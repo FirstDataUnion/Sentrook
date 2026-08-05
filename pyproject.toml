@@ -36,9 +36,8 @@ path = "sentrook/sentrook/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sentrook/sentrook"]
+# Ensure non-Python sanitize rules ship in the wheel
 
-[tool.hatch.build.targets.wheel.force-include]
-"sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sanitize/rules.yaml"
 
 [tool.hatch.build.targets.sdist]
 packages = ["sentrook/sentrook"]
@@ -50,3 +49,6 @@ markers = [
     "l3_embed: run with the real fastembed bi-encoder (network/model download)",
     "ner_presidio: Presidio+spaCy NER corpus scrub (needs sentrook[ner] + en_core_web_sm)",
 ]
+
+[tool.hatch.build.force-include]
+"sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sentrook/sanitize/rules.yaml"

@@ -2,7 +2,7 @@
 
 FIDU runtime scanner for agent execution trajectories (PlanIR / Ariadne thread).
 
-**Version:** Sentrook `0.2.12` (prototype). The OpenClaw plugin uses its own SemVer (`@firstdataunion/sentrook-shadow`).
+**Version:** Sentrook `0.2.13` (prototype). The OpenClaw plugin uses its own SemVer (`@firstdataunion/sentrook-shadow`).
 
 Production YAIRA rules and corpus live in the private **Rookery** registry. This repo ships the engine, TestNest harness, plugins, and a tiny `examples/` demo library for format docs and smoke tests only.
 
