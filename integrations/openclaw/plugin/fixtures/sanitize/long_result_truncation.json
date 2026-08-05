@@ -1,0 +1,48 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "/tmp/big.txt"
+        },
+        "result": {
+          "ok": true,
+          "text": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEND"
+        }
+      }
+    ],
+    "pending": {
+      "tool": "exec",
+      "args": {
+        "command": "wc -c /tmp/big.txt"
+      }
+    }
+  },
+  "expected": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [
+      {
+        "tool": "read",
+        "args": {
+          "path": "/tmp/big.txt"
+        },
+        "result": {
+          "ok": true,
+          "text": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \u2026 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEND"
+        }
+      }
+    ],
+    "pending": {
+      "tool": "exec",
+      "args": {
+        "command": "wc -c /tmp/big.txt"
+      }
+    }
+  }
+}

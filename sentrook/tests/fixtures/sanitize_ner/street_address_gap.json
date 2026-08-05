@@ -1,0 +1,28 @@
+{
+  "id": "street_address_gap",
+  "description": "Street address fixture for the full ingest path (Option C regex, then NER). Excluded from NER-only harness — spaCy sm typically leaves the street and only redacts the city.",
+  "example": {
+    "id": "ner-street-gap",
+    "label": "benign",
+    "trust": "community",
+    "intent": "Confirm delivery address before shipping",
+    "steps": [
+      {
+        "tool": "read",
+        "status": "executed",
+        "args": { "path": "/tmp/addr.txt" },
+        "excerpt": "Deliver to 221B Baker Street, London."
+      },
+      {
+        "tool": "exec",
+        "status": "pending",
+        "args": { "command": "cat /tmp/addr.txt" }
+      }
+    ]
+  },
+  "expect": {
+    "must_not_contain": ["221B Baker Street"],
+    "must_still_contain": ["Deliver to"],
+    "min_entity_types": ["LOCATION"]
+  }
+}

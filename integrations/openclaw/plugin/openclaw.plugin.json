@@ -1,0 +1,139 @@
+{
+  "id": "sentrook-shadow",
+  "name": "Sentrook Shadow Scanner",
+  "description": "Sentrook trajectory scanner (hosted HTTPS or local URL). Shadow mode observes only; enforce mode can block or require human approval on flagged tool calls.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "Sentrook scan service base URL (e.g. http://sentrook-shadow:9099 or https://sentrook.example). Falls back to SENTROOK_SHADOW_URL env, then http://sentrook-shadow:9099."
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Legacy static scan API key (optional override). Preferred: SENTROOK_SCAN_API_KEY in ~/.openclaw/.env — do not use SecretRefs here (unresolved refs fail-close the gateway)."
+      },
+      "clientId": {
+        "type": "string",
+        "description": "Optional override. Preferred: SENTROOK_SCAN_CLIENT_ID in ~/.openclaw/.env (or compose env_file)."
+      },
+      "clientSecret": {
+        "type": "string",
+        "description": "Optional override. Preferred: SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env — avoid SecretRefs in openclaw.json (unresolved refs fail-close the gateway)."
+      },
+      "oidcIssuer": {
+        "type": "string",
+        "description": "OIDC issuer base URL. Default https://identity.firstdataunion.org. Env: SENTROOK_OIDC_ISSUER."
+      },
+      "oidcAudience": {
+        "type": "string",
+        "description": "Expected token audience. Default sentrook. Env: SENTROOK_OIDC_AUDIENCE."
+      },
+      "oidcScope": {
+        "type": "string",
+        "description": "OAuth scope requested for scan tokens. Default sentrook.scan. Env: SENTROOK_OIDC_SCOPE."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "description": "Scan request timeout in ms. In enforce mode this gates the agent; in shadow mode it only bounds fire-and-forget posts. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SHADOW_TIMEOUT_MS)."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["shadow", "enforce"],
+        "description": "shadow = observe-only (default). enforce = honour allow/review/block decisions from the scan service."
+      },
+      "feedback": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["off", "submit"],
+            "description": "Feedback for review resolutions (allow-once / deny). off = disabled. submit = POST sanitized candidates to hosted Sentrook /feedback (forwarded to Rookery). Configure wizard defaults to submit (community corpus contribution); opt out with feedback.mode=off or --contribute-corpus false."
+          }
+        }
+      },
+      "sanitization": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Sanitise snapshot payloads before POST /scan and /feedback. Default true. Set false or SENTROOK_SANITIZE_SNAPSHOT=0 to disable."
+          }
+        }
+      },
+      "approval": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Human approval timeouts for enforce-mode review decisions. Unattended cron/subagent runs get a longer window; interactive sessions stay short with deny-on-timeout.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "When false, all intents use interactiveTimeoutMs with deny-on-timeout. Default true. Env: SENTROOK_SCHEDULED_APPROVAL_ENABLED."
+          },
+          "interactiveTimeoutMs": {
+            "type": "integer",
+            "description": "Review timeout for interactive sessions (ms). Default 120000. Env: SENTROOK_APPROVAL_TIMEOUT_MS."
+          },
+          "scheduledTimeoutMs": {
+            "type": "integer",
+            "description": "Review timeout for unattended cron/subagent runs (ms). Default 900000 (15 min). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
+          },
+          "scheduledTimeoutBehavior": {
+            "type": "string",
+            "enum": ["allow", "deny"],
+            "description": "When an unattended review times out. Default allow (proceed). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR."
+          },
+          "scheduledIntentKinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["user", "cron", "subagent", "system"]
+            },
+            "description": "Intent kinds that use the scheduled policy. Default [cron, subagent]."
+          }
+        }
+      },
+      "allowlist": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Local short-circuit for enforce-mode allow-always decisions. Stores skeletons / script content hashes under ~/.openclaw; does not override Sentrook blocks.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "When true (default), allow-always records a local entry and matching future reviews skip requireApproval. Env: SENTROOK_ALLOWLIST_ENABLED."
+          },
+          "path": {
+            "type": "string",
+            "description": "Override path for sentrook-allowlist.json. Default ~/.openclaw/sentrook-allowlist.json (or $OPENCLAW_STATE_DIR/...). Env: SENTROOK_ALLOWLIST_PATH."
+          },
+          "scriptBind": {
+            "type": "boolean",
+            "description": "When true (default), interpreter+local-script forms are stored as path+SHA-256 bindings. Env: SENTROOK_ALLOWLIST_SCRIPT_BIND."
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "Scan API key (legacy)",
+      "sensitive": true,
+      "placeholder": "Prefer SENTROOK_SCAN_API_KEY in ~/.openclaw/.env"
+    },
+    "clientId": {
+      "label": "Scan OAuth client ID",
+      "placeholder": "Prefer SENTROOK_SCAN_CLIENT_ID in ~/.openclaw/.env"
+    },
+    "clientSecret": {
+      "label": "Scan OAuth client secret",
+      "sensitive": true,
+      "placeholder": "Prefer SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env"
+    }
+  }
+}

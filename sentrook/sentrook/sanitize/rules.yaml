@@ -1,0 +1,119 @@
+# Sentrook snapshot sanitization rules — host-agnostic source of truth.
+# Consumed by sentrook.sanitize (Python) and mirrored in integrations/openclaw/plugin/sanitize.ts.
+# Option C: curated regex expansions (street_address, uk_postcode, …) live here.
+
+version: 1
+
+placeholders:
+  redacted: "[REDACTED]"
+  truncated: "[TRUNCATED]"
+
+limits:
+  # Bound egress size. Content-like keys (content/text/body/message) use
+  # signal-preserving packing (head + URLs/paths/markers + tail) instead of a
+  # pure prefix cut — see sentrook.sanitize.signal_excerpt / plugin sanitize.ts.
+  result_text_max_chars: 500
+  intent_max_chars: 1000
+  string_leaf_max_chars: 500
+
+session_id:
+  hash_prefix: "sess_"
+  hash_hex_chars: 12
+
+# Option A — redact entire value when the field name matches (case-insensitive).
+# ``pass`` is bounded so keys like ``bypass`` / ``compass`` are not treated as secrets;
+# ``passwd`` / ``password`` and names like ``LIBRARY_BOT_PASS`` still match.
+# Env-style assignments (export FOO_PASS=…) and CLI flag values (--password …) are
+# handled in sentrook.sanitize.core before these substring patterns — keyword-only
+# replacement would leave values intact (PASSWORD=secret → [REDACTED]=secret).
+credential_field_pattern: "(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)"
+
+# Option B — redact matching substrings in string values.
+# Prefer unique provider prefixes (gitleaks / GitHub secret-scanning style).
+# Do not mirror the full gitleaks catalog — labeled generics have high FP rates
+# for a redactor that runs on every command string.
+secret_value_patterns:
+  - name: labeled_secret
+    # Avoid eating CLI flags (--password) and assignment LHS already scrubbed
+    # (PASSWORD=[REDACTED]); keyword-only replacement never redacted values.
+    pattern: '(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)|bearer\s+[A-Za-z0-9._=-]+'
+  - name: openai_key
+    # Classic user keys (T3BlbkFJ = base64 "OpenAI"), project/svc/admin keys,
+    # plus a short sk- fallback for fixtures / legacy keys (no hyphen body).
+    pattern: 'sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|sk-[a-z0-9]{10,}'
+  - name: anthropic_key
+    pattern: 'sk-ant-[a-z0-9-]{10,}'
+  - name: github_token
+    pattern: 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'
+  - name: gitlab_token
+    pattern: 'glpat-[A-Za-z0-9_-]{20,}'
+  - name: slack_token
+    # Bot/user/app tokens (xox*) plus app-level (xapp) and config (xoxe).
+    pattern: 'xox[baprs]-[A-Za-z0-9-]{10,}|xoxe(?:\.xox[bp])?-\d-[A-Za-z0-9]+|xapp-\d-[A-Za-z0-9-]+'
+  - name: slack_webhook
+    pattern: 'https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9+/_-]+'
+  - name: discord_bot_token
+    # id.timestamp.hmac (base64url); first segment is snowflake → M/N/O.
+    pattern: '[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}'
+  - name: discord_webhook
+    pattern: 'https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+'
+  - name: telegram_bot_token
+    pattern: '\b\d{5,16}:A[A-Za-z0-9_-]{34}\b'
+  - name: npm_token
+    pattern: '\bnpm_[A-Za-z0-9]{36}\b'
+  - name: twilio_api_key
+    # Often used for WhatsApp Business / SMS agent channels.
+    pattern: '\bSK[0-9a-fA-F]{32}\b'
+  - name: meta_access_token
+    # WhatsApp Cloud / Facebook Graph tokens commonly start with EAA.
+    pattern: '\bEAA[A-Za-z0-9]{40,}\b'
+  - name: aws_access_key
+    pattern: '(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}'
+  - name: google_api_key
+    pattern: 'AIza[0-9A-Za-z_-]{35}'
+  - name: stripe_secret_key
+    # Publishable pk_* keys are intentional public; only secret/restricted.
+    pattern: '(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}'
+  - name: huggingface_token
+    pattern: 'hf_[A-Za-z0-9]{20,}'
+  - name: groq_api_key
+    pattern: 'gsk_[A-Za-z0-9]{20,}'
+  - name: pem_private_key
+    pattern: '-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----'
+
+# Option D / C — applied only on high-risk string fields (see pii_arg_keys + intent/result paths).
+# Order matters: structured IDs (IBAN/NI/address) before loose phone/card digit runs.
+pii_patterns:
+  - name: email
+    pattern: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+  - name: street_address
+    pattern: '(?i)\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][a-z]+|[A-Z]{1,3}\d?[A-Za-z]?)\s+(?:[A-Z][a-z]+\s+){0,3}(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Place|Pl\.?|Terrace|Ter\.?|Close|Crescent|Cres\.?|Grove|Hill|Row)\b'
+  - name: uk_postcode
+    pattern: '(?i)\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b'
+  - name: uk_ni
+    # UK National Insurance: 2 letters + 6 digits + A–D (spaces optional).
+    # Excludes known-invalid prefixes; first-letter set follows HMRC rules.
+    pattern: '(?i)\b(?!BG|GB|NK|KN|TN|NT|ZZ)[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b'
+  - name: iban
+    # ISO 13616 IBAN (country + check digits + BBAN); optional spaces every 4.
+    pattern: '(?i)\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b'
+  - name: credit_card
+    pattern: '\b(?:\d[ -]*?){13,19}\b'
+  - name: phone
+    pattern: '\+?[0-9][0-9()\-\s.]{7,}[0-9]'
+
+# Arg keys that receive PII scrubbing (in addition to intent and result text/command).
+pii_arg_keys:
+  - command
+  - cmd
+  - message
+  - text
+  - content
+  - body
+
+# Option G — only these keys are kept on executed result objects.
+allowed_result_keys:
+  - ok
+  - text
+  - command
+  - content_type

@@ -1,0 +1,24 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "session_id": "sess-raw-abc",
+    "run_id": "sess-raw-abc:run_9",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": { "command": "ls" }
+    }
+  },
+  "expected": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "session_id": "sess_6a6cbcb803b1",
+    "run_id": "sess_6a6cbcb803b1:run_9",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": { "command": "ls" }
+    }
+  }
+}

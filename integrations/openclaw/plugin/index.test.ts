@@ -1,0 +1,664 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, it } from "node:test";
+
+import { resolveApprovalPolicyConfig } from "./approvalPolicy.ts";
+import {
+  buildScanTiming,
+  computeTransportMs,
+  extractEngineMs,
+  postScan,
+  resolveScanTimeoutMs,
+  translateScanResponse,
+  type ScanResponse,
+  type ShadowSnapshot,
+} from "./index.ts";
+import { recordAllowAlways } from "./localAllowlist.ts";
+
+const noopLogger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+function snapshot(overrides: Partial<ShadowSnapshot> = {}): ShadowSnapshot {
+  return {
+    schema: "sentrook.shadow.snapshot/v1",
+    adapter: "openclaw",
+    session_id: "sess-1",
+    run_id: "sess-1:run_1",
+    intent: "check my email",
+    intent_kind: "user",
+    executed: [],
+    pending: { tool: "exec", args: { command: "ls /tmp" } },
+    ...overrides,
+  };
+}
+
+function ctx(overrides: Record<string, unknown> = {}) {
+  return {
+    snapshot: snapshot(),
+    url: "http://sentrook-shadow:9099",
+    auth: { apiKey: null, oidc: null },
+    feedbackMode: "off" as const,
+    approval: resolveApprovalPolicyConfig({}),
+    sanitization: { enabled: false },
+    allowlist: { enabled: false, path: "/tmp/unused-sentrook-allowlist.json", scriptBind: true },
+    logger: noopLogger,
+    ...overrides,
+  };
+}
+
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+describe("scan timing helpers", () => {
+  it("defaults to 3000ms for HTTPS scan URLs", () => {
+    assert.equal(
+      resolveScanTimeoutMs(undefined, "https://sentrook.firstdataunion.org", {}),
+      3000,
+    );
+  });
+
+  it("defaults to 1500ms for local HTTP sidecar URLs", () => {
+    assert.equal(resolveScanTimeoutMs(undefined, "http://sentrook-shadow:9099", {}), 1500);
+  });
+
+  it("prefers explicit config and env timeout overrides", () => {
+    assert.equal(resolveScanTimeoutMs(5000, "http://sentrook-shadow:9099", {}), 5000);
+    assert.equal(
+      resolveScanTimeoutMs(undefined, "http://sentrook-shadow:9099", {
+        SENTROOK_SHADOW_TIMEOUT_MS: "4000",
+      }),
+      4000,
+    );
+  });
+
+  it("prefers timing.engine_ms over log.total_ms", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "allow",
+      timing: { engine_ms: 42, request_ms: 44 },
+      log: { total_ms: 99 },
+    };
+    assert.equal(extractEngineMs(scan), 42);
+    const timing = buildScanTiming(scan, 50);
+    assert.equal(timing.pluginE2eMs, 50);
+    assert.equal(timing.requestMs, 44);
+    assert.equal(timing.transportMs, 8);
+    assert.equal(timing.sanitizeEnabled, false);
+    assert.equal(timing.sanitizeMs, 0);
+  });
+
+  it("falls back to log.total_ms when timing is missing", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "allow",
+      log: { total_ms: 120 },
+    };
+    assert.equal(extractEngineMs(scan), 120);
+    assert.equal(computeTransportMs(125, 120), 5);
+  });
+});
+
+describe("postScan timing", () => {
+  it("measures plugin round-trip time for enforce scans", async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          block: false,
+          decision: "allow",
+          timing: { engine_ms: 10, request_ms: 12 },
+          log: { total_ms: 10 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+
+    const result = await postScan(
+      "http://sentrook-shadow:9099",
+      1500,
+      snapshot({ tool_call_id: "exec:abc" }),
+      null,
+      { enabled: false },
+    );
+    assert.ok(result);
+    assert.equal(result.scan.decision, "allow");
+    assert.ok(result.timing.pluginE2eMs >= 0);
+    assert.equal(result.timing.engineMs, 10);
+    assert.equal(result.timing.requestMs, 12);
+    assert.equal(result.timing.transportMs, Math.max(0, result.timing.pluginE2eMs - 10));
+    assert.equal(result.timing.sanitizeEnabled, false);
+    assert.equal(result.timing.sanitizeMs, 0);
+  });
+
+  it("sanitizes snapshot body when sanitization is enabled", async () => {
+    let postedBody = "";
+    globalThis.fetch = (async (_url, init) => {
+      postedBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          block: false,
+          decision: "allow",
+          timing: { engine_ms: 1, request_ms: 2 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    const result = await postScan(
+      "http://sentrook-shadow:9099",
+      1500,
+      snapshot({
+        pending: {
+          tool: "exec",
+          args: { command: "echo hi", api_key: "super-secret" },
+        },
+      }),
+      null,
+      { enabled: true },
+    );
+    assert.ok(result);
+    assert.equal(result.timing.sanitizeEnabled, true);
+    assert.ok(result.timing.sanitizeMs >= 0);
+    const body = JSON.parse(postedBody) as { pending: { args: { api_key: string } } };
+    assert.equal(body.pending.args.api_key, "[REDACTED]");
+    assert.ok(!postedBody.includes("super-secret"));
+  });
+});
+
+describe("postScan failure logging", () => {
+  it("warns with HTTP status and body snippet on non-OK, then fails open", async () => {
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    const body = "x".repeat(250);
+    globalThis.fetch = (async () =>
+      new Response(body, { status: 401 })) as typeof fetch;
+
+    const result = await postScan(
+      "https://scan.test",
+      1500,
+      snapshot(),
+      { apiKey: "k", oidc: null },
+      { enabled: false },
+      logger,
+    );
+    assert.equal(result, null);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0]!, /scan HTTP 401:/);
+    assert.match(warns[0]!, /failing open/);
+    assert.ok(!warns[0]!.includes(body));
+    assert.ok(warns[0]!.includes("x".repeat(200)));
+  });
+
+  it("warns scan timed out when the request is aborted", async () => {
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    globalThis.fetch = ((_url, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error("missing abort signal"));
+          return;
+        }
+        if (signal.aborted) {
+          reject(new Error("aborted"));
+          return;
+        }
+        signal.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as typeof fetch;
+
+    const result = await postScan(
+      "https://scan.test",
+      20,
+      snapshot(),
+      null,
+      { enabled: false },
+      logger,
+    );
+    assert.equal(result, null);
+    assert.match(warns[0] || "", /scan timed out:.*failing open/);
+  });
+
+  it("warns scan failed on network errors", async () => {
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as typeof fetch;
+
+    const result = await postScan(
+      "https://scan.test",
+      1500,
+      snapshot(),
+      null,
+      { enabled: false },
+      logger,
+    );
+    assert.equal(result, null);
+    assert.match(warns[0] || "", /scan failed: ECONNREFUSED; failing open/);
+  });
+});
+
+describe("translateScanResponse — block mapping", () => {
+  it("maps a block decision to an OpenClaw veto with the sidecar reason", () => {
+    const scan: ScanResponse = {
+      block: true,
+      decision: "block",
+      block_reason: "AIRA-001: fetched payload piped to shell",
+    };
+    const result = translateScanResponse(scan, ctx());
+    assert.ok(result);
+    assert.equal(result.block, true);
+    assert.equal(result.blockReason, "AIRA-001: fetched payload piped to shell");
+    assert.equal(result.requireApproval, undefined);
+  });
+
+  it("blocks on decision=block even when block flag is false (defence in depth)", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "block",
+      summary: "Block triggered by AIRA-001",
+    };
+    const result = translateScanResponse(scan, ctx());
+    assert.ok(result);
+    assert.equal(result.block, true);
+    assert.equal(result.blockReason, "Block triggered by AIRA-001");
+  });
+
+  it("falls back to a generic reason when the sidecar sends none", () => {
+    const scan: ScanResponse = { block: true, decision: "block" };
+    const result = translateScanResponse(scan, ctx());
+    assert.ok(result?.blockReason);
+    assert.match(result.blockReason!, /Sentrook blocked/);
+  });
+});
+
+describe("translateScanResponse — review mapping", () => {
+  it("maps review to requireApproval with sidecar copy and severity", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "read → exec chain flagged",
+      review_severity: "critical",
+    };
+    const result = translateScanResponse(scan, ctx());
+    assert.ok(result?.requireApproval);
+    const approval = result.requireApproval!;
+    assert.equal(approval.title, "Sentrook review: exec");
+    assert.equal(approval.description, "read → exec chain flagged");
+    assert.equal(approval.severity, "critical");
+    assert.deepEqual(approval.allowedDecisions, [
+      "allow-once",
+      "allow-always",
+      "deny",
+    ]);
+  });
+
+  it("uses fallback title/description/severity when copy is missing", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      summary: "Review triggered by AIRA-064",
+    };
+    const result = translateScanResponse(scan, ctx());
+    const approval = result?.requireApproval;
+    assert.ok(approval);
+    assert.equal(approval.title, "Sentrook review: exec");
+    assert.equal(approval.description, "Review triggered by AIRA-064");
+    assert.equal(approval.severity, "warning");
+  });
+
+  it("applies interactive deny timing for user intents", () => {
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(scan, ctx());
+    const approval = result?.requireApproval;
+    assert.ok(approval);
+    assert.equal(approval.timeoutBehavior, "deny");
+  });
+
+  it("applies scheduled allow timing for cron intents", () => {
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        snapshot: snapshot({
+          intent: "[cron:abc] Daily Brief",
+          intent_kind: "cron",
+        }),
+      }),
+    );
+    const approval = result?.requireApproval;
+    assert.ok(approval);
+    assert.equal(approval.timeoutBehavior, "allow");
+  });
+});
+
+describe("translateScanResponse — allow mapping", () => {
+  it("returns undefined so the tool call proceeds untouched", () => {
+    const scan: ScanResponse = { block: false, decision: "allow" };
+    assert.equal(translateScanResponse(scan, ctx()), undefined);
+  });
+});
+
+describe("translateScanResponse — resolution feedback", () => {
+  function captureFeedback(): { calls: Array<{ url: string; body: any }> } {
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = ((url: any, init?: any) => {
+      calls.push({ url: String(url), body: JSON.parse(init?.body ?? "{}") });
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as typeof fetch;
+    return { calls };
+  }
+
+  it("posts feedback on allow-always even when feedback mode is off", async () => {
+    const { calls } = captureFeedback();
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(scan, ctx());
+    await result!.requireApproval!.onResolution!("allow-always");
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/feedback$/);
+    assert.equal(calls[0].body.resolution, "allow-always");
+  });
+
+  it("warns when feedback response is skipped", async () => {
+    const warns: string[] = [];
+    globalThis.fetch = ((url: any, init?: any) => {
+      return Promise.resolve(
+        new Response(JSON.stringify({ status: "skipped", reason: "feedback disabled" }), {
+          status: 200,
+        }),
+      );
+    }) as typeof fetch;
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        feedbackMode: "submit",
+        logger: {
+          info: () => {},
+          warn: (msg: string) => warns.push(msg),
+          error: () => {},
+        },
+      }),
+    );
+    await result!.requireApproval!.onResolution!("allow-once");
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /feedback not submitted/);
+    assert.match(warns[0], /feedback disabled/);
+  });
+
+  it("posts deny feedback when feedback mode is submit", async () => {
+    const { calls } = captureFeedback();
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(scan, ctx({ feedbackMode: "submit" }));
+    await result!.requireApproval!.onResolution!("deny");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.resolution, "deny");
+  });
+
+  it("sanitizes feedback snapshot when sanitization is enabled", async () => {
+    const { calls } = captureFeedback();
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const snap = snapshot({
+      pending: {
+        tool: "exec",
+        args: { command: "echo hi", api_key: "super-secret" },
+      },
+    });
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        snapshot: snap,
+        feedbackMode: "submit",
+        sanitization: { enabled: true },
+      }),
+    );
+    await result!.requireApproval!.onResolution!("deny");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.snapshot.pending.args.api_key, "[REDACTED]");
+    assert.ok(!JSON.stringify(calls[0].body).includes("super-secret"));
+  });
+});
+
+describe("translateScanResponse — local allowlist", () => {
+  const allowlistDirs: string[] = [];
+  afterEach(() => {
+    while (allowlistDirs.length) {
+      const dir = allowlistDirs.pop();
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function allowlistCtx(command: string) {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-idx-allow-"));
+    allowlistDirs.push(dir);
+    const path = join(dir, "sentrook-allowlist.json");
+    const allowlist = { enabled: true, path, scriptBind: true };
+    const snap = snapshot({
+      pending: { tool: "exec", args: { command } },
+    });
+    const log = { matched_rules: [{ id: "AIRA-010" }] };
+    return { dir, allowlist, snap, log };
+  }
+
+  it("skips requireApproval on allowlist hit", () => {
+    const warns: string[] = [];
+    const { allowlist, snap, log } = allowlistCtx("rg -n TODO src/");
+    recordAllowAlways(snap, log, allowlist);
+    const result = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({
+        snapshot: snap,
+        allowlist,
+        logger: { ...noopLogger, warn: (m) => warns.push(m) },
+      }),
+    );
+    assert.equal(result, undefined);
+    assert.ok(warns.some((m) => /local allowlist hit \(skeleton\)/.test(m)));
+    assert.ok(warns.some((m) => /rules=AIRA-010/.test(m)));
+    assert.ok(warns.some((m) => /skeleton=rg -n TODO src\//.test(m)));
+  });
+
+  it("never short-circuits block decisions", () => {
+    const { allowlist, snap, log } = allowlistCtx("rg -n TODO src/");
+    recordAllowAlways(snap, log, allowlist);
+    const result = translateScanResponse(
+      { block: true, decision: "block", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    assert.equal(result?.block, true);
+  });
+
+  it("records allowlist on allow-always and still posts feedback", async () => {
+    const { calls } = (() => {
+      const calls: Array<{ url: string; body: any }> = [];
+      globalThis.fetch = ((url: any, init?: any) => {
+        calls.push({ url: String(url), body: JSON.parse(init?.body ?? "{}") });
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch;
+      return { calls };
+    })();
+
+    const { dir, allowlist, snap, log } = allowlistCtx(
+      "rg -n hello src/",
+    );
+    const result = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    assert.ok(result?.requireApproval);
+    await result!.requireApproval!.onResolution!("allow-always");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.resolution, "allow-always");
+
+    const again = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    assert.equal(again, undefined);
+    assert.ok(dir);
+  });
+
+  it("records script_bind for python helpers", async () => {
+    const { calls } = (() => {
+      const calls: Array<{ url: string; body: any }> = [];
+      globalThis.fetch = ((url: any, init?: any) => {
+        calls.push({ url: String(url), body: JSON.parse(init?.body ?? "{}") });
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch;
+      return { calls };
+    })();
+
+    const { dir, allowlist, log } = allowlistCtx("placeholder");
+    const scriptPath = join(dir, "helper.py");
+    writeFileSync(scriptPath, "print(1)\n", "utf8");
+    const snap = snapshot({
+      pending: {
+        tool: "exec",
+        args: { command: `python3 ${scriptPath} --date 2026-07-17` },
+      },
+    });
+    const result = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    await result!.requireApproval!.onResolution!("allow-always");
+    assert.equal(calls.length, 1);
+
+    const hit = translateScanResponse(
+      {
+        block: false,
+        decision: "review",
+        log,
+      },
+      ctx({
+        snapshot: snapshot({
+          pending: {
+            tool: "exec",
+            args: { command: `python3 ${scriptPath} --date 2026-07-20` },
+          },
+        }),
+        allowlist,
+      }),
+    );
+    assert.equal(hit, undefined);
+  });
+
+  it("allow-once does not record and still prompts next time", async () => {
+    const { calls } = (() => {
+      const calls: Array<{ url: string; body: any }> = [];
+      globalThis.fetch = ((url: any, init?: any) => {
+        calls.push({ url: String(url), body: JSON.parse(init?.body ?? "{}") });
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch;
+      return { calls };
+    })();
+
+    const { allowlist, snap, log } = allowlistCtx("rg -n once src/");
+    const result = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist, feedbackMode: "submit" }),
+    );
+    await result!.requireApproval!.onResolution!("allow-once");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.resolution, "allow-once");
+
+    const again = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    assert.ok(again?.requireApproval);
+  });
+
+  it("high-risk allow-always posts feedback but does not short-circuit later", async () => {
+    const { calls } = (() => {
+      const calls: Array<{ url: string; body: any }> = [];
+      globalThis.fetch = ((url: any, init?: any) => {
+        calls.push({ url: String(url), body: JSON.parse(init?.body ?? "{}") });
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch;
+      return { calls };
+    })();
+
+    const { allowlist, snap, log } = allowlistCtx("python3 -c 'print(1)'");
+    const result = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    await result!.requireApproval!.onResolution!("allow-always");
+    assert.equal(calls.length, 1);
+
+    const again = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({ snapshot: snap, allowlist }),
+    );
+    assert.ok(again?.requireApproval);
+  });
+
+  it("disabled allowlist still posts allow-always feedback", async () => {
+    const { calls } = (() => {
+      const calls: Array<{ url: string; body: any }> = [];
+      globalThis.fetch = ((url: any, init?: any) => {
+        calls.push({ url: String(url), body: JSON.parse(init?.body ?? "{}") });
+        return Promise.resolve(new Response("{}", { status: 200 }));
+      }) as typeof fetch;
+      return { calls };
+    })();
+
+    const { allowlist, snap, log } = allowlistCtx("rg -n TODO src/");
+    const result = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({
+        snapshot: snap,
+        allowlist: { ...allowlist, enabled: false },
+      }),
+    );
+    await result!.requireApproval!.onResolution!("allow-always");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.resolution, "allow-always");
+  });
+
+  it("script URL arg change still requires approval after script_bind", async () => {
+    const { dir, allowlist, log } = allowlistCtx("placeholder");
+    const scriptPath = join(dir, "helper.py");
+    writeFileSync(scriptPath, "print(1)\n", "utf8");
+    const snap = snapshot({
+      pending: {
+        tool: "exec",
+        args: { command: `python3 ${scriptPath} --url https://safe.example` },
+      },
+    });
+    recordAllowAlways(snap, log, allowlist);
+
+    const miss = translateScanResponse(
+      { block: false, decision: "review", log },
+      ctx({
+        snapshot: snapshot({
+          pending: {
+            tool: "exec",
+            args: { command: `python3 ${scriptPath} --url https://evil.example` },
+          },
+        }),
+        allowlist,
+      }),
+    );
+    assert.ok(miss?.requireApproval);
+  });
+});

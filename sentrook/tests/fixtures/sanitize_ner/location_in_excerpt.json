@@ -1,0 +1,28 @@
+{
+  "id": "location_in_excerpt",
+  "description": "City/location in step excerpt should be NER-redacted (spaCy sm catches GPE, not full street addresses).",
+  "example": {
+    "id": "ner-location-excerpt",
+    "label": "benign",
+    "trust": "community",
+    "intent": "Look up the office postal address for shipping",
+    "steps": [
+      {
+        "tool": "read",
+        "status": "executed",
+        "args": { "path": "/tmp/contacts.txt" },
+        "excerpt": "Customer lives in San Francisco near the ferry building."
+      },
+      {
+        "tool": "exec",
+        "status": "pending",
+        "args": { "command": "cat /tmp/contacts.txt" }
+      }
+    ]
+  },
+  "expect": {
+    "must_not_contain": ["San Francisco"],
+    "must_still_contain": ["Customer lives", "contacts.txt"],
+    "min_entity_types": ["LOCATION"]
+  }
+}

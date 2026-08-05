@@ -1,0 +1,22 @@
+{
+  "id": "uk_ni_in_intent",
+  "description": "UK National Insurance number in intent (spaced and compact forms).",
+  "example": {
+    "id": "pii-uk-ni-intent",
+    "label": "benign",
+    "trust": "community",
+    "intent": "Lookup payroll for NI JG 10 30 05 A before the next run",
+    "steps": [
+      {
+        "tool": "exec",
+        "status": "pending",
+        "args": { "command": "openclaw gateway status" }
+      }
+    ]
+  },
+  "expect": {
+    "must_not_contain": ["JG 10 30 05 A"],
+    "must_still_contain": ["payroll", "gateway"],
+    "pattern_names": ["uk_ni"]
+  }
+}

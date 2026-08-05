@@ -1,0 +1,8 @@
+name: demo-fetch-exec-block
+tags: [smoke]
+description: Demo rule DEMO-001 blocks fetch→pipe-to-shell
+plan: ../plans/web_fetch_exec_block.json
+profiles:
+  v0:
+    decision: block
+    matched_rules: [DEMO-001]

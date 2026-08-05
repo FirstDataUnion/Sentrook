@@ -1,0 +1,24 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "intent": "List files in /tmp",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": { "command": "ls /tmp" }
+    }
+  },
+  "expected": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "intent": "List files in /tmp",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": { "command": "ls /tmp" }
+    }
+  }
+}

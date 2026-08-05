@@ -1,0 +1,40 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [
+      {
+        "tool": "exec",
+        "args": { "command": "curl https://api.example.com" },
+        "result": {
+          "ok": true,
+          "text": "curl -H 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz'"
+        }
+      }
+    ],
+    "pending": {
+      "tool": "read",
+      "args": { "path": "/tmp/out.txt" }
+    }
+  },
+  "expected": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [
+      {
+        "tool": "exec",
+        "args": { "command": "curl https://api.example.com" },
+        "result": {
+          "ok": true,
+          "text": "curl -H 'Authorization: [REDACTED]'"
+        }
+      }
+    ],
+    "pending": {
+      "tool": "read",
+      "args": { "path": "/tmp/out.txt" }
+    }
+  }
+}

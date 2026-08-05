@@ -1,0 +1,17 @@
+{
+  "version": "0.1",
+  "run_id": "fixture:pending_exec",
+  "intent": "Run a command",
+  "steps": [
+    {
+      "id": "s1",
+      "tool": "exec",
+      "status": "pending",
+      "args": { "command": "ls -la" }
+    }
+  ],
+  "metadata": {
+    "adapter": "fixture",
+    "hook": "before_tool_call"
+  }
+}

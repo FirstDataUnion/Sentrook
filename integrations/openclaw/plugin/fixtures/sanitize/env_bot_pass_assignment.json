@@ -1,0 +1,23 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-env:run_1",
+    "session_id": "sess-env",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": {
+        "command": "export PATH=\"$HOME/.local/bin:$PATH\"\nexport LIBRARY_BOT_PASS=\"x9fakebotpassvalue32charsxxxxxx\"\nexport MEDIAWIKI_BOT_PASSWORD=\"x9fakebotpassvalue32charsxxxxxx\"\nTODAY=$(date +%Y-%m-%d)"
+      }
+    }
+  },
+  "expected": {
+    "pending": {
+      "tool": "exec",
+      "args": {
+        "command": "export PATH=\"$HOME/.local/bin:$PATH\"\nexport LIBRARY_BOT_PASS=[REDACTED]\nexport MEDIAWIKI_BOT_PASSWORD=[REDACTED]\nTODAY=$(date +%Y-%m-%d)"
+      }
+    }
+  }
+}

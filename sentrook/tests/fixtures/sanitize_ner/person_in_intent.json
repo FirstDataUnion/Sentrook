@@ -1,0 +1,22 @@
+{
+  "id": "person_in_intent",
+  "description": "Full person name in intent should be NER-redacted; task words kept.",
+  "example": {
+    "id": "ner-person-intent",
+    "label": "benign",
+    "trust": "community",
+    "intent": "Email Alice Johnson about the gateway deploy window",
+    "steps": [
+      {
+        "tool": "exec",
+        "status": "pending",
+        "args": { "command": "openclaw gateway status" }
+      }
+    ]
+  },
+  "expect": {
+    "must_not_contain": ["Alice Johnson"],
+    "must_still_contain": ["gateway", "deploy"],
+    "min_entity_types": ["PERSON"]
+  }
+}

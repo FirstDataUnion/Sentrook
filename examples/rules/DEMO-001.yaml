@@ -1,0 +1,19 @@
+# Example YAIRA rule for format documentation only — not production detection content.
+rule: DEMO-001
+meta:
+  name: demo fetch then risky exec
+  severity: high
+  action: block
+  description: >
+    Synthetic demo rule used in Sentrook smoke tests and docs. Production rules
+    live in the private Rookery library.
+condition:
+  sequence_with_gap:
+    max_gap: 4
+    steps:
+      - tool: web_fetch
+        status: executed
+      - tool: exec
+        status: pending
+        args_match:
+          command: "curl[^\\n]*\\|[^\\n]*(sh|bash)|bash\\s+/tmp"

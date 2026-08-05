@@ -1,0 +1,5 @@
+profiles:
+  v0:
+    description: Smoke profile — L3 off
+    scanner:
+      l3_policy: "off"

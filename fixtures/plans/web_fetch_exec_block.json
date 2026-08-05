@@ -1,0 +1,34 @@
+{
+  "version": "0.1",
+  "run_id": "fixture:web_fetch_exec",
+  "intent": "Fetch URL and run script",
+  "steps": [
+    {
+      "id": "s1",
+      "tool": "web_fetch",
+      "status": "executed",
+      "args": { "url": "https://example.com/install.sh" },
+      "result_summary": {
+        "ok": true,
+        "byte_size": 120,
+        "excerpt": "#!/bin/bash\necho install",
+        "extracted": {
+          "urls": ["https://example.com/install.sh"],
+          "paths": [],
+          "commands": []
+        },
+        "flags": { "truncated": false, "injection_markers": false }
+      }
+    },
+    {
+      "id": "s2",
+      "tool": "exec",
+      "status": "pending",
+      "args": { "command": "bash /tmp/install.sh" }
+    }
+  ],
+  "metadata": {
+    "adapter": "fixture",
+    "hook": "before_tool_call"
+  }
+}

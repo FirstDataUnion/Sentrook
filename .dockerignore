@@ -1,0 +1,14 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+# Local OpenClaw fixture data (gitignored, large session transcripts)
+openclaw_example
+# Node artifacts from the OpenClaw plugin
+integrations/openclaw/plugin/node_modules
+# Build caches
+**/.fastembed_cache
+# Rookery runtime data (SQLite + bundles)
+rookery/data

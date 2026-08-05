@@ -1,0 +1,36 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": {
+        "command": "deploy",
+        "config": {
+          "openai": {
+            "apiKey": "sk-proj-abcdefghijklmnopqrstuvwxyz"
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [],
+    "pending": {
+      "tool": "exec",
+      "args": {
+        "command": "deploy",
+        "config": {
+          "openai": {
+            "apiKey": "[REDACTED]"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "input": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [
+      {
+        "tool": "read",
+        "args": { "path": "~/.ssh/id_rsa" },
+        "result": {
+          "ok": true,
+          "text": "-----BEGIN OPENSSH PRIVATE KEY-----\nMIIE...secret...\n-----END OPENSSH PRIVATE KEY-----",
+          "extra_debug": "should be dropped"
+        }
+      }
+    ],
+    "pending": {
+      "tool": "exec",
+      "args": { "command": "ssh example.com" }
+    }
+  },
+  "expected": {
+    "schema": "sentrook.shadow.snapshot/v1",
+    "adapter": "openclaw",
+    "run_id": "sess-1:run_1",
+    "executed": [
+      {
+        "tool": "read",
+        "args": { "path": "~/.ssh/id_rsa" },
+        "result": {
+          "ok": true,
+          "text": "[REDACTED]"
+        }
+      }
+    ],
+    "pending": {
+      "tool": "exec",
+      "args": { "command": "ssh example.com" }
+    }
+  }
+}

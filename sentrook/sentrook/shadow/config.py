@@ -1,0 +1,207 @@
+"""Environment-driven configuration for the shadow scanner.
+
+Operators configure the live hook through ``SENTROOK_*`` env vars so the same image
+behaves correctly whether it runs as a sidecar container, a host daemon, or a
+one-shot CLI. Defaults mirror the rest of Sentrook (``tie_breaker`` L3, repo/home
+rules and corpus discovery).
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from sentrook.config import L3Config, L3Policy, ScannerConfig
+from sentrook.corpus.loader import resolve_corpus_dir
+from sentrook.corpus.personal import resolve_personal_corpus_dir
+from sentrook.library.paths import DEFAULT_LIBRARY_DIR
+from sentrook.shadow.bundle import resolve_bundle_version
+from sentrook.shadow.oidc import DEFAULT_OIDC_AUDIENCE, DEFAULT_OIDC_ISSUER, normalize_oidc_url
+
+DEFAULT_RULES_DIR = Path.home() / ".sentrook" / "rules"
+DEFAULT_LOG_PATH = Path.home() / ".sentrook" / "shadow.log.jsonl"
+DEFAULT_LATENCY_LOG_PATH = Path.home() / ".sentrook" / "latency.log.jsonl"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 9099
+DEFAULT_LIBRARY_SYNC_INTERVAL_SEC = 86_400
+DEFAULT_PERSONAL_CORPUS_DIR = Path.home() / ".sentrook" / "personal-corpus"
+DEFAULT_OIDC_JWKS_CACHE_SECONDS = 300
+VALID_SCAN_AUTH_MODES = frozenset({"auto", "oidc", "apikey"})
+
+
+def _env_bool(env: dict[str, str], key: str, *, default: bool = False) -> bool:
+    raw = (env.get(key) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+@dataclass
+class FeedbackConfig:
+    """Corpus submission from live reviews (plugin consent + server mode).
+
+    ``mode`` is operator-controlled on the scan host (``SENTROOK_FEEDBACK_MODE``).
+    The OpenClaw plugin separately gates whether review resolutions are POSTed
+    via ``feedback.mode`` / configure ``contributeCorpus`` (default contribute,
+    user may opt out).
+
+    ``derive_intent`` replaces prompt-as-intent with a trajectory-derived string
+    before Rookery submit (privacy). See ADR — Derived Intent for Community
+    Feedback. Toggle with ``SENTROOK_FEEDBACK_DERIVE_INTENT``.
+    """
+
+    mode: str = "off"  # off | submit
+    rookery_url: str | None = None
+    max_excerpt_chars: int = 200
+    derive_intent: bool = True
+
+
+@dataclass
+class ShadowConfig:
+    """Resolved shadow-mode settings."""
+
+    mode: str = "shadow"
+    rules_path: Path = DEFAULT_RULES_DIR
+    corpus_dir: Path | None = None
+    log_path: Path = DEFAULT_LOG_PATH
+    latency_log_path: Path = DEFAULT_LATENCY_LOG_PATH
+    l3_policy: L3Policy = L3Policy.TIE_BREAKER
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    bundle_version: str | None = None
+    library_url: str | None = None
+    library_dir: Path = DEFAULT_LIBRARY_DIR
+    library_sync_interval_sec: int = DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
+    rookery_api_key: str | None = None
+    scan_api_key: str | None = None
+    scan_auth_mode: str = "auto"  # auto | oidc | apikey
+    oidc_issuer: str = DEFAULT_OIDC_ISSUER
+    oidc_audience: str = DEFAULT_OIDC_AUDIENCE
+    oidc_jwks_url: str = ""
+    oidc_jwks_cache_seconds: int = DEFAULT_OIDC_JWKS_CACHE_SECONDS
+    feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+    personal_corpus_dir: Path | None = DEFAULT_PERSONAL_CORPUS_DIR
+    personal_corpus_enabled: bool = True
+    server_sanitize_snapshots: bool = True
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | None = None) -> "ShadowConfig":
+        env = env if env is not None else dict(os.environ)
+
+        rules = env.get("SENTROOK_RULES")
+        corpus = env.get("SENTROOK_CORPUS")
+        log_path = env.get("SENTROOK_LOG_PATH")
+        latency_log_path = env.get("SENTROOK_LATENCY_LOG_PATH")
+        policy_raw = env.get("SENTROOK_L3_POLICY")
+        bundle_raw = env.get("SENTROOK_BUNDLE_VERSION")
+        library_url = env.get("SENTROOK_LIBRARY_URL") or None
+        library_dir_raw = env.get("SENTROOK_LIBRARY_DIR")
+        sync_interval_raw = env.get("SENTROOK_LIBRARY_SYNC_INTERVAL_SEC")
+
+        rules_path = Path(rules).expanduser() if rules else DEFAULT_RULES_DIR
+        bundle_version = bundle_raw or resolve_bundle_version(rules_path)
+        library_dir = (
+            Path(library_dir_raw).expanduser()
+            if library_dir_raw
+            else DEFAULT_LIBRARY_DIR
+        )
+        sync_interval = (
+            int(sync_interval_raw)
+            if sync_interval_raw
+            else DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
+        )
+        feedback_mode = env.get("SENTROOK_FEEDBACK_MODE", "off")
+        # Legacy alias: queue previously wrote a local JSONL; always submit now.
+        if feedback_mode == "queue":
+            feedback_mode = "submit"
+        # Prefer an explicit feedback URL; fall back to the library sync base
+        # so hosted deploys need only SENTROOK_LIBRARY_URL for pull + submit.
+        feedback_url = (
+            env.get("SENTROOK_FEEDBACK_ROOKERY_URL")
+            or env.get("SENTROOK_LIBRARY_URL")
+            or None
+        )
+        feedback_excerpt = env.get("SENTROOK_FEEDBACK_MAX_EXCERPT_CHARS")
+        rookery_api_key = (env.get("SENTROOK_ROOKERY_API_KEY") or "").strip() or None
+        scan_api_key = (env.get("SENTROOK_SCAN_API_KEY") or "").strip() or None
+        auth_mode_raw = (env.get("SENTROOK_SCAN_AUTH_MODE") or "auto").strip().lower()
+        scan_auth_mode = auth_mode_raw if auth_mode_raw in VALID_SCAN_AUTH_MODES else "auto"
+        oidc_issuer = normalize_oidc_url(
+            env.get("SENTROOK_OIDC_ISSUER") or DEFAULT_OIDC_ISSUER
+        ) or DEFAULT_OIDC_ISSUER
+        oidc_audience = (env.get("SENTROOK_OIDC_AUDIENCE") or DEFAULT_OIDC_AUDIENCE).strip() or (
+            DEFAULT_OIDC_AUDIENCE
+        )
+        oidc_jwks_url = normalize_oidc_url(env.get("SENTROOK_OIDC_JWKS_URL") or "")
+        jwks_cache_raw = env.get("SENTROOK_OIDC_JWKS_CACHE_SECONDS")
+        personal_corpus_raw = env.get("SENTROOK_PERSONAL_CORPUS_DIR")
+        personal_enabled_raw = (env.get("SENTROOK_PERSONAL_CORPUS_ENABLED") or "").strip().lower()
+        personal_corpus_enabled = personal_enabled_raw not in ("0", "false", "no")
+
+        return cls(
+            mode=env.get("SENTROOK_MODE", "shadow"),
+            rules_path=rules_path,
+            corpus_dir=Path(corpus).expanduser() if corpus else None,
+            log_path=Path(log_path).expanduser() if log_path else DEFAULT_LOG_PATH,
+            latency_log_path=(
+                Path(latency_log_path).expanduser()
+                if latency_log_path
+                else (
+                    Path(log_path).expanduser().parent / "latency.log.jsonl"
+                    if log_path
+                    else DEFAULT_LATENCY_LOG_PATH
+                )
+            ),
+            l3_policy=L3Policy(policy_raw) if policy_raw else L3Policy.TIE_BREAKER,
+            host=env.get("SENTROOK_SHADOW_HOST", DEFAULT_HOST),
+            port=int(env.get("SENTROOK_SHADOW_PORT", str(DEFAULT_PORT))),
+            bundle_version=bundle_version,
+            library_url=library_url,
+            library_dir=library_dir,
+            library_sync_interval_sec=sync_interval,
+            rookery_api_key=rookery_api_key,
+            scan_api_key=scan_api_key,
+            scan_auth_mode=scan_auth_mode,
+            oidc_issuer=oidc_issuer,
+            oidc_audience=oidc_audience,
+            oidc_jwks_url=oidc_jwks_url,
+            oidc_jwks_cache_seconds=(
+                int(jwks_cache_raw) if jwks_cache_raw else DEFAULT_OIDC_JWKS_CACHE_SECONDS
+            ),
+            feedback=FeedbackConfig(
+                mode=feedback_mode,
+                rookery_url=feedback_url,
+                max_excerpt_chars=int(feedback_excerpt) if feedback_excerpt else 200,
+                derive_intent=_env_bool(
+                    env, "SENTROOK_FEEDBACK_DERIVE_INTENT", default=True
+                ),
+            ),
+            personal_corpus_dir=Path(personal_corpus_raw).expanduser()
+            if personal_corpus_raw
+            else DEFAULT_PERSONAL_CORPUS_DIR,
+            personal_corpus_enabled=personal_corpus_enabled,
+            server_sanitize_snapshots=_env_bool(
+                env, "SENTROOK_SERVER_SANITIZE_SNAPSHOT", default=True
+            ),
+        )
+
+    def resolved_corpus_dir(self) -> Path:
+        return resolve_corpus_dir(
+            str(self.corpus_dir) if self.corpus_dir else L3Config().corpus_dir
+        )
+
+    def resolved_personal_corpus_dir(self) -> Path | None:
+        if not self.personal_corpus_enabled:
+            return None
+        return resolve_personal_corpus_dir(self.personal_corpus_dir)
+
+    def scanner_config(self) -> ScannerConfig:
+        return ScannerConfig(
+            l3_policy=self.l3_policy,
+            l3=L3Config(corpus_dir=str(self.resolved_corpus_dir())),
+        )

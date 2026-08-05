@@ -1,0 +1,28 @@
+{
+  "id": "iban_in_excerpt",
+  "description": "IBAN in step excerpt (spaced GB form).",
+  "example": {
+    "id": "pii-iban-excerpt",
+    "label": "benign",
+    "trust": "community",
+    "intent": "Confirm supplier payment details from the invoice note",
+    "steps": [
+      {
+        "tool": "read",
+        "status": "executed",
+        "args": { "path": "/tmp/invoice.txt" },
+        "excerpt": "Please pay IBAN GB82 WEST 1234 5698 7654 32 by Friday."
+      },
+      {
+        "tool": "exec",
+        "status": "pending",
+        "args": { "command": "cat /tmp/invoice.txt" }
+      }
+    ]
+  },
+  "expect": {
+    "must_not_contain": ["GB82 WEST 1234 5698 7654 32"],
+    "must_still_contain": ["Please pay", "invoice.txt"],
+    "pattern_names": ["iban"]
+  }
+}

@@ -1,0 +1,6 @@
+suites:
+  smoke:
+    description: Engine wiring only — not policy regression
+    tags: [smoke]
+  all:
+    description: Every public scenario

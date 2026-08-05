@@ -1,0 +1,24 @@
+{
+  "id": "uk_ni_in_command",
+  "description": "Compact UK NI embedded in an exec command string.",
+  "example": {
+    "id": "pii-uk-ni-command",
+    "label": "attack",
+    "trust": "community",
+    "intent": "Dump HR records for the listed NI",
+    "steps": [
+      {
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "grep -R AB123456C /var/hr/employees.csv"
+        }
+      }
+    ]
+  },
+  "expect": {
+    "must_not_contain": ["AB123456C"],
+    "must_still_contain": ["grep", "/var/hr/employees.csv"],
+    "pattern_names": ["uk_ni"]
+  }
+}

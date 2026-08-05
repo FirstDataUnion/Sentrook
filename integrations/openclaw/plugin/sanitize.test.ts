@@ -1,0 +1,228 @@
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { describe, it } from "node:test";
+
+import type { ShadowSnapshot } from "./index.ts";
+import {
+  DEFAULT_RULES,
+  hashSessionId,
+  maybeSanitizeSnapshot,
+  resolveSanitizationConfig,
+  sanitizeSnapshot,
+  sanitizeSnapshotDict,
+} from "./sanitize.ts";
+
+const FIXTURES_DIR = path.join(import.meta.dirname, "fixtures", "sanitize");
+
+type FixtureDoc = {
+  input: Record<string, unknown>;
+  expected: Record<string, unknown>;
+};
+
+function assertSubset(actual: unknown, expected: unknown, label = ""): void {
+  if (expected !== null && typeof expected === "object" && !Array.isArray(expected)) {
+    assert.ok(actual !== null && typeof actual === "object" && !Array.isArray(actual), label);
+    for (const [key, expVal] of Object.entries(expected)) {
+      assert.ok(key in (actual as Record<string, unknown>), `${label}.${key} missing`);
+      assertSubset((actual as Record<string, unknown>)[key], expVal, label ? `${label}.${key}` : key);
+    }
+    return;
+  }
+  if (Array.isArray(expected)) {
+    assert.ok(Array.isArray(actual), label);
+    assert.equal(actual.length, expected.length, `${label} length`);
+    for (let i = 0; i < expected.length; i += 1) {
+      assertSubset(actual[i], expected[i], `${label}[${i}]`);
+    }
+    return;
+  }
+  assert.deepEqual(actual, expected, label);
+}
+
+function loadFixtures(): Array<{ name: string; doc: FixtureDoc }> {
+  return readdirSync(FIXTURES_DIR)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => ({
+      name: name.replace(/\.json$/, ""),
+      doc: JSON.parse(readFileSync(path.join(FIXTURES_DIR, name), "utf8")) as FixtureDoc,
+    }));
+}
+
+describe("sanitizeSnapshot", () => {
+  for (const { name, doc } of loadFixtures()) {
+    it(`fixture parity: ${name}`, () => {
+      const { snapshot } = sanitizeSnapshot(doc.input as ShadowSnapshot);
+      const actual = JSON.parse(JSON.stringify(snapshot)) as Record<string, unknown>;
+      assertSubset(actual, doc.expected);
+    });
+  }
+
+  it("hashSessionId is stable", () => {
+    assert.equal(hashSessionId("sess-raw-abc"), "sess_6a6cbcb803b1");
+  });
+
+  it("sanitizeSnapshotDict does not mutate input", () => {
+    const input = {
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "sess-1:run_1",
+      executed: [],
+      pending: {
+        tool: "exec",
+        args: { command: "echo", api_key: "secret" },
+      },
+    };
+    const original = structuredClone(input);
+    const cleaned = sanitizeSnapshotDict(input);
+    assert.deepEqual(input, original);
+    assert.equal((cleaned.pending as { args: { api_key: string } }).args.api_key, "[REDACTED]");
+  });
+
+  it("redacts github tokens in exec commands", () => {
+    const { snapshot } = sanitizeSnapshot({
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "r1",
+      executed: [],
+      pending: {
+        tool: "exec",
+        args: { command: "curl -H 'Authorization: token ghp_1234567890abcdefghij'" },
+      },
+    });
+    const command = String(snapshot.pending.args.command);
+    assert.ok(!command.includes("ghp_"));
+    assert.ok(command.includes("[REDACTED]"));
+  });
+
+  it("redacts LIBRARY_BOT_PASS / MEDIAWIKI_BOT_PASSWORD export values", () => {
+    const fake = "x9fakebotpassvalue32charsxxxxxx";
+    const { snapshot } = sanitizeSnapshot({
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "r1",
+      executed: [],
+      pending: {
+        tool: "exec",
+        args: {
+          command:
+            `export PATH="$HOME/.local/bin:$PATH"\n` +
+            `export LIBRARY_BOT_PASS="${fake}"\n` +
+            `export MEDIAWIKI_BOT_PASSWORD="${fake}"\n` +
+            `TODAY=$(date +%Y-%m-%d)`,
+        },
+      },
+    });
+    const command = String(snapshot.pending.args.command);
+    assert.ok(!command.includes(fake));
+    assert.ok(command.includes("LIBRARY_BOT_PASS=[REDACTED]"));
+    assert.ok(command.includes("MEDIAWIKI_BOT_PASSWORD=[REDACTED]"));
+    assert.ok(command.includes('PATH="$HOME/.local/bin:$PATH"'));
+    assert.ok(command.includes("TODAY=$(date +%Y-%m-%d)"));
+  });
+
+  it("redacts sk-proj OpenAI keys in message-like text", () => {
+    const { snapshot } = sanitizeSnapshot({
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "r1",
+      executed: [],
+      pending: {
+        tool: "message",
+        args: {
+          text: "Support debug: openai apiKey=sk-proj-ab12cd34ef56ghijklmnop",
+        },
+      },
+    });
+    const text = String(snapshot.pending.args.text);
+    assert.ok(!text.includes("sk-proj-"));
+    assert.ok(text.includes("[REDACTED]"));
+  });
+
+  it("redacts discord bot tokens and telegram bot tokens", () => {
+    const bot =
+      "MTIwMTE0MDk0MDQ2Nzg3MTc1NA.GIA1aR.l4cyaDp557_lJ_AV_wFHanBKwFJlB1KOxfKG6I";
+    const tg = "123456789:AAabcdefghijklmnopqrstuvwxyz0123456";
+    const { snapshot } = sanitizeSnapshot({
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "r1",
+      executed: [],
+      pending: {
+        tool: "exec",
+        args: { command: `export DISCORD_TOKEN=${bot} TELEGRAM_BOT_TOKEN=${tg}` },
+      },
+    });
+    const command = String(snapshot.pending.args.command);
+    assert.ok(!command.includes(bot));
+    assert.ok(!command.includes(tg));
+    assert.ok(command.includes("[REDACTED]"));
+  });
+});
+
+describe("resolveSanitizationConfig", () => {
+  it("defaults to enabled", () => {
+    assert.deepEqual(resolveSanitizationConfig(undefined, {}), { enabled: true });
+  });
+
+  it("reads plugin config when env unset", () => {
+    assert.deepEqual(resolveSanitizationConfig({ sanitization: { enabled: true } }, {}), {
+      enabled: true,
+    });
+    assert.deepEqual(resolveSanitizationConfig({ sanitization: { enabled: false } }, {}), {
+      enabled: false,
+    });
+  });
+
+  it("env overrides plugin config", () => {
+    assert.deepEqual(
+      resolveSanitizationConfig(
+        { sanitization: { enabled: true } },
+        { SENTROOK_SANITIZE_SNAPSHOT: "0" },
+      ),
+      { enabled: false },
+    );
+    assert.deepEqual(
+      resolveSanitizationConfig(
+        { sanitization: { enabled: false } },
+        { SENTROOK_SANITIZE_SNAPSHOT: "1" },
+      ),
+      { enabled: true },
+    );
+  });
+
+  it("maybeSanitizeSnapshot is a no-op when disabled", () => {
+    const snap: ShadowSnapshot = {
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "sess-1:run_1",
+      executed: [],
+      pending: { tool: "exec", args: { command: "echo", api_key: "secret" } },
+    };
+    const result = maybeSanitizeSnapshot(snap, { enabled: false });
+    assert.equal(result.sanitizeMs, 0);
+    assert.deepEqual(result.snapshot, snap);
+  });
+
+  it("maybeSanitizeSnapshot scrubs when enabled", () => {
+    const snap: ShadowSnapshot = {
+      schema: "sentrook.shadow.snapshot/v1",
+      adapter: "openclaw",
+      run_id: "sess-1:run_1",
+      executed: [],
+      pending: { tool: "exec", args: { command: "echo", api_key: "secret" } },
+    };
+    const result = maybeSanitizeSnapshot(snap, { enabled: true });
+    assert.ok(result.sanitizeMs >= 0);
+    assert.equal(result.snapshot.pending.args.api_key, "[REDACTED]");
+  });
+});
+
+describe("DEFAULT_RULES", () => {
+  it("matches rules.yaml version", () => {
+    assert.equal(DEFAULT_RULES.version, 1);
+    assert.ok(DEFAULT_RULES.credentialField.test("apiKey"));
+    assert.ok(DEFAULT_RULES.piiArgKeys.has("command"));
+  });
+});
