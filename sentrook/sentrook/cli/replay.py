@@ -21,7 +21,7 @@ from sentrook.replay.baseline import (
     write_baseline_file,
 )
 from sentrook.replay.openclaw import replay_session, write_snapshots
-from sentrook.replay.parity import compare_shadow_to_replay, format_parity_text
+from sentrook.replay.parity import compare_scan_to_replay, format_parity_text
 
 replay_app = typer.Typer(help="Replay host session logs into PlanIR snapshots.")
 
@@ -113,7 +113,7 @@ def replay_scan_cmd(
         typer.Option("--top-k", help="Override L3 top_k per side"),
     ] = None,
 ) -> None:
-    """Shadow-scan every before_tool_call moment in a replayed OpenClaw session."""
+    """Scan every before_tool_call moment in a replayed OpenClaw session."""
     try:
         config = build_scanner_config(
             corpus=corpus,
@@ -152,8 +152,8 @@ def replay_scan_cmd(
 
 @replay_app.command("parity")
 def replay_parity_cmd(
-    shadow_log: Annotated[
-        Path, typer.Option("--shadow-log", help="Live shadow JSONL log")
+    scan_log: Annotated[
+        Path, typer.Option("--scan-log", help="Live scan JSONL log")
     ],
     session: Annotated[
         Path, typer.Option("--session", help="OpenClaw session JSONL to replay")
@@ -164,7 +164,7 @@ def replay_parity_cmd(
     ] = DEFAULT_RULES_DIR,
     session_id: Annotated[
         Optional[str],
-        typer.Option("--session-id", help="Filter shadow log to one session id"),
+        typer.Option("--session-id", help="Filter scan log to one session id"),
     ] = None,
     format: Annotated[
         str, typer.Option("--format", help="Output format: json or text")
@@ -172,14 +172,14 @@ def replay_parity_cmd(
     corpus: Annotated[Optional[Path], typer.Option("--corpus", help="Corpus dir")] = None,
     l3_policy: Annotated[Optional[str], typer.Option("--l3-policy")] = None,
 ) -> None:
-    """Compare live shadow log decisions against replay on the same session."""
+    """Compare live scan log decisions against replay on the same session."""
     try:
         config = build_scanner_config(
             corpus=corpus,
             l3_policy=l3_policy,
         )
-        report = compare_shadow_to_replay(
-            shadow_log,
+        report = compare_scan_to_replay(
+            scan_log,
             session,
             rules,
             config,
@@ -200,7 +200,7 @@ def replay_parity_cmd(
         typer.echo(f"unknown format: {format}", err=True)
         raise typer.Exit(code=1)
 
-    if report.decision_mismatches or report.unmatched_shadow:
+    if report.decision_mismatches or report.unmatched_scan:
         raise typer.Exit(code=1)
     raise typer.Exit(code=0)
 
@@ -258,7 +258,7 @@ def replay_baseline_cmd(
         typer.Option("--top-k", help="Override L3 top_k per side"),
     ] = None,
 ) -> None:
-    """Shadow-scan canonical OpenClaw sessions and report baseline metrics."""
+    """Scan canonical OpenClaw sessions and report baseline metrics."""
     try:
         config = build_scanner_config(
             corpus=corpus,

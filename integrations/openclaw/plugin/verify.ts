@@ -103,7 +103,7 @@ export async function runVerify(opts: {
       detail: credsOk
         ? clientId && clientSecret
           ? `${CLIENT_ID_VAR}+${CLIENT_SECRET_VAR} available via ~/.openclaw/.env and/or process env`
-          : `${API_KEY_VAR} available (legacy)`
+          : `${API_KEY_VAR} available (shared API key)`
         : `missing OIDC vars (need ${CLIENT_ID_VAR}+${CLIENT_SECRET_VAR} in ${dotenv})`,
     });
   } else {

@@ -1,4 +1,4 @@
-"""Compare live shadow log decisions against replay audit for parity."""
+"""Compare live scan log decisions against replay audit for parity."""
 
 from __future__ import annotations
 
@@ -10,37 +10,37 @@ from pydantic import BaseModel, Field
 
 from sentrook.config import ScannerConfig
 from sentrook.replay.audit import SessionAuditReport, SnapshotAudit, audit_openclaw_session
-from sentrook.shadow.log import load_shadow_log
+from sentrook.serve.log import load_scan_log
 
 MatchKind = Literal["tool_call_id", "tool_command_hash", "unmatched"]
 
 
 class ParityRow(BaseModel):
-    shadow_index: int | None = None
+    scan_index: int | None = None
     replay_index: int | None = None
     match_kind: MatchKind
     tool_call_id: str | None = None
     pending_tool: str | None = None
     pending_command: str | None = None
-    shadow_decision: str | None = None
+    scan_decision: str | None = None
     replay_decision: str | None = None
     decision_match: bool = False
-    shadow_rules: list[str] = Field(default_factory=list)
+    scan_rules: list[str] = Field(default_factory=list)
     replay_rules: list[str] = Field(default_factory=list)
     rules_match: bool = False
     note: str | None = None
 
 
 class ParityReport(BaseModel):
-    shadow_log_path: str
+    scan_log_path: str
     session_path: str
     session_id: str | None = None
-    shadow_records: int = 0
+    scan_records: int = 0
     replay_snapshots: int = 0
     matched: int = 0
     decision_mismatches: int = 0
     rule_mismatches: int = 0
-    unmatched_shadow: int = 0
+    unmatched_scan: int = 0
     unmatched_replay: int = 0
     rows: list[ParityRow] = Field(default_factory=list)
 
@@ -53,7 +53,7 @@ def _command_hash(tool: str | None, command: str | None) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
-def _shadow_rules(row: dict[str, Any]) -> list[str]:
+def _scan_rules(row: dict[str, Any]) -> list[str]:
     return [str(m.get("id")) for m in row.get("matched_rules") or [] if m.get("id")]
 
 
@@ -75,18 +75,18 @@ def _index_replay_by_hash(snapshots: list[SnapshotAudit]) -> dict[str, SnapshotA
     return out
 
 
-def compare_shadow_to_replay(
-    shadow_log_path: Path,
+def compare_scan_to_replay(
+    scan_log_path: Path,
     session_path: Path,
     rules_path: Path,
     config: ScannerConfig,
     *,
     session_id: str | None = None,
 ) -> ParityReport:
-    """Match shadow log rows to replay snapshots and flag decision drift."""
-    shadow_rows = load_shadow_log(shadow_log_path)
+    """Match scan log rows to replay snapshots and flag decision drift."""
+    scan_rows = load_scan_log(scan_log_path)
     if session_id:
-        shadow_rows = [r for r in shadow_rows if r.get("session_id") == session_id]
+        scan_rows = [r for r in scan_rows if r.get("session_id") == session_id]
 
     replay_report = audit_openclaw_session(session_path, rules_path, config)
     by_id = _index_replay_by_tool_call_id(replay_report.snapshots)
@@ -97,9 +97,9 @@ def compare_shadow_to_replay(
     matched = 0
     decision_mismatches = 0
     rule_mismatches = 0
-    unmatched_shadow = 0
+    unmatched_scan = 0
 
-    for shadow_index, row in enumerate(shadow_rows, start=1):
+    for scan_index, row in enumerate(scan_rows, start=1):
         tool_call_id = row.get("tool_call_id")
         replay_snap: SnapshotAudit | None = None
         match_kind: MatchKind = "unmatched"
@@ -114,16 +114,16 @@ def compare_shadow_to_replay(
                 match_kind = "tool_command_hash"
 
         if replay_snap is None:
-            unmatched_shadow += 1
+            unmatched_scan += 1
             rows.append(
                 ParityRow(
-                    shadow_index=shadow_index,
+                    scan_index=scan_index,
                     match_kind="unmatched",
                     tool_call_id=tool_call_id,
                     pending_tool=row.get("pending_tool"),
                     pending_command=row.get("pending_command_excerpt"),
-                    shadow_decision=row.get("decision"),
-                    shadow_rules=_shadow_rules(row),
+                    scan_decision=row.get("decision"),
+                    scan_rules=_scan_rules(row),
                     note="no replay snapshot matched",
                 )
             )
@@ -131,11 +131,11 @@ def compare_shadow_to_replay(
 
         used_replay.add(replay_snap.index)
         matched += 1
-        shadow_decision = str(row.get("decision", "allow"))
-        shadow_rule_ids = _shadow_rules(row)
+        scan_decision = str(row.get("decision", "allow"))
+        scan_rule_ids = _scan_rules(row)
         replay_rule_ids = replay_snap.matched_rule_ids
-        decision_match = shadow_decision == replay_snap.decision
-        rules_match = shadow_rule_ids == replay_rule_ids
+        decision_match = scan_decision == replay_snap.decision
+        rules_match = scan_rule_ids == replay_rule_ids
 
         if not decision_match:
             decision_mismatches += 1
@@ -144,20 +144,20 @@ def compare_shadow_to_replay(
 
         note = None
         if not decision_match:
-            note = f"shadow={shadow_decision} replay={replay_snap.decision}"
+            note = f"scan={scan_decision} replay={replay_snap.decision}"
 
         rows.append(
             ParityRow(
-                shadow_index=shadow_index,
+                scan_index=scan_index,
                 replay_index=replay_snap.index,
                 match_kind=match_kind,
                 tool_call_id=tool_call_id or replay_snap.tool_call_id,
                 pending_tool=row.get("pending_tool"),
                 pending_command=row.get("pending_command_excerpt") or replay_snap.pending_command,
-                shadow_decision=shadow_decision,
+                scan_decision=scan_decision,
                 replay_decision=replay_snap.decision,
                 decision_match=decision_match,
-                shadow_rules=shadow_rule_ids,
+                scan_rules=scan_rule_ids,
                 replay_rules=replay_rule_ids,
                 rules_match=rules_match,
                 note=note,
@@ -169,15 +169,15 @@ def compare_shadow_to_replay(
     )
 
     return ParityReport(
-        shadow_log_path=str(shadow_log_path.expanduser().resolve()),
+        scan_log_path=str(scan_log_path.expanduser().resolve()),
         session_path=str(session_path.expanduser().resolve()),
         session_id=session_id or replay_report.session_id,
-        shadow_records=len(shadow_rows),
+        scan_records=len(scan_rows),
         replay_snapshots=replay_report.total_snapshots,
         matched=matched,
         decision_mismatches=decision_mismatches,
         rule_mismatches=rule_mismatches,
-        unmatched_shadow=unmatched_shadow,
+        unmatched_scan=unmatched_scan,
         unmatched_replay=unmatched_replay,
         rows=rows,
     )
@@ -185,16 +185,16 @@ def compare_shadow_to_replay(
 
 def format_parity_text(report: ParityReport) -> str:
     lines = [
-        "=== Sentrook Shadow / Replay Parity ===",
-        f"Shadow log: {report.shadow_log_path}",
+        "=== Sentrook Scan / Replay Parity ===",
+        f"Scan log: {report.scan_log_path}",
         f"Session: {report.session_path}",
         f"Session id: {report.session_id or '(unknown)'}",
-        f"Shadow records: {report.shadow_records}",
+        f"Scan records: {report.scan_records}",
         f"Replay snapshots: {report.replay_snapshots}",
         f"Matched: {report.matched}",
         f"Decision mismatches: {report.decision_mismatches}",
         f"Rule mismatches: {report.rule_mismatches}",
-        f"Unmatched shadow: {report.unmatched_shadow}",
+        f"Unmatched scan: {report.unmatched_scan}",
         f"Unmatched replay: {report.unmatched_replay}",
         "",
         "Mismatches:",
@@ -207,9 +207,9 @@ def format_parity_text(report: ParityReport) -> str:
         for row in mismatches[:30]:
             rules_bit = ""
             if not row.rules_match:
-                rules_bit = f" rules shadow={row.shadow_rules} replay={row.replay_rules}"
+                rules_bit = f" rules scan={row.scan_rules} replay={row.replay_rules}"
             lines.append(
-                f"  shadow#{row.shadow_index} replay#{row.replay_index} "
+                f"  scan#{row.scan_index} replay#{row.replay_index} "
                 f"{row.pending_tool} — {row.note or 'rules differ'}{rules_bit}"
             )
 

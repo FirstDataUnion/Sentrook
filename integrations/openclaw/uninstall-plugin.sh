@@ -3,7 +3,7 @@
 #
 # Usage:
 #   OPENCLAW_DIR=~/openclaw ./uninstall-plugin.sh
-#   PURGE=1 OPENCLAW_DIR=~/openclaw ./uninstall-plugin.sh   # also drop .env scan keys + stale patches
+#   PURGE=1 OPENCLAW_DIR=~/openclaw ./uninstall-plugin.sh   # also drop .env scan keys + install patches
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,17 +15,16 @@ openclaw_common_init "${SCRIPT_DIR}"
 
 require_openclaw_dir
 
-PLUGIN_ID="sentrook-shadow"
+PLUGIN_ID="sentrook-openclaw"
 OPENCLAW_CONFIG="${OPENCLAW_CONFIG:-${OPENCLAW_STATE_DIR}/openclaw.json}"
 PURGE="${PURGE:-0}"
-LEGACY_PLUGIN_HOST_DIR="${OPENCLAW_STATE_DIR}/sentrook-shadow-plugin"
 
 remove_plugin_config_via_gateway() {
   local patch_file remove_path openclaw_home
   patch_file="$(mktemp)"
   trap 'rm -f "${patch_file}"' RETURN
   openclaw_home="$(gateway_openclaw_home)"
-  remove_path="${openclaw_home}/sentrook-shadow.remove.patch.json5"
+  remove_path="${openclaw_home}/sentrook-openclaw.remove.patch.json5"
 
   cat > "${patch_file}" <<EOF
 {
@@ -133,15 +132,9 @@ else
   remove_plugin_config_on_host || true
 fi
 
-# Legacy rsync install path (pre–GitHub Packages)
-if [[ -d "${LEGACY_PLUGIN_HOST_DIR}" ]]; then
-  echo "==> Removing legacy linked plugin tree at ${LEGACY_PLUGIN_HOST_DIR}"
-  rm -rf "${LEGACY_PLUGIN_HOST_DIR}"
-fi
-
 if [[ "${PURGE}" == "1" ]]; then
   purge_scan_credentials
-  rm -f "${OPENCLAW_STATE_DIR}/sentrook-shadow.patch.json5" \
+  rm -f "${OPENCLAW_STATE_DIR}/sentrook-openclaw.patch.json5" \
     "${OPENCLAW_STATE_DIR}/sentrook-install.env" 2>/dev/null || true
 fi
 

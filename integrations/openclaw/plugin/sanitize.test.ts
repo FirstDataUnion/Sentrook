@@ -3,14 +3,14 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import type { ShadowSnapshot } from "./index.ts";
+import type { PlanIR } from "./planir.ts";
 import {
   DEFAULT_RULES,
   hashSessionId,
-  maybeSanitizeSnapshot,
+  maybeSanitizePlanir,
   resolveSanitizationConfig,
-  sanitizeSnapshot,
-  sanitizeSnapshotDict,
+  sanitizePlanir,
+  sanitizePlanirDict,
 } from "./sanitize.ts";
 
 const FIXTURES_DIR = path.join(import.meta.dirname, "fixtures", "sanitize");
@@ -50,11 +50,15 @@ function loadFixtures(): Array<{ name: string; doc: FixtureDoc }> {
     }));
 }
 
-describe("sanitizeSnapshot", () => {
+function pendingStep(plan: PlanIR) {
+  return plan.steps.find((s) => s.status === "pending");
+}
+
+describe("sanitizePlanir", () => {
   for (const { name, doc } of loadFixtures()) {
     it(`fixture parity: ${name}`, () => {
-      const { snapshot } = sanitizeSnapshot(doc.input as ShadowSnapshot);
-      const actual = JSON.parse(JSON.stringify(snapshot)) as Record<string, unknown>;
+      const { plan } = sanitizePlanir(doc.input as PlanIR);
+      const actual = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
       assertSubset(actual, doc.expected);
     });
   }
@@ -63,58 +67,68 @@ describe("sanitizeSnapshot", () => {
     assert.equal(hashSessionId("sess-raw-abc"), "sess_6a6cbcb803b1");
   });
 
-  it("sanitizeSnapshotDict does not mutate input", () => {
+  it("sanitizePlanirDict does not mutate input", () => {
     const input = {
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+      version: "1.0",
       run_id: "sess-1:run_1",
-      executed: [],
-      pending: {
-        tool: "exec",
-        args: { command: "echo", api_key: "secret" },
-      },
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: "echo", api_key: "secret" },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     };
     const original = structuredClone(input);
-    const cleaned = sanitizeSnapshotDict(input);
+    const cleaned = sanitizePlanirDict(input);
     assert.deepEqual(input, original);
-    assert.equal((cleaned.pending as { args: { api_key: string } }).args.api_key, "[REDACTED]");
+    const step = (cleaned.steps as Array<{ args: { api_key: string } }>)[0];
+    assert.equal(step.args.api_key, "[REDACTED]");
   });
 
   it("redacts github tokens in exec commands", () => {
-    const { snapshot } = sanitizeSnapshot({
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+    const { plan } = sanitizePlanir({
+      version: "1.0",
       run_id: "r1",
-      executed: [],
-      pending: {
-        tool: "exec",
-        args: { command: "curl -H 'Authorization: token ghp_1234567890abcdefghij'" },
-      },
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: "curl -H 'Authorization: token ghp_1234567890abcdefghij'" },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     });
-    const command = String(snapshot.pending.args.command);
+    const command = String(pendingStep(plan)?.args.command);
     assert.ok(!command.includes("ghp_"));
     assert.ok(command.includes("[REDACTED]"));
   });
 
   it("redacts LIBRARY_BOT_PASS / MEDIAWIKI_BOT_PASSWORD export values", () => {
     const fake = "x9fakebotpassvalue32charsxxxxxx";
-    const { snapshot } = sanitizeSnapshot({
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+    const { plan } = sanitizePlanir({
+      version: "1.0",
       run_id: "r1",
-      executed: [],
-      pending: {
-        tool: "exec",
-        args: {
-          command:
-            `export PATH="$HOME/.local/bin:$PATH"\n` +
-            `export LIBRARY_BOT_PASS="${fake}"\n` +
-            `export MEDIAWIKI_BOT_PASSWORD="${fake}"\n` +
-            `TODAY=$(date +%Y-%m-%d)`,
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: {
+            command:
+              `export PATH="$HOME/.local/bin:$PATH"\n` +
+              `export LIBRARY_BOT_PASS="${fake}"\n` +
+              `export MEDIAWIKI_BOT_PASSWORD="${fake}"\n` +
+              `TODAY=$(date +%Y-%m-%d)`,
+          },
         },
-      },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     });
-    const command = String(snapshot.pending.args.command);
+    const command = String(pendingStep(plan)?.args.command);
     assert.ok(!command.includes(fake));
     assert.ok(command.includes("LIBRARY_BOT_PASS=[REDACTED]"));
     assert.ok(command.includes("MEDIAWIKI_BOT_PASSWORD=[REDACTED]"));
@@ -123,19 +137,22 @@ describe("sanitizeSnapshot", () => {
   });
 
   it("redacts sk-proj OpenAI keys in message-like text", () => {
-    const { snapshot } = sanitizeSnapshot({
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+    const { plan } = sanitizePlanir({
+      version: "1.0",
       run_id: "r1",
-      executed: [],
-      pending: {
-        tool: "message",
-        args: {
-          text: "Support debug: openai apiKey=sk-proj-ab12cd34ef56ghijklmnop",
+      steps: [
+        {
+          id: "s1",
+          tool: "message",
+          status: "pending",
+          args: {
+            text: "Support debug: openai apiKey=sk-proj-ab12cd34ef56ghijklmnop",
+          },
         },
-      },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     });
-    const text = String(snapshot.pending.args.text);
+    const text = String(pendingStep(plan)?.args.text);
     assert.ok(!text.includes("sk-proj-"));
     assert.ok(text.includes("[REDACTED]"));
   });
@@ -144,17 +161,20 @@ describe("sanitizeSnapshot", () => {
     const bot =
       "MTIwMTE0MDk0MDQ2Nzg3MTc1NA.GIA1aR.l4cyaDp557_lJ_AV_wFHanBKwFJlB1KOxfKG6I";
     const tg = "123456789:AAabcdefghijklmnopqrstuvwxyz0123456";
-    const { snapshot } = sanitizeSnapshot({
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+    const { plan } = sanitizePlanir({
+      version: "1.0",
       run_id: "r1",
-      executed: [],
-      pending: {
-        tool: "exec",
-        args: { command: `export DISCORD_TOKEN=${bot} TELEGRAM_BOT_TOKEN=${tg}` },
-      },
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: `export DISCORD_TOKEN=${bot} TELEGRAM_BOT_TOKEN=${tg}` },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     });
-    const command = String(snapshot.pending.args.command);
+    const command = String(pendingStep(plan)?.args.command);
     assert.ok(!command.includes(bot));
     assert.ok(!command.includes(tg));
     assert.ok(command.includes("[REDACTED]"));
@@ -179,43 +199,58 @@ describe("resolveSanitizationConfig", () => {
     assert.deepEqual(
       resolveSanitizationConfig(
         { sanitization: { enabled: true } },
-        { SENTROOK_SANITIZE_SNAPSHOT: "0" },
+        { SENTROOK_SANITIZE_PLANIR: "0" },
       ),
       { enabled: false },
     );
     assert.deepEqual(
       resolveSanitizationConfig(
         { sanitization: { enabled: false } },
-        { SENTROOK_SANITIZE_SNAPSHOT: "1" },
+        { SENTROOK_SANITIZE_PLANIR: "1" },
       ),
       { enabled: true },
     );
   });
 
-  it("maybeSanitizeSnapshot is a no-op when disabled", () => {
-    const snap: ShadowSnapshot = {
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+  it("maybeSanitizePlanir is a no-op when disabled", () => {
+    const plan: PlanIR = {
+      version: "1.0",
       run_id: "sess-1:run_1",
-      executed: [],
-      pending: { tool: "exec", args: { command: "echo", api_key: "secret" } },
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: "echo", api_key: "secret" },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     };
-    const result = maybeSanitizeSnapshot(snap, { enabled: false });
+    const result = maybeSanitizePlanir(plan, { enabled: false });
     assert.equal(result.sanitizeMs, 0);
-    assert.deepEqual(result.snapshot, snap);
+    assert.deepEqual(result.plan, plan);
   });
 
-  it("maybeSanitizeSnapshot scrubs when enabled", () => {
-    const snap: ShadowSnapshot = {
-      schema: "sentrook.shadow.snapshot/v1",
-      adapter: "openclaw",
+  it("maybeSanitizePlanir scrubs when enabled", () => {
+    const plan: PlanIR = {
+      version: "1.0",
       run_id: "sess-1:run_1",
-      executed: [],
-      pending: { tool: "exec", args: { command: "echo", api_key: "secret" } },
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: "echo", api_key: "secret" },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
     };
-    const result = maybeSanitizeSnapshot(snap, { enabled: true });
+    const result = maybeSanitizePlanir(plan, { enabled: true });
     assert.ok(result.sanitizeMs >= 0);
-    assert.equal(result.snapshot.pending.args.api_key, "[REDACTED]");
+    assert.equal(
+      (result.plan.steps[0].args as { api_key: string }).api_key,
+      "[REDACTED]",
+    );
   });
 });
 

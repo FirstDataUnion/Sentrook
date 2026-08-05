@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish @firstdataunion/sentrook-shadow to GitHub Packages.
+# Publish @firstdataunion/sentrook-openclaw to GitHub Packages.
 #
 # Prerequisites:
 #   - gh auth login (or NODE_AUTH_TOKEN / GITHUB_TOKEN with write:packages + repo read)

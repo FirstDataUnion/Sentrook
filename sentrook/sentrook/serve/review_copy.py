@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from sentrook.result import MatchedRule, ScanResult
 from sentrook.sanitize.core import apply_secret_patterns
 from sentrook.sanitize.rules import load_rules
-from sentrook.shadow.log import ShadowLogRecord
+from sentrook.serve.log import ScanLogRecord
 
 # OpenClaw plugin.approval.request limits (verified on 2026.6.x): description
 # must be <= 256 chars, title <= 80. Keep a small safety margin below 256.
@@ -432,14 +432,14 @@ def _order_by_appearance(command: str, spans: list[_Span]) -> list[_Span]:
     return sorted(spans, key=idx)
 
 
-def _pending_args(record: ShadowLogRecord, result: ScanResult) -> dict:
+def _pending_args(record: ScanLogRecord, result: ScanResult) -> dict:
     pending = result.debug.pending_step
     if pending is not None and pending.args:
         return dict(pending.args)
     return {}
 
 
-def _full_pending_command(record: ShadowLogRecord, result: ScanResult) -> str | None:
+def _full_pending_command(record: ScanLogRecord, result: ScanResult) -> str | None:
     """Prefer full pending argv from scan debug; fall back to log excerpt."""
     args = _pending_args(record, result)
     for key in ("command", "cmd"):
@@ -451,7 +451,7 @@ def _full_pending_command(record: ShadowLogRecord, result: ScanResult) -> str | 
     return None
 
 
-def _pending_tool(record: ShadowLogRecord, result: ScanResult) -> str:
+def _pending_tool(record: ScanLogRecord, result: ScanResult) -> str:
     return record.pending_tool or result.plan.pending_tool or "tool"
 
 
@@ -625,7 +625,7 @@ def _is_loopback_host(host: str | None) -> bool:
     return lower in _LOOPBACK_HOSTS or lower.endswith(".localhost")
 
 
-def _pending_path(record: ShadowLogRecord, result: ScanResult) -> str | None:
+def _pending_path(record: ScanLogRecord, result: ScanResult) -> str | None:
     args = _pending_args(record, result)
     for key in ("path", "file", "file_path", "target", "destination"):
         raw = args.get(key)
@@ -894,7 +894,7 @@ def estimate_likely_intent(
     return f"use the {tool} tool"
 
 
-def describe_pending_action(record: ShadowLogRecord, result: ScanResult) -> str:
+def describe_pending_action(record: ScanLogRecord, result: ScanResult) -> str:
     """Plain-language description of what the agent is trying to do (single line)."""
     tool = _pending_tool(record, result)
     command = _full_pending_command(record, result)
@@ -934,7 +934,7 @@ def _rule_risk_line(rule: MatchedRule) -> str:
     return f"{rule.name} — {_rule_consequence(rule)}"
 
 
-def build_review_title(record: ShadowLogRecord, result: ScanResult) -> str:
+def build_review_title(record: ScanLogRecord, result: ScanResult) -> str:
     tool = _pending_tool(record, result)
     command = _full_pending_command(record, result)
     matched = [r for r in result.matched_rules if r.action in ("review", "block")]
@@ -979,7 +979,7 @@ def build_review_title(record: ShadowLogRecord, result: ScanResult) -> str:
 
 
 def build_review_description(
-    record: ShadowLogRecord,
+    record: ScanLogRecord,
     result: ScanResult,
     *,
     max_len: int = DESCRIPTION_MAX,
@@ -1045,7 +1045,7 @@ def build_review_description(
 
 
 def build_block_reason(
-    record: ShadowLogRecord,
+    record: ScanLogRecord,
     result: ScanResult,
     *,
     max_len: int = DESCRIPTION_MAX,

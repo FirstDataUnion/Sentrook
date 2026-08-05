@@ -1,5 +1,5 @@
 {
-  "version": "0.1",
+  "version": "1.0",
   "run_id": "fixture:web_fetch_exec",
   "intent": "Fetch URL and run script",
   "steps": [

@@ -1,26 +1,42 @@
 {
   "input": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
     "intent": "Email oli@example.com about the deployment",
     "intent_kind": "user",
-    "executed": [],
-    "pending": {
-      "tool": "message",
-      "args": { "text": "Reach me at +44 7700 900123 if blocked" }
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "message",
+        "status": "pending",
+        "args": {
+          "text": "Reach me at +44 7700 900123 if blocked"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   },
   "expected": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
     "intent": "Email [REDACTED] about the deployment",
     "intent_kind": "user",
-    "executed": [],
-    "pending": {
-      "tool": "message",
-      "args": { "text": "Reach me at [REDACTED] if blocked" }
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "message",
+        "status": "pending",
+        "args": {
+          "text": "Reach me at [REDACTED] if blocked"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   }
 }

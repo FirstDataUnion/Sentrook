@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from sentrook.shadow.snapshot import ShadowSnapshot
+from sentrook.planir import PlanIR
 
 ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_DIR = ROOT / "integrations" / "openclaw" / "plugin"
@@ -19,8 +19,8 @@ def node_available() -> bool:
     return shutil.which("node") is not None
 
 
-def plugin_sanitize_snapshot_dict(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run ``sanitize.ts`` on a snapshot dict; return the sanitized snapshot."""
+def plugin_sanitize_planir_dict(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run ``sanitize.ts`` on a PlanIR dict; return the sanitized PlanIR dict."""
     if not node_available():
         msg = "node is required for plugin sanitize parity tests"
         raise RuntimeError(msg)
@@ -43,15 +43,15 @@ def plugin_sanitize_snapshot_dict(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(msg)
 
     body = json.loads(proc.stdout.decode("utf-8"))
-    snapshot = body.get("snapshot")
-    if not isinstance(snapshot, dict):
-        msg = "plugin sanitize stdout missing 'snapshot' object"
+    plan = body.get("plan")
+    if not isinstance(plan, dict):
+        msg = "plugin sanitize stdout missing 'plan' object"
         raise RuntimeError(msg)
-    return snapshot
+    return plan
 
 
-def plugin_sanitize_snapshot(snapshot: ShadowSnapshot) -> ShadowSnapshot:
+def plugin_sanitize_planir(plan: PlanIR) -> PlanIR:
     """Sanitize using the real OpenClaw plugin implementation."""
-    payload = snapshot.model_dump(mode="json", by_alias=True)
-    cleaned = plugin_sanitize_snapshot_dict(payload)
-    return ShadowSnapshot.model_validate(cleaned)
+    payload = plan.model_dump(mode="json")
+    cleaned = plugin_sanitize_planir_dict(payload)
+    return PlanIR.model_validate(cleaned)

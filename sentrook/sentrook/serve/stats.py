@@ -1,4 +1,4 @@
-"""Lightweight runtime statistics for the shadow sidecar."""
+"""Lightweight runtime statistics for the serve sidecar."""
 
 from __future__ import annotations
 

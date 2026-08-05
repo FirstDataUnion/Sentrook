@@ -1,4 +1,4 @@
-"""Prune Sentrook shadow/latency JSONL logs by record ``ts`` (UTC).
+"""Prune Sentrook scan/latency JSONL logs by record ``ts`` (UTC).
 
 Hosted entrypoint: ``sentrook/deploy/retain-logs.sh`` (``python -m sentrook.ops.retain_logs``).
 Lines without a parseable ``ts`` are kept (conservative). Concurrent appenders
@@ -125,11 +125,11 @@ def prune_jsonl_file(
 
 
 def default_log_paths() -> list[Path]:
-    shadow = os.environ.get("SENTROOK_LOG_PATH", "/var/log/sentrook/shadow.log.jsonl")
+    scan_log = os.environ.get("SENTROOK_LOG_PATH", "/var/log/sentrook/scan.log.jsonl")
     latency = os.environ.get(
         "SENTROOK_LATENCY_LOG_PATH", "/var/log/sentrook/latency.log.jsonl"
     )
-    return [Path(shadow), Path(latency)]
+    return [Path(scan_log), Path(latency)]
 
 
 def build_parser() -> argparse.ArgumentParser:

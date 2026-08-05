@@ -3,7 +3,7 @@
 Goal: raise the cost of trivial evasion (base64-wrapped curl, ``\\x`` splits)
 without pretending to defeat arbitrary interpreters. Matchers should still key
 off high-signal structure (hooks/, secret paths); this only restores obvious
-literals into a shadow string that L2 also searches.
+literals into a normalized form that L2 also searches.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def normalize_arg_text_for_match(text: str) -> str:
 
 
 def match_text_with_normalization(pattern: str, value: str) -> bool:
-    """True if ``pattern`` matches the raw value or its normalized shadow."""
+    """True if ``pattern`` matches the raw value or its normalized decoded variant."""
     flags = re.IGNORECASE | re.DOTALL
     if re.search(pattern, value, flags):
         return True

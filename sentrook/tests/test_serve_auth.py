@@ -9,8 +9,8 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-import sentrook.shadow.oidc as oidc
-from sentrook.shadow.auth import (
+import sentrook.serve.oidc as oidc
+from sentrook.serve.auth import (
     SCAN_API_KEY_HEADER,
     extract_scan_api_key,
     scan_api_key_enabled,
@@ -18,8 +18,8 @@ from sentrook.shadow.auth import (
     verify_scan_api_key,
     verify_scan_auth,
 )
-from sentrook.shadow.config import ShadowConfig
-from sentrook.shadow.oidc import SCOPE_SCAN, caller_id_from_claims
+from sentrook.serve.config import ServeConfig
+from sentrook.serve.oidc import SCOPE_SCAN, caller_id_from_claims
 
 ISSUER = "https://identity.test.example"
 AUDIENCE = "sentrook"
@@ -79,8 +79,8 @@ def _mint_token(
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
 
 
-def _oidc_config(**kwargs) -> ShadowConfig:
-    base = ShadowConfig(
+def _oidc_config(**kwargs) -> ServeConfig:
+    base = ServeConfig(
         scan_auth_mode="auto",
         oidc_issuer=ISSUER,
         oidc_audience=AUDIENCE,
@@ -90,7 +90,7 @@ def _oidc_config(**kwargs) -> ShadowConfig:
 
 
 def test_scan_api_key_disabled_when_unset() -> None:
-    config = ShadowConfig(scan_api_key=None, scan_auth_mode="apikey", oidc_issuer="")
+    config = ServeConfig(scan_api_key=None, scan_auth_mode="apikey", oidc_issuer="")
     assert not scan_api_key_enabled(config)
     assert verify_scan_api_key(config, {})
 
@@ -101,13 +101,13 @@ def test_extract_bearer_and_header() -> None:
 
 
 def test_verify_rejects_missing_or_wrong_key() -> None:
-    config = ShadowConfig(scan_api_key="expected", scan_auth_mode="apikey", oidc_issuer="")
+    config = ServeConfig(scan_api_key="expected", scan_auth_mode="apikey", oidc_issuer="")
     assert not verify_scan_api_key(config, {})
     assert not verify_scan_api_key(config, {"Authorization": "Bearer wrong"})
 
 
 def test_verify_accepts_matching_bearer() -> None:
-    config = ShadowConfig(scan_api_key="expected", scan_auth_mode="apikey", oidc_issuer="")
+    config = ServeConfig(scan_api_key="expected", scan_auth_mode="apikey", oidc_issuer="")
     assert verify_scan_api_key(config, {"Authorization": "Bearer expected"})
 
 
@@ -169,7 +169,7 @@ def test_caller_id_from_claims_priority() -> None:
 
 def test_scan_auth_health_label() -> None:
     assert (
-        scan_auth_health_label(ShadowConfig(scan_api_key=None, oidc_issuer="", scan_auth_mode="auto"))
+        scan_auth_health_label(ServeConfig(scan_api_key=None, oidc_issuer="", scan_auth_mode="auto"))
         == "off"
     )
     assert "optional_oidc" in scan_auth_health_label(_oidc_config(scan_api_key=None))

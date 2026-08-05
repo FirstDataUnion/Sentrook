@@ -1,23 +1,40 @@
 {
   "input": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-env:run_1",
-    "session_id": "sess-env",
-    "executed": [],
-    "pending": {
-      "tool": "exec",
-      "args": {
-        "command": "export PATH=\"$HOME/.local/bin:$PATH\"\nexport LIBRARY_BOT_PASS=\"x9fakebotpassvalue32charsxxxxxx\"\nexport MEDIAWIKI_BOT_PASSWORD=\"x9fakebotpassvalue32charsxxxxxx\"\nTODAY=$(date +%Y-%m-%d)"
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "export PATH=\"$HOME/.local/bin:$PATH\"\nexport LIBRARY_BOT_PASS=\"x9fakebotpassvalue32charsxxxxxx\"\nexport MEDIAWIKI_BOT_PASSWORD=\"x9fakebotpassvalue32charsxxxxxx\"\nTODAY=$(date +%Y-%m-%d)"
+        }
       }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "session_id": "sess-env",
+      "hook": "before_tool_call"
     }
   },
   "expected": {
-    "pending": {
-      "tool": "exec",
-      "args": {
-        "command": "export PATH=\"$HOME/.local/bin:$PATH\"\nexport LIBRARY_BOT_PASS=[REDACTED]\nexport MEDIAWIKI_BOT_PASSWORD=[REDACTED]\nTODAY=$(date +%Y-%m-%d)"
+    "version": "1.0",
+    "run_id": "sess_9eda890b199f:run_1",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "export PATH=\"$HOME/.local/bin:$PATH\"\nexport LIBRARY_BOT_PASS=[REDACTED]\nexport MEDIAWIKI_BOT_PASSWORD=[REDACTED]\nTODAY=$(date +%Y-%m-%d)"
+        }
       }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "session_id": "sess_9eda890b199f",
+      "hook": "before_tool_call"
     }
   }
 }

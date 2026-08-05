@@ -122,7 +122,7 @@ class DebugInfo(BaseModel):
 
 
 class ScanResult(BaseModel):
-    version: Literal["0.1"] = "0.1"
+    version: Literal["1.0"] = "1.0"
     decision: Literal["allow", "review", "block"]
     risk: float
     summary: str

@@ -1,5 +1,5 @@
 /**
- * Snapshot sanitization for sentrook.shadow.snapshot/v1 (Options A, B, D, G).
+ * PlanIR 1.0 sanitization (Options A, B, D, G).
  * Rules mirror sentrook/sentrook/sanitize/rules.yaml — keep in sync.
  *
  * Env-style credential assignments (export FOO_PASS=…) and CLI secret flags
@@ -9,7 +9,7 @@
 
 import { createHash } from "node:crypto";
 
-import type { ShadowSnapshot } from "./index.ts";
+import type { PlanIR } from "./planir.ts";
 
 export interface SanitizeRules {
   version: number;
@@ -80,11 +80,18 @@ export const DEFAULT_RULES: SanitizeRules = {
     /\+?[0-9][0-9()\-\s.]{7,}[0-9]/g,
   ],
   piiArgKeys: new Set(["command", "cmd", "message", "text", "content", "body"]),
-  allowedResultKeys: new Set(["ok", "text", "command", "content_type"]),
+  allowedResultKeys: new Set([
+    "ok",
+    "content_type",
+    "byte_size",
+    "excerpt",
+    "extracted",
+    "flags",
+  ]),
 };
 
-export interface SanitizeSnapshotResult {
-  snapshot: ShadowSnapshot;
+export interface SanitizePlanIRResult {
+  plan: PlanIR;
   sanitizeMs: number;
 }
 
@@ -96,7 +103,7 @@ export function resolveSanitizationConfig(
   pluginCfg: Record<string, unknown> | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): SanitizationConfig {
-  const envRaw = env.SENTROOK_SANITIZE_SNAPSHOT;
+  const envRaw = env.SENTROOK_SANITIZE_PLANIR;
   if (envRaw !== undefined && envRaw !== "") {
     const normalized = envRaw.trim().toLowerCase();
     if (normalized === "1" || normalized === "true" || normalized === "yes") {
@@ -410,53 +417,61 @@ function sanitizeMapping(
   return out;
 }
 
-function sanitizeResult(
-  result: Record<string, unknown>,
+function sanitizeResultSummary(
+  summary: Record<string, unknown>,
   rules: SanitizeRules,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(result)) {
-    if (!rules.allowedResultKeys.has(key)) continue;
-    const value = result[key];
-    if (key === "text" && typeof value === "string") {
-      out[key] = scrubString(value, rules, {
-        pii: false,
-        maxChars: rules.resultTextMaxChars,
-        key,
-      });
-    } else if (key === "command" && typeof value === "string") {
-      out[key] = scrubString(value, rules, {
-        pii: true,
-        maxChars: rules.stringLeafMaxChars,
-        key,
-      });
-    } else if (typeof value === "string") {
-      out[key] = scrubString(value, rules, {
-        pii: false,
-        maxChars: rules.stringLeafMaxChars,
-        key,
-      });
-    } else {
-      out[key] = value;
+  const out: Record<string, unknown> = { ...summary };
+  if (typeof summary.excerpt === "string") {
+    const scrubbed = scrubString(summary.excerpt, rules, {
+      pii: false,
+      maxChars: rules.resultTextMaxChars,
+      key: "excerpt",
+    });
+    out.excerpt = scrubbed;
+    out.byte_size = Buffer.byteLength(scrubbed, "utf8");
+  }
+  const extracted = summary.extracted;
+  if (extracted && typeof extracted === "object" && !Array.isArray(extracted)) {
+    const ext = extracted as Record<string, unknown>;
+    const cleaned: Record<string, unknown> = { ...ext };
+    if (Array.isArray(ext.commands)) {
+      cleaned.commands = ext.commands.map((item) =>
+        typeof item === "string"
+          ? scrubString(item, rules, {
+              pii: true,
+              maxChars: rules.stringLeafMaxChars,
+              key: "command",
+            })
+          : item,
+      );
     }
+    out.extracted = cleaned;
   }
   return out;
 }
 
-function sanitizeCall(
-  call: Record<string, unknown>,
+function sanitizeStep(
+  step: Record<string, unknown>,
   rules: SanitizeRules,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...call };
-  if (call.args && typeof call.args === "object" && !Array.isArray(call.args)) {
-    out.args = sanitizeMapping(call.args as Record<string, unknown>, rules, {
+  const out: Record<string, unknown> = { ...step };
+  if (step.args && typeof step.args === "object" && !Array.isArray(step.args)) {
+    out.args = sanitizeMapping(step.args as Record<string, unknown>, rules, {
       pii: false,
       maxChars: rules.stringLeafMaxChars,
       piiKeys: rules.piiArgKeys,
     });
   }
-  if (call.result && typeof call.result === "object" && !Array.isArray(call.result)) {
-    out.result = sanitizeResult(call.result as Record<string, unknown>, rules);
+  if (
+    step.result_summary &&
+    typeof step.result_summary === "object" &&
+    !Array.isArray(step.result_summary)
+  ) {
+    out.result_summary = sanitizeResultSummary(
+      step.result_summary as Record<string, unknown>,
+      rules,
+    );
   }
   return out;
 }
@@ -469,16 +484,22 @@ function rewriteRunId(runId: string, originalSessionId: string, hashedSessionId:
   return runId;
 }
 
-export function sanitizeSnapshotDict(
+export function sanitizePlanirDict(
   payload: Record<string, unknown>,
   rules: SanitizeRules = DEFAULT_RULES,
 ): Record<string, unknown> {
   const data = structuredClone(payload);
 
-  const originalSessionId = data.session_id;
+  const metadata =
+    data.metadata && typeof data.metadata === "object" && !Array.isArray(data.metadata)
+      ? (data.metadata as Record<string, unknown>)
+      : {};
+  data.metadata = metadata;
+
+  const originalSessionId = metadata.session_id;
   if (typeof originalSessionId === "string" && originalSessionId) {
     const hashed = hashSessionId(originalSessionId, rules);
-    data.session_id = hashed;
+    metadata.session_id = hashed;
     if (typeof data.run_id === "string") {
       data.run_id = rewriteRunId(data.run_id, originalSessionId, hashed);
     }
@@ -491,45 +512,35 @@ export function sanitizeSnapshotDict(
     });
   }
 
-  if (Array.isArray(data.executed)) {
-    data.executed = data.executed
+  if (Array.isArray(data.steps)) {
+    data.steps = data.steps
       .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
-      .map((item) => sanitizeCall(item, rules));
-  }
-
-  if (Array.isArray(data.co_pending)) {
-    data.co_pending = data.co_pending
-      .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
-      .map((item) => sanitizeCall(item, rules));
-  }
-
-  if (data.pending && typeof data.pending === "object" && !Array.isArray(data.pending)) {
-    data.pending = sanitizeCall(data.pending as Record<string, unknown>, rules);
+      .map((item) => sanitizeStep(item, rules));
   }
 
   return data;
 }
 
-export function sanitizeSnapshot(
-  snapshot: ShadowSnapshot,
+export function sanitizePlanir(
+  plan: PlanIR,
   rules: SanitizeRules = DEFAULT_RULES,
-): SanitizeSnapshotResult {
+): SanitizePlanIRResult {
   const started = performance.now();
-  const cleaned = sanitizeSnapshotDict(snapshot as unknown as Record<string, unknown>, rules);
+  const cleaned = sanitizePlanirDict(plan as unknown as Record<string, unknown>, rules);
   const elapsedMs = Math.round(performance.now() - started);
   return {
-    snapshot: cleaned as ShadowSnapshot,
+    plan: cleaned as PlanIR,
     sanitizeMs: elapsedMs,
   };
 }
 
-export function maybeSanitizeSnapshot(
-  snapshot: ShadowSnapshot,
+export function maybeSanitizePlanir(
+  plan: PlanIR,
   config: SanitizationConfig,
   rules: SanitizeRules = DEFAULT_RULES,
-): SanitizeSnapshotResult {
+): SanitizePlanIRResult {
   if (!config.enabled) {
-    return { snapshot, sanitizeMs: 0 };
+    return { plan, sanitizeMs: 0 };
   }
-  return sanitizeSnapshot(snapshot, rules);
+  return sanitizePlanir(plan, rules);
 }

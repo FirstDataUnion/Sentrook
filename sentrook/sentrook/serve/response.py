@@ -1,13 +1,13 @@
-"""Build HTTP scan responses for shadow vs enforce mode."""
+"""Build HTTP scan responses for observe vs enforce mode."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from sentrook.result import ScanResult
-from sentrook.shadow.config import ShadowConfig
-from sentrook.shadow.log import ShadowLogRecord
-from sentrook.shadow.review_copy import (
+from sentrook.serve.config import ServeConfig
+from sentrook.serve.log import ScanLogRecord
+from sentrook.serve.review_copy import (
     build_block_reason,
     build_review_description,
     build_review_title,
@@ -27,9 +27,9 @@ def _review_severity(result: ScanResult) -> str:
 
 
 def build_scan_response(
-    config: ShadowConfig,
+    config: ServeConfig,
     result: ScanResult,
-    record: ShadowLogRecord,
+    record: ScanLogRecord,
     *,
     error: str | None = None,
     request_ms: int | None = None,

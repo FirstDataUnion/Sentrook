@@ -1,4 +1,4 @@
-"""Low-level sanitization primitives (no shadow/planir imports)."""
+"""Low-level sanitization primitives (no planir imports)."""
 
 from __future__ import annotations
 

@@ -1,8 +1,8 @@
-"""Stateful shadow scanner: rules, corpus, and the L3 scorer kept warm.
+"""Stateful scan service: rules, corpus, and the L3 scorer kept warm.
 
-A single :class:`ShadowScanner` is created once (at daemon startup or first CLI
-use) and reused for every snapshot, so the fastembed model and corpus embeddings
-are loaded exactly once rather than per tool call.
+A single :class:`ScanService` is created once (at daemon startup or first CLI
+use) and reused for every PlanIR body, so the fastembed model and corpus
+embeddings are loaded exactly once rather than per tool call.
 """
 
 from __future__ import annotations
@@ -14,18 +14,18 @@ from sentrook.corpus.loader import load_corpus
 from sentrook.corpus.models import LoadedRuleCorpus
 from sentrook.layers.l3_embed import make_scorer
 from sentrook.layers.l3_score import BiEncoderScorer
+from sentrook.planir import PlanIR
 from sentrook.result import ScanResult
 from sentrook.rules.loader import load_rules
 from sentrook.scan import scan_plan
-from sentrook.shadow.config import ShadowConfig
-from sentrook.shadow.log import ShadowLogRecord, append_shadow_log, build_log_record
-from sentrook.shadow.snapshot import ShadowSnapshot
+from sentrook.serve.config import ServeConfig
+from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
 
 
-class ShadowScanner:
+class ScanService:
     """Reusable scanner that keeps rules, corpus, and the L3 scorer warm."""
 
-    def __init__(self, config: ShadowConfig) -> None:
+    def __init__(self, config: ServeConfig) -> None:
         self.config = config
         self.scanner_config = config.scanner_config()
         self.rules = load_rules(config.rules_path)
@@ -50,35 +50,36 @@ class ShadowScanner:
             self.scorer.warm_corpus(rule_corpus.pos)
             self.scorer.warm_corpus(rule_corpus.neg)
 
-    def scan(self, snapshot: ShadowSnapshot) -> ScanResult:
-        plan = snapshot.to_planir()
+    def scan(self, plan: PlanIR) -> ScanResult:
         with self._lock:
             return scan_plan(
                 plan,
                 self.rules,
                 self.scanner_config,
-                plan_source=f"shadow:{snapshot.session_id or '?'}:{snapshot.run_id}",
+                plan_source=(
+                    f"serve:{plan.metadata.session_id or '?'}:{plan.run_id}"
+                ),
                 rules_source=str(self.config.rules_path),
                 corpus=self.corpus,
                 l3_scorer=self.scorer,
             )
 
-    def scan_and_log(self, snapshot: ShadowSnapshot) -> tuple[ScanResult, ShadowLogRecord]:
-        """Scan a snapshot and append a shadow log line. Never raises on log I/O."""
-        result = self.scan(snapshot)
+    def scan_and_log(self, plan: PlanIR) -> tuple[ScanResult, ScanLogRecord]:
+        """Scan a PlanIR body and append a scan log line. Never raises on log I/O."""
+        result = self.scan(plan)
         record = build_log_record(
             result,
-            snapshot,
+            plan,
             mode=self.config.mode,
             bundle_version=self.config.bundle_version,
-            sanitize_log_fields=self.config.server_sanitize_snapshots,
+            sanitize_log_fields=self.config.server_sanitize_planir,
         )
-        append_shadow_log(self.config.log_path, record)
+        append_scan_log(self.config.log_path, record)
         return result, record
 
     def reload(self) -> None:
         """Reload rules, corpus, and the L3 scorer from configured paths."""
-        from sentrook.shadow.bundle import resolve_bundle_version
+        from sentrook.serve.bundle import resolve_bundle_version
 
         with self._lock:
             self.rules = load_rules(self.config.rules_path)

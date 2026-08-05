@@ -14,10 +14,10 @@ from sentrook.corpus.models import CorpusExample, CorpusLabel, CorpusStep
 from sentrook.corpus.personal import append_personal_corpus_example
 from sentrook.redact import redact_args
 from sentrook.library.rookery_client import rookery_auth_headers
-from sentrook.sanitize.ingress import maybe_sanitize_snapshot
+from sentrook.sanitize.ingress import maybe_sanitize_planir
 from sentrook.sanitize.text import scrub_text
-from sentrook.shadow.config import FeedbackConfig, ShadowConfig
-from sentrook.shadow.snapshot import ShadowCall, ShadowSnapshot
+from sentrook.serve.config import FeedbackConfig, ServeConfig
+from sentrook.planir import PlanIR, PlanStep
 
 FeedbackResolution = Literal[
     "allow-once", "allow-always", "deny", "timeout", "cancelled"
@@ -27,7 +27,7 @@ FeedbackResolution = Literal[
 class FeedbackRequest(BaseModel):
     """Wire contract for ``POST /feedback`` from the OpenClaw plugin."""
 
-    snapshot: dict[str, Any]
+    plan: dict[str, Any]
     resolution: FeedbackResolution
     log: dict[str, Any] | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
@@ -52,22 +52,24 @@ def sanitize_text(text: str, *, max_chars: int) -> str:
     return scrub_text(text, max_chars=max_chars, pii=True)
 
 
-def _ingress_snapshot(config: ShadowConfig, raw: dict[str, Any]) -> ShadowSnapshot:
-    snapshot = ShadowSnapshot.model_validate(raw)
-    cleaned, _ = maybe_sanitize_snapshot(
-        snapshot,
-        enabled=config.server_sanitize_snapshots,
+def _ingress_plan(config: ServeConfig, raw: dict[str, Any]) -> PlanIR:
+    plan = PlanIR.model_validate(raw)
+    cleaned, _ = maybe_sanitize_planir(
+        plan,
+        enabled=config.server_sanitize_planir,
     )
     return cleaned
 
 
-def _step_excerpt(call: ShadowCall, *, max_chars: int) -> str | None:
-    if call.result is None:
+def _step_excerpt(step: PlanStep, *, max_chars: int) -> str | None:
+    summary = step.result_summary
+    if summary is None:
         return None
-    if call.result.command:
-        return sanitize_text(call.result.command, max_chars=max_chars)
-    if call.result.text:
-        return sanitize_text(call.result.text, max_chars=max_chars)
+    commands = summary.extracted.commands if summary.extracted else []
+    if commands:
+        return sanitize_text(str(commands[0]), max_chars=max_chars)
+    if summary.excerpt:
+        return sanitize_text(summary.excerpt, max_chars=max_chars)
     return None
 
 
@@ -103,8 +105,8 @@ def derive_community_intent(
     return text[:200]
 
 
-def snapshot_to_corpus_example(
-    snapshot: ShadowSnapshot,
+def plan_to_corpus_example(
+    plan: PlanIR,
     *,
     rule_id: str,
     label: Literal["attack", "benign"],
@@ -114,43 +116,39 @@ def snapshot_to_corpus_example(
     derive_intent: bool = False,
 ) -> CorpusExample:
     steps: list[CorpusStep] = []
-    for call in snapshot.executed:
+    for step in plan.steps:
         steps.append(
             CorpusStep(
-                tool=call.tool,
-                status="executed",
-                args=redact_args(call.args),
-                excerpt=_step_excerpt(call, max_chars=max_excerpt_chars),
+                tool=step.tool,
+                status=step.status,
+                args=redact_args(step.args),
+                excerpt=(
+                    _step_excerpt(step, max_chars=max_excerpt_chars)
+                    if step.status == "executed"
+                    else None
+                ),
             )
         )
-    steps.append(
-        CorpusStep(
-            tool=snapshot.pending.tool,
-            status="pending",
-            args=redact_args(snapshot.pending.args),
-            excerpt=None,
-        )
-    )
     if derive_intent:
         intent = derive_community_intent(
-            intent_kind=snapshot.intent_kind,
+            intent_kind=plan.intent_kind,
             steps=steps,
         )
     else:
-        intent = snapshot.intent
+        intent = plan.intent
     return CorpusExample(
         id=example_id,
         label=label,
         trust="community",
         intent=intent,
-        intent_kind=snapshot.intent_kind,
+        intent_kind=plan.intent_kind,
         notes=notes,
         steps=steps,
     )
 
 
 def pick_rule_id(
-    snapshot: ShadowSnapshot | None,
+    plan: PlanIR | None,
     log: dict[str, Any] | None,
 ) -> str | None:
     """Pick the winning/causal rule that drove the review/block.
@@ -158,7 +156,7 @@ def pick_rule_id(
     ``matched_rules`` is unordered for learning purposes: L3 may allow early matches
     while a later rule keeps the review. Prefer the scan's winning/causal rule.
     """
-    del snapshot  # reserved for future snapshot-side hints
+    del plan  # reserved for future snapshot-side hints
     if not log:
         return None
 
@@ -199,7 +197,7 @@ def pick_rule_id(
 
 
 def pick_feedback_rule_ids(
-    snapshot: ShadowSnapshot | None,
+    plan: PlanIR | None,
     log: dict[str, Any] | None,
     *,
     resolution: FeedbackResolution,
@@ -212,7 +210,7 @@ def pick_feedback_rule_ids(
       rule, primary first — so co-firing soft rules all learn the benign
       neighbor. Never includes L3-allowed matches.
     """
-    primary = pick_rule_id(snapshot, log)
+    primary = pick_rule_id(plan, log)
     if primary is None:
         return []
     if resolution == "deny":
@@ -291,9 +289,9 @@ def _rank_causal_rule(candidates: list[dict[str, Any]]) -> str:
     return max(pool, key=key)["id"]
 
 
-def build_example_id(snapshot: ShadowSnapshot, rule_id: str, label: str) -> str:
-    session = (snapshot.session_id or "session").replace(":", "-")[:24]
-    tool_call = (snapshot.tool_call_id or "call").replace(":", "-")[:24]
+def build_example_id(plan: PlanIR, rule_id: str, label: str) -> str:
+    session = (plan.metadata.session_id or "session").replace(":", "-")[:24]
+    tool_call = (plan.metadata.tool_call_id or "call").replace(":", "-")[:24]
     return f"fb-{label}-{rule_id.lower()}-{session}-{tool_call}"
 
 
@@ -335,7 +333,7 @@ def submit_to_rookery(
 
 
 def process_feedback(
-    config: ShadowConfig,
+    config: ServeConfig,
     request: FeedbackRequest,
 ) -> dict[str, Any]:
     """Sanitize, label, submit, or persist personal corpus from a review."""
@@ -346,13 +344,13 @@ def process_feedback(
 
 
 def _submit_feedback(
-    config: ShadowConfig,
+    config: ServeConfig,
     request: FeedbackRequest,
     *,
     example: CorpusExample | None = None,
     rule_id: str | None = None,
     rule_ids: list[str] | None = None,
-    snapshot: ShadowSnapshot | None = None,
+    plan: PlanIR | None = None,
 ) -> dict[str, Any]:
     """Submit labelled corpus example(s) to Rookery (shared by allow/deny)."""
     feedback_cfg = config.feedback
@@ -363,15 +361,15 @@ def _submit_feedback(
     if label is None:
         return {"status": "skipped", "reason": f"resolution {request.resolution} not labelable"}
 
-    if snapshot is None:
-        snapshot = _ingress_snapshot(config, request.snapshot)
+    if plan is None:
+        plan = _ingress_plan(config, request.plan)
 
     if rule_ids is None:
         if rule_id is not None:
             rule_ids = [rule_id]
         else:
             rule_ids = pick_feedback_rule_ids(
-                snapshot,
+                plan,
                 request.log,
                 resolution=request.resolution,
             )
@@ -407,11 +405,11 @@ def _submit_feedback(
         if example is not None and rid == primary:
             ex = example
         else:
-            ex = snapshot_to_corpus_example(
-                snapshot,
+            ex = plan_to_corpus_example(
+                plan,
                 rule_id=rid,
                 label=label,
-                example_id=build_example_id(snapshot, rid, label),
+                example_id=build_example_id(plan, rid, label),
                 notes=notes,
                 max_excerpt_chars=feedback_cfg.max_excerpt_chars,
                 derive_intent=feedback_cfg.derive_intent,
@@ -419,7 +417,7 @@ def _submit_feedback(
         provenance = _build_provenance(
             config,
             request,
-            snapshot,
+            plan,
             rid,
             primary_rule_id=primary,
             co_fired_rules=rule_ids,
@@ -508,7 +506,7 @@ def _aggregate_submission_results(
 
 
 def _process_allow_always(
-    config: ShadowConfig,
+    config: ServeConfig,
     request: FeedbackRequest,
 ) -> dict[str, Any]:
     """Save local personal corpus (if enabled) and also feed Rookery when configured.
@@ -520,9 +518,9 @@ def _process_allow_always(
     Fatigue attribution: personal + community examples go to every post-L3 kept
     review rule (primary first), matching allow-once multi-submit policy.
     """
-    snapshot = _ingress_snapshot(config, request.snapshot)
+    plan = _ingress_plan(config, request.plan)
     rule_ids = pick_feedback_rule_ids(
-        snapshot,
+        plan,
         request.log,
         resolution="allow-always",
     )
@@ -542,11 +540,11 @@ def _process_allow_always(
     primary_example_id: str | None = None
 
     for rid in rule_ids:
-        example = snapshot_to_corpus_example(
-            snapshot,
+        example = plan_to_corpus_example(
+            plan,
             rule_id=rid,
             label="benign",
-            example_id=build_example_id(snapshot, rid, "benign"),
+            example_id=build_example_id(plan, rid, "benign"),
             notes="Personal allow-always (live review)",
             max_excerpt_chars=config.feedback.max_excerpt_chars,
             derive_intent=config.feedback.derive_intent,
@@ -584,7 +582,7 @@ def _process_allow_always(
         config,
         request,
         rule_ids=rule_ids,
-        snapshot=snapshot,
+        plan=plan,
     )
     result["feedback_status"] = feedback.get("status")
     result["submissions"] = feedback.get("submissions")
@@ -613,9 +611,9 @@ def _process_allow_always(
 
 
 def _build_provenance(
-    config: ShadowConfig,
+    config: ServeConfig,
     request: FeedbackRequest,
-    snapshot: ShadowSnapshot,
+    plan: PlanIR,
     rule_id: str,
     *,
     primary_rule_id: str | None = None,
@@ -633,9 +631,9 @@ def _build_provenance(
         "bundle_version": config.bundle_version,
         "source": "openclaw_review",
         "resolution": request.resolution,
-        "session_id": snapshot.session_id,
-        "run_id": snapshot.run_id,
-        "tool_call_id": snapshot.tool_call_id,
+        "session_id": plan.metadata.session_id,
+        "run_id": plan.run_id,
+        "tool_call_id": plan.metadata.tool_call_id,
         "rule_id": rule_id,
         "primary_rule_id": primary,
         "co_fired_rules": co_fired,
@@ -644,7 +642,7 @@ def _build_provenance(
         **request.provenance,
     }
     if request.log:
-        provenance["shadow_log"] = {
+        provenance["scan_log"] = {
             "decision": request.log.get("decision"),
             "summary": request.log.get("summary"),
             "matched_rules": request.log.get("matched_rules"),

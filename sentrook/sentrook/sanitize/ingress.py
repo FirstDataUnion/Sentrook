@@ -1,18 +1,18 @@
-"""Server ingress helpers — optional full snapshot sanitization."""
+"""Server ingress helpers — optional full PlanIR sanitization."""
 
 from __future__ import annotations
 
-from sentrook.sanitize.snapshot import sanitize_snapshot
-from sentrook.shadow.snapshot import ShadowSnapshot
+from sentrook.planir import PlanIR
+from sentrook.sanitize.planir import sanitize_planir
 
 
-def maybe_sanitize_snapshot(
-    snapshot: ShadowSnapshot,
+def maybe_sanitize_planir(
+    plan: PlanIR,
     *,
     enabled: bool,
-) -> tuple[ShadowSnapshot, int]:
+) -> tuple[PlanIR, int]:
     """Sanitize when ``enabled``; otherwise return the input unchanged."""
     if not enabled:
-        return snapshot, 0
-    result = sanitize_snapshot(snapshot)
-    return result.snapshot, result.sanitize_ms
+        return plan, 0
+    result = sanitize_planir(plan)
+    return result.plan, result.sanitize_ms

@@ -6,8 +6,8 @@ import secrets
 from dataclasses import dataclass
 from typing import Mapping
 
-from sentrook.shadow.config import ShadowConfig
-from sentrook.shadow.oidc import (
+from sentrook.serve.config import ServeConfig
+from sentrook.serve.oidc import (
     InsufficientScopeError,
     OIDCError,
     caller_id_from_claims,
@@ -30,20 +30,20 @@ class ScanAuthResult:
     error: str | None = None  # "unauthorized" | "insufficient_scope"
 
 
-def scan_api_key_enabled(config: ShadowConfig) -> bool:
+def scan_api_key_enabled(config: ServeConfig) -> bool:
     if config.scan_auth_mode == "oidc":
         return False
     return bool(config.scan_api_key)
 
 
-def oidc_available(config: ShadowConfig) -> bool:
+def oidc_available(config: ServeConfig) -> bool:
     """True when JWTs can be verified (issuer set, mode allows OIDC)."""
     if config.scan_auth_mode == "apikey":
         return False
     return bool(normalize_oidc_url(config.oidc_issuer))
 
 
-def scan_auth_required(config: ShadowConfig) -> bool:
+def scan_auth_required(config: ServeConfig) -> bool:
     """Whether anonymous ``/scan`` is rejected.
 
     Local sidecar default (``auto``, no API key): open.
@@ -70,8 +70,8 @@ def extract_scan_api_key(headers: Mapping[str, str]) -> str | None:
     return extract_bearer_token(headers)
 
 
-def verify_scan_api_key(config: ShadowConfig, headers: Mapping[str, str]) -> bool:
-    """Legacy helper: API-key-only check (no OIDC). Prefer ``verify_scan_auth``."""
+def verify_scan_api_key(config: ServeConfig, headers: Mapping[str, str]) -> bool:
+    """API-key-only check (no OIDC). Prefer ``verify_scan_auth``."""
     if not scan_api_key_enabled(config):
         return True
     provided = extract_scan_api_key(headers)
@@ -83,7 +83,7 @@ def verify_scan_api_key(config: ShadowConfig, headers: Mapping[str, str]) -> boo
     return secrets.compare_digest(provided, config.scan_api_key)
 
 
-def _verify_api_key_credential(config: ShadowConfig, headers: Mapping[str, str]) -> bool:
+def _verify_api_key_credential(config: ServeConfig, headers: Mapping[str, str]) -> bool:
     if not scan_api_key_enabled(config) or not config.scan_api_key:
         return False
     header_key = headers.get(SCAN_API_KEY_HEADER) or headers.get(SCAN_API_KEY_HEADER.lower())
@@ -95,7 +95,7 @@ def _verify_api_key_credential(config: ShadowConfig, headers: Mapping[str, str])
     return False
 
 
-def verify_scan_auth(config: ShadowConfig, headers: Mapping[str, str]) -> ScanAuthResult:
+def verify_scan_auth(config: ServeConfig, headers: Mapping[str, str]) -> ScanAuthResult:
     """Hybrid scan auth: OIDC JWT and/or static API key per ``scan_auth_mode``."""
     bearer = extract_bearer_token(headers)
 
@@ -122,7 +122,7 @@ def verify_scan_auth(config: ShadowConfig, headers: Mapping[str, str]) -> ScanAu
     return ScanAuthResult(ok=True, method=None)
 
 
-def scan_auth_health_label(config: ShadowConfig) -> str:
+def scan_auth_health_label(config: ServeConfig) -> str:
     """Compact ``/health`` label (no secrets)."""
     if not scan_auth_required(config) and not oidc_available(config):
         return "off"

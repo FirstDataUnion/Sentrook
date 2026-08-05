@@ -1,4 +1,4 @@
-"""Harvest shadow log records into Rookery corpus submission payloads."""
+"""Harvest scan log records into Rookery corpus submission payloads."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from typing import Any
 from sentrook import __version__
 from sentrook.corpus.models import CorpusExample, CorpusLabel, CorpusStep
 from sentrook.redact import redact_args
-from sentrook.shadow.feedback import (
+from sentrook.serve.feedback import (
     FeedbackResolution,
     build_submission_body,
     pick_feedback_rule_ids,
     pick_rule_id,
     submit_to_rookery,
 )
-from sentrook.shadow.log import load_shadow_log
+from sentrook.serve.log import load_scan_log
 
 
 def _resolution_for_harvest_label(label: CorpusLabel | None) -> FeedbackResolution:
@@ -30,7 +30,7 @@ def log_row_to_corpus_example(
     *,
     rule_id: str,
     label: CorpusLabel | None = None,
-    example_id_suffix: str = "shadow-harvest",
+    example_id_suffix: str = "scan-harvest",
 ) -> CorpusExample | None:
     pending_tool = row.get("pending_tool")
     if not pending_tool:
@@ -59,7 +59,7 @@ def log_row_to_corpus_example(
         trust=trust,
         intent=row.get("intent"),
         intent_kind=row.get("intent_kind"),
-        notes=str(row.get("summary") or "shadow log harvest candidate"),
+        notes=str(row.get("summary") or "scan log harvest candidate"),
         steps=steps,
     )
 
@@ -70,8 +70,8 @@ def harvest_candidates_from_log(
     decision: str = "review",
     label: CorpusLabel | None = None,
 ) -> list[dict[str, Any]]:
-    """Return submission-ready dicts for review (or other) decisions in a shadow log."""
-    records = load_shadow_log(path)
+    """Return submission-ready dicts for review (or other) decisions in a scan log."""
+    records = load_scan_log(path)
     candidates: list[dict[str, Any]] = []
 
     for index, row in enumerate(records, start=1):
@@ -97,7 +97,7 @@ def harvest_candidates_from_log(
             provenance = {
                 "scanner_version": row.get("scanner_version") or __version__,
                 "bundle_version": row.get("bundle_version"),
-                "source": "shadow_log_harvest",
+                "source": "scan_log_harvest",
                 "session_id": row.get("session_id"),
                 "run_id": row.get("run_id"),
                 "snapshot_index": index,
@@ -163,7 +163,7 @@ def preview_harvest_candidates(
     decision: str = "review",
 ) -> list[dict[str, Any]]:
     """Dry-run payloads without corpus labels (metadata only)."""
-    records = load_shadow_log(path)
+    records = load_scan_log(path)
     previews: list[dict[str, Any]] = []
     for index, row in enumerate(records, start=1):
         if str(row.get("decision", "allow")) != decision:

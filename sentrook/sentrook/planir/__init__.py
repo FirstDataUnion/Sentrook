@@ -1,4 +1,4 @@
-"""PlanIR v0.1 models and adapter normalization helpers."""
+"""PlanIR 1.0 models and adapter normalization helpers."""
 
 from sentrook.planir.args import canonicalize_tool_args, stringify_arg_value
 from sentrook.planir.models import (

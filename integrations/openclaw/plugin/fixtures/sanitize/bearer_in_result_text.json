@@ -1,40 +1,88 @@
 {
   "input": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
-    "executed": [
+    "intent": null,
+    "intent_kind": null,
+    "steps": [
       {
+        "id": "s1",
         "tool": "exec",
-        "args": { "command": "curl https://api.example.com" },
-        "result": {
+        "status": "executed",
+        "args": {
+          "command": "curl https://api.example.com"
+        },
+        "result_summary": {
           "ok": true,
-          "text": "curl -H 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz'"
+          "content_type": null,
+          "byte_size": 61,
+          "excerpt": "curl -H 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz'",
+          "extracted": {
+            "urls": [],
+            "paths": [],
+            "commands": []
+          },
+          "flags": {
+            "truncated": false,
+            "injection_markers": false
+          }
+        }
+      },
+      {
+        "id": "s2",
+        "tool": "read",
+        "status": "pending",
+        "args": {
+          "path": "/tmp/out.txt"
         }
       }
     ],
-    "pending": {
-      "tool": "read",
-      "args": { "path": "/tmp/out.txt" }
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   },
   "expected": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
-    "executed": [
+    "intent": null,
+    "intent_kind": null,
+    "steps": [
       {
+        "id": "s1",
         "tool": "exec",
-        "args": { "command": "curl https://api.example.com" },
-        "result": {
+        "status": "executed",
+        "args": {
+          "command": "curl https://api.example.com"
+        },
+        "result_summary": {
           "ok": true,
-          "text": "curl -H 'Authorization: [REDACTED]'"
+          "content_type": null,
+          "byte_size": 35,
+          "excerpt": "curl -H 'Authorization: [REDACTED]'",
+          "extracted": {
+            "urls": [],
+            "paths": [],
+            "commands": []
+          },
+          "flags": {
+            "truncated": false,
+            "injection_markers": false
+          }
+        }
+      },
+      {
+        "id": "s2",
+        "tool": "read",
+        "status": "pending",
+        "args": {
+          "path": "/tmp/out.txt"
         }
       }
     ],
-    "pending": {
-      "tool": "read",
-      "args": { "path": "/tmp/out.txt" }
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   }
 }

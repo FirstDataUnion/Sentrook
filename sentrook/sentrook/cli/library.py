@@ -230,7 +230,7 @@ def library_login_cmd(
     """Authenticate this machine against FIDU ID via the OAuth device flow.
 
     Caches a short-lived access token + refresh token under
-    ``~/.sentrook/auth/`` that ``library sync``/``status`` and shadow feedback
+    ``~/.sentrook/auth/`` that ``library sync``/``status`` and scan feedback
     submit use automatically. Re-run this when the refresh token expires or
     is revoked.
     """

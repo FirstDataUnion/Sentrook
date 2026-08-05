@@ -1,4 +1,4 @@
-"""String scrubbing helpers shared by feedback and shadow logs."""
+"""String scrubbing helpers shared by feedback and scan logs."""
 
 from __future__ import annotations
 

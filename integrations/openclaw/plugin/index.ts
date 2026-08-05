@@ -1,7 +1,7 @@
 /**
- * Sentrook Shadow Scanner — OpenClaw plugin (the "layer").
+ * Sentrook OpenClaw plugin (the "layer").
  *
- * In shadow mode: fire-and-forget scan, never blocks.
+ * In observe mode: fire-and-forget scan, never blocks.
  * In enforce mode: awaits the sidecar and maps allow / review / block to OpenClaw
  * before_tool_call decisions (block veto or requireApproval).
  */
@@ -21,7 +21,7 @@ import {
 } from "./approvalPolicy.ts";
 import {
   type SanitizationConfig,
-  maybeSanitizeSnapshot,
+  maybeSanitizePlanir,
   resolveSanitizationConfig,
 } from "./sanitize.ts";
 import {
@@ -30,6 +30,15 @@ import {
   recordAllowAlways,
   resolveAllowlistConfig,
 } from "./localAllowlist.ts";
+import {
+  buildPlanirSnapshot,
+  lastPendingStep,
+  type IntentKind,
+  type PlanIR,
+  type SnapshotCall,
+} from "./planir.ts";
+
+export type { PlanIR } from "./planir.ts";
 
 // ---- Minimal local typings for the OpenClaw plugin SDK surface we use --------
 
@@ -42,7 +51,7 @@ interface PluginLogger {
   error: (m: string) => void;
 }
 
-type PluginMode = "shadow" | "enforce";
+type PluginMode = "observe" | "enforce";
 type FeedbackMode = "off" | "submit";
 type ApprovalResolution =
   | "allow-once"
@@ -120,40 +129,9 @@ interface OpenClawPluginApi {
   ) => void;
 }
 
-// ---- Shadow snapshot + sidecar response contract ----------------------------
-
-interface ShadowResult {
-  ok: boolean;
-  text: string;
-  content_type?: string | null;
-  command?: string | null;
-}
-interface ShadowCall {
-  tool: string;
-  args: Json;
-  result?: ShadowResult;
-}
-type IntentKind = "user" | "cron" | "subagent" | "system";
-
 interface RunIntent {
   intent: string;
   kind: IntentKind;
-}
-
-export interface ShadowSnapshot {
-  schema: "sentrook.shadow.snapshot/v1";
-  adapter: "openclaw";
-  session_id?: string;
-  agent_id?: string;
-  run_id: string;
-  intent?: string;
-  intent_kind?: IntentKind;
-  executed: ShadowCall[];
-  co_pending?: ShadowCall[];
-  pending: ShadowCall;
-  tool_call_id?: string;
-  step_seq?: number;
-  batch_size?: number;
 }
 
 export interface ScanResponse {
@@ -184,9 +162,9 @@ export interface ScanTiming {
   requestMs: number | null;
   /** Estimated transport overhead: pluginE2eMs - engineMs (ms). */
   transportMs: number | null;
-  /** Whether snapshot sanitization ran before POST. */
+  /** Whether PlanIR sanitization ran before POST. */
   sanitizeEnabled: boolean;
-  /** Wall-clock time spent in snapshot sanitization (ms). */
+  /** Wall-clock time spent in PlanIR sanitization (ms). */
   sanitizeMs: number;
 }
 
@@ -217,7 +195,7 @@ interface PluginConfig {
 
 interface SessionState {
   runIntents: Map<string, RunIntent>;
-  executed: ShadowCall[];
+  executed: SnapshotCall[];
   pending: Map<string, { tool: string; args: Json }>;
   stepSeq: number;
 }
@@ -236,7 +214,7 @@ export function resolveScanTimeoutMs(
   if (typeof cfgTimeout === "number" && Number.isFinite(cfgTimeout) && cfgTimeout > 0) {
     return Math.round(cfgTimeout);
   }
-  const envMs = Number(env.SENTROOK_SHADOW_TIMEOUT_MS);
+  const envMs = Number(env.SENTROOK_SCAN_TIMEOUT_MS);
   if (Number.isFinite(envMs) && envMs > 0) {
     return Math.round(envMs);
   }
@@ -260,8 +238,8 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
 
   const url = (
     (typeof cfg.url === "string" && cfg.url) ||
-    process.env.SENTROOK_SHADOW_URL ||
-    "http://sentrook-shadow:9099"
+    process.env.SENTROOK_SCAN_URL ||
+    "http://sentrook-scan:9099"
   ).replace(/\/+$/, "");
 
   const timeoutMs = resolveScanTimeoutMs(cfg.timeoutMs, url, process.env);
@@ -269,8 +247,8 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
   const modeRaw =
     (typeof cfg.mode === "string" && cfg.mode) ||
     process.env.SENTROOK_MODE ||
-    "shadow";
-  const mode: PluginMode = modeRaw === "enforce" ? "enforce" : "shadow";
+    "observe";
+  const mode: PluginMode = modeRaw === "enforce" ? "enforce" : "observe";
 
   const feedbackCfg =
     cfg.feedback && typeof cfg.feedback === "object"
@@ -280,7 +258,7 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
     (typeof feedbackCfg.mode === "string" && feedbackCfg.mode) ||
     process.env.SENTROOK_FEEDBACK_MODE ||
     "off";
-  // Legacy "queue" meant "post to Sentrook"; same as submit on the plugin side.
+  // "queue" previously meant "post to Sentrook"; same as submit on the plugin side.
   const feedbackMode: FeedbackMode =
     feedbackModeRaw === "submit" || feedbackModeRaw === "queue" ? "submit" : "off";
 
@@ -379,17 +357,21 @@ export function buildScanTiming(
   };
 }
 
+function pendingToolName(plan: PlanIR): string {
+  return lastPendingStep(plan)?.tool ?? "unknown";
+}
+
 function formatScanTimingLog(
-  snapshot: ShadowSnapshot,
+  plan: PlanIR,
   scan: ScanResponse,
   timing: ScanTiming,
 ): string {
   return JSON.stringify({
     event: "scan_timing",
-    tool_call_id: snapshot.tool_call_id ?? null,
-    session_id: snapshot.session_id ?? null,
-    run_id: snapshot.run_id,
-    pending_tool: snapshot.pending.tool,
+    tool_call_id: plan.metadata.tool_call_id ?? null,
+    session_id: plan.metadata.session_id ?? null,
+    run_id: plan.run_id,
+    pending_tool: pendingToolName(plan),
     decision: scan.decision,
     plugin_e2e_ms: timing.pluginE2eMs,
     engine_ms: timing.engineMs,
@@ -403,7 +385,7 @@ function formatScanTimingLog(
 function recordScanLatency(
   url: string,
   auth: ScanAuthConfig,
-  snapshot: ShadowSnapshot,
+  plan: PlanIR,
   scan: ScanResponse,
   timing: ScanTiming,
 ): void {
@@ -414,10 +396,10 @@ function recordScanLatency(
         method: "POST",
         headers,
         body: JSON.stringify({
-          tool_call_id: snapshot.tool_call_id ?? null,
-          session_id: snapshot.session_id ?? null,
-          run_id: snapshot.run_id,
-          pending_tool: snapshot.pending.tool,
+          tool_call_id: plan.metadata.tool_call_id ?? null,
+          session_id: plan.metadata.session_id ?? null,
+          run_id: plan.run_id,
+          pending_tool: pendingToolName(plan),
           decision: scan.decision,
           plugin_e2e_ms: timing.pluginE2eMs,
           engine_ms: timing.engineMs,
@@ -436,13 +418,13 @@ function recordScanLatency(
 export async function postScan(
   url: string,
   timeoutMs: number,
-  snapshot: ShadowSnapshot,
+  plan: PlanIR,
   auth: ScanAuthConfig | null = null,
   sanitization: SanitizationConfig = { enabled: true },
   logger?: PluginLogger,
 ): Promise<PostScanResult | null> {
   const resolvedAuth: ScanAuthConfig = auth ?? { apiKey: null, oidc: null };
-  const { snapshot: outbound, sanitizeMs } = maybeSanitizeSnapshot(snapshot, sanitization);
+  const { plan: outbound, sanitizeMs } = maybeSanitizePlanir(plan, sanitization);
   const sanitizeTiming: SanitizeTiming = {
     enabled: sanitization.enabled,
     ms: sanitizeMs,
@@ -467,7 +449,7 @@ export async function postScan(
         detail = "";
       }
       logger?.warn(
-        `[sentrook-shadow] scan HTTP ${response.status}` +
+        `[sentrook-openclaw] scan HTTP ${response.status}` +
           (detail ? `: ${detail}` : "") +
           `; failing open`,
       );
@@ -480,7 +462,7 @@ export async function postScan(
     const msg = err instanceof Error ? err.message : String(err);
     const aborted = msg.toLowerCase().includes("abort");
     logger?.warn(
-      `[sentrook-shadow] scan ${aborted ? "timed out" : "failed"}: ${msg}; failing open`,
+      `[sentrook-openclaw] scan ${aborted ? "timed out" : "failed"}: ${msg}; failing open`,
     );
     return null;
   } finally {
@@ -492,21 +474,27 @@ function postFeedback(
   url: string,
   auth: ScanAuthConfig,
   payload: {
-    snapshot: ShadowSnapshot;
+    plan: PlanIR;
     resolution: ApprovalResolution;
     log?: Json;
+    provenance?: Json;
   },
   sanitization: SanitizationConfig,
   logger: PluginLogger,
 ): Promise<void> {
-  const { snapshot: outbound } = maybeSanitizeSnapshot(payload.snapshot, sanitization);
+  const { plan: outbound } = maybeSanitizePlanir(payload.plan, sanitization);
   return (async () => {
     try {
       const headers = await buildScanAuthHeadersAsync(auth);
       const res = await fetch(`${url}/feedback`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ ...payload, snapshot: outbound }),
+        body: JSON.stringify({
+          plan: outbound,
+          resolution: payload.resolution,
+          log: payload.log,
+          provenance: payload.provenance ?? {},
+        }),
       });
       const text = await res.text();
       let body: {
@@ -522,7 +510,7 @@ function postFeedback(
       }
       if (!res.ok) {
         logger.warn(
-          `[sentrook-shadow] feedback HTTP ${res.status}: ${text.slice(0, 200) || "(empty)"}`,
+          `[sentrook-openclaw] feedback HTTP ${res.status}: ${text.slice(0, 200) || "(empty)"}`,
         );
         return;
       }
@@ -534,14 +522,14 @@ function postFeedback(
         status === "feedback_error"
       ) {
         logger.warn(
-          `[sentrook-shadow] feedback not submitted: status=${status}` +
+          `[sentrook-openclaw] feedback not submitted: status=${status}` +
             (reason ? ` reason=${reason}` : ""),
         );
         return;
       }
-      logger.info(`[sentrook-shadow] feedback ${status}`);
+      logger.info(`[sentrook-openclaw] feedback ${status}`);
     } catch (err: unknown) {
-      logger.warn(`[sentrook-shadow] feedback post failed: ${String(err)}`);
+      logger.warn(`[sentrook-openclaw] feedback post failed: ${String(err)}`);
     }
   })();
 }
@@ -549,7 +537,7 @@ function postFeedback(
 export function translateScanResponse(
   scan: ScanResponse,
   ctx: {
-    snapshot: ShadowSnapshot;
+    plan: PlanIR;
     url: string;
     auth: ScanAuthConfig;
     feedbackMode: FeedbackMode;
@@ -570,12 +558,14 @@ export function translateScanResponse(
   }
 
   if (scan.decision === "review") {
-    const snapshot = ctx.snapshot;
+    const plan = ctx.plan;
     const log = scan.log;
+    const pending = lastPendingStep(plan);
+    const pendingTool = pending?.tool ?? "tool";
 
     if (ctx.allowlist?.enabled) {
       const match = matchAllowlist(
-        snapshot,
+        plan,
         log && typeof log === "object" ? log : undefined,
         ctx.allowlist,
       );
@@ -583,7 +573,7 @@ export function translateScanResponse(
         const rules = (match.matchedRuleIds ?? []).join(",") || "?";
         const detail = match.entryDetail ?? "";
         ctx.logger.warn(
-          `[sentrook-shadow] local allowlist hit (${match.kind ?? "unknown"}); skipping requireApproval; rules=${rules}; ${detail}`,
+          `[sentrook-openclaw] local allowlist hit (${match.kind ?? "unknown"}); skipping requireApproval; rules=${rules}; ${detail}`,
         );
         return undefined;
       }
@@ -591,18 +581,18 @@ export function translateScanResponse(
 
     const timing = resolveApprovalTiming(
       ctx.approval,
-      snapshot.intent_kind,
-      snapshot.intent,
+      plan.intent_kind ?? undefined,
+      plan.intent ?? undefined,
     );
     if (timing.unattended) {
       ctx.logger.info(
-        `[sentrook-shadow] unattended review (${snapshot.intent_kind ?? "unknown"}): ` +
+        `[sentrook-openclaw] unattended review (${plan.intent_kind ?? "unknown"}): ` +
           `timeout=${timing.timeoutMs}ms behavior=${timing.timeoutBehavior}`,
       );
     }
     return {
       requireApproval: {
-        title: scan.review_title || `Sentrook review: ${snapshot.pending.tool}`,
+        title: scan.review_title || `Sentrook review: ${pendingTool}`,
         description:
           scan.review_description ||
           scan.summary ||
@@ -615,22 +605,22 @@ export function translateScanResponse(
           if (decision === "allow-always" && ctx.allowlist?.enabled) {
             try {
               const recorded = recordAllowAlways(
-                snapshot,
+                plan,
                 log && typeof log === "object" ? log : undefined,
                 ctx.allowlist,
               );
               if (recorded.status === "recorded") {
                 ctx.logger.info(
-                  `[sentrook-shadow] local allowlist recorded (${recorded.kind})`,
+                  `[sentrook-openclaw] local allowlist recorded (${recorded.kind})`,
                 );
               } else if (recorded.status === "skipped") {
                 ctx.logger.info(
-                  `[sentrook-shadow] local allowlist skip: ${recorded.reason ?? "unknown"}`,
+                  `[sentrook-openclaw] local allowlist skip: ${recorded.reason ?? "unknown"}`,
                 );
               }
             } catch (err: unknown) {
               ctx.logger.warn(
-                `[sentrook-shadow] local allowlist record failed: ${String(err)}`,
+                `[sentrook-openclaw] local allowlist record failed: ${String(err)}`,
               );
             }
           }
@@ -638,7 +628,7 @@ export function translateScanResponse(
             await postFeedback(
               ctx.url,
               ctx.auth,
-              { snapshot, resolution: decision, log },
+              { plan, resolution: decision, log },
               ctx.sanitization,
               ctx.logger,
             );
@@ -652,10 +642,10 @@ export function translateScanResponse(
 }
 
 const plugin = {
-  id: "sentrook-shadow",
-  name: "Sentrook Shadow Scanner",
+  id: "sentrook-openclaw",
+  name: "Sentrook OpenClaw",
   description:
-    "Sentrook trajectory scanner (hosted HTTPS or local URL). Shadow mode observes only; enforce mode can block or require approval.",
+    "Sentrook trajectory scanner (hosted HTTPS or local URL). Observe mode scans without blocking; enforce mode can block or require approval.",
 
   register(api: OpenClawPluginApi) {
     const mode = api.registrationMode ?? "full";
@@ -687,7 +677,7 @@ const plugin = {
 
     if (urlRequiresScanAuth(config.url) && !hasScanCredentials(config.auth)) {
       api.logger.warn(
-        "[sentrook-shadow] HTTPS scan URL configured without credentials — " +
+        "[sentrook-openclaw] HTTPS scan URL configured without credentials — " +
           "run: openclaw sentrook configure  (or set SENTROOK_SCAN_CLIENT_ID + " +
           "SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env)",
       );
@@ -711,8 +701,8 @@ const plugin = {
         envWithOpenclawDotenv(process.env),
       );
 
-    const postFireAndForget = (snapshot: ShadowSnapshot): void => {
-      const { snapshot: outbound } = maybeSanitizeSnapshot(snapshot, config.sanitization);
+    const postFireAndForget = (plan: PlanIR): void => {
+      const { plan: outbound } = maybeSanitizePlanir(plan, config.sanitization);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), config.timeoutMs);
       void (async () => {
@@ -733,7 +723,7 @@ const plugin = {
               detail = "";
             }
             api.logger.warn(
-              `[sentrook-shadow] shadow scan HTTP ${response.status}` +
+              `[sentrook-openclaw] observe scan HTTP ${response.status}` +
                 (detail ? `: ${detail}` : ""),
             );
           }
@@ -741,7 +731,7 @@ const plugin = {
           const msg = err instanceof Error ? err.message : String(err);
           const aborted = msg.toLowerCase().includes("abort");
           api.logger.warn(
-            `[sentrook-shadow] shadow scan ${aborted ? "timed out" : "failed"}: ${msg}`,
+            `[sentrook-openclaw] observe scan ${aborted ? "timed out" : "failed"}: ${msg}`,
           );
         } finally {
           clearTimeout(timer);
@@ -764,11 +754,11 @@ const plugin = {
         try {
           const sid = ctx.sessionId || ctx.sessionKey;
           const st = getSession(sessionKeyOf(ctx));
-          const pending: ShadowCall = {
+          const pendingCall: SnapshotCall = {
             tool: event.toolName,
             args: (event.params as Json) ?? {},
           };
-          const coPending: ShadowCall[] = [];
+          const coPending: SnapshotCall[] = [];
           for (const [id, peer] of st.pending) {
             if (event.toolCallId && id === event.toolCallId) continue;
             coPending.push({ tool: peer.tool, args: peer.args });
@@ -777,28 +767,29 @@ const plugin = {
           st.stepSeq += 1;
           const runId = resolveRunId(event.runId, ctx.runId);
           const runIntent = st.runIntents.get(runId);
-          const snapshot: ShadowSnapshot = {
-            schema: "sentrook.shadow.snapshot/v1",
-            adapter: "openclaw",
-            session_id: sid,
-            agent_id: ctx.agentId,
-            run_id: `${sid ?? "session"}:${runId}`,
-            intent: runIntent?.intent,
-            intent_kind: runIntent?.kind,
+          const plan = buildPlanirSnapshot({
             executed: st.executed.slice(-MAX_TRAJECTORY),
-            co_pending: coPending.length ? coPending : undefined,
-            pending,
-            tool_call_id: event.toolCallId,
-            step_seq: st.stepSeq,
-            batch_size: batchSize > 1 ? batchSize : undefined,
-          };
+            pending: pendingCall,
+            coPending: coPending.length ? coPending : undefined,
+            runId: `${sid ?? "session"}:${runId}`,
+            intent: runIntent?.intent,
+            intentKind: runIntent?.kind,
+            sessionId: sid,
+            agentId: ctx.agentId,
+            toolCallId: event.toolCallId,
+            stepSeq: st.stepSeq,
+            batchSize: batchSize > 1 ? batchSize : undefined,
+          });
 
           if (event.toolCallId) {
-            st.pending.set(event.toolCallId, { tool: pending.tool, args: pending.args });
+            st.pending.set(event.toolCallId, {
+              tool: pendingCall.tool,
+              args: pendingCall.args,
+            });
           }
 
-          if (config.mode === "shadow") {
-            postFireAndForget(snapshot);
+          if (config.mode === "observe") {
+            postFireAndForget(plan);
             return undefined;
           }
 
@@ -808,7 +799,7 @@ const plugin = {
           const scanResult = await postScan(
             config.url,
             config.timeoutMs,
-            snapshot,
+            plan,
             liveAuth,
             config.sanitization,
             api.logger,
@@ -818,11 +809,11 @@ const plugin = {
           }
 
           const { scan, timing } = scanResult;
-          api.logger.info(`[sentrook-shadow] ${formatScanTimingLog(snapshot, scan, timing)}`);
-          recordScanLatency(config.url, liveAuth, snapshot, scan, timing);
+          api.logger.info(`[sentrook-openclaw] ${formatScanTimingLog(plan, scan, timing)}`);
+          recordScanLatency(config.url, liveAuth, plan, scan, timing);
 
           return translateScanResponse(scan, {
-            snapshot,
+            plan,
             url: config.url,
             auth: liveAuth,
             feedbackMode: config.feedbackMode,
@@ -832,7 +823,7 @@ const plugin = {
             logger: api.logger,
           });
         } catch (err) {
-          api.logger.warn(`[sentrook-shadow] before_tool_call failed: ${String(err)}`);
+          api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);
           return undefined;
         }
       },
@@ -854,17 +845,15 @@ const plugin = {
         st.executed.push({
           tool: call.tool,
           args: call.args,
-          result: {
-            ok: !event.error,
-            text: resultToText(event.result, event.error),
-            command,
-          },
+          resultText: resultToText(event.result, event.error),
+          resultOk: !event.error,
+          command,
         });
         if (st.executed.length > MAX_TRAJECTORY) {
           st.executed.splice(0, st.executed.length - MAX_TRAJECTORY);
         }
       } catch (err) {
-        api.logger.warn(`[sentrook-shadow] after_tool_call failed: ${String(err)}`);
+        api.logger.warn(`[sentrook-openclaw] after_tool_call failed: ${String(err)}`);
       }
     });
 
@@ -888,7 +877,7 @@ const plugin = {
       ? "sanitization=on"
       : "sanitization=off";
     api.logger.info(
-      `[sentrook-shadow] registered (sidecar=${config.url}, mode=${config.mode}, ` +
+      `[sentrook-openclaw] registered (sidecar=${config.url}, mode=${config.mode}, ` +
         `${scanAuthSummary}, timeout=${config.timeoutMs}ms, feedback=${config.feedbackMode}, ` +
         `${sanitizationSummary}, approval: ${approvalSummary})`,
     );

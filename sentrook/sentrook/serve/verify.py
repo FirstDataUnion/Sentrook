@@ -1,4 +1,4 @@
-"""Post-install checks for the Sentrook shadow sidecar and OpenClaw plugin."""
+"""Post-install checks for the Sentrook scan serve sidecar and OpenClaw plugin."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from typing import Any
 
 @dataclass
 class VerifyReport:
-    """Structured result from :func:`run_shadow_verify`."""
+    """Structured result from :func:`run_scan_verify`."""
 
     sidecar_url: str
     sidecar_ok: bool = False
@@ -38,7 +38,7 @@ class VerifyReport:
 def fetch_sidecar_health_via_compose(
     openclaw_dir: Path,
     *,
-    sidecar_service: str = "sentrook-shadow",
+    sidecar_service: str = "sentrook-scan",
     port: int = 9099,
     timeout_sec: float = 15.0,
 ) -> dict[str, Any]:
@@ -70,7 +70,7 @@ def fetch_sidecar_health_via_compose(
 
 
 def fetch_sidecar_health(url: str, *, timeout_sec: float = 5.0) -> dict[str, Any]:
-    """GET ``/health`` from the shadow sidecar base URL."""
+    """GET ``/health`` from the scan serve base URL."""
     base = url.rstrip("/")
     req = urllib.request.Request(f"{base}/health", method="GET")
     with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
@@ -186,7 +186,7 @@ def inspect_openclaw_plugin_runtime(
 
 
 def verify_plugin_runtime(runtime: dict[str, Any], *, plugin_id: str) -> list[str]:
-    """Return errors when the plugin is not loaded with shadow hooks."""
+    """Return errors when the plugin is not loaded with scan hooks."""
     errors: list[str] = []
     status = runtime.get("status")
     if status != "loaded":
@@ -203,13 +203,13 @@ def verify_plugin_runtime(runtime: dict[str, Any], *, plugin_id: str) -> list[st
     return errors
 
 
-def run_shadow_verify(
+def run_scan_verify(
     *,
     url: str,
     openclaw_dir: Path | None = None,
     gateway_service: str = "openclaw-gateway",
     sidecar_service: str | None = None,
-    plugin_id: str = "sentrook-shadow",
+    plugin_id: str = "sentrook-openclaw",
     check_plugin: bool = True,
     check_gateway_fetch: bool = True,
     timeout_sec: float = 5.0,
@@ -285,7 +285,7 @@ def run_shadow_verify(
 def format_verify_text(report: VerifyReport) -> str:
     """Operator-readable summary."""
     lines = [
-        "=== Sentrook shadow verify ===",
+        "=== Sentrook scan verify ===",
         f"sidecar: {report.sidecar_url}",
     ]
     if report.sidecar_health:

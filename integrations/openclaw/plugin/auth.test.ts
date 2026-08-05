@@ -40,7 +40,7 @@ describe("resolveApiKey", () => {
 describe("urlRequiresScanApiKey", () => {
   it("requires auth for https URLs only", () => {
     assert.equal(urlRequiresScanApiKey("https://sentrook.example/scan"), true);
-    assert.equal(urlRequiresScanApiKey("http://sentrook-shadow:9099"), false);
+    assert.equal(urlRequiresScanApiKey("http://sentrook-scan:9099"), false);
   });
 });
 
@@ -64,10 +64,10 @@ describe("resolveScanAuthConfig", () => {
       {
         SENTROOK_SCAN_CLIENT_ID: "client-1",
         SENTROOK_SCAN_CLIENT_SECRET: "secret-1",
-        SENTROOK_SCAN_API_KEY: "legacy",
+        SENTROOK_SCAN_API_KEY: "test-key",
       },
     );
-    assert.equal(auth.apiKey, "legacy");
+    assert.equal(auth.apiKey, "test-key");
     assert.ok(auth.oidc);
     assert.equal(auth.oidc?.clientId, "client-1");
     assert.equal(auth.oidc?.scope, "sentrook.scan");

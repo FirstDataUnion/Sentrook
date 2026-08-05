@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 IntentKind = Literal["user", "cron", "subagent", "system"]
 
@@ -46,9 +46,41 @@ class PlanMetadata(BaseModel):
 
 
 class PlanIR(BaseModel):
-    version: Literal["0.1"] = "0.1"
+    """PlanIR 1.0 — single public scan ingress (conceptual id: ``sentrook.planir/v1``)."""
+
+    version: Literal["1.0"] = "1.0"
     run_id: str
     intent: str | None = None
     intent_kind: IntentKind | None = None
     steps: list[PlanStep]
     metadata: PlanMetadata = Field(default_factory=PlanMetadata)
+
+    @model_validator(mode="after")
+    def _validate_invariants(self) -> PlanIR:
+        if not self.steps:
+            raise ValueError("PlanIR requires at least one step")
+
+        pending = [s for s in self.steps if s.status == "pending"]
+        if not pending:
+            raise ValueError("PlanIR requires at least one pending step")
+
+        # Executed history must precede all pending steps (no executed after first pending).
+        seen_pending = False
+        for step in self.steps:
+            if step.status == "pending":
+                seen_pending = True
+            elif seen_pending:
+                raise ValueError(
+                    "PlanIR executed steps must precede pending steps "
+                    "(no executed step after the first pending)"
+                )
+
+        for index, step in enumerate(self.steps, start=1):
+            expected = f"s{index}"
+            if step.id != expected:
+                raise ValueError(
+                    f"PlanIR step ids must be sequential s1..sN; "
+                    f"expected {expected!r} at index {index}, got {step.id!r}"
+                )
+
+        return self

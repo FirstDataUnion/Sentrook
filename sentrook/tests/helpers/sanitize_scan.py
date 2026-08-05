@@ -9,9 +9,8 @@ from sentrook.planir import PlanIR
 from sentrook.result import ScanResult
 from sentrook.rules.models import Rule
 from sentrook.scan import scan_plan
-from sentrook.sanitize.ingress import maybe_sanitize_snapshot
-from tests.helpers.planir_shadow import planir_to_shadow_snapshot
-from tests.helpers.plugin_sanitize import plugin_sanitize_snapshot
+from sentrook.sanitize.ingress import maybe_sanitize_planir
+from tests.helpers.plugin_sanitize import plugin_sanitize_planir
 
 
 def scan_plan_direct(
@@ -33,10 +32,9 @@ def scan_plan_via_plugin_sanitize(
     corpus: dict[str, LoadedRuleCorpus] | None = None,
     l3_scorer: BiEncoderScorer | None = None,
 ) -> ScanResult:
-    snapshot = planir_to_shadow_snapshot(plan)
-    sanitized = plugin_sanitize_snapshot(snapshot)
+    sanitized = plugin_sanitize_planir(plan)
     return scan_plan(
-        sanitized.to_planir(),
+        sanitized,
         rules,
         config,
         corpus=corpus,
@@ -52,10 +50,9 @@ def scan_plan_via_server_sanitize(
     corpus: dict[str, LoadedRuleCorpus] | None = None,
     l3_scorer: BiEncoderScorer | None = None,
 ) -> ScanResult:
-    snapshot = planir_to_shadow_snapshot(plan)
-    sanitized, _ms = maybe_sanitize_snapshot(snapshot, enabled=True)
+    sanitized, _ms = maybe_sanitize_planir(plan, enabled=True)
     return scan_plan(
-        sanitized.to_planir(),
+        sanitized,
         rules,
         config,
         corpus=corpus,

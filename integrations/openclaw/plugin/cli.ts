@@ -46,7 +46,7 @@ export interface VerifyCliOptions {
 
 function parseMode(raw?: string): PluginMode | undefined {
   if (!raw) return undefined;
-  return raw === "shadow" ? "shadow" : raw === "enforce" ? "enforce" : undefined;
+  return raw === "observe" ? "observe" : raw === "enforce" ? "enforce" : undefined;
 }
 
 function parseBool(raw?: string): boolean | undefined {
@@ -117,16 +117,16 @@ export function registerSentrookCli(program: CliProgram): void {
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
     .option("--url <url>", "Scan service base URL")
-    .option("--mode <mode>", "shadow | enforce")
+    .option("--mode <mode>", "observe | enforce")
     .option("--timeout-ms <ms>", "Scan POST timeout in ms")
-    .option("--sanitize <bool>", "Enable snapshot sanitization (true|false)")
+    .option("--sanitize <bool>", "Enable PlanIR sanitization (true|false)")
     .option(
       "--contribute-corpus <bool>",
       "Contribute sanitized review feedback to the community corpus (true|false; default true / opt-out)",
     )
     .option("--client-id <id>", "FIDU ID OAuth client_id")
     .option("--client-secret <secret>", "FIDU ID OAuth client_secret")
-    .option("--api-key <key>", "Legacy shared scan API key (soak only)")
+    .option("--api-key <key>", "Shared scan API key (optional)")
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .action(async (opts: ConfigureCliOptions) => {
       try {

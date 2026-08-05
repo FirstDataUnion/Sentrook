@@ -410,7 +410,7 @@ def _args_match(patterns: dict[str, str], args: dict) -> bool:
         value = stringify_arg_value(args[key])
         if not value:
             return False
-        # Search raw + lightly deobfuscated shadow (base64 echo|d, \\xNN, quote concat).
+        # Search raw + lightly deobfuscated variant (base64 echo|d, \\xNN, quote concat).
         if not match_text_with_normalization(pattern, value):
             return False
     return True

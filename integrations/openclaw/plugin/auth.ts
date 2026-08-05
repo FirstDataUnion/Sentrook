@@ -318,7 +318,7 @@ export async function buildScanAuthHeadersAsync(
   return headers;
 }
 
-/** Sync helper for static API key only (tests / legacy callers). */
+/** Sync helper for static API key only (tests / callers without OIDC). */
 export function buildScanAuthHeaders(
   apiKey: string | null,
   extra: Record<string, string> = {},

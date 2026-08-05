@@ -1,6 +1,6 @@
 /**
  * Integration-style tests for plugin.register — per-call dotenv auth and
- * shadow fire-and-forget logging. Uses legacy API-key auth so OIDC minting
+ * observe fire-and-forget logging. Uses shared API-key auth so OIDC minting
  * is not required to prove resolveLiveAuth re-reads ~/.openclaw/.env.
  */
 
@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe("plugin.register — per-call dotenv auth", () => {
-  it("shadow mode: second tool call uses credentials rewritten in .env", async () => {
+  it("observe mode: second tool call uses credentials rewritten in .env", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
     const saved = saveEnv();
     const authHeaders: string[] = [];
@@ -102,7 +102,7 @@ describe("plugin.register — per-call dotenv auth", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "shadow",
+        mode: "observe",
         url: "https://scan.test",
         timeoutMs: 1500,
         sanitization: { enabled: false },
@@ -192,7 +192,7 @@ describe("plugin.register — per-call dotenv auth", () => {
       writeFileSync(path.join(stateDir, ".env"), "# empty\n");
 
       const { api, warns } = createMockApi({
-        mode: "shadow",
+        mode: "observe",
         url: "https://scan.test",
       });
       plugin.register(api as never);
@@ -204,8 +204,8 @@ describe("plugin.register — per-call dotenv auth", () => {
   });
 });
 
-describe("plugin.register — shadow fail logging", () => {
-  it("warns with shadow scan HTTP status and body on non-OK", async () => {
+describe("plugin.register — observe fail logging", () => {
+  it("warns with observe scan HTTP status and body on non-OK", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
     const saved = saveEnv();
     try {
@@ -217,7 +217,7 @@ describe("plugin.register — shadow fail logging", () => {
         new Response('{"error":"unauthorized"}', { status: 401 })) as typeof fetch;
 
       const { api, handlers, warns } = createMockApi({
-        mode: "shadow",
+        mode: "observe",
         url: "https://scan.test",
         timeoutMs: 1500,
         sanitization: { enabled: false },
@@ -232,7 +232,7 @@ describe("plugin.register — shadow fail logging", () => {
       );
       assert.equal(result, undefined);
       await flushAsyncWork();
-      assert.ok(warns.some((w) => /shadow scan HTTP 401:.*"unauthorized"/.test(w)));
+      assert.ok(warns.some((w) => /observe scan HTTP 401:.*"unauthorized"/.test(w)));
       assert.ok(!warns.some((w) => /failing open/.test(w)));
     } finally {
       restoreEnv(saved);
@@ -240,7 +240,7 @@ describe("plugin.register — shadow fail logging", () => {
     }
   });
 
-  it("warns shadow scan failed on network errors", async () => {
+  it("warns observe scan failed on network errors", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
     const saved = saveEnv();
     try {
@@ -253,7 +253,7 @@ describe("plugin.register — shadow fail logging", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns } = createMockApi({
-        mode: "shadow",
+        mode: "observe",
         url: "https://scan.test",
         timeoutMs: 1500,
         sanitization: { enabled: false },
@@ -267,7 +267,7 @@ describe("plugin.register — shadow fail logging", () => {
         { sessionId: "s1" },
       );
       await flushAsyncWork();
-      assert.ok(warns.some((w) => /shadow scan failed: ECONNREFUSED/.test(w)));
+      assert.ok(warns.some((w) => /observe scan failed: ECONNREFUSED/.test(w)));
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

@@ -6,11 +6,27 @@ Sentrook (`https://sentrook.firstdataunion.org`). No local sidecar.
 **Branch note:** this tree is the online-only install path. Offline sidecar
 scripts live on `main`.
 
+## PlanIR 1.0 wire format
+
+Every `before_tool_call` builds a **PlanIR 1.0** trajectory (`version: "1.0"`, sequential
+`s1`…`sN` steps with one or more `pending` steps) and `POST`s it to `/scan`. Executed
+steps include redacted args plus optional `result_summary`; the pending step is the tool
+under review.
+
+| Mode | Behaviour |
+| --- | --- |
+| `observe` (default) | Fire-and-forget scan; never blocks the agent |
+| `enforce` | Awaits `/scan`; maps allow / review / block to OpenClaw vetoes or approval UI |
+
+Sanitization scrubs PlanIR before egress (`sanitization.enabled: true` /
+`SENTROOK_SANITIZE_PLANIR=1`).
+Review feedback `POST /feedback` sends `{ plan, resolution, log, provenance }`.
+
 ## Install (GitHub Packages)
 
 ```bash
 # 1. Install plugin (pinned)
-openclaw plugins install npm:@firstdataunion/sentrook-shadow@0.2.4 --pin --force
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw@0.2.4 --pin --force
 
 # 2. Configure (wizard in the package — OIDC + defaults)
 openclaw sentrook configure
@@ -26,7 +42,7 @@ prompts work:
 ```bash
 cd ~/openclaw
 docker compose exec openclaw-gateway \
-  openclaw plugins install npm:@firstdataunion/sentrook-shadow@0.2.4 --pin --force
+  openclaw plugins install npm:@firstdataunion/sentrook-openclaw@0.2.4 --pin --force
 docker compose exec openclaw-gateway openclaw sentrook configure
 
 # Restart is enough: OpenClaw reloads ~/.openclaw/.env on process start.
@@ -48,7 +64,7 @@ One-time `~/.npmrc` (see [`.npmrc.example`](.npmrc.example)):
 Token needs `read:packages` (and org SSO authorize if applicable).
 `NODE_AUTH_TOKEN=$(gh auth token)` also works if `gh` is logged into the org.
 
-**Updates:** `openclaw plugins update npm:@firstdataunion/sentrook-shadow@0.2.4 --force`
+**Updates:** `openclaw plugins update npm:@firstdataunion/sentrook-openclaw@0.2.4 --force`
 then recreate/restart the gateway. Pinned installs stay on the exact version until you
 opt in.
 
@@ -79,7 +95,7 @@ Interactive flow:
 2. Community corpus: contribute sanitized allow-once/deny reviews by default
    (opt out with `n`, or later `feedback.mode: "off"` / `--contribute-corpus false`)
 3. Paste FIDU ID OAuth `client_id` + `client_secret` (link printed in the wizard)
-4. Writes credentials + patches `plugins.entries.sentrook-shadow`
+4. Writes credentials + patches `plugins.entries.sentrook-openclaw`
 5. Prints reload instructions — **does not restart the gateway**
 
 Non-interactive:
@@ -92,7 +108,7 @@ openclaw sentrook configure --non-interactive \
 #   --contribute-corpus false
 ```
 
-Legacy shared API key (soak only): `--api-key` / `SENTROOK_SCAN_API_KEY`.
+Shared scan API key (optional, soak only): `--api-key` / `SENTROOK_SCAN_API_KEY`.
 
 Optional dual-write for Docker: set `SENTROOK_DOTENV=~/openclaw/.env` (or
 `OPENCLAW_COMPOSE_ENV`) when that path is visible to the configure process
@@ -139,7 +155,7 @@ requirement; we deliberately avoid that for Sentrook.
 {
   plugins: {
     entries: {
-      "sentrook-shadow": {
+      "sentrook-openclaw": {
         enabled: true,
         config: {
           url: "https://sentrook.firstdataunion.org",
@@ -244,19 +260,19 @@ Optional runtime inspect:
 
 ```bash
 docker compose exec openclaw-gateway \
-  openclaw plugins inspect sentrook-shadow --runtime --json
+  openclaw plugins inspect sentrook-openclaw --runtime --json
 ```
 
 Gateway (plugin timing):
 
 ```bash
-docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-shadow
+docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 
 Sentrook VPS (decisions + transport):
 
 ```bash
-docker exec sentrook-scan tail -f /var/log/sentrook/shadow.log.jsonl
+docker exec sentrook-scan tail -f /var/log/sentrook/scan.log.jsonl
 docker exec sentrook-scan tail -f /var/log/sentrook/latency.log.jsonl
 ```
 
@@ -266,18 +282,18 @@ Scans run only on **tool calls**. Chat-only turns produce no scan lines.
 
 | Path | Purpose |
 |------|---------|
-| `plugin/` | OpenClaw plugin (`@firstdataunion/sentrook-shadow`) + `openclaw sentrook configure` |
+| `plugin/` | OpenClaw plugin (`@firstdataunion/sentrook-openclaw`) + `openclaw sentrook configure` |
 | `publish-plugin.sh` | Test + publish to GitHub Packages |
 | `.npmrc.example` | Colleague/CI registry auth template |
 | `lib/common.sh` | Gateway exec / config helpers |
 | `lib/sentrook-scan-auth.sh` | Write scan OIDC / API key to `~/.openclaw/.env` |
 | `sentrook-scan-oidc.sh` | Standalone OIDC credential helper (optional) |
-| `sentrook-scan-key.sh` | Legacy shared-key helper (soak) |
+| `sentrook-scan-key.sh` | Shared API key helper (optional; prefer OIDC) |
 | `uninstall-plugin.sh` | Remove plugin + optional credential purge |
 
-## Snapshot sanitization
+## PlanIR sanitization
 
 Plugin egress scrubbing defaults **on** (`sanitization.enabled: true` /
-`SENTROOK_SANITIZE_SNAPSHOT=1`). Server ingress uses
-`SENTROOK_SERVER_SANITIZE_SNAPSHOT` (default on). See hosted deploy docs under
+`SENTROOK_SANITIZE_PLANIR=1`). Server
+ingress uses `SENTROOK_SERVER_SANITIZE_PLANIR` (default on). See hosted deploy docs under
 `sentrook/deploy/README.md`.

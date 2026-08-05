@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sentrook.shadow.latency import LatencyReport, append_latency_log, build_latency_record
+from sentrook.serve.latency import LatencyReport, append_latency_log, build_latency_record
 
 
 def test_build_and_append_latency_record(tmp_path: Path) -> None:

@@ -1,4 +1,4 @@
-"""Environment-driven configuration for the shadow scanner.
+"""Environment-driven configuration for the scan serve sidecar.
 
 Operators configure the live hook through ``SENTROOK_*`` env vars so the same image
 behaves correctly whether it runs as a sidecar container, a host daemon, or a
@@ -16,11 +16,11 @@ from sentrook.config import L3Config, L3Policy, ScannerConfig
 from sentrook.corpus.loader import resolve_corpus_dir
 from sentrook.corpus.personal import resolve_personal_corpus_dir
 from sentrook.library.paths import DEFAULT_LIBRARY_DIR
-from sentrook.shadow.bundle import resolve_bundle_version
-from sentrook.shadow.oidc import DEFAULT_OIDC_AUDIENCE, DEFAULT_OIDC_ISSUER, normalize_oidc_url
+from sentrook.serve.bundle import resolve_bundle_version
+from sentrook.serve.oidc import DEFAULT_OIDC_AUDIENCE, DEFAULT_OIDC_ISSUER, normalize_oidc_url
 
 DEFAULT_RULES_DIR = Path.home() / ".sentrook" / "rules"
-DEFAULT_LOG_PATH = Path.home() / ".sentrook" / "shadow.log.jsonl"
+DEFAULT_LOG_PATH = Path.home() / ".sentrook" / "scan.log.jsonl"
 DEFAULT_LATENCY_LOG_PATH = Path.home() / ".sentrook" / "latency.log.jsonl"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9099
@@ -62,10 +62,10 @@ class FeedbackConfig:
 
 
 @dataclass
-class ShadowConfig:
-    """Resolved shadow-mode settings."""
+class ServeConfig:
+    """Resolved observe/enforce serve settings."""
 
-    mode: str = "shadow"
+    mode: str = "observe"
     rules_path: Path = DEFAULT_RULES_DIR
     corpus_dir: Path | None = None
     log_path: Path = DEFAULT_LOG_PATH
@@ -87,10 +87,10 @@ class ShadowConfig:
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     personal_corpus_dir: Path | None = DEFAULT_PERSONAL_CORPUS_DIR
     personal_corpus_enabled: bool = True
-    server_sanitize_snapshots: bool = True
+    server_sanitize_planir: bool = True
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "ShadowConfig":
+    def from_env(cls, env: dict[str, str] | None = None) -> "ServeConfig":
         env = env if env is not None else dict(os.environ)
 
         rules = env.get("SENTROOK_RULES")
@@ -116,7 +116,7 @@ class ShadowConfig:
             else DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
         )
         feedback_mode = env.get("SENTROOK_FEEDBACK_MODE", "off")
-        # Legacy alias: queue previously wrote a local JSONL; always submit now.
+        # Alias: queue previously wrote a local JSONL; always submit now.
         if feedback_mode == "queue":
             feedback_mode = "submit"
         # Prefer an explicit feedback URL; fall back to the library sync base
@@ -144,7 +144,7 @@ class ShadowConfig:
         personal_corpus_enabled = personal_enabled_raw not in ("0", "false", "no")
 
         return cls(
-            mode=env.get("SENTROOK_MODE", "shadow"),
+            mode=env.get("SENTROOK_MODE", "observe"),
             rules_path=rules_path,
             corpus_dir=Path(corpus).expanduser() if corpus else None,
             log_path=Path(log_path).expanduser() if log_path else DEFAULT_LOG_PATH,
@@ -158,8 +158,8 @@ class ShadowConfig:
                 )
             ),
             l3_policy=L3Policy(policy_raw) if policy_raw else L3Policy.TIE_BREAKER,
-            host=env.get("SENTROOK_SHADOW_HOST", DEFAULT_HOST),
-            port=int(env.get("SENTROOK_SHADOW_PORT", str(DEFAULT_PORT))),
+            host=env.get("SENTROOK_SCAN_HOST", DEFAULT_HOST),
+            port=int(env.get("SENTROOK_SCAN_PORT", str(DEFAULT_PORT))),
             bundle_version=bundle_version,
             library_url=library_url,
             library_dir=library_dir,
@@ -185,8 +185,8 @@ class ShadowConfig:
             if personal_corpus_raw
             else DEFAULT_PERSONAL_CORPUS_DIR,
             personal_corpus_enabled=personal_corpus_enabled,
-            server_sanitize_snapshots=_env_bool(
-                env, "SENTROOK_SERVER_SANITIZE_SNAPSHOT", default=True
+            server_sanitize_planir=_env_bool(
+                env, "SENTROOK_SERVER_SANITIZE_PLANIR", default=True
             ),
         )
 

@@ -1,9 +1,11 @@
 {
-  "id": "sentrook-shadow",
-  "name": "Sentrook Shadow Scanner",
-  "description": "Sentrook trajectory scanner (hosted HTTPS or local URL). Shadow mode observes only; enforce mode can block or require human approval on flagged tool calls.",
+  "id": "sentrook-openclaw",
+  "name": "Sentrook OpenClaw",
+  "description": "Sentrook trajectory scanner (hosted HTTPS or local URL). Observe mode scans without blocking; enforce mode can block or require human approval on flagged tool calls.",
   "activation": {
-    "onCapabilities": ["hook"]
+    "onCapabilities": [
+      "hook"
+    ]
   },
   "configSchema": {
     "type": "object",
@@ -11,11 +13,11 @@
     "properties": {
       "url": {
         "type": "string",
-        "description": "Sentrook scan service base URL (e.g. http://sentrook-shadow:9099 or https://sentrook.example). Falls back to SENTROOK_SHADOW_URL env, then http://sentrook-shadow:9099."
+        "description": "Sentrook scan service base URL (e.g. http://sentrook-scan:9099 or https://sentrook.example). Falls back to SENTROOK_SCAN_URL env, then http://sentrook-scan:9099."
       },
       "apiKey": {
         "type": "string",
-        "description": "Legacy static scan API key (optional override). Preferred: SENTROOK_SCAN_API_KEY in ~/.openclaw/.env — do not use SecretRefs here (unresolved refs fail-close the gateway)."
+        "description": "Shared scan API key (optional override). Preferred: SENTROOK_SCAN_API_KEY in ~/.openclaw/.env \u2014 do not use SecretRefs here (unresolved refs fail-close the gateway)."
       },
       "clientId": {
         "type": "string",
@@ -23,7 +25,7 @@
       },
       "clientSecret": {
         "type": "string",
-        "description": "Optional override. Preferred: SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env — avoid SecretRefs in openclaw.json (unresolved refs fail-close the gateway)."
+        "description": "Optional override. Preferred: SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env \u2014 avoid SecretRefs in openclaw.json (unresolved refs fail-close the gateway)."
       },
       "oidcIssuer": {
         "type": "string",
@@ -39,12 +41,15 @@
       },
       "timeoutMs": {
         "type": "integer",
-        "description": "Scan request timeout in ms. In enforce mode this gates the agent; in shadow mode it only bounds fire-and-forget posts. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SHADOW_TIMEOUT_MS)."
+        "description": "Scan request timeout in ms. In enforce mode this gates the agent; in observe mode it only bounds fire-and-forget posts. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SCAN_TIMEOUT_MS)."
       },
       "mode": {
         "type": "string",
-        "enum": ["shadow", "enforce"],
-        "description": "shadow = observe-only (default). enforce = honour allow/review/block decisions from the scan service."
+        "enum": [
+          "observe",
+          "enforce"
+        ],
+        "description": "observe = scan-only (default). enforce = honour allow/review/block decisions from the scan service."
       },
       "feedback": {
         "type": "object",
@@ -52,7 +57,10 @@
         "properties": {
           "mode": {
             "type": "string",
-            "enum": ["off", "submit"],
+            "enum": [
+              "off",
+              "submit"
+            ],
             "description": "Feedback for review resolutions (allow-once / deny). off = disabled. submit = POST sanitized candidates to hosted Sentrook /feedback (forwarded to Rookery). Configure wizard defaults to submit (community corpus contribution); opt out with feedback.mode=off or --contribute-corpus false."
           }
         }
@@ -63,7 +71,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Sanitise snapshot payloads before POST /scan and /feedback. Default true. Set false or SENTROOK_SANITIZE_SNAPSHOT=0 to disable."
+            "description": "Sanitise PlanIR payloads before POST /scan and /feedback. Default true. Set false or SENTROOK_SANITIZE_PLANIR=0 to disable."
           }
         }
       },
@@ -86,14 +94,22 @@
           },
           "scheduledTimeoutBehavior": {
             "type": "string",
-            "enum": ["allow", "deny"],
+            "enum": [
+              "allow",
+              "deny"
+            ],
             "description": "When an unattended review times out. Default allow (proceed). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR."
           },
           "scheduledIntentKinds": {
             "type": "array",
             "items": {
               "type": "string",
-              "enum": ["user", "cron", "subagent", "system"]
+              "enum": [
+                "user",
+                "cron",
+                "subagent",
+                "system"
+              ]
             },
             "description": "Intent kinds that use the scheduled policy. Default [cron, subagent]."
           }
@@ -122,7 +138,7 @@
   },
   "uiHints": {
     "apiKey": {
-      "label": "Scan API key (legacy)",
+      "label": "Shared scan API key (optional)",
       "sensitive": true,
       "placeholder": "Prefer SENTROOK_SCAN_API_KEY in ~/.openclaw/.env"
     },

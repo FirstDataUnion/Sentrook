@@ -113,7 +113,7 @@ def run_replay_baseline(
     sessions: tuple[CanonicalReplaySession, ...] = CANONICAL_REPLAY_SESSIONS,
     max_snapshots: int | None = None,
 ) -> ReplayBaselineReport:
-    """Shadow-scan all canonical replay sessions and build a baseline report."""
+    """Scan all canonical replay sessions and build a baseline report."""
     from sentrook.rules.loader import load_rules
 
     root = repo_root or _REPO_ROOT
@@ -229,7 +229,7 @@ def format_baseline_text(
     compare_to: ReplayBaselineReport | None = None,
 ) -> str:
     lines: list[str] = [
-        "=== Sentrook Replay Baseline (shadow) ===",
+        "=== Sentrook Replay Baseline ===",
         f"Version: {report.version} · Sentrook {report.sentrook_version} · {report.recorded_at}",
         "",
     ]

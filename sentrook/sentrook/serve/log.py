@@ -1,4 +1,4 @@
-"""Structured shadow-mode decision log (JSON Lines).
+"""Structured observe/enforce decision log (JSON Lines).
 
 Each line records one ``before_tool_call`` decision in a compact, stable shape so
 operators can tail it live and so it can be diffed against ``sentrook replay scan``
@@ -14,13 +14,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from sentrook.adapters.snapshot import primary_pending_step
+from sentrook.planir import PlanIR
 from sentrook.result import ScanResult
 from sentrook.sanitize.text import scrub_text
-from sentrook.shadow.snapshot import ShadowSnapshot
+
 COMMAND_EXCERPT_LIMIT = 120
 
 
-class ShadowMatchedRule(BaseModel):
+class ScanMatchedRule(BaseModel):
     id: str
     action: Literal["block", "review"]
     severity: Literal["low", "medium", "high", "critical"]
@@ -28,12 +30,12 @@ class ShadowMatchedRule(BaseModel):
     layer: Literal["L1", "L2", "L3"]
 
 
-class ShadowLogRecord(BaseModel):
-    """One observe-only decision, as written to the shadow log."""
+class ScanLogRecord(BaseModel):
+    """One scan decision, as written to the scan log."""
 
     ts: str
-    mode: str = "shadow"
-    schema_version: str = "sentrook.shadow.log/v2"
+    mode: str = "observe"
+    schema_version: str = "sentrook.scan.log/v1"
     adapter: str
     session_id: str | None = None
     run_id: str
@@ -47,7 +49,7 @@ class ShadowLogRecord(BaseModel):
     decision: Literal["allow", "review", "block"]
     risk: float
     summary: str
-    matched_rules: list[ShadowMatchedRule] = Field(default_factory=list)
+    matched_rules: list[ScanMatchedRule] = Field(default_factory=list)
     #: Rule that actually drove review/block after L3 (causal for feedback).
     winning_rule_id: str | None = None
     layer_exits: list[str] = Field(default_factory=list)
@@ -64,8 +66,11 @@ class ShadowLogRecord(BaseModel):
         return json.dumps(self.model_dump(mode="json"), ensure_ascii=False)
 
 
-def _pending_command_excerpt(snapshot: ShadowSnapshot) -> str | None:
-    args = snapshot.pending.args or {}
+def _pending_command_excerpt(plan: PlanIR) -> str | None:
+    pending = primary_pending_step(plan)
+    if pending is None:
+        return None
+    args = pending.args or {}
     command = args.get("command") or args.get("cmd")
     if command is None:
         return None
@@ -93,17 +98,17 @@ def _l3_rule_lists(result: ScanResult) -> tuple[list[str], list[str]]:
 
 def build_log_record(
     result: ScanResult,
-    snapshot: ShadowSnapshot,
+    plan: PlanIR,
     *,
-    mode: str = "shadow",
+    mode: str = "observe",
     ts: str | None = None,
     bundle_version: str | None = None,
     request_ms: int | None = None,
     sanitize_log_fields: bool = False,
-) -> ShadowLogRecord:
+) -> ScanLogRecord:
     l3_allow, l3_kept = _l3_rule_lists(result)
-    intent = snapshot.intent
-    pending_excerpt = _pending_command_excerpt(snapshot)
+    intent = plan.intent
+    pending_excerpt = _pending_command_excerpt(plan)
     if sanitize_log_fields:
         if intent:
             intent = scrub_text(intent, max_chars=1000, pii=True)
@@ -113,16 +118,17 @@ def build_log_record(
                 max_chars=COMMAND_EXCERPT_LIMIT,
                 pii=True,
             )
-    return ShadowLogRecord(
+    meta = plan.metadata
+    return ScanLogRecord(
         ts=ts or datetime.now(timezone.utc).isoformat(),
         mode=mode,
-        adapter=snapshot.adapter,
-        session_id=snapshot.session_id,
+        adapter=meta.adapter,
+        session_id=meta.session_id,
         run_id=result.plan.run_id,
-        agent_id=snapshot.agent_id,
-        tool_call_id=snapshot.tool_call_id,
-        step_seq=snapshot.step_seq,
-        batch_size=snapshot.batch_size,
+        agent_id=meta.agent_id,
+        tool_call_id=meta.tool_call_id,
+        step_seq=meta.step_seq,
+        batch_size=meta.batch_size,
         pending_tool=result.plan.pending_tool,
         pending_step_id=result.plan.pending_step_id,
         pending_command_excerpt=pending_excerpt,
@@ -130,7 +136,7 @@ def build_log_record(
         risk=result.risk,
         summary=result.summary,
         matched_rules=[
-            ShadowMatchedRule(
+            ScanMatchedRule(
                 id=m.id,
                 action=m.action,
                 severity=m.severity,
@@ -148,12 +154,12 @@ def build_log_record(
         scanner_version=result.debug.scanner_version,
         bundle_version=bundle_version,
         intent=intent,
-        intent_kind=snapshot.intent_kind,
+        intent_kind=plan.intent_kind,
     )
 
 
-def load_shadow_log(path: Path) -> list[dict[str, Any]]:
-    """Load a shadow JSONL file, skipping blank lines."""
+def load_scan_log(path: Path) -> list[dict[str, Any]]:
+    """Load a scan JSONL file, skipping blank lines."""
     records: list[dict[str, Any]] = []
     with Path(path).expanduser().open(encoding="utf-8") as handle:
         for line in handle:
@@ -164,13 +170,13 @@ def load_shadow_log(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def append_shadow_log(log_path: Path, record: ShadowLogRecord | dict[str, Any]) -> None:
+def append_scan_log(log_path: Path, record: ScanLogRecord | dict[str, Any]) -> None:
     """Append one record as a JSON line, creating parent dirs as needed."""
     log_path = Path(log_path).expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     line = (
         record.to_json_line()
-        if isinstance(record, ShadowLogRecord)
+        if isinstance(record, ScanLogRecord)
         else json.dumps(record, ensure_ascii=False)
     )
     with log_path.open("a", encoding="utf-8") as handle:

@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 
-import type { ShadowSnapshot } from "./index.ts";
+import { lastPendingStep, type PlanIR } from "./planir.ts";
 
 export type AllowlistEntryKind = "skeleton" | "script_bind";
 
@@ -410,18 +410,21 @@ function skeletonizeGeneralToken(token: string): string {
   return token;
 }
 
-function pendingCommand(snapshot: ShadowSnapshot): string | null {
-  const args = snapshot.pending?.args;
+function pendingCommand(plan: PlanIR): string | null {
+  const step = lastPendingStep(plan);
+  const args = step?.args;
   if (!args || typeof args !== "object") return null;
   const command = (args as Record<string, unknown>).command ?? (args as Record<string, unknown>).cmd;
   return typeof command === "string" ? command : null;
 }
 
-function pendingPrimaryText(snapshot: ShadowSnapshot): string | null {
-  const tool = snapshot.pending?.tool ?? "";
-  const args = (snapshot.pending?.args ?? {}) as Record<string, unknown>;
+function pendingPrimaryText(plan: PlanIR): string | null {
+  const step = lastPendingStep(plan);
+  if (!step) return null;
+  const tool = step.tool ?? "";
+  const args = (step.args ?? {}) as Record<string, unknown>;
   if (tool === "exec") {
-    return pendingCommand(snapshot);
+    return pendingCommand(plan);
   }
   // Non-exec: fingerprint tool + stable JSON of args (string leaves only, sorted keys)
   try {
@@ -561,7 +564,7 @@ function entryDedupeKey(entry: AllowlistEntry): string {
 }
 
 export function matchAllowlist(
-  snapshot: ShadowSnapshot,
+  plan: PlanIR,
   log: Record<string, unknown> | undefined,
   config: AllowlistConfig,
   opts: { readFile?: FileReader; cwd?: string } = {},
@@ -574,8 +577,9 @@ export function matchAllowlist(
   const file = loadAllowlist(config.path);
   if (file.entries.length === 0) return { hit: false, reason: "empty allowlist" };
 
-  const tool = snapshot.pending?.tool ?? "";
-  const command = pendingCommand(snapshot);
+  const pending = lastPendingStep(plan);
+  const tool = pending?.tool ?? "";
+  const command = pendingCommand(plan);
   const readFile = opts.readFile ?? defaultFileReader;
   const cwd = opts.cwd ?? process.cwd();
 
@@ -608,7 +612,7 @@ export function matchAllowlist(
   }
 
   // Skeleton match
-  const primary = pendingPrimaryText(snapshot);
+  const primary = pendingPrimaryText(plan);
   if (!primary) return { hit: false, reason: "no pending primary" };
 
   let skeleton: string | null;
@@ -640,7 +644,7 @@ export function matchAllowlist(
 }
 
 export function recordAllowAlways(
-  snapshot: ShadowSnapshot,
+  plan: PlanIR,
   log: Record<string, unknown> | undefined,
   config: AllowlistConfig,
   opts: { readFile?: FileReader; cwd?: string; now?: () => string } = {},
@@ -652,8 +656,9 @@ export function recordAllowAlways(
     return { status: "skipped", reason: "no matched rules" };
   }
 
-  const tool = snapshot.pending?.tool ?? "";
-  const command = pendingCommand(snapshot);
+  const pending = lastPendingStep(plan);
+  const tool = pending?.tool ?? "";
+  const command = pendingCommand(plan);
   const readFile = opts.readFile ?? defaultFileReader;
   const cwd = opts.cwd ?? process.cwd();
   const createdAt = (opts.now ?? (() => new Date().toISOString()))();
@@ -706,7 +711,7 @@ export function recordAllowAlways(
         source: "allow-always",
       };
     } else {
-      const primary = pendingPrimaryText(snapshot);
+      const primary = pendingPrimaryText(plan);
       if (!primary) return { status: "skipped", reason: "no pending primary" };
       const skeleton = skeletonizeCommand(primary) ?? primary;
       entry = {

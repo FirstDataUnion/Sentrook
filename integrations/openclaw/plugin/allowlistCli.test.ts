@@ -50,7 +50,7 @@ describe("allowlist CLI helpers", () => {
       JSON.stringify({
         plugins: {
           entries: {
-            "sentrook-shadow": {
+            "sentrook-openclaw": {
               enabled: true,
               config: { allowlist: { path: custom } },
             },

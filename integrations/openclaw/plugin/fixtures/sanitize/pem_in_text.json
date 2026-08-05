@@ -1,41 +1,84 @@
 {
   "input": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
-    "executed": [
+    "steps": [
       {
+        "id": "s1",
         "tool": "read",
-        "args": { "path": "~/.ssh/id_rsa" },
-        "result": {
+        "status": "executed",
+        "args": {
+          "path": "~/.ssh/id_rsa"
+        },
+        "result_summary": {
           "ok": true,
-          "text": "-----BEGIN OPENSSH PRIVATE KEY-----\nMIIE...secret...\n-----END OPENSSH PRIVATE KEY-----",
-          "extra_debug": "should be dropped"
+          "content_type": null,
+          "byte_size": 86,
+          "excerpt": "-----BEGIN OPENSSH PRIVATE KEY-----\nMIIE...secret...\n-----END OPENSSH PRIVATE KEY-----",
+          "extracted": {
+            "urls": [],
+            "paths": [],
+            "commands": []
+          },
+          "flags": {
+            "truncated": false,
+            "injection_markers": false
+          }
+        }
+      },
+      {
+        "id": "s2",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ssh example.com"
         }
       }
     ],
-    "pending": {
-      "tool": "exec",
-      "args": { "command": "ssh example.com" }
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   },
   "expected": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
-    "executed": [
+    "steps": [
       {
+        "id": "s1",
         "tool": "read",
-        "args": { "path": "~/.ssh/id_rsa" },
-        "result": {
+        "status": "executed",
+        "args": {
+          "path": "~/.ssh/id_rsa"
+        },
+        "result_summary": {
           "ok": true,
-          "text": "[REDACTED]"
+          "content_type": null,
+          "byte_size": 10,
+          "excerpt": "[REDACTED]",
+          "extracted": {
+            "urls": [],
+            "paths": [],
+            "commands": []
+          },
+          "flags": {
+            "truncated": false,
+            "injection_markers": false
+          }
+        }
+      },
+      {
+        "id": "s2",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ssh example.com"
         }
       }
     ],
-    "pending": {
-      "tool": "exec",
-      "args": { "command": "ssh example.com" }
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   }
 }

@@ -1,4 +1,4 @@
-"""Resolve the rules/corpus bundle version for shadow logging."""
+"""Resolve the rules/corpus bundle version for scan logging."""
 
 from __future__ import annotations
 

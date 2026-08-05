@@ -1,4 +1,4 @@
-"""Shadow sidecar runtime: library sync, reload, health, and latency tracking."""
+"""Scan sidecar runtime: library sync, reload, health, and latency tracking."""
 
 from __future__ import annotations
 
@@ -10,29 +10,29 @@ from typing import Any
 
 from sentrook import __version__
 from sentrook.corpus.models import LoadedRuleCorpus
-from sentrook.library.paths import DEFAULT_LIBRARY_DIR, MANIFEST_FILENAME
+from sentrook.library.paths import MANIFEST_FILENAME
 from sentrook.library.sync import LibraryAuthError, library_status, sync_library
+from sentrook.planir import PlanIR
 from sentrook.result import ScanResult
-from sentrook.sanitize.ingress import maybe_sanitize_snapshot
-from sentrook.shadow.auth import oidc_available, scan_auth_health_label
-from sentrook.shadow.config import ShadowConfig
-from sentrook.shadow.log import ShadowLogRecord, append_shadow_log, build_log_record
-from sentrook.shadow.oidc import normalize_oidc_url
-from sentrook.shadow.service import ShadowScanner
-from sentrook.shadow.snapshot import ShadowSnapshot
-from sentrook.shadow.stats import LatencyTracker
+from sentrook.sanitize.ingress import maybe_sanitize_planir
+from sentrook.serve.auth import oidc_available, scan_auth_health_label
+from sentrook.serve.config import ServeConfig
+from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
+from sentrook.serve.oidc import normalize_oidc_url
+from sentrook.serve.service import ScanService
+from sentrook.serve.stats import LatencyTracker
 
-logger = logging.getLogger("sentrook.shadow")
+logger = logging.getLogger("sentrook.serve")
 
 DEFAULT_SYNC_INTERVAL_SEC = 86_400  # 24 hours
 
 
-class ShadowRuntime:
-    """Wraps a warm :class:`ShadowScanner` with ops hooks for long-running shadow mode."""
+class ServeRuntime:
+    """Wraps a warm :class:`ScanService` with ops hooks for long-running serve mode."""
 
-    def __init__(self, config: ShadowConfig) -> None:
+    def __init__(self, config: ServeConfig) -> None:
         self.config = config
-        self.scanner = ShadowScanner(config)
+        self.scanner = ScanService(config)
         self.scanner.warm()
         self._latency = LatencyTracker()
         self._scan_count = 0
@@ -69,38 +69,38 @@ class ShadowRuntime:
     def warm(self) -> None:
         self.scanner.warm()
 
-    def prepare_snapshot(self, snapshot: ShadowSnapshot) -> tuple[ShadowSnapshot, int]:
-        """Optionally sanitize an ingress snapshot before scan or feedback."""
-        return maybe_sanitize_snapshot(
-            snapshot,
-            enabled=self.config.server_sanitize_snapshots,
+    def prepare_plan(self, plan: PlanIR) -> tuple[PlanIR, int]:
+        """Optionally sanitize an ingress PlanIR before scan or feedback."""
+        return maybe_sanitize_planir(
+            plan,
+            enabled=self.config.server_sanitize_planir,
         )
 
     def scan_and_log(
-        self, snapshot: ShadowSnapshot, *, request_ms: int | None = None
-    ) -> tuple[ScanResult, ShadowLogRecord]:
-        result = self.scanner.scan(snapshot)
-        return self.log_scan(snapshot, result, request_ms=request_ms)
+        self, plan: PlanIR, *, request_ms: int | None = None
+    ) -> tuple[ScanResult, ScanLogRecord]:
+        result = self.scanner.scan(plan)
+        return self.log_scan(plan, result, request_ms=request_ms)
 
     def log_scan(
         self,
-        snapshot: ShadowSnapshot,
+        plan: PlanIR,
         result: ScanResult,
         *,
         request_ms: int | None = None,
-    ) -> tuple[ScanResult, ShadowLogRecord]:
+    ) -> tuple[ScanResult, ScanLogRecord]:
         self._latency.record(result.timing.total_ms)
         with self._ops_lock:
             self._scan_count += 1
         record = build_log_record(
             result,
-            snapshot,
+            plan,
             mode=self.config.mode,
             bundle_version=self.config.bundle_version,
             request_ms=request_ms,
-            sanitize_log_fields=self.config.server_sanitize_snapshots,
+            sanitize_log_fields=self.config.server_sanitize_planir,
         )
-        append_shadow_log(self.config.log_path, record)
+        append_scan_log(self.config.log_path, record)
         return result, record
 
     def reload_from_disk(self) -> None:
@@ -108,7 +108,7 @@ class ShadowRuntime:
         with self._ops_lock:
             self.scanner.reload()
         logger.info(
-            "shadow library reloaded from disk: bundle=%s rules=%d corpus_rules=%d",
+            "scan library reloaded from disk: bundle=%s rules=%d corpus_rules=%d",
             self.config.bundle_version,
             len(self.scanner.rules),
             len(self.scanner.corpus),
@@ -244,7 +244,6 @@ class ShadowRuntime:
                 "last_feedback_reason": self._last_feedback_reason,
                 "last_feedback_resolution": self._last_feedback_resolution,
                 "scan_auth": scan_auth_health_label(self.config),
-                # Public issuer URL so clients can detect dig/prod mismatch (not a secret).
                 "oidc_issuer": (
                     normalize_oidc_url(self.config.oidc_issuer)
                     if oidc_available(self.config)
@@ -253,7 +252,7 @@ class ShadowRuntime:
                 "oidc_audience": (
                     self.config.oidc_audience if oidc_available(self.config) else None
                 ),
-                "server_sanitize_snapshots": self.config.server_sanitize_snapshots,
+                "server_sanitize_planir": self.config.server_sanitize_planir,
                 "scan_count": self._scan_count,
                 "scan_latency_ms": latency,
             }

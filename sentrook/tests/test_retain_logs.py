@@ -48,7 +48,7 @@ def test_classify_keeps_unparsed() -> None:
 
 def test_prune_jsonl_dry_run_and_apply(tmp_path: Path) -> None:
     now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
-    path = tmp_path / "shadow.log.jsonl"
+    path = tmp_path / "scan.log.jsonl"
     path.write_text(
         _line(now - timedelta(days=30), id="old")
         + _line(now - timedelta(days=1), id="new")

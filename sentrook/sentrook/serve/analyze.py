@@ -1,4 +1,4 @@
-"""Aggregate analysis of shadow-mode JSONL logs."""
+"""Aggregate analysis of observe-mode scan JSONL logs."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from sentrook.replay.audit import ExecSummary, SnapshotAudit, build_exec_summary
-from sentrook.shadow.log import load_shadow_log
-from sentrook.shadow.stats import percentile
+from sentrook.serve.log import load_scan_log
+from sentrook.serve.stats import percentile
 
 
 class ScanLatencySummary(BaseModel):
@@ -21,7 +21,7 @@ class ScanLatencySummary(BaseModel):
     max_ms: int | None = None
 
 
-class SessionShadowSummary(BaseModel):
+class SessionScanSummary(BaseModel):
     session_id: str
     total: int = 0
     decision_counts: dict[str, int] = Field(default_factory=dict)
@@ -30,14 +30,14 @@ class SessionShadowSummary(BaseModel):
     harvest_candidates: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class ShadowAnalyzeReport(BaseModel):
+class ScanAnalyzeReport(BaseModel):
     log_path: str
     schema_versions: dict[str, int] = Field(default_factory=dict)
     total_records: int = 0
     decision_counts: dict[str, int] = Field(default_factory=dict)
     rule_hit_counts: dict[str, int] = Field(default_factory=dict)
     bundle_versions: dict[str, int] = Field(default_factory=dict)
-    sessions: list[SessionShadowSummary] = Field(default_factory=list)
+    sessions: list[SessionScanSummary] = Field(default_factory=list)
     exec_summary: ExecSummary = Field(default_factory=ExecSummary)
     scan_latency: ScanLatencySummary = Field(default_factory=ScanLatencySummary)
 
@@ -65,9 +65,9 @@ def _row_to_exec_audit(index: int, row: dict[str, Any]) -> SnapshotAudit:
     )
 
 
-def analyze_shadow_log(path: Path) -> ShadowAnalyzeReport:
-    """Summarise a shadow JSONL file for operator triage."""
-    records = load_shadow_log(path)
+def analyze_scan_log(path: Path) -> ScanAnalyzeReport:
+    """Summarise a scan JSONL file for operator triage."""
+    records = load_scan_log(path)
     decision_counts: Counter[str] = Counter()
     rule_hit_counts: Counter[str] = Counter()
     schema_versions: Counter[str] = Counter()
@@ -94,7 +94,7 @@ def analyze_shadow_log(path: Path) -> ShadowAnalyzeReport:
         if row.get("pending_tool") == "exec":
             exec_audits.append(_row_to_exec_audit(index, row))
 
-    sessions: list[SessionShadowSummary] = []
+    sessions: list[SessionScanSummary] = []
     for session_id, rows in sorted(by_session.items(), key=lambda pair: (-len(pair[1]), pair[0])):
         sess_decisions: Counter[str] = Counter()
         sess_rules: Counter[str] = Counter()
@@ -125,7 +125,7 @@ def analyze_shadow_log(path: Path) -> ShadowAnalyzeReport:
                     )
 
         sessions.append(
-            SessionShadowSummary(
+            SessionScanSummary(
                 session_id=session_id,
                 total=len(rows),
                 decision_counts=dict(sorted(sess_decisions.items())),
@@ -135,7 +135,7 @@ def analyze_shadow_log(path: Path) -> ShadowAnalyzeReport:
             )
         )
 
-    return ShadowAnalyzeReport(
+    return ScanAnalyzeReport(
         log_path=str(path.expanduser().resolve()),
         schema_versions=dict(schema_versions),
         total_records=len(records),
@@ -165,9 +165,9 @@ def _latency_summary(records: list[dict[str, Any]]) -> ScanLatencySummary:
     )
 
 
-def format_shadow_analyze_text(report: ShadowAnalyzeReport) -> str:
+def format_scan_analyze_text(report: ScanAnalyzeReport) -> str:
     lines = [
-        "=== Sentrook Shadow Log Analysis ===",
+        "=== Sentrook Scan Log Analysis ===",
         f"Log: {report.log_path}",
         f"Records: {report.total_records}",
         "",

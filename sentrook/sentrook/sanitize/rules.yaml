@@ -39,7 +39,7 @@ secret_value_patterns:
     pattern: '(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)|bearer\s+[A-Za-z0-9._=-]+'
   - name: openai_key
     # Classic user keys (T3BlbkFJ = base64 "OpenAI"), project/svc/admin keys,
-    # plus a short sk- fallback for fixtures / legacy keys (no hyphen body).
+    # plus a short sk- fallback for fixtures / short keys (no hyphen body).
     pattern: 'sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|sk-[a-z0-9]{10,}'
   - name: anthropic_key
     pattern: 'sk-ant-[a-z0-9-]{10,}'

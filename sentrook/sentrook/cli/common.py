@@ -18,7 +18,7 @@ __all__ = [
     "build_scanner_config",
     "rookery_api_key",
     "emit_formatted",
-    "shadow_config",
+    "serve_config",
 ]
 
 
@@ -54,7 +54,7 @@ def build_scanner_config(
     return ScannerConfig(l3_policy=policy, l3=L3Config(**l3_kwargs))
 
 
-def shadow_config(
+def serve_config(
     *,
     rules: Path | None,
     corpus: Path | None,
@@ -63,11 +63,11 @@ def shadow_config(
     host: str | None,
     port: int | None,
 ):
-    """Build a ShadowConfig from env, then apply explicit CLI overrides."""
-    from sentrook.shadow.bundle import resolve_bundle_version
-    from sentrook.shadow.config import ShadowConfig
+    """Build a ServeConfig from env, then apply explicit CLI overrides."""
+    from sentrook.serve.bundle import resolve_bundle_version
+    from sentrook.serve.config import ServeConfig
 
-    config = ShadowConfig.from_env()
+    config = ServeConfig.from_env()
     if rules is not None:
         config.rules_path = rules
         config.bundle_version = resolve_bundle_version(rules)

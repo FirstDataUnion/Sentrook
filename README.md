@@ -1,10 +1,12 @@
 # Sentrook
 
-FIDU runtime scanner for agent execution trajectories (PlanIR / Ariadne thread).
+FIDU runtime scanner for agent execution trajectories (**PlanIR 1.0** / Ariadne thread).
 
-**Version:** Sentrook `0.2.13` (prototype). The OpenClaw plugin uses its own SemVer (`@firstdataunion/sentrook-shadow`).
+**Version:** Sentrook `0.2.13` (prototype). The OpenClaw plugin uses its own SemVer (`@firstdataunion/sentrook-openclaw`).
 
 Production YAIRA rules and corpus live in the private **Rookery** registry. This repo ships the engine, TestNest harness, plugins, and a tiny `examples/` demo library for format docs and smoke tests only.
+
+Offline and live traffic share one ingress: PlanIR `version: "1.0"` in, `ScanResult` `version: "1.0"` out. CLI: `sentrook scan` (PlanIR file) and `sentrook serve` (warm HTTP `/scan`). Mode: `observe` | `enforce`.
 
 ## Quick start
 
@@ -21,11 +23,11 @@ make smoke
 
 | Path | Purpose |
 |------|---------|
-| `sentrook/` | Scanner package, unit tests, hosted-scan deploy recipes |
+| `sentrook/` | Scanner package (`planir`, `serve`, layers), unit tests, hosted-scan deploy |
 | `testnest/` | Scenario harness (engine-smoke suites only in this repo) |
 | `examples/rules`, `examples/corpus` | Synthetic DEMO-* format examples — not the regression net |
-| `fixtures/plans` | Minimal PlanIR smoke inputs |
-| `integrations/openclaw/` | OpenClaw plugin for hosted Sentrook scan |
+| `fixtures/plans` | Minimal PlanIR 1.0 smoke inputs |
+| `integrations/openclaw/` | OpenClaw plugin — builds PlanIR 1.0 and POSTs `/scan` |
 
 ## Library sync (Rookery)
 

@@ -1,8 +1,8 @@
-"""Loopback/in-network HTTP daemon for live shadow scanning.
+"""Loopback/in-network HTTP daemon for live scan serving.
 
 Built on the standard library only (no extra deps in the sidecar image). The
 scanner is created and warmed once at startup; each ``POST /scan`` reuses it.
-In shadow mode the response always reports ``block: false``; in enforce mode
+In observe mode the response always reports ``block: false``; in enforce mode
 ``block`` and review metadata reflect the scanner decision.
 """
 
@@ -16,21 +16,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pydantic import ValidationError
 
 from sentrook import __version__
-from sentrook.shadow.auth import scan_auth_health_label, verify_scan_auth
-from sentrook.shadow.config import ShadowConfig
-from sentrook.shadow.feedback import FeedbackRequest, process_feedback
-from sentrook.shadow.latency import LatencyReport, append_latency_log, build_latency_record
-from sentrook.shadow.oidc import OIDCError, oidc_enabled, validate_oidc_configuration
-from sentrook.shadow.response import build_scan_response
-from sentrook.shadow.runtime import ShadowRuntime
-from sentrook.shadow.snapshot import ShadowSnapshot
+from sentrook.serve.auth import scan_auth_health_label, verify_scan_auth
+from sentrook.serve.config import ServeConfig
+from sentrook.serve.feedback import FeedbackRequest, process_feedback
+from sentrook.serve.latency import LatencyReport, append_latency_log, build_latency_record
+from sentrook.serve.oidc import OIDCError, oidc_enabled, validate_oidc_configuration
+from sentrook.serve.response import build_scan_response
+from sentrook.serve.runtime import ServeRuntime
+from sentrook.planir import PlanIR
 
-logger = logging.getLogger("sentrook.shadow")
+logger = logging.getLogger("sentrook.serve")
 
 _MAX_BODY_BYTES = 4 * 1024 * 1024
 
 
-def _should_validate_oidc_at_startup(config: ShadowConfig) -> bool:
+def _should_validate_oidc_at_startup(config: ServeConfig) -> bool:
     if config.scan_auth_mode == "oidc":
         return oidc_enabled(config)
     # auto/apikey: skip network JWKS check unless explicitly requested (hosted cutover).
@@ -40,9 +40,9 @@ def _should_validate_oidc_at_startup(config: ShadowConfig) -> bool:
     return raw in ("1", "true", "yes", "on") and oidc_enabled(config)
 
 
-def _make_handler(runtime: ShadowRuntime) -> type[BaseHTTPRequestHandler]:
-    class ShadowHandler(BaseHTTPRequestHandler):
-        server_version = f"sentrook-shadow/{__version__}"
+def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
+    class ServeHandler(BaseHTTPRequestHandler):
+        server_version = f"sentrook-scan/{__version__}"
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             logger.debug("%s - %s", self.address_string(), format % args)
@@ -114,33 +114,33 @@ def _make_handler(runtime: ShadowRuntime) -> type[BaseHTTPRequestHandler]:
             assert raw_payload is not None
 
             try:
-                snapshot = ShadowSnapshot.model_validate(raw_payload)
+                plan = PlanIR.model_validate(raw_payload)
             except ValidationError as exc:
-                self._write_json(422, {"error": "invalid snapshot", "detail": exc.errors()})
+                self._write_json(422, {"error": "invalid planir", "detail": exc.errors()})
                 return
 
-            snapshot, _sanitize_ms = runtime.prepare_snapshot(snapshot)
+            plan, _sanitize_ms = runtime.prepare_plan(plan)
 
             try:
-                result = runtime.scanner.scan(snapshot)
+                result = runtime.scanner.scan(plan)
                 request_ms = int((time.perf_counter() - started) * 1000)
-                result, record = runtime.log_scan(snapshot, result, request_ms=request_ms)
+                result, record = runtime.log_scan(plan, result, request_ms=request_ms)
                 payload = build_scan_response(
                     runtime.config, result, record, request_ms=request_ms
                 )
             except Exception as exc:
-                logger.exception("shadow scan failed")
-                from sentrook.shadow.log import build_log_record
+                logger.exception("scan request failed")
+                from sentrook.serve.log import build_log_record
 
                 try:
-                    result = runtime.scanner.scan(snapshot)
+                    result = runtime.scanner.scan(plan)
                     request_ms = int((time.perf_counter() - started) * 1000)
                     record = build_log_record(
                         result,
-                        snapshot,
+                        plan,
                         mode=runtime.config.mode,
                         request_ms=request_ms,
-                        sanitize_log_fields=runtime.config.server_sanitize_snapshots,
+                        sanitize_log_fields=runtime.config.server_sanitize_planir,
                     )
                     payload = build_scan_response(
                         runtime.config,
@@ -235,11 +235,11 @@ def _make_handler(runtime: ShadowRuntime) -> type[BaseHTTPRequestHandler]:
 
             self._write_json(200, result)
 
-    return ShadowHandler
+    return ServeHandler
 
 
-def serve(config: ShadowConfig | None = None) -> None:
-    config = config or ShadowConfig.from_env()
+def serve(config: ServeConfig | None = None) -> None:
+    config = config or ServeConfig.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if _should_validate_oidc_at_startup(config):
@@ -250,7 +250,7 @@ def serve(config: ShadowConfig | None = None) -> None:
             raise SystemExit(1) from exc
 
     logger.info(
-        "sentrook shadow starting: mode=%s rules=%s corpus=%s l3=%s log=%s library=%s feedback=%s scan_auth=%s server_sanitize=%s",
+        "sentrook serve starting: mode=%s rules=%s corpus=%s l3=%s log=%s library=%s feedback=%s scan_auth=%s server_sanitize=%s",
         config.mode,
         config.rules_path,
         config.resolved_corpus_dir(),
@@ -259,9 +259,9 @@ def serve(config: ShadowConfig | None = None) -> None:
         config.library_url or "(local only)",
         config.feedback.mode,
         scan_auth_health_label(config),
-        config.server_sanitize_snapshots,
+        config.server_sanitize_planir,
     )
-    runtime = ShadowRuntime(config)
+    runtime = ServeRuntime(config)
     runtime.install_signal_handlers()
     runtime.start_background_sync()
     logger.info(

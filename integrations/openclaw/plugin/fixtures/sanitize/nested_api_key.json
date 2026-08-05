@@ -1,36 +1,48 @@
 {
   "input": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
-    "executed": [],
-    "pending": {
-      "tool": "exec",
-      "args": {
-        "command": "deploy",
-        "config": {
-          "openai": {
-            "apiKey": "sk-proj-abcdefghijklmnopqrstuvwxyz"
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "deploy",
+          "config": {
+            "openai": {
+              "apiKey": "sk-proj-abcdefghijklmnopqrstuvwxyz"
+            }
           }
         }
       }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   },
   "expected": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
-    "executed": [],
-    "pending": {
-      "tool": "exec",
-      "args": {
-        "command": "deploy",
-        "config": {
-          "openai": {
-            "apiKey": "[REDACTED]"
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "deploy",
+          "config": {
+            "openai": {
+              "apiKey": "[REDACTED]"
+            }
           }
         }
       }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   }
 }

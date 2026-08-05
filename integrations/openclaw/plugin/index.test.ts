@@ -13,8 +13,8 @@ import {
   resolveScanTimeoutMs,
   translateScanResponse,
   type ScanResponse,
-  type ShadowSnapshot,
 } from "./index.ts";
+import { buildPlanirSnapshot, type PlanIR } from "./planir.ts";
 import { recordAllowAlways } from "./localAllowlist.ts";
 
 const noopLogger = {
@@ -23,24 +23,29 @@ const noopLogger = {
   error: () => {},
 };
 
-function snapshot(overrides: Partial<ShadowSnapshot> = {}): ShadowSnapshot {
-  return {
-    schema: "sentrook.shadow.snapshot/v1",
-    adapter: "openclaw",
-    session_id: "sess-1",
-    run_id: "sess-1:run_1",
-    intent: "check my email",
-    intent_kind: "user",
-    executed: [],
-    pending: { tool: "exec", args: { command: "ls /tmp" } },
-    ...overrides,
-  };
+function plan(overrides: {
+  executed?: Array<{ tool: string; args: Record<string, unknown> }>;
+  pending?: { tool: string; args: Record<string, unknown> };
+  intent?: string;
+  intentKind?: PlanIR["intent_kind"];
+  sessionId?: string;
+  toolCallId?: string;
+} = {}): PlanIR {
+  return buildPlanirSnapshot({
+    executed: overrides.executed ?? [],
+    pending: overrides.pending ?? { tool: "exec", args: { command: "ls /tmp" } },
+    runId: `${overrides.sessionId ?? "sess-1"}:run_1`,
+    intent: overrides.intent ?? "check my email",
+    intentKind: overrides.intentKind ?? "user",
+    sessionId: overrides.sessionId ?? "sess-1",
+    toolCallId: overrides.toolCallId,
+  });
 }
 
 function ctx(overrides: Record<string, unknown> = {}) {
   return {
-    snapshot: snapshot(),
-    url: "http://sentrook-shadow:9099",
+    plan: plan(),
+    url: "http://sentrook-scan:9099",
     auth: { apiKey: null, oidc: null },
     feedbackMode: "off" as const,
     approval: resolveApprovalPolicyConfig({}),
@@ -65,14 +70,14 @@ describe("scan timing helpers", () => {
   });
 
   it("defaults to 1500ms for local HTTP sidecar URLs", () => {
-    assert.equal(resolveScanTimeoutMs(undefined, "http://sentrook-shadow:9099", {}), 1500);
+    assert.equal(resolveScanTimeoutMs(undefined, "http://sentrook-scan:9099", {}), 1500);
   });
 
   it("prefers explicit config and env timeout overrides", () => {
-    assert.equal(resolveScanTimeoutMs(5000, "http://sentrook-shadow:9099", {}), 5000);
+    assert.equal(resolveScanTimeoutMs(5000, "http://sentrook-scan:9099", {}), 5000);
     assert.equal(
-      resolveScanTimeoutMs(undefined, "http://sentrook-shadow:9099", {
-        SENTROOK_SHADOW_TIMEOUT_MS: "4000",
+      resolveScanTimeoutMs(undefined, "http://sentrook-scan:9099", {
+        SENTROOK_SCAN_TIMEOUT_MS: "4000",
       }),
       4000,
     );
@@ -119,9 +124,9 @@ describe("postScan timing", () => {
       )) as typeof fetch;
 
     const result = await postScan(
-      "http://sentrook-shadow:9099",
+      "http://sentrook-scan:9099",
       1500,
-      snapshot({ tool_call_id: "exec:abc" }),
+      plan({ toolCallId: "exec:abc" }),
       null,
       { enabled: false },
     );
@@ -135,7 +140,7 @@ describe("postScan timing", () => {
     assert.equal(result.timing.sanitizeMs, 0);
   });
 
-  it("sanitizes snapshot body when sanitization is enabled", async () => {
+  it("sanitizes PlanIR body when sanitization is enabled", async () => {
     let postedBody = "";
     globalThis.fetch = (async (_url, init) => {
       postedBody = String(init?.body ?? "");
@@ -150,9 +155,9 @@ describe("postScan timing", () => {
     }) as typeof fetch;
 
     const result = await postScan(
-      "http://sentrook-shadow:9099",
+      "http://sentrook-scan:9099",
       1500,
-      snapshot({
+      plan({
         pending: {
           tool: "exec",
           args: { command: "echo hi", api_key: "super-secret" },
@@ -164,8 +169,11 @@ describe("postScan timing", () => {
     assert.ok(result);
     assert.equal(result.timing.sanitizeEnabled, true);
     assert.ok(result.timing.sanitizeMs >= 0);
-    const body = JSON.parse(postedBody) as { pending: { args: { api_key: string } } };
-    assert.equal(body.pending.args.api_key, "[REDACTED]");
+    const body = JSON.parse(postedBody) as {
+      steps: Array<{ args: { api_key: string } }>;
+    };
+    const pendingStep = body.steps.find((s) => s.args.api_key !== undefined);
+    assert.equal(pendingStep?.args.api_key, "[REDACTED]");
     assert.ok(!postedBody.includes("super-secret"));
   });
 });
@@ -185,7 +193,7 @@ describe("postScan failure logging", () => {
     const result = await postScan(
       "https://scan.test",
       1500,
-      snapshot(),
+      plan(),
       { apiKey: "k", oidc: null },
       { enabled: false },
       logger,
@@ -222,7 +230,7 @@ describe("postScan failure logging", () => {
     const result = await postScan(
       "https://scan.test",
       20,
-      snapshot(),
+      plan(),
       null,
       { enabled: false },
       logger,
@@ -245,7 +253,7 @@ describe("postScan failure logging", () => {
     const result = await postScan(
       "https://scan.test",
       1500,
-      snapshot(),
+      plan(),
       null,
       { enabled: false },
       logger,
@@ -338,9 +346,9 @@ describe("translateScanResponse — review mapping", () => {
     const result = translateScanResponse(
       scan,
       ctx({
-        snapshot: snapshot({
+        plan: plan({
           intent: "[cron:abc] Daily Brief",
-          intent_kind: "cron",
+          intentKind: "cron",
         }),
       }),
     );
@@ -413,10 +421,10 @@ describe("translateScanResponse — resolution feedback", () => {
     assert.equal(calls[0].body.resolution, "deny");
   });
 
-  it("sanitizes feedback snapshot when sanitization is enabled", async () => {
+  it("sanitizes feedback plan when sanitization is enabled", async () => {
     const { calls } = captureFeedback();
     const scan: ScanResponse = { block: false, decision: "review" };
-    const snap = snapshot({
+    const snap = plan({
       pending: {
         tool: "exec",
         args: { command: "echo hi", api_key: "super-secret" },
@@ -425,14 +433,17 @@ describe("translateScanResponse — resolution feedback", () => {
     const result = translateScanResponse(
       scan,
       ctx({
-        snapshot: snap,
+        plan: snap,
         feedbackMode: "submit",
         sanitization: { enabled: true },
       }),
     );
     await result!.requireApproval!.onResolution!("deny");
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].body.snapshot.pending.args.api_key, "[REDACTED]");
+    const pendingStep = (calls[0].body.plan as PlanIR).steps.find(
+      (s) => (s.args as { api_key?: string }).api_key !== undefined,
+    );
+    assert.equal((pendingStep?.args as { api_key: string }).api_key, "[REDACTED]");
     assert.ok(!JSON.stringify(calls[0].body).includes("super-secret"));
   });
 });
@@ -451,7 +462,7 @@ describe("translateScanResponse — local allowlist", () => {
     allowlistDirs.push(dir);
     const path = join(dir, "sentrook-allowlist.json");
     const allowlist = { enabled: true, path, scriptBind: true };
-    const snap = snapshot({
+    const snap = plan({
       pending: { tool: "exec", args: { command } },
     });
     const log = { matched_rules: [{ id: "AIRA-010" }] };
@@ -465,7 +476,7 @@ describe("translateScanResponse — local allowlist", () => {
     const result = translateScanResponse(
       { block: false, decision: "review", log },
       ctx({
-        snapshot: snap,
+        plan: snap,
         allowlist,
         logger: { ...noopLogger, warn: (m) => warns.push(m) },
       }),
@@ -481,7 +492,7 @@ describe("translateScanResponse — local allowlist", () => {
     recordAllowAlways(snap, log, allowlist);
     const result = translateScanResponse(
       { block: true, decision: "block", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     assert.equal(result?.block, true);
   });
@@ -501,7 +512,7 @@ describe("translateScanResponse — local allowlist", () => {
     );
     const result = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     assert.ok(result?.requireApproval);
     await result!.requireApproval!.onResolution!("allow-always");
@@ -510,7 +521,7 @@ describe("translateScanResponse — local allowlist", () => {
 
     const again = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     assert.equal(again, undefined);
     assert.ok(dir);
@@ -529,7 +540,7 @@ describe("translateScanResponse — local allowlist", () => {
     const { dir, allowlist, log } = allowlistCtx("placeholder");
     const scriptPath = join(dir, "helper.py");
     writeFileSync(scriptPath, "print(1)\n", "utf8");
-    const snap = snapshot({
+    const snap = plan({
       pending: {
         tool: "exec",
         args: { command: `python3 ${scriptPath} --date 2026-07-17` },
@@ -537,7 +548,7 @@ describe("translateScanResponse — local allowlist", () => {
     });
     const result = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     await result!.requireApproval!.onResolution!("allow-always");
     assert.equal(calls.length, 1);
@@ -549,7 +560,7 @@ describe("translateScanResponse — local allowlist", () => {
         log,
       },
       ctx({
-        snapshot: snapshot({
+        plan: plan({
           pending: {
             tool: "exec",
             args: { command: `python3 ${scriptPath} --date 2026-07-20` },
@@ -574,7 +585,7 @@ describe("translateScanResponse — local allowlist", () => {
     const { allowlist, snap, log } = allowlistCtx("rg -n once src/");
     const result = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist, feedbackMode: "submit" }),
+      ctx({ plan: snap, allowlist, feedbackMode: "submit" }),
     );
     await result!.requireApproval!.onResolution!("allow-once");
     assert.equal(calls.length, 1);
@@ -582,7 +593,7 @@ describe("translateScanResponse — local allowlist", () => {
 
     const again = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     assert.ok(again?.requireApproval);
   });
@@ -600,14 +611,14 @@ describe("translateScanResponse — local allowlist", () => {
     const { allowlist, snap, log } = allowlistCtx("python3 -c 'print(1)'");
     const result = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     await result!.requireApproval!.onResolution!("allow-always");
     assert.equal(calls.length, 1);
 
     const again = translateScanResponse(
       { block: false, decision: "review", log },
-      ctx({ snapshot: snap, allowlist }),
+      ctx({ plan: snap, allowlist }),
     );
     assert.ok(again?.requireApproval);
   });
@@ -626,7 +637,7 @@ describe("translateScanResponse — local allowlist", () => {
     const result = translateScanResponse(
       { block: false, decision: "review", log },
       ctx({
-        snapshot: snap,
+        plan: snap,
         allowlist: { ...allowlist, enabled: false },
       }),
     );
@@ -639,7 +650,7 @@ describe("translateScanResponse — local allowlist", () => {
     const { dir, allowlist, log } = allowlistCtx("placeholder");
     const scriptPath = join(dir, "helper.py");
     writeFileSync(scriptPath, "print(1)\n", "utf8");
-    const snap = snapshot({
+    const snap = plan({
       pending: {
         tool: "exec",
         args: { command: `python3 ${scriptPath} --url https://safe.example` },
@@ -650,7 +661,7 @@ describe("translateScanResponse — local allowlist", () => {
     const miss = translateScanResponse(
       { block: false, decision: "review", log },
       ctx({
-        snapshot: snapshot({
+        plan: plan({
           pending: {
             tool: "exec",
             args: { command: `python3 ${scriptPath} --url https://evil.example` },

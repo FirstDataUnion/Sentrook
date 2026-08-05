@@ -1,24 +1,42 @@
 {
   "input": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
     "intent": "List files in /tmp",
-    "executed": [],
-    "pending": {
-      "tool": "exec",
-      "args": { "command": "ls /tmp" }
+    "intent_kind": null,
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ls /tmp"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   },
   "expected": {
-    "schema": "sentrook.shadow.snapshot/v1",
-    "adapter": "openclaw",
+    "version": "1.0",
     "run_id": "sess-1:run_1",
     "intent": "List files in /tmp",
-    "executed": [],
-    "pending": {
-      "tool": "exec",
-      "args": { "command": "ls /tmp" }
+    "intent_kind": null,
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ls /tmp"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "hook": "before_tool_call"
     }
   }
 }

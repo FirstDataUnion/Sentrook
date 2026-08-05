@@ -1,7 +1,7 @@
 """Plugin-reported scan latency log (JSON Lines).
 
 Records end-to-end plugin round-trip time alongside engine timing from the scan
-response. Join to ``shadow.log.jsonl`` on ``tool_call_id`` when needed.
+response. Join to ``scan.log.jsonl`` on ``tool_call_id`` when needed.
 """
 
 from __future__ import annotations

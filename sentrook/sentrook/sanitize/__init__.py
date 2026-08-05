@@ -1,4 +1,4 @@
-"""Trajectory snapshot sanitization (Options A, B, D, G)."""
+"""Trajectory PlanIR sanitization (Options A, B, D, G)."""
 
 from __future__ import annotations
 
@@ -10,37 +10,33 @@ from sentrook.sanitize.text import scrub_text
 
 if TYPE_CHECKING:
     from sentrook.sanitize.corpus import RedactionReport, SanitizeCorpusResult
-    from sentrook.sanitize.snapshot import SanitizeSnapshotResult
+    from sentrook.sanitize.planir import SanitizePlanIRResult
 
 __all__ = [
     "SanitizeRules",
-    "SanitizeSnapshotResult",
+    "SanitizePlanIRResult",
     "SanitizeCorpusResult",
     "RedactionReport",
     "hash_session_id",
     "load_rules",
-    "maybe_sanitize_snapshot",
+    "maybe_sanitize_planir",
     "policy_reject",
     "redact_args",
     "redact_value",
     "sanitize_corpus_example",
-    "sanitize_shadow_call",
-    "sanitize_shadow_result",
-    "sanitize_snapshot",
-    "sanitize_snapshot_dict",
+    "sanitize_planir",
+    "sanitize_planir_dict",
     "scrub_text",
 ]
 
 _LAZY_EXPORTS = {
-    "SanitizeSnapshotResult",
+    "SanitizePlanIRResult",
     "SanitizeCorpusResult",
     "RedactionReport",
     "hash_session_id",
-    "sanitize_shadow_call",
-    "sanitize_shadow_result",
-    "sanitize_snapshot",
-    "sanitize_snapshot_dict",
-    "maybe_sanitize_snapshot",
+    "sanitize_planir",
+    "sanitize_planir_dict",
+    "maybe_sanitize_planir",
     "policy_reject",
     "sanitize_corpus_example",
 }
@@ -61,12 +57,12 @@ def __getattr__(name: str):
         from sentrook.sanitize import corpus as corpus_mod
 
         return getattr(corpus_mod, name)
-    if name in _LAZY_EXPORTS - {"maybe_sanitize_snapshot"} - _CORPUS_EXPORTS:
-        from sentrook.sanitize import snapshot as snapshot_mod
+    if name in {"SanitizePlanIRResult", "hash_session_id", "sanitize_planir", "sanitize_planir_dict"}:
+        from sentrook.sanitize import planir as planir_mod
 
-        return getattr(snapshot_mod, name)
-    if name == "maybe_sanitize_snapshot":
-        from sentrook.sanitize.ingress import maybe_sanitize_snapshot
+        return getattr(planir_mod, name)
+    if name == "maybe_sanitize_planir":
+        from sentrook.sanitize.ingress import maybe_sanitize_planir
 
-        return maybe_sanitize_snapshot
+        return maybe_sanitize_planir
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

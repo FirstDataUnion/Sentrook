@@ -1,7 +1,7 @@
 """FIDU ID OIDC bearer-token verification for hosted Sentrook ``/scan``.
 
 Validates RS256 access tokens issued by the FIDU identity-service against its
-published JWKS. Additive to the static scan API key — see ``sentrook.shadow.auth``.
+published JWKS. Additive to the static scan API key — see ``sentrook.serve.auth``.
 
 Audience and scope are scan-specific (``sentrook`` / ``sentrook.scan``), separate
 from Rookery library scopes.
@@ -16,7 +16,7 @@ import jwt
 from jwt import PyJWKClient
 
 if TYPE_CHECKING:
-    from sentrook.shadow.config import ShadowConfig
+    from sentrook.serve.config import ServeConfig
 
 SCOPE_SCAN = "sentrook.scan"
 DEFAULT_OIDC_ISSUER = "https://identity.firstdataunion.org"
@@ -59,7 +59,7 @@ def looks_like_jwt(token: str) -> bool:
     return token.count(".") == 2
 
 
-def oidc_enabled(config: ShadowConfig) -> bool:
+def oidc_enabled(config: ServeConfig) -> bool:
     """Backward-compatible alias: JWTs can be verified with the configured issuer."""
     if config.scan_auth_mode == "apikey":
         return False
@@ -84,7 +84,7 @@ def caller_id_from_claims(claims: dict[str, Any]) -> str | None:
     return None
 
 
-def _jwks_url(config: ShadowConfig) -> str:
+def _jwks_url(config: ServeConfig) -> str:
     override = normalize_oidc_url(config.oidc_jwks_url)
     if override:
         return f"{override}/.well-known/jwks.json" if not override.endswith(".json") else override
@@ -94,7 +94,7 @@ def _jwks_url(config: ShadowConfig) -> str:
     return f"{issuer}/.well-known/jwks.json"
 
 
-def _jwks_client(config: ShadowConfig) -> PyJWKClient:
+def _jwks_client(config: ServeConfig) -> PyJWKClient:
     url = _jwks_url(config)
     client = _jwks_clients.get(url)
     if client is None:
@@ -107,7 +107,7 @@ def _jwks_client(config: ShadowConfig) -> PyJWKClient:
     return client
 
 
-def decode_oidc_token(config: ShadowConfig, token: str) -> dict[str, Any]:
+def decode_oidc_token(config: ServeConfig, token: str) -> dict[str, Any]:
     """Verify an RS256 bearer token's signature, issuer, audience, and expiry."""
     issuer = normalize_oidc_url(config.oidc_issuer)
     if not issuer:
@@ -138,7 +138,7 @@ def require_scan_scope(claims: dict[str, Any]) -> None:
         raise InsufficientScopeError(SCOPE_SCAN)
 
 
-def validate_oidc_configuration(config: ShadowConfig) -> None:
+def validate_oidc_configuration(config: ServeConfig) -> None:
     """Fail fast when OIDC is enabled but the issuer JWKS cannot be reached."""
     if not oidc_enabled(config):
         return

@@ -54,17 +54,17 @@ describe("buildPluginEntryConfig", () => {
     assert.deepEqual(cfg.feedback, { mode: "off" });
   });
 
-  it("also omits legacy apiKey from config", () => {
+  it("also omits apiKey from config", () => {
     const cfg = buildPluginEntryConfig({
       url: DEFAULT_SCAN_URL,
-      mode: "shadow",
+      mode: "observe",
       timeoutMs: 1500,
       sanitize: false,
       contributeCorpus: true,
       apiKey: "k",
     });
     assert.equal(cfg.apiKey, undefined);
-    assert.equal(cfg.mode, "shadow");
+    assert.equal(cfg.mode, "observe");
   });
 });
 
@@ -300,7 +300,7 @@ describe("withSpinner", () => {
 });
 
 describe("stripCredentialKeysFromPluginConfig", () => {
-  it("removes legacy SecretRef credential keys", () => {
+  it("removes stale SecretRef credential keys", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-strip-"));
     try {
       writeFileSync(

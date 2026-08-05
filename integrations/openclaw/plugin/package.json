@@ -1,6 +1,6 @@
 {
-  "name": "@firstdataunion/sentrook-shadow",
-  "version": "0.2.4",
+  "name": "@firstdataunion/sentrook-openclaw",
+  "version": "0.4.0",
   "description": "OpenClaw plugin: Sentrook trajectory scanner for hosted (or local) scan services.",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,6 +8,7 @@
   "files": [
     "dist/",
     "index.ts",
+    "planir.ts",
     "auth.ts",
     "sanitize.ts",
     "approvalPolicy.ts",
@@ -35,7 +36,7 @@
   "scripts": {
     "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --legal-comments=none",
     "prepack": "npm run build",
-    "test": "node --experimental-strip-types --test approvalPolicy.test.ts auth.test.ts sanitize.test.ts configure.test.ts verify.test.ts localAllowlist.test.ts allowlistCli.test.ts index.test.ts register.test.ts",
+    "test": "node --experimental-strip-types --test approvalPolicy.test.ts auth.test.ts sanitize.test.ts configure.test.ts verify.test.ts localAllowlist.test.ts allowlistCli.test.ts index.test.ts register.test.ts planir.test.ts",
     "pack:check": "npm run build && npm pack --dry-run"
   },
   "openclaw": {

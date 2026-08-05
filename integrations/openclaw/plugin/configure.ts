@@ -1,7 +1,7 @@
 /**
  * Configure helpers for `openclaw sentrook configure`.
  * Writes ~/.openclaw/.env (+ optional SENTROOK_DOTENV) and patches
- * plugins.entries.sentrook-shadow. Does not restart the gateway.
+ * plugins.entries.sentrook-openclaw. Does not restart the gateway.
  */
 
 import { spawn } from "node:child_process";
@@ -18,7 +18,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
-export const PLUGIN_ID = "sentrook-shadow";
+export const PLUGIN_ID = "sentrook-openclaw";
 
 export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
 export const DEFAULT_MODE = "enforce" as const;
@@ -32,7 +32,7 @@ export const CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID";
 export const CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET";
 export const API_KEY_VAR = "SENTROOK_SCAN_API_KEY";
 
-export type PluginMode = "shadow" | "enforce";
+export type PluginMode = "observe" | "enforce";
 export type FeedbackMode = "off" | "submit";
 
 export interface ConfigureAnswers {
@@ -47,7 +47,7 @@ export interface ConfigureAnswers {
   contributeCorpus: boolean;
   clientId?: string;
   clientSecret?: string;
-  /** Legacy soak-only */
+  /** Optional shared API key (soak / closed beta) */
   apiKey?: string;
 }
 
@@ -173,7 +173,7 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
       throw new Error("api key must be non-empty");
     }
   } else {
-    throw new Error("OIDC client_id + client_secret are required (or legacy --api-key)");
+    throw new Error("OIDC client_id + client_secret are required (or --api-key)");
   }
 
   const dotenv = dotenvPath(stateDir);
@@ -274,7 +274,7 @@ export async function applyConfigPatch(
   if (patch.status === 0) {
     await runOpenclaw(bin, ["config", "validate"]);
     await runOpenclaw(bin, ["plugins", "enable", PLUGIN_ID]);
-    // Config patch deep-merges; strip legacy SecretRef keys so missing env cannot
+    // Config patch deep-merges; strip stale SecretRef keys so missing env cannot
     // fail-close gateway startup on older installs.
     stripCredentialKeysFromPluginConfig(stateDir);
     return { method: "cli" };
@@ -448,8 +448,8 @@ export async function collectAnswersInteractive(
   let mode: PluginMode = seed.mode ?? DEFAULT_MODE;
   if (!seed.mode) {
     if (!(await io.confirm(`Use default mode (${DEFAULT_MODE})?`, true))) {
-      const raw = (await io.prompt("Mode (shadow|enforce)", DEFAULT_MODE)).trim();
-      mode = raw === "shadow" ? "shadow" : "enforce";
+      const raw = (await io.prompt("Mode (observe|enforce)", DEFAULT_MODE)).trim();
+      mode = raw === "observe" ? "observe" : "enforce";
     }
   }
 
@@ -464,7 +464,7 @@ export async function collectAnswersInteractive(
 
   let sanitize = seed.sanitize ?? DEFAULT_SANITIZE;
   if (seed.sanitize === undefined) {
-    sanitize = await io.confirm("Enable snapshot sanitization?", true);
+    sanitize = await io.confirm("Enable PlanIR sanitization?", true);
   }
 
   let contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
@@ -501,7 +501,7 @@ export async function collectAnswersInteractive(
 
 export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): ConfigureAnswers {
   const url = seed.url?.trim() || DEFAULT_SCAN_URL;
-  const mode: PluginMode = seed.mode === "shadow" ? "shadow" : DEFAULT_MODE;
+  const mode: PluginMode = seed.mode === "observe" ? "observe" : DEFAULT_MODE;
   const timeoutMs =
     typeof seed.timeoutMs === "number" && seed.timeoutMs > 0
       ? seed.timeoutMs
@@ -514,7 +514,7 @@ export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): C
   if (!apiKey && (!clientId || !clientSecret)) {
     throw new Error(
       "non-interactive configure requires --client-id and --client-secret " +
-        `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR}); legacy --api-key also accepted`,
+        `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR}); --api-key also accepted`,
     );
   }
   return { url, mode, timeoutMs, sanitize, contributeCorpus, clientId, clientSecret, apiKey };

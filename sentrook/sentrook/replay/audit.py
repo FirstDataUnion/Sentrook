@@ -1,4 +1,4 @@
-"""Batch shadow scan of replayed OpenClaw session snapshots."""
+"""Batch scan of replayed OpenClaw session snapshots."""
 
 from __future__ import annotations
 
@@ -64,9 +64,9 @@ class ExecSummary(BaseModel):
 
 
 class SessionAuditReport(BaseModel):
-    """Aggregate shadow-scan results for an OpenClaw session replay."""
+    """Aggregate scan results for an OpenClaw session replay."""
 
-    mode: Literal["shadow"] = "shadow"
+    mode: Literal["observe"] = "observe"
     session_path: str
     session_id: str | None = None
     agent_id: str | None = None
@@ -95,7 +95,7 @@ def audit_openclaw_session(
     max_snapshots: int | None = None,
     l3_scorer: BiEncoderScorer | None = None,
 ) -> SessionAuditReport:
-    """Replay an OpenClaw session and shadow-scan every ``before_tool_call`` snapshot."""
+    """Replay an OpenClaw session and scan every ``before_tool_call`` snapshot."""
     session_path = session_path.expanduser().resolve()
     rules_path = rules_path.expanduser().resolve()
     rules = load_rules(rules_path)
@@ -314,9 +314,9 @@ def _scanner_summary(
 
 
 def format_session_audit_text(report: SessionAuditReport) -> str:
-    """Operator-readable shadow audit summary."""
+    """Operator-readable session audit summary."""
     lines: list[str] = [
-        "=== Sentrook Session Audit (shadow) ===",
+        "=== Sentrook Session Audit (observe) ===",
         f"Session: {report.session_id or '(unknown)'}",
         f"Path: {report.session_path}",
         f"Snapshots scanned: {report.total_snapshots}",

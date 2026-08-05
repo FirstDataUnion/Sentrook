@@ -1,5 +1,5 @@
 {
-  "version": "0.1",
+  "version": "1.0",
   "run_id": "fixture:safe_read",
   "intent": "Read a local file",
   "steps": [

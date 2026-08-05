@@ -51,7 +51,7 @@ class SequenceWithGapCondition(BaseModel):
     type: Literal["sequence_with_gap"] = "sequence_with_gap"
     steps: list[SequenceSlot]
     # Max plan steps strictly between consecutive matched slots (inclusive pair window).
-    # When unset, any gap is allowed (legacy sticky behaviour).
+    # When unset, any gap is allowed (sticky behaviour when max_gap omitted).
     max_gap: int | None = None
 
 

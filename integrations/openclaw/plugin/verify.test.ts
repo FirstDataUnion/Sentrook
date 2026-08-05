@@ -124,13 +124,13 @@ describe("runVerify", () => {
     }
   });
 
-  it("accepts legacy SENTROOK_SCAN_API_KEY from dotenv alone for HTTPS", async () => {
+  it("accepts SENTROOK_SCAN_API_KEY from dotenv alone for HTTPS", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
     const prevKey = process.env.SENTROOK_SCAN_API_KEY;
     try {
       delete process.env.SENTROOK_SCAN_API_KEY;
       writePluginConfig(dir);
-      writeFileSync(path.join(dir, ".env"), "SENTROOK_SCAN_API_KEY=legacy-key\n", {
+      writeFileSync(path.join(dir, ".env"), "SENTROOK_SCAN_API_KEY=shared-key\n", {
         mode: 0o600,
       });
       const result = await runVerify({
@@ -140,7 +140,7 @@ describe("runVerify", () => {
       });
       const creds = result.checks.find((c) => c.name === "scan credentials");
       assert.equal(creds?.ok, true);
-      assert.match(creds?.detail || "", /legacy/i);
+      assert.match(creds?.detail || "", /shared API key/i);
     } finally {
       if (prevKey === undefined) delete process.env.SENTROOK_SCAN_API_KEY;
       else process.env.SENTROOK_SCAN_API_KEY = prevKey;
@@ -215,7 +215,7 @@ describe("runVerify — OIDC issuer alignment", () => {
     }
   });
 
-  it("passes informatively when /health omits oidc_issuer (legacy deploy)", async () => {
+  it("passes informatively when /health omits oidc_issuer (older deploy)", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
     try {
       writePluginConfig(dir);

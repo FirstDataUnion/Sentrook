@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scan auth helpers — SecretRef backing store in ~/.openclaw/.env
-# Prefer OIDC client credentials (SENTROOK_SCAN_CLIENT_*); legacy API key still supported.
+# Prefer OIDC client credentials (SENTROOK_SCAN_CLIENT_*); shared API key still supported.
 set -euo pipefail
 
 SENTROOK_SCAN_API_KEY_VAR="${SENTROOK_SCAN_API_KEY_VAR:-SENTROOK_SCAN_API_KEY}"

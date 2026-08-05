@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Legacy: write shared Sentrook scan API key to ~/.openclaw/.env.
+# Write shared Sentrook scan API key to ~/.openclaw/.env.
 #
 # Prefer sentrook-scan-oidc.sh (per-user OIDC). Kept for closed-beta / soak hosts only.
 #
@@ -19,7 +19,7 @@ for arg in "$@"; do
   case "${arg}" in
     -h|--help)
       echo "Usage: $(basename "$0")"
-      echo "  Legacy shared-key path. Prefer ./sentrook-scan-oidc.sh."
+      echo "  Shared API key path. Prefer ./sentrook-scan-oidc.sh."
       echo "  Writes SENTROOK_SCAN_API_KEY to ${OPENCLAW_STATE_DIR}/.env (chmod 600)."
       exit 0
       ;;
@@ -44,7 +44,7 @@ prompt_secret() {
 }
 
 if [[ -z "${SENTROOK_SCAN_API_KEY:-}" ]]; then
-  echo "warning: shared API key is legacy — prefer sentrook-scan-oidc.sh" >&2
+  echo "warning: shared API key is optional — prefer sentrook-scan-oidc.sh" >&2
   SENTROOK_SCAN_API_KEY="$(prompt_secret "Sentrook scan API key")"
 fi
 if [[ -z "${SENTROOK_SCAN_API_KEY}" ]]; then

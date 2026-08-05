@@ -56,7 +56,7 @@ SCOPE_LABELS: dict[str, str] = {
     "profile": "basic profile",
 }
 
-# Fallback paths when discovery is unavailable (legacy FIDU identity-service layout).
+# Fallback paths when discovery is unavailable (previous FIDU identity-service layout).
 _FALLBACK_DEVICE_PATH = "/oauth/device/code"
 _FALLBACK_TOKEN_PATH = "/oauth/token"
 
