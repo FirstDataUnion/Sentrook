@@ -9,26 +9,43 @@ uv pip install -e .
 uv pip install -e ./testnest
 ```
 
+## Smoke (committed in this repo)
+
+This checkout ships only the **smoke** suite plus DEMO rules/corpus:
+
 ```bash
-testnest run --suite core --profile v0
-testnest run --suite negative --profile v0
-testnest run --suite edge --profile v0
-testnest run --suite ambiguous --profile l3_primary   # exercises Layer 3
-testnest list
+make smoke
+# or:
+testnest run --suite smoke --profile v0 \
+  --rules examples/rules --corpus examples/corpus
+testnest list --scenarios testnest/fixtures/scenarios
 ```
 
-Scenarios live in `testnest/fixtures/scenarios/`. Shared PlanIR fixtures and YAIRA rules remain at the repo root (`fixtures/plans/`, `rules/`).
+Scenarios: `testnest/fixtures/scenarios/`. Smoke PlanIR inputs: `fixtures/plans/` (and duplicates under `testnest/fixtures/plans/`).
+
+## Full policy suites (Rookery SoT)
+
+Production YAIRA rules, corpus, and suites (`core`, `negative`, `edge`, `ambiguous`, `asi`, `ast`, …) live in **Rookery**. From Sentrook:
+
+```bash
+# B — sync a gitignored mirror, then run
+make sync-library
+make testnest-core    # or: make testnest-all
+
+# C — point at a sibling Rookery without copying
+testnest run --suite core --profile v0 \
+  --scenarios ../FIDU-Rookery/eval/scenarios \
+  --rules ../FIDU-Rookery/rules \
+  --corpus ../FIDU-Rookery/corpus
+```
+
+Pinning, release gates, and CI shape: sibling **[Rookery TESTING.md](../../FIDU-Rookery/TESTING.md)** ([FirstDataUnion/Rookery](https://github.com/FirstDataUnion/Rookery)).
 
 ## Profiles
 
-`fixtures/scenarios/profiles.yaml` maps a profile name to the `ScannerConfig` the runner
-scans with, and each scenario declares its expectations per profile:
+`profiles.yaml` (in the scenarios dir you pass) maps a profile name to the `ScannerConfig` the runner uses; each scenario declares expectations per profile:
 
-- `v0` — default full stack (L1+L2+L3 tie-breaker).
-- `l3_primary` — same scanner as `v0`; scenarios add L3-specific assertions such as
-  `l3_required: true`.
+- `v0` — default full stack (L1+L2+L3 tie-breaker), or L2-only when the profile sets `l3_policy: "off"` (smoke does).
+- `l3_primary` — same scanner as `v0` with L3-focused assertions such as `l3_required: true` (Rookery suites).
 
-The runner loads the corpus (repo `corpus/` by default, override with `--corpus`) and
-builds the bi-encoder. Pass `--l3-policy off` on `sentrook scan` or define a profile with
-`l3_policy: "off"` to run L2-only. A scenario can assert `l3_required: true` to require that L3 actually ran (`L3` in `layer_exits`).
-Every report header (and JSON report) echoes the resolved scanner config and corpus path.
+The runner loads the corpus (override with `--corpus`) and builds the bi-encoder when L3 is on. A scenario can assert `l3_required: true` to require that L3 actually ran (`L3` in `layer_exits`). Every report header (and JSON report) echoes the resolved scanner config and corpus path.

@@ -14,6 +14,14 @@ dist/
 
 tmp/
 openclaw_example/
+.cache/rookery/
+
+# Local mirror of Rookery SoT (rules/corpus/eval). Sync with: make sync-library
+# Never commit these — production library stays in FirstDataUnion/Rookery.
+/rules/
+/corpus/
+/eval/
+
 sentrook/deploy/.env
 integrations/openclaw/plugin/*.tgz
 integrations/openclaw/plugin/.npmrc
