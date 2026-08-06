@@ -95,7 +95,7 @@ jobs:
           queries: security-extended
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3.37.6
+        uses: github/codeql-action/autobuild@d1ba80a13dd99fba24a470575428917156a28b43 # v4.37.5
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3.37.6
