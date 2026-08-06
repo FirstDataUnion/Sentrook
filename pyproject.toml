@@ -5,7 +5,7 @@ description = "Agent execution trajectory scanner (FIDU Sentrook)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 authors = [
     { name = "FirstDataUnion" },
 ]

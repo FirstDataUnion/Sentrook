@@ -66,7 +66,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) b
 
 - [x] GitHub Actions: `make lint`, unit, plugin, smoke TestNest (`.github/workflows/ci.yml`)
 - [x] Full TestNest eval gate hosted in Rookery (Sentrook `notify-rookery` → `repository_dispatch`; stubbed if `ROOKERY_DISPATCH_TOKEN` unset)
-- [ ] Dependabot, image scan, Changesets for the plugin (Phase 2–3)
+- [x] Phase 2 security: Dependabot, Gitleaks, actionlint, Trivy fs, Semgrep, CodeQL (`.github/workflows/security.yml`); `uv.lock` committed
+- [ ] Changesets for the plugin; GHCR image publish (Phase 3)
 - [ ] Flip repo public only after a secret/library scrub pass (history is already clean)
 
 Cross-repo pin/sync/CI details: sibling Rookery `TESTING.md`.
