@@ -62,12 +62,14 @@ sentrook library status --url http://127.0.0.1:8080              # local Rookery
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) before reporting vulnerabilities, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
-## Phase 1 readiness (not in this repo yet)
+## Phase 1 readiness
 
-- GitHub Actions: `make lint`, unit, plugin, smoke TestNest (ruff is wired locally via `make lint` / `make lint-fix`; CI workflows still TBD)
-- Full TestNest eval gate hosted in Rookery (triggered by Sentrook commit dispatch)
-- Dependabot, image scan, Changesets for the plugin
-- Flip repo public only after a secret/library scrub pass (history is already clean)
+- [x] GitHub Actions: `make lint`, unit, plugin, smoke TestNest (`.github/workflows/ci.yml`)
+- [x] Full TestNest eval gate hosted in Rookery (Sentrook `notify-rookery` → `repository_dispatch`; stubbed if `ROOKERY_DISPATCH_TOKEN` unset)
+- [ ] Dependabot, image scan, Changesets for the plugin (Phase 2–3)
+- [ ] Flip repo public only after a secret/library scrub pass (history is already clean)
+
+Cross-repo pin/sync/CI details: sibling Rookery `TESTING.md`.
 
 ## Related
 
