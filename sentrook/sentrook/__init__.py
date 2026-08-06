@@ -1,3 +1,3 @@
-"""Sentrook — local agent trajectory security scanner (prototype)."""
+"""Sentrook — agent trajectory security scanner."""
 
-__version__ = "0.2.13"
+__version__ = "1.0.0"

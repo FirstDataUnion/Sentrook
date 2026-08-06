@@ -2,7 +2,7 @@
 
 FIDU runtime scanner for agent execution trajectories (**PlanIR 1.0** / Ariadne thread).
 
-**License:** [MIT](LICENSE) · **Version:** Sentrook `0.2.13`. The OpenClaw plugin uses its own SemVer (`@firstdataunion/sentrook-openclaw`).
+**License:** [MIT](LICENSE) · **Version:** Sentrook `1.0.0`. The OpenClaw plugin uses its own SemVer (`@firstdataunion/sentrook-openclaw@1.0.0`).
 
 Production YAIRA rules and corpus are not publically available at this time. This repo ships the engine, TestNest harness, plugins, and a tiny `examples/` demo library for format docs and smoke tests only.
 
@@ -23,7 +23,7 @@ make smoke
 
 | Path | Purpose |
 |------|---------|
-| `sentrook/` | Scanner package (`planir`, `serve`, layers), unit tests, hosted-scan deploy |
+| `sentrook/` | Scanner package (`planir`, `serve`, layers), unit tests; `deploy/` scripts (FIDU ops runbook in Notion) |
 | `testnest/` | Scenario harness (engine-smoke suites only in this repo) |
 | `examples/rules`, `examples/corpus` | Synthetic DEMO-* format examples — not the regression net |
 | `fixtures/plans` | Minimal PlanIR 1.0 smoke inputs |
@@ -32,13 +32,20 @@ make smoke
 
 ## Test paths
 
+Policy-bound L1/L2/`scan_plan` pytest and full TestNest suites live in **Rookery**
+(against production `rules/` / `corpus/` / `eval/`). This repo keeps library-free
+unit tests + DEMO smoke so a clean checkout stays public-ready. Full strategy:
+sibling [Rookery `TESTING.md`](../FIDU-Rookery/TESTING.md).
+
 | Path | What | Command |
 |------|------|---------|
 | **A — committed** | Unit + TestNest harness unit + OpenClaw plugin | `make test` · `make plugin-test` |
 | **A — smoke** | DEMO scenarios only (no production library) | `make smoke` |
-| **B — full (mirror)** | Karazhan-parity TestNest against synced Rookery | `make sync-library` then `make testnest-core` (or `testnest-all`) |
-| **C — sibling** | Same suites without copying | `testnest run --suite core --profile v0 --scenarios ../FIDU-Rookery/eval/scenarios --rules ../FIDU-Rookery/rules --corpus ../FIDU-Rookery/corpus` |
-| **D — CI RC gate** | Full eval against a Sentrook SHA | Runs in **Rookery** (Sentrook may `repository_dispatch` the SHA) |
+| **B — TestNest (mirror)** | Full-policy TestNest against synced Rookery SoT | `make sync-library` then `make testnest-core` (or `testnest-all`) |
+| **C — TestNest (sibling)** | Same suites without copying | `testnest run --suite core --profile v0 --scenarios ../FIDU-Rookery/eval/scenarios --rules ../FIDU-Rookery/rules --corpus ../FIDU-Rookery/corpus` |
+| **D — engine pytest** | L1/L2/`scan_plan` + replay (Rookery `tests/engine`) | `make test-engine` (delegates to sibling Rookery; use editable Sentrook pin there while iterating) |
+| **D — sanitize gate** | Plugin TS ↔ server Python scrub + decision parity | `make sanitize-gate` (delegates to Rookery parity/replay tests; subset of engine suite) |
+| **E — CI RC gate** | Full eval against a Sentrook SHA | Runs in **Rookery** (Sentrook may `repository_dispatch` the SHA) |
 
 ## Library sync (hosted Rookery)
 
@@ -63,7 +70,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) b
 ## Related
 
 - Private library + eval: [FirstDataUnion/Rookery](https://github.com/FirstDataUnion/Rookery) — see `TESTING.md`
-- Prior monorepo archive: `FirstDataUnion/Medivh` (left in place)
+- FIDU internal testing + deploy runbook: Notion **Sentrook + Rookery** (Documentation/RunBooks)
 
 ## License
 

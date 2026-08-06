@@ -109,19 +109,18 @@ _PIPE_TO_SHELL_RE = re.compile(
 _GREP_SECRET_HARVEST_RE = re.compile(
     r"(?i)\bgrep\b[^\n]*(?:token|api[_-]?key|secret|pass(?:word|wd)?|credential)"
 )
-# Fido/Clawtana soak: Google Workspace CLI dominates benign exec reviews.
+# Google Workspace CLI (``gog …``) is a common benign exec-review shape.
 _GOG_SERVICE_RE = re.compile(
     r"(?i)\bgog\s+(?P<svc>gmail|docs?|sheets?|calendar|drive|slides|tasks)"
     r"(?:\s+(?P<sub>[A-Za-z][\w-]*))?"
 )
-# MCP soak: openclaw CLI is the other huge benign/admin review cluster.
+# OpenClaw host CLI is the other large benign/admin review cluster.
 _OPENCLAW_CLI_RE = re.compile(
     r"(?i)\bopenclaw\s+(?P<area>message|config|gateway|doctor|agents|models|status|backup|skills)"
     r"(?:\s+(?P<sub>[\w.-]+))?"
 )
-_MEDIAWIKI_SCRIPT_RE = re.compile(
-    r"(?i)(?:mediawiki\.py|fletch_wiki\.py)\b"
-)
+# Local wiki skill scripts under agent skill dirs.
+_WIKI_SCRIPT_RE = re.compile(r"(?i)(?:mediawiki|wiki)\.py\b")
 _NTN_RE = re.compile(r"(?i)(?:^|[\s;|&])ntn\b")
 _NOTION_SCRIPT_RE = re.compile(r"(?i)notion\.js\b")
 _WHICH_CLI_RE = re.compile(r"(?i)(?:^|[\s;|&])which\b")
@@ -213,7 +212,7 @@ def _compress_operator_noise(text: str) -> str:
 
 
 def _gog_service_bits(text: str) -> tuple[str, str] | None:
-    """Return (service, subcommand) for ``gog …`` argv, or None."""
+    """Return (service, subcommand) for Google Workspace CLI argv (``gog …``), or None."""
     m = _GOG_SERVICE_RE.search(text)
     if not m:
         return None
@@ -232,28 +231,28 @@ def _estimate_gog_intent(text: str) -> str | None:
     if re.search(r"(?i)(?:^|\s)--help(?:\s|$)", text) or re.search(
         r"(?i)\bgog\s+\w+\s+help\b", text
     ):
-        return "check gog CLI help"
+        return "check Google Workspace CLI help"
     bits = _gog_service_bits(text)
     if not bits:
-        return "use Google Workspace via gog"
+        return "use Google Workspace CLI"
     svc, sub = bits
     if sub == "help":
-        return "check gog CLI help"
+        return "check Google Workspace CLI help"
     if svc == "gmail":
-        return "read Gmail via gog"
+        return "read Gmail via Google Workspace CLI"
     if svc == "docs":
-        return "read Google Docs via gog"
+        return "read Google Docs via Google Workspace CLI"
     if svc == "sheets":
-        return "read Google Sheets via gog"
+        return "read Google Sheets via Google Workspace CLI"
     if svc == "calendar":
-        return "read Google Calendar via gog"
-    return f"use Google Workspace via gog ({svc})"
+        return "read Google Calendar via Google Workspace CLI"
+    return f"use Google Workspace CLI ({svc})"
 
 
 def _format_gog_excerpt(command: str, limit: int) -> str:
-    """Compact gog argv: service + action + short id/account/out, not raw Drive ids."""
+    """Compact Workspace CLI argv: service + action + short id/account/out, not raw Drive ids."""
     collapsed = _collapse_ws(_scrub_secrets(command))
-    # Fido often prefixes with echo commentary before gog.
+    # Drop leading ``echo '…' &&`` commentary before the real CLI.
     collapsed = re.sub(r'(?i)^echo\s+(["\'])(?:\\.|[^\\])*?\1\s*&&\s*', "", collapsed)
     collapsed = _compress_operator_noise(collapsed)
     bits = _gog_service_bits(collapsed)
@@ -587,7 +586,7 @@ def _best_paths(spans: list[_Span], *, limit: int = 2) -> list[_Span]:
 
 
 def _is_openclaw_inspect(text: str, *, has_secret_path: bool) -> bool:
-    """``cd ~/.openclaw/… && grep/find`` (online Clawtana) counts as inspect."""
+    """``cd ~/.openclaw/… && grep/find`` without secret paths counts as inspect."""
     if has_secret_path or ".openclaw" not in text.lower():
         return False
     if re.search(r"(?i)\b(?:curl|wget)\b", text):
@@ -761,7 +760,7 @@ def estimate_likely_intent(
         return "download and run remote/untrusted code"
 
     if rid == "AIRA-055":
-        # Online Clawtana: ``LOGIN_TOKEN=$(curl mediawiki…)`` — embedded fetch, not pipe-to-shell.
+        # Embedded ``$(curl …)`` fetch is not the same as pipe-to-shell.
         if _EMBEDDED_CURL_RE.search(text) and not _PIPE_TO_SHELL_RE.search(text):
             if host:
                 return f"fetch from {host} via $(curl…)"
@@ -813,7 +812,7 @@ def estimate_likely_intent(
     if rid == "AIRA-065":
         return "act on content that may include injection markers"
 
-    # MCP: pkill/kill openclaw must not be labeled as credential probe (059).
+    # pkill/kill openclaw must not be labeled as credential probe (059).
     if _PKILL_OPENCLAW_RE.search(text) or (
         rid == "AIRA-059" and re.search(r"(?i)\b(?:pkill|killall)\b", text)
     ):
@@ -824,7 +823,7 @@ def estimate_likely_intent(
             return "read or copy the auth database"
         if has_auth_json or has_env or has_ssh or has_credentials_dir:
             return "read or probe credentials on this machine"
-        # Fido: ``env | grep search|brave`` matched 059 but is not credential-shaped.
+        # ``env | grep`` without credential-shaped needles is not a secret probe.
         if _ENV_PIPE_GREP_RE.search(text) and not _ENV_CRED_NEEDLE_RE.search(text):
             return "inspect environment variables"
         return "probe credentials on this machine"
@@ -864,8 +863,8 @@ def estimate_likely_intent(
     if _NOTION_SCRIPT_RE.search(text):
         return "use Notion skill script"
 
-    if _MEDIAWIKI_SCRIPT_RE.search(text):
-        return "use MediaWiki via skill script"
+    if _WIKI_SCRIPT_RE.search(text):
+        return "use wiki skill script"
 
     if _WHICH_CLI_RE.search(text):
         return "check whether a CLI tool is installed"

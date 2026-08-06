@@ -1,6 +1,7 @@
 """Prune Sentrook scan/latency JSONL logs by record ``ts`` (UTC).
 
-Hosted entrypoint: ``sentrook/deploy/retain-logs.sh`` (``python -m sentrook.ops.retain_logs``).
+Hosted entrypoint (FIDU): Rookery ``deploy/sentrook-scan/retain-logs.sh``
+(``python -m sentrook.ops.retain_logs``).
 Lines without a parseable ``ts`` are kept (conservative). Concurrent appenders
 open/close the file per write, so an atomic replace is safe between writes.
 """

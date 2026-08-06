@@ -26,7 +26,7 @@ Review feedback `POST /feedback` sends `{ plan, resolution, log, provenance }`.
 
 ```bash
 # 1. Install plugin (pinned)
-openclaw plugins install npm:@firstdataunion/sentrook-openclaw@0.2.4 --pin --force
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.0 --pin --force
 
 # 2. Configure (wizard in the package — OIDC + defaults)
 openclaw sentrook configure
@@ -42,7 +42,7 @@ prompts work:
 ```bash
 cd ~/openclaw
 docker compose exec openclaw-gateway \
-  openclaw plugins install npm:@firstdataunion/sentrook-openclaw@0.2.4 --pin --force
+  openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.0 --pin --force
 docker compose exec openclaw-gateway openclaw sentrook configure
 
 # Restart is enough: OpenClaw reloads ~/.openclaw/.env on process start.
@@ -64,7 +64,7 @@ One-time `~/.npmrc` (see [`.npmrc.example`](.npmrc.example)):
 Token needs `read:packages` (and org SSO authorize if applicable).
 `NODE_AUTH_TOKEN=$(gh auth token)` also works if `gh` is logged into the org.
 
-**Updates:** `openclaw plugins update npm:@firstdataunion/sentrook-openclaw@0.2.4 --force`
+**Updates:** `openclaw plugins update npm:@firstdataunion/sentrook-openclaw@1.0.0 --force`
 then recreate/restart the gateway. Pinned installs stay on the exact version until you
 opt in.
 
@@ -140,11 +140,11 @@ Missing credentials → plugin warns and soft-fails scans; gateway stays up.
 Trade-off: `openclaw secrets audit` will not track these as SecretRef migrations.
 Intentional until optional SecretRefs exist without aborting startup.
 
-**How others do it:** gog uses an encrypted file keyring (`GOG_HOME`) plus a
-process env unlock password (often systemd/`~/.openclaw/.env`) — different shape,
-same idea: durable state under the OpenClaw home, not compose `env_file`. Notion
-and similar integrations that live only in compose `.env` hit the recreate
-requirement; we deliberately avoid that for Sentrook.
+**How others do it:** Some CLIs keep an encrypted file keyring under the tool
+home plus a process env unlock password (often systemd / `~/.openclaw/.env`) —
+different shape, same idea: durable state under the agent home, not compose
+`env_file`. Notion and similar integrations that live only in compose `.env`
+hit the recreate requirement; we deliberately avoid that for Sentrook.
 
 ### Manual (optional)
 
@@ -295,5 +295,6 @@ Scans run only on **tool calls**. Chat-only turns produce no scan lines.
 
 Plugin egress scrubbing defaults **on** (`sanitization.enabled: true` /
 `SENTROOK_SANITIZE_PLANIR=1`). Server
-ingress uses `SENTROOK_SERVER_SANITIZE_PLANIR` (default on). See hosted deploy docs under
-`sentrook/deploy/README.md`.
+ingress uses `SENTROOK_SERVER_SANITIZE_PLANIR` (default on). FIDU hosted
+deploy docs live in Rookery `deploy/sentrook-scan/` (see also
+`sentrook/deploy/README.md` pointer).

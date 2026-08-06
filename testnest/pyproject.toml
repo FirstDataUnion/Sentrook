@@ -1,7 +1,7 @@
 [project]
 name = "testnest"
 dynamic = ["version"]
-description = "Scenario test harness for Sentrook (FIDU prototype)"
+description = "Scenario test harness for Sentrook"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

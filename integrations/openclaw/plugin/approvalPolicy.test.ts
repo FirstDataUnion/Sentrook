@@ -54,7 +54,7 @@ describe("resolveApprovalTiming", () => {
     const timing = resolveApprovalTiming(
       policy,
       "subagent",
-      "[Subagent Task] run gog calendar",
+      "[Subagent Task] run calendar sync",
     );
     assert.equal(timing.unattended, true);
     assert.equal(timing.timeoutBehavior, "allow");

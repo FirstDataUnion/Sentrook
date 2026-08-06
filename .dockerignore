@@ -10,5 +10,6 @@ openclaw_example
 integrations/openclaw/plugin/node_modules
 # Build caches
 **/.fastembed_cache
-# Rookery runtime data (SQLite + bundles)
-rookery/data
+# Rookery runtime data (if a sibling tree is ever copied into the build context)
+**/rookery/data
+**/FIDU-Rookery/data

@@ -107,11 +107,13 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
         def _handle_scan(self) -> None:
             started = time.perf_counter()
             raw_payload, error_status = self._read_json_body()
-            if error_status is not None:
-                if raw_payload is None:
+            # None payload: either already responded (bad JSON / non-object) or
+            # length error (caller must write). Never assert — ThreadingHTTPServer
+            # would print a noisy traceback after a successful 400.
+            if raw_payload is None:
+                if error_status is not None:
                     self._write_json(error_status, {"error": "missing or oversized body"})
                 return
-            assert raw_payload is not None
 
             try:
                 plan = PlanIR.model_validate(raw_payload)
@@ -164,11 +166,10 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
 
         def _handle_latency(self) -> None:
             raw_payload, error_status = self._read_json_body()
-            if error_status is not None:
-                if raw_payload is None:
+            if raw_payload is None:
+                if error_status is not None:
                     self._write_json(error_status, {"error": "missing or oversized body"})
                 return
-            assert raw_payload is not None
 
             try:
                 report = LatencyReport.model_validate(raw_payload)
@@ -190,11 +191,10 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
 
         def _handle_feedback(self) -> None:
             raw_payload, error_status = self._read_json_body()
-            if error_status is not None:
-                if raw_payload is None:
+            if raw_payload is None:
+                if error_status is not None:
                     self._write_json(error_status, {"error": "missing or oversized body"})
                 return
-            assert raw_payload is not None
 
             try:
                 request = FeedbackRequest.model_validate(raw_payload)

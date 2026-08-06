@@ -22,7 +22,6 @@ openclaw_example/
 /corpus/
 /eval/
 
-sentrook/deploy/.env
 integrations/openclaw/plugin/*.tgz
 integrations/openclaw/plugin/.npmrc
 integrations/openclaw/plugin/dist/

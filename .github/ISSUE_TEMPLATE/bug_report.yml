@@ -35,7 +35,7 @@ body:
     attributes:
       label: Version
       description: Sentrook version (`sentrook --version`), plugin version, and/or git SHA.
-      placeholder: "0.2.13 / @firstdataunion/sentrook-openclaw@0.4.0 / abc1234"
+      placeholder: "1.0.0 / @firstdataunion/sentrook-openclaw@1.0.0 / abc1234"
   - type: textarea
     id: reproduce
     attributes:

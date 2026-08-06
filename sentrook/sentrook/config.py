@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class L3Policy(str, Enum):
-    """When Layer 3 semantic scoring runs (prototype tuning knob)."""
+    """When Layer 3 semantic scoring runs (config tuning knob)."""
 
     OFF = "off"
     TIE_BREAKER = "tie_breaker"

@@ -22,9 +22,13 @@ contributing to these it is not yet ready, but we'd still love to hear your thou
 1. Fork (or branch) from `main`.
 2. Make the change; keep public CI paths green: unit tests, smoke TestNest,
    plugin tests when you touch the plugin.
-3. Open a PR with:
+3. If you change scanner decisions (L1/L2/`scan_plan`, PlanIR, serve), also run
+   Rookery’s engine regression (`make test-engine` from this repo, or in
+   Rookery after an editable Sentrook pin — see Rookery `TESTING.md`). Do not
+   copy production rules or engine policy tests into this tree.
+4. Open a PR with:
    - **What** changed and **why**
-   - How you tested (`make test`, `make smoke`, …)
+   - How you tested (`make test`, `make smoke`, `make test-engine`, …)
    - Any follow-ups or known gaps
 
 Use the PR template when prompted. Link related issues.

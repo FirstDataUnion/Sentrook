@@ -1,7 +1,7 @@
 [project]
 name = "sentrook"
 dynamic = ["version"]
-description = "Local agent execution trajectory scanner (FIDU Sentrook prototype)"
+description = "Agent execution trajectory scanner (FIDU Sentrook)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

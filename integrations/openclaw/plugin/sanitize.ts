@@ -121,7 +121,7 @@ export function resolveSanitizationConfig(
   if (cfg && typeof cfg.enabled === "boolean") {
     return { enabled: cfg.enabled };
   }
-  // Default on after Phase 6 soak: scrub unless explicitly disabled.
+  // Default on: scrub unless explicitly disabled.
   return { enabled: true };
 }
 
