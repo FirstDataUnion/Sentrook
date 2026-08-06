@@ -121,9 +121,7 @@ class FastEmbedScorer:
         for entry, vec in zip(missing, self._embed([e.text for e in missing]), strict=True):
             entry.embedding = vec.tolist()
 
-    def similarities(
-        self, query_text: str, entries: list[CorpusEntry]
-    ) -> list[float]:
+    def similarities(self, query_text: str, entries: list[CorpusEntry]) -> list[float]:
         import numpy as np
 
         if not entries:

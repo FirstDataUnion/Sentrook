@@ -1,4 +1,3 @@
-from sentrook.replay.openclaw import replay_session, write_snapshots
 from sentrook.replay.audit import (
     audit_openclaw_session,
     build_exec_summary,
@@ -14,6 +13,7 @@ from sentrook.replay.baseline import (
     run_replay_baseline,
     write_baseline_file,
 )
+from sentrook.replay.openclaw import replay_session, write_snapshots
 
 __all__ = [
     "CANONICAL_REPLAY_SESSIONS",

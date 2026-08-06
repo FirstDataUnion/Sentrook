@@ -78,7 +78,5 @@ def load_rules(path: Path | None = None) -> SanitizeRules:
         secret_value_patterns=_compile_patterns(secret_items, flags=re.IGNORECASE),
         pii_patterns=_compile_patterns(pii_items),
         pii_arg_keys=frozenset(str(k) for k in (raw.get("pii_arg_keys") or [])),
-        allowed_result_keys=frozenset(
-            str(k) for k in (raw.get("allowed_result_keys") or [])
-        ),
+        allowed_result_keys=frozenset(str(k) for k in (raw.get("allowed_result_keys") or [])),
     )

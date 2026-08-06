@@ -154,9 +154,7 @@ def classify_deltas(
     other_chg: list[str] = []
     for name in sorted(baseline):
         a, b = baseline[name], other[name]
-        if a["outcome"] == b["outcome"] and a.get("scan_summary") == b.get(
-            "scan_summary"
-        ):
+        if a["outcome"] == b["outcome"] and a.get("scan_summary") == b.get("scan_summary"):
             continue
         a_sum = a.get("scan_summary") or ""
         b_sum = b.get("scan_summary") or ""
@@ -165,9 +163,7 @@ def classify_deltas(
         elif "Allowed after L3" in b_sum and "Allowed after L3" not in a_sum:
             gained_allow.append(name)
         else:
-            other_chg.append(
-                f"{name}: {a['outcome']}/{a_sum} → {b['outcome']}/{b_sum}"
-            )
+            other_chg.append(f"{name}: {a['outcome']}/{a_sum} → {b['outcome']}/{b_sum}")
     return lost_allow, gained_allow, other_chg
 
 
@@ -214,15 +210,11 @@ def main() -> None:
     if "hybrid" in wanted:
         hybrid_dir = work / "corpus-hybrid"
         n_orig, n_clone = build_hybrid_corpus(CORPUS_SRC, hybrid_dir)
-        print(
-            f"hybrid: {n_orig} authored + {n_clone} derived clones → {hybrid_dir}"
-        )
+        print(f"hybrid: {n_orig} authored + {n_clone} derived clones → {hybrid_dir}")
         dirs["hybrid"] = hybrid_dir
 
     if "derived" in dirs:
-        sample = yaml.safe_load(
-            (dirs["derived"] / "AIRA-058.yaml").read_text(encoding="utf-8")
-        )
+        sample = yaml.safe_load((dirs["derived"] / "AIRA-058.yaml").read_text(encoding="utf-8"))
         print("sample derived intents (AIRA-058):")
         for ex in sample["examples"][:3]:
             print(f"  {ex['id']}: {ex['intent']}")

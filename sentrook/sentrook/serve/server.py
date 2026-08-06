@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pydantic import ValidationError
 
 from sentrook import __version__
+from sentrook.planir import PlanIR
 from sentrook.serve.auth import scan_auth_health_label, verify_scan_auth
 from sentrook.serve.config import ServeConfig
 from sentrook.serve.feedback import FeedbackRequest, process_feedback
@@ -23,7 +24,6 @@ from sentrook.serve.latency import LatencyReport, append_latency_log, build_late
 from sentrook.serve.oidc import OIDCError, oidc_enabled, validate_oidc_configuration
 from sentrook.serve.response import build_scan_response
 from sentrook.serve.runtime import ServeRuntime
-from sentrook.planir import PlanIR
 
 logger = logging.getLogger("sentrook.serve")
 
@@ -67,9 +67,7 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 return True
             status = 403 if result.error == "insufficient_scope" else 401
             detail = (
-                "insufficient scope"
-                if result.error == "insufficient_scope"
-                else "unauthorized"
+                "insufficient scope" if result.error == "insufficient_scope" else "unauthorized"
             )
             self._write_json(status, {"error": detail})
             return False
@@ -127,9 +125,7 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 result = runtime.scanner.scan(plan)
                 request_ms = int((time.perf_counter() - started) * 1000)
                 result, record = runtime.log_scan(plan, result, request_ms=request_ms)
-                payload = build_scan_response(
-                    runtime.config, result, record, request_ms=request_ms
-                )
+                payload = build_scan_response(runtime.config, result, record, request_ms=request_ms)
             except Exception as exc:
                 logger.exception("scan request failed")
                 from sentrook.serve.log import build_log_record

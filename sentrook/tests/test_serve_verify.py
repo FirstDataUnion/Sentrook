@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
 from sentrook.serve.verify import (
@@ -13,9 +12,7 @@ from sentrook.serve.verify import (
 
 
 def test_verify_sidecar_health_ok():
-    assert verify_sidecar_health(
-        {"status": "ok", "rules_loaded": 22, "corpus_examples": 223}
-    ) == []
+    assert verify_sidecar_health({"status": "ok", "rules_loaded": 22, "corpus_examples": 223}) == []
 
 
 def test_verify_sidecar_health_errors():

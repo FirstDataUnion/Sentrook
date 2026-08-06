@@ -12,16 +12,14 @@ from pydantic import BaseModel, Field
 from sentrook import __version__
 from sentrook.corpus.models import CorpusExample, CorpusLabel, CorpusStep
 from sentrook.corpus.personal import append_personal_corpus_example
-from sentrook.redact import redact_args
 from sentrook.library.rookery_client import rookery_auth_headers
+from sentrook.planir import PlanIR, PlanStep
+from sentrook.redact import redact_args
 from sentrook.sanitize.ingress import maybe_sanitize_planir
 from sentrook.sanitize.text import scrub_text
 from sentrook.serve.config import FeedbackConfig, ServeConfig
-from sentrook.planir import PlanIR, PlanStep
 
-FeedbackResolution = Literal[
-    "allow-once", "allow-always", "deny", "timeout", "cancelled"
-]
+FeedbackResolution = Literal["allow-once", "allow-always", "deny", "timeout", "cancelled"]
 
 
 class FeedbackRequest(BaseModel):
@@ -183,9 +181,7 @@ def pick_rule_id(
         return l3_kept[0]
 
     actionable = [
-        m
-        for m in matched
-        if m.get("action") in ("review", "block") and m["id"] not in l3_allow
+        m for m in matched if m.get("action") in ("review", "block") and m["id"] not in l3_allow
     ]
     if actionable:
         return _rank_causal_rule(actionable)
@@ -227,9 +223,7 @@ def pick_feedback_rule_ids(
     return ordered
 
 
-_SUMMARY_WINNING_RE = re.compile(
-    r"^(?:Review triggered|Blocked) by (?P<rule_id>[A-Za-z0-9_-]+)\b"
-)
+_SUMMARY_WINNING_RE = re.compile(r"^(?:Review triggered|Blocked) by (?P<rule_id>[A-Za-z0-9_-]+)\b")
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
@@ -570,7 +564,9 @@ def _process_allow_always(
             "personal_corpus_saved" if any_created else "personal_corpus_duplicate"
         )
         result["example_id"] = primary_example_id
-        result["path"] = personal_paths[0] if personal_paths else str(personal_dir / f"{primary}.yaml")
+        result["path"] = (
+            personal_paths[0] if personal_paths else str(personal_dir / f"{primary}.yaml")
+        )
         if len(personal_paths) > 1:
             result["paths"] = personal_paths
         result["reload_recommended"] = any_created
@@ -592,9 +588,10 @@ def _process_allow_always(
         result["feedback_reason"] = feedback["reason"]
 
     # Primary status: prefer a concrete outcome for callers/tests.
-    if result["personal_status"].startswith("personal_corpus_") and result[
-        "personal_status"
-    ] != "personal_corpus_disabled":
+    if (
+        result["personal_status"].startswith("personal_corpus_")
+        and result["personal_status"] != "personal_corpus_disabled"
+    ):
         result["status"] = result["personal_status"]
     elif result["feedback_status"] in ("submitted", "partial"):
         result["status"] = result["feedback_status"]

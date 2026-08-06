@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -23,16 +23,16 @@ def _line(ts: datetime, **extra: object) -> str:
 
 def test_parse_ts_z_suffix() -> None:
     got = parse_ts("2026-07-14T12:00:00Z")
-    assert got == datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+    assert got == datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
 
 
 def test_cutoff_utc_days() -> None:
-    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
     assert cutoff_utc(now=now, days=14) == now - timedelta(days=14)
 
 
 def test_classify_keeps_recent_drops_old() -> None:
-    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
     cutoff = now - timedelta(days=14)
     keep_ts = now - timedelta(days=1)
     drop_ts = now - timedelta(days=30)
@@ -41,13 +41,13 @@ def test_classify_keeps_recent_drops_old() -> None:
 
 
 def test_classify_keeps_unparsed() -> None:
-    cutoff = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    cutoff = datetime(2026, 7, 1, tzinfo=UTC)
     assert classify_line("not-json\n", cutoff=cutoff)[0] == "keep_unparsed"
     assert classify_line('{"decision":"allow"}\n', cutoff=cutoff)[0] == "keep_unparsed"
 
 
 def test_prune_jsonl_dry_run_and_apply(tmp_path: Path) -> None:
-    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
     path = tmp_path / "scan.log.jsonl"
     path.write_text(
         _line(now - timedelta(days=30), id="old")
@@ -74,12 +74,10 @@ def test_prune_jsonl_dry_run_and_apply(tmp_path: Path) -> None:
 
 
 def test_prune_noop_when_nothing_to_drop(tmp_path: Path) -> None:
-    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
     path = tmp_path / "latency.log.jsonl"
     path.write_text(_line(now - timedelta(days=1)), encoding="utf-8")
-    summary = prune_jsonl_file(
-        path, cutoff=cutoff_utc(now=now, days=14), dry_run=False
-    )
+    summary = prune_jsonl_file(path, cutoff=cutoff_utc(now=now, days=14), dry_run=False)
     assert summary["dropped"] == 0
     assert summary["rewritten"] is False
 

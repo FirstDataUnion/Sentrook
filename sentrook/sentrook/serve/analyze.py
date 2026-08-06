@@ -149,11 +149,7 @@ def analyze_scan_log(path: Path) -> ScanAnalyzeReport:
 
 
 def _latency_summary(records: list[dict[str, Any]]) -> ScanLatencySummary:
-    values = [
-        int(row["total_ms"])
-        for row in records
-        if isinstance(row.get("total_ms"), int)
-    ]
+    values = [int(row["total_ms"]) for row in records if isinstance(row.get("total_ms"), int)]
     if not values:
         return ScanLatencySummary()
     return ScanLatencySummary(

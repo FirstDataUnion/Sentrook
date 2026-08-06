@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from sentrook.config import MatcherConfig
@@ -34,9 +33,7 @@ def evaluate_rule(rule: Rule, plan: PlanIR, config: MatcherConfig) -> MatchOutco
     return _eval_node(rule.condition, plan, config)
 
 
-def _eval_node(
-    node: ConditionNode, plan: PlanIR, config: MatcherConfig
-) -> MatchOutcome:
+def _eval_node(node: ConditionNode, plan: PlanIR, config: MatcherConfig) -> MatchOutcome:
     if isinstance(node, PendingToolCondition):
         return _match_pending_tool(node, plan)
     if isinstance(node, IntentKindCondition):
@@ -54,9 +51,7 @@ def _eval_node(
     return MatchOutcome(False, 0.0, "unknown condition", [], L2PassKind.UNKNOWN)
 
 
-def _match_intent_kind(
-    node: IntentKindCondition, plan: PlanIR
-) -> MatchOutcome:
+def _match_intent_kind(node: IntentKindCondition, plan: PlanIR) -> MatchOutcome:
     if plan.intent_kind == node.kind:
         return MatchOutcome(
             True,
@@ -74,9 +69,7 @@ def _match_intent_kind(
     )
 
 
-def _match_pending_tool(
-    node: PendingToolCondition, plan: PlanIR
-) -> MatchOutcome:
+def _match_pending_tool(node: PendingToolCondition, plan: PlanIR) -> MatchOutcome:
     from sentrook.adapters.snapshot import primary_pending_step
 
     step = primary_pending_step(plan)
@@ -88,14 +81,10 @@ def _match_pending_tool(
             [step.id],
             L2PassKind.PENDING_TOOL,
         )
-    return MatchOutcome(
-        False, 0.0, f"no pending {node.tool}", [], L2PassKind.PENDING_TOOL
-    )
+    return MatchOutcome(False, 0.0, f"no pending {node.tool}", [], L2PassKind.PENDING_TOOL)
 
 
-def _sequence_pass_kind(
-    slots: list[SequenceSlot], *, with_gap: bool = False
-) -> L2PassKind:
+def _sequence_pass_kind(slots: list[SequenceSlot], *, with_gap: bool = False) -> L2PassKind:
     if any(slot.args_match or slot.result_flags for slot in slots):
         return L2PassKind.SEQUENCE_ARGS
     if with_gap:
@@ -127,9 +116,7 @@ def _match_sequence(node: SequenceCondition, plan: PlanIR) -> MatchOutcome:
     return best
 
 
-def _match_sequence_with_gap(
-    node: SequenceWithGapCondition, plan: PlanIR
-) -> MatchOutcome:
+def _match_sequence_with_gap(node: SequenceWithGapCondition, plan: PlanIR) -> MatchOutcome:
     slots = node.steps
     pass_kind = _sequence_pass_kind(slots, with_gap=True)
     if not slots:
@@ -151,9 +138,7 @@ def _match_window(
     for slot, step in zip(slots, window, strict=True):
         if not _slot_matches(slot, step):
             if step.tool not in _slot_tool_names(slot.tool):
-                return MatchOutcome(
-                    False, 0.0, f"tool mismatch at {step.id}", [], pass_kind
-                )
+                return MatchOutcome(False, 0.0, f"tool mismatch at {step.id}", [], pass_kind)
             if slot.status != "any" and step.status != slot.status:
                 return MatchOutcome(
                     False,
@@ -162,9 +147,7 @@ def _match_window(
                     [],
                     pass_kind,
                 )
-            return MatchOutcome(
-                False, 0.0, f"args mismatch for {step.tool}", [], pass_kind
-            )
+            return MatchOutcome(False, 0.0, f"args mismatch for {step.tool}", [], pass_kind)
         matched_ids.append(step.id)
 
     return MatchOutcome(
@@ -296,16 +279,12 @@ def _slot_matches(slot: SequenceSlot, step: PlanStep) -> bool:
         return False
     if slot.args_match and not _args_match(slot.args_match, step.args):
         return False
-    if slot.result_flags and not _result_flags_match(
-        slot.result_flags, step.result_summary
-    ):
+    if slot.result_flags and not _result_flags_match(slot.result_flags, step.result_summary):
         return False
     return True
 
 
-def _result_flags_match(
-    expected: dict[str, bool], result_summary: ResultSummary | None
-) -> bool:
+def _result_flags_match(expected: dict[str, bool], result_summary: ResultSummary | None) -> bool:
     if result_summary is None:
         return False
     flags = result_summary.flags
@@ -315,9 +294,7 @@ def _result_flags_match(
     return True
 
 
-def _match_none(
-    node: NoneCondition, plan: PlanIR, config: MatcherConfig
-) -> MatchOutcome:
+def _match_none(node: NoneCondition, plan: PlanIR, config: MatcherConfig) -> MatchOutcome:
     inner = _eval_node(node.condition, plan, config)
     if inner.matched:
         return MatchOutcome(
@@ -336,9 +313,7 @@ def _match_none(
     )
 
 
-def _match_all(
-    node: AllCondition, plan: PlanIR, config: MatcherConfig
-) -> MatchOutcome:
+def _match_all(node: AllCondition, plan: PlanIR, config: MatcherConfig) -> MatchOutcome:
     if not node.conditions:
         return MatchOutcome(False, 0.0, "empty all()", [], L2PassKind.ALL)
 
@@ -365,9 +340,7 @@ def _match_all(
     )
 
 
-def _match_any(
-    node: AnyCondition, plan: PlanIR, config: MatcherConfig
-) -> MatchOutcome:
+def _match_any(node: AnyCondition, plan: PlanIR, config: MatcherConfig) -> MatchOutcome:
     if not node.conditions:
         return MatchOutcome(False, 0.0, "empty any()", [], L2PassKind.ANY)
 

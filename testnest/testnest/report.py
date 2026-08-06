@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from testnest.runner import TestNestReport, ScenarioOutcome, ScenarioResult
+from testnest.runner import ScenarioOutcome, ScenarioResult, TestNestReport
 
 
 def format_text_report(report: TestNestReport, *, verbose: bool = False) -> str:
@@ -106,9 +106,7 @@ def _format_result_detail(result: ScenarioResult, *, verbose: bool) -> list[str]
     if result.scan_summary:
         lines.append(f"      scan: {result.scan_summary}")
     for failure in result.failures:
-        lines.append(
-            f"      {failure.field}: expected {failure.expected}; got {failure.actual}"
-        )
+        lines.append(f"      {failure.field}: expected {failure.expected}; got {failure.actual}")
     if verbose and result.scenario.description:
         lines.append(f"      desc: {result.scenario.description}")
     return lines
@@ -122,22 +120,16 @@ def _junit_case(result: ScenarioResult) -> str:
         reason = result.summary or "skipped"
         return (
             f'  <testcase name="{name}" classname="testnest">'
-            f"<skipped message=\"{reason}\"/></testcase>"
+            f'<skipped message="{reason}"/></testcase>'
         )
     if result.outcome == ScenarioOutcome.XFAILED:
         return (
-            f'  <testcase name="{name}" classname="testnest">'
-            f"<skipped message=\"xfail\"/></testcase>"
+            f'  <testcase name="{name}" classname="testnest"><skipped message="xfail"/></testcase>'
         )
     if result.outcome == ScenarioOutcome.NO_PROFILE:
         return (
             f'  <testcase name="{name}" classname="testnest">'
-            f"<skipped message=\"no profile\"/></testcase>"
+            f'<skipped message="no profile"/></testcase>'
         )
-    msg = result.summary or "; ".join(
-        f"{f.field}: {f.actual}" for f in result.failures
-    )
-    return (
-        f'  <testcase name="{name}" classname="testnest">'
-        f"<failure message=\"{msg}\"/></testcase>"
-    )
+    msg = result.summary or "; ".join(f"{f.field}: {f.actual}" for f in result.failures)
+    return f'  <testcase name="{name}" classname="testnest"><failure message="{msg}"/></testcase>'

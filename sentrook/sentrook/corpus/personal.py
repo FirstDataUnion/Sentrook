@@ -32,9 +32,9 @@ def resolve_personal_corpus_dir(
 ) -> Path | None:
     """Return the personal corpus directory when enabled, else ``None``.
 
-  When ``configured`` is omitted, reads ``SENTROOK_PERSONAL_CORPUS_DIR`` (default
-  ``~/.sentrook/personal-corpus``). Disabled when ``SENTROOK_PERSONAL_CORPUS_ENABLED``
-  is ``0`` / ``false``.
+    When ``configured`` is omitted, reads ``SENTROOK_PERSONAL_CORPUS_DIR`` (default
+    ``~/.sentrook/personal-corpus``). Disabled when ``SENTROOK_PERSONAL_CORPUS_ENABLED``
+    is ``0`` / ``false``.
     """
     import os
 

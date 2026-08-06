@@ -8,7 +8,7 @@ on the same session for live-vs-replay parity checks.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -120,7 +120,7 @@ def build_log_record(
             )
     meta = plan.metadata
     return ScanLogRecord(
-        ts=ts or datetime.now(timezone.utc).isoformat(),
+        ts=ts or datetime.now(UTC).isoformat(),
         mode=mode,
         adapter=meta.adapter,
         session_id=meta.session_id,

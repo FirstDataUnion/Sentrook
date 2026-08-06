@@ -355,9 +355,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: synced corpus not found at {remote_corpus_dir}", file=sys.stderr)
         return 1
 
-    known_rule_ids = {
-        path.stem for path in rules_dir.glob("*.yaml")
-    } | {path.stem for path in rules_dir.glob("*.yml")}
+    known_rule_ids = {path.stem for path in rules_dir.glob("*.yaml")} | {
+        path.stem for path in rules_dir.glob("*.yml")
+    }
 
     try:
         local_examples = load_corpus_examples(args.corpus_dir)

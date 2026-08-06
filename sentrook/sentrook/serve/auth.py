@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 from sentrook.serve.config import ServeConfig
 from sentrook.serve.oidc import (

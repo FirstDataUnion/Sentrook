@@ -169,7 +169,9 @@ def test_caller_id_from_claims_priority() -> None:
 
 def test_scan_auth_health_label() -> None:
     assert (
-        scan_auth_health_label(ServeConfig(scan_api_key=None, oidc_issuer="", scan_auth_mode="auto"))
+        scan_auth_health_label(
+            ServeConfig(scan_api_key=None, oidc_issuer="", scan_auth_mode="auto")
+        )
         == "off"
     )
     assert "optional_oidc" in scan_auth_health_label(_oidc_config(scan_api_key=None))

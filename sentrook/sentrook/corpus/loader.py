@@ -52,9 +52,7 @@ def merge_loaded_rule_corpus(
 ) -> LoadedRuleCorpus:
     """Merge personal/overlay examples into a base rule corpus (dedupe by id)."""
     if base.rule_id != overlay.rule_id:
-        raise ValueError(
-            f"Cannot merge corpus for {overlay.rule_id!r} into {base.rule_id!r}"
-        )
+        raise ValueError(f"Cannot merge corpus for {overlay.rule_id!r} into {base.rule_id!r}")
 
     seen_pos = {entry.example_id for entry in base.pos}
     seen_neg = {entry.example_id for entry in base.neg}
@@ -139,9 +137,7 @@ def load_rule_corpus(path: Path) -> LoadedRuleCorpus:
     return LoadedRuleCorpus(
         rule_id=spec.rule_id,
         allow_margin=spec.thresholds.allow_margin if spec.thresholds else None,
-        fail_closed_margin=(
-            spec.thresholds.fail_closed_margin if spec.thresholds else None
-        ),
+        fail_closed_margin=(spec.thresholds.fail_closed_margin if spec.thresholds else None),
         pos=pos,
         neg=neg,
     )
@@ -156,9 +152,7 @@ def _build_entry(example: CorpusExample) -> CorpusEntry:
     steps: list[PlanStep] = []
     for index, step in enumerate(example.steps, start=1):
         result_summary = (
-            ResultSummary(ok=True, excerpt=step.excerpt)
-            if step.excerpt is not None
-            else None
+            ResultSummary(ok=True, excerpt=step.excerpt) if step.excerpt is not None else None
         )
         steps.append(
             PlanStep(
@@ -175,9 +169,7 @@ def _build_entry(example: CorpusExample) -> CorpusEntry:
         tools=[s.tool for s in steps],
         steps=steps,
     )
-    text = subgraph_to_text(
-        subgraph, intent=example.intent, intent_kind=example.intent_kind
-    )
+    text = subgraph_to_text(subgraph, intent=example.intent, intent_kind=example.intent_kind)
 
     return CorpusEntry(
         example_id=example.id,

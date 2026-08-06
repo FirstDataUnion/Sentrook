@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from sentrook.config import ScannerConfig
-from sentrook.replay.audit import SessionAuditReport, SnapshotAudit, audit_openclaw_session
+from sentrook.replay.audit import SnapshotAudit, audit_openclaw_session
 from sentrook.serve.log import load_scan_log
 
 MatchKind = Literal["tool_call_id", "tool_command_hash", "unmatched"]
@@ -164,9 +164,7 @@ def compare_scan_to_replay(
             )
         )
 
-    unmatched_replay = sum(
-        1 for snap in replay_report.snapshots if snap.index not in used_replay
-    )
+    unmatched_replay = sum(1 for snap in replay_report.snapshots if snap.index not in used_replay)
 
     return ParityReport(
         scan_log_path=str(scan_log_path.expanduser().resolve()),

@@ -6,6 +6,7 @@
 
 ## Test plan
 
+- [ ] `make lint`
 - [ ] `make test`
 - [ ] `make smoke` (if scanner / examples / TestNest touched)
 - [ ] `make plugin-test` (if `integrations/openclaw/` touched)

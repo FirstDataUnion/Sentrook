@@ -5,16 +5,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from sentrook.config import L3Policy, ScannerConfig
+from sentrook.corpus.loader import load_corpus, resolve_corpus_dir
+from sentrook.corpus.models import LoadedRuleCorpus
+from sentrook.layers.l3_embed import make_scorer
+from sentrook.layers.l3_score import BiEncoderScorer
+from sentrook.scan import scan_plan_file
 from testnest.assertions import AssertionFailure, check_expectation
 from testnest.loader import filter_scenarios, load_scenarios, load_suites
 from testnest.models import Scenario
 from testnest.profiles import resolve_scanner_config
-from sentrook.config import L3Policy, ScannerConfig
-from sentrook.corpus.loader import load_corpus, resolve_corpus_dir
-from sentrook.corpus.models import LoadedRuleCorpus
-from sentrook.layers.l3_score import BiEncoderScorer
-from sentrook.layers.l3_embed import make_scorer
-from sentrook.scan import scan_plan_file
 
 
 class ScenarioOutcome(str, Enum):
@@ -105,9 +105,7 @@ def run_suite(
     )
     for scenario in selected:
         report.results.append(
-            _run_scenario(
-                scenario, scenarios_dir, rules_dir, profile, config, corpus, scorer
-            )
+            _run_scenario(scenario, scenarios_dir, rules_dir, profile, config, corpus, scorer)
         )
     return report
 
@@ -140,9 +138,7 @@ def _run_scenario(
 
     plan_path = scenario.plan_path(scenarios_dir)
     try:
-        scan_result = scan_plan_file(
-            plan_path, rules_dir, config, corpus=corpus, l3_scorer=scorer
-        )
+        scan_result = scan_plan_file(plan_path, rules_dir, config, corpus=corpus, l3_scorer=scorer)
     except Exception as exc:
         if expectation.xfail:
             return ScenarioResult(

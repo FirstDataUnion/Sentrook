@@ -66,9 +66,7 @@ def _plan_satisfies_rule(
     if isinstance(node, PendingToolCondition):
         return node.tool in plan_tools
     if isinstance(node, (SequenceCondition, SequenceWithGapCondition)):
-        return all(
-            bool(_slot_tool_names(slot.tool) & plan_tools) for slot in node.steps
-        )
+        return all(bool(_slot_tool_names(slot.tool) & plan_tools) for slot in node.steps)
     if isinstance(node, AllCondition):
         return all(
             _plan_satisfies_rule(plan_tools, child, intent_kind=intent_kind)
@@ -111,9 +109,7 @@ def l1_candidates(
         for rule in index.get(tool, []):
             if rule.id in seen:
                 continue
-            if not _plan_satisfies_rule(
-                plan_tools, rule.condition, intent_kind=intent_kind
-            ):
+            if not _plan_satisfies_rule(plan_tools, rule.condition, intent_kind=intent_kind):
                 continue
             seen.add(rule.id)
             candidates.append(rule)

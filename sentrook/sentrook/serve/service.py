@@ -56,9 +56,7 @@ class ScanService:
                 plan,
                 self.rules,
                 self.scanner_config,
-                plan_source=(
-                    f"serve:{plan.metadata.session_id or '?'}:{plan.run_id}"
-                ),
+                plan_source=(f"serve:{plan.metadata.session_id or '?'}:{plan.run_id}"),
                 rules_source=str(self.config.rules_path),
                 corpus=self.corpus,
                 l3_scorer=self.scorer,

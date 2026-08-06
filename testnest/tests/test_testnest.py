@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sentrook.config import L3Policy
 from testnest.loader import filter_scenarios, load_scenarios, load_suites
 from testnest.profiles import load_profiles, resolve_scanner_config
 from testnest.runner import run_suite
-from sentrook.config import L3Policy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTNEST_ROOT = Path(__file__).resolve().parents[1]
@@ -29,9 +29,7 @@ def test_smoke_suite_passes_v0():
         suite="smoke",
         corpus_dir=CORPUS,
     )
-    assert report.ok, [
-        (r.scenario.name, r.outcome, r.failures) for r in report.results
-    ]
+    assert report.ok, [(r.scenario.name, r.outcome, r.failures) for r in report.results]
 
 
 def test_profiles_yaml_loads():

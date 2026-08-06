@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from testnest.models import ProfileExpectation, RiskExpectation
 from sentrook.result import ScanResult
+from testnest.models import ProfileExpectation, RiskExpectation
 
 
 @dataclass
@@ -19,9 +19,7 @@ class AssertionResult:
     failures: list[AssertionFailure] = field(default_factory=list)
 
 
-def check_expectation(
-    result: ScanResult, expectation: ProfileExpectation
-) -> AssertionResult:
+def check_expectation(result: ScanResult, expectation: ProfileExpectation) -> AssertionResult:
     failures: list[AssertionFailure] = []
 
     if result.decision != expectation.decision:

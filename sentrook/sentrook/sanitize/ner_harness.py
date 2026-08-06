@@ -30,9 +30,7 @@ from sentrook.corpus.models import CorpusExample
 from sentrook.sanitize.ner import NerPassResult, apply_ner_pass, ner_available
 
 # sentrook/sentrook/sanitize/ → sentrook/tests/fixtures/sanitize_ner/
-FIXTURES_DIR = (
-    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "sanitize_ner"
-)
+FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "sanitize_ner"
 
 
 @dataclass(frozen=True)
@@ -122,16 +120,12 @@ def evaluate_expect(
 
     max_fields = expect.get("max_fields_touched")
     if max_fields is not None and len(ner.fields_touched) > int(max_fields):
-        failures.append(
-            f"fields_touched={ner.fields_touched!r} exceeds max {max_fields}"
-        )
+        failures.append(f"fields_touched={ner.fields_touched!r} exceeds max {max_fields}")
 
     # Sanity: original PII needles should have existed before scrub when listed.
     for needle in expect.get("must_not_contain") or []:
         if needle not in _example_blob(original):
-            failures.append(
-                f"fixture bug: must_not_contain {needle!r} absent from input"
-            )
+            failures.append(f"fixture bug: must_not_contain {needle!r} absent from input")
 
     return failures
 

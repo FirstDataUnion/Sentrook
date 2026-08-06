@@ -193,9 +193,7 @@ def library_sync_cmd(
         raise typer.Exit(code=1) from exc
 
     if result.updated:
-        typer.echo(
-            f"Synced bundle {result.bundle_version} to {result.library_dir}"
-        )
+        typer.echo(f"Synced bundle {result.bundle_version} to {result.library_dir}")
     else:
         version = result.bundle_version or "unknown"
         typer.echo(f"Already up to date ({version})")
@@ -324,7 +322,12 @@ def library_logout_cmd() -> None:
 @library_app.command("whoami")
 def library_whoami_cmd() -> None:
     """Show the identity/scope of the cached FIDU ID token, if any."""
-    from sentrook.library.oidc_client import describe_scopes, identity_issuer, issuers_match, load_cached_tokens
+    from sentrook.library.oidc_client import (
+        describe_scopes,
+        identity_issuer,
+        issuers_match,
+        load_cached_tokens,
+    )
 
     tokens = load_cached_tokens()
     if tokens is None:

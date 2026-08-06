@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
+from sentrook import __version__ as sentrook_version
+from sentrook.corpus.loader import default_corpus_dir
+from sentrook.rules.loader import resolve_rules_dir
 from testnest import __version__ as testnest_version
 from testnest.loader import filter_scenarios, load_scenarios, load_suites
 from testnest.report import format_json_report, format_text_report, write_junit
 from testnest.runner import run_suite
-from sentrook import __version__ as sentrook_version
-from sentrook.corpus.loader import default_corpus_dir
-from sentrook.rules.loader import resolve_rules_dir
 
 PKG_DIR = Path(__file__).resolve().parent
 
@@ -70,19 +70,19 @@ def testnest_run(
         ),
     ] = "v0",
     scenarios: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--scenarios", help="Scenario definitions directory"),
     ] = None,
     rules: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--rules", help="YAIRA rules directory"),
     ] = None,
     corpus: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--corpus", help="Layer 3 corpus directory (default repo corpus/)"),
     ] = None,
     tag: Annotated[
-        Optional[list[str]],
+        list[str] | None,
         typer.Option("--tag", "-t", help="Filter scenarios by tag (repeatable)"),
     ] = None,
     format: Annotated[
@@ -91,7 +91,7 @@ def testnest_run(
     ] = "text",
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
     junit: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--junit", help="Write JUnit XML report to path"),
     ] = None,
 ) -> None:
@@ -132,12 +132,10 @@ def testnest_run(
 
 @app.command("list")
 def testnest_list(
-    scenarios: Annotated[
-        Optional[Path], typer.Option("--scenarios")
-    ] = None,
-    suite: Annotated[Optional[str], typer.Option("--suite", "-s")] = None,
+    scenarios: Annotated[Path | None, typer.Option("--scenarios")] = None,
+    suite: Annotated[str | None, typer.Option("--suite", "-s")] = None,
     tag: Annotated[
-        Optional[list[str]],
+        list[str] | None,
         typer.Option("--tag", "-t"),
     ] = None,
 ) -> None:
@@ -150,9 +148,7 @@ def testnest_list(
     loaded = load_scenarios(scenarios)
     suites = load_suites(scenarios)
     try:
-        selected = filter_scenarios(
-            loaded, suite=suite, tags=tag, suites=suites
-        )
+        selected = filter_scenarios(loaded, suite=suite, tags=tag, suites=suites)
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

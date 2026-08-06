@@ -26,9 +26,7 @@ def load_suites(scenarios_dir: Path) -> dict[str, SuiteConfig]:
     if not suites_path.is_file():
         return {
             "core": SuiteConfig(description="Seed rule coverage", tags=["core"]),
-            "ambiguous": SuiteConfig(
-                description="Ambiguous / L3-target cases", tags=["ambiguous"]
-            ),
+            "ambiguous": SuiteConfig(description="Ambiguous / L3-target cases", tags=["ambiguous"]),
             "all": SuiteConfig(description="Every scenario", tags=[]),
         }
     with suites_path.open(encoding="utf-8") as handle:

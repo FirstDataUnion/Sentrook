@@ -11,6 +11,8 @@ from typing import Any
 from sentrook.planir import PlanIR
 from sentrook.sanitize.core import (
     is_credential_field,
+)
+from sentrook.sanitize.core import (
     scrub_string as _scrub_string,
 )
 from sentrook.sanitize.rules import SanitizeRules, load_rules
@@ -41,9 +43,7 @@ def _sanitize_value(
         return rules.redacted
 
     if isinstance(value, str):
-        return _scrub_string(
-            value, rules, pii=pii, max_chars=max_chars, key=parent_key
-        )
+        return _scrub_string(value, rules, pii=pii, max_chars=max_chars, key=parent_key)
     if isinstance(value, dict):
         return _sanitize_mapping(value, rules, pii=False, max_chars=max_chars)
     if isinstance(value, list):
@@ -76,9 +76,7 @@ def _sanitize_mapping(
     return out
 
 
-def _sanitize_result_summary(
-    summary: dict[str, Any], rules: SanitizeRules
-) -> dict[str, Any]:
+def _sanitize_result_summary(summary: dict[str, Any], rules: SanitizeRules) -> dict[str, Any]:
     out = dict(summary)
     excerpt = summary.get("excerpt")
     if isinstance(excerpt, str):
@@ -132,7 +130,7 @@ def _sanitize_step(step: dict[str, Any], rules: SanitizeRules) -> dict[str, Any]
 def _rewrite_run_id(run_id: str, original_session_id: str, hashed_session_id: str) -> str:
     prefix = f"{original_session_id}:"
     if run_id.startswith(prefix):
-        return f"{hashed_session_id}:{run_id[len(prefix):]}"
+        return f"{hashed_session_id}:{run_id[len(prefix) :]}"
     return run_id
 
 
@@ -168,9 +166,7 @@ def sanitize_planir_dict(
 
     steps = data.get("steps")
     if isinstance(steps, list):
-        data["steps"] = [
-            _sanitize_step(item, rules) for item in steps if isinstance(item, dict)
-        ]
+        data["steps"] = [_sanitize_step(item, rules) for item in steps if isinstance(item, dict)]
 
     return data
 

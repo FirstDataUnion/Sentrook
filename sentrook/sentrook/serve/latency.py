@@ -7,7 +7,7 @@ response. Join to ``scan.log.jsonl`` on ``tool_call_id`` when needed.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -53,7 +53,7 @@ class LatencyReport(BaseModel):
 
 def build_latency_record(report: LatencyReport, *, ts: str | None = None) -> LatencyLogRecord:
     return LatencyLogRecord(
-        ts=ts or datetime.now(timezone.utc).isoformat(),
+        ts=ts or datetime.now(UTC).isoformat(),
         tool_call_id=report.tool_call_id,
         session_id=report.session_id,
         run_id=report.run_id,

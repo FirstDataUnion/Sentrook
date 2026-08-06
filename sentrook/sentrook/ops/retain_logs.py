@@ -13,9 +13,8 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
 
 DEFAULT_RETENTION_DAYS = 14
 
@@ -31,18 +30,18 @@ def parse_ts(value: object) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def cutoff_utc(*, now: datetime | None = None, days: int) -> datetime:
     if days < 1:
         raise ValueError("retention days must be >= 1")
-    base = now or datetime.now(timezone.utc)
+    base = now or datetime.now(UTC)
     if base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
+        base = base.replace(tzinfo=UTC)
     else:
-        base = base.astimezone(timezone.utc)
+        base = base.astimezone(UTC)
     return base - timedelta(days=days)
 
 
@@ -127,9 +126,7 @@ def prune_jsonl_file(
 
 def default_log_paths() -> list[Path]:
     scan_log = os.environ.get("SENTROOK_LOG_PATH", "/var/log/sentrook/scan.log.jsonl")
-    latency = os.environ.get(
-        "SENTROOK_LATENCY_LOG_PATH", "/var/log/sentrook/latency.log.jsonl"
-    )
+    latency = os.environ.get("SENTROOK_LATENCY_LOG_PATH", "/var/log/sentrook/latency.log.jsonl")
     return [Path(scan_log), Path(latency)]
 
 

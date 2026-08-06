@@ -99,9 +99,7 @@ _SECRET_TOKEN_RE = re.compile(
     r")\b"
 )
 # Discord (and similar) webhook path tokens — keep host, drop secret segment.
-_WEBHOOK_SECRET_RE = re.compile(
-    r"(?i)(/api/webhooks/\d+/)([A-Za-z0-9_-]{20,})"
-)
+_WEBHOOK_SECRET_RE = re.compile(r"(?i)(/api/webhooks/\d+/)([A-Za-z0-9_-]{20,})")
 _PIPE_TO_SHELL_RE = re.compile(
     r"(?i)(?:curl|wget|fetch)\s+[^\n]*\|\s*(?:ba)?sh\b"
     r"|base64\s+[^\n]*\|\s*(?:ba)?sh\b"
@@ -339,8 +337,8 @@ def _format_openclaw_excerpt(command: str, limit: int) -> str:
         collapsed,
     )
     collapsed = re.sub(
-        r'(?i)(-m|--message)\s+(\S{40,})',
-        r'\1 …',
+        r"(?i)(-m|--message)\s+(\S{40,})",
+        r"\1 …",
         collapsed,
     )
     m = _OPENCLAW_CLI_RE.search(collapsed)
@@ -354,9 +352,7 @@ def _format_openclaw_excerpt(command: str, limit: int) -> str:
     elif sub:
         parts.append(sub)
     channel = re.search(r"(?i)--channel\s+(\S+)|(?:^|[\s])channel=(\S+)", collapsed)
-    target = re.search(
-        r"(?i)(?:-t|--target|--to)\s+(\S+)|(?:^|[\s])to=(\S+)", collapsed
-    )
+    target = re.search(r"(?i)(?:-t|--target|--to)\s+(\S+)|(?:^|[\s])to=(\S+)", collapsed)
     cfg_key = re.search(r"(?i)\bopenclaw\s+config\s+(?:get|set|patch)\s+(\S+)", collapsed)
     if channel:
         parts.append(channel.group(1) or channel.group(2))
@@ -577,9 +573,7 @@ def extract_salient_spans(command: str) -> list[_Span]:
 
 def _best_paths(spans: list[_Span], *, limit: int = 2) -> list[_Span]:
     paths = [
-        s
-        for s in spans
-        if s.kind in ("secret_path", "sqlite_connect", "literal_path", "upload")
+        s for s in spans if s.kind in ("secret_path", "sqlite_connect", "literal_path", "upload")
     ]
     paths = sorted(paths, key=lambda s: -_path_signal_score(s.text))
     return paths[:limit]
@@ -733,9 +727,7 @@ def estimate_likely_intent(
     spans = extract_salient_spans(text) if text else []
     urls = [s.text for s in spans if s.kind == "url"]
     host = _host_from_url(urls[0]) if urls else None
-    has_sqlite = any(
-        "sqlite" in s.text.lower() or "auth-intake" in s.text.lower() for s in spans
-    )
+    has_sqlite = any("sqlite" in s.text.lower() or "auth-intake" in s.text.lower() for s in spans)
     has_auth_json = any("auth-profiles" in s.text.lower() for s in spans)
     has_env = any(s.text.rstrip("/").endswith(".env") or "/.env" in s.text.lower() for s in spans)
     has_ssh = any(".ssh" in s.text.lower() for s in spans)

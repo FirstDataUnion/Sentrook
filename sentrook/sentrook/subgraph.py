@@ -88,9 +88,7 @@ def subgraph_to_text(
         lines.append(f"intent_kind: {intent_kind}")
     if intent:
         lines.append(f"intent: {intent}")
-    trajectory = " → ".join(
-        f"{step.tool}({step.status})" for step in subgraph.steps
-    )
+    trajectory = " → ".join(f"{step.tool}({step.status})" for step in subgraph.steps)
     lines.append(f"trajectory: {trajectory}")
     for step in subgraph.steps:
         if step.args:

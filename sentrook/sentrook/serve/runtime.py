@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sentrook import __version__
@@ -126,7 +126,7 @@ class ServeRuntime:
                         api_key=self.config.rookery_api_key,
                     )
                     updated = result.updated
-                    self._last_sync_at = datetime.now(timezone.utc).isoformat()
+                    self._last_sync_at = datetime.now(UTC).isoformat()
                     self._clear_sync_error()
                     if result.updated:
                         logger.info(
@@ -143,7 +143,7 @@ class ServeRuntime:
                         logger.warning("library sync failed: %s", exc)
                     raise
             else:
-                self._last_sync_at = datetime.now(timezone.utc).isoformat()
+                self._last_sync_at = datetime.now(UTC).isoformat()
 
             self.scanner.reload()
             self._refresh_library_status_unlocked()
@@ -167,7 +167,7 @@ class ServeRuntime:
         manifest = self.config.library_dir / MANIFEST_FILENAME
         if not manifest.is_file():
             return
-        mtime = datetime.fromtimestamp(manifest.stat().st_mtime, tz=timezone.utc)
+        mtime = datetime.fromtimestamp(manifest.stat().st_mtime, tz=UTC)
         self._last_sync_at = mtime.isoformat()
 
     def _refresh_library_status(self) -> None:
@@ -205,10 +205,8 @@ class ServeRuntime:
         reason = result.get("reason") or result.get("feedback_reason")
         with self._ops_lock:
             self._feedback_count += 1
-            self._feedback_by_status[status] = (
-                self._feedback_by_status.get(status, 0) + 1
-            )
-            self._last_feedback_at = datetime.now(timezone.utc).isoformat()
+            self._feedback_by_status[status] = self._feedback_by_status.get(status, 0) + 1
+            self._last_feedback_at = datetime.now(UTC).isoformat()
             self._last_feedback_status = status
             self._last_feedback_reason = str(reason) if reason else None
             self._last_feedback_resolution = resolution

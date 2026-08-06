@@ -24,7 +24,9 @@ def stub_oidc_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def offline_l3_unless_embed(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+def offline_l3_unless_embed(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Use the deterministic KeywordScorer unless a test opts into real fastembed."""
     if request.node.get_closest_marker("l3_embed"):
         return

@@ -35,9 +35,7 @@ def _compile_condition(node: dict[str, Any]) -> ConditionNode:
     if "pending_tool" in node:
         return PendingToolCondition(tool=str(node["pending_tool"]))
     if "sequence" in node:
-        return SequenceCondition(
-            steps=[_compile_slot(slot) for slot in node["sequence"]]
-        )
+        return SequenceCondition(steps=[_compile_slot(slot) for slot in node["sequence"]])
     if "sequence_with_gap" in node:
         raw = node["sequence_with_gap"]
         max_gap: int | None = None
@@ -53,13 +51,9 @@ def _compile_condition(node: dict[str, Any]) -> ConditionNode:
         slots: list[SequenceSlot] = [_compile_slot(slot) for slot in slots_raw]
         return SequenceWithGapCondition(steps=slots, max_gap=max_gap)
     if "all" in node:
-        return AllCondition(
-            conditions=[_compile_condition(child) for child in node["all"]]
-        )
+        return AllCondition(conditions=[_compile_condition(child) for child in node["all"]])
     if "any" in node:
-        return AnyCondition(
-            conditions=[_compile_condition(child) for child in node["any"]]
-        )
+        return AnyCondition(conditions=[_compile_condition(child) for child in node["any"]])
     if "none" in node:
         return NoneCondition(condition=_compile_condition(node["none"]))
     raise ValueError(f"Unsupported condition node: {node!r}")

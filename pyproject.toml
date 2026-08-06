@@ -26,6 +26,7 @@ Issues = "https://github.com/FirstDataUnion/Sentrook/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
+    "ruff==0.16.1",
 ]
 # Presidio + spaCy NER for Rookery corpus ingest spike (not on scan hot path).
 # Also: python -m spacy download en_core_web_sm
@@ -49,9 +50,11 @@ path = "sentrook/sentrook/__init__.py"
 packages = ["sentrook/sentrook"]
 # Ensure non-Python sanitize rules ship in the wheel
 
-
 [tool.hatch.build.targets.sdist]
 packages = ["sentrook/sentrook"]
+
+[tool.hatch.build.force-include]
+"sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sentrook/sanitize/rules.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["sentrook/tests"]
@@ -61,5 +64,39 @@ markers = [
     "ner_presidio: Presidio+spaCy NER corpus scrub (needs sentrook[ner] + en_core_web_sm)",
 ]
 
-[tool.hatch.build.force-include]
-"sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sentrook/sanitize/rules.yaml"
+# Ruff — lint + format (CI and `make lint`). Rule set is intentionally lenient
+# (E501/UP042/B008 ignored); tighten gradually once CI is in place.
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["sentrook", "testnest"]
+extend-exclude = [
+    ".venv",
+    "integrations/openclaw/plugin/node_modules",
+    "integrations/openclaw/plugin/dist",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "W",   # pycodestyle warnings
+]
+ignore = [
+    "E501",  # line length — formatter owns wrapping; long strings/URLs are common
+    "UP042",  # str, Enum → StrEnum; leave for a dedicated pass (serialization callers)
+    "B008",  # function calls in defaults — Typer Option/Argument pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"sentrook/tests/**" = ["B011"]
+"testnest/tests/**" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

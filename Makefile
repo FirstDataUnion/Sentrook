@@ -1,4 +1,4 @@
-.PHONY: install install-dev test test-sentrook test-testnest sanitize-gate lint plugin-test smoke \
+.PHONY: install install-dev test test-sentrook test-testnest sanitize-gate lint lint-fix plugin-test smoke \
 	sync-library testnest-core testnest-all require-library-mirror require-rookery test-engine
 
 VENV ?= .venv
@@ -65,7 +65,7 @@ test-engine: require-rookery
 	$(MAKE) -C "$(ROOKERY_ROOT)" test-engine
 
 # Plugin TS ↔ server Python sanitize + decision/replay parity (Rookery SoT).
-# Same files Medivh ran; Rookery helpers resolve the plugin from this sibling checkout.
+# Rookery helpers resolve the plugin from this sibling checkout.
 # Needs Rookery venv + Node. For uncommitted engine/plugin changes, use editable
 # Sentrook pin in Rookery first — see TESTING.md.
 sanitize-gate: require-rookery
@@ -77,7 +77,12 @@ plugin-test:
 	cd integrations/openclaw/plugin && npm test && npm run pack:check
 
 lint:
-	$(PYTHON) -m compileall sentrook/sentrook testnest/testnest sentrook/tests testnest/tests
+	$(VENV)/bin/ruff check sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
+	$(VENV)/bin/ruff format --check sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
+
+lint-fix:
+	$(VENV)/bin/ruff check --fix sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
+	$(VENV)/bin/ruff format sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
 
 scan-demo:
 	$(VENV)/bin/sentrook scan --plan fixtures/plans/safe_read_only.json --rules examples/rules

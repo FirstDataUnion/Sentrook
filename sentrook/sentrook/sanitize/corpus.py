@@ -45,9 +45,7 @@ _SENSITIVE_QUERY_KEYS = frozenset(
     }
 )
 
-_JWT_RE = re.compile(
-    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
-)
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
 # Rookery intensify: 32+ catches short bot passwords; pre-scan stays prefix-only.
 _HIGH_ENTROPY_RE = re.compile(r"\b[A-Za-z0-9+/_-]{32,}\b")
 _LIKELY_DIGEST_RE = re.compile(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$")
@@ -85,9 +83,7 @@ _CONNECTION_USERINFO = re.compile(
 )
 
 # Basic auth in headers: Authorization: Basic <base64>
-_BASIC_AUTH_HEADER = re.compile(
-    r"(?i)(Authorization:\s*Basic\s+)([A-Za-z0-9+/=]{8,})"
-)
+_BASIC_AUTH_HEADER = re.compile(r"(?i)(Authorization:\s*Basic\s+)([A-Za-z0-9+/=]{8,})")
 
 
 @dataclass
@@ -144,8 +140,8 @@ def sanitize_corpus_example(
     """Deep-scrub a corpus example in memory; return sanitized copy + report."""
     rules = rules or load_rules()
     report = RedactionReport()
-    intent_limit = intent_max_chars if intent_max_chars is not None else min(
-        rules.intent_max_chars, 400
+    intent_limit = (
+        intent_max_chars if intent_max_chars is not None else min(rules.intent_max_chars, 400)
     )
 
     intent = example.intent
@@ -203,14 +199,13 @@ def sanitize_corpus_example(
     if report.pattern_counts.get("pem_private_key", 0) > 0:
         report.bump_severity("critical")
     elif report.pattern_counts:
-        report.bump_severity("medium" if any(
-            k.startswith("sk") or "token" in k or k == "jwt"
-            for k in report.pattern_counts
-        ) else "low")
+        report.bump_severity(
+            "medium"
+            if any(k.startswith("sk") or "token" in k or k == "jwt" for k in report.pattern_counts)
+            else "low"
+        )
 
-    cleaned = example.model_copy(
-        update={"intent": intent, "notes": notes, "steps": steps}
-    )
+    cleaned = example.model_copy(update={"intent": intent, "notes": notes, "steps": steps})
     return SanitizeCorpusResult(example=cleaned, report=report)
 
 
@@ -310,6 +305,7 @@ def _redact_high_entropy(
         return rules.redacted
 
     return _HIGH_ENTROPY_RE.sub(_entropy_sub, text)
+
 
 def _scrub_args(
     args: dict[str, Any],

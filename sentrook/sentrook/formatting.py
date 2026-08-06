@@ -58,8 +58,7 @@ def _format_plan_section(result: ScanResult) -> str:
         parts.append(f'intent="{result.debug.intent}"')
 
     trajectory = " → ".join(
-        f"{step.tool}{_STATUS_ICON.get(step.status, '?')}"
-        for step in result.debug.steps_summary
+        f"{step.tool}{_STATUS_ICON.get(step.status, '?')}" for step in result.debug.steps_summary
     )
     section = [" | ".join(parts)]
     if trajectory:

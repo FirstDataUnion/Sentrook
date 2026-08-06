@@ -15,6 +15,7 @@ uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 uv pip install -e ./testnest
 sentrook scan --plan fixtures/plans/safe_read_only.json --rules examples/rules
+make lint
 make test
 make smoke
 ```
@@ -23,8 +24,9 @@ make smoke
 
 | Path | Purpose |
 |------|---------|
-| `sentrook/` | Scanner package (`planir`, `serve`, layers), unit tests; `deploy/` scripts (FIDU ops runbook in Notion) |
+| `sentrook/` | Scanner package (`planir`, `serve`, layers), unit tests; `deploy/` is a pointer to Rookery (FIDU ops runbook in Notion) |
 | `testnest/` | Scenario harness (engine-smoke suites only in this repo) |
+| `docs/` | Public language/API docs — stub for now; may expand later |
 | `examples/rules`, `examples/corpus` | Synthetic DEMO-* format examples — not the regression net |
 | `fixtures/plans` | Minimal PlanIR 1.0 smoke inputs |
 | `integrations/openclaw/` | OpenClaw plugin — builds PlanIR 1.0 and POSTs `/scan` |
@@ -39,7 +41,7 @@ sibling [Rookery `TESTING.md`](../FIDU-Rookery/TESTING.md).
 
 | Path | What | Command |
 |------|------|---------|
-| **A — committed** | Unit + TestNest harness unit + OpenClaw plugin | `make test` · `make plugin-test` |
+| **A — committed** | Lint + unit + TestNest harness unit + OpenClaw plugin | `make lint` · `make test` · `make plugin-test` |
 | **A — smoke** | DEMO scenarios only (no production library) | `make smoke` |
 | **B — TestNest (mirror)** | Full-policy TestNest against synced Rookery SoT | `make sync-library` then `make testnest-core` (or `testnest-all`) |
 | **C — TestNest (sibling)** | Same suites without copying | `testnest run --suite core --profile v0 --scenarios ../FIDU-Rookery/eval/scenarios --rules ../FIDU-Rookery/rules --corpus ../FIDU-Rookery/corpus` |
@@ -62,9 +64,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) b
 
 ## Phase 1 readiness (not in this repo yet)
 
-- GitHub Actions: lint, unit, plugin, smoke TestNest
+- GitHub Actions: `make lint`, unit, plugin, smoke TestNest (ruff is wired locally via `make lint` / `make lint-fix`; CI workflows still TBD)
 - Full TestNest eval gate hosted in Rookery (triggered by Sentrook commit dispatch)
-- ruff, Dependabot, image scan, Changesets for the plugin
+- Dependabot, image scan, Changesets for the plugin
 - Flip repo public only after a secret/library scrub pass (history is already clean)
 
 ## Related

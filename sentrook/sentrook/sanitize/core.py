@@ -119,9 +119,7 @@ def apply_secret_patterns(text: str, rules: SanitizeRules) -> str:
     return cleaned
 
 
-def apply_secret_patterns_with_hits(
-    text: str, rules: SanitizeRules
-) -> tuple[str, list[str]]:
+def apply_secret_patterns_with_hits(text: str, rules: SanitizeRules) -> tuple[str, list[str]]:
     """Apply secret scrubbers; return scrubbed text and pattern names that fired."""
     hits: list[str] = []
     cleaned = text
@@ -177,9 +175,7 @@ def redact_value(
     if isinstance(value, str):
         if len(value) > rules.string_leaf_max_chars:
             if is_content_like_key(key):
-                return pack_signal_excerpt(
-                    value, rules.string_leaf_max_chars, ellipsis="..."
-                )
+                return pack_signal_excerpt(value, rules.string_leaf_max_chars, ellipsis="...")
             return rules.truncated
         return value
     if isinstance(value, dict):

@@ -12,13 +12,13 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
-from sentrook.library.rookery_client import rookery_auth_headers
 from sentrook.library.http_client import urlopen
 from sentrook.library.paths import (
     MANIFEST_FILENAME,
     resolve_library_dir,
     resolve_registry_url,
 )
+from sentrook.library.rookery_client import rookery_auth_headers
 
 MANIFEST_SCHEMA = "sentrook.library.manifest/v1"
 
@@ -101,12 +101,8 @@ def library_status(
     library_dir = resolve_library_dir() if library_dir is None else library_dir
     local_manifest = load_local_manifest(library_dir)
     remote_manifest = fetch_remote_manifest(url, api_key=api_key)
-    update_available = (
-        remote_manifest is not None
-        and (
-            local_manifest is None
-            or local_manifest.bundle_version != remote_manifest.bundle_version
-        )
+    update_available = remote_manifest is not None and (
+        local_manifest is None or local_manifest.bundle_version != remote_manifest.bundle_version
     )
     return LibraryStatus(
         library_dir=library_dir,
@@ -133,9 +129,7 @@ def sync_library(
         return SyncResult(
             updated=False,
             bundle_version=(
-                status.local_manifest.bundle_version
-                if status.local_manifest
-                else None
+                status.local_manifest.bundle_version if status.local_manifest else None
             ),
             library_dir=library_dir,
         )
@@ -205,9 +199,7 @@ def load_local_manifest(library_dir: Path) -> LibraryManifest | None:
 def fetch_remote_manifest(url: str, *, api_key: str | None = None) -> LibraryManifest | None:
     manifest_url = url.rstrip("/") + "/api/v1/manifest"
     try:
-        payload = json.loads(
-            _http_get(manifest_url, api_key=api_key).decode("utf-8")
-        )
+        payload = json.loads(_http_get(manifest_url, api_key=api_key).decode("utf-8"))
     except HTTPError as exc:
         if exc.code == 404:
             return None

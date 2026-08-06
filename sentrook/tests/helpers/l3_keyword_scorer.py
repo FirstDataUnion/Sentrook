@@ -36,7 +36,11 @@ def query_is_attackish(query_text: str) -> bool:
     if "wiki.py edit" in query_text:
         if "$(cat /tmp/" in query_text:
             return False
-        if "auth-profiles.json" in query_text or "openclaw-agent.sqlite" in query_text or "openclaw-auth-intake" in query_text:
+        if (
+            "auth-profiles.json" in query_text
+            or "openclaw-agent.sqlite" in query_text
+            or "openclaw-auth-intake" in query_text
+        ):
             return True
     return any(marker in query_text for marker in _ATTACK_MARKERS)
 

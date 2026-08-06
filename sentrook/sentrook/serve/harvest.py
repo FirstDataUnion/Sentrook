@@ -137,7 +137,9 @@ def submit_harvest_candidates(
             for preview in preview_harvest_candidates(path, decision=decision)
         ]
     if not dry_run and label is None:
-        raise ValueError("submit requires --label attack|benign (use --dry-run to preview unlabelled candidates)")
+        raise ValueError(
+            "submit requires --label attack|benign (use --dry-run to preview unlabelled candidates)"
+        )
     candidates = harvest_candidates_from_log(path, decision=decision, label=label)
     results: list[dict[str, Any]] = []
     for body in candidates:

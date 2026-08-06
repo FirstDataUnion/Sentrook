@@ -250,12 +250,11 @@ def _merge_counts(dest: dict[str, int], src: dict[str, int]) -> None:
 @lru_cache(maxsize=1)
 def _engines() -> tuple[Any, Any]:
     """Lazy singleton Presidio analyzer + anonymizer (spaCy sm)."""
+    # Import check — fails clearly if model not downloaded.
+    import spacy
     from presidio_analyzer import AnalyzerEngine
     from presidio_analyzer.nlp_engine import NlpEngineProvider
     from presidio_anonymizer import AnonymizerEngine
-
-    # Import check — fails clearly if model not downloaded.
-    import spacy
 
     spacy.load("en_core_web_sm")
 

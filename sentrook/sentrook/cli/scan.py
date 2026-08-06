@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -23,33 +23,31 @@ def scan_cmd(
             help="Rules file or directory (default: ~/.sentrook/rules/)",
         ),
     ] = DEFAULT_RULES_DIR,
-    format: Annotated[
-        str, typer.Option("--format", help="Output format: json or text")
-    ] = "json",
+    format: Annotated[str, typer.Option("--format", help="Output format: json or text")] = "json",
     corpus: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option(
             "--corpus",
             help="Layer 3 corpus directory (default: repo corpus/ or ~/.sentrook/corpus/)",
         ),
     ] = None,
     l3_policy: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--l3-policy",
             help="L3 policy (default: tie_breaker; use off for L2-only)",
         ),
     ] = None,
     allow_margin: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--allow-margin", help="Override L3 allow_margin"),
     ] = None,
     fail_closed_margin: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--fail-closed-margin", help="Override L3 fail_closed_margin"),
     ] = None,
     top_k: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--top-k", help="Override L3 top_k per side"),
     ] = None,
     verbose: Annotated[

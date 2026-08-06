@@ -4,13 +4,14 @@ import time
 from pathlib import Path
 
 from sentrook import __version__
+from sentrook.adapters.snapshot import primary_pending_step
 from sentrook.config import L2Authority, L3Policy, ScannerConfig
 from sentrook.corpus.loader import load_corpus, resolve_corpus_dir
-from sentrook.corpus.personal import resolve_personal_corpus_dir
-from sentrook.layers.l3_embed import make_scorer
 from sentrook.corpus.models import LoadedRuleCorpus
+from sentrook.corpus.personal import resolve_personal_corpus_dir
 from sentrook.layers.l1_index import build_l1_index, l1_candidates
 from sentrook.layers.l2_match import classify_match, evaluate_rule
+from sentrook.layers.l3_embed import make_scorer
 from sentrook.layers.l3_score import (
     BiEncoderScorer,
     L3ScoreParams,
@@ -24,8 +25,8 @@ from sentrook.result import (
     L2RuleTrace,
     L3RuleTrace,
     LayerInfo,
-    MatcherThresholds,
     MatchedRule,
+    MatcherThresholds,
     PendingStepDebug,
     PlanEcho,
     PlanMetadataEcho,
@@ -35,7 +36,6 @@ from sentrook.result import (
 )
 from sentrook.rules.loader import load_rules
 from sentrook.rules.models import Rule
-from sentrook.adapters.snapshot import primary_pending_step
 from sentrook.subgraph import (
     SubgraphStrategy,
     extract_subgraph,
@@ -100,9 +100,7 @@ def scan_plan(
     if candidates:
         for rule in candidates:
             outcome = evaluate_rule(rule, redacted_plan, config.matcher)
-            is_hit, effective_action = classify_match(
-                outcome, rule.meta.action, config.matcher
-            )
+            is_hit, effective_action = classify_match(outcome, rule.meta.action, config.matcher)
             l2_traces.append(
                 L2RuleTrace(
                     rule_id=rule.id,
@@ -179,8 +177,7 @@ def scan_plan(
     subgraph = subgraph_from_matched_rule(redacted_plan, winning_rule)
 
     steps_summary = [
-        StepSummary(id=step.id, tool=step.tool, status=step.status)
-        for step in redacted_plan.steps
+        StepSummary(id=step.id, tool=step.tool, status=step.status) for step in redacted_plan.steps
     ]
 
     return ScanResult(
@@ -350,9 +347,7 @@ def _apply_l3(
             ),
             top_k=config.l3.top_k,
         )
-        query_text = subgraph_to_text(
-            subgraph, intent=plan.intent, intent_kind=plan.intent_kind
-        )
+        query_text = subgraph_to_text(subgraph, intent=plan.intent, intent_kind=plan.intent_kind)
         trace = score_rule(matched.id, query_text, rule_corpus, params, scorer)
         traces.append(trace)
         if trace.ran:
@@ -363,11 +358,7 @@ def _apply_l3(
         for matched in matched_rules:
             if matched.id in downgraded:
                 matched.layer = "L3"
-        remaining = [
-            m
-            for m in matched_rules
-            if m.action == "review" and m.id not in downgraded
-        ]
+        remaining = [m for m in matched_rules if m.action == "review" and m.id not in downgraded]
         if not remaining:
             return (
                 "allow",
@@ -385,9 +376,7 @@ def _apply_l3(
 def _redact_plan(plan: PlanIR) -> PlanIR:
     steps = []
     for step in plan.steps:
-        steps.append(
-            step.model_copy(update={"args": redact_args(step.args)})
-        )
+        steps.append(step.model_copy(update={"args": redact_args(step.args)}))
     return plan.model_copy(update={"steps": steps})
 
 

@@ -33,7 +33,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from sentrook.library import http_client
-
 from sentrook.library.token_store import (
     clear_cached_tokens,
     load_cached_tokens,

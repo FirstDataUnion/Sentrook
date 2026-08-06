@@ -90,7 +90,7 @@ class ServeConfig:
     server_sanitize_planir: bool = True
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> "ServeConfig":
+    def from_env(cls, env: dict[str, str] | None = None) -> ServeConfig:
         env = env if env is not None else dict(os.environ)
 
         rules = env.get("SENTROOK_RULES")
@@ -105,15 +105,9 @@ class ServeConfig:
 
         rules_path = Path(rules).expanduser() if rules else DEFAULT_RULES_DIR
         bundle_version = bundle_raw or resolve_bundle_version(rules_path)
-        library_dir = (
-            Path(library_dir_raw).expanduser()
-            if library_dir_raw
-            else DEFAULT_LIBRARY_DIR
-        )
+        library_dir = Path(library_dir_raw).expanduser() if library_dir_raw else DEFAULT_LIBRARY_DIR
         sync_interval = (
-            int(sync_interval_raw)
-            if sync_interval_raw
-            else DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
+            int(sync_interval_raw) if sync_interval_raw else DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
         )
         feedback_mode = env.get("SENTROOK_FEEDBACK_MODE", "off")
         # Alias: queue previously wrote a local JSONL; always submit now.
@@ -122,18 +116,17 @@ class ServeConfig:
         # Prefer an explicit feedback URL; fall back to the library sync base
         # so hosted deploys need only SENTROOK_LIBRARY_URL for pull + submit.
         feedback_url = (
-            env.get("SENTROOK_FEEDBACK_ROOKERY_URL")
-            or env.get("SENTROOK_LIBRARY_URL")
-            or None
+            env.get("SENTROOK_FEEDBACK_ROOKERY_URL") or env.get("SENTROOK_LIBRARY_URL") or None
         )
         feedback_excerpt = env.get("SENTROOK_FEEDBACK_MAX_EXCERPT_CHARS")
         rookery_api_key = (env.get("SENTROOK_ROOKERY_API_KEY") or "").strip() or None
         scan_api_key = (env.get("SENTROOK_SCAN_API_KEY") or "").strip() or None
         auth_mode_raw = (env.get("SENTROOK_SCAN_AUTH_MODE") or "auto").strip().lower()
         scan_auth_mode = auth_mode_raw if auth_mode_raw in VALID_SCAN_AUTH_MODES else "auto"
-        oidc_issuer = normalize_oidc_url(
-            env.get("SENTROOK_OIDC_ISSUER") or DEFAULT_OIDC_ISSUER
-        ) or DEFAULT_OIDC_ISSUER
+        oidc_issuer = (
+            normalize_oidc_url(env.get("SENTROOK_OIDC_ISSUER") or DEFAULT_OIDC_ISSUER)
+            or DEFAULT_OIDC_ISSUER
+        )
         oidc_audience = (env.get("SENTROOK_OIDC_AUDIENCE") or DEFAULT_OIDC_AUDIENCE).strip() or (
             DEFAULT_OIDC_AUDIENCE
         )
@@ -177,17 +170,13 @@ class ServeConfig:
                 mode=feedback_mode,
                 rookery_url=feedback_url,
                 max_excerpt_chars=int(feedback_excerpt) if feedback_excerpt else 200,
-                derive_intent=_env_bool(
-                    env, "SENTROOK_FEEDBACK_DERIVE_INTENT", default=True
-                ),
+                derive_intent=_env_bool(env, "SENTROOK_FEEDBACK_DERIVE_INTENT", default=True),
             ),
             personal_corpus_dir=Path(personal_corpus_raw).expanduser()
             if personal_corpus_raw
             else DEFAULT_PERSONAL_CORPUS_DIR,
             personal_corpus_enabled=personal_corpus_enabled,
-            server_sanitize_planir=_env_bool(
-                env, "SENTROOK_SERVER_SANITIZE_PLANIR", default=True
-            ),
+            server_sanitize_planir=_env_bool(env, "SENTROOK_SERVER_SANITIZE_PLANIR", default=True),
         )
 
     def resolved_corpus_dir(self) -> Path:

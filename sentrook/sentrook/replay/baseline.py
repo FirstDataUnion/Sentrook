@@ -34,8 +34,7 @@ CANONICAL_REPLAY_SESSIONS: tuple[CanonicalReplaySession, ...] = (
         label="memory-token-optimization",
         session_id="52d3c8dc-0141-46bc-82bd-ad26a52a2db2",
         relative_path=(
-            "openclaw_example/agents/main/sessions/"
-            "52d3c8dc-0141-46bc-82bd-ad26a52a2db2.jsonl"
+            "openclaw_example/agents/main/sessions/52d3c8dc-0141-46bc-82bd-ad26a52a2db2.jsonl"
         ),
         description="Long memory/token session — exec-heavy, early doc fetch",
     ),
@@ -43,8 +42,7 @@ CANONICAL_REPLAY_SESSIONS: tuple[CanonicalReplaySession, ...] = (
         label="wiki-notion-work",
         session_id="3bad67cf-3323-4569-846c-dfbde83daf15",
         relative_path=(
-            "openclaw_example/agents/main/sessions/"
-            "3bad67cf-3323-4569-846c-dfbde83daf15.jsonl"
+            "openclaw_example/agents/main/sessions/3bad67cf-3323-4569-846c-dfbde83daf15.jsonl"
         ),
         description="Wiki/Notion session — exec-heavy, little web_fetch",
     ),
@@ -132,13 +130,9 @@ def run_replay_baseline(
             max_snapshots=max_snapshots,
         )
         if not scanner_summary:
-            scanner_summary = _relativize_scanner_paths(
-                dict(report.scanner), root
-            )
+            scanner_summary = _relativize_scanner_paths(dict(report.scanner), root)
             scanner_summary["rules_loaded"] = rules_loaded
-        session_entries[canonical.label] = session_report_to_baseline_entry(
-            canonical, report
-        )
+        session_entries[canonical.label] = session_report_to_baseline_entry(canonical, report)
 
     return ReplayBaselineReport(
         scanner=scanner_summary,
@@ -174,9 +168,7 @@ def _comparable_sessions(report: ReplayBaselineReport) -> dict[str, Any]:
     }
 
 
-def compare_baselines(
-    current: ReplayBaselineReport, expected: ReplayBaselineReport
-) -> list[str]:
+def compare_baselines(current: ReplayBaselineReport, expected: ReplayBaselineReport) -> list[str]:
     """Return human-readable drift messages; empty when metrics match."""
     drifts: list[str] = []
 
@@ -208,9 +200,7 @@ def compare_baselines(
         exp_exec = exp.get("exec_summary") or {}
         for key in ("total", "allow", "review", "block", "l3_allow"):
             if cur_exec.get(key) != exp_exec.get(key):
-                drifts.append(
-                    f"{label}.exec.{key}: {exp_exec.get(key)!r} → {cur_exec.get(key)!r}"
-                )
+                drifts.append(f"{label}.exec.{key}: {exp_exec.get(key)!r} → {cur_exec.get(key)!r}")
 
         cur_top = cur_exec.get("top_review_commands") or []
         exp_top = exp_exec.get("top_review_commands") or []
@@ -251,11 +241,7 @@ def format_baseline_text(
         lines.append(f"   snapshots: {entry.get('total_snapshots', 0)}")
 
         decisions = entry.get("decision_counts") or {}
-        parts = [
-            f"{k}={decisions[k]}"
-            for k in ("allow", "review", "block")
-            if decisions.get(k)
-        ]
+        parts = [f"{k}={decisions[k]}" for k in ("allow", "review", "block") if decisions.get(k)]
         lines.append(f"   decisions: {', '.join(parts) or '(none)'}")
 
         rules = entry.get("rule_hit_counts") or {}
@@ -281,9 +267,7 @@ def format_baseline_text(
                         cmd = cmd[:69] + "..."
                     indices = item.get("snapshot_indices") or []
                     idx_hint = f" #{indices[0]:03d}" if indices else ""
-                    lines.append(
-                        f"     ×{item.get('count', 1)}{idx_hint} {cmd}"
-                    )
+                    lines.append(f"     ×{item.get('count', 1)}{idx_hint} {cmd}")
         lines.append("")
 
     if compare_to is not None:

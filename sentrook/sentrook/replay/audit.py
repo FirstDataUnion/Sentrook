@@ -165,9 +165,7 @@ def _session_id_from_path(session_path: Path) -> str | None:
     return stem if stem else None
 
 
-def _snapshot_from_result(
-    index: int, plan: PlanIR, result: ScanResult
-) -> SnapshotAudit:
+def _snapshot_from_result(index: int, plan: PlanIR, result: ScanResult) -> SnapshotAudit:
     l3_allow: list[str] = []
     l3_kept: list[str] = []
     for trace in result.debug.l3_traces:
@@ -225,9 +223,7 @@ def _fetch_exec_context(
     primary = primary_pending_step(plan)
     pending_exec_idx: int | None = None
     if primary and primary.tool == "exec":
-        pending_exec_idx = next(
-            i for i, step in enumerate(plan.steps) if step.id == primary.id
-        )
+        pending_exec_idx = next(i for i, step in enumerate(plan.steps) if step.id == primary.id)
     steps_since: int | None = None
     if fetch_indices and pending_exec_idx is not None:
         last_fetch = fetch_indices[-1]
@@ -252,9 +248,7 @@ def _is_notable(audit: SnapshotAudit) -> bool:
     return False
 
 
-def build_exec_summary(
-    audits: list[SnapshotAudit], *, top_n: int = 10
-) -> ExecSummary:
+def build_exec_summary(audits: list[SnapshotAudit], *, top_n: int = 10) -> ExecSummary:
     """Summarise pending exec snapshots for baseline and tuning reports."""
     exec_snaps = [a for a in audits if a.pending_tool == "exec"]
     if not exec_snaps:

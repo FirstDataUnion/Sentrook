@@ -21,7 +21,7 @@ testnest run --suite smoke --profile v0 \
 testnest list --scenarios testnest/fixtures/scenarios
 ```
 
-Scenarios: `testnest/fixtures/scenarios/`. Smoke PlanIR inputs: `fixtures/plans/` (and duplicates under `testnest/fixtures/plans/`).
+Scenarios: `testnest/fixtures/scenarios/`. Smoke PlanIR inputs (shared SoT): `fixtures/plans/`.
 
 ## Full policy suites (Rookery SoT)
 

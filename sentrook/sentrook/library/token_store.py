@@ -15,9 +15,7 @@ TOKEN_FILENAME = "rookery-token.json"
 
 
 def token_cache_path() -> Path:
-    auth_dir = Path(
-        os.environ.get("SENTROOK_AUTH_DIR", str(DEFAULT_AUTH_DIR))
-    ).expanduser()
+    auth_dir = Path(os.environ.get("SENTROOK_AUTH_DIR", str(DEFAULT_AUTH_DIR))).expanduser()
     return auth_dir / TOKEN_FILENAME
 
 

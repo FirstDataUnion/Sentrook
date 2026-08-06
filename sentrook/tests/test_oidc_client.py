@@ -51,13 +51,17 @@ def _http_error(payload: dict, code: int = 400) -> urllib.error.HTTPError:
 
 
 def test_token_set_expiry() -> None:
-    fresh = oc.TokenSet(access_token="a", refresh_token=None, expires_at=time.time() + 300, scope="")
+    fresh = oc.TokenSet(
+        access_token="a", refresh_token=None, expires_at=time.time() + 300, scope=""
+    )
     assert not fresh.is_expired()
 
     stale = oc.TokenSet(access_token="a", refresh_token=None, expires_at=time.time() - 1, scope="")
     assert stale.is_expired()
 
-    about_to_expire = oc.TokenSet(access_token="a", refresh_token=None, expires_at=time.time() + 5, scope="")
+    about_to_expire = oc.TokenSet(
+        access_token="a", refresh_token=None, expires_at=time.time() + 5, scope=""
+    )
     assert about_to_expire.is_expired(skew_seconds=60)
 
 
@@ -75,7 +79,12 @@ def test_identity_issuer_defaults_when_unset_or_empty(monkeypatch: pytest.Monkey
 def test_save_load_clear_round_trip(isolated_auth_dir: Path) -> None:
     assert oc.load_cached_tokens() is None
 
-    tokens = oc.TokenSet(access_token="abc", refresh_token="def", expires_at=time.time() + 1800, scope="sentrook.library.read")
+    tokens = oc.TokenSet(
+        access_token="abc",
+        refresh_token="def",
+        expires_at=time.time() + 1800,
+        scope="sentrook.library.read",
+    )
     oc.save_tokens(tokens)
 
     path = oc.token_cache_path()
@@ -220,9 +229,7 @@ def test_poll_device_token_raises_on_denied(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         oc,
         "_oauth_post",
-        lambda url, form: (_ for _ in ()).throw(
-            oc.OIDCClientError("access_denied: user rejected")
-        ),
+        lambda url, form: (_ for _ in ()).throw(oc.OIDCClientError("access_denied: user rejected")),
     )
     with pytest.raises(oc.OIDCClientError, match="access_denied"):
         oc.poll_device_token(
@@ -272,7 +279,9 @@ def test_get_access_token_returns_none_when_nothing_cached() -> None:
 
 def test_get_access_token_uses_valid_cached_token(isolated_auth_dir: Path) -> None:
     oc.save_tokens(
-        oc.TokenSet(access_token="cached-valid", refresh_token=None, expires_at=time.time() + 1800, scope="")
+        oc.TokenSet(
+            access_token="cached-valid", refresh_token=None, expires_at=time.time() + 1800, scope=""
+        )
     )
     assert oc.get_access_token() == "cached-valid"
 
@@ -328,7 +337,9 @@ def test_get_access_token_expired_without_refresh_token_returns_none(
     isolated_auth_dir: Path,
 ) -> None:
     oc.save_tokens(
-        oc.TokenSet(access_token="expired", refresh_token=None, expires_at=time.time() - 10, scope="")
+        oc.TokenSet(
+            access_token="expired", refresh_token=None, expires_at=time.time() - 10, scope=""
+        )
     )
     assert oc.get_access_token() is None
 

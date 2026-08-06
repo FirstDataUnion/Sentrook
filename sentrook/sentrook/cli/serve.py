@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -18,19 +18,15 @@ serve_app = typer.Typer(help="Warm HTTP scan daemon (POST /scan with PlanIR 1.0)
 def serve_root(
     ctx: typer.Context,
     host: Annotated[
-        Optional[str], typer.Option("--host", help="Bind host (default: 127.0.0.1)")
+        str | None, typer.Option("--host", help="Bind host (default: 127.0.0.1)")
     ] = None,
-    port: Annotated[
-        Optional[int], typer.Option("--port", help="Bind port (default: 9099)")
-    ] = None,
-    rules: Annotated[Optional[Path], typer.Option("--rules", help="Rules dir")] = None,
-    corpus: Annotated[Optional[Path], typer.Option("--corpus", help="Corpus dir")] = None,
+    port: Annotated[int | None, typer.Option("--port", help="Bind port (default: 9099)")] = None,
+    rules: Annotated[Path | None, typer.Option("--rules", help="Rules dir")] = None,
+    corpus: Annotated[Path | None, typer.Option("--corpus", help="Corpus dir")] = None,
     l3_policy: Annotated[
-        Optional[str], typer.Option("--l3-policy", help="L3 policy (default: tie_breaker)")
+        str | None, typer.Option("--l3-policy", help="L3 policy (default: tie_breaker)")
     ] = None,
-    log_path: Annotated[
-        Optional[Path], typer.Option("--log-path", help="Scan log JSONL path")
-    ] = None,
+    log_path: Annotated[Path | None, typer.Option("--log-path", help="Scan log JSONL path")] = None,
 ) -> None:
     """Run the warm scan HTTP daemon (POST /scan, GET /health)."""
     if ctx.invoked_subcommand is not None:
@@ -49,12 +45,8 @@ def serve_root(
 
 
 def analyze_cmd(
-    log_path: Annotated[
-        Path, typer.Option("--log-path", help="Scan JSONL log file")
-    ],
-    format: Annotated[
-        str, typer.Option("--format", help="Output format: json or text")
-    ] = "text",
+    log_path: Annotated[Path, typer.Option("--log-path", help="Scan JSONL log file")],
+    format: Annotated[str, typer.Option("--format", help="Output format: json or text")] = "text",
 ) -> None:
     """Aggregate a scan JSONL log: decisions, rule hits, exec review rate."""
     try:
@@ -77,9 +69,7 @@ def analyze_cmd(
 
 
 def harvest_submit_cmd(
-    log_path: Annotated[
-        Path, typer.Option("--log-path", help="Scan JSONL log file")
-    ],
+    log_path: Annotated[Path, typer.Option("--log-path", help="Scan JSONL log file")],
     url: Annotated[
         str,
         typer.Option("--url", help="Rookery base URL for submissions"),
@@ -88,7 +78,7 @@ def harvest_submit_cmd(
         str, typer.Option("--decision", help="Scan decision to harvest (default: review)")
     ] = "review",
     label: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--label", help="Corpus label required for submit (attack|benign)"),
     ] = None,
     dry_run: Annotated[
@@ -131,7 +121,7 @@ def verify_cmd(
         typer.Option("--url", help="Scan sidecar base URL"),
     ] = "http://127.0.0.1:9099",
     openclaw_dir: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option(
             "--openclaw-dir",
             help="OpenClaw compose project (enables plugin + gateway network checks)",
@@ -142,7 +132,7 @@ def verify_cmd(
         typer.Option("--gateway-service", help="Compose service for the gateway"),
     ] = "openclaw-gateway",
     sidecar_service: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--sidecar-service",
             help="Compose service for sidecar health (default sentrook-scan when --openclaw-dir is set)",

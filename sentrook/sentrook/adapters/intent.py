@@ -8,9 +8,7 @@ from typing import Literal
 IntentKind = Literal["user", "cron", "subagent", "system"]
 
 _CRON_PREFIX = re.compile(r"^\s*\[cron:", re.IGNORECASE)
-_SUBAGENT_MARKERS = re.compile(
-    r"\[Subagent Context\]|\[Subagent Task\]", re.IGNORECASE
-)
+_SUBAGENT_MARKERS = re.compile(r"\[Subagent Context\]|\[Subagent Task\]", re.IGNORECASE)
 _SYSTEM_PREFIX = re.compile(r"^\s*\[system[:\]]", re.IGNORECASE)
 
 

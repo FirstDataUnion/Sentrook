@@ -7,6 +7,7 @@ from typing import Protocol
 from sentrook.corpus.models import CorpusEntry, LoadedRuleCorpus
 from sentrook.result import L3CandidateTrace, L3RuleTrace
 
+
 @dataclass(frozen=True)
 class L3ScoreParams:
     """Resolved thresholds for one scoring call (per-rule overrides already applied)."""
@@ -23,8 +24,7 @@ class BiEncoderScorer(Protocol):
     this same interface, so nothing downstream changes.
     """
 
-    def similarities(self, query_text: str, entries: list[CorpusEntry]) -> list[float]:
-        ...
+    def similarities(self, query_text: str, entries: list[CorpusEntry]) -> list[float]: ...
 
 
 class StubScorer:
@@ -35,9 +35,7 @@ class StubScorer:
     to drive a specific margin and exercise the policy fuse.
     """
 
-    def __init__(
-        self, scores: dict[str, float] | None = None, *, default: float = 0.0
-    ) -> None:
+    def __init__(self, scores: dict[str, float] | None = None, *, default: float = 0.0) -> None:
         self._scores = scores or {}
         self._default = default
 

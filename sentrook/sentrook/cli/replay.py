@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -29,16 +29,14 @@ replay_app = typer.Typer(help="Replay host session logs into PlanIR snapshots.")
 @replay_app.command("openclaw")
 def replay_openclaw_cmd(
     session: Annotated[Path, typer.Option("--session", help="OpenClaw session JSONL")],
-    output: Annotated[
-        Path, typer.Option("--output", help="Directory for PlanIR snapshots")
-    ],
+    output: Annotated[Path, typer.Option("--output", help="Directory for PlanIR snapshots")],
     trajectory: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--trajectory", help="Optional trajectory JSONL for run_id/intent"),
     ] = None,
     agent_id: Annotated[str, typer.Option("--agent-id")] = "main",
     max_snapshots: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--max-snapshots", help="Limit snapshots written"),
     ] = None,
 ) -> None:
@@ -64,9 +62,7 @@ def replay_openclaw_cmd(
 
 @replay_app.command("scan")
 def replay_scan_cmd(
-    session: Annotated[
-        Path, typer.Option("--session", help="OpenClaw session JSONL")
-    ],
+    session: Annotated[Path, typer.Option("--session", help="OpenClaw session JSONL")],
     rules: Annotated[
         Path,
         typer.Option(
@@ -75,41 +71,39 @@ def replay_scan_cmd(
         ),
     ] = DEFAULT_RULES_DIR,
     trajectory: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--trajectory", help="Optional trajectory JSONL for run_id/intent"),
     ] = None,
     agent_id: Annotated[str, typer.Option("--agent-id")] = "main",
     max_snapshots: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--max-snapshots", help="Limit snapshots scanned"),
     ] = None,
-    format: Annotated[
-        str, typer.Option("--format", help="Output format: json or text")
-    ] = "text",
+    format: Annotated[str, typer.Option("--format", help="Output format: json or text")] = "text",
     corpus: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option(
             "--corpus",
             help="Layer 3 corpus directory (default: repo corpus/ or ~/.sentrook/corpus/)",
         ),
     ] = None,
     l3_policy: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--l3-policy",
             help="L3 policy (default: tie_breaker; use off for L2-only)",
         ),
     ] = None,
     allow_margin: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--allow-margin", help="Override L3 allow_margin"),
     ] = None,
     fail_closed_margin: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--fail-closed-margin", help="Override L3 fail_closed_margin"),
     ] = None,
     top_k: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--top-k", help="Override L3 top_k per side"),
     ] = None,
 ) -> None:
@@ -152,25 +146,19 @@ def replay_scan_cmd(
 
 @replay_app.command("parity")
 def replay_parity_cmd(
-    scan_log: Annotated[
-        Path, typer.Option("--scan-log", help="Live scan JSONL log")
-    ],
-    session: Annotated[
-        Path, typer.Option("--session", help="OpenClaw session JSONL to replay")
-    ],
+    scan_log: Annotated[Path, typer.Option("--scan-log", help="Live scan JSONL log")],
+    session: Annotated[Path, typer.Option("--session", help="OpenClaw session JSONL to replay")],
     rules: Annotated[
         Path,
         typer.Option("--rules", help="Rules directory"),
     ] = DEFAULT_RULES_DIR,
     session_id: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--session-id", help="Filter scan log to one session id"),
     ] = None,
-    format: Annotated[
-        str, typer.Option("--format", help="Output format: json or text")
-    ] = "text",
-    corpus: Annotated[Optional[Path], typer.Option("--corpus", help="Corpus dir")] = None,
-    l3_policy: Annotated[Optional[str], typer.Option("--l3-policy")] = None,
+    format: Annotated[str, typer.Option("--format", help="Output format: json or text")] = "text",
+    corpus: Annotated[Path | None, typer.Option("--corpus", help="Corpus dir")] = None,
+    l3_policy: Annotated[str | None, typer.Option("--l3-policy")] = None,
 ) -> None:
     """Compare live scan log decisions against replay on the same session."""
     try:
@@ -214,47 +202,45 @@ def replay_baseline_cmd(
             help="Rules file or directory (default: ~/.sentrook/rules/)",
         ),
     ] = DEFAULT_RULES_DIR,
-    format: Annotated[
-        str, typer.Option("--format", help="Output format: json or text")
-    ] = "text",
+    format: Annotated[str, typer.Option("--format", help="Output format: json or text")] = "text",
     compare: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option(
             "--compare",
             help="Compare metrics to a pinned baseline JSON (default: replay/baselines/v0.2.0.json)",
         ),
     ] = None,
     write: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option(
             "--write",
             help="Write baseline JSON to this path (default: replay/baselines/v0.2.0.json)",
         ),
     ] = None,
     corpus: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option(
             "--corpus",
             help="Layer 3 corpus directory (default: repo corpus/ or ~/.sentrook/corpus/)",
         ),
     ] = None,
     l3_policy: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--l3-policy",
             help="L3 policy (default: tie_breaker; use off for L2-only)",
         ),
     ] = None,
     allow_margin: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--allow-margin", help="Override L3 allow_margin"),
     ] = None,
     fail_closed_margin: Annotated[
-        Optional[float],
+        float | None,
         typer.Option("--fail-closed-margin", help="Override L3 fail_closed_margin"),
     ] = None,
     top_k: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--top-k", help="Override L3 top_k per side"),
     ] = None,
 ) -> None:
@@ -288,7 +274,7 @@ def replay_baseline_cmd(
         except FileNotFoundError:
             if compare is not None:
                 typer.echo(f"baseline compare file not found: {compare_path}", err=True)
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=1) from None
 
     if format == "json":
         payload = report.to_json_dict()

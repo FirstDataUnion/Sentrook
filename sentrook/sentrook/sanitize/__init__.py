@@ -57,7 +57,12 @@ def __getattr__(name: str):
         from sentrook.sanitize import corpus as corpus_mod
 
         return getattr(corpus_mod, name)
-    if name in {"SanitizePlanIRResult", "hash_session_id", "sanitize_planir", "sanitize_planir_dict"}:
+    if name in {
+        "SanitizePlanIRResult",
+        "hash_session_id",
+        "sanitize_planir",
+        "sanitize_planir_dict",
+    }:
         from sentrook.sanitize import planir as planir_mod
 
         return getattr(planir_mod, name)

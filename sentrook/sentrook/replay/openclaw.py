@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from sentrook.adapters.intent import (
     IntentKind,
@@ -29,9 +30,7 @@ def replay_session(
     """Replay an OpenClaw session JSONL into rolling before_tool_call PlanIR snapshots."""
     session_id = session_path.stem.split(".")[0]
     messages = _load_jsonl(session_path)
-    trajectory_intents = (
-        _load_trajectory_intents(trajectory_path) if trajectory_path else {}
-    )
+    trajectory_intents = _load_trajectory_intents(trajectory_path) if trajectory_path else {}
     tool_calls = _collect_tool_calls(messages, trajectory_intents)
 
     count = 0
@@ -229,9 +228,7 @@ def _collect_tool_calls(
                 "tool": _normalize_tool_name(block.get("name", "")),
                 "args": _normalize_args(block),
                 "tool_call_id": str(call_id) if call_id else None,
-                "result_summary": results_by_id.get(str(call_id))
-                if call_id
-                else None,
+                "result_summary": results_by_id.get(str(call_id)) if call_id else None,
                 "openclaw_run_id": current_run,
                 "intent": current_intent,
                 "intent_kind": current_kind,

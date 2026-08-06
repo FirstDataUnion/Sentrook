@@ -1,7 +1,7 @@
 name: empty-allow
 tags: [smoke]
 description: Safe plan allows under demo library
-plan: ../plans/safe_read_only.json
+plan: ../../../fixtures/plans/safe_read_only.json
 profiles:
   v0:
     decision: allow
