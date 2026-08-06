@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose an improvement to the public engine, harness, plugin, or docs
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Production detection content belongs in **Rookery**, not here. Feature requests for the public engine, TestNest harness, DEMO examples, or OpenClaw plugin are welcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How should Sentrook behave instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scanner / PlanIR / layers
+        - sentrook serve / auth
+        - Library sync / registry contract
+        - TestNest harness
+        - OpenClaw plugin
+        - Docs / examples
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional — other approaches you thought about.

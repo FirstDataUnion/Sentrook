@@ -3,7 +3,12 @@ name = "sentrook"
 dynamic = ["version"]
 description = "Local agent execution trajectory scanner (FIDU Sentrook prototype)"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [
+    { name = "FirstDataUnion" },
+]
 dependencies = [
     "pydantic>=2.10.0",
     "pyjwt[crypto]>=2.13.0",
@@ -11,6 +16,12 @@ dependencies = [
     "typer>=0.15.0",
     "fastembed>=0.8.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/FirstDataUnion/Sentrook"
+Repository = "https://github.com/FirstDataUnion/Sentrook"
+Issues = "https://github.com/FirstDataUnion/Sentrook/issues"
+"Bug Tracker" = "https://github.com/FirstDataUnion/Sentrook/issues"
 
 [project.optional-dependencies]
 dev = [

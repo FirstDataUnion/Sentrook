@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in Sentrook (engine, TestNest, plugin, or docs) is wrong
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not** include secrets, production YAIRA rules, or personal PlanIR with sensitive args.
+        Security issues → [SECURITY.md](https://github.com/FirstDataUnion/Sentrook/blob/main/SECURITY.md).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong in one or two sentences?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Scanner / PlanIR / layers
+        - sentrook serve / auth
+        - Library sync CLI
+        - TestNest harness
+        - OpenClaw plugin
+        - Docs / examples
+        - Deploy recipes
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Sentrook version (`sentrook --version`), plugin version, and/or git SHA.
+      placeholder: "0.2.13 / @firstdataunion/sentrook-openclaw@0.4.0 / abc1234"
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Prefer DEMO rules under `examples/` and fixtures under `fixtures/plans/`.
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Node version (if plugin), how you installed Sentrook.

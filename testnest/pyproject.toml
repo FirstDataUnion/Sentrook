@@ -3,12 +3,21 @@ name = "testnest"
 dynamic = ["version"]
 description = "Scenario test harness for Sentrook (FIDU prototype)"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
+authors = [
+    { name = "FirstDataUnion" },
+]
 dependencies = [
     "sentrook",
     "pyyaml>=6.0.2",
     "typer>=0.15.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/FirstDataUnion/Sentrook"
+Repository = "https://github.com/FirstDataUnion/Sentrook"
+Issues = "https://github.com/FirstDataUnion/Sentrook/issues"
 
 [project.optional-dependencies]
 dev = [

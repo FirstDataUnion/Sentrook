@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "license": "MIT",
+  "author": "FirstDataUnion",
   "files": [
     "dist/",
     "index.ts",
