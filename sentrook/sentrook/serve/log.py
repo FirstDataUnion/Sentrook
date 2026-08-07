@@ -3,6 +3,14 @@
 Each line records one ``before_tool_call`` decision in a compact, stable shape so
 operators can tail it live and so it can be diffed against ``sentrook replay scan``
 on the same session for live-vs-replay parity checks.
+
+Free-text PlanIR fields (``intent``, ``pending_command_excerpt``) are gated by
+``SENTROOK_LOG_CONTENT`` / :func:`append_scan_log`'s ``log_content``:
+
+- ``metadata`` — omit free text **on disk** (required for ``SENTROOK_ENV=production``);
+  the HTTP echo still carries pattern-scrubbed text for feedback/review tooling
+- ``scrubbed`` — pattern-redacted text on disk and wire (secrets/PII patterns; not a guarantee)
+- ``full`` — unsanitized (development only)
 """
 
 from __future__ import annotations
@@ -105,11 +113,22 @@ def build_log_record(
     bundle_version: str | None = None,
     request_ms: int | None = None,
     sanitize_log_fields: bool = False,
+    log_content: str = "scrubbed",
 ) -> ScanLogRecord:
+    """Build a scan log record for the HTTP response / feedback echo.
+
+    Free-text fields (``intent``, ``pending_command_excerpt``):
+
+    - ``full`` — as present on the plan (developer debugging only)
+    - ``scrubbed`` / ``metadata`` — pattern-scrubbed text for the wire echo
+
+    Disk writers must call :func:`append_scan_log` (or :func:`record_for_disk`)
+    with the same ``log_content`` so ``metadata`` omits free text on disk.
+    """
     l3_allow, l3_kept = _l3_rule_lists(result)
     intent = plan.intent
     pending_excerpt = _pending_command_excerpt(plan)
-    if sanitize_log_fields:
+    if log_content != "full":
         if intent:
             intent = scrub_text(intent, max_chars=1000, pii=True)
         if pending_excerpt:
@@ -118,6 +137,8 @@ def build_log_record(
                 max_chars=COMMAND_EXCERPT_LIMIT,
                 pii=True,
             )
+    # sanitize_log_fields kept for call-site compatibility; policy is log_content.
+    _ = sanitize_log_fields
     meta = plan.metadata
     return ScanLogRecord(
         ts=ts or datetime.now(UTC).isoformat(),
@@ -158,6 +179,24 @@ def build_log_record(
     )
 
 
+def record_for_disk(record: ScanLogRecord, *, log_content: str) -> ScanLogRecord:
+    """Return a copy safe to append to scan.log.jsonl under ``log_content`` policy.
+
+    ``metadata`` strips PlanIR free text. Other modes pass through (callers
+    must have built scrubbed/full content via :func:`build_log_record`).
+    """
+    if log_content != "metadata":
+        return record
+    if record.intent is None and record.pending_command_excerpt is None:
+        return record
+    return record.model_copy(
+        update={
+            "intent": None,
+            "pending_command_excerpt": None,
+        }
+    )
+
+
 def load_scan_log(path: Path) -> list[dict[str, Any]]:
     """Load a scan JSONL file, skipping blank lines."""
     records: list[dict[str, Any]] = []
@@ -170,14 +209,24 @@ def load_scan_log(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def append_scan_log(log_path: Path, record: ScanLogRecord | dict[str, Any]) -> None:
-    """Append one record as a JSON line, creating parent dirs as needed."""
+def append_scan_log(
+    log_path: Path,
+    record: ScanLogRecord | dict[str, Any],
+    *,
+    log_content: str = "scrubbed",
+) -> None:
+    """Append one record as a JSON line, creating parent dirs as needed.
+
+    When ``record`` is a :class:`ScanLogRecord`, free-text fields are stripped
+    according to ``log_content`` before write. Dict payloads are written as-is
+    (callers must pre-strip).
+    """
     log_path = Path(log_path).expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    line = (
-        record.to_json_line()
-        if isinstance(record, ScanLogRecord)
-        else json.dumps(record, ensure_ascii=False)
-    )
+    if isinstance(record, ScanLogRecord):
+        disk_record = record_for_disk(record, log_content=log_content)
+        line = disk_record.to_json_line()
+    else:
+        line = json.dumps(record, ensure_ascii=False)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")

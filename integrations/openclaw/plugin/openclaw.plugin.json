@@ -86,11 +86,11 @@
           },
           "interactiveTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for interactive sessions (ms). Default 120000. Env: SENTROOK_APPROVAL_TIMEOUT_MS."
+            "description": "Review timeout for interactive sessions (ms). Default 300000 (5 min). Env: SENTROOK_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for unattended cron/subagent runs (ms). Default 900000 (15 min). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
+            "description": "Review timeout for unattended cron/subagent runs (ms). Default 1800000 (30 min). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutBehavior": {
             "type": "string",

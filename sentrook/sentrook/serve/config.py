@@ -4,6 +4,15 @@ Operators configure the live hook through ``SENTROOK_*`` env vars so the same im
 behaves correctly whether it runs as a sidecar container, a host daemon, or a
 one-shot CLI. Defaults mirror the rest of Sentrook (``tie_breaker`` L3, repo/home
 rules and corpus discovery).
+
+Logging privacy (disk):
+
+- ``SENTROOK_ENV=production`` defaults ``SENTROOK_LOG_CONTENT=metadata`` (no
+  PlanIR intent/command excerpts in ``scan.log.jsonl``) and refuses to start
+  unless sanitize stays on.
+- Development defaults to ``scrubbed`` (pattern redaction only — not a PII
+  guarantee). Use ``full`` only for local debugging.
+- ``SENTROOK_LOG_LEVEL`` controls stdlib verbosity (HTTP access lines are DEBUG).
 """
 
 from __future__ import annotations
@@ -28,6 +37,13 @@ DEFAULT_LIBRARY_SYNC_INTERVAL_SEC = 86_400
 DEFAULT_PERSONAL_CORPUS_DIR = Path.home() / ".sentrook" / "personal-corpus"
 DEFAULT_OIDC_JWKS_CACHE_SECONDS = 300
 VALID_SCAN_AUTH_MODES = frozenset({"auto", "oidc", "apikey"})
+# Disk scan-log content policy. ``metadata`` omits PlanIR free text (intent /
+# command excerpts) so production hosts can guarantee no submission prose on disk.
+# ``scrubbed`` keeps pattern-redacted text (not a PII guarantee). ``full`` is
+# developer-only and writes unsanitized excerpts.
+VALID_LOG_CONTENT_MODES = frozenset({"metadata", "scrubbed", "full"})
+VALID_ENVIRONMENTS = frozenset({"production", "development"})
+VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 
 def _env_bool(env: dict[str, str], key: str, *, default: bool = False) -> bool:
@@ -39,6 +55,35 @@ def _env_bool(env: dict[str, str], key: str, *, default: bool = False) -> bool:
     if raw in ("0", "false", "no", "off"):
         return False
     return default
+
+
+def _parse_environment(raw: str | None) -> str:
+    """Normalize SENTROOK_ENV to production | development (default development)."""
+    value = (raw or "").strip().lower()
+    if value in ("production", "prod"):
+        return "production"
+    if value in ("development", "dev", ""):
+        return "development"
+    if value in VALID_ENVIRONMENTS:
+        return value
+    return "development"
+
+
+def _parse_log_content(raw: str | None, *, environment: str) -> str:
+    value = (raw or "").strip().lower()
+    if value in VALID_LOG_CONTENT_MODES:
+        return value
+    # Production defaults to metadata-only disk logs (zero free-text from PlanIR).
+    if environment == "production":
+        return "metadata"
+    return "scrubbed"
+
+
+def _parse_log_level(raw: str | None) -> str:
+    value = (raw or "INFO").strip().upper()
+    if value in VALID_LOG_LEVELS:
+        return value
+    return "INFO"
 
 
 @dataclass
@@ -88,6 +133,12 @@ class ServeConfig:
     personal_corpus_dir: Path | None = DEFAULT_PERSONAL_CORPUS_DIR
     personal_corpus_enabled: bool = True
     server_sanitize_planir: bool = True
+    #: deployment profile: production | development (from SENTROOK_ENV).
+    environment: str = "development"
+    #: What free text from PlanIR may be written to scan.log.jsonl.
+    log_content: str = "scrubbed"  # metadata | scrubbed | full
+    #: Stdlib logger level for sentrook.serve (access lines are DEBUG).
+    log_level: str = "INFO"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> ServeConfig:
@@ -135,6 +186,9 @@ class ServeConfig:
         personal_corpus_raw = env.get("SENTROOK_PERSONAL_CORPUS_DIR")
         personal_enabled_raw = (env.get("SENTROOK_PERSONAL_CORPUS_ENABLED") or "").strip().lower()
         personal_corpus_enabled = personal_enabled_raw not in ("0", "false", "no")
+        environment = _parse_environment(env.get("SENTROOK_ENV"))
+        log_content = _parse_log_content(env.get("SENTROOK_LOG_CONTENT"), environment=environment)
+        log_level = _parse_log_level(env.get("SENTROOK_LOG_LEVEL"))
 
         return cls(
             mode=env.get("SENTROOK_MODE", "observe"),
@@ -177,6 +231,9 @@ class ServeConfig:
             else DEFAULT_PERSONAL_CORPUS_DIR,
             personal_corpus_enabled=personal_corpus_enabled,
             server_sanitize_planir=_env_bool(env, "SENTROOK_SERVER_SANITIZE_PLANIR", default=True),
+            environment=environment,
+            log_content=log_content,
+            log_level=log_level,
         )
 
     def resolved_corpus_dir(self) -> Path:
@@ -194,3 +251,22 @@ class ServeConfig:
             l3_policy=self.l3_policy,
             l3=L3Config(corpus_dir=str(self.resolved_corpus_dir())),
         )
+
+
+def validate_production_logging(config: ServeConfig) -> list[str]:
+    """Return hard errors when production logging cannot guarantee no PlanIR prose on disk."""
+    if config.environment != "production":
+        return []
+    errors: list[str] = []
+    if not config.server_sanitize_planir:
+        errors.append(
+            "production requires SENTROOK_SERVER_SANITIZE_PLANIR=1 "
+            "(ingress must sanitize before scan/log)"
+        )
+    if config.log_content != "metadata":
+        errors.append(
+            "production requires SENTROOK_LOG_CONTENT=metadata "
+            "(omit intent/command excerpts from scan.log.jsonl; "
+            "pattern scrubbing is not a PII guarantee)"
+        )
+    return errors

@@ -291,10 +291,33 @@ Scans run only on **tool calls**. Chat-only turns produce no scan lines.
 | `sentrook-scan-key.sh` | Shared API key helper (optional; prefer OIDC) |
 | `uninstall-plugin.sh` | Remove plugin + optional credential purge |
 
-## PlanIR sanitization
+## PlanIR sanitization and scan-log privacy
 
 Plugin egress scrubbing defaults **on** (`sanitization.enabled: true` /
 `SENTROOK_SANITIZE_PLANIR=1`). Server
 ingress uses `SENTROOK_SERVER_SANITIZE_PLANIR` (default on). FIDU hosted
 deploy docs live in Rookery `deploy/sentrook-scan/` (see also
 `sentrook/deploy/README.md` pointer).
+
+**Disk logs (`scan.log.jsonl`)** can still hold scrubbed intent / command
+excerpts when `SENTROOK_LOG_CONTENT=scrubbed` (the development default).
+Pattern scrubbing is **not** a PII guarantee — free-form names and prose that
+do not match patterns remain. For production traffic set:
+
+```bash
+SENTROOK_ENV=production
+# implies SENTROOK_LOG_CONTENT=metadata (omit intent + command excerpts on disk)
+# HTTP/feedback echo still gets scrubbed text; only the JSONL file is stripped
+# refuses to start if sanitize is off or log content is scrubbed/full
+```
+
+| Variable | Role |
+|----------|------|
+| `SENTROOK_ENV` | `production` \| `development` (aliases: `prod` / `dev`) |
+| `SENTROOK_LOG_CONTENT` | `metadata` (no PlanIR free text on disk) \| `scrubbed` \| `full` (dev only) |
+| `SENTROOK_LOG_LEVEL` | Stdlib level (`INFO` default; access lines are `DEBUG`) |
+| `SENTROOK_SERVER_SANITIZE_PLANIR` | Ingress sanitize + session-id hashing (required in production) |
+
+Latency JSONL (`SENTROOK_LATENCY_LOG_PATH`) stores timings and ids only — no
+PlanIR body. Decision summaries in the scan log are rule-engine text, not user
+prompts.

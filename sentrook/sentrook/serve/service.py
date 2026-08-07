@@ -71,8 +71,13 @@ class ScanService:
             mode=self.config.mode,
             bundle_version=self.config.bundle_version,
             sanitize_log_fields=self.config.server_sanitize_planir,
+            log_content=self.config.log_content,
         )
-        append_scan_log(self.config.log_path, record)
+        append_scan_log(
+            self.config.log_path,
+            record,
+            log_content=self.config.log_content,
+        )
         return result, record
 
     def reload(self) -> None:

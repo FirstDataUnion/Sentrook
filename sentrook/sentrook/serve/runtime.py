@@ -99,8 +99,13 @@ class ServeRuntime:
             bundle_version=self.config.bundle_version,
             request_ms=request_ms,
             sanitize_log_fields=self.config.server_sanitize_planir,
+            log_content=self.config.log_content,
         )
-        append_scan_log(self.config.log_path, record)
+        append_scan_log(
+            self.config.log_path,
+            record,
+            log_content=self.config.log_content,
+        )
         return result, record
 
     def reload_from_disk(self) -> None:
@@ -251,6 +256,8 @@ class ServeRuntime:
                     self.config.oidc_audience if oidc_available(self.config) else None
                 ),
                 "server_sanitize_planir": self.config.server_sanitize_planir,
+                "environment": self.config.environment,
+                "log_content": self.config.log_content,
                 "scan_count": self._scan_count,
                 "scan_latency_ms": latency,
             }

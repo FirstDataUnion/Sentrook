@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from sentrook import __version__
 from sentrook.planir import PlanIR
 from sentrook.serve.auth import scan_auth_health_label, verify_scan_auth
-from sentrook.serve.config import ServeConfig
+from sentrook.serve.config import ServeConfig, validate_production_logging
 from sentrook.serve.feedback import FeedbackRequest, process_feedback
 from sentrook.serve.latency import LatencyReport, append_latency_log, build_latency_record
 from sentrook.serve.oidc import OIDCError, oidc_enabled, validate_oidc_configuration
@@ -28,6 +28,14 @@ from sentrook.serve.runtime import ServeRuntime
 logger = logging.getLogger("sentrook.serve")
 
 _MAX_BODY_BYTES = 4 * 1024 * 1024
+
+
+def _configure_logging(level_name: str) -> None:
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s")
+    # basicConfig is a no-op if already configured (e.g. tests); force our level.
+    logging.getLogger().setLevel(level)
+    logger.setLevel(level)
 
 
 def _should_validate_oidc_at_startup(config: ServeConfig) -> bool:
@@ -139,6 +147,7 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                         mode=runtime.config.mode,
                         request_ms=request_ms,
                         sanitize_log_fields=runtime.config.server_sanitize_planir,
+                        log_content=runtime.config.log_content,
                     )
                     payload = build_scan_response(
                         runtime.config,
@@ -236,7 +245,25 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
 
 def serve(config: ServeConfig | None = None) -> None:
     config = config or ServeConfig.from_env()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    _configure_logging(config.log_level)
+
+    logging_errors = validate_production_logging(config)
+    if logging_errors:
+        for err in logging_errors:
+            logger.error("refusing to start: %s", err)
+        raise SystemExit(1)
+
+    if config.log_content == "full":
+        logger.warning(
+            "SENTROOK_LOG_CONTENT=full writes unsanitized PlanIR intent/command "
+            "excerpts to scan.log.jsonl — development only"
+        )
+    elif config.log_content == "scrubbed":
+        logger.info(
+            "scan log content=scrubbed (pattern redaction only; not a PII guarantee). "
+            "Use SENTROOK_ENV=production / SENTROOK_LOG_CONTENT=metadata for "
+            "metadata-only disk logs."
+        )
 
     if _should_validate_oidc_at_startup(config):
         try:
@@ -246,12 +273,16 @@ def serve(config: ServeConfig | None = None) -> None:
             raise SystemExit(1) from exc
 
     logger.info(
-        "sentrook serve starting: mode=%s rules=%s corpus=%s l3=%s log=%s library=%s feedback=%s scan_auth=%s server_sanitize=%s",
+        "sentrook serve starting: env=%s mode=%s rules=%s corpus=%s l3=%s log=%s "
+        "log_content=%s log_level=%s library=%s feedback=%s scan_auth=%s server_sanitize=%s",
+        config.environment,
         config.mode,
         config.rules_path,
         config.resolved_corpus_dir(),
         config.l3_policy.value,
         config.log_path,
+        config.log_content,
+        config.log_level,
         config.library_url or "(local only)",
         config.feedback.mode,
         scan_auth_health_label(config),

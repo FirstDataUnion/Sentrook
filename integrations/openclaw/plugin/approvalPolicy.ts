@@ -10,9 +10,9 @@ export type IntentKind = "user" | "cron" | "subagent" | "system";
 export type TimeoutBehavior = "allow" | "deny";
 
 export interface ApprovalPolicyConfig {
-  /** Interactive review timeout (ms). Default 120_000 (2 min). */
+  /** Interactive review timeout (ms). Default 300_000 (5 min). */
   interactiveTimeoutMs: number;
-  /** Unattended review timeout (ms). Default 900_000 (15 min). */
+  /** Unattended review timeout (ms). Default 1_800_000 (30 min). */
   scheduledTimeoutMs: number;
   /** When an unattended review times out. Default allow. */
   scheduledTimeoutBehavior: TimeoutBehavior;
@@ -28,8 +28,8 @@ export interface ApprovalTiming {
   unattended: boolean;
 }
 
-export const DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS = 120_000;
-export const DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS = 900_000;
+export const DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS = 300_000;
+export const DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS = 1_800_000;
 
 const DEFAULT_SCHEDULED_INTENT_KINDS: IntentKind[] = ["cron", "subagent"];
 

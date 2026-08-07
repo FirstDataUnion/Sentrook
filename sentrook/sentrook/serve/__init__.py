@@ -12,7 +12,7 @@ a single-shot library/CLI call for debugging and replay-parity checks.
 """
 
 from sentrook.serve.config import ServeConfig
-from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
+from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record, record_for_disk
 from sentrook.serve.service import ScanService
 
 __all__ = [
@@ -21,4 +21,5 @@ __all__ = [
     "ScanLogRecord",
     "append_scan_log",
     "build_log_record",
+    "record_for_disk",
 ]

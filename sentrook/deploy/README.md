@@ -6,6 +6,11 @@ bundle assembly) lives in the private **Rookery** repo:
 `deploy/sentrook-scan/` in [FirstDataUnion/Rookery](https://github.com/FirstDataUnion/Rookery)
 (or your local `FIDU-Rookery` sibling).
 
+For production scan hosts, set `SENTROOK_ENV=production` so the sidecar
+defaults to metadata-only `scan.log.jsonl` (no PlanIR intent/command excerpts
+on disk) and refuses to start if sanitize is disabled. See the OpenClaw
+README section **PlanIR sanitization and scan-log privacy**.
+
 Public self-host documentation for a DIY Sentrook + custom ruleset may be
 added here later. Until then, run the engine locally via the root README / Make
 targets.
