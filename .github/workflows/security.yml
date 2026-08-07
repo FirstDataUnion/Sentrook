@@ -84,6 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Private repos: analyze upload calls workflow-runs API (get-a-workflow-run).
+      actions: read
       security-events: write
     steps:
       - name: Checkout
