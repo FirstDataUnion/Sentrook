@@ -67,11 +67,29 @@ def test_build_log_record_metadata_scrubs_for_wire_echo() -> None:
     assert record.pending_tool == "exec"
 
 
-def test_build_log_record_scrubbed_redacts_email() -> None:
+def test_build_log_record_scrubbed_redacts_email_when_sanitize_on() -> None:
     plan = _plan(intent="email jane@example.com please", command="echo hi")
-    record = build_log_record(_result(plan), plan, log_content="scrubbed")
+    record = build_log_record(
+        _result(plan),
+        plan,
+        log_content="scrubbed",
+        sanitize_log_fields=True,
+    )
     assert record.intent is not None
     assert "jane@example.com" not in record.intent
+    assert record.pending_command_excerpt == "echo hi"
+
+
+def test_build_log_record_scrubbed_preserves_raw_when_sanitize_off() -> None:
+    """Legacy: SENTROOK_SERVER_SANITIZE_PLANIR=0 keeps raw log free text."""
+    plan = _plan(intent="email jane@example.com please", command="echo hi")
+    record = build_log_record(
+        _result(plan),
+        plan,
+        log_content="scrubbed",
+        sanitize_log_fields=False,
+    )
+    assert record.intent == "email jane@example.com please"
     assert record.pending_command_excerpt == "echo hi"
 
 

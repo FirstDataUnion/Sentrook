@@ -120,7 +120,10 @@ def build_log_record(
     Free-text fields (``intent``, ``pending_command_excerpt``):
 
     - ``full`` — as present on the plan (developer debugging only)
-    - ``scrubbed`` / ``metadata`` — pattern-scrubbed text for the wire echo
+    - ``metadata`` — pattern-scrubbed on the wire; disk writers strip via
+      :func:`record_for_disk`
+    - ``scrubbed`` — pattern-scrubbed when ``sanitize_log_fields`` is true;
+      otherwise raw (matches ``SENTROOK_SERVER_SANITIZE_PLANIR=0``)
 
     Disk writers must call :func:`append_scan_log` (or :func:`record_for_disk`)
     with the same ``log_content`` so ``metadata`` omits free text on disk.
@@ -128,7 +131,10 @@ def build_log_record(
     l3_allow, l3_kept = _l3_rule_lists(result)
     intent = plan.intent
     pending_excerpt = _pending_command_excerpt(plan)
-    if log_content != "full":
+    should_scrub = log_content == "metadata" or (
+        log_content == "scrubbed" and sanitize_log_fields
+    )
+    if should_scrub:
         if intent:
             intent = scrub_text(intent, max_chars=1000, pii=True)
         if pending_excerpt:
@@ -137,8 +143,6 @@ def build_log_record(
                 max_chars=COMMAND_EXCERPT_LIMIT,
                 pii=True,
             )
-    # sanitize_log_fields kept for call-site compatibility; policy is log_content.
-    _ = sanitize_log_fields
     meta = plan.metadata
     return ScanLogRecord(
         ts=ts or datetime.now(UTC).isoformat(),
