@@ -1,0 +1,15 @@
+# Extend the default ruleset; only allowlist intentional fake secrets used to
+# exercise Sentrook / OpenClaw sanitize paths. Do not blanket-ignore all tests.
+title = "sentrook"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Sanitize unit tests and fixtures deliberately embed secret-shaped strings"
+paths = [
+  '''(^|/)sentrook/tests/test_sanitize_corpus\.py$''',
+  '''(^|/)sentrook/tests/fixtures/sanitize_[^/]+/''',
+  '''(^|/)integrations/openclaw/plugin/sanitize\.test\.ts$''',
+  '''(^|/)integrations/openclaw/plugin/fixtures/sanitize/''',
+]
