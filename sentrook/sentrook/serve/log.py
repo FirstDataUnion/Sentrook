@@ -131,9 +131,7 @@ def build_log_record(
     l3_allow, l3_kept = _l3_rule_lists(result)
     intent = plan.intent
     pending_excerpt = _pending_command_excerpt(plan)
-    should_scrub = log_content == "metadata" or (
-        log_content == "scrubbed" and sanitize_log_fields
-    )
+    should_scrub = log_content == "metadata" or (log_content == "scrubbed" and sanitize_log_fields)
     if should_scrub:
         if intent:
             intent = scrub_text(intent, max_chars=1000, pii=True)
