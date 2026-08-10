@@ -15,8 +15,10 @@ Two credential paths, matching the identity-service's seeded OAuth clients:
   pair cached on disk or the OS keychain and silently refreshed by
   ``get_access_token()``.
 - CI/automation: client-credentials grant against the ``sentrook-ci``
-  confidential client, activated by setting ``SENTROOK_ROOKERY_CI_CLIENT_SECRET``.
-  Minted fresh on demand — short-lived and not persisted to disk.
+  confidential client, activated by ``SENTROOK_ROOKERY_CI_CLIENT_SECRET`` in
+  the environment, or the same value loaded into process memory from OpenBao
+  when ``SENTROOK_OPENBAO_ENABLED=1``. Minted fresh on demand — short-lived and
+  not persisted to disk.
 """
 
 from __future__ import annotations
@@ -310,7 +312,23 @@ def get_access_token() -> str | None:
     """
     issuer = identity_issuer()
 
-    ci_secret = os.environ.get("SENTROOK_ROOKERY_CI_CLIENT_SECRET")
+    # Prefer in-memory OpenBao load (prod) over process env (local/staging).
+    ci_secret: str | None = None
+    from sentrook.openbao import (
+        OpenBaoError,
+        ensure_sentrook_secrets_loaded,
+        openbao_enabled,
+        runtime_ci_client_secret,
+    )
+
+    if openbao_enabled():
+        try:
+            ensure_sentrook_secrets_loaded()
+            ci_secret = runtime_ci_client_secret()
+        except OpenBaoError:
+            ci_secret = None
+    if not ci_secret:
+        ci_secret = os.environ.get("SENTROOK_ROOKERY_CI_CLIENT_SECRET")
     if ci_secret:
         ci_client_id = os.environ.get("SENTROOK_ROOKERY_CI_CLIENT_ID", DEFAULT_CI_CLIENT_ID)
         scope = os.environ.get("SENTROOK_ROOKERY_SCOPE", DEFAULT_CI_SCOPE)

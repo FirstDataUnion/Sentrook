@@ -18,7 +18,7 @@ Logging privacy (disk):
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sentrook.config import L3Config, L3Policy, ScannerConfig
@@ -123,6 +123,8 @@ class ServeConfig:
     library_dir: Path = DEFAULT_LIBRARY_DIR
     library_sync_interval_sec: int = DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
     rookery_api_key: str | None = None
+    #: Plaintext for ``sentrook-ci`` client_credentials (Identity remains SoT for seed/hash).
+    rookery_ci_client_secret: str | None = None
     scan_api_key: str | None = None
     scan_auth_mode: str = "auto"  # auto | oidc | apikey
     oidc_issuer: str = DEFAULT_OIDC_ISSUER
@@ -171,6 +173,9 @@ class ServeConfig:
         )
         feedback_excerpt = env.get("SENTROOK_FEEDBACK_MAX_EXCERPT_CHARS")
         rookery_api_key = (env.get("SENTROOK_ROOKERY_API_KEY") or "").strip() or None
+        rookery_ci_client_secret = (
+            env.get("SENTROOK_ROOKERY_CI_CLIENT_SECRET") or ""
+        ).strip() or None
         scan_api_key = (env.get("SENTROOK_SCAN_API_KEY") or "").strip() or None
         auth_mode_raw = (env.get("SENTROOK_SCAN_AUTH_MODE") or "auto").strip().lower()
         scan_auth_mode = auth_mode_raw if auth_mode_raw in VALID_SCAN_AUTH_MODES else "auto"
@@ -212,6 +217,7 @@ class ServeConfig:
             library_dir=library_dir,
             library_sync_interval_sec=sync_interval,
             rookery_api_key=rookery_api_key,
+            rookery_ci_client_secret=rookery_ci_client_secret,
             scan_api_key=scan_api_key,
             scan_auth_mode=scan_auth_mode,
             oidc_issuer=oidc_issuer,
@@ -234,6 +240,33 @@ class ServeConfig:
             environment=environment,
             log_content=log_content,
             log_level=log_level,
+        )
+
+    @classmethod
+    def from_env_with_openbao(cls, env: dict[str, str] | None = None) -> ServeConfig:
+        """Like ``from_env``, but merge OpenBao KV secrets when enabled.
+
+        When ``SENTROOK_OPENBAO_ENABLED=1`` (or ``SENTROOK_OPENBAO``), fetches
+        ``rookery_ci_client_secret``, ``rookery_api_key``, and optional
+        ``scan_api_key`` from OpenBao and overlays them onto the env-based config
+        **without** writing those values back to ``os.environ``.
+        Fails fast if OpenBao is enabled and the fetch fails.
+        """
+        from sentrook.openbao import OpenBaoError, fetch_sentrook_secrets, openbao_enabled
+
+        environ = env if env is not None else dict(os.environ)
+        base = cls.from_env(environ)
+        if not openbao_enabled(environ):
+            return base
+        try:
+            secrets = fetch_sentrook_secrets(environ=environ)
+        except OpenBaoError:
+            raise
+        return replace(
+            base,
+            rookery_ci_client_secret=secrets["rookery_ci_client_secret"],
+            rookery_api_key=secrets["rookery_api_key"],
+            scan_api_key=secrets.get("scan_api_key") or None,
         )
 
     def resolved_corpus_dir(self) -> Path:

@@ -24,6 +24,15 @@ __all__ = [
 
 
 def rookery_api_key() -> str | None:
+    """Rookery machine API key from env, or OpenBao when enabled."""
+    from sentrook.openbao import OpenBaoError, ensure_sentrook_secrets_loaded, openbao_enabled
+
+    if openbao_enabled():
+        try:
+            secrets = ensure_sentrook_secrets_loaded()
+        except OpenBaoError:
+            raise
+        return secrets.get("rookery_api_key") or None
     return os.environ.get("SENTROOK_ROOKERY_API_KEY") or None
 
 
@@ -64,11 +73,16 @@ def serve_config(
     host: str | None,
     port: int | None,
 ):
-    """Build a ServeConfig from env, then apply explicit CLI overrides."""
+    """Build a ServeConfig from env (and OpenBao when enabled), then CLI overrides."""
+    from sentrook.openbao import OpenBaoError
     from sentrook.serve.bundle import resolve_bundle_version
     from sentrook.serve.config import ServeConfig
 
-    config = ServeConfig.from_env()
+    try:
+        config = ServeConfig.from_env_with_openbao()
+    except OpenBaoError as exc:
+        typer.echo(f"OpenBao secret load failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if rules is not None:
         config.rules_path = rules
         config.bundle_version = resolve_bundle_version(rules)

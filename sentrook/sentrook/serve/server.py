@@ -244,7 +244,14 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
 
 
 def serve(config: ServeConfig | None = None) -> None:
-    config = config or ServeConfig.from_env()
+    if config is None:
+        from sentrook.openbao import OpenBaoError
+
+        try:
+            config = ServeConfig.from_env_with_openbao()
+        except OpenBaoError as exc:
+            logger.error("OpenBao secret load failed: %s", exc)
+            raise SystemExit(1) from exc
     _configure_logging(config.log_level)
 
     logging_errors = validate_production_logging(config)

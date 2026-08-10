@@ -17,6 +17,9 @@ dependencies = [
     "pyyaml>=6.0.2",
     "typer>=0.15.0",
     "fastembed>=0.8.0",
+    # OpenBao / Vault KV client (prod secrets via agent token sink).
+    # Latest secure: 2.4.0 (Safety; fixes Authlib/Werkzeug issues in <2.3.0).
+    "hvac>=2.4.0",
 ]
 
 [project.urls]
