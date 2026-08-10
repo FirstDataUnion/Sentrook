@@ -57,7 +57,7 @@ export const DEFAULT_RULES: SanitizeRules = {
     /xox[baprs]-[A-Za-z0-9-]{10,}|xoxe(?:\.xox[bp])?-\d-[A-Za-z0-9]+|xapp-\d-[A-Za-z0-9-]+/gi,
     /https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9+/_-]+/g,
     /[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}/g,
-    /https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/g,
+    /https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/(?:\d+|\[REDACTED\])\/[A-Za-z0-9_-]+/g,
     /\b\d{5,16}:A[A-Za-z0-9_-]{34}\b/g,
     /\bnpm_[A-Za-z0-9]{36}\b/g,
     /\bSK[0-9a-fA-F]{32}\b/g,

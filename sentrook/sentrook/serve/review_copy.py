@@ -99,7 +99,9 @@ _SECRET_TOKEN_RE = re.compile(
     r")\b"
 )
 # Discord (and similar) webhook path tokens — keep host, drop secret segment.
-_WEBHOOK_SECRET_RE = re.compile(r"(?i)(/api/webhooks/\d+/)([A-Za-z0-9_-]{20,})")
+_WEBHOOK_SECRET_RE = re.compile(
+    r"(?i)(/api/webhooks/(?:\d+|\[REDACTED\])/)([A-Za-z0-9_-]{20,})"
+)
 _PIPE_TO_SHELL_RE = re.compile(
     r"(?i)(?:curl|wget|fetch)\s+[^\n]*\|\s*(?:ba)?sh\b"
     r"|base64\s+[^\n]*\|\s*(?:ba)?sh\b"

@@ -56,7 +56,8 @@ secret_value_patterns:
     # id.timestamp.hmac (base64url); first segment is snowflake → M/N/O.
     pattern: '[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}'
   - name: discord_webhook
-    pattern: 'https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+'
+    # Digit snowflake OR already-PII-bitten [REDACTED] id — token segment must never remain.
+    pattern: 'https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/(?:\d+|\[REDACTED\])/[A-Za-z0-9_-]+'
   - name: telegram_bot_token
     pattern: '\b\d{5,16}:A[A-Za-z0-9_-]{34}\b'
   - name: npm_token

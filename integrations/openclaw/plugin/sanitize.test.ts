@@ -179,6 +179,27 @@ describe("sanitizePlanir", () => {
     assert.ok(!command.includes(tg));
     assert.ok(command.includes("[REDACTED]"));
   });
+
+  it("redacts discord webhook tokens after a PII-bitten snowflake id", () => {
+    const token = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789";
+    const broken = `https://discord.com/api/webhooks/[REDACTED]/${token}`;
+    const { plan } = sanitizePlanir({
+      version: "1.0",
+      run_id: "r1",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: `curl -X POST "${broken}"` },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+    });
+    const command = String(pendingStep(plan)?.args.command);
+    assert.ok(!command.includes(token));
+    assert.ok(command.includes("[REDACTED]"));
+  });
 });
 
 describe("resolveSanitizationConfig", () => {
