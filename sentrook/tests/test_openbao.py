@@ -80,20 +80,16 @@ def test_fetch_from_token_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     )
 
 
-def test_fetch_optional_scan_api_key_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_oidc_only_omits_static_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENBAO_TOKEN", "s.test")
     client = MagicMock()
     client.secrets.kv.v2.read_secret_version.return_value = {
-        "data": {
-            "data": {
-                "rookery_ci_client_secret": "ci-secret",
-                "rookery_api_key": "rook-key",
-            }
-        }
+        "data": {"data": {"rookery_ci_client_secret": "ci-secret"}}
     }
     secrets = fetch_sentrook_secrets(client=client)
+    assert secrets == {"rookery_ci_client_secret": "ci-secret"}
+    assert "rookery_api_key" not in secrets
     assert "scan_api_key" not in secrets
-    assert secrets["rookery_api_key"] == "rook-key"
 
 
 def test_fetch_missing_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,7 +103,7 @@ def test_fetch_missing_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENBAO_TOKEN", "s.test")
     client = MagicMock()
     client.secrets.kv.v2.read_secret_version.return_value = {
-        "data": {"data": {"rookery_api_key": "only"}}
+        "data": {"data": {"rookery_api_key": "legacy-only"}}
     }
     with pytest.raises(OpenBaoError, match="missing required keys"):
         fetch_sentrook_secrets(client=client)
@@ -153,6 +149,24 @@ def test_from_env_with_openbao_success(tmp_path: Path, monkeypatch: pytest.Monke
     import os
 
     assert os.environ.get("SENTROOK_ROOKERY_API_KEY") == "should-be-overridden"
+
+
+def test_from_env_with_openbao_oidc_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SENTROOK_OPENBAO_ENABLED", "1")
+    monkeypatch.setenv("SENTROOK_ROOKERY_API_KEY", "should-not-be-used")
+    monkeypatch.setenv("SENTROOK_SCAN_API_KEY", "should-not-be-used")
+    monkeypatch.setenv("OPENBAO_TOKEN", "s.test")
+
+    fake = MagicMock()
+    fake.is_authenticated.return_value = True
+    fake.secrets.kv.v2.read_secret_version.return_value = {
+        "data": {"data": {"rookery_ci_client_secret": "bao-ci"}}
+    }
+    monkeypatch.setattr("hvac.Client", lambda *args, **kwargs: fake)
+    cfg = ServeConfig.from_env_with_openbao()
+    assert cfg.rookery_ci_client_secret == "bao-ci"
+    assert cfg.rookery_api_key is None
+    assert cfg.scan_api_key is None
 
 
 def test_from_env_with_openbao_fail_fast(monkeypatch: pytest.MonkeyPatch) -> None:

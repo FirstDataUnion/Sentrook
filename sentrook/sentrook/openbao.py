@@ -21,14 +21,14 @@ logger = logging.getLogger("sentrook.openbao")
 DEFAULT_ADDR = "http://127.0.0.1:8200"
 DEFAULT_SECRET_PATH = "sentrook/data/prod"
 
-# Required OpenBao KV keys → ServeConfig / runtime field names
+# Required: OIDC client_credentials for Rookery library sync / feedback.
 _REQUIRED_KEY_MAP = {
     "rookery_ci_client_secret": "rookery_ci_client_secret",
-    "rookery_api_key": "rookery_api_key",
 }
 
-# Optional: omit when scan auth is OIDC-only
+# Optional static keys — omit for OIDC-only (preferred).
 _OPTIONAL_KEY_MAP = {
+    "rookery_api_key": "rookery_api_key",
     "scan_api_key": "scan_api_key",
 }
 
@@ -91,7 +91,9 @@ def fetch_sentrook_secrets(
     environ: dict[str, str] | None = None,
     client: Any | None = None,
 ) -> dict[str, str]:
-    """Return Sentrook secrets from KV (required + optional keys present).
+    """Return Sentrook secrets from KV.
+
+    ``rookery_ci_client_secret`` is required. Static API keys are optional.
 
     ``client`` is an optional pre-configured ``hvac.Client`` (tests).
     """

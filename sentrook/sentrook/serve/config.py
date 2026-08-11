@@ -247,7 +247,7 @@ class ServeConfig:
         """Like ``from_env``, but merge OpenBao KV secrets when enabled.
 
         When ``SENTROOK_OPENBAO_ENABLED=1`` (or ``SENTROOK_OPENBAO``), fetches
-        ``rookery_ci_client_secret``, ``rookery_api_key``, and optional
+        ``rookery_ci_client_secret`` and optional ``rookery_api_key`` /
         ``scan_api_key`` from OpenBao and overlays them onto the env-based config
         **without** writing those values back to ``os.environ``.
         Fails fast if OpenBao is enabled and the fetch fails.
@@ -265,7 +265,7 @@ class ServeConfig:
         return replace(
             base,
             rookery_ci_client_secret=secrets["rookery_ci_client_secret"],
-            rookery_api_key=secrets["rookery_api_key"],
+            rookery_api_key=secrets.get("rookery_api_key") or None,
             scan_api_key=secrets.get("scan_api_key") or None,
         )
 
