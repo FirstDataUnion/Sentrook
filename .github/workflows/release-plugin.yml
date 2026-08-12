@@ -1,0 +1,243 @@
+# Phase 3B — gated publish of @firstdataunion/sentrook-openclaw to public npmjs.
+# Manual only. Merging to main / Changesets Version PRs never publish.
+#
+# Operator: bump via Changesets → merge Version PR → dispatch this workflow
+# with channel=next|latest → approve Environment release-npm.
+#
+# Auth: npm Trusted Publishing (OIDC). No NPM_TOKEN.
+# Trusted Publisher on npmjs: org FirstDataUnion, repo Sentrook,
+# workflow release-plugin.yml, environment release-npm.
+name: release-plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: npm dist-tag (next = prerelease soak; latest = stable)
+        required: true
+        type: choice
+        options:
+          - next
+          - latest
+      require_full_eval:
+        description: Require rookery/full-eval success on this SHA
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: Run tests + gates only; skip npm publish and GitHub Release
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sentrook-release-plugin
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  NPMJS_REGISTRY: "https://registry.npmjs.org"
+  PLUGIN_DIR: integrations/openclaw/plugin
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release-npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require rookery/full-eval on this SHA
+        if: ${{ inputs.require_full_eval }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/${{ github.repository }}/commits/${SHA}/status" \
+            --jq '.statuses | map(select(.context=="rookery/full-eval")) | .[0].state // empty')"
+          if [ -z "${state}" ]; then
+            echo "No rookery/full-eval commit status on ${SHA}." >&2
+            echo "Run Rookery full-eval for this SHA (Sentrook notify or Rookery workflow_dispatch), then retry." >&2
+            echo "Or re-run with require_full_eval=false for an emergency bypass." >&2
+            exit 1
+          fi
+          if [ "${state}" != "success" ]; then
+            echo "rookery/full-eval is '${state}' (want success) for ${SHA}" >&2
+            exit 1
+          fi
+          echo "rookery/full-eval=success for ${SHA}"
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # Avoid registry-url here — it can write a token-shaped .npmrc that
+          # breaks OIDC Trusted Publishing. publishConfig.registry is enough.
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Ensure npm ≥ 11.5.1 (OIDC Trusted Publishing)
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          npm --version
+          node -e "
+            const [maj, min, pat] = require('child_process')
+              .execSync('npm --version', { encoding: 'utf8' })
+              .trim()
+              .split('.')
+              .map(Number);
+            const ver = `${maj}.${min}.${pat}`;
+            if (maj < 11 || (maj === 11 && min < 5) || (maj === 11 && min === 5 && pat < 1)) {
+              console.error('npm >= 11.5.1 required for Trusted Publishing, got', ver);
+              process.exit(1);
+            }
+          "
+
+      - name: Install JS workspace
+        run: npm ci
+
+      - name: Assert publishConfig (public npmjs)
+        working-directory: ${{ env.PLUGIN_DIR }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          registry="$(node -p "require('./package.json').publishConfig?.registry || ''")"
+          access="$(node -p "require('./package.json').publishConfig?.access || ''")"
+          if [[ "${name}" != @firstdataunion/sentrook-openclaw ]]; then
+            echo "error: unexpected package name ${name}" >&2
+            exit 1
+          fi
+          if [[ "${registry}" != "${NPMJS_REGISTRY}" ]]; then
+            echo "error: publishConfig.registry must be ${NPMJS_REGISTRY} (got ${registry})" >&2
+            exit 1
+          fi
+          if [[ "${access}" != "public" ]]; then
+            echo "error: publishConfig.access must be public (got ${access})" >&2
+            exit 1
+          fi
+          echo "Package ${name}@${version} → ${registry} (${access})"
+
+      - name: Assert version matches channel
+        id: meta
+        working-directory: ${{ env.PLUGIN_DIR }}
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          is_prerelease=0
+          if [[ "${version}" == *-* ]]; then
+            is_prerelease=1
+          fi
+          if [[ "${CHANNEL}" == "latest" && "${is_prerelease}" == "1" ]]; then
+            echo "error: channel=latest refuses prerelease version ${version}" >&2
+            echo "    merge a stable Version PR (no -rc) first" >&2
+            exit 1
+          fi
+          if [[ "${CHANNEL}" == "next" && "${is_prerelease}" != "1" ]]; then
+            echo "error: channel=next requires a prerelease version (got ${version})" >&2
+            echo "    enter Changesets pre mode (rc), open/merge a Version PR, then retry" >&2
+            exit 1
+          fi
+          {
+            echo "name=${name}"
+            echo "version=${version}"
+            echo "tag=${CHANNEL}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Will publish ${name}@${version} with dist-tag ${CHANNEL}"
+
+      - name: Plugin tests + pack check
+        run: make plugin-test
+
+      - name: Publish to npmjs
+        if: ${{ !inputs.dry_run }}
+        working-directory: ${{ env.PLUGIN_DIR }}
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # OIDC Trusted Publishing — no NPM_TOKEN / NODE_AUTH_TOKEN.
+          unset NODE_AUTH_TOKEN NPM_TOKEN || true
+          npm publish --access public --tag "${TAG}"
+
+      - name: GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release_tag="plugin-v${VERSION}"
+          notes_file="$(mktemp)"
+          {
+            echo "## ${NAME}@${VERSION}"
+            echo ""
+            echo "- npm dist-tag: \`${TAG}\`"
+            echo "- git SHA: \`${SHA}\`"
+            echo ""
+            if [[ -f "${PLUGIN_DIR}/CHANGELOG.md" ]]; then
+              echo "### Changelog"
+              echo ""
+              # First ## section after the title (best-effort).
+              awk '
+                BEGIN { p=0 }
+                /^## / {
+                  if (p) exit
+                  p=1
+                  next
+                }
+                p { print }
+              ' "${PLUGIN_DIR}/CHANGELOG.md"
+            fi
+            echo ""
+            echo "Install:"
+            if [[ "${TAG}" == "next" ]]; then
+              echo "\`\`\`bash"
+              echo "openclaw plugins install npm:${NAME}@next --pin --force"
+              echo "\`\`\`"
+            else
+              echo "\`\`\`bash"
+              echo "openclaw plugins install npm:${NAME}@${VERSION} --pin --force"
+              echo "\`\`\`"
+            fi
+          } > "${notes_file}"
+          gh release create "${release_tag}" \
+            --title "${NAME}@${VERSION}" \
+            --notes-file "${notes_file}" \
+            --target "${SHA}"
+
+      - name: Summary
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DRY: ${{ inputs.dry_run }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Plugin release"
+            echo ""
+            echo "- Package: \`${NAME}@${VERSION}\`"
+            echo "- Dist-tag: \`${TAG}\`"
+            echo "- SHA: \`${SHA}\`"
+            if [[ "${DRY}" == "true" ]]; then
+              echo "- Mode: **dry_run** (not published)"
+            else
+              echo "- Registry: ${NPMJS_REGISTRY}"
+              echo "- GitHub Release: \`plugin-v${VERSION}\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

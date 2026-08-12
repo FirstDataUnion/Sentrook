@@ -26,7 +26,9 @@ Pick `patch` / `minor` / `major`, write a user-facing summary. Commit the new
 On `main`, `.github/workflows/changeset-version.yml` opens a **Version** PR
 (`changeset version` + lockfile). Merge that to bump
 `integrations/openclaw/plugin/package.json` and `CHANGELOG.md`. Then dispatch
-`release-plugin` with `channel=next` or `latest` (workflow lands in a later PR).
+Sentrook Actions → **`release-plugin`** with `channel=next` or `latest`
+(Environment `release-npm`, OIDC). That workflow is the only npm write —
+merging never publishes.
 
 Local equivalent: `make plugin-version`.
 

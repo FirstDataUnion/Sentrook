@@ -88,19 +88,25 @@ openclaw sentrook configure   # url → staging scan host
 on plugin-behaviour PRs:
 
 ```bash
-make plugin-changeset    # or: cd plugin && npx changeset
+make plugin-changeset    # or: npx changeset
 ```
 
 Merging to `main` opens a Version PR (`.github/workflows/changeset-version.yml`)
-that bumps `plugin/package.json` + `CHANGELOG.md`. Merge that, then publish via
-Sentrook Actions → **`release-plugin`** (`channel=next` or `latest`, Environment
-`release-npm`, OIDC). Local script is tests + pack, plus a one-off bootstrap:
+that bumps `plugin/package.json` + `CHANGELOG.md`. Merge that, then **manually**
+dispatch Sentrook Actions → **`release-plugin`** (`channel=next` or `latest`,
+Environment `release-npm`, OIDC). Merging never publishes. Local script is
+tests + pack, plus a one-off bootstrap:
 
 ```bash
 # after package.json already matches the channel (stable x.y.z or x.y.z-rc.N):
 ./publish-plugin.sh --dry-run                 # tests + pack; infers tag from version
 ./publish-plugin.sh --publish --tag=latest    # bootstrap / emergency only; npm login
 ```
+
+`release-plugin` inputs: `channel`, optional `require_full_eval` (default on),
+optional `dry_run` (gates only). First CI publish needs npm Trusted Publisher
+configured for workflow `release-plugin.yml` + Environment `release-npm`
+(or a one-off laptop bootstrap of `1.0.0` so Trusted Publisher can attach).
 
 RCs: `npx changeset pre enter rc` before `make plugin-version`, then
 `pre exit` before the matching stable bump. Dist-tag `next` is a publish

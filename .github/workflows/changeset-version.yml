@@ -1,5 +1,6 @@
 # Open a Version PR for the OpenClaw plugin when changesets land on main.
-# Does NOT publish to npm — that is release-plugin.yml + Environment release-npm.
+# Does NOT publish to npm — never pass a publish script to changesets/action.
+# npm write is only release-plugin.yml (manual workflow_dispatch + Environment release-npm).
 name: changeset-version
 
 on:
@@ -44,11 +45,13 @@ jobs:
       - name: Install JS workspace
         run: npm ci
 
+      # Intentionally omit `publish:` — Version PR / bump only.
       - name: Open Version PR (no npm publish)
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: npm run version
           title: "Version @firstdataunion/sentrook-openclaw"
           commit: "chore(plugin): version package"
+          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
