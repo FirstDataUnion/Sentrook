@@ -72,11 +72,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) b
 
 Cross-repo pin/sync/CI details: sibling Rookery `TESTING.md`.
 
-## Related
-
-- Private library + eval: [FirstDataUnion/Rookery](https://github.com/FirstDataUnion/Rookery) — see `TESTING.md`
-- FIDU internal testing + deploy runbook: Notion **Sentrook + Rookery** (Documentation/RunBooks)
-
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2026 FirstDataUnion
