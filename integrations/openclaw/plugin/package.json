@@ -31,8 +31,8 @@
     "url": "https://github.com/FirstDataUnion/Sentrook/issues"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "scripts": {
     "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --legal-comments=none",

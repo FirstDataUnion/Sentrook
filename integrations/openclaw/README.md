@@ -22,10 +22,23 @@ Sanitization scrubs PlanIR before egress (`sanitization.enabled: true` /
 `SENTROOK_SANITIZE_PLANIR=1`).
 Review feedback `POST /feedback` sends `{ plan, resolution, log, provenance }`.
 
-## Install (GitHub Packages)
+## Install (public npmjs)
+
+No `.npmrc` or GitHub token. The package is `@firstdataunion/sentrook-openclaw`
+on public [npmjs](https://www.npmjs.com/) (first `1.0.0` lands with Sentrook
+Actions `release-plugin`; until then use a git checkout / this tree).
+Plugin SemVer is **independent** of the Sentrook scanner. Keep installs
+**`--pin`ned** so a `latest` publish does not surprise a live gateway.
+
+Hosted scan URLs (after configure):
+
+| Environment | Typical `url` |
+|-------------|----------------|
+| Production | `https://sentrook.firstdataunion.org` |
+| Staging / soak | `https://sentrook-dev.firstdataunion.org` (or your staging host) |
 
 ```bash
-# 1. Install plugin (pinned)
+# 1. Install plugin (pinned to a released version)
 openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.0 --pin --force
 
 # 2. Configure (wizard in the package — OIDC + defaults)
@@ -52,34 +65,50 @@ docker compose restart openclaw-gateway
 docker compose exec openclaw-gateway openclaw sentrook verify
 ```
 
-### Auth for GitHub Packages (colleagues)
+**Updates:** bump the pin, then restart:
 
-One-time `~/.npmrc` (see [`.npmrc.example`](.npmrc.example)):
-
-```
-@firstdataunion:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=<GITHUB_TOKEN>
+```bash
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.1 --pin --force
+# or: openclaw plugins update npm:@firstdataunion/sentrook-openclaw@1.0.1 --force
 ```
 
-Token needs `read:packages` (and org SSO authorize if applicable).
-`NODE_AUTH_TOKEN=$(gh auth token)` also works if `gh` is logged into the org.
+### Soak / release candidate (`next`)
 
-**Updates:** `openclaw plugins update npm:@firstdataunion/sentrook-openclaw@1.0.0 --force`
-then recreate/restart the gateway. Pinned installs stay on the exact version until you
-opt in.
+Prereleases publish to dist-tag **`next`** and never move `latest`. Point the
+plugin at **staging** Sentrook and keep feedback off there.
 
-Plugin SemVer is **independent** of the Sentrook scanner version.
+```bash
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw@next --pin --force
+openclaw sentrook configure   # url → staging scan host
+```
 
 ### Publishing a new plugin version (maintainers)
 
+**Changesets** record bump intent + changelog. They **do not** publish. Add one
+on plugin-behaviour PRs:
+
 ```bash
-# bump version in plugin/package.json, then:
-./publish-plugin.sh --dry-run    # tests + pack check
-NODE_AUTH_TOKEN=$(gh auth token) ./publish-plugin.sh
+make plugin-changeset    # or: cd plugin && npx changeset
 ```
 
-Requires `write:packages` on a token that can publish to the `FirstDataUnion`
-GitHub Packages org.
+Merging to `main` opens a Version PR (`.github/workflows/changeset-version.yml`)
+that bumps `plugin/package.json` + `CHANGELOG.md`. Merge that, then publish via
+Sentrook Actions → **`release-plugin`** (`channel=next` or `latest`, Environment
+`release-npm`, OIDC). Local script is tests + pack, plus a one-off bootstrap:
+
+```bash
+# after package.json already matches the channel (stable x.y.z or x.y.z-rc.N):
+./publish-plugin.sh --dry-run                 # tests + pack; infers tag from version
+./publish-plugin.sh --publish --tag=latest    # bootstrap / emergency only; npm login
+```
+
+RCs: `npx changeset pre enter rc` before `make plugin-version`, then
+`pre exit` before the matching stable bump. Dist-tag `next` is a publish
+concern, not a Changesets tag.
+
+Do **not** publish to GitHub Packages. First-ever npm version must be `1.0.0` on
+`latest`; later RCs use `x.y.z-rc.N` + tag `next`. See
+[`.changeset/README.md`](../../.changeset/README.md).
 
 ## Configure
 
@@ -283,8 +312,8 @@ Scans run only on **tool calls**. Chat-only turns produce no scan lines.
 | Path | Purpose |
 |------|---------|
 | `plugin/` | OpenClaw plugin (`@firstdataunion/sentrook-openclaw`) + `openclaw sentrook configure` |
-| `publish-plugin.sh` | Test + publish to GitHub Packages |
-| `.npmrc.example` | Colleague/CI registry auth template |
+| (repo root) `.changeset/` | Plugin bump intent + changelog (does not publish) |
+| `publish-plugin.sh` | Test + pack; optional local npmjs publish (`--publish`) |
 | `lib/common.sh` | Gateway exec / config helpers |
 | `lib/sentrook-scan-auth.sh` | Write scan OIDC / API key to `~/.openclaw/.env` |
 | `sentrook-scan-oidc.sh` | Standalone OIDC credential helper (optional) |

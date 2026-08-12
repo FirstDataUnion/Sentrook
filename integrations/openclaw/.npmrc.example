@@ -1,8 +1,0 @@
-# Colleague / CI auth for GitHub Packages (FirstDataUnion scope).
-# Copy to ~/.npmrc (or merge), then set a token with read:packages (and write:packages to publish).
-#
-#   cp integrations/openclaw/.npmrc.example ~/.npmrc
-#   # or: export NODE_AUTH_TOKEN=$(gh auth token)
-#
-@firstdataunion:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}

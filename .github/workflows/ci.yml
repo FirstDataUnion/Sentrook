@@ -131,10 +131,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: integrations/openclaw/plugin/package-lock.json
+          cache-dependency-path: package-lock.json
 
-      - name: Install plugin deps
-        working-directory: integrations/openclaw/plugin
+      - name: Install JS workspace
         run: npm ci
 
       - name: Plugin tests + pack check

@@ -1,4 +1,5 @@
-.PHONY: install install-dev test test-sentrook test-testnest sanitize-gate lint lint-fix plugin-test smoke \
+.PHONY: install install-dev test test-sentrook test-testnest sanitize-gate lint lint-fix plugin-test \
+	plugin-changeset plugin-version smoke \
 	sync-library testnest-core testnest-all require-library-mirror require-rookery test-engine
 
 VENV ?= .venv
@@ -75,6 +76,14 @@ sanitize-gate: require-rookery
 
 plugin-test:
 	cd integrations/openclaw/plugin && npm test && npm run pack:check
+
+# Interactive: add a changeset for the OpenClaw plugin (does not publish).
+plugin-changeset:
+	npx changeset
+
+# Consume changesets → bump plugin package.json + CHANGELOG + lockfile (does not publish).
+plugin-version:
+	npm run version
 
 lint:
 	$(VENV)/bin/ruff check sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts

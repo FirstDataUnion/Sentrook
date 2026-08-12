@@ -1,30 +1,44 @@
 #!/usr/bin/env bash
-# Publish @firstdataunion/sentrook-openclaw to GitHub Packages.
+# Test, pack, and optionally publish @firstdataunion/sentrook-openclaw to public npmjs.
 #
-# Prerequisites:
-#   - gh auth login (or NODE_AUTH_TOKEN / GITHUB_TOKEN with write:packages + repo read)
-#   - Package linked to github.com/FirstDataUnion/Sentrook (first publish creates it)
+# Preferred publish path is Sentrook Actions `release-plugin.yml` (OIDC + Environment
+# `release-npm`). This script is for local dry-run and the one-off bootstrap publish.
 #
 # Usage:
-#   ./publish-plugin.sh              # test + publish
-#   ./publish-plugin.sh --dry-run    # test + npm pack only
+#   ./publish-plugin.sh --dry-run              # tests + npm pack (default-safe)
+#   ./publish-plugin.sh --dry-run --tag next
+#   ./publish-plugin.sh --publish              # npm publish (requires npm login)
+#   ./publish-plugin.sh --publish --tag latest
 #   DRY_RUN=1 ./publish-plugin.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="${SCRIPT_DIR}/plugin"
-DRY_RUN="${DRY_RUN:-0}"
+DRY_RUN="${DRY_RUN:-1}"
+TAG=""
+NPMJS_REGISTRY="https://registry.npmjs.org"
+
+usage() {
+  echo "Usage: $(basename "$0") [--dry-run|--publish] [--tag next|latest]"
+  echo "  Tests + packs integrations/openclaw/plugin; publishes to npmjs only with --publish."
+}
 
 for arg in "$@"; do
   case "${arg}" in
     --dry-run) DRY_RUN=1 ;;
+    --publish) DRY_RUN=0 ;;
+    --tag=next|--tag=latest) TAG="${arg#--tag=}" ;;
+    --tag)
+      echo "error: use --tag=next or --tag=latest" >&2
+      exit 2
+      ;;
     -h|--help)
-      echo "Usage: $(basename "$0") [--dry-run]"
-      echo "  Publishes integrations/openclaw/plugin to GitHub Packages."
+      usage
       exit 0
       ;;
     *)
       echo "error: unknown argument: ${arg}" >&2
+      usage >&2
       exit 2
       ;;
   esac
@@ -38,30 +52,41 @@ fi
 name="$(node -p "require('${PLUGIN_DIR}/package.json').name")"
 version="$(node -p "require('${PLUGIN_DIR}/package.json').version")"
 registry="$(node -p "require('${PLUGIN_DIR}/package.json').publishConfig?.registry || ''")"
+access="$(node -p "require('${PLUGIN_DIR}/package.json').publishConfig?.access || ''")"
 
 if [[ "${name}" != @firstdataunion/* ]]; then
   echo "error: expected scoped name @firstdataunion/... (got ${name})" >&2
   exit 1
 fi
-if [[ "${registry}" != "https://npm.pkg.github.com" ]]; then
-  echo "error: publishConfig.registry must be https://npm.pkg.github.com (got ${registry})" >&2
+if [[ "${registry}" != "${NPMJS_REGISTRY}" ]]; then
+  echo "error: publishConfig.registry must be ${NPMJS_REGISTRY} (got ${registry})" >&2
+  exit 1
+fi
+if [[ "${access}" != "public" ]]; then
+  echo "error: publishConfig.access must be public (got ${access})" >&2
   exit 1
 fi
 
-# Prefer explicit NODE_AUTH_TOKEN; fall back to gh / GITHUB_TOKEN for publish.
-if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    export NODE_AUTH_TOKEN="${GITHUB_TOKEN}"
-  elif command -v gh >/dev/null 2>&1; then
-    if token="$(gh auth token 2>/dev/null)" && [[ -n "${token}" ]]; then
-      export NODE_AUTH_TOKEN="${token}"
-    fi
+is_prerelease=0
+if [[ "${version}" == *-* ]]; then
+  is_prerelease=1
+fi
+
+if [[ -z "${TAG}" ]]; then
+  if [[ "${is_prerelease}" == "1" ]]; then
+    TAG=next
+  else
+    TAG=latest
   fi
 fi
 
-if [[ -z "${NODE_AUTH_TOKEN:-}" && "${DRY_RUN}" != "1" ]]; then
-  echo "error: set NODE_AUTH_TOKEN (or GITHUB_TOKEN / gh auth login) with write:packages" >&2
-  echo "    example: NODE_AUTH_TOKEN=\$(gh auth token) $0" >&2
+if [[ "${TAG}" == "latest" && "${is_prerelease}" == "1" ]]; then
+  echo "error: --tag=latest refuses prerelease version ${version}" >&2
+  exit 1
+fi
+if [[ "${TAG}" == "next" && "${is_prerelease}" != "1" ]]; then
+  echo "error: --tag=next requires a prerelease version (got ${version})" >&2
+  echo "    bump package.json to x.y.z-rc.N first" >&2
   exit 1
 fi
 
@@ -69,6 +94,8 @@ echo "==> Plugin package"
 echo "    name=${name}"
 echo "    version=${version}"
 echo "    registry=${registry}"
+echo "    access=${access}"
+echo "    tag=${TAG}"
 
 echo "==> Tests"
 (
@@ -95,29 +122,26 @@ echo "==> Pack check (runtime files only)"
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "==> Dry run complete (not published)"
   echo "    Install preview: openclaw plugins install npm:${name}@${version} --pin --force"
+  if [[ "${TAG}" == "next" ]]; then
+    echo "    Soak tag:        openclaw plugins install npm:${name}@next --pin --force"
+  fi
   exit 0
 fi
 
-# npm does not send NODE_AUTH_TOKEN to GitHub Packages unless an .npmrc maps the
-# registry to that token. Write a throwaway userconfig (never committed / packed).
-npmrc="$(mktemp)"
-trap 'rm -f "${npmrc}"' EXIT
-cat > "${npmrc}" <<EOF
-@firstdataunion:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-always-auth=true
-EOF
-
-echo "==> Publishing to GitHub Packages"
+echo "==> Publishing to npmjs (tag=${TAG})"
+echo "    Prefer GitHub Actions release-plugin.yml (OIDC). Local publish needs npm login."
 (
   cd "${PLUGIN_DIR}"
-  npm publish --userconfig "${npmrc}"
+  npm publish --access public --tag "${TAG}"
 )
 
-echo "==> Published ${name}@${version}"
+echo "==> Published ${name}@${version} (dist-tag ${TAG})"
 echo
-echo "Colleague install:"
-echo "  # ~/.npmrc — see integrations/openclaw/.npmrc.example"
-echo "  openclaw plugins install npm:${name}@${version} --pin --force"
+echo "Install:"
+if [[ "${TAG}" == "next" ]]; then
+  echo "  openclaw plugins install npm:${name}@next --pin --force"
+else
+  echo "  openclaw plugins install npm:${name}@${version} --pin --force"
+fi
 echo "  openclaw sentrook configure"
 echo "  docker compose restart openclaw-gateway"

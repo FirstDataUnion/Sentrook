@@ -67,7 +67,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Please read [SECURITY.md](SECURITY.md) b
 - [x] GitHub Actions: `make lint`, unit, plugin, smoke TestNest (`.github/workflows/ci.yml`)
 - [x] Full TestNest eval gate hosted in Rookery (Sentrook `notify-rookery` → `repository_dispatch`; stubbed if `ROOKERY_DISPATCH_TOKEN` unset)
 - [x] Phase 2 security: Dependabot, Gitleaks, actionlint, Trivy fs, Semgrep, CodeQL (`.github/workflows/security.yml`); `uv.lock` committed
-- [ ] Changesets for the plugin; GHCR image publish (Phase 3)
+- [ ] Phase 3B: plugin publish to public npmjs (`release-plugin.yml`; Changesets in `.changeset/`; install: `integrations/openclaw/README.md`)
 - [ ] Flip repo public only after a secret/library scrub pass (history is already clean)
 
 Cross-repo pin/sync/CI details: sibling Rookery `TESTING.md`.
