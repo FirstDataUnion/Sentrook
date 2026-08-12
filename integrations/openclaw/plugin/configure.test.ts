@@ -57,14 +57,15 @@ describe("buildPluginEntryConfig", () => {
   it("also omits apiKey from config", () => {
     const cfg = buildPluginEntryConfig({
       url: DEFAULT_SCAN_URL,
-      mode: "observe",
+      mode: "enforce",
       timeoutMs: 1500,
-      sanitize: false,
+      sanitize: true,
       contributeCorpus: true,
       apiKey: "k",
     });
     assert.equal(cfg.apiKey, undefined);
-    assert.equal(cfg.mode, "observe");
+    assert.equal(cfg.mode, "enforce");
+    assert.deepEqual(cfg.sanitization, { enabled: true });
   });
 });
 
@@ -229,6 +230,24 @@ describe("collectAnswersNonInteractive", () => {
       contributeCorpus: false,
     });
     assert.equal(a.contributeCorpus, false);
+  });
+
+  it("always configures enforce (observe is not offered)", () => {
+    const a = collectAnswersNonInteractive({
+      clientId: "c",
+      clientSecret: "s",
+      mode: "observe",
+    });
+    assert.equal(a.mode, "enforce");
+  });
+
+  it("always enables PlanIR sanitization (disable is not offered)", () => {
+    const a = collectAnswersNonInteractive({
+      clientId: "c",
+      clientSecret: "s",
+      sanitize: false,
+    });
+    assert.equal(a.sanitize, true);
   });
 });
 

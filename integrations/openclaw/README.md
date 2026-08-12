@@ -1,47 +1,37 @@
-# Sentrook OpenClaw integration (online)
+# Sentrook OpenClaw integration
 
 Thin TypeScript plugin that scans every `before_tool_call` against **hosted**
 Sentrook (`https://sentrook.firstdataunion.org`). No local sidecar.
 
-**Branch note:** this tree is the online-only install path. Offline sidecar
-scripts live on `main`.
+## How it works
 
-## PlanIR 1.0 wire format
+On each `before_tool_call`, the plugin builds a **PlanIR 1.0** trajectory
+(`version: "1.0"`, steps `s1`…`sN`, with one or more `pending` steps) and
+`POST`s it to `/scan`. Completed steps include redacted args plus an optional
+`result_summary`; the pending step is the tool under review.
 
-Every `before_tool_call` builds a **PlanIR 1.0** trajectory (`version: "1.0"`, sequential
-`s1`…`sN` steps with one or more `pending` steps) and `POST`s it to `/scan`. Executed
-steps include redacted args plus optional `result_summary`; the pending step is the tool
-under review.
+The plugin waits for the decision and maps **allow** / **review** / **block** to
+OpenClaw continue / approval UI / veto.
 
-| Mode | Behaviour |
-| --- | --- |
-| `observe` (default) | Fire-and-forget scan; never blocks the agent |
-| `enforce` | Awaits `/scan`; maps allow / review / block to OpenClaw vetoes or approval UI |
+PlanIR is scrubbed before egress (always on when you use configure). Optional
+review feedback `POST /feedback` sends `{ plan, resolution, log, provenance }`.
 
-Sanitization scrubs PlanIR before egress (`sanitization.enabled: true` /
-`SENTROOK_SANITIZE_PLANIR=1`).
-Review feedback `POST /feedback` sends `{ plan, resolution, log, provenance }`.
+## Install
 
-## Install (public npmjs)
-
-No `.npmrc` or GitHub token. The package is `@firstdataunion/sentrook-openclaw`
-on public [npmjs](https://www.npmjs.com/) (first `1.0.0` lands with Sentrook
-Actions `release-plugin`; until then use a git checkout / this tree).
-Plugin SemVer is **independent** of the Sentrook scanner. Keep installs
-**`--pin`ned** so a `latest` publish does not surprise a live gateway.
-
-Hosted scan URLs (after configure):
+Package: [`@firstdataunion/sentrook-openclaw`](https://www.npmjs.com/package/@firstdataunion/sentrook-openclaw)
+on public npmjs — no `.npmrc` or GitHub token. Plugin SemVer is **independent**
+of the Sentrook scanner.
 
 | Environment | Typical `url` |
 |-------------|----------------|
 | Production | `https://sentrook.firstdataunion.org` |
-| Staging / soak | `https://sentrook-dev.firstdataunion.org` (or your staging host) |
+| Staging / soak | `https://sentrook-dev.firstdataunion.org` |
 
 ```bash
-# 1. Install plugin (pinned to a released version)
-openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.0 --pin --force
+# 1. Install (tracks npm latest — see Updates below)
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force
 
-# 2. Configure (wizard in the package — OIDC + defaults)
+# 2. Configure (OIDC + defaults)
 openclaw sentrook configure
 
 # 3. Restart gateway (reload ~/.openclaw/.env + plugin config)
@@ -49,28 +39,32 @@ openclaw sentrook configure
 openclaw sentrook verify
 ```
 
-Via Docker Compose (typical VPS layout), run `openclaw` **without** `-T` so
-prompts work:
+Docker Compose (typical VPS layout) — run `openclaw` **without** `-T` so prompts
+work:
 
 ```bash
 cd ~/openclaw
 docker compose exec openclaw-gateway \
-  openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.0 --pin --force
+  openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force
 docker compose exec openclaw-gateway openclaw sentrook configure
 
 # Restart is enough: OpenClaw reloads ~/.openclaw/.env on process start.
-# (force-recreate is only needed if you put secrets in the compose env_file.)
+# (force-recreate only if secrets live solely in the compose env_file.)
 docker compose restart openclaw-gateway
 
 docker compose exec openclaw-gateway openclaw sentrook verify
 ```
 
-**Updates:** bump the pin, then restart:
+### Updates
 
 ```bash
-openclaw plugins install npm:@firstdataunion/sentrook-openclaw@1.0.1 --pin --force
-# or: openclaw plugins update npm:@firstdataunion/sentrook-openclaw@1.0.1 --force
+openclaw plugins update @firstdataunion/sentrook-openclaw
+# or: openclaw plugins update --all
+# then restart the gateway
 ```
+
+OpenClaw does not auto-update plugins on restart. Prefer staying on `latest`
+unless you deliberately pin a version for a frozen host.
 
 ### Soak / release candidate (`next`)
 
@@ -78,11 +72,13 @@ Prereleases publish to dist-tag **`next`** and never move `latest`. Point the
 plugin at **staging** Sentrook and keep feedback off there.
 
 ```bash
-openclaw plugins install npm:@firstdataunion/sentrook-openclaw@next --pin --force
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw@next --force
 openclaw sentrook configure   # url → staging scan host
 ```
 
-### Publishing a new plugin version (maintainers)
+## Maintainers
+
+Publishing and Changesets. Operators can skip this section.
 
 **Changesets** record bump intent + changelog. They **do not** publish. Add one
 on plugin-behaviour PRs:
@@ -94,8 +90,7 @@ make plugin-changeset    # or: npx changeset
 Merging to `main` opens a Version PR (`.github/workflows/changeset-version.yml`)
 that bumps `plugin/package.json` + `CHANGELOG.md`. Merge that, then **manually**
 dispatch Sentrook Actions → **`release-plugin`** (`channel=next` or `latest`,
-Environment `release-npm`, OIDC). Merging never publishes. Local script is
-tests + pack, plus a one-off bootstrap:
+Environment `release-npm`, OIDC). Merging never publishes.
 
 ```bash
 # after package.json already matches the channel (stable x.y.z or x.y.z-rc.N):
@@ -104,16 +99,14 @@ tests + pack, plus a one-off bootstrap:
 ```
 
 `release-plugin` inputs: `channel`, optional `require_full_eval` (default on),
-optional `dry_run` (gates only). First CI publish needs npm Trusted Publisher
-configured for workflow `release-plugin.yml` + Environment `release-npm`
-(or a one-off laptop bootstrap of `1.0.0` so Trusted Publisher can attach).
+optional `dry_run` (gates only). CI publish needs npm Trusted Publisher for
+`release-plugin.yml` + Environment `release-npm`.
 
-RCs: `npx changeset pre enter rc` before `make plugin-version`, then
-`pre exit` before the matching stable bump. Dist-tag `next` is a publish
-concern, not a Changesets tag.
+RCs: `npx changeset pre enter rc` before `make plugin-version`, then `pre exit`
+before the matching stable bump. Dist-tag `next` is a publish concern, not a
+Changesets tag.
 
-Do **not** publish to GitHub Packages. First-ever npm version must be `1.0.0` on
-`latest`; later RCs use `x.y.z-rc.N` + tag `next`. See
+Do **not** publish to GitHub Packages. See
 [`.changeset/README.md`](../../.changeset/README.md).
 
 ## Configure
@@ -126,12 +119,14 @@ openclaw sentrook configure
 
 Interactive flow:
 
-1. Accept defaults for scan URL / mode / timeout / sanitization (or override)
+1. Accept defaults for scan URL / timeout (or override)
 2. Community corpus: contribute sanitized allow-once/deny reviews by default
    (opt out with `n`, or later `feedback.mode: "off"` / `--contribute-corpus false`)
 3. Paste FIDU ID OAuth `client_id` + `client_secret` (link printed in the wizard)
 4. Writes credentials + patches `plugins.entries.sentrook-openclaw`
 5. Prints reload instructions — **does not restart the gateway**
+
+PlanIR sanitization is always enabled by configure (not prompted).
 
 Non-interactive:
 
@@ -151,8 +146,8 @@ Optional dual-write for Docker: set `SENTROOK_DOTENV=~/openclaw/.env` (or
 
 ### Where secrets live (Docker vs native)
 
-Scan credentials are **not** stored as SecretRefs in `openclaw.json` (unresolved
-refs on an enabled plugin fail-close the gateway). Configure writes
+Scan credentials are **not** stored as SecretRefs in `openclaw.json` — unresolved
+refs on an enabled plugin fail-close the whole gateway. Configure writes
 `SENTROOK_SCAN_*` to **`~/.openclaw/.env`**; the plugin reads them from process
 env after OpenClaw loads that file at gateway start.
 
@@ -166,20 +161,13 @@ This matches OpenClaw’s recommended store for provider API keys
 
 **Do not put Sentrook scan secrets only in `~/openclaw/.env` (compose `env_file`)**
 unless you prefer that layout. Compose injects `env_file` only at container
-**create** time, so changes need `docker compose up -d --force-recreate` — the
-same trap as Notion/Discord keys in the project `.env`. State-dir `.env` avoids
-that: a normal **restart** re-reads the file.
+**create** time, so changes need `docker compose up -d --force-recreate`.
+State-dir `.env` avoids that: a normal **restart** re-reads the file.
 
 Missing credentials → plugin warns and soft-fails scans; gateway stays up.
 
 Trade-off: `openclaw secrets audit` will not track these as SecretRef migrations.
 Intentional until optional SecretRefs exist without aborting startup.
-
-**How others do it:** Some CLIs keep an encrypted file keyring under the tool
-home plus a process env unlock password (often systemd / `~/.openclaw/.env`) —
-different shape, same idea: durable state under the agent home, not compose
-`env_file`. Notion and similar integrations that live only in compose `.env`
-hit the recreate requirement; we deliberately avoid that for Sentrook.
 
 ### Manual (optional)
 
@@ -206,47 +194,103 @@ hit the recreate requirement; we deliberately avoid that for Sentrook.
 ```
 
 `feedback.mode: "submit"` (configure default) posts sanitized allow-once / deny
-resolutions to hosted Sentrook `/feedback`, which forwards them to Rookery as
-pending community corpus examples (human review still gates publish). Examples are
-attributed to post-L3 **kept** review rules (never L3-allowed matches): allow-once /
-allow-always fan out to every kept co-firer (fatigue learning); deny trains only the
-winning/causal rule. Hosted
-Sentrook **derives** community `intent` from the tool trajectory by default
-(`SENTROOK_FEEDBACK_DERIVE_INTENT=1`) so chat prompts are not stored in Rookery —
-set `0` on the scan host to keep prompt-as-intent while soaking. Set
-`feedback.mode: "off"` to opt out. `allow-always` uses the local allowlist below;
-it does not write a per-user corpus on the hosted scanner.
+resolutions to hosted Sentrook `/feedback`, which forwards them as pending
+community corpus examples (human review still gates publish). Set
+`feedback.mode: "off"` to opt out.
+
+`allow-always` uses the [local allowlist](#allow-every-time-local-allowlist)
+below; it does not write a per-user corpus on the hosted scanner.
 
 3. Put `SENTROOK_SCAN_*` in `~/.openclaw/.env` (preferred) or your compose `env_file`
 4. Restart gateway: `docker compose restart openclaw-gateway`
    (use `--force-recreate` only if credentials live solely in the compose `env_file`)
 
+## Chat-channel approvals
+
+When Sentrook returns **review**, the plugin asks OpenClaw for a human decision
+(`allow-once` / `allow-always` / `deny`). If you talk to the agent over Discord,
+Slack, Telegram, or similar, those prompts must be delivered on that channel —
+otherwise the tool call waits on an approval you never see.
+
+This is an **OpenClaw** setting; Sentrook configure does not set it for you.
+Upstream:
+[Approval forwarding to chat channels](https://docs.openclaw.ai/tools/exec-approvals-advanced#approval-forwarding-to-chat-channels)
+and
+[Plugin permission requests](https://docs.openclaw.ai/plugins/plugin-permission-requests).
+
+### Discord example
+
+Native Discord exec-approvals on the channel you already use. In
+`~/.openclaw/openclaw.json` (shape illustrative — keep your existing Discord
+token / guild config):
+
+```json5
+{
+  channels: {
+    discord: {
+      enabled: true,
+      token: {
+        // ...
+      },
+      execApprovals: {
+        enabled: true,
+        approvers: [
+          "<your-discord-user-id>",
+        ],
+        target: "both",
+        cleanupAfterResolve: false,
+      },
+    },
+  },
+}
+```
+
+Notes:
+
+- The important part is the `execApprovals` block.
+- Put **your** Discord user id in `approvers` — only listed approvers can
+  allow / deny.
+- `target: "both"` is a practical default so prompts can land in DM and in the
+  originating chat (see OpenClaw’s docs for `dm` / `channel` / `both`).
+- Restart the gateway after changing channel approval config.
+- You can still resolve with `/approve <id> allow-once|allow-always|deny` when
+  the channel falls back to text instructions.
+
+### Other channels
+
+Slack, Telegram, and others use the same idea under
+`channels.<name>.execApprovals` (or channel-specific equivalents). You can also
+forward plugin approvals via the shared `approvals.plugin` block — see the
+OpenClaw docs linked above.
+
+After changing approvals, trigger a tool call that Sentrook would `review` and
+confirm the card or `/approve` prompt appears where you expect.
+
 ## Allow every time (local allowlist)
 
-In **enforce** mode, Sentrook `review` decisions surface OpenClaw’s approval UI
-(`allow-once` / `allow-always` / `deny`). Online hosted Sentrook does **not** keep a
-per-user personal corpus, so “Allow every time” would otherwise re-prompt forever.
+Sentrook `review` decisions surface OpenClaw’s approval UI (`allow-once` /
+`allow-always` / `deny`). Hosted Sentrook does **not** keep a per-user personal
+corpus, so “Allow every time” would otherwise re-prompt forever.
 
-The plugin restores durable short-circuiting **locally** on the OpenClaw host:
+The plugin keeps a short-circuit list **locally** on the OpenClaw host:
 
 1. Scan still always runs (`POST /scan`); Sentrook `block` is never overridden
 2. On `allow-always`, the plugin records a local entry and still `POST`s `/feedback`
 3. On later matching `review`s, the plugin skips `requireApproval`
 
-Store: `~/.openclaw/sentrook-allowlist.json` (or `$OPENCLAW_STATE_DIR/sentrook-allowlist.json`).
-Separate from OpenClaw’s native `exec-approvals.json`. Treat both files like
-`openclaw.json`: they control approval bypass and must not be edited by the agent
-without operator review (Sentrook **AIRA-050** flags `write`/`edit` to these paths).
+Store: `~/.openclaw/sentrook-allowlist.json` (or
+`$OPENCLAW_STATE_DIR/sentrook-allowlist.json`). Separate from OpenClaw’s native
+`exec-approvals.json`. Treat both like `openclaw.json`: they control approval
+bypass and must not be edited by the agent without operator review (Sentrook
+**AIRA-050** flags `write`/`edit` to these paths).
 
 **Security:** Only entries recorded via the plugin’s `allow-always` handler are
-honoured at load time (`source: allow-always`, valid `created_at`, schema checks).
-Hand-edited or poisoned JSON is ignored. Allowlist hits are logged at **warn**
-level with matched rule ids and entry fingerprints — grep gateway logs for
+honoured at load time (`source: allow-always`, valid `created_at`, schema
+checks). Hand-edited or poisoned JSON is ignored. Allowlist hits are logged at
+**warn** with matched rule ids and entry fingerprints — grep gateway logs for
 `local allowlist hit` when auditing unexpected auto-allows.
 
-Supported mutations: `openclaw sentrook allowlist list|clear --yes` (not agent `write`).
-
-Two entry kinds:
+Manage with: `openclaw sentrook allowlist list|clear --yes` (not agent `write`).
 
 | Kind | When | Match |
 | --- | --- | --- |
@@ -276,10 +320,15 @@ Optional flags: `--path <file>`, `--state-dir <dir>` (same resolution as the liv
 ## Uninstall
 
 ```bash
-OPENCLAW_DIR=~/openclaw ./uninstall-plugin.sh
-PURGE=1 OPENCLAW_DIR=~/openclaw ./uninstall-plugin.sh
-# Then restart the gateway yourself.
+openclaw plugins uninstall sentrook-openclaw
+# Docker Compose: run the same inside the gateway container, then restart if needed
 ```
+
+Removes the managed install and `plugins.entries.sentrook-openclaw`. Optional
+manual purge afterwards:
+
+- `SENTROOK_SCAN_*` lines in `~/.openclaw/.env`
+- `~/.openclaw/sentrook-allowlist.json` (or `openclaw sentrook allowlist clear --yes` before uninstall)
 
 ## Verify & logs
 
@@ -287,8 +336,8 @@ PURGE=1 OPENCLAW_DIR=~/openclaw ./uninstall-plugin.sh
 docker compose exec openclaw-gateway openclaw sentrook verify
 ```
 
-Checks plugin config entry, scan credentials in `~/.openclaw/.env`, whether those
-env vars are loaded in-process (recreate/restart gateway if not), and `GET /health`
+Checks plugin config, scan credentials in `~/.openclaw/.env`, whether those env
+vars are loaded in-process (restart/recreate gateway if not), and `GET /health`
 on the scan URL. No Python `sentrook` package required.
 
 Optional runtime inspect:
@@ -304,7 +353,7 @@ Gateway (plugin timing):
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 
-Sentrook VPS (decisions + transport):
+FIDU scan host (decisions + transport), if you operate one:
 
 ```bash
 docker exec sentrook-scan tail -f /var/log/sentrook/scan.log.jsonl
@@ -324,20 +373,21 @@ Scans run only on **tool calls**. Chat-only turns produce no scan lines.
 | `lib/sentrook-scan-auth.sh` | Write scan OIDC / API key to `~/.openclaw/.env` |
 | `sentrook-scan-oidc.sh` | Standalone OIDC credential helper (optional) |
 | `sentrook-scan-key.sh` | Shared API key helper (optional; prefer OIDC) |
-| `uninstall-plugin.sh` | Remove plugin + optional credential purge |
 
 ## PlanIR sanitization and scan-log privacy
 
-Plugin egress scrubbing defaults **on** (`sanitization.enabled: true` /
-`SENTROOK_SANITIZE_PLANIR=1`). Server
-ingress uses `SENTROOK_SERVER_SANITIZE_PLANIR` (default on). FIDU hosted
-deploy docs live in Rookery `deploy/sentrook-scan/` (see also
-`sentrook/deploy/README.md` pointer).
+The plugin **always** scrubs PlanIR before `POST /scan` and `/feedback` when set
+up via configure. Turning egress scrubbing off is not supported for real users.
+Pattern scrubbing is **not** a full PII guarantee — free-form names and prose
+that do not match patterns can remain.
+
+Server ingress also sanitizes (`SENTROOK_SERVER_SANITIZE_PLANIR`, default on).
+FIDU hosted deploy docs for scan hosts are private (see also
+`sentrook/deploy/README.md`).
 
 **Disk logs (`scan.log.jsonl`)** can still hold scrubbed intent / command
-excerpts when `SENTROOK_LOG_CONTENT=scrubbed` (the development default).
-Pattern scrubbing is **not** a PII guarantee — free-form names and prose that
-do not match patterns remain. For production traffic set:
+excerpts when `SENTROOK_LOG_CONTENT=scrubbed` (the development default). For
+production traffic set:
 
 ```bash
 SENTROOK_ENV=production

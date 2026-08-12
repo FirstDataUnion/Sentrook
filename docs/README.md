@@ -1,8 +1,8 @@
 # Documentation
 
-Full public references for **PlanIR**, **YAIRA** rule language, and the Rookery
-**library registry** contract (`manifest` / bundle sync) are not published in
-this repo yet. They may land here later as the open-source surface settles.
+Full public references for **PlanIR**, the **YAIRA** rule language, and the
+**library registry** contract (`manifest` / bundle sync) are not in this repo
+yet. They should land here as the open-source docs catch up.
 
 Until then:
 
@@ -12,5 +12,5 @@ Until then:
 | YAIRA rule + corpus format | Synthetic examples under `examples/rules/` and `examples/corpus/` |
 | Library sync CLI | `sentrook library --help`; package `sentrook/library/` |
 
-Contributions that add concise, accurate public docs for these contracts are
-welcome once we open that work — see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Contributions that add short, accurate public docs for these contracts are
+welcome once that work opens — see [CONTRIBUTING.md](../CONTRIBUTING.md).

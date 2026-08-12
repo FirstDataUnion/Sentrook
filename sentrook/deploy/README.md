@@ -1,16 +1,12 @@
 # Deploy recipes
 
-FIDU-hosted Sentrook scan deploy (Docker Compose, nginx/Caddy examples, VPS
-bundle assembly) lives in the private **Rookery** repo:
+FIDU production scan-host recipes (Compose, reverse proxy, VPS bundle assembly)
+live in a **private** ops repository and are not published here.
 
-`deploy/sentrook-scan/` in [FirstDataUnion/Rookery](https://github.com/FirstDataUnion/Rookery)
-(or your local `FIDU-Rookery` sibling).
+For production scan hosts, set `SENTROOK_ENV=production` so the sidecar defaults
+to metadata-only `scan.log.jsonl` (no PlanIR intent/command excerpts on disk)
+and refuses to start if sanitize is disabled. See the OpenClaw README section
+**PlanIR sanitization and scan-log privacy**.
 
-For production scan hosts, set `SENTROOK_ENV=production` so the sidecar
-defaults to metadata-only `scan.log.jsonl` (no PlanIR intent/command excerpts
-on disk) and refuses to start if sanitize is disabled. See the OpenClaw
-README section **PlanIR sanitization and scan-log privacy**.
-
-Public self-host documentation for a DIY Sentrook + custom ruleset may be
-added here later. Until then, run the engine locally via the root README / Make
-targets.
+Public self-host docs for a DIY Sentrook + custom ruleset may be added here
+later. Until then, run the engine locally via the root README / Make targets.

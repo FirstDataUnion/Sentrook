@@ -356,7 +356,7 @@ export function restartHint(dotenvWritten?: string): string {
   return [
     "Configuration written.",
     `  Credentials: ${dotenv} (OpenClaw loads this on gateway start).`,
-    "  Plugin config: openclaw.json (enable + URL/mode).",
+    "  Plugin config: openclaw.json (enable + URL).",
     "",
     "Reload the gateway process (restart is enough — you do NOT need",
     "docker compose force-recreate for ~/.openclaw/.env changes):",
@@ -445,13 +445,7 @@ export async function collectAnswersInteractive(
     }
   }
 
-  let mode: PluginMode = seed.mode ?? DEFAULT_MODE;
-  if (!seed.mode) {
-    if (!(await io.confirm(`Use default mode (${DEFAULT_MODE})?`, true))) {
-      const raw = (await io.prompt("Mode (observe|enforce)", DEFAULT_MODE)).trim();
-      mode = raw === "observe" ? "observe" : "enforce";
-    }
-  }
+  let mode: PluginMode = DEFAULT_MODE;
 
   let timeoutMs = seed.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (seed.timeoutMs === undefined) {
@@ -462,10 +456,7 @@ export async function collectAnswersInteractive(
     }
   }
 
-  let sanitize = seed.sanitize ?? DEFAULT_SANITIZE;
-  if (seed.sanitize === undefined) {
-    sanitize = await io.confirm("Enable PlanIR sanitization?", true);
-  }
+  const sanitize = DEFAULT_SANITIZE;
 
   let contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
   if (seed.contributeCorpus === undefined) {
@@ -501,12 +492,12 @@ export async function collectAnswersInteractive(
 
 export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): ConfigureAnswers {
   const url = seed.url?.trim() || DEFAULT_SCAN_URL;
-  const mode: PluginMode = seed.mode === "observe" ? "observe" : DEFAULT_MODE;
+  const mode: PluginMode = DEFAULT_MODE;
   const timeoutMs =
     typeof seed.timeoutMs === "number" && seed.timeoutMs > 0
       ? seed.timeoutMs
       : DEFAULT_TIMEOUT_MS;
-  const sanitize = seed.sanitize ?? DEFAULT_SANITIZE;
+  const sanitize = DEFAULT_SANITIZE;
   const contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
   const clientId = seed.clientId?.trim();
   const clientSecret = seed.clientSecret?.trim();

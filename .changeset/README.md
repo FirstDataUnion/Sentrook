@@ -4,10 +4,10 @@ Bump intent + changelog for `@firstdataunion/sentrook-openclaw`. **Merging a
 changeset does not publish to npm.** `release-plugin.yml` (OIDC, Environment
 `release-npm`) is the only npm write.
 
-Python packages are not in this workspace. The root `package.json` exists so
-Changesets can see the plugin from the git root.
+Python packages are not in this Changesets workspace. The root `package.json`
+exists so Changesets can see the plugin from the git root.
 
-Tooling: `@changesets/cli` 2.x and `changesets/action@v1`. Action v2 requires
+Tooling: `@changesets/cli` 2.x and `changesets/action@v1`. Action v2 needs
 Changesets 3 (still prerelease).
 
 ## Feature PRs
@@ -27,8 +27,8 @@ On `main`, `.github/workflows/changeset-version.yml` opens a **Version** PR
 (`changeset version` + lockfile). Merge that to bump
 `integrations/openclaw/plugin/package.json` and `CHANGELOG.md`. Then dispatch
 Sentrook Actions → **`release-plugin`** with `channel=next` or `latest`
-(Environment `release-npm`, OIDC). That workflow is the only npm write —
-merging never publishes.
+(Environment `release-npm`, OIDC Trusted Publisher). That workflow is the only
+npm write — merging never publishes.
 
 Local equivalent: `make plugin-version`.
 

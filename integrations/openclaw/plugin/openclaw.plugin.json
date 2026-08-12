@@ -1,7 +1,7 @@
 {
   "id": "sentrook-openclaw",
   "name": "Sentrook OpenClaw",
-  "description": "Sentrook trajectory scanner (hosted HTTPS or local URL). Observe mode scans without blocking; enforce mode can block or require human approval on flagged tool calls.",
+  "description": "Sentrook trajectory scanner (hosted HTTPS or local URL). Scans tool calls and can allow, require human approval, or block flagged actions.",
   "activation": {
     "onCapabilities": [
       "hook"
@@ -41,7 +41,7 @@
       },
       "timeoutMs": {
         "type": "integer",
-        "description": "Scan request timeout in ms. In enforce mode this gates the agent; in observe mode it only bounds fire-and-forget posts. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SCAN_TIMEOUT_MS)."
+        "description": "Scan request timeout in ms. Gates the agent while awaiting /scan. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SCAN_TIMEOUT_MS)."
       },
       "mode": {
         "type": "string",
@@ -49,7 +49,7 @@
           "observe",
           "enforce"
         ],
-        "description": "observe = scan-only (default). enforce = honour allow/review/block decisions from the scan service."
+        "description": "Product mode is enforce (allow / review / block). observe remains accepted for compatibility but is not offered by configure and is not recommended."
       },
       "feedback": {
         "type": "object",
@@ -71,7 +71,7 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "description": "Sanitise PlanIR payloads before POST /scan and /feedback. Default true. Set false or SENTROOK_SANITIZE_PLANIR=0 to disable."
+            "description": "PlanIR scrubbing before POST /scan and /feedback. Always enabled by configure; leaving this false is unsupported and not recommended."
           }
         }
       },

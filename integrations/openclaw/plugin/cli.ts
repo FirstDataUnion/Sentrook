@@ -8,7 +8,6 @@ import {
   createStdioIo,
   runConfigure,
   type ConfigureAnswers,
-  type PluginMode,
 } from "./configure.ts";
 import { formatVerifyReport, runVerify } from "./verify.ts";
 
@@ -27,9 +26,7 @@ export interface CliCommand {
 export interface ConfigureCliOptions {
   nonInteractive?: boolean;
   url?: string;
-  mode?: string;
   timeoutMs?: string;
-  sanitize?: string;
   /** true|false — contribute sanitized review feedback to community corpus */
   contributeCorpus?: string;
   clientId?: string;
@@ -42,11 +39,6 @@ export interface VerifyCliOptions {
   url?: string;
   stateDir?: string;
   timeoutMs?: string;
-}
-
-function parseMode(raw?: string): PluginMode | undefined {
-  if (!raw) return undefined;
-  return raw === "observe" ? "observe" : raw === "enforce" ? "enforce" : undefined;
 }
 
 function parseBool(raw?: string): boolean | undefined {
@@ -66,9 +58,7 @@ function parseTimeout(raw?: string): number | undefined {
 function seedFromOptions(opts: ConfigureCliOptions): Partial<ConfigureAnswers> {
   return {
     url: opts.url,
-    mode: parseMode(opts.mode),
     timeoutMs: parseTimeout(opts.timeoutMs),
-    sanitize: parseBool(opts.sanitize),
     contributeCorpus: parseBool(opts.contributeCorpus),
     clientId: opts.clientId || process.env.SENTROOK_SCAN_CLIENT_ID,
     clientSecret: opts.clientSecret || process.env.SENTROOK_SCAN_CLIENT_SECRET,
@@ -117,9 +107,7 @@ export function registerSentrookCli(program: CliProgram): void {
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
     .option("--url <url>", "Scan service base URL")
-    .option("--mode <mode>", "observe | enforce")
     .option("--timeout-ms <ms>", "Scan POST timeout in ms")
-    .option("--sanitize <bool>", "Enable PlanIR sanitization (true|false)")
     .option(
       "--contribute-corpus <bool>",
       "Contribute sanitized review feedback to the community corpus (true|false; default true / opt-out)",

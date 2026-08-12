@@ -1,9 +1,10 @@
 /**
  * Sentrook OpenClaw plugin (the "layer").
  *
- * In observe mode: fire-and-forget scan, never blocks.
- * In enforce mode: awaits the sidecar and maps allow / review / block to OpenClaw
+ * Awaits hosted /scan and maps allow / review / block to OpenClaw
  * before_tool_call decisions (block veto or requireApproval).
+ * A legacy observe mode (fire-and-forget, never blocks) remains for
+ * compatibility but is not offered by configure.
  */
 
 import {
@@ -247,8 +248,8 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
   const modeRaw =
     (typeof cfg.mode === "string" && cfg.mode) ||
     process.env.SENTROOK_MODE ||
-    "observe";
-  const mode: PluginMode = modeRaw === "enforce" ? "enforce" : "observe";
+    "enforce";
+  const mode: PluginMode = modeRaw === "observe" ? "observe" : "enforce";
 
   const feedbackCfg =
     cfg.feedback && typeof cfg.feedback === "object"
@@ -645,7 +646,7 @@ const plugin = {
   id: "sentrook-openclaw",
   name: "Sentrook OpenClaw",
   description:
-    "Sentrook trajectory scanner (hosted HTTPS or local URL). Observe mode scans without blocking; enforce mode can block or require approval.",
+    "Sentrook trajectory scanner (hosted HTTPS or local URL). Scans tool calls and can allow, require approval, or block flagged actions.",
 
   register(api: OpenClawPluginApi) {
     const mode = api.registrationMode ?? "full";
