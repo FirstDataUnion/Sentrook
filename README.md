@@ -1,7 +1,6 @@
 # Sentrook
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/FirstDataUnion/Sentrook/ci.yml?branch=main&label=CI)](https://github.com/FirstDataUnion/Sentrook/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@firstdataunion/sentrook-openclaw.svg)](https://www.npmjs.com/package/@firstdataunion/sentrook-openclaw)
 
 Sentrook is a runtime security scanner developed by [FIDU](https://firstdataunion.org), 
