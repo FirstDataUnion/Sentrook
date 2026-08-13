@@ -1,9 +1,10 @@
 /**
  * Human approval timeouts for enforce-mode Sentrook reviews.
  *
- * Interactive sessions keep a short timeout with deny-on-timeout (operator is present).
- * Cron and subagent runs use a longer window and allow-on-timeout so unattended jobs
- * (morning brief, spawned collectors) are not blocked when nobody is at the keyboard.
+ * Interactive sessions keep a short timeout with deny-on-timeout (always fail-closed;
+ * not configurable). Cron and subagent runs use a longer window but also default to
+ * deny-on-timeout — opt into allow via scheduledTimeoutBehavior if unattended jobs
+ * must proceed without a human.
  */
 
 export type IntentKind = "user" | "cron" | "subagent" | "system";
@@ -14,12 +15,10 @@ export interface ApprovalPolicyConfig {
   interactiveTimeoutMs: number;
   /** Unattended review timeout (ms). Default 1_800_000 (30 min). */
   scheduledTimeoutMs: number;
-  /** When an unattended review times out. Default allow. */
+  /** When an unattended review times out. Default deny (fail-closed). */
   scheduledTimeoutBehavior: TimeoutBehavior;
   /** Apply scheduled policy to these intent kinds. Default cron + subagent. */
   scheduledIntentKinds: IntentKind[];
-  /** When false, all intents use the interactive policy. */
-  scheduledApprovalEnabled: boolean;
 }
 
 export interface ApprovalTiming {
@@ -51,16 +50,6 @@ function parseTimeoutBehavior(raw: unknown, fallback: TimeoutBehavior): TimeoutB
   if (typeof raw === "string") {
     const normalized = raw.trim().toLowerCase();
     if (normalized === "allow" || normalized === "deny") return normalized;
-  }
-  return fallback;
-}
-
-function parseBool(raw: unknown, fallback: boolean): boolean {
-  if (typeof raw === "boolean") return raw;
-  if (typeof raw === "string") {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
-    if (normalized === "0" || normalized === "false" || normalized === "no") return false;
   }
   return fallback;
 }
@@ -107,13 +96,9 @@ export function resolveApprovalPolicyConfig(sources: {
     ),
     scheduledTimeoutBehavior: parseTimeoutBehavior(
       cfg.scheduledTimeoutBehavior ?? env.SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR,
-      "allow",
+      "deny",
     ),
     scheduledIntentKinds: parseIntentKinds(cfg.scheduledIntentKinds),
-    scheduledApprovalEnabled: parseBool(
-      cfg.enabled ?? env.SENTROOK_SCHEDULED_APPROVAL_ENABLED,
-      true,
-    ),
   };
 }
 
@@ -124,9 +109,7 @@ export function resolveApprovalTiming(
 ): ApprovalTiming {
   const kind = resolveIntentKind(intentKind, intent);
   const unattended =
-    policy.scheduledApprovalEnabled &&
-    kind != null &&
-    policy.scheduledIntentKinds.includes(kind);
+    kind != null && policy.scheduledIntentKinds.includes(kind);
 
   if (unattended) {
     return {

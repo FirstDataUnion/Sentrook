@@ -21,9 +21,7 @@ import { stdin as input, stdout as output } from "node:process";
 export const PLUGIN_ID = "sentrook-openclaw";
 
 export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
-export const DEFAULT_MODE = "enforce" as const;
 export const DEFAULT_TIMEOUT_MS = 3000;
-export const DEFAULT_SANITIZE = true;
 /** Contribute sanitized review feedback to the community corpus (opt-out). */
 export const DEFAULT_CONTRIBUTE_CORPUS = true;
 export const DEFAULT_IDENTITY_URL = "https://identity.firstdataunion.org";
@@ -32,14 +30,11 @@ export const CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID";
 export const CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET";
 export const API_KEY_VAR = "SENTROOK_SCAN_API_KEY";
 
-export type PluginMode = "observe" | "enforce";
 export type FeedbackMode = "off" | "submit";
 
 export interface ConfigureAnswers {
   url: string;
-  mode: PluginMode;
   timeoutMs: number;
-  sanitize: boolean;
   /**
    * When true, review allow-once/deny resolutions are POSTed to hosted Sentrook
    * `/feedback` for community corpus submission (Rookery). Opt-out sets false.
@@ -92,12 +87,11 @@ export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string
   // Credentials intentionally omitted from openclaw.json. Unresolved SecretRefs on an
   // enabled plugin fail-close the entire gateway; scan auth is read from
   // SENTROOK_SCAN_* in process env / ~/.openclaw/.env instead (see auth.ts).
+  // mode / sanitization are not configurable — always enforce + scrub.
   return {
     url: answers.url,
     timeoutMs: answers.timeoutMs,
-    mode: answers.mode,
     feedback: { mode: feedbackModeFromContribute(answers.contributeCorpus) },
-    sanitization: { enabled: answers.sanitize },
   };
 }
 
@@ -276,7 +270,7 @@ export async function applyConfigPatch(
     await runOpenclaw(bin, ["plugins", "enable", PLUGIN_ID]);
     // Config patch deep-merges; strip stale SecretRef keys so missing env cannot
     // fail-close gateway startup on older installs.
-    stripCredentialKeysFromPluginConfig(stateDir);
+    stripStalePluginConfigKeys(stateDir);
     return { method: "cli" };
   }
 
@@ -291,8 +285,11 @@ export async function applyConfigPatch(
   return { method: "json-fallback" };
 }
 
-/** Remove credential fields that older configure versions wrote as `${SENTROOK_SCAN_*}` SecretRefs. */
-export function stripCredentialKeysFromPluginConfig(stateDir: string): boolean {
+/**
+ * Remove stale plugin config keys that older configure versions wrote:
+ * credential SecretRefs, plus removed `mode` / `sanitization` toggles.
+ */
+export function stripStalePluginConfigKeys(stateDir: string): boolean {
   const cfgPath = openclawConfigPath(stateDir);
   if (!existsSync(cfgPath)) return false;
   let cfg: Record<string, unknown>;
@@ -308,7 +305,7 @@ export function stripCredentialKeysFromPluginConfig(stateDir: string): boolean {
   if (!config) return false;
 
   let changed = false;
-  for (const key of ["clientId", "clientSecret", "apiKey"] as const) {
+  for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization"] as const) {
     if (key in config) {
       delete config[key];
       changed = true;
@@ -317,6 +314,11 @@ export function stripCredentialKeysFromPluginConfig(stateDir: string): boolean {
   if (!changed) return false;
   writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8" });
   return true;
+}
+
+/** @deprecated Use {@link stripStalePluginConfigKeys}. */
+export function stripCredentialKeysFromPluginConfig(stateDir: string): boolean {
+  return stripStalePluginConfigKeys(stateDir);
 }
 
 function mergeOpenclawJsonFallback(stateDir: string, answers: ConfigureAnswers): void {
@@ -339,7 +341,7 @@ function mergeOpenclawJsonFallback(stateDir: string, answers: ConfigureAnswers):
     prev?.config && typeof prev.config === "object"
       ? { ...(prev.config as Record<string, unknown>) }
       : {};
-  for (const key of ["clientId", "clientSecret", "apiKey"] as const) {
+  for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization"] as const) {
     delete prevConfig[key];
   }
   entries[PLUGIN_ID] = {
@@ -445,8 +447,6 @@ export async function collectAnswersInteractive(
     }
   }
 
-  let mode: PluginMode = DEFAULT_MODE;
-
   let timeoutMs = seed.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (seed.timeoutMs === undefined) {
     if (!(await io.confirm(`Use default timeout (${DEFAULT_TIMEOUT_MS}ms)?`, true))) {
@@ -455,8 +455,6 @@ export async function collectAnswersInteractive(
       timeoutMs = Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS;
     }
   }
-
-  const sanitize = DEFAULT_SANITIZE;
 
   let contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
   if (seed.contributeCorpus === undefined) {
@@ -487,17 +485,15 @@ export async function collectAnswersInteractive(
     clientSecret = (await io.promptSecret("OAuth client_secret")).trim();
   }
 
-  return { url, mode, timeoutMs, sanitize, contributeCorpus, clientId, clientSecret, apiKey };
+  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey };
 }
 
 export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): ConfigureAnswers {
   const url = seed.url?.trim() || DEFAULT_SCAN_URL;
-  const mode: PluginMode = DEFAULT_MODE;
   const timeoutMs =
     typeof seed.timeoutMs === "number" && seed.timeoutMs > 0
       ? seed.timeoutMs
       : DEFAULT_TIMEOUT_MS;
-  const sanitize = DEFAULT_SANITIZE;
   const contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
   const clientId = seed.clientId?.trim();
   const clientSecret = seed.clientSecret?.trim();
@@ -508,7 +504,7 @@ export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): C
         `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR}); --api-key also accepted`,
     );
   }
-  return { url, mode, timeoutMs, sanitize, contributeCorpus, clientId, clientSecret, apiKey };
+  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey };
 }
 
 export async function runConfigure(

@@ -203,37 +203,19 @@ describe("sanitizePlanir", () => {
 });
 
 describe("resolveSanitizationConfig", () => {
-  it("defaults to enabled", () => {
+  it("always returns enabled (config/env toggles removed)", () => {
     assert.deepEqual(resolveSanitizationConfig(undefined, {}), { enabled: true });
-  });
-
-  it("reads plugin config when env unset", () => {
-    assert.deepEqual(resolveSanitizationConfig({ sanitization: { enabled: true } }, {}), {
-      enabled: true,
-    });
-    assert.deepEqual(resolveSanitizationConfig({ sanitization: { enabled: false } }, {}), {
-      enabled: false,
-    });
-  });
-
-  it("env overrides plugin config", () => {
     assert.deepEqual(
-      resolveSanitizationConfig(
-        { sanitization: { enabled: true } },
-        { SENTROOK_SANITIZE_PLANIR: "0" },
-      ),
-      { enabled: false },
+      resolveSanitizationConfig({ sanitization: { enabled: false } }, {}),
+      { enabled: true },
     );
     assert.deepEqual(
-      resolveSanitizationConfig(
-        { sanitization: { enabled: false } },
-        { SENTROOK_SANITIZE_PLANIR: "1" },
-      ),
+      resolveSanitizationConfig({}, { SENTROOK_SANITIZE_PLANIR: "0" }),
       { enabled: true },
     );
   });
 
-  it("maybeSanitizePlanir is a no-op when disabled", () => {
+  it("maybeSanitizePlanir always scrubs", () => {
     const plan: PlanIR = {
       version: "1.0",
       run_id: "sess-1:run_1",
@@ -247,29 +229,15 @@ describe("resolveSanitizationConfig", () => {
       ],
       metadata: { adapter: "openclaw", hook: "before_tool_call" },
     };
-    const result = maybeSanitizePlanir(plan, { enabled: false });
-    assert.equal(result.sanitizeMs, 0);
-    assert.deepEqual(result.plan, plan);
-  });
-
-  it("maybeSanitizePlanir scrubs when enabled", () => {
-    const plan: PlanIR = {
-      version: "1.0",
-      run_id: "sess-1:run_1",
-      steps: [
-        {
-          id: "s1",
-          tool: "exec",
-          status: "pending",
-          args: { command: "echo", api_key: "secret" },
-        },
-      ],
-      metadata: { adapter: "openclaw", hook: "before_tool_call" },
-    };
-    const result = maybeSanitizePlanir(plan, { enabled: true });
-    assert.ok(result.sanitizeMs >= 0);
+    const disabled = maybeSanitizePlanir(plan, { enabled: false });
     assert.equal(
-      (result.plan.steps[0].args as { api_key: string }).api_key,
+      (disabled.plan.steps[0].args as { api_key: string }).api_key,
+      "[REDACTED]",
+    );
+    const enabled = maybeSanitizePlanir(plan, { enabled: true });
+    assert.ok(enabled.sanitizeMs >= 0);
+    assert.equal(
+      (enabled.plan.steps[0].args as { api_key: string }).api_key,
       "[REDACTED]",
     );
   });

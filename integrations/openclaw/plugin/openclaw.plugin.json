@@ -43,14 +43,6 @@
         "type": "integer",
         "description": "Scan request timeout in ms. Gates the agent while awaiting /scan. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SCAN_TIMEOUT_MS)."
       },
-      "mode": {
-        "type": "string",
-        "enum": [
-          "observe",
-          "enforce"
-        ],
-        "description": "Product mode is enforce (allow / review / block). observe remains accepted for compatibility but is not offered by configure and is not recommended."
-      },
       "feedback": {
         "type": "object",
         "additionalProperties": false,
@@ -65,25 +57,11 @@
           }
         }
       },
-      "sanitization": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "PlanIR scrubbing before POST /scan and /feedback. Always enabled by configure; leaving this false is unsupported and not recommended."
-          }
-        }
-      },
       "approval": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Human approval timeouts for enforce-mode review decisions. Unattended cron/subagent runs get a longer window; interactive sessions stay short with deny-on-timeout.",
+        "description": "Human approval timeouts for review decisions. Unattended cron/subagent runs get a longer window; both interactive and scheduled reviews default to deny-on-timeout (fail-closed).",
         "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "When false, all intents use interactiveTimeoutMs with deny-on-timeout. Default true. Env: SENTROOK_SCHEDULED_APPROVAL_ENABLED."
-          },
           "interactiveTimeoutMs": {
             "type": "integer",
             "description": "Review timeout for interactive sessions (ms). Default 300000 (5 min). Env: SENTROOK_APPROVAL_TIMEOUT_MS."
@@ -98,7 +76,7 @@
               "allow",
               "deny"
             ],
-            "description": "When an unattended review times out. Default allow (proceed). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR."
+            "description": "When an unattended review times out. Default deny (fail-closed). Set allow if cron/subagent jobs must proceed without a human. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR."
           },
           "scheduledIntentKinds": {
             "type": "array",
@@ -118,7 +96,7 @@
       "allowlist": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Local short-circuit for enforce-mode allow-always decisions. Stores skeletons / script content hashes under ~/.openclaw; does not override Sentrook blocks.",
+        "description": "Local short-circuit for allow-always decisions. Stores skeletons / script content hashes under ~/.openclaw; does not override Sentrook blocks.",
         "properties": {
           "enabled": {
             "type": "boolean",

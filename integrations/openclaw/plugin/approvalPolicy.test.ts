@@ -39,38 +39,52 @@ describe("resolveApprovalTiming", () => {
     assert.equal(timing.unattended, false);
   });
 
-  it("uses scheduled allow for cron intents", () => {
+  it("uses scheduled deny for cron intents", () => {
     const timing = resolveApprovalTiming(
       policy,
       "cron",
       "[cron:abc] Daily Brief",
     );
     assert.equal(timing.timeoutMs, DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS);
-    assert.equal(timing.timeoutBehavior, "allow");
+    assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.unattended, true);
   });
 
-  it("uses scheduled allow for subagent intents", () => {
+  it("uses scheduled deny for subagent intents", () => {
     const timing = resolveApprovalTiming(
       policy,
       "subagent",
       "[Subagent Task] run calendar sync",
     );
     assert.equal(timing.unattended, true);
-    assert.equal(timing.timeoutBehavior, "allow");
+    assert.equal(timing.timeoutBehavior, "deny");
   });
 
-  it("falls back to interactive when scheduled approval disabled", () => {
-    const disabled = resolveApprovalPolicyConfig({
-      pluginApproval: { enabled: false },
+  it("honours scheduledTimeoutBehavior allow override", () => {
+    const open = resolveApprovalPolicyConfig({
+      pluginApproval: { scheduledTimeoutBehavior: "allow" },
     });
     const timing = resolveApprovalTiming(
-      disabled,
+      open,
+      "cron",
+      "[cron:abc] Daily Brief",
+    );
+    assert.equal(timing.timeoutBehavior, "allow");
+    assert.equal(timing.unattended, true);
+  });
+
+  it("uses interactive policy when kind is outside scheduledIntentKinds", () => {
+    const narrowed = resolveApprovalPolicyConfig({
+      pluginApproval: { scheduledIntentKinds: ["subagent"] },
+    });
+    const timing = resolveApprovalTiming(
+      narrowed,
       "cron",
       "[cron:abc] Daily Brief",
     );
     assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.timeoutMs, DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS);
+    assert.equal(timing.unattended, false);
   });
 });
 
@@ -80,13 +94,16 @@ describe("resolveApprovalPolicyConfig", () => {
       env: {
         SENTROOK_APPROVAL_TIMEOUT_MS: "60000",
         SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS: "300000",
-        SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR: "deny",
-        SENTROOK_SCHEDULED_APPROVAL_ENABLED: "0",
+        SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR: "allow",
       },
     });
     assert.equal(policy.interactiveTimeoutMs, 60_000);
     assert.equal(policy.scheduledTimeoutMs, 300_000);
+    assert.equal(policy.scheduledTimeoutBehavior, "allow");
+  });
+
+  it("defaults scheduledTimeoutBehavior to deny", () => {
+    const policy = resolveApprovalPolicyConfig({});
     assert.equal(policy.scheduledTimeoutBehavior, "deny");
-    assert.equal(policy.scheduledApprovalEnabled, false);
   });
 });

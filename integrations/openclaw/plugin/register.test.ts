@@ -83,7 +83,7 @@ afterEach(() => {
 });
 
 describe("plugin.register — per-call dotenv auth", () => {
-  it("observe mode: second tool call uses credentials rewritten in .env", async () => {
+  it("second tool call uses credentials rewritten in .env", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
     const saved = saveEnv();
     const authHeaders: string[] = [];
@@ -92,7 +92,11 @@ describe("plugin.register — per-call dotenv auth", () => {
       process.env.OPENCLAW_STATE_DIR = stateDir;
       writeApiKeyDotenv(stateDir, "key-a");
 
-      globalThis.fetch = (async (_url, init) => {
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (!url.endsWith("/scan")) {
+          return new Response("{}", { status: 200 });
+        }
         const headers = (init?.headers ?? {}) as Record<string, string>;
         authHeaders.push(headers.authorization || headers.Authorization || "");
         return new Response(JSON.stringify({ decision: "allow", block: false }), {
@@ -102,10 +106,8 @@ describe("plugin.register — per-call dotenv auth", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "observe",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
       });
       plugin.register(api as never);
       const beforeTool = handlers.get("before_tool_call");
@@ -162,10 +164,8 @@ describe("plugin.register — per-call dotenv auth", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
       });
       plugin.register(api as never);
       const beforeTool = handlers.get("before_tool_call");
@@ -192,7 +192,6 @@ describe("plugin.register — per-call dotenv auth", () => {
       writeFileSync(path.join(stateDir, ".env"), "# empty\n");
 
       const { api, warns } = createMockApi({
-        mode: "observe",
         url: "https://scan.test",
       });
       plugin.register(api as never);
@@ -204,8 +203,8 @@ describe("plugin.register — per-call dotenv auth", () => {
   });
 });
 
-describe("plugin.register — observe fail logging", () => {
-  it("warns with observe scan HTTP status and body on non-OK", async () => {
+describe("plugin.register — scan fail logging", () => {
+  it("warns with scan HTTP status and body on non-OK", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
     const saved = saveEnv();
     try {
@@ -217,10 +216,8 @@ describe("plugin.register — observe fail logging", () => {
         new Response('{"error":"unauthorized"}', { status: 401 })) as typeof fetch;
 
       const { api, handlers, warns } = createMockApi({
-        mode: "observe",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
       });
       plugin.register(api as never);
       const beforeTool = handlers.get("before_tool_call");
@@ -232,15 +229,15 @@ describe("plugin.register — observe fail logging", () => {
       );
       assert.equal(result, undefined);
       await flushAsyncWork();
-      assert.ok(warns.some((w) => /observe scan HTTP 401:.*"unauthorized"/.test(w)));
-      assert.ok(!warns.some((w) => /failing open/.test(w)));
+      assert.ok(warns.some((w) => /scan HTTP 401:.*"unauthorized"/.test(w)));
+      assert.ok(warns.some((w) => /failing open/.test(w)));
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
     }
   });
 
-  it("warns observe scan failed on network errors", async () => {
+  it("warns scan failed on network errors", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
     const saved = saveEnv();
     try {
@@ -253,10 +250,8 @@ describe("plugin.register — observe fail logging", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns } = createMockApi({
-        mode: "observe",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
       });
       plugin.register(api as never);
       const beforeTool = handlers.get("before_tool_call");
@@ -267,7 +262,7 @@ describe("plugin.register — observe fail logging", () => {
         { sessionId: "s1" },
       );
       await flushAsyncWork();
-      assert.ok(warns.some((w) => /observe scan failed: ECONNREFUSED/.test(w)));
+      assert.ok(warns.some((w) => /scan failed: ECONNREFUSED/.test(w)));
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
@@ -311,10 +306,8 @@ describe("plugin.register — enforce local allowlist", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: {
           enabled: true,
           path: path.join(stateDir, "sentrook-allowlist.json"),
@@ -402,10 +395,8 @@ describe("plugin.register — enforce local allowlist", () => {
       );
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: {
           enabled: true,
           path: path.join(stateDir, "sentrook-allowlist.json"),
@@ -468,10 +459,8 @@ describe("plugin.register — enforce local allowlist", () => {
       mockReviewFetch(feedbackBodies);
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: { enabled: true, path: allowPath, scriptBind: true },
       });
       plugin.register(api as never);
@@ -521,10 +510,8 @@ describe("plugin.register — enforce local allowlist", () => {
       mockReviewFetch(feedbackBodies);
 
       const { api, handlers, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: { enabled: true, path: allowPath, scriptBind: true },
       });
       plugin.register(api as never);
@@ -573,10 +560,8 @@ describe("plugin.register — enforce local allowlist", () => {
       mockReviewFetch(feedbackBodies);
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         feedback: { mode: "submit" },
         allowlist: { enabled: true, path: allowPath, scriptBind: true },
       });
@@ -626,10 +611,8 @@ describe("plugin.register — enforce local allowlist", () => {
       mockReviewFetch(feedbackBodies);
 
       const { api, handlers, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: { enabled: false, path: allowPath, scriptBind: true },
       });
       plugin.register(api as never);
@@ -680,10 +663,8 @@ describe("plugin.register — enforce local allowlist", () => {
       mockReviewFetch(feedbackBodies);
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: { enabled: true, path: allowPath, scriptBind: true },
       });
       plugin.register(api as never);
@@ -762,10 +743,8 @@ describe("plugin.register — enforce local allowlist", () => {
       }) as typeof fetch;
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: { enabled: true, path: allowPath, scriptBind: true },
       });
       plugin.register(api as never);
@@ -798,10 +777,8 @@ describe("plugin.register — enforce local allowlist", () => {
       mockReviewFetch(feedbackBodies);
 
       const { api, handlers, warns, infos } = createMockApi({
-        mode: "enforce",
         url: "https://scan.test",
         timeoutMs: 1500,
-        sanitization: { enabled: false },
         allowlist: { enabled: true, scriptBind: true },
       });
       plugin.register(api as never);

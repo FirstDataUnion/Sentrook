@@ -2,9 +2,8 @@
  * Sentrook OpenClaw plugin (the "layer").
  *
  * Awaits hosted /scan and maps allow / review / block to OpenClaw
- * before_tool_call decisions (block veto or requireApproval).
- * A legacy observe mode (fire-and-forget, never blocks) remains for
- * compatibility but is not offered by configure.
+ * before_tool_call decisions (block veto or requireApproval). PlanIR is
+ * always scrubbed before egress.
  */
 
 import {
@@ -20,11 +19,7 @@ import {
   resolveApprovalPolicyConfig,
   resolveApprovalTiming,
 } from "./approvalPolicy.ts";
-import {
-  type SanitizationConfig,
-  maybeSanitizePlanir,
-  resolveSanitizationConfig,
-} from "./sanitize.ts";
+import { maybeSanitizePlanir } from "./sanitize.ts";
 import {
   type AllowlistConfig,
   matchAllowlist,
@@ -52,7 +47,6 @@ interface PluginLogger {
   error: (m: string) => void;
 }
 
-type PluginMode = "observe" | "enforce";
 type FeedbackMode = "off" | "submit";
 type ApprovalResolution =
   | "allow-once"
@@ -185,10 +179,8 @@ interface PluginConfig {
   url: string;
   auth: ScanAuthConfig;
   timeoutMs: number;
-  mode: PluginMode;
   feedbackMode: FeedbackMode;
   approval: ApprovalPolicyConfig;
-  sanitization: SanitizationConfig;
   allowlist: AllowlistConfig;
 }
 
@@ -245,12 +237,6 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
 
   const timeoutMs = resolveScanTimeoutMs(cfg.timeoutMs, url, process.env);
 
-  const modeRaw =
-    (typeof cfg.mode === "string" && cfg.mode) ||
-    process.env.SENTROOK_MODE ||
-    "enforce";
-  const mode: PluginMode = modeRaw === "observe" ? "observe" : "enforce";
-
   const feedbackCfg =
     cfg.feedback && typeof cfg.feedback === "object"
       ? (cfg.feedback as Json)
@@ -277,11 +263,6 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
     envWithOpenclawDotenv(process.env),
   );
 
-  const sanitization = resolveSanitizationConfig(
-    cfg as Record<string, unknown>,
-    process.env,
-  );
-
   const allowlist = resolveAllowlistConfig(
     cfg as Record<string, unknown>,
     process.env,
@@ -291,10 +272,8 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
     url,
     auth,
     timeoutMs,
-    mode,
     feedbackMode,
     approval,
-    sanitization,
     allowlist,
   };
 }
@@ -421,13 +400,12 @@ export async function postScan(
   timeoutMs: number,
   plan: PlanIR,
   auth: ScanAuthConfig | null = null,
-  sanitization: SanitizationConfig = { enabled: true },
   logger?: PluginLogger,
 ): Promise<PostScanResult | null> {
   const resolvedAuth: ScanAuthConfig = auth ?? { apiKey: null, oidc: null };
-  const { plan: outbound, sanitizeMs } = maybeSanitizePlanir(plan, sanitization);
+  const { plan: outbound, sanitizeMs } = maybeSanitizePlanir(plan);
   const sanitizeTiming: SanitizeTiming = {
-    enabled: sanitization.enabled,
+    enabled: true,
     ms: sanitizeMs,
   };
 
@@ -480,10 +458,9 @@ function postFeedback(
     log?: Json;
     provenance?: Json;
   },
-  sanitization: SanitizationConfig,
   logger: PluginLogger,
 ): Promise<void> {
-  const { plan: outbound } = maybeSanitizePlanir(payload.plan, sanitization);
+  const { plan: outbound } = maybeSanitizePlanir(payload.plan);
   return (async () => {
     try {
       const headers = await buildScanAuthHeadersAsync(auth);
@@ -543,7 +520,6 @@ export function translateScanResponse(
     auth: ScanAuthConfig;
     feedbackMode: FeedbackMode;
     approval: ApprovalPolicyConfig;
-    sanitization: SanitizationConfig;
     allowlist?: AllowlistConfig;
     logger: PluginLogger;
   },
@@ -630,7 +606,6 @@ export function translateScanResponse(
               ctx.url,
               ctx.auth,
               { plan, resolution: decision, log },
-              ctx.sanitization,
               ctx.logger,
             );
           }
@@ -702,44 +677,6 @@ const plugin = {
         envWithOpenclawDotenv(process.env),
       );
 
-    const postFireAndForget = (plan: PlanIR): void => {
-      const { plan: outbound } = maybeSanitizePlanir(plan, config.sanitization);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), config.timeoutMs);
-      void (async () => {
-        try {
-          const liveAuth = resolveLiveAuth();
-          const headers = await buildScanAuthHeadersAsync(liveAuth);
-          const response = await fetch(`${config.url}/scan`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(outbound),
-            signal: controller.signal,
-          });
-          if (!response.ok) {
-            let detail = "";
-            try {
-              detail = (await response.text()).slice(0, 200);
-            } catch {
-              detail = "";
-            }
-            api.logger.warn(
-              `[sentrook-openclaw] observe scan HTTP ${response.status}` +
-                (detail ? `: ${detail}` : ""),
-            );
-          }
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const aborted = msg.toLowerCase().includes("abort");
-          api.logger.warn(
-            `[sentrook-openclaw] observe scan ${aborted ? "timed out" : "failed"}: ${msg}`,
-          );
-        } finally {
-          clearTimeout(timer);
-        }
-      })();
-    };
-
     api.on("before_prompt_build", (event: BeforePromptBuildEvent, ctx: AgentContext) => {
       const st = getSession(sessionKeyOf(ctx));
       const runId = resolveRunId(event.runId, ctx.runId);
@@ -789,11 +726,6 @@ const plugin = {
             });
           }
 
-          if (config.mode === "observe") {
-            postFireAndForget(plan);
-            return undefined;
-          }
-
           // Re-resolve auth per call so ~/.openclaw/.env updates apply without
           // relying on Compose-injected process env (printenv won't show those).
           const liveAuth = resolveLiveAuth();
@@ -802,7 +734,6 @@ const plugin = {
             config.timeoutMs,
             plan,
             liveAuth,
-            config.sanitization,
             api.logger,
           );
           if (!scanResult) {
@@ -819,7 +750,6 @@ const plugin = {
             auth: liveAuth,
             feedbackMode: config.feedbackMode,
             approval: config.approval,
-            sanitization: config.sanitization,
             allowlist: config.allowlist,
             logger: api.logger,
           });
@@ -862,11 +792,10 @@ const plugin = {
       sessions.delete(sessionKeyOf(ctx));
     });
 
-    const approvalSummary = config.approval.scheduledApprovalEnabled
-      ? `interactive=${config.approval.interactiveTimeoutMs}ms/deny, ` +
-        `scheduled=${config.approval.scheduledTimeoutMs}ms/${config.approval.scheduledTimeoutBehavior} ` +
-        `(${config.approval.scheduledIntentKinds.join("+")})`
-      : `interactive=${config.approval.interactiveTimeoutMs}ms/deny (scheduled disabled)`;
+    const approvalSummary =
+      `interactive=${config.approval.interactiveTimeoutMs}ms/deny, ` +
+      `scheduled=${config.approval.scheduledTimeoutMs}ms/${config.approval.scheduledTimeoutBehavior} ` +
+      `(${config.approval.scheduledIntentKinds.join("+")})`;
     const scanAuthSummary = hasScanCredentials(config.auth)
       ? config.auth.oidc
         ? "scan-auth=oidc"
@@ -874,13 +803,10 @@ const plugin = {
       : urlRequiresScanAuth(config.url)
         ? "scan-auth=missing"
         : "scan-auth=off";
-    const sanitizationSummary = config.sanitization.enabled
-      ? "sanitization=on"
-      : "sanitization=off";
     api.logger.info(
-      `[sentrook-openclaw] registered (sidecar=${config.url}, mode=${config.mode}, ` +
+      `[sentrook-openclaw] registered (url=${config.url}, ` +
         `${scanAuthSummary}, timeout=${config.timeoutMs}ms, feedback=${config.feedbackMode}, ` +
-        `${sanitizationSummary}, approval: ${approvalSummary})`,
+        `sanitization=on, approval: ${approvalSummary})`,
     );
   },
 };

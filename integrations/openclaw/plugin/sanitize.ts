@@ -96,33 +96,17 @@ export interface SanitizePlanIRResult {
 }
 
 export interface SanitizationConfig {
+  /** @deprecated Always true; PlanIR is always scrubbed before egress. */
   enabled: boolean;
 }
 
-export function resolveSanitizationConfig(
-  pluginCfg: Record<string, unknown> | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): SanitizationConfig {
-  const envRaw = env.SENTROOK_SANITIZE_PLANIR;
-  if (envRaw !== undefined && envRaw !== "") {
-    const normalized = envRaw.trim().toLowerCase();
-    if (normalized === "1" || normalized === "true" || normalized === "yes") {
-      return { enabled: true };
-    }
-    if (normalized === "0" || normalized === "false" || normalized === "no") {
-      return { enabled: false };
-    }
-  }
+export const ALWAYS_SANITIZE: SanitizationConfig = { enabled: true };
 
-  const cfg =
-    pluginCfg?.sanitization && typeof pluginCfg.sanitization === "object"
-      ? (pluginCfg.sanitization as Record<string, unknown>)
-      : undefined;
-  if (cfg && typeof cfg.enabled === "boolean") {
-    return { enabled: cfg.enabled };
-  }
-  // Default on: scrub unless explicitly disabled.
-  return { enabled: true };
+export function resolveSanitizationConfig(
+  _pluginCfg?: Record<string, unknown>,
+  _env: NodeJS.ProcessEnv = process.env,
+): SanitizationConfig {
+  return ALWAYS_SANITIZE;
 }
 
 export function hashSessionId(sessionId: string, rules: SanitizeRules = DEFAULT_RULES): string {
@@ -536,11 +520,8 @@ export function sanitizePlanir(
 
 export function maybeSanitizePlanir(
   plan: PlanIR,
-  config: SanitizationConfig,
+  _config: SanitizationConfig = ALWAYS_SANITIZE,
   rules: SanitizeRules = DEFAULT_RULES,
 ): SanitizePlanIRResult {
-  if (!config.enabled) {
-    return { plan, sanitizeMs: 0 };
-  }
   return sanitizePlanir(plan, rules);
 }

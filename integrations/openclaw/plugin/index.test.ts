@@ -49,7 +49,6 @@ function ctx(overrides: Record<string, unknown> = {}) {
     auth: { apiKey: null, oidc: null },
     feedbackMode: "off" as const,
     approval: resolveApprovalPolicyConfig({}),
-    sanitization: { enabled: false },
     allowlist: { enabled: false, path: "/tmp/unused-sentrook-allowlist.json", scriptBind: true },
     logger: noopLogger,
     ...overrides,
@@ -123,21 +122,15 @@ describe("postScan timing", () => {
         { status: 200, headers: { "content-type": "application/json" } },
       )) as typeof fetch;
 
-    const result = await postScan(
-      "http://sentrook-scan:9099",
-      1500,
-      plan({ toolCallId: "exec:abc" }),
-      null,
-      { enabled: false },
-    );
+    const result = await postScan("http://sentrook-scan:9099", 1500, plan({ toolCallId: "exec:abc" }), null, );
     assert.ok(result);
     assert.equal(result.scan.decision, "allow");
     assert.ok(result.timing.pluginE2eMs >= 0);
     assert.equal(result.timing.engineMs, 10);
     assert.equal(result.timing.requestMs, 12);
     assert.equal(result.timing.transportMs, Math.max(0, result.timing.pluginE2eMs - 10));
-    assert.equal(result.timing.sanitizeEnabled, false);
-    assert.equal(result.timing.sanitizeMs, 0);
+    assert.equal(result.timing.sanitizeEnabled, true);
+    assert.ok(result.timing.sanitizeMs >= 0);
   });
 
   it("sanitizes PlanIR body when sanitization is enabled", async () => {
@@ -164,7 +157,6 @@ describe("postScan timing", () => {
         },
       }),
       null,
-      { enabled: true },
     );
     assert.ok(result);
     assert.equal(result.timing.sanitizeEnabled, true);
@@ -195,7 +187,6 @@ describe("postScan failure logging", () => {
       1500,
       plan(),
       { apiKey: "k", oidc: null },
-      { enabled: false },
       logger,
     );
     assert.equal(result, null);
@@ -227,13 +218,7 @@ describe("postScan failure logging", () => {
         signal.addEventListener("abort", () => reject(new Error("aborted")));
       })) as typeof fetch;
 
-    const result = await postScan(
-      "https://scan.test",
-      20,
-      plan(),
-      null,
-      { enabled: false },
-      logger,
+    const result = await postScan("https://scan.test", 20, plan(), null, logger,
     );
     assert.equal(result, null);
     assert.match(warns[0] || "", /scan timed out:.*failing open/);
@@ -250,13 +235,7 @@ describe("postScan failure logging", () => {
       throw new Error("ECONNREFUSED");
     }) as typeof fetch;
 
-    const result = await postScan(
-      "https://scan.test",
-      1500,
-      plan(),
-      null,
-      { enabled: false },
-      logger,
+    const result = await postScan("https://scan.test", 1500, plan(), null, logger,
     );
     assert.equal(result, null);
     assert.match(warns[0] || "", /scan failed: ECONNREFUSED; failing open/);
@@ -341,7 +320,7 @@ describe("translateScanResponse — review mapping", () => {
     assert.equal(approval.timeoutBehavior, "deny");
   });
 
-  it("applies scheduled allow timing for cron intents", () => {
+  it("applies scheduled deny timing for cron intents", () => {
     const scan: ScanResponse = { block: false, decision: "review" };
     const result = translateScanResponse(
       scan,
@@ -354,7 +333,7 @@ describe("translateScanResponse — review mapping", () => {
     );
     const approval = result?.requireApproval;
     assert.ok(approval);
-    assert.equal(approval.timeoutBehavior, "allow");
+    assert.equal(approval.timeoutBehavior, "deny");
   });
 });
 
@@ -435,7 +414,6 @@ describe("translateScanResponse — resolution feedback", () => {
       ctx({
         plan: snap,
         feedbackMode: "submit",
-        sanitization: { enabled: true },
       }),
     );
     await result!.requireApproval!.onResolution!("deny");

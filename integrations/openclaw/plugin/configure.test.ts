@@ -6,7 +6,6 @@ import { describe, it } from "node:test";
 import {
   CLIENT_ID_VAR,
   CLIENT_SECRET_VAR,
-  DEFAULT_MODE,
   DEFAULT_SCAN_URL,
   DEFAULT_TIMEOUT_MS,
   PLUGIN_ID,
@@ -18,7 +17,7 @@ import {
   openclawConfigPath,
   resolveStateDir,
   restartHint,
-  stripCredentialKeysFromPluginConfig,
+  stripStalePluginConfigKeys,
   upsertDotenvVar,
   withSpinner,
   writeScanCredentials,
@@ -28,9 +27,7 @@ describe("buildPluginEntryConfig", () => {
   it("omits credentials from openclaw.json (env-only auth)", () => {
     const cfg = buildPluginEntryConfig({
       url: DEFAULT_SCAN_URL,
-      mode: "enforce",
       timeoutMs: 3000,
-      sanitize: true,
       contributeCorpus: true,
       clientId: "cid",
       clientSecret: "csec",
@@ -39,16 +36,15 @@ describe("buildPluginEntryConfig", () => {
     assert.equal(cfg.clientSecret, undefined);
     assert.equal(cfg.apiKey, undefined);
     assert.equal(cfg.url, DEFAULT_SCAN_URL);
-    assert.deepEqual(cfg.sanitization, { enabled: true });
+    assert.equal("mode" in cfg, false);
+    assert.equal("sanitization" in cfg, false);
     assert.deepEqual(cfg.feedback, { mode: "submit" });
   });
 
   it("sets feedback off when user opts out of corpus contribution", () => {
     const cfg = buildPluginEntryConfig({
       url: DEFAULT_SCAN_URL,
-      mode: "enforce",
       timeoutMs: 3000,
-      sanitize: true,
       contributeCorpus: false,
     });
     assert.deepEqual(cfg.feedback, { mode: "off" });
@@ -57,15 +53,13 @@ describe("buildPluginEntryConfig", () => {
   it("also omits apiKey from config", () => {
     const cfg = buildPluginEntryConfig({
       url: DEFAULT_SCAN_URL,
-      mode: "enforce",
       timeoutMs: 1500,
-      sanitize: true,
       contributeCorpus: true,
       apiKey: "k",
     });
     assert.equal(cfg.apiKey, undefined);
-    assert.equal(cfg.mode, "enforce");
-    assert.deepEqual(cfg.sanitization, { enabled: true });
+    assert.equal("mode" in cfg, false);
+    assert.equal("sanitization" in cfg, false);
   });
 });
 
@@ -73,9 +67,7 @@ describe("buildConfigPatchDocument", () => {
   it("does not declare SecretRefs or secrets.providers", () => {
     const doc = buildConfigPatchDocument({
       url: DEFAULT_SCAN_URL,
-      mode: DEFAULT_MODE,
       timeoutMs: DEFAULT_TIMEOUT_MS,
-      sanitize: true,
       contributeCorpus: true,
       clientId: "cid",
       clientSecret: "sec",
@@ -95,9 +87,7 @@ describe("dotenv helpers", () => {
       upsertDotenvVar(dotenv, "OTHER", "keep");
       writeScanCredentials(dir, {
         url: DEFAULT_SCAN_URL,
-        mode: "enforce",
         timeoutMs: 3000,
-        sanitize: true,
         contributeCorpus: true,
         clientId: "id1",
         clientSecret: "sec1",
@@ -108,9 +98,7 @@ describe("dotenv helpers", () => {
       assert.match(text, new RegExp(`^${CLIENT_SECRET_VAR}=sec1$`, "m"));
       writeScanCredentials(dir, {
         url: DEFAULT_SCAN_URL,
-        mode: "enforce",
         timeoutMs: 3000,
-        sanitize: true,
         contributeCorpus: true,
         clientId: "id2",
         clientSecret: "sec2",
@@ -130,9 +118,7 @@ describe("dotenv helpers", () => {
         () =>
           writeScanCredentials(dir, {
             url: DEFAULT_SCAN_URL,
-            mode: "enforce",
             timeoutMs: 3000,
-            sanitize: true,
             contributeCorpus: true,
             clientId: "id",
             clientSecret: "   ",
@@ -152,9 +138,7 @@ describe("dotenv helpers", () => {
       process.env.SENTROOK_DOTENV = composeEnv;
       writeScanCredentials(path.join(dir, "state"), {
         url: DEFAULT_SCAN_URL,
-        mode: "enforce",
         timeoutMs: 3000,
-        sanitize: true,
         contributeCorpus: true,
         clientId: "id1",
         clientSecret: "sec1",
@@ -218,7 +202,6 @@ describe("collectAnswersNonInteractive", () => {
       clientSecret: "s",
     });
     assert.equal(a.url, DEFAULT_SCAN_URL);
-    assert.equal(a.mode, DEFAULT_MODE);
     assert.equal(a.clientId, "c");
     assert.equal(a.contributeCorpus, true);
   });
@@ -232,22 +215,16 @@ describe("collectAnswersNonInteractive", () => {
     assert.equal(a.contributeCorpus, false);
   });
 
-  it("always configures enforce (observe is not offered)", () => {
-    const a = collectAnswersNonInteractive({
+  it("plugin entry config never includes mode or sanitization", () => {
+    const cfg = buildPluginEntryConfig({
+      url: DEFAULT_SCAN_URL,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      contributeCorpus: true,
       clientId: "c",
       clientSecret: "s",
-      mode: "observe",
     });
-    assert.equal(a.mode, "enforce");
-  });
-
-  it("always enables PlanIR sanitization (disable is not offered)", () => {
-    const a = collectAnswersNonInteractive({
-      clientId: "c",
-      clientSecret: "s",
-      sanitize: false,
-    });
-    assert.equal(a.sanitize, true);
+    assert.equal("mode" in cfg, false);
+    assert.equal("sanitization" in cfg, false);
   });
 });
 
@@ -275,9 +252,7 @@ describe("applyConfigPatch json fallback", () => {
         dir,
         {
           url: DEFAULT_SCAN_URL,
-          mode: "enforce",
           timeoutMs: 3000,
-          sanitize: true,
           contributeCorpus: true,
           clientId: "cid",
           clientSecret: "sec",
@@ -318,7 +293,7 @@ describe("withSpinner", () => {
   });
 });
 
-describe("stripCredentialKeysFromPluginConfig", () => {
+describe("stripStalePluginConfigKeys", () => {
   it("removes stale SecretRef credential keys", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-strip-"));
     try {
@@ -331,6 +306,8 @@ describe("stripCredentialKeysFromPluginConfig", () => {
                 enabled: true,
                 config: {
                   url: DEFAULT_SCAN_URL,
+                  mode: "observe",
+                  sanitization: { enabled: false },
                   clientId: `\${${CLIENT_ID_VAR}}`,
                   clientSecret: `\${${CLIENT_SECRET_VAR}}`,
                 },
@@ -339,13 +316,15 @@ describe("stripCredentialKeysFromPluginConfig", () => {
           },
         }) + "\n",
       );
-      assert.equal(stripCredentialKeysFromPluginConfig(dir), true);
+      assert.equal(stripStalePluginConfigKeys(dir), true);
       const cfg = JSON.parse(readFileSync(openclawConfigPath(dir), "utf8")) as {
         plugins: { entries: Record<string, { config: Record<string, unknown> }> };
       };
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.url, DEFAULT_SCAN_URL);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.clientId, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.clientSecret, undefined);
+      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.mode, undefined);
+      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.sanitization, undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
