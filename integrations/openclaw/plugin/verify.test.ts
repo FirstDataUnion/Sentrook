@@ -39,14 +39,44 @@ function writeOidcDotenv(
   writeFileSync(path.join(dir, ".env"), lines.join("\n") + "\n", { mode: 0o600 });
 }
 
-function mockHealth(body: Record<string, unknown>, status = 200): void {
+function mintJwt(expiresInSec = 3600): string {
+  const exp = Math.floor(Date.now() / 1000) + expiresInSec;
+  const payload = Buffer.from(JSON.stringify({ exp })).toString("base64url");
+  return `aaa.${payload}.bbb`;
+}
+
+/** Route-aware fetch mock: /health, OIDC discovery, token mint. */
+function mockVerifyNetwork(opts: {
+  health?: { body: Record<string, unknown>; status?: number };
+  tokenStatus?: number;
+  tokenBody?: string;
+}): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
-    assert.match(url, /\/health$/);
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
+    if (url.includes("/health")) {
+      const health = opts.health ?? { body: { status: "ok" }, status: 200 };
+      return new Response(JSON.stringify(health.body), {
+        status: health.status ?? 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("openid-configuration")) {
+      return new Response(
+        JSON.stringify({ token_endpoint: "https://identity.test/oauth/token" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/oauth/token")) {
+      const status = opts.tokenStatus ?? 200;
+      const body =
+        opts.tokenBody ??
+        JSON.stringify({ access_token: mintJwt(), expires_in: 3600 });
+      return new Response(body, {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
   }) as typeof fetch;
 }
 
@@ -77,6 +107,10 @@ describe("runVerify", () => {
       delete process.env[CLIENT_SECRET_VAR];
       writePluginConfig(dir);
       writeOidcDotenv(dir);
+      mockVerifyNetwork({
+        health: { body: { status: "error" }, status: 503 },
+        tokenStatus: 200,
+      });
       const result = await runVerify({
         stateDir: dir,
         url: "https://example.invalid",
@@ -88,6 +122,7 @@ describe("runVerify", () => {
       assert.equal(byName["credentials load path"]?.ok, true);
       assert.match(byName["credentials load path"]?.detail || "", /\.env file/);
       assert.equal(byName["scan service health"]?.ok, false);
+      assert.equal(byName["OIDC token mint"]?.ok, true);
       assert.match(formatVerifyReport(result), /FAILED/);
     } finally {
       if (prevId === undefined) delete process.env[CLIENT_ID_VAR];
@@ -107,6 +142,9 @@ describe("runVerify", () => {
       writeOidcDotenv(dir);
       process.env[CLIENT_ID_VAR] = "cid";
       process.env[CLIENT_SECRET_VAR] = "csec";
+      mockVerifyNetwork({
+        health: { body: { status: "error" }, status: 503 },
+      });
       const result = await runVerify({
         stateDir: dir,
         url: "https://example.invalid",
@@ -133,6 +171,9 @@ describe("runVerify", () => {
       writeFileSync(path.join(dir, ".env"), "SENTROOK_SCAN_API_KEY=shared-key\n", {
         mode: 0o600,
       });
+      mockVerifyNetwork({
+        health: { body: { status: "error" }, status: 503 },
+      });
       const result = await runVerify({
         stateDir: dir,
         url: "https://example.invalid",
@@ -141,9 +182,40 @@ describe("runVerify", () => {
       const creds = result.checks.find((c) => c.name === "scan credentials");
       assert.equal(creds?.ok, true);
       assert.match(creds?.detail || "", /shared API key/i);
+      assert.ok(!result.checks.some((c) => c.name === "OIDC token mint"));
     } finally {
       if (prevKey === undefined) delete process.env.SENTROOK_SCAN_API_KEY;
       else process.env.SENTROOK_SCAN_API_KEY = prevKey;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when Identity rejects client_credentials (HTTP 401)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
+    try {
+      writePluginConfig(dir);
+      writeOidcDotenv(dir);
+      mockVerifyNetwork({
+        health: {
+          body: {
+            status: "ok",
+            oidc_issuer: "https://identity.firstdataunion.org",
+          },
+        },
+        tokenStatus: 401,
+        tokenBody: '{"error":"invalid_client"}',
+      });
+      const result = await runVerify({
+        stateDir: dir,
+        url: "https://scan.test",
+        timeoutMs: 2000,
+      });
+      const mint = result.checks.find((c) => c.name === "OIDC token mint");
+      assert.equal(mint?.ok, false);
+      assert.match(mint?.detail || "", /HTTP 401/);
+      assert.match(mint?.detail || "", /invalid_client|client_id\/secret/i);
+      assert.equal(result.ok, false);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -159,11 +231,15 @@ describe("runVerify — OIDC issuer alignment", () => {
       writeOidcDotenv(dir, {
         SENTROOK_OIDC_ISSUER: "https://dev.identity.example/",
       });
-      mockHealth({
-        status: "ok",
-        rules_loaded: 22,
-        oidc_issuer: "https://dev.identity.example",
-        oidc_audience: "sentrook",
+      mockVerifyNetwork({
+        health: {
+          body: {
+            status: "ok",
+            rules_loaded: 22,
+            oidc_issuer: "https://dev.identity.example",
+            oidc_audience: "sentrook",
+          },
+        },
       });
       const result = await runVerify({
         stateDir: dir,
@@ -177,8 +253,10 @@ describe("runVerify — OIDC issuer alignment", () => {
         byName["OIDC issuer alignment"]?.detail || "",
         /https:\/\/dev\.identity\.example/,
       );
+      assert.equal(byName["OIDC token mint"]?.ok, true);
       assert.equal(result.ok, true);
       assert.match(formatVerifyReport(result), /OK —/);
+      assert.match(formatVerifyReport(result), /gateway logs/);
     } finally {
       if (prevIssuer === undefined) delete process.env.SENTROOK_OIDC_ISSUER;
       else process.env.SENTROOK_OIDC_ISSUER = prevIssuer;
@@ -195,9 +273,13 @@ describe("runVerify — OIDC issuer alignment", () => {
       writeOidcDotenv(dir, {
         SENTROOK_OIDC_ISSUER: "https://dev.identity.firstdataunion.org",
       });
-      mockHealth({
-        status: "ok",
-        oidc_issuer: "https://identity.firstdataunion.org",
+      mockVerifyNetwork({
+        health: {
+          body: {
+            status: "ok",
+            oidc_issuer: "https://identity.firstdataunion.org",
+          },
+        },
       });
       const result = await runVerify({
         stateDir: dir,
@@ -220,7 +302,9 @@ describe("runVerify — OIDC issuer alignment", () => {
     try {
       writePluginConfig(dir);
       writeOidcDotenv(dir);
-      mockHealth({ status: "ok", rules_loaded: 10 });
+      mockVerifyNetwork({
+        health: { body: { status: "ok", rules_loaded: 10 } },
+      });
       const result = await runVerify({
         stateDir: dir,
         url: "https://scan.test",
@@ -229,6 +313,7 @@ describe("runVerify — OIDC issuer alignment", () => {
       const align = result.checks.find((c) => c.name === "OIDC issuer alignment");
       assert.equal(align?.ok, true);
       assert.match(align?.detail || "", /no oidc_issuer yet/);
+      assert.equal(result.checks.find((c) => c.name === "OIDC token mint")?.ok, true);
       assert.equal(result.ok, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -240,7 +325,9 @@ describe("runVerify — OIDC issuer alignment", () => {
     try {
       writePluginConfig(dir);
       writeOidcDotenv(dir);
-      mockHealth({ status: "degraded" }, 503);
+      mockVerifyNetwork({
+        health: { body: { status: "degraded" }, status: 503 },
+      });
       const result = await runVerify({
         stateDir: dir,
         url: "https://scan.test",
@@ -250,6 +337,8 @@ describe("runVerify — OIDC issuer alignment", () => {
       assert.equal(health?.ok, false);
       assert.match(health?.detail || "", /HTTP 503/);
       assert.ok(!result.checks.some((c) => c.name === "OIDC issuer alignment"));
+      // Mint still runs when OIDC vars are present (Identity ≠ scan health).
+      assert.equal(result.checks.find((c) => c.name === "OIDC token mint")?.ok, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

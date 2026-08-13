@@ -14,7 +14,14 @@ import {
   openclawConfigPath,
   resolveStateDir,
 } from "./configure.ts";
-import { DEFAULT_SCAN_ISSUER, envWithOpenclawDotenv } from "./auth.ts";
+import {
+  DEFAULT_SCAN_AUDIENCE,
+  DEFAULT_SCAN_ISSUER,
+  DEFAULT_SCAN_SCOPE,
+  clearScanTokenCache,
+  envWithOpenclawDotenv,
+  getScanAccessToken,
+} from "./auth.ts";
 
 export interface VerifyResult {
   ok: boolean;
@@ -189,6 +196,42 @@ export async function runVerify(opts: {
     }
   }
 
+  // Presence checks above are not enough: Identity can 401 on mint while /health stays green.
+  if (https && clientId && clientSecret) {
+    const audience =
+      merged.SENTROOK_OIDC_AUDIENCE?.trim() ||
+      readDotenvValue(dotenv, "SENTROOK_OIDC_AUDIENCE") ||
+      DEFAULT_SCAN_AUDIENCE;
+    const scope =
+      merged.SENTROOK_OIDC_SCOPE?.trim() ||
+      readDotenvValue(dotenv, "SENTROOK_OIDC_SCOPE") ||
+      DEFAULT_SCAN_SCOPE;
+    clearScanTokenCache();
+    try {
+      await getScanAccessToken({
+        clientId,
+        clientSecret,
+        issuer: pluginIssuer,
+        audience,
+        scope,
+      });
+      checks.push({
+        name: "OIDC token mint",
+        ok: true,
+        detail: `client_credentials OK at ${pluginIssuer} (scope=${scope}, aud=${audience})`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      checks.push({
+        name: "OIDC token mint",
+        ok: false,
+        detail:
+          `${msg} — check client_id/secret, grant_types=client_credentials, and scope ${scope} ` +
+          `at ${pluginIssuer} (Sentrook tab). Presence in ~/.openclaw/.env is not enough.`,
+      });
+    }
+  }
+
   return {
     ok: checks.every((c) => c.ok),
     url,
@@ -201,7 +244,7 @@ export function formatVerifyReport(result: VerifyResult): string {
     `=== Sentrook verify (${result.url}) ===`,
     ...result.checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`),
     result.ok
-      ? "OK — restart gateway if you have not since configure, then exercise a tool call."
+      ? "OK — restart gateway if you have not since configure, then exercise a tool call and confirm [sentrook-openclaw] lines in the gateway logs."
       : "FAILED — fix the items above, then re-run: openclaw sentrook verify",
   ];
   return lines.join("\n");

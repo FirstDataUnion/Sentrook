@@ -265,13 +265,23 @@ export async function getScanAccessToken(
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
   });
+  const responseText = await response.text();
   if (!response.ok) {
-    throw new Error(`client_credentials token mint failed: HTTP ${response.status}`);
+    const hint = responseText.trim().slice(0, 200);
+    throw new Error(
+      `client_credentials token mint failed: HTTP ${response.status}` +
+        (hint ? `: ${hint}` : ""),
+    );
   }
-  const payload = (await response.json()) as {
-    access_token?: string;
-    expires_in?: number;
-  };
+  let payload: { access_token?: string; expires_in?: number };
+  try {
+    payload = JSON.parse(responseText) as {
+      access_token?: string;
+      expires_in?: number;
+    };
+  } catch {
+    throw new Error("token response was not JSON");
+  }
   if (!payload.access_token) {
     throw new Error("token response missing access_token");
   }

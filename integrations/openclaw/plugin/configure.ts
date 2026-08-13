@@ -157,13 +157,31 @@ function alignDotenvOwner(file: string): void {
   }
 }
 
+/**
+ * Strip terminal focus / CSI / C0 junk that raw-mode secret prompts can capture
+ * when the TTY gains/loses focus during paste (`ESC[I` / `ESC[O`, etc.).
+ */
+export function sanitizeSecretInput(raw: string): string {
+  let s = raw.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  s = s.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "");
+  s = s.replace(/\u001b./g, "");
+  s = s.replace(/[\u0000-\u001f\u007f]/g, "");
+  return s.trim();
+}
+
 export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers): string {
-  if (answers.clientId && answers.clientSecret) {
-    if (!answers.clientId.trim() || !answers.clientSecret.trim()) {
+  const clientId = answers.clientId ? sanitizeSecretInput(answers.clientId) : "";
+  const clientSecret = answers.clientSecret
+    ? sanitizeSecretInput(answers.clientSecret)
+    : "";
+  const apiKey = answers.apiKey ? sanitizeSecretInput(answers.apiKey) : "";
+
+  if (answers.clientId != null || answers.clientSecret != null) {
+    if (!clientId || !clientSecret) {
       throw new Error("client_id and client_secret must be non-empty");
     }
-  } else if (answers.apiKey) {
-    if (!answers.apiKey.trim()) {
+  } else if (answers.apiKey != null) {
+    if (!apiKey) {
       throw new Error("api key must be non-empty");
     }
   } else {
@@ -171,22 +189,22 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
   }
 
   const dotenv = dotenvPath(stateDir);
-  if (answers.clientId && answers.clientSecret) {
-    upsertDotenvVar(dotenv, CLIENT_ID_VAR, answers.clientId.trim());
-    upsertDotenvVar(dotenv, CLIENT_SECRET_VAR, answers.clientSecret.trim());
-  } else if (answers.apiKey) {
-    upsertDotenvVar(dotenv, API_KEY_VAR, answers.apiKey.trim());
+  if (clientId && clientSecret) {
+    upsertDotenvVar(dotenv, CLIENT_ID_VAR, clientId);
+    upsertDotenvVar(dotenv, CLIENT_SECRET_VAR, clientSecret);
+  } else if (apiKey) {
+    upsertDotenvVar(dotenv, API_KEY_VAR, apiKey);
   }
 
   // Extra write target: compose project .env (Docker). Only works if the path is
   // visible inside this process (host-side configure, or a mounted OPENCLAW_DIR).
   const extra = process.env.SENTROOK_DOTENV?.trim() || process.env.OPENCLAW_COMPOSE_ENV?.trim();
   if (extra && path.resolve(extra) !== path.resolve(dotenv)) {
-    if (answers.clientId && answers.clientSecret) {
-      upsertDotenvVar(extra, CLIENT_ID_VAR, answers.clientId.trim());
-      upsertDotenvVar(extra, CLIENT_SECRET_VAR, answers.clientSecret.trim());
-    } else if (answers.apiKey) {
-      upsertDotenvVar(extra, API_KEY_VAR, answers.apiKey.trim());
+    if (clientId && clientSecret) {
+      upsertDotenvVar(extra, CLIENT_ID_VAR, clientId);
+      upsertDotenvVar(extra, CLIENT_SECRET_VAR, clientSecret);
+    } else if (apiKey) {
+      upsertDotenvVar(extra, API_KEY_VAR, apiKey);
     }
   }
 
@@ -409,19 +427,47 @@ async function promptSecretRaw(label: string): Promise<string> {
     stdin.resume();
     stdin.setEncoding("utf8");
     let buf = "";
-    const onData = (ch: string) => {
-      if (ch === "\n" || ch === "\r" || ch === "\u0004") {
-        cleanup();
-        output.write("\n");
-        resolve(buf);
-      } else if (ch === "\u0003") {
-        cleanup();
-        reject(new Error("interrupted"));
-      } else if (ch === "\u007f" || ch === "\b") {
-        buf = buf.slice(0, -1);
-      } else if (ch === "\u0015") {
-        buf = "";
-      } else {
+    /** Incomplete ESC / CSI sequence (focus events, bracketed paste, …). */
+    let esc = "";
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (esc) {
+          esc += ch;
+          if (esc.startsWith("\u001b[")) {
+            const code = ch.charCodeAt(0);
+            // CSI final byte is 0x40–0x7E (`ESC[I` / `ESC[O` focus, paste markers, …).
+            if (code >= 0x40 && code <= 0x7e) esc = "";
+            continue;
+          }
+          // Other ESC-prefixed controls: drop once we have the follower byte.
+          if (esc.length >= 2) esc = "";
+          continue;
+        }
+        if (ch === "\u001b") {
+          esc = ch;
+          continue;
+        }
+        if (ch === "\n" || ch === "\r" || ch === "\u0004") {
+          cleanup();
+          output.write("\n");
+          resolve(sanitizeSecretInput(buf));
+          return;
+        }
+        if (ch === "\u0003") {
+          cleanup();
+          reject(new Error("interrupted"));
+          return;
+        }
+        if (ch === "\u007f" || ch === "\b") {
+          buf = buf.slice(0, -1);
+          continue;
+        }
+        if (ch === "\u0015") {
+          buf = "";
+          continue;
+        }
+        // Ignore other C0 controls; keep printable secret characters only.
+        if (ch.charCodeAt(0) < 0x20) continue;
         buf += ch;
       }
     };
@@ -481,8 +527,8 @@ export async function collectAnswersInteractive(
     io.log(`      ${DEFAULT_IDENTITY_URL}`);
     io.log("      → Sentrook tab → grant_types=client_credentials, scope sentrook.scan");
     io.log("    Paste client_id and client_secret below (access tokens are minted at runtime).");
-    clientId = (await io.prompt("OAuth client_id")).trim();
-    clientSecret = (await io.promptSecret("OAuth client_secret")).trim();
+    clientId = sanitizeSecretInput(await io.prompt("OAuth client_id"));
+    clientSecret = sanitizeSecretInput(await io.promptSecret("OAuth client_secret"));
   }
 
   return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey };

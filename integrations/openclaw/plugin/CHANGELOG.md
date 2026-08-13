@@ -1,5 +1,12 @@
 # @firstdataunion/sentrook-openclaw
 
+## 1.0.1-rc.3
+
+### Patch Changes
+
+- `openclaw sentrook verify` now mints a live `client_credentials` token against FIDU Identity (catches HTTP 401 / invalid client that presence-only checks missed). Token mint errors include a short IdP response body. Docs stress a post-verify tool call + gateway log check for end-to-end scan path.
+- Configure secret prompt no longer stores terminal focus/CSI junk (`ESC[I` / `ESC[O`) in `SENTROOK_SCAN_CLIENT_SECRET` when pasting into the raw-mode wizard.
+
 ## 1.0.1-rc.2
 
 ### Patch Changes

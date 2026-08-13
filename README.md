@@ -86,12 +86,18 @@ openclaw sentrook configure
 #    (native: openclaw gateway restart)
 #    (Docker Compose: docker compose restart openclaw-gateway)
 
-# 4. Sanity-check config, credentials, and that the scan host is reachable
+# 4. Sanity-check config, credentials, OIDC token mint, and scan host reachability
 openclaw sentrook verify
+
+# 5. Exercise a real tool call (ask the agent to use a tool), then check gateway
+#    logs for [sentrook-openclaw] — verify cannot prove the live scan path alone
+#    native: openclaw logs --follow
+#    Docker: docker compose logs -f openclaw-gateway 2>&1 | grep sentrook-openclaw
 ```
 
 After this, Sentrook will begin scanning tool calls — allowing them, asking you
-to review, or blocking where appropriate.
+to review, or blocking where appropriate. A green verify means config + Identity
+token mint look good; a tool call in the logs is the end-to-end check.
 
 > [!IMPORTANT]
 > If you talk to your agent over a messaging channel (Discord, Slack, Telegram,

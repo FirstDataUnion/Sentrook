@@ -17,11 +17,28 @@ import {
   openclawConfigPath,
   resolveStateDir,
   restartHint,
+  sanitizeSecretInput,
   stripStalePluginConfigKeys,
   upsertDotenvVar,
   withSpinner,
   writeScanCredentials,
 } from "./configure.ts";
+
+describe("sanitizeSecretInput", () => {
+  it("strips terminal focus-in/out CSI sequences (ESC[I / ESC[O)", () => {
+    const poisoned = `\u001b[O\u001b[I549015b282bca5f2deadbeef`;
+    assert.equal(sanitizeSecretInput(poisoned), "549015b282bca5f2deadbeef");
+  });
+
+  it("strips bracketed-paste markers and other C0 controls", () => {
+    const poisoned = `\u001b[200~abc-secret\u001b[201~\u0000\u0007`;
+    assert.equal(sanitizeSecretInput(poisoned), "abc-secret");
+  });
+
+  it("trims surrounding whitespace without altering a clean secret", () => {
+    assert.equal(sanitizeSecretInput("  plain-secret  "), "plain-secret");
+  });
+});
 
 describe("buildPluginEntryConfig", () => {
   it("omits credentials from openclaw.json (env-only auth)", () => {
@@ -80,6 +97,24 @@ describe("buildConfigPatchDocument", () => {
 });
 
 describe("dotenv helpers", () => {
+  it("strips focus CSI junk when writing client_secret", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-cfg-"));
+    try {
+      writeScanCredentials(dir, {
+        url: DEFAULT_SCAN_URL,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        contributeCorpus: true,
+        clientId: "cid",
+        clientSecret: "\u001b[O\u001b[I549015b282bca5f2",
+      });
+      const text = readFileSync(dotenvPath(dir), "utf8");
+      assert.match(text, new RegExp(`^${CLIENT_SECRET_VAR}=549015b282bca5f2$`, "m"));
+      assert.doesNotMatch(text, /\u001b/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("upserts credentials without clobbering other keys", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-cfg-"));
     try {

@@ -35,8 +35,11 @@ openclaw plugins install npm:@firstdataunion/sentrook-openclaw
 openclaw sentrook configure
 
 # 3. Restart gateway (reload ~/.openclaw/.env + plugin config)
-# 4. Verify
+# 4. Verify (includes a live client_credentials mint against FIDU Identity)
 openclaw sentrook verify
+
+# 5. Ask the agent to run a tool, then confirm [sentrook-openclaw] scan lines
+#    in the gateway logs (verify does not replace an end-to-end tool call)
 ```
 
 Docker Compose (typical VPS layout):
@@ -48,6 +51,8 @@ docker compose exec openclaw-gateway \
 docker compose exec openclaw-gateway openclaw sentrook configure
 docker compose restart openclaw-gateway
 docker compose exec openclaw-gateway openclaw sentrook verify
+# Then exercise a tool call and:
+docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 
 ### Updates
@@ -272,7 +277,7 @@ manual purge afterwards:
 ## Verify & logs
 
 Use the built-in verify command to confirm the plugin is installed, configured,
-and able to talk to the scan service:
+can mint an OIDC scan token, and can reach the scan service:
 
 ```bash
 # native
@@ -282,16 +287,25 @@ openclaw sentrook verify
 docker compose exec openclaw-gateway openclaw sentrook verify
 ```
 
+Verify checks that `SENTROOK_SCAN_CLIENT_ID` / `SECRET` are present **and** that
+FIDU Identity accepts a `client_credentials` mint (HTTP 401 here usually means
+wrong secret, missing `client_credentials` grant, or missing `sentrook.scan`
+scope on the OAuth client). `/health` alone does not prove that.
+
 If credentials look fine in `~/.openclaw/.env` but verify says they are not
 loaded in-process, restart the gateway and run verify again.
 
-For live plugin activity (timing, decisions, allowlist hits):
+After a green verify, **still** have the agent run a tool call and watch the
+gateway logs. Scans run only on **tool calls** — chat-only turns produce no
+scan lines — and fail-open paths only show up live:
 
 ```bash
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 
-Scans run only on **tool calls**. Chat-only turns produce no scan lines.
+Healthy traffic looks like timing / decision lines. `scan failed: … failing open`
+means the tool proceeded without a Sentrook decision — fix auth or connectivity,
+then retry a tool call.
 
 ## Privacy (plugin side)
 
