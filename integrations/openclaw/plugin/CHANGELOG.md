@@ -1,25 +1,15 @@
 # @firstdataunion/sentrook-openclaw
 
-## 1.0.1-rc.3
-
-### Patch Changes
-
-- `openclaw sentrook verify` now mints a live `client_credentials` token against FIDU Identity (catches HTTP 401 / invalid client that presence-only checks missed). Token mint errors include a short IdP response body. Docs stress a post-verify tool call + gateway log check for end-to-end scan path.
-- Configure secret prompt no longer stores terminal focus/CSI junk (`ESC[I` / `ESC[O`) in `SENTROOK_SCAN_CLIENT_SECRET` when pasting into the raw-mode wizard.
-
-## 1.0.1-rc.2
-
-### Patch Changes
-
-- Default unattended (cron/subagent) review timeout behavior to deny (fail-closed). Opt into `approval.scheduledTimeoutBehavior: "allow"` if jobs must proceed without a human.
-- Remove unused `approval.enabled` / `SENTROOK_SCHEDULED_APPROVAL_ENABLED` kill switch. Cron and subagent always use the scheduled timeout policy (tune via `scheduledTimeoutMs` / `scheduledTimeoutBehavior` / `scheduledIntentKinds`).
-- Remove `mode` (observe/enforce) and `sanitization.enabled` config options. The plugin always enforces decisions and always scrubs PlanIR before egress. Re-run `openclaw sentrook configure` (or delete leftover `mode` / `sanitization` keys) so older `openclaw.json` entries do not fail schema validation.
-
-## 1.0.1-rc.1
+## 1.0.1
 
 ### Patch Changes
 
 - Configure no longer offers observe mode or PlanIR sanitization toggles. Installs always use enforce with sanitization on; disabling those via the wizard/CLI flags is removed.
+- Default unattended (cron/subagent) review timeout behavior to deny (fail-closed). Opt into `approval.scheduledTimeoutBehavior: "allow"` if jobs must proceed without a human.
+- Remove unused `approval.enabled` / `SENTROOK_SCHEDULED_APPROVAL_ENABLED` kill switch. Cron and subagent always use the scheduled timeout policy (tune via `scheduledTimeoutMs` / `scheduledTimeoutBehavior` / `scheduledIntentKinds`).
+- Remove `mode` (observe/enforce) and `sanitization.enabled` config options. The plugin always enforces decisions and always scrubs PlanIR before egress. Re-run `openclaw sentrook configure` (or delete leftover `mode` / `sanitization` keys) so older `openclaw.json` entries do not fail schema validation.
+- `openclaw sentrook verify` now mints a live `client_credentials` token against FIDU Identity (catches HTTP 401 / invalid client that presence-only checks missed). Token mint errors include a short IdP response body. Docs stress a post-verify tool call + gateway log check for end-to-end scan path.
+- Configure secret prompt no longer stores terminal focus/CSI junk (`ESC[I` / `ESC[O`) in `SENTROOK_SCAN_CLIENT_SECRET` when pasting into the raw-mode wizard.
 
 ## 1.0.0
 
