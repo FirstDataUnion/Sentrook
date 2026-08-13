@@ -1,6 +1,6 @@
 {
   "name": "@firstdataunion/sentrook-openclaw",
-  "version": "1.0.1",
+  "version": "1.0.1-rc.1",
   "description": "OpenClaw plugin: Sentrook trajectory scanner for hosted (or local) scan services.",
   "type": "module",
   "main": "./dist/index.js",
