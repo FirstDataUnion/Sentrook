@@ -1,6 +1,5 @@
 # Sentrook
 
-[![CI](https://github.com/FirstDataUnion/Sentrook/actions/workflows/ci.yml/badge.svg)](https://github.com/FirstDataUnion/Sentrook/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@firstdataunion/sentrook-openclaw.svg)](https://www.npmjs.com/package/@firstdataunion/sentrook-openclaw)
 
