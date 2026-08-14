@@ -1,0 +1,6 @@
+# Community / bot PRs: the main-exec-review ruleset requires an approval from
+# this team. Exec members bypass that ruleset on their own PRs (CI still applies).
+#
+# The team must have at least Write on this repository or GitHub ignores it.
+
+* @FirstDataUnion/exec

@@ -15,10 +15,13 @@ public GitHub issues.
 Please **do not** open a public GitHub issue for security vulnerabilities in
 Sentrook (engine, TestNest harness, OpenClaw plugin, or deploy recipes).
 
+Prefer a private GitHub security advisory:
 
-Email **hello@firstdataunion.org** with a clear description, impact, and
-steps to reproduce. Include affected component versions or git SHAs when
-known.
+https://github.com/FirstDataUnion/Sentrook/security/advisories/new
+
+If you cannot use GitHub, email **hello@firstdataunion.org**. Include a clear
+description, impact, and steps to reproduce, plus affected component versions
+or git SHAs when known.
 
 You should receive an acknowledgement within a few business days. Please give
 us reasonable time to investigate and ship a fix before any public disclosure.

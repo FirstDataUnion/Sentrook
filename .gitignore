@@ -17,13 +17,17 @@ tmp/
 openclaw_example/
 .cache/rookery/
 
+.env
+.env.*
+!.env.example
+*.tgz
+
 # Local mirror of Rookery SoT (rules/corpus/eval). Sync with: make sync-library
 # Never commit these — production library stays in FirstDataUnion/Rookery.
 /rules/
 /corpus/
 /eval/
 
-integrations/openclaw/plugin/*.tgz
 integrations/openclaw/plugin/.npmrc
 integrations/openclaw/plugin/dist/
 integrations/openclaw/plugin/node_modules/

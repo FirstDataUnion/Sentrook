@@ -15,4 +15,4 @@
 
 ## Notes
 
-<!-- Rookery-only changes? Link the private PR. Any follow-ups? -->
+<!-- Follow-ups or known gaps. Do not paste production YAIRA rules or secrets. -->

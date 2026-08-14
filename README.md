@@ -308,7 +308,7 @@ open public issues for security reports.
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 FirstDataUnion
+[MIT](LICENSE) — Copyright (c) 2026 First International Data Union Ltd
 
 ## Layout
 

@@ -386,7 +386,7 @@ export function restartHint(dotenvWritten?: string): string {
     "Then verify:",
     "  docker compose exec openclaw-gateway openclaw sentrook verify",
     "",
-    "Optional: if you prefer keeping secrets next to Discord keys in the",
+    "Optional: if you prefer keeping secrets in the",
     "compose project env_file (~/openclaw/.env), also merge SENTROOK_SCAN_*",
     "there — that path needs `docker compose up -d --force-recreate` because",
     "Compose only injects env_file at container create time.",
