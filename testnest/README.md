@@ -36,8 +36,8 @@ make sync-library
 make testnest-core    # or: make testnest-all
 ```
 
-Pinning, release gates, and full eval strategy live in FIDU’s internal testing
-notes (not linked from this public tree).
+Pinning, release gates, and full-eval strategy live in the private Rookery
+repo, not in this tree.
 
 ## Profiles
 

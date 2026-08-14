@@ -1,0 +1,9 @@
+# Advisory only while this repo is solo-maintained. The main ruleset does
+# not require reviews, so these entries request visibility from @FirstDataUnion/exec
+# without blocking merge.
+#
+# The team must have at least Write on this repository or GitHub ignores it.
+
+.github/ @FirstDataUnion/exec
+integrations/openclaw/plugin/package.json @FirstDataUnion/exec
+integrations/openclaw/publish-plugin.sh @FirstDataUnion/exec
