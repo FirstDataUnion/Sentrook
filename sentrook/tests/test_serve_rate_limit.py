@@ -51,7 +51,9 @@ def test_from_env_enables_limiter_for_oidc_and_production() -> None:
         {"SENTROOK_SCAN_AUTH_MODE": "oidc", "SENTROOK_RATE_LIMIT_ENABLED": "0"}
     )
     assert off.rate_limit_enabled is False
-    custom = ServeConfig.from_env({"SENTROOK_RATE_LIMIT_SCAN_RATE": "7", "SENTROOK_RATE_LIMIT_SCAN_BURST": "9"})
+    custom = ServeConfig.from_env(
+        {"SENTROOK_RATE_LIMIT_SCAN_RATE": "7", "SENTROOK_RATE_LIMIT_SCAN_BURST": "9"}
+    )
     assert custom.rate_limit_scan_rate == 7.0
     assert custom.rate_limit_scan_burst == 9
 
