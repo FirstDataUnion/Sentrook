@@ -56,6 +56,7 @@ describe("buildPluginEntryConfig", () => {
     assert.equal("mode" in cfg, false);
     assert.equal("sanitization" in cfg, false);
     assert.deepEqual(cfg.feedback, { mode: "submit" });
+    assert.equal(cfg.onScanError, "allow");
   });
 
   it("sets feedback off when user opts out of corpus contribution", () => {
@@ -223,6 +224,8 @@ describe("restartHint", () => {
     assert.match(hint, /\/home\/node\/\.openclaw\/\.env/);
     assert.match(hint, /force-recreate/);
     assert.match(hint, /do NOT need/i);
+    assert.match(hint, /default Compose service name/);
+    assert.match(hint, /docker compose ps/);
   });
 });
 
@@ -239,6 +242,7 @@ describe("collectAnswersNonInteractive", () => {
     assert.equal(a.url, DEFAULT_SCAN_URL);
     assert.equal(a.clientId, "c");
     assert.equal(a.contributeCorpus, true);
+    assert.equal(a.onScanError, "allow");
   });
 
   it("honours contributeCorpus opt-out", () => {

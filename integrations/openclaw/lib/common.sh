@@ -9,6 +9,7 @@ openclaw_common_init() {
   OPENCLAW_INTEGRATION_DIR="$(cd "${script_dir}" && pwd)"
   SENTROOK_REPO="${SENTROOK_REPO:-$(cd "${OPENCLAW_INTEGRATION_DIR}/../.." && pwd)}"
   OPENCLAW_DIR="${OPENCLAW_DIR:-$(pwd)}"
+  # Official OpenClaw compose *service* name (not the docker ps container name).
   OPENCLAW_GATEWAY_SERVICE="${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}"
   OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
   SENTROOK_SCAN_URL="${SENTROOK_SCAN_URL:-${SIDECAR_URL:-https://sentrook.firstdataunion.org}}"
@@ -83,5 +84,6 @@ gateway_restart_hint() {
   cat <<EOF
 Restart the gateway when ready (from your OpenClaw compose project):
   cd ${OPENCLAW_DIR} && docker compose restart ${OPENCLAW_GATEWAY_SERVICE}
+  # Compose service name (often openclaw-gateway). Override OPENCLAW_GATEWAY_SERVICE if yours differs.
 EOF
 }

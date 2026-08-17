@@ -10,11 +10,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from sentrook import __version__
+from sentrook.adapters.snapshot import primary_pending_step
 from sentrook.corpus.models import CorpusExample, CorpusLabel, CorpusStep
 from sentrook.corpus.personal import append_personal_corpus_example
 from sentrook.library.rookery_client import rookery_auth_headers
 from sentrook.planir import PlanIR, PlanStep
 from sentrook.redact import redact_args
+from sentrook.sanitize.corpus import policy_reject, sanitize_corpus_example
 from sentrook.sanitize.ingress import maybe_sanitize_planir
 from sentrook.sanitize.text import scrub_text
 from sentrook.serve.config import FeedbackConfig, ServeConfig
@@ -71,6 +73,63 @@ def _step_excerpt(step: PlanStep, *, max_chars: int) -> str | None:
     return None
 
 
+def _drop_duplicate_exec_excerpt(step: PlanStep, excerpt: str | None) -> str | None:
+    """Drop exec excerpts that merely repeat ``args.command`` (L3 already embeds command)."""
+    if excerpt is None or step.tool != "exec":
+        return excerpt
+    args = step.args or {}
+    command = args.get("command") or args.get("cmd")
+    if command is None:
+        return excerpt
+    cmd = str(command).strip()
+    if not cmd:
+        return excerpt
+    if excerpt.strip()[:80] == cmd[:80]:
+        return None
+    return excerpt
+
+
+def keep_step_ids_for_rule(
+    plan: PlanIR,
+    log: dict[str, Any] | None,
+    rule_id: str,
+) -> list[str]:
+    """PlanIR step ids L2 matched for this rule, plus the pending step.
+
+    Live L3 embeds only matched steps. Community examples should use that same
+    slice so the rest of the session trajectory is not stored.
+    """
+    pending = primary_pending_step(plan)
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in (log or {}).get("matched_rules") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "") != rule_id:
+            continue
+        for sid in item.get("matched_step_ids") or []:
+            text = str(sid).strip()
+            if text and text not in seen:
+                seen.add(text)
+                ids.append(text)
+    if pending is not None and pending.id not in seen:
+        ids.append(pending.id)
+    elif not ids and pending is not None:
+        ids.append(pending.id)
+    return ids
+
+
+def _select_plan_steps(plan: PlanIR, keep_step_ids: list[str] | None) -> list[PlanStep]:
+    if keep_step_ids is None:
+        return list(plan.steps)
+    wanted = set(keep_step_ids)
+    selected = [step for step in plan.steps if step.id in wanted]
+    if selected:
+        return selected
+    pending = primary_pending_step(plan)
+    return [pending] if pending is not None else list(plan.steps)
+
+
 def derive_community_intent(
     *,
     intent_kind: str | None,
@@ -112,19 +171,21 @@ def plan_to_corpus_example(
     notes: str | None = None,
     max_excerpt_chars: int = 200,
     derive_intent: bool = False,
+    keep_step_ids: list[str] | None = None,
 ) -> CorpusExample:
+    del rule_id  # used by callers when minting example_id
     steps: list[CorpusStep] = []
-    for step in plan.steps:
+    for step in _select_plan_steps(plan, keep_step_ids):
+        excerpt = (
+            _step_excerpt(step, max_chars=max_excerpt_chars) if step.status == "executed" else None
+        )
+        excerpt = _drop_duplicate_exec_excerpt(step, excerpt)
         steps.append(
             CorpusStep(
                 tool=step.tool,
                 status=step.status,
                 args=redact_args(step.args),
-                excerpt=(
-                    _step_excerpt(step, max_chars=max_excerpt_chars)
-                    if step.status == "executed"
-                    else None
-                ),
+                excerpt=excerpt,
             )
         )
     if derive_intent:
@@ -143,6 +204,37 @@ def plan_to_corpus_example(
         notes=notes,
         steps=steps,
     )
+
+
+def finalize_community_example(example: CorpusExample) -> CorpusExample | None:
+    """Rookery-strict scrub; drop the example when residual secret risk is critical."""
+    result = sanitize_corpus_example(example)
+    if policy_reject(result.report):
+        return None
+    return result.example
+
+
+def _community_example_from_plan(
+    plan: PlanIR,
+    *,
+    rule_id: str,
+    label: Literal["attack", "benign"],
+    notes: str | None,
+    max_excerpt_chars: int,
+    derive_intent: bool,
+    log: dict[str, Any] | None,
+) -> CorpusExample | None:
+    example = plan_to_corpus_example(
+        plan,
+        rule_id=rule_id,
+        label=label,
+        example_id=build_example_id(plan, rule_id, label),
+        notes=notes,
+        max_excerpt_chars=max_excerpt_chars,
+        derive_intent=derive_intent,
+        keep_step_ids=keep_step_ids_for_rule(plan, log, rule_id),
+    )
+    return finalize_community_example(example)
 
 
 def pick_rule_id(
@@ -262,6 +354,11 @@ def _normalize_matched_rules(raw: list[Any]) -> list[dict[str, Any]]:
                     "action": item.get("action"),
                     "severity": item.get("severity"),
                     "confidence": item.get("confidence"),
+                    "matched_step_ids": [
+                        str(sid).strip()
+                        for sid in (item.get("matched_step_ids") or [])
+                        if str(sid).strip()
+                    ],
                 }
             )
     return out
@@ -399,15 +496,25 @@ def _submit_feedback(
         if example is not None and rid == primary:
             ex = example
         else:
-            ex = plan_to_corpus_example(
+            ex = _community_example_from_plan(
                 plan,
                 rule_id=rid,
                 label=label,
-                example_id=build_example_id(plan, rid, label),
                 notes=notes,
                 max_excerpt_chars=feedback_cfg.max_excerpt_chars,
                 derive_intent=feedback_cfg.derive_intent,
+                log=request.log,
             )
+        if ex is None:
+            submissions.append(
+                {
+                    "status": "skipped",
+                    "reason": "policy_reject",
+                    "rule_id": rid,
+                    "label": label,
+                }
+            )
+            continue
         provenance = _build_provenance(
             config,
             request,
@@ -534,15 +641,17 @@ def _process_allow_always(
     primary_example_id: str | None = None
 
     for rid in rule_ids:
-        example = plan_to_corpus_example(
+        example = _community_example_from_plan(
             plan,
             rule_id=rid,
             label="benign",
-            example_id=build_example_id(plan, rid, "benign"),
             notes="Personal allow-always (live review)",
             max_excerpt_chars=config.feedback.max_excerpt_chars,
             derive_intent=config.feedback.derive_intent,
+            log=request.log,
         )
+        if example is None:
+            continue
         if rid == primary:
             primary_example_id = example.id
 

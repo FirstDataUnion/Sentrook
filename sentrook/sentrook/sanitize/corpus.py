@@ -313,6 +313,7 @@ def _scrub_args(
     *,
     path: str,
     report: RedactionReport,
+    pii_all: bool = False,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in args.items():
@@ -322,11 +323,16 @@ def _scrub_args(
             out[key] = rules.redacted
             continue
         if isinstance(value, str):
-            use_pii = key in rules.pii_arg_keys or key.lower() in {
-                "url",
-                "uri",
-                "href",
-            }
+            use_pii = (
+                pii_all
+                or key in rules.pii_arg_keys
+                or key.lower()
+                in {
+                    "url",
+                    "uri",
+                    "href",
+                }
+            )
             out[key] = _scrub_field(
                 value,
                 rules,
@@ -338,7 +344,13 @@ def _scrub_args(
                 field_key=key,
             )
         elif isinstance(value, dict):
-            out[key] = _scrub_args(value, rules, path=child, report=report)
+            out[key] = _scrub_args(
+                value,
+                rules,
+                path=child,
+                report=report,
+                pii_all=pii_all or key.lower() == "env",
+            )
         elif isinstance(value, list):
             out[key] = [
                 _scrub_field(
@@ -352,7 +364,13 @@ def _scrub_args(
                 )
                 if isinstance(item, str)
                 else (
-                    _scrub_args(item, rules, path=f"{child}[{i}]", report=report)
+                    _scrub_args(
+                        item,
+                        rules,
+                        path=f"{child}[{i}]",
+                        report=report,
+                        pii_all=pii_all,
+                    )
                     if isinstance(item, dict)
                     else item
                 )

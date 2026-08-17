@@ -8,6 +8,7 @@ from typing import Any
 from sentrook import __version__
 from sentrook.corpus.models import CorpusExample, CorpusLabel, CorpusStep
 from sentrook.redact import redact_args
+from sentrook.sanitize.corpus import policy_reject, sanitize_corpus_example
 from sentrook.serve.feedback import (
     FeedbackResolution,
     build_submission_body,
@@ -45,23 +46,25 @@ def log_row_to_corpus_example(
             tool=str(pending_tool),
             status="pending",
             args=redact_args(dict(row.get("pending_args") or {})),
-            excerpt=row.get("pending_command_excerpt"),
         )
     ]
 
-    trust = "community"
     if label is None:
         return None
 
-    return CorpusExample(
+    example = CorpusExample(
         id=example_id,
         label=label,
-        trust=trust,
+        trust="community",
         intent=row.get("intent"),
         intent_kind=row.get("intent_kind"),
         notes=str(row.get("summary") or "scan log harvest candidate"),
         steps=steps,
     )
+    result = sanitize_corpus_example(example)
+    if policy_reject(result.report):
+        return None
+    return result.example
 
 
 def harvest_candidates_from_log(

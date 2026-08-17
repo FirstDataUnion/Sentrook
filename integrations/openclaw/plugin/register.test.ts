@@ -223,14 +223,15 @@ describe("plugin.register — scan fail logging", () => {
       const beforeTool = handlers.get("before_tool_call");
       assert.ok(beforeTool);
 
-      const result = await beforeTool(
+      const result = (await beforeTool(
         { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
         { sessionId: "s1" },
-      );
-      assert.equal(result, undefined);
+      )) as { block?: boolean; blockReason?: string } | undefined;
+      assert.equal(result?.block, true);
+      assert.match(result?.blockReason || "", /credentials/);
       await flushAsyncWork();
       assert.ok(warns.some((w) => /scan HTTP 401:.*"unauthorized"/.test(w)));
-      assert.ok(warns.some((w) => /failing open/.test(w)));
+      assert.ok(!warns.some((w) => /failing open/.test(w)));
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

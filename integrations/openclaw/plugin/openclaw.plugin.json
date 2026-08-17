@@ -43,6 +43,15 @@
         "type": "integer",
         "description": "Scan request timeout in ms. Gates the agent while awaiting /scan. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SCAN_TIMEOUT_MS)."
       },
+      "onScanError": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny",
+          "review"
+        ],
+        "description": "When /scan times out, cannot connect, returns 5xx, or is rate-limited after retry. allow = continue without scanning (default for existing installs). deny = block the tool. review = ask (interactive); unattended uses approval.scheduledTimeoutBehavior immediately. Env: SENTROOK_ON_SCAN_ERROR."
+      },
       "feedback": {
         "type": "object",
         "additionalProperties": false,

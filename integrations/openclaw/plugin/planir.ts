@@ -3,6 +3,8 @@
  * ``planir.args`` + ``sanitize.core.redact_args`` for golden parity.
  */
 
+import { packSignalExcerpt } from "./sanitize.ts";
+
 export type IntentKind = "user" | "cron" | "subagent" | "system";
 export type Json = Record<string, unknown>;
 
@@ -81,7 +83,7 @@ const TRUNCATED = "[TRUNCATED]";
 const STRING_LEAF_MAX = 500;
 const CREDENTIAL_FIELD =
   /(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)/i;
-const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message"]);
+const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message", "command", "cmd"]);
 
 export function stringifyArgValue(value: unknown): string {
   if (value == null) return "";
@@ -153,13 +155,6 @@ export function canonicalizeToolArgs(tool: string, args: Json): Json {
     return out;
   }
   return { ...args };
-}
-
-function packSignalExcerpt(text: string, limit: number): string {
-  if (text.length <= limit) return text;
-  const head = Math.max(8, Math.floor(limit / 3));
-  const tail = Math.max(6, Math.floor(limit / 4));
-  return `${text.slice(0, head)}...${text.slice(-tail)}`;
 }
 
 export function redactArgs(args: Json): Json {

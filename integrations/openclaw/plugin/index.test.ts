@@ -171,7 +171,7 @@ describe("postScan timing", () => {
 });
 
 describe("postScan failure logging", () => {
-  it("warns with HTTP status and body snippet on non-OK, then fails open", async () => {
+  it("warns with HTTP status and body snippet on non-OK", async () => {
     const warns: string[] = [];
     const logger = {
       info: () => {},
@@ -189,12 +189,57 @@ describe("postScan failure logging", () => {
       { apiKey: "k", oidc: null },
       logger,
     );
-    assert.equal(result, null);
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "http");
+    assert.equal(result.status, 401);
     assert.equal(warns.length, 1);
     assert.match(warns[0]!, /scan HTTP 401:/);
-    assert.match(warns[0]!, /failing open/);
+    assert.ok(!warns[0]!.includes("failing open"));
     assert.ok(!warns[0]!.includes(body));
     assert.ok(warns[0]!.includes("x".repeat(200)));
+  });
+
+  it("retries once on 429 when Retry-After fits in the timeout", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response("slow down", {
+          status: 429,
+          headers: { "Retry-After": "0" },
+        });
+      }
+      return new Response(JSON.stringify({ block: false, decision: "allow" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await postScan("https://scan.test", 1500, plan(), null);
+    assert.equal(calls, 2);
+    assert.ok(!("ok" in result && (result as { ok?: false }).ok === false));
+    assert.equal((result as { scan: { decision: string } }).scan.decision, "allow");
+  });
+
+  it("returns rate_limited when 429 Retry-After does not fit", async () => {
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    globalThis.fetch = (async () =>
+      new Response("slow", {
+        status: 429,
+        headers: { "Retry-After": "30" },
+      })) as typeof fetch;
+
+    const result = await postScan("https://scan.test", 200, plan(), null, logger);
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "rate_limited");
+    assert.match(warns[0] || "", /HTTP 429: rate limited; Retry-After=30/);
   });
 
   it("warns scan timed out when the request is aborted", async () => {
@@ -218,10 +263,12 @@ describe("postScan failure logging", () => {
         signal.addEventListener("abort", () => reject(new Error("aborted")));
       })) as typeof fetch;
 
-    const result = await postScan("https://scan.test", 20, plan(), null, logger,
-    );
-    assert.equal(result, null);
-    assert.match(warns[0] || "", /scan timed out:.*failing open/);
+    const result = await postScan("https://scan.test", 20, plan(), null, logger);
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "timeout");
+    assert.match(warns[0] || "", /scan timed out:/);
+    assert.ok(!warns[0]!.includes("failing open"));
   });
 
   it("warns scan failed on network errors", async () => {
@@ -235,10 +282,12 @@ describe("postScan failure logging", () => {
       throw new Error("ECONNREFUSED");
     }) as typeof fetch;
 
-    const result = await postScan("https://scan.test", 1500, plan(), null, logger,
-    );
-    assert.equal(result, null);
-    assert.match(warns[0] || "", /scan failed: ECONNREFUSED; failing open/);
+    const result = await postScan("https://scan.test", 1500, plan(), null, logger);
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "network");
+    assert.match(warns[0] || "", /scan failed: ECONNREFUSED/);
+    assert.ok(!warns[0]!.includes("failing open"));
   });
 });
 
@@ -296,6 +345,24 @@ describe("translateScanResponse — review mapping", () => {
       "allow-always",
       "deny",
     ]);
+  });
+
+  it("overlays local exec command when sidecar copy is [TRUNCATED]", () => {
+    const command = `python3 wiki.py get Self:Today ${"padding ".repeat(80)}`;
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "[TRUNCATED]",
+      review_description: "Likely: run a shell command\nrun: `[TRUNCATED]`\n(010)",
+      review_severity: "warning",
+    };
+    const result = translateScanResponse(scan, ctx({ pendingArgs: { command } }));
+    const approval = result?.requireApproval;
+    assert.ok(approval);
+    assert.notEqual(approval.title, "[TRUNCATED]");
+    assert.ok(!approval.description.includes("[TRUNCATED]"));
+    assert.ok(approval.description.includes("wiki.py"));
+    assert.ok(approval.description.includes("(010)"));
   });
 
   it("uses fallback title/description/severity when copy is missing", () => {

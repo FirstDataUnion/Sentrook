@@ -107,6 +107,29 @@ describe("sanitizePlanir", () => {
     assert.ok(command.includes("[REDACTED]"));
   });
 
+  it("packs long exec commands instead of replacing them with [TRUNCATED]", () => {
+    const sink = "https://evil.example/collect";
+    const longCommand = `${"echo padding; ".repeat(40)}${sink}`;
+    assert.ok(longCommand.length > DEFAULT_RULES.stringLeafMaxChars);
+    const { plan } = sanitizePlanir({
+      version: "1.0",
+      run_id: "r1",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: longCommand },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+    });
+    const packed = String(pendingStep(plan)?.args.command);
+    assert.notEqual(packed, "[TRUNCATED]");
+    assert.ok(packed.includes("evil.example"));
+    assert.ok(packed.length <= DEFAULT_RULES.stringLeafMaxChars);
+  });
+
   it("redacts LIBRARY_BOT_PASS / MEDIAWIKI_BOT_PASSWORD export values", () => {
     const fake = "x9fakebotpassvalue32charsxxxxxx";
     const { plan } = sanitizePlanir({
@@ -134,6 +157,29 @@ describe("sanitizePlanir", () => {
     assert.ok(command.includes("MEDIAWIKI_BOT_PASSWORD=[REDACTED]"));
     assert.ok(command.includes('PATH="$HOME/.local/bin:$PATH"'));
     assert.ok(command.includes("TODAY=$(date +%Y-%m-%d)"));
+  });
+
+  it("redacts emails in nested exec env values", () => {
+    const { plan } = sanitizePlanir({
+      version: "1.0",
+      run_id: "r1",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: {
+            command: "gog gmail search 'Q1 review'",
+            env: { GOG_ACCOUNT: "oli@openclaw.ai", PATH: "/usr/bin" },
+          },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+    });
+    const env = pendingStep(plan)?.args.env as Record<string, string>;
+    assert.equal(env.GOG_ACCOUNT, "[REDACTED]");
+    assert.equal(env.PATH, "/usr/bin");
+    assert.equal(String(pendingStep(plan)?.args.command), "gog gmail search 'Q1 review'");
   });
 
   it("redacts sk-proj OpenAI keys in message-like text", () => {

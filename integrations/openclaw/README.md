@@ -10,7 +10,9 @@ On each `before_tool_call`, the plugin builds a short **PlanIR** trajectory
 `/scan`. The pending step is the tool under review.
 
 The plugin waits for the decision and maps **allow** / **review** / **block** to
-OpenClaw continue / approval UI / veto.
+OpenClaw continue / approval UI / veto. Review cards are filled from the **local**
+pending command (secret patterns scrubbed, packed to OpenClaw's title/description
+caps) so a long `exec` is still readable.
 
 PlanIR is always scrubbed before egress (not configurable). Optional review
 feedback can `POST /feedback` with a sanitized resolution for the community
@@ -54,6 +56,13 @@ docker compose exec openclaw-gateway openclaw sentrook verify
 # Then exercise a tool call and:
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
+
+`openclaw-gateway` is the default Compose **service** name in OpenClaw's
+official `docker-compose.yml`. The running **container** is often named
+`openclaw-gateway-1` or `{project}-openclaw-gateway-1`. If a command fails
+with "no such service", run `docker compose ps` from your compose project
+and substitute the service name shown there. Helper scripts honour
+`OPENCLAW_GATEWAY_SERVICE` when yours is not the default.
 
 ### Updates
 
@@ -125,7 +134,8 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 | Setting | Default | Role |
 |---------|---------|------|
 | `url` | `https://sentrook.firstdataunion.org` (set by configure) | Scan service base URL |
-| `timeoutMs` | `3000` | Bounds the `/scan` wait. On timeout or transport error the plugin **fails open** (tool call proceeds) — see [Timeouts](#timeouts) |
+| `timeoutMs` | `3000` | Bounds the `/scan` wait. On timeout or transport error the plugin follows `onScanError` — see [Timeouts](#timeouts) |
+| `onScanError` | `allow` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive). Env: `SENTROOK_ON_SCAN_ERROR`. Hosted configure recommends `review`. |
 | `feedback.mode` | `submit` (wizard default) | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
 | `allowlist.enabled` | `true` | Local short-circuit for “allow every time” — see [Allow every time](#allow-every-time-local-allowlist) |
 | `allowlist.path` | `~/.openclaw/sentrook-allowlist.json` | Override store path |
@@ -141,9 +151,18 @@ review / block) — there is no observe-only or sanitization-off toggle.
 Two different options:
 
 1. **`timeoutMs` (scan)** — how long to wait for hosted `/scan`. If the request
-   times out or fails, the plugin **fails open** and the tool call continues.
-   That keeps the agent usable when the scan host is unreachable; it is *not*
-   the same as a human-review timeout.
+   times out, cannot connect, returns 5xx, or is still rate-limited after one
+   `Retry-After` retry, the plugin applies **`onScanError`**:
+   - `allow` — continue the tool without scanning (legacy fail-open; default
+     when the key is missing so existing installs do not change behaviour)
+   - `deny` — block the tool
+   - `review` — interactive `requireApproval` (“Sentrook is unreachable…” /
+     rate-limit copy). Decisions are **allow-once** or **deny** only (no
+     allow-always, no local allowlist, no `/feedback`). Cron/subagent does
+     **not** wait the human-review window; it applies
+     `approval.scheduledTimeoutBehavior` immediately (default deny).
+   HTTP 401/403 always deny — bad credentials must not silently skip scans.
+   This is *not* the same as a human-review timeout.
 2. **`approval.*` (human review)** — after Sentrook returns `review`, how long
    to wait for allow / deny. Interactive and scheduled (cron / subagent) both
    **fail closed** (`deny`) by default. Opt into
@@ -160,7 +179,7 @@ recommends for provider API keys
 | Install | Credentials | Reload after configure |
 | --- | --- | --- |
 | Native / systemd | `~/.openclaw/.env` | `openclaw gateway restart` |
-| Docker Compose | `~/.openclaw/.env` (bind-mounted) | `docker compose restart openclaw-gateway` |
+| Docker Compose | `~/.openclaw/.env` (bind-mounted) | `docker compose restart openclaw-gateway` (default service name; see Install) |
 
 Avoid putting Sentrook scan secrets **only** in a compose `env_file`
 (`~/openclaw/.env`). Compose injects that file at container **create** time, so
@@ -283,7 +302,7 @@ can mint an OIDC scan token, and can reach the scan service:
 # native
 openclaw sentrook verify
 
-# Docker Compose
+# Docker Compose (default service name; docker compose ps if yours differs)
 docker compose exec openclaw-gateway openclaw sentrook verify
 ```
 
@@ -300,6 +319,7 @@ gateway logs. Scans run only on **tool calls** — chat-only turns produce no
 scan lines — and fail-open paths only show up live:
 
 ```bash
+# default Compose service name; docker compose ps if yours differs
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 
@@ -314,6 +334,6 @@ up via configure. Pattern scrubbing catches credentials and common PII shapes; i
 is **not** a full guarantee that no personal detail remains in free-form text.
 
 On the hosted scan path, the execution plan is evaluated in memory and is **not**
-stored as PlanIR. Opt-in review feedback is a separate path (derived intent +
-human-gated community corpus) — see the root
+stored as PlanIR. Opt-in review feedback is a separate path (derived intent,
+matched-step slice, human-gated community corpus) — see the root
 [README — Privacy and community contribution](../../README.md#privacy-and-community-contribution).

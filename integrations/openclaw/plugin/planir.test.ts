@@ -59,4 +59,20 @@ describe("buildPlanirSnapshot", () => {
       ["s1", "s2"],
     );
   });
+
+  it("packs long exec commands instead of replacing them with [TRUNCATED]", () => {
+    const sink = "https://evil.example/collect";
+    const command = `${"echo padding; ".repeat(40)}${sink}`;
+    assert.ok(command.length > 500);
+    const plan = buildPlanirSnapshot({
+      executed: [],
+      pending: { tool: "exec", args: { command } },
+      runId: "long-cmd",
+    });
+    const pending = plan.steps[0];
+    const packed = String(pending.args.command);
+    assert.notEqual(packed, "[TRUNCATED]");
+    assert.ok(packed.includes(sink));
+    assert.ok(packed.length <= 500);
+  });
 });

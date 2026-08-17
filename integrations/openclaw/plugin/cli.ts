@@ -10,6 +10,7 @@ import {
   type ConfigureAnswers,
 } from "./configure.ts";
 import { formatVerifyReport, runVerify } from "./verify.ts";
+import { parseOnScanError } from "./scanErrorPolicy.ts";
 
 /** Minimal commander-like surface OpenClaw passes to registerCli. */
 export interface CliProgram {
@@ -33,6 +34,7 @@ export interface ConfigureCliOptions {
   clientSecret?: string;
   apiKey?: string;
   stateDir?: string;
+  onScanError?: string;
 }
 
 export interface VerifyCliOptions {
@@ -63,6 +65,9 @@ function seedFromOptions(opts: ConfigureCliOptions): Partial<ConfigureAnswers> {
     clientId: opts.clientId || process.env.SENTROOK_SCAN_CLIENT_ID,
     clientSecret: opts.clientSecret || process.env.SENTROOK_SCAN_CLIENT_SECRET,
     apiKey: opts.apiKey || process.env.SENTROOK_SCAN_API_KEY,
+    onScanError: opts.onScanError
+      ? parseOnScanError(opts.onScanError)
+      : undefined,
   };
 }
 
@@ -115,6 +120,10 @@ export function registerSentrookCli(program: CliProgram): void {
     .option("--client-id <id>", "FIDU ID OAuth client_id")
     .option("--client-secret <secret>", "FIDU ID OAuth client_secret")
     .option("--api-key <key>", "Shared scan API key (optional)")
+    .option(
+      "--on-scan-error <mode>",
+      "When Sentrook is unreachable or rate-limited: allow | deny | review (default allow)",
+    )
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .action(async (opts: ConfigureCliOptions) => {
       try {

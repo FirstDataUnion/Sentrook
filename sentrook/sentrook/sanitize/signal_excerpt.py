@@ -1,9 +1,10 @@
-"""Signal-preserving truncation for long prose args (write/message bodies).
+"""Signal-preserving truncation for long prose args and exec argv.
 
 Prefix-only truncation drops late-payload attacks (e.g. canary sink URLs after
-bland MEMORY.md prefs). This packer keeps a short head for context, extracts
-IOC-like spans (URLs, sensitive paths, command-ish lines, injection markers),
-and optionally a short tail — packed into a fixed char budget.
+bland MEMORY.md prefs, or a curl at the end of a long shell script). This packer
+keeps a short head for context, extracts IOC-like spans (URLs, sensitive paths,
+command-ish lines, injection markers), and optionally a short tail — packed into
+a fixed char budget.
 
 Used by sanitize (budget 500) and L3 embed briefing (budget 80). Mirrors live in
 ``integrations/openclaw/plugin/sanitize.ts``.
@@ -13,8 +14,10 @@ from __future__ import annotations
 
 import re
 
-# Prose arg keys where late malice is common (write/message/result text).
-CONTENT_LIKE_KEYS = frozenset({"content", "text", "body", "message"})
+# Prose arg keys and exec argv where late malice is common. Long ``command``
+# strings used to be replaced with the literal ``[TRUNCATED]``, which hid the
+# pending exec from both L2 and operator review copy.
+CONTENT_LIKE_KEYS = frozenset({"content", "text", "body", "message", "command", "cmd"})
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _SENSITIVE_PATH_RE = re.compile(
@@ -208,8 +211,9 @@ def _assemble(
         used += len(_SEP) + len(signal)
 
     if tail and tail not in head:
-        # Skip tail when a packed signal already covers it (avoid mid-word dups).
-        already = any(tail in p or p in tail for p in parts[1:])
+        # Skip tail only when a packed signal already contains it. A short URL
+        # inside the tail must not drop the rest (curl|bash after a long prefix).
+        already = any(tail in p for p in parts[1:])
         room = limit - used - len(_SEP)
         if not already and room >= 8:
             clipped = tail if len(tail) <= room else tail[-(room - 3) :] + ellipsis

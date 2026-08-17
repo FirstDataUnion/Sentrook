@@ -36,6 +36,9 @@ class ScanMatchedRule(BaseModel):
     severity: Literal["low", "medium", "high", "critical"]
     confidence: float
     layer: Literal["L1", "L2", "L3"]
+    #: PlanIR step ids this rule matched. Feedback uses these to slice community
+    #: corpus examples to the same subgraph L3 embeds (not the full session).
+    matched_step_ids: list[str] = Field(default_factory=list)
 
 
 class ScanLogRecord(BaseModel):
@@ -165,6 +168,7 @@ def build_log_record(
                 severity=m.severity,
                 confidence=m.confidence,
                 layer=m.layer,
+                matched_step_ids=list(m.matched_step_ids),
             )
             for m in result.matched_rules
         ],

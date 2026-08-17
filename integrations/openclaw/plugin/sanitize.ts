@@ -114,8 +114,8 @@ export function hashSessionId(sessionId: string, rules: SanitizeRules = DEFAULT_
   return `${rules.sessionHashPrefix}${digest.slice(0, rules.sessionHashHexChars)}`;
 }
 
-/** Prose arg keys where late-payload attacks are common (mirror Python). */
-const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message"]);
+/** Prose arg keys and exec argv where late-payload attacks are common (mirror Python). */
+const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message", "command", "cmd"]);
 
 const URL_RE = /https?:\/\/[^\s"'<>]+/gi;
 const SENSITIVE_PATH_RE =
@@ -248,7 +248,9 @@ export function packSignalExcerpt(text: string, limit: number, ellipsis = "...")
   }
 
   if (tail && !head.includes(tail)) {
-    const already = parts.slice(1).some((p) => p.includes(tail) || tail.includes(p));
+    // Skip tail only when a packed signal already contains it. A short URL
+    // inside the tail must not drop the rest (curl|bash after a long prefix).
+    const already = parts.slice(1).some((p) => p.includes(tail));
     const room = limit - used - SIGNAL_SEP.length;
     if (!already && room >= 8) {
       const clipped =
@@ -336,6 +338,11 @@ function applySecretPatterns(text: string, rules: SanitizeRules): string {
   return applyPatterns(cleaned, rules.secretValuePatterns, rules.redacted);
 }
 
+/** Secret-pattern scrub for operator-facing copy (no PII, no length placeholder). */
+export function scrubSecrets(text: string, rules: SanitizeRules = DEFAULT_RULES): string {
+  return applySecretPatterns(text, rules);
+}
+
 function scrubString(
   text: string,
   rules: SanitizeRules,
@@ -358,7 +365,12 @@ function isCredentialField(key: string, rules: SanitizeRules): boolean {
 function sanitizeValue(
   value: unknown,
   rules: SanitizeRules,
-  options: { parentKey: string | null; pii: boolean; maxChars: number },
+  options: {
+    parentKey: string | null;
+    pii: boolean;
+    maxChars: number;
+    piiKeys?: ReadonlySet<string>;
+  },
 ): unknown {
   if (options.parentKey !== null && isCredentialField(options.parentKey, rules)) {
     return rules.redacted;
@@ -372,13 +384,21 @@ function sanitizeValue(
   }
   if (Array.isArray(value)) {
     return value.map((item) =>
-      sanitizeValue(item, rules, { parentKey: null, pii: false, maxChars: options.maxChars }),
+      sanitizeValue(item, rules, {
+        parentKey: null,
+        pii: false,
+        maxChars: options.maxChars,
+        piiKeys: options.piiKeys,
+      }),
     );
   }
   if (value !== null && typeof value === "object") {
+    const nestedPii =
+      options.pii || (options.parentKey !== null && options.parentKey.toLowerCase() === "env");
     return sanitizeMapping(value as Record<string, unknown>, rules, {
-      pii: false,
+      pii: nestedPii,
       maxChars: options.maxChars,
+      piiKeys: options.piiKeys,
     });
   }
   return value;
@@ -396,6 +416,7 @@ function sanitizeMapping(
       parentKey: key,
       pii: options.pii || piiKeys.has(key),
       maxChars: options.maxChars,
+      piiKeys,
     });
   }
   return out;

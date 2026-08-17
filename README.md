@@ -85,6 +85,8 @@ openclaw sentrook configure
 # 3. Restart the gateway so it picks up ~/.openclaw/.env and the plugin config
 #    (native: openclaw gateway restart)
 #    (Docker Compose: docker compose restart openclaw-gateway)
+#    `openclaw-gateway` is the default Compose service name; `docker compose ps`
+#    if yours differs (container names like openclaw-gateway-1 are not the same)
 
 # 4. Sanity-check config, credentials, OIDC token mint, and scan host reachability
 openclaw sentrook verify
@@ -113,7 +115,8 @@ token mint look good; a tool call in the logs is the end-to-end check.
 
 Running under Docker Compose? Use the same commands inside the gateway
 container (`docker compose exec openclaw-gateway openclaw...`), then restart as
-above.
+above. `openclaw-gateway` is OpenClaw's default Compose **service** name — check
+`docker compose ps` if a command reports no such service.
 
 #### Updates
 
@@ -257,10 +260,11 @@ review (allow-once or deny) and contribution is on (`feedback.mode: "submit"`,
 the configure default), a sanitized copy of that outcome can be sent as a
 candidate example. Before it is considered for the shared library, the hosted
 side replaces the raw prompt-as-intent with a short **derived intent** built from
-the trajectory (tool sequence + a brief pending-arg sketch) so Rookery reviewers
-never see the original chat prompt. Submissions are scrubbed again and
-**reviewed by humans** before anything is published — nothing goes live
-automatically. Opt out in the wizard or with `feedback.mode: "off"`.
+the trajectory (tool sequence + a brief pending-arg sketch), and keeps **only the
+steps the rule matched** (the pending action plus any prior steps that fired it)
+— not the rest of the session. Submissions are scrubbed again and **reviewed by
+humans** before anything is published — nothing goes live automatically. Opt out
+in the wizard or with `feedback.mode: "off"`.
 
 More detail on scrubbing, logs, and channel approvals:
 [integrations/openclaw/README.md](integrations/openclaw/README.md).
