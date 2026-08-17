@@ -31,6 +31,12 @@ def hash_session_id(session_id: str, rules: SanitizeRules) -> str:
     return f"{rules.session_hash_prefix}{digest[: rules.session_hash_hex_chars]}"
 
 
+# Nested mappings whose string values carry identity (emails, names in account
+# fields). ``env`` is the OpenClaw exec env bag — not in ``pii_arg_keys`` because
+# it is a dict, not a command string.
+_NESTED_PII_KEYS = frozenset({"env"})
+
+
 def _sanitize_value(
     value: Any,
     rules: SanitizeRules,
@@ -38,17 +44,33 @@ def _sanitize_value(
     parent_key: str | None,
     pii: bool,
     max_chars: int,
+    pii_keys: frozenset[str] | None = None,
 ) -> Any:
+    pii_keys = pii_keys or frozenset()
     if parent_key is not None and is_credential_field(parent_key, rules):
         return rules.redacted
 
     if isinstance(value, str):
         return _scrub_string(value, rules, pii=pii, max_chars=max_chars, key=parent_key)
     if isinstance(value, dict):
-        return _sanitize_mapping(value, rules, pii=False, max_chars=max_chars)
+        nested_pii = pii or (parent_key is not None and parent_key.lower() in _NESTED_PII_KEYS)
+        return _sanitize_mapping(
+            value,
+            rules,
+            pii=nested_pii,
+            max_chars=max_chars,
+            pii_keys=pii_keys,
+        )
     if isinstance(value, list):
         return [
-            _sanitize_value(item, rules, parent_key=None, pii=False, max_chars=max_chars)
+            _sanitize_value(
+                item,
+                rules,
+                parent_key=None,
+                pii=False,
+                max_chars=max_chars,
+                pii_keys=pii_keys,
+            )
             for item in value
         ]
     return value
@@ -72,6 +94,7 @@ def _sanitize_mapping(
             parent_key=key,
             pii=key_pii,
             max_chars=max_chars,
+            pii_keys=pii_keys,
         )
     return out
 

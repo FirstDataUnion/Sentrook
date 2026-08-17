@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Scrub PII in nested `exec` `env` values (account emails) before scan and feedback egress.
 - `onScanError` (`allow` / `deny` / `review`) for scan timeouts, transport errors, 5xx, and exhausted 429s. Existing installs without the key keep fail-open. Hosted configure recommends `review`. HTTP 401/403 always deny. 429 retries once when `Retry-After` fits in `timeoutMs`.
 
 ## 1.0.1

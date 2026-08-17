@@ -358,7 +358,12 @@ function isCredentialField(key: string, rules: SanitizeRules): boolean {
 function sanitizeValue(
   value: unknown,
   rules: SanitizeRules,
-  options: { parentKey: string | null; pii: boolean; maxChars: number },
+  options: {
+    parentKey: string | null;
+    pii: boolean;
+    maxChars: number;
+    piiKeys?: ReadonlySet<string>;
+  },
 ): unknown {
   if (options.parentKey !== null && isCredentialField(options.parentKey, rules)) {
     return rules.redacted;
@@ -372,13 +377,21 @@ function sanitizeValue(
   }
   if (Array.isArray(value)) {
     return value.map((item) =>
-      sanitizeValue(item, rules, { parentKey: null, pii: false, maxChars: options.maxChars }),
+      sanitizeValue(item, rules, {
+        parentKey: null,
+        pii: false,
+        maxChars: options.maxChars,
+        piiKeys: options.piiKeys,
+      }),
     );
   }
   if (value !== null && typeof value === "object") {
+    const nestedPii =
+      options.pii || (options.parentKey !== null && options.parentKey.toLowerCase() === "env");
     return sanitizeMapping(value as Record<string, unknown>, rules, {
-      pii: false,
+      pii: nestedPii,
       maxChars: options.maxChars,
+      piiKeys: options.piiKeys,
     });
   }
   return value;
@@ -396,6 +409,7 @@ function sanitizeMapping(
       parentKey: key,
       pii: options.pii || piiKeys.has(key),
       maxChars: options.maxChars,
+      piiKeys,
     });
   }
   return out;

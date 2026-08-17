@@ -324,6 +324,6 @@ up via configure. Pattern scrubbing catches credentials and common PII shapes; i
 is **not** a full guarantee that no personal detail remains in free-form text.
 
 On the hosted scan path, the execution plan is evaluated in memory and is **not**
-stored as PlanIR. Opt-in review feedback is a separate path (derived intent +
-human-gated community corpus) — see the root
+stored as PlanIR. Opt-in review feedback is a separate path (derived intent,
+matched-step slice, human-gated community corpus) — see the root
 [README — Privacy and community contribution](../../README.md#privacy-and-community-contribution).

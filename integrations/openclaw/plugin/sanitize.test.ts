@@ -136,6 +136,29 @@ describe("sanitizePlanir", () => {
     assert.ok(command.includes("TODAY=$(date +%Y-%m-%d)"));
   });
 
+  it("redacts emails in nested exec env values", () => {
+    const { plan } = sanitizePlanir({
+      version: "1.0",
+      run_id: "r1",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: {
+            command: "gog gmail search 'Q1 review'",
+            env: { GOG_ACCOUNT: "oli@openclaw.ai", PATH: "/usr/bin" },
+          },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+    });
+    const env = pendingStep(plan)?.args.env as Record<string, string>;
+    assert.equal(env.GOG_ACCOUNT, "[REDACTED]");
+    assert.equal(env.PATH, "/usr/bin");
+    assert.equal(String(pendingStep(plan)?.args.command), "gog gmail search 'Q1 review'");
+  });
+
   it("redacts sk-proj OpenAI keys in message-like text", () => {
     const { plan } = sanitizePlanir({
       version: "1.0",

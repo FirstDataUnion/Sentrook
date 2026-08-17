@@ -25,6 +25,19 @@ def test_redacts_intact_discord_webhook(rules) -> None:
     assert "[REDACTED]" in cleaned
 
 
+def test_redacts_library_bot_pass_export(rules) -> None:
+    secret = "hlnmmsiliurjnt5v41j43c0o71j0bvq6"
+    command = (
+        'export PATH="$HOME/.local/bin:$PATH"\n'
+        f'export LIBRARY_BOT_PASS="{secret}"\n'
+        "TODAY=$(date +%Y-%m-%d)"
+    )
+    cleaned = apply_secret_patterns(command, rules)
+    assert secret not in cleaned
+    assert "LIBRARY_BOT_PASS=[REDACTED]" in cleaned
+    assert 'PATH="$HOME/.local/bin:$PATH"' in cleaned
+
+
 def test_redacts_discord_webhook_after_pii_bitten_id(rules) -> None:
     """Snowflake IDs can be PII-replaced first; leftover token must still scrub."""
     token = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789"

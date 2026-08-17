@@ -56,6 +56,11 @@ def _example_blob(example: CorpusExample) -> str:
             value = step.args.get(key)
             if isinstance(value, str):
                 parts.append(value)
+        env = step.args.get("env")
+        if isinstance(env, dict):
+            for value in env.values():
+                if isinstance(value, str):
+                    parts.append(value)
         if step.excerpt:
             parts.append(step.excerpt)
     return "\n".join(parts)
@@ -108,6 +113,50 @@ def test_pem_is_critical_and_policy_rejects() -> None:
     assert result.report.severity == "critical"
     assert policy_reject(result.report)
     assert "pem_private_key" in result.report.pattern_counts
+
+
+def test_corpus_env_email_redacted() -> None:
+    ex = _example(
+        steps=[
+            {
+                "tool": "exec",
+                "status": "pending",
+                "args": {
+                    "command": "gog gmail search 'Q1 review'",
+                    "env": {"GOG_ACCOUNT": "oli@openclaw.ai"},
+                },
+            }
+        ]
+    )
+    result = sanitize_corpus_example(ex)
+    env = result.example.steps[0].args["env"]
+    assert "oli@openclaw.ai" not in str(env)
+    assert "[REDACTED]" in str(env)
+    assert "email" in result.report.pattern_counts
+
+
+def test_corpus_library_bot_pass_in_command() -> None:
+    secret = "hlnmmsiliurjnt5v41j43c0o71j0bvq6"
+    ex = _example(
+        steps=[
+            {
+                "tool": "exec",
+                "status": "pending",
+                "args": {
+                    "command": (
+                        'export PATH="$HOME/.local/bin:$PATH"\n'
+                        f'export LIBRARY_BOT_PASS="{secret}"\n'
+                        "python3 wiki.py get Self:Today"
+                    )
+                },
+            }
+        ]
+    )
+    result = sanitize_corpus_example(ex)
+    cmd = result.example.steps[0].args["command"]
+    assert secret not in cmd
+    assert "LIBRARY_BOT_PASS=[REDACTED]" in cmd
+    assert "env_secret_assignment" in result.report.pattern_counts
 
 
 def test_email_in_intent_redacted() -> None:
