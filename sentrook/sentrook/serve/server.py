@@ -22,6 +22,7 @@ from sentrook.serve.config import ServeConfig, validate_production_logging
 from sentrook.serve.feedback import FeedbackRequest, process_feedback
 from sentrook.serve.latency import LatencyReport, append_latency_log, build_latency_record
 from sentrook.serve.oidc import OIDCError, oidc_enabled, validate_oidc_configuration
+from sentrook.serve.rate_limit import check_request, rate_limit_headers
 from sentrook.serve.response import build_scan_response
 from sentrook.serve.runtime import ServeRuntime
 
@@ -55,11 +56,16 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             logger.debug("%s - %s", self.address_string(), format % args)
 
-        def _write_json(self, status: int, payload: dict) -> None:
+        def _write_json(
+            self, status: int, payload: dict, extra_headers: dict[str, str] | None = None
+        ) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            if extra_headers:
+                for name, value in extra_headers.items():
+                    self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
@@ -71,14 +77,31 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
 
         def _require_scan_auth(self) -> bool:
             result = verify_scan_auth(runtime.config, self.headers)
-            if result.ok:
-                return True
-            status = 403 if result.error == "insufficient_scope" else 401
-            detail = (
-                "insufficient scope" if result.error == "insufficient_scope" else "unauthorized"
+            if not result.ok:
+                status = 403 if result.error == "insufficient_scope" else 401
+                detail = (
+                    "insufficient scope" if result.error == "insufficient_scope" else "unauthorized"
+                )
+                self._write_json(status, {"error": detail})
+                return False
+            decision = check_request(
+                runtime.limiter,
+                result,
+                self.path,
+                enabled=runtime.config.rate_limit_enabled,
+                scan_rate=runtime.config.rate_limit_scan_rate,
+                scan_burst=runtime.config.rate_limit_scan_burst,
+                aux_rate=runtime.config.rate_limit_aux_rate,
+                aux_burst=runtime.config.rate_limit_aux_burst,
             )
-            self._write_json(status, {"error": detail})
-            return False
+            if decision is not None and not decision.allowed:
+                self._write_json(
+                    429,
+                    {"error": "rate limited"},
+                    extra_headers=dict(rate_limit_headers(decision)),
+                )
+                return False
+            return True
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.rstrip("/")
@@ -281,7 +304,8 @@ def serve(config: ServeConfig | None = None) -> None:
 
     logger.info(
         "sentrook serve starting: env=%s mode=%s rules=%s corpus=%s l3=%s log=%s "
-        "log_content=%s log_level=%s library=%s feedback=%s scan_auth=%s server_sanitize=%s",
+        "log_content=%s log_level=%s library=%s feedback=%s scan_auth=%s "
+        "rate_limit=%s server_sanitize=%s",
         config.environment,
         config.mode,
         config.rules_path,
@@ -293,6 +317,11 @@ def serve(config: ServeConfig | None = None) -> None:
         config.library_url or "(local only)",
         config.feedback.mode,
         scan_auth_health_label(config),
+        (
+            f"{config.rate_limit_scan_rate:g}r/s burst={config.rate_limit_scan_burst}"
+            if config.rate_limit_enabled
+            else "off"
+        ),
         config.server_sanitize_planir,
     )
     runtime = ServeRuntime(config)

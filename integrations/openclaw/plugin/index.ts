@@ -19,6 +19,14 @@ import {
   resolveApprovalPolicyConfig,
   resolveApprovalTiming,
 } from "./approvalPolicy.ts";
+import {
+  type OnScanError,
+  type ScanFailure,
+  isScanFailure,
+  parseRetryAfterSeconds,
+  resolveOnScanError,
+  scanErrorToHookResult,
+} from "./scanErrorPolicy.ts";
 import { maybeSanitizePlanir } from "./sanitize.ts";
 import {
   type AllowlistConfig,
@@ -170,6 +178,9 @@ export interface SanitizeTiming {
 
 const DISABLED_SANITIZE_TIMING: SanitizeTiming = { enabled: false, ms: 0 };
 
+export type { OnScanError, ScanFailure } from "./scanErrorPolicy.ts";
+export { scanErrorToHookResult } from "./scanErrorPolicy.ts";
+
 export interface PostScanResult {
   scan: ScanResponse;
   timing: ScanTiming;
@@ -182,6 +193,7 @@ interface PluginConfig {
   feedbackMode: FeedbackMode;
   approval: ApprovalPolicyConfig;
   allowlist: AllowlistConfig;
+  onScanError: OnScanError;
 }
 
 // ---- Per-session trajectory state -------------------------------------------
@@ -268,6 +280,11 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
     process.env,
   );
 
+  const onScanError = resolveOnScanError({
+    pluginConfig: cfg.onScanError,
+    env: process.env,
+  });
+
   return {
     url,
     auth,
@@ -275,6 +292,7 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
     feedbackMode,
     approval,
     allowlist,
+    onScanError,
   };
 }
 
@@ -401,7 +419,7 @@ export async function postScan(
   plan: PlanIR,
   auth: ScanAuthConfig | null = null,
   logger?: PluginLogger,
-): Promise<PostScanResult | null> {
+): Promise<PostScanResult | ScanFailure> {
   const resolvedAuth: ScanAuthConfig = auth ?? { apiKey: null, oidc: null };
   const { plan: outbound, sanitizeMs } = maybeSanitizePlanir(plan);
   const sanitizeTiming: SanitizeTiming = {
@@ -412,41 +430,112 @@ export async function postScan(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const started = performance.now();
+  const deadline = started + timeoutMs;
+  let retried429 = false;
   try {
     const headers = await buildScanAuthHeadersAsync(resolvedAuth);
-    const response = await fetch(`${url}/scan`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(outbound),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
+    const body = JSON.stringify(outbound);
+    while (true) {
+      const response = await fetch(`${url}/scan`, {
+        method: "POST",
+        headers,
+        body,
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const scan = (await response.json()) as ScanResponse;
+        const pluginE2eMs = Math.round(performance.now() - started);
+        return { scan, timing: buildScanTiming(scan, pluginE2eMs, sanitizeTiming) };
+      }
+
       let detail = "";
       try {
         detail = (await response.text()).slice(0, 200);
       } catch {
         detail = "";
       }
+
+      if (response.status === 429 && !retried429) {
+        const retryAfterSec = parseRetryAfterSeconds(response.headers.get("retry-after")) ?? 1;
+        const waitMs = Math.ceil(retryAfterSec * 1000);
+        const remainingMs = deadline - performance.now();
+        if (waitMs + 50 < remainingMs) {
+          retried429 = true;
+          logger?.warn(
+            `[sentrook-openclaw] scan HTTP 429: rate limited; Retry-After=${retryAfterSec}; retrying`,
+          );
+          await sleepMs(waitMs, controller.signal);
+          continue;
+        }
+        logger?.warn(
+          `[sentrook-openclaw] scan HTTP 429: rate limited; Retry-After=${retryAfterSec}` +
+            (detail ? `: ${detail}` : ""),
+        );
+        return {
+          ok: false,
+          kind: "rate_limited",
+          status: 429,
+          retryAfterSec,
+          detail: detail || "rate limited",
+        };
+      }
+
+      if (response.status === 429) {
+        const retryAfterSec = parseRetryAfterSeconds(response.headers.get("retry-after"));
+        logger?.warn(
+          `[sentrook-openclaw] scan HTTP 429: rate limited` +
+            (retryAfterSec != null ? `; Retry-After=${retryAfterSec}` : "") +
+            (detail ? `: ${detail}` : ""),
+        );
+        return {
+          ok: false,
+          kind: "rate_limited",
+          status: 429,
+          retryAfterSec,
+          detail: detail || "rate limited",
+        };
+      }
+
       logger?.warn(
-        `[sentrook-openclaw] scan HTTP ${response.status}` +
-          (detail ? `: ${detail}` : "") +
-          `; failing open`,
+        `[sentrook-openclaw] scan HTTP ${response.status}` + (detail ? `: ${detail}` : ""),
       );
-      return null;
+      return {
+        ok: false,
+        kind: "http",
+        status: response.status,
+        detail: detail || `HTTP ${response.status}`,
+      };
     }
-    const scan = (await response.json()) as ScanResponse;
-    const pluginE2eMs = Math.round(performance.now() - started);
-    return { scan, timing: buildScanTiming(scan, pluginE2eMs, sanitizeTiming) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const aborted = msg.toLowerCase().includes("abort");
     logger?.warn(
-      `[sentrook-openclaw] scan ${aborted ? "timed out" : "failed"}: ${msg}; failing open`,
+      `[sentrook-openclaw] scan ${aborted ? "timed out" : "failed"}: ${msg}`,
     );
-    return null;
+    return {
+      ok: false,
+      kind: aborted ? "timeout" : "network",
+      detail: msg,
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function sleepMs(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(), ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function postFeedback(
@@ -736,8 +825,24 @@ const plugin = {
             liveAuth,
             api.logger,
           );
-          if (!scanResult) {
-            return undefined;
+          if (isScanFailure(scanResult)) {
+            const timing = resolveApprovalTiming(
+              config.approval,
+              plan.intent_kind ?? undefined,
+              plan.intent ?? undefined,
+            );
+            const mapped = scanErrorToHookResult(scanResult, {
+              onScanError: config.onScanError,
+              unattended: timing.unattended,
+              scheduledTimeoutBehavior: config.approval.scheduledTimeoutBehavior,
+              interactiveTimeoutMs: config.approval.interactiveTimeoutMs,
+            });
+            if (mapped == null) {
+              api.logger.warn(
+                `[sentrook-openclaw] scan error (${scanResult.kind}); continuing without scan (onScanError=allow)`,
+              );
+            }
+            return mapped;
           }
 
           const { scan, timing } = scanResult;
@@ -805,7 +910,8 @@ const plugin = {
         : "scan-auth=off";
     api.logger.info(
       `[sentrook-openclaw] registered (url=${config.url}, ` +
-        `${scanAuthSummary}, timeout=${config.timeoutMs}ms, feedback=${config.feedbackMode}, ` +
+        `${scanAuthSummary}, timeout=${config.timeoutMs}ms, onScanError=${config.onScanError}, ` +
+        `feedback=${config.feedbackMode}, ` +
         `sanitization=on, approval: ${approvalSummary})`,
     );
   },

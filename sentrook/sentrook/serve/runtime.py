@@ -19,6 +19,7 @@ from sentrook.serve.auth import oidc_available, scan_auth_health_label
 from sentrook.serve.config import ServeConfig
 from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
 from sentrook.serve.oidc import normalize_oidc_url
+from sentrook.serve.rate_limit import MemoryTokenBucketLimiter
 from sentrook.serve.service import ScanService
 from sentrook.serve.stats import LatencyTracker
 
@@ -51,6 +52,7 @@ class ServeRuntime:
         self._stop = threading.Event()
         self._sync_thread: threading.Thread | None = None
         self._ops_lock = threading.Lock()
+        self.limiter = MemoryTokenBucketLimiter() if config.rate_limit_enabled else None
         self._seed_last_sync_from_manifest()
         self._refresh_library_status()
 

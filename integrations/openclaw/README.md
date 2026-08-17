@@ -125,7 +125,8 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 | Setting | Default | Role |
 |---------|---------|------|
 | `url` | `https://sentrook.firstdataunion.org` (set by configure) | Scan service base URL |
-| `timeoutMs` | `3000` | Bounds the `/scan` wait. On timeout or transport error the plugin **fails open** (tool call proceeds) — see [Timeouts](#timeouts) |
+| `timeoutMs` | `3000` | Bounds the `/scan` wait. On timeout or transport error the plugin follows `onScanError` — see [Timeouts](#timeouts) |
+| `onScanError` | `allow` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive). Env: `SENTROOK_ON_SCAN_ERROR`. Hosted configure recommends `review`. |
 | `feedback.mode` | `submit` (wizard default) | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
 | `allowlist.enabled` | `true` | Local short-circuit for “allow every time” — see [Allow every time](#allow-every-time-local-allowlist) |
 | `allowlist.path` | `~/.openclaw/sentrook-allowlist.json` | Override store path |
@@ -141,9 +142,18 @@ review / block) — there is no observe-only or sanitization-off toggle.
 Two different options:
 
 1. **`timeoutMs` (scan)** — how long to wait for hosted `/scan`. If the request
-   times out or fails, the plugin **fails open** and the tool call continues.
-   That keeps the agent usable when the scan host is unreachable; it is *not*
-   the same as a human-review timeout.
+   times out, cannot connect, returns 5xx, or is still rate-limited after one
+   `Retry-After` retry, the plugin applies **`onScanError`**:
+   - `allow` — continue the tool without scanning (legacy fail-open; default
+     when the key is missing so existing installs do not change behaviour)
+   - `deny` — block the tool
+   - `review` — interactive `requireApproval` (“Sentrook is unreachable…” /
+     rate-limit copy). Decisions are **allow-once** or **deny** only (no
+     allow-always, no local allowlist, no `/feedback`). Cron/subagent does
+     **not** wait the human-review window; it applies
+     `approval.scheduledTimeoutBehavior` immediately (default deny).
+   HTTP 401/403 always deny — bad credentials must not silently skip scans.
+   This is *not* the same as a human-review timeout.
 2. **`approval.*` (human review)** — after Sentrook returns `review`, how long
    to wait for allow / deny. Interactive and scheduled (cron / subagent) both
    **fail closed** (`deny`) by default. Opt into

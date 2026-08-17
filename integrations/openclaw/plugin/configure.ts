@@ -18,6 +18,9 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
+import { urlRequiresScanAuth } from "./auth.ts";
+import { parseOnScanError, type OnScanError } from "./scanErrorPolicy.ts";
+
 export const PLUGIN_ID = "sentrook-openclaw";
 
 export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
@@ -44,6 +47,11 @@ export interface ConfigureAnswers {
   clientSecret?: string;
   /** Optional shared API key (soak / closed beta) */
   apiKey?: string;
+  /**
+   * When Sentrook is unreachable or rate-limited: allow (fail-open), deny
+   * (fail-closed), or review (ask, interactive only).
+   */
+  onScanError?: OnScanError;
 }
 
 export function feedbackModeFromContribute(contribute: boolean): FeedbackMode {
@@ -92,6 +100,7 @@ export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string
     url: answers.url,
     timeoutMs: answers.timeoutMs,
     feedback: { mode: feedbackModeFromContribute(answers.contributeCorpus) },
+    onScanError: answers.onScanError ?? "allow",
   };
 }
 
@@ -531,7 +540,22 @@ export async function collectAnswersInteractive(
     clientSecret = sanitizeSecretInput(await io.promptSecret("OAuth client_secret"));
   }
 
-  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey };
+  let onScanError: OnScanError = seed.onScanError ?? recommendOnScanError(url);
+  if (seed.onScanError === undefined) {
+    io.log("");
+    io.log("==> When Sentrook is unreachable or rate-limited");
+    io.log("    allow  = continue the tool without scanning (old default)");
+    io.log("    deny   = block the tool");
+    io.log("    review = ask you first (recommended for hosted HTTPS)");
+    const raw = await io.prompt(`onScanError [${onScanError}]`, onScanError);
+    onScanError = parseOnScanError(raw, onScanError);
+  }
+
+  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
+}
+
+export function recommendOnScanError(url: string): OnScanError {
+  return urlRequiresScanAuth(url) ? "review" : "allow";
 }
 
 export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): ConfigureAnswers {
@@ -544,13 +568,14 @@ export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): C
   const clientId = seed.clientId?.trim();
   const clientSecret = seed.clientSecret?.trim();
   const apiKey = seed.apiKey?.trim();
+  const onScanError = seed.onScanError ?? "allow";
   if (!apiKey && (!clientId || !clientSecret)) {
     throw new Error(
       "non-interactive configure requires --client-id and --client-secret " +
         `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR}); --api-key also accepted`,
     );
   }
-  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey };
+  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
 }
 
 export async function runConfigure(

@@ -36,6 +36,10 @@ DEFAULT_PORT = 9099
 DEFAULT_LIBRARY_SYNC_INTERVAL_SEC = 86_400
 DEFAULT_PERSONAL_CORPUS_DIR = Path.home() / ".sentrook" / "personal-corpus"
 DEFAULT_OIDC_JWKS_CACHE_SECONDS = 300
+DEFAULT_RATE_LIMIT_SCAN_RATE = 5.0
+DEFAULT_RATE_LIMIT_SCAN_BURST = 15
+DEFAULT_RATE_LIMIT_AUX_RATE = 2.0
+DEFAULT_RATE_LIMIT_AUX_BURST = 8
 VALID_SCAN_AUTH_MODES = frozenset({"auto", "oidc", "apikey"})
 # Disk scan-log content policy. ``metadata`` omits PlanIR free text (intent /
 # command excerpts) so production hosts can guarantee no submission prose on disk.
@@ -55,6 +59,37 @@ def _env_bool(env: dict[str, str], key: str, *, default: bool = False) -> bool:
     if raw in ("0", "false", "no", "off"):
         return False
     return default
+
+
+def _env_float(env: dict[str, str], key: str, default: float) -> float:
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_int(env: dict[str, str], key: str, default: int) -> int:
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _parse_rate_limit_enabled(
+    env: dict[str, str], *, scan_auth_mode: str, environment: str
+) -> bool:
+    raw = (env.get("SENTROOK_RATE_LIMIT_ENABLED") or "").strip()
+    if raw:
+        return _env_bool(env, "SENTROOK_RATE_LIMIT_ENABLED", default=False)
+    return scan_auth_mode == "oidc" or environment == "production"
 
 
 def _parse_environment(raw: str | None) -> str:
@@ -141,6 +176,12 @@ class ServeConfig:
     log_content: str = "scrubbed"  # metadata | scrubbed | full
     #: Stdlib logger level for sentrook.serve (access lines are DEBUG).
     log_level: str = "INFO"
+    #: Per-caller token bucket after auth. Default on for oidc / production.
+    rate_limit_enabled: bool = False
+    rate_limit_scan_rate: float = DEFAULT_RATE_LIMIT_SCAN_RATE
+    rate_limit_scan_burst: int = DEFAULT_RATE_LIMIT_SCAN_BURST
+    rate_limit_aux_rate: float = DEFAULT_RATE_LIMIT_AUX_RATE
+    rate_limit_aux_burst: int = DEFAULT_RATE_LIMIT_AUX_BURST
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> ServeConfig:
@@ -194,6 +235,9 @@ class ServeConfig:
         environment = _parse_environment(env.get("SENTROOK_ENV"))
         log_content = _parse_log_content(env.get("SENTROOK_LOG_CONTENT"), environment=environment)
         log_level = _parse_log_level(env.get("SENTROOK_LOG_LEVEL"))
+        rate_limit_enabled = _parse_rate_limit_enabled(
+            env, scan_auth_mode=scan_auth_mode, environment=environment
+        )
 
         return cls(
             mode=env.get("SENTROOK_MODE", "observe"),
@@ -240,6 +284,19 @@ class ServeConfig:
             environment=environment,
             log_content=log_content,
             log_level=log_level,
+            rate_limit_enabled=rate_limit_enabled,
+            rate_limit_scan_rate=_env_float(
+                env, "SENTROOK_RATE_LIMIT_SCAN_RATE", DEFAULT_RATE_LIMIT_SCAN_RATE
+            ),
+            rate_limit_scan_burst=_env_int(
+                env, "SENTROOK_RATE_LIMIT_SCAN_BURST", DEFAULT_RATE_LIMIT_SCAN_BURST
+            ),
+            rate_limit_aux_rate=_env_float(
+                env, "SENTROOK_RATE_LIMIT_AUX_RATE", DEFAULT_RATE_LIMIT_AUX_RATE
+            ),
+            rate_limit_aux_burst=_env_int(
+                env, "SENTROOK_RATE_LIMIT_AUX_BURST", DEFAULT_RATE_LIMIT_AUX_BURST
+            ),
         )
 
     @classmethod
