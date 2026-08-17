@@ -434,16 +434,24 @@ def _pending_args(record: ScanLogRecord, result: ScanResult) -> dict:
     return {}
 
 
+def _usable_command_text(raw: object | None) -> str | None:
+    """Return stripped argv, ignoring the PlanIR length placeholder."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text == "[TRUNCATED]":
+        return None
+    return text
+
+
 def _full_pending_command(record: ScanLogRecord, result: ScanResult) -> str | None:
     """Prefer full pending argv from scan debug; fall back to log excerpt."""
     args = _pending_args(record, result)
     for key in ("command", "cmd"):
-        raw = args.get(key)
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
-    if record.pending_command_excerpt and record.pending_command_excerpt.strip():
-        return record.pending_command_excerpt.strip()
-    return None
+        command = _usable_command_text(args.get(key))
+        if command is not None:
+            return command
+    return _usable_command_text(record.pending_command_excerpt)
 
 
 def _pending_tool(record: ScanLogRecord, result: ScanResult) -> str:

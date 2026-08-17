@@ -224,6 +224,8 @@ describe("restartHint", () => {
     assert.match(hint, /\/home\/node\/\.openclaw\/\.env/);
     assert.match(hint, /force-recreate/);
     assert.match(hint, /do NOT need/i);
+    assert.match(hint, /default Compose service name/);
+    assert.match(hint, /docker compose ps/);
   });
 });
 

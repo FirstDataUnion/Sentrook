@@ -145,3 +145,4 @@ else
 fi
 echo "  openclaw sentrook configure"
 echo "  docker compose restart openclaw-gateway"
+echo "  # default Compose service name — docker compose ps if yours differs"

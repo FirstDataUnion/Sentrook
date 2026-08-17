@@ -129,7 +129,10 @@ def verify_cmd(
     ] = None,
     gateway_service: Annotated[
         str,
-        typer.Option("--gateway-service", help="Compose service for the gateway"),
+        typer.Option(
+            "--gateway-service",
+            help="Compose service for the gateway (default openclaw-gateway; names vary)",
+        ),
     ] = "openclaw-gateway",
     sidecar_service: Annotated[
         str | None,

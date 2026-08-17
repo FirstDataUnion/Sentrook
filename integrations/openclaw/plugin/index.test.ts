@@ -347,6 +347,24 @@ describe("translateScanResponse — review mapping", () => {
     ]);
   });
 
+  it("overlays local exec command when sidecar copy is [TRUNCATED]", () => {
+    const command = `python3 wiki.py get Self:Today ${"padding ".repeat(80)}`;
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "[TRUNCATED]",
+      review_description: "Likely: run a shell command\nrun: `[TRUNCATED]`\n(010)",
+      review_severity: "warning",
+    };
+    const result = translateScanResponse(scan, ctx({ pendingArgs: { command } }));
+    const approval = result?.requireApproval;
+    assert.ok(approval);
+    assert.notEqual(approval.title, "[TRUNCATED]");
+    assert.ok(!approval.description.includes("[TRUNCATED]"));
+    assert.ok(approval.description.includes("wiki.py"));
+    assert.ok(approval.description.includes("(010)"));
+  });
+
   it("uses fallback title/description/severity when copy is missing", () => {
     const scan: ScanResponse = {
       block: false,

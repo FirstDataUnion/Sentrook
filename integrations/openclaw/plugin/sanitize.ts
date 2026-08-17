@@ -114,8 +114,8 @@ export function hashSessionId(sessionId: string, rules: SanitizeRules = DEFAULT_
   return `${rules.sessionHashPrefix}${digest.slice(0, rules.sessionHashHexChars)}`;
 }
 
-/** Prose arg keys where late-payload attacks are common (mirror Python). */
-const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message"]);
+/** Prose arg keys and exec argv where late-payload attacks are common (mirror Python). */
+const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message", "command", "cmd"]);
 
 const URL_RE = /https?:\/\/[^\s"'<>]+/gi;
 const SENSITIVE_PATH_RE =
@@ -334,6 +334,11 @@ function applySecretPatterns(text: string, rules: SanitizeRules): string {
   let cleaned = redactEnvSecretAssignments(text, rules.redacted);
   cleaned = redactCliSecretFlags(cleaned, rules.redacted);
   return applyPatterns(cleaned, rules.secretValuePatterns, rules.redacted);
+}
+
+/** Secret-pattern scrub for operator-facing copy (no PII, no length placeholder). */
+export function scrubSecrets(text: string, rules: SanitizeRules = DEFAULT_RULES): string {
+  return applySecretPatterns(text, rules);
 }
 
 function scrubString(

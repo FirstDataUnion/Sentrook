@@ -85,6 +85,8 @@ openclaw sentrook configure
 # 3. Restart the gateway so it picks up ~/.openclaw/.env and the plugin config
 #    (native: openclaw gateway restart)
 #    (Docker Compose: docker compose restart openclaw-gateway)
+#    `openclaw-gateway` is the default Compose service name; `docker compose ps`
+#    if yours differs (container names like openclaw-gateway-1 are not the same)
 
 # 4. Sanity-check config, credentials, OIDC token mint, and scan host reachability
 openclaw sentrook verify
@@ -113,7 +115,8 @@ token mint look good; a tool call in the logs is the end-to-end check.
 
 Running under Docker Compose? Use the same commands inside the gateway
 container (`docker compose exec openclaw-gateway openclaw...`), then restart as
-above.
+above. `openclaw-gateway` is OpenClaw's default Compose **service** name — check
+`docker compose ps` if a command reports no such service.
 
 #### Updates
 

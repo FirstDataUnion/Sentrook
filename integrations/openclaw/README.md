@@ -10,7 +10,9 @@ On each `before_tool_call`, the plugin builds a short **PlanIR** trajectory
 `/scan`. The pending step is the tool under review.
 
 The plugin waits for the decision and maps **allow** / **review** / **block** to
-OpenClaw continue / approval UI / veto.
+OpenClaw continue / approval UI / veto. Review cards are filled from the **local**
+pending command (secret patterns scrubbed, packed to OpenClaw's title/description
+caps) so a long `exec` is still readable.
 
 PlanIR is always scrubbed before egress (not configurable). Optional review
 feedback can `POST /feedback` with a sanitized resolution for the community
@@ -54,6 +56,13 @@ docker compose exec openclaw-gateway openclaw sentrook verify
 # Then exercise a tool call and:
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
+
+`openclaw-gateway` is the default Compose **service** name in OpenClaw's
+official `docker-compose.yml`. The running **container** is often named
+`openclaw-gateway-1` or `{project}-openclaw-gateway-1`. If a command fails
+with "no such service", run `docker compose ps` from your compose project
+and substitute the service name shown there. Helper scripts honour
+`OPENCLAW_GATEWAY_SERVICE` when yours is not the default.
 
 ### Updates
 
@@ -170,7 +179,7 @@ recommends for provider API keys
 | Install | Credentials | Reload after configure |
 | --- | --- | --- |
 | Native / systemd | `~/.openclaw/.env` | `openclaw gateway restart` |
-| Docker Compose | `~/.openclaw/.env` (bind-mounted) | `docker compose restart openclaw-gateway` |
+| Docker Compose | `~/.openclaw/.env` (bind-mounted) | `docker compose restart openclaw-gateway` (default service name; see Install) |
 
 Avoid putting Sentrook scan secrets **only** in a compose `env_file`
 (`~/openclaw/.env`). Compose injects that file at container **create** time, so
@@ -293,7 +302,7 @@ can mint an OIDC scan token, and can reach the scan service:
 # native
 openclaw sentrook verify
 
-# Docker Compose
+# Docker Compose (default service name; docker compose ps if yours differs)
 docker compose exec openclaw-gateway openclaw sentrook verify
 ```
 
@@ -310,6 +319,7 @@ gateway logs. Scans run only on **tool calls** — chat-only turns produce no
 scan lines — and fail-open paths only show up live:
 
 ```bash
+# default Compose service name; docker compose ps if yours differs
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 

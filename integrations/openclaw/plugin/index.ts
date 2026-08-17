@@ -28,6 +28,7 @@ import {
   scanErrorToHookResult,
 } from "./scanErrorPolicy.ts";
 import { maybeSanitizePlanir } from "./sanitize.ts";
+import { overlayApprovalCopy } from "./reviewCopy.ts";
 import {
   type AllowlistConfig,
   matchAllowlist,
@@ -611,6 +612,8 @@ export function translateScanResponse(
     approval: ApprovalPolicyConfig;
     allowlist?: AllowlistConfig;
     logger: PluginLogger;
+    /** Unredacted pending tool args from the live hook (operator review only). */
+    pendingArgs?: Json;
   },
 ): BeforeToolCallResult | undefined {
   if (scan.block || scan.decision === "block") {
@@ -656,13 +659,19 @@ export function translateScanResponse(
           `timeout=${timing.timeoutMs}ms behavior=${timing.timeoutBehavior}`,
       );
     }
+    const copy = overlayApprovalCopy({
+      scanTitle: scan.review_title,
+      scanDescription: scan.review_description,
+      fallbackTitle: `Sentrook review: ${pendingTool}`,
+      fallbackDescription:
+        scan.summary || "Sentrook flagged this tool call for human review",
+      pendingTool,
+      pendingArgs: ctx.pendingArgs,
+    });
     return {
       requireApproval: {
-        title: scan.review_title || `Sentrook review: ${pendingTool}`,
-        description:
-          scan.review_description ||
-          scan.summary ||
-          "Sentrook flagged this tool call for human review",
+        title: copy.title,
+        description: copy.description,
         severity: scan.review_severity || "warning",
         timeoutMs: timing.timeoutMs,
         timeoutBehavior: timing.timeoutBehavior,
@@ -857,6 +866,7 @@ const plugin = {
             approval: config.approval,
             allowlist: config.allowlist,
             logger: api.logger,
+            pendingArgs: pendingCall.args,
           });
         } catch (err) {
           api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);

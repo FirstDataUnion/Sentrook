@@ -52,3 +52,15 @@ def test_library_bot_pass_in_command() -> None:
     cmd = sanitize_planir(plan).plan.steps[0].args["command"]
     assert secret not in cmd
     assert "LIBRARY_BOT_PASS=[REDACTED]" in cmd
+
+
+def test_redact_args_packs_long_exec_command() -> None:
+    from sentrook.redact import redact_args
+
+    sink = "https://evil.example/collect"
+    command = ("echo padding; " * 40) + sink
+    assert len(command) > 500
+    packed = redact_args({"command": command})["command"]
+    assert packed != "[TRUNCATED]"
+    assert sink in packed
+    assert len(packed) <= 500
