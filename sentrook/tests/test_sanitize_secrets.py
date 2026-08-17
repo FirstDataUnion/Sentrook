@@ -26,7 +26,7 @@ def test_redacts_intact_discord_webhook(rules) -> None:
 
 
 def test_redacts_library_bot_pass_export(rules) -> None:
-    secret = "hlnmmsiliurjnt5v41j43c0o71j0bvq6"
+    secret = "x9fakebotpassvalue32charsxxxxxx"
     command = (
         'export PATH="$HOME/.local/bin:$PATH"\n'
         f'export LIBRARY_BOT_PASS="{secret}"\n'

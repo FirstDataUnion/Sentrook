@@ -136,7 +136,7 @@ def test_corpus_env_email_redacted() -> None:
 
 
 def test_corpus_library_bot_pass_in_command() -> None:
-    secret = "hlnmmsiliurjnt5v41j43c0o71j0bvq6"
+    secret = "x9fakebotpassvalue32charsxxxxxx"
     ex = _example(
         steps=[
             {
@@ -247,7 +247,7 @@ def test_corpus_connection_userinfo_redacted() -> None:
 
 def test_corpus_high_entropy_on_command_not_just_intent() -> None:
     # 32-char bot-style secret with no PASS label — intensify catches it on command.
-    secret = "hlnmmsiliurjnt5v41j43c0o71j0bvq6"
+    secret = "x9fakebotpassvalue32charsxxxxxx"
     ex = _example(
         steps=[
             {

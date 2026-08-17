@@ -248,7 +248,9 @@ export function packSignalExcerpt(text: string, limit: number, ellipsis = "...")
   }
 
   if (tail && !head.includes(tail)) {
-    const already = parts.slice(1).some((p) => p.includes(tail) || tail.includes(p));
+    // Skip tail only when a packed signal already contains it. A short URL
+    // inside the tail must not drop the rest (curl|bash after a long prefix).
+    const already = parts.slice(1).some((p) => p.includes(tail));
     const room = limit - used - SIGNAL_SEP.length;
     if (!already && room >= 8) {
       const clipped =

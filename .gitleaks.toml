@@ -9,7 +9,17 @@ useDefault = true
 description = "Sanitize unit tests and fixtures deliberately embed secret-shaped strings"
 paths = [
   '''(^|/)sentrook/tests/test_sanitize_corpus\.py$''',
+  '''(^|/)sentrook/tests/test_sanitize_secrets\.py$''',
+  '''(^|/)sentrook/tests/test_sanitize_planir\.py$''',
   '''(^|/)sentrook/tests/fixtures/sanitize_[^/]+/''',
   '''(^|/)integrations/openclaw/plugin/sanitize\.test\.ts$''',
+  '''(^|/)integrations/openclaw/plugin/reviewCopy\.test\.ts$''',
   '''(^|/)integrations/openclaw/plugin/fixtures/sanitize/''',
+]
+
+[[allowlists]]
+description = "Known-fake tokens used to exercise sanitize (not real credentials)"
+regexes = [
+  '''x9fakebotpassvalue32charsxxxxxx''',
+  '''ghp_1234567890abcdefghij''',
 ]

@@ -211,8 +211,9 @@ def _assemble(
         used += len(_SEP) + len(signal)
 
     if tail and tail not in head:
-        # Skip tail when a packed signal already covers it (avoid mid-word dups).
-        already = any(tail in p or p in tail for p in parts[1:])
+        # Skip tail only when a packed signal already contains it. A short URL
+        # inside the tail must not drop the rest (curl|bash after a long prefix).
+        already = any(tail in p for p in parts[1:])
         room = limit - used - len(_SEP)
         if not already and room >= 8:
             clipped = tail if len(tail) <= room else tail[-(room - 3) :] + ellipsis
