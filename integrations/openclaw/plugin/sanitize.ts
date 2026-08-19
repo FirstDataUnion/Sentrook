@@ -33,8 +33,11 @@ const CREDENTIAL_VAR_SEGMENT =
 
 // Quoted values use the unrolled form `[^"\\]*(?:\\.[^"\\]*)*` so each character
 // has one match path (`(?:\\.|[^"\\])*` is polynomial ReDoS on backtracking engines).
+// The var-name pattern `(?=[A-Za-z_])[A-Za-z0-9_]+` uses a lookahead to assert the
+// first char without consuming it, so the entire identifier is one `[A-Za-z0-9_]+`
+// atom — no split-point backtracking on long underscore runs.
 const ENV_ASSIGNMENT =
-  /((?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
+  /((?:export\s+)?)((?=[A-Za-z_])[A-Za-z0-9_]+)\s*=\s*(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
 
 const CLI_SECRET_FLAG =
   /(--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:-\w+)?)(\s*=\s*|\s+)(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
