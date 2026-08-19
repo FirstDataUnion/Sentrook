@@ -1,5 +1,13 @@
 # @firstdataunion/sentrook-openclaw
 
+## 1.0.3
+
+### Patch Changes
+
+- 391bf75: Exec review cards show a secret-scrubbed local command excerpt instead of the PlanIR `[TRUNCATED]` placeholder. Hosted `/scan` and `/feedback` still receive length-bounded, secret/PII-scrubbed PlanIR.
+- 391bf75: Configure restart hints note that `openclaw-gateway` is OpenClaw's default Compose service name and may differ (`docker compose ps`).
+- b150aa3: Pin the scan/feedback origin in plugin code (`SCAN_BASE_URL`) so it cannot be retargeted via openclaw.json or SENTROOK_SCAN_URL.
+
 ## 1.0.2
 
 ### Patch Changes
