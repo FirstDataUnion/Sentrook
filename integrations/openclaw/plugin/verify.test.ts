@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, PLUGIN_ID } from "./configure.ts";
+import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 import { formatVerifyReport, runVerify } from "./verify.ts";
 
 const realFetch = globalThis.fetch;
@@ -87,7 +88,6 @@ describe("runVerify", () => {
       writeFileSync(path.join(dir, "openclaw.json"), "{}\n");
       const result = await runVerify({
         stateDir: dir,
-        url: "https://example.invalid",
         timeoutMs: 500,
       });
       assert.equal(result.ok, false);
@@ -113,7 +113,6 @@ describe("runVerify", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://example.invalid",
         timeoutMs: 500,
       });
       const byName = Object.fromEntries(result.checks.map((c) => [c.name, c]));
@@ -147,7 +146,6 @@ describe("runVerify", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://example.invalid",
         timeoutMs: 500,
       });
       const loadPath = result.checks.find((c) => c.name === "credentials load path");
@@ -176,7 +174,6 @@ describe("runVerify", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://example.invalid",
         timeoutMs: 500,
       });
       const creds = result.checks.find((c) => c.name === "scan credentials");
@@ -207,7 +204,6 @@ describe("runVerify", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://scan.test",
         timeoutMs: 2000,
       });
       const mint = result.checks.find((c) => c.name === "OIDC token mint");
@@ -243,7 +239,6 @@ describe("runVerify — OIDC issuer alignment", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://scan.test",
         timeoutMs: 2000,
       });
       const byName = Object.fromEntries(result.checks.map((c) => [c.name, c]));
@@ -264,7 +259,7 @@ describe("runVerify — OIDC issuer alignment", () => {
     }
   });
 
-  it("fails when plugin issuer is dig and scan /health reports prod", async () => {
+  it("fails when plugin issuer is dev and scan /health reports prod", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
     const prevIssuer = process.env.SENTROOK_OIDC_ISSUER;
     try {
@@ -283,7 +278,6 @@ describe("runVerify — OIDC issuer alignment", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://scan.test",
         timeoutMs: 2000,
       });
       const align = result.checks.find((c) => c.name === "OIDC issuer alignment");
@@ -307,7 +301,6 @@ describe("runVerify — OIDC issuer alignment", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://scan.test",
         timeoutMs: 2000,
       });
       const align = result.checks.find((c) => c.name === "OIDC issuer alignment");
@@ -330,7 +323,6 @@ describe("runVerify — OIDC issuer alignment", () => {
       });
       const result = await runVerify({
         stateDir: dir,
-        url: "https://scan.test",
         timeoutMs: 2000,
       });
       const health = result.checks.find((c) => c.name === "scan service health");
@@ -339,6 +331,66 @@ describe("runVerify — OIDC issuer alignment", () => {
       assert.ok(!result.checks.some((c) => c.name === "OIDC issuer alignment"));
       // Mint still runs when OIDC vars are present (Identity ≠ scan health).
       assert.equal(result.checks.find((c) => c.name === "OIDC token mint")?.ok, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runVerify — pinned scan URL", () => {
+  it("ignores url in openclaw.json including non-http(s) values", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
+    try {
+      writePluginConfig(dir, "file:///etc/passwd");
+      writeOidcDotenv(dir);
+      mockVerifyNetwork({
+        health: { body: { status: "ok" } },
+      });
+      const result = await runVerify({ stateDir: dir, timeoutMs: 2000 });
+      assert.equal(result.url, SCAN_BASE_URL);
+      assert.equal(result.checks.find((c) => c.name === "scan service health")?.ok, true);
+      assert.ok(!result.checks.some((c) => c.name === "scan URL"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fetches /health on the pinned origin, not plugin config.url", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
+    try {
+      writePluginConfig(dir, "https://scan.test/v1/");
+      writeOidcDotenv(dir);
+      const fetched: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        fetched.push(String(input));
+        const url = String(input);
+        if (url.includes("/health")) {
+          assert.equal(init?.redirect, "error");
+          return new Response(JSON.stringify({ status: "ok" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.includes("openid-configuration")) {
+          return new Response(
+            JSON.stringify({ token_endpoint: "https://identity.test/oauth/token" }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.includes("/oauth/token")) {
+          const exp = Math.floor(Date.now() / 1000) + 3600;
+          const payload = Buffer.from(JSON.stringify({ exp })).toString("base64url");
+          return new Response(
+            JSON.stringify({ access_token: `aaa.${payload}.bbb`, expires_in: 3600 }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+      const result = await runVerify({ stateDir: dir, timeoutMs: 2000 });
+      assert.ok(fetched.some((u) => u === `${SCAN_BASE_URL}/health`));
+      assert.ok(!fetched.some((u) => u.includes("scan.test")));
+      assert.equal(result.checks.find((c) => c.name === "scan service health")?.ok, true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

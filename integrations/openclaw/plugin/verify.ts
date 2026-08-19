@@ -8,7 +8,6 @@ import {
   API_KEY_VAR,
   CLIENT_ID_VAR,
   CLIENT_SECRET_VAR,
-  DEFAULT_SCAN_URL,
   PLUGIN_ID,
   dotenvPath,
   openclawConfigPath,
@@ -21,7 +20,10 @@ import {
   clearScanTokenCache,
   envWithOpenclawDotenv,
   getScanAccessToken,
+  parseScanBaseUrl,
+  stripTrailingSlashes,
 } from "./auth.ts";
+import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 export interface VerifyResult {
   ok: boolean;
@@ -41,21 +43,7 @@ function readDotenvValue(dotenvFile: string, key: string): string | undefined {
 }
 
 function normalizeIssuer(url: string): string {
-  return url.trim().replace(/\/+$/, "").toLowerCase();
-}
-
-function readConfiguredUrl(stateDir: string): string | undefined {
-  const cfgPath = openclawConfigPath(stateDir);
-  if (!existsSync(cfgPath)) return undefined;
-  try {
-    const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as {
-      plugins?: { entries?: Record<string, { config?: { url?: string } }> };
-    };
-    const url = cfg.plugins?.entries?.[PLUGIN_ID]?.config?.url;
-    return typeof url === "string" && url.trim() ? url.trim() : undefined;
-  } catch {
-    return undefined;
-  }
+  return stripTrailingSlashes(url.trim()).toLowerCase();
 }
 
 function pluginEntryPresent(stateDir: string): boolean {
@@ -73,15 +61,13 @@ function pluginEntryPresent(stateDir: string): boolean {
 }
 
 export async function runVerify(opts: {
-  url?: string;
   stateDir?: string;
   timeoutMs?: number;
 }): Promise<VerifyResult> {
   const stateDir = opts.stateDir ?? resolveStateDir();
-  const url = (opts.url?.trim() || readConfiguredUrl(stateDir) || DEFAULT_SCAN_URL).replace(
-    /\/$/,
-    "",
-  );
+  const parsedUrl = parseScanBaseUrl(SCAN_BASE_URL);
+  const url = parsedUrl.ok ? parsedUrl.href : SCAN_BASE_URL;
+  const https = parsedUrl.ok ? parsedUrl.https : SCAN_BASE_URL.startsWith("https://");
   const timeoutMs = opts.timeoutMs ?? 8000;
   const checks: VerifyResult["checks"] = [];
 
@@ -101,9 +87,14 @@ export async function runVerify(opts: {
   const clientSecret =
     merged[CLIENT_SECRET_VAR]?.trim() || readDotenvValue(dotenv, CLIENT_SECRET_VAR);
   const apiKey = merged[API_KEY_VAR]?.trim() || readDotenvValue(dotenv, API_KEY_VAR);
-  const https = url.startsWith("https://");
   const credsOk = Boolean((clientId && clientSecret) || apiKey);
-  if (https) {
+  if (!parsedUrl.ok) {
+    checks.push({
+      name: "scan URL",
+      ok: false,
+      detail: parsedUrl.reason,
+    });
+  } else if (https) {
     checks.push({
       name: "scan credentials",
       ok: credsOk,
@@ -117,7 +108,7 @@ export async function runVerify(opts: {
     checks.push({
       name: "scan credentials",
       ok: true,
-      detail: "local HTTP URL — scan auth not required",
+      detail: "HTTP scan URL — scan auth not required",
     });
   }
 
@@ -145,31 +136,40 @@ export async function runVerify(opts: {
   let healthOk = false;
   let healthDetail = "";
   let healthBody: Record<string, unknown> = {};
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (!parsedUrl.ok) {
+    healthDetail = `refusing to fetch: ${parsedUrl.reason}`;
+  } else {
     try {
-      const resp = await fetch(`${url}/health`, { signal: controller.signal });
-      const text = await resp.text();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        healthBody = JSON.parse(text) as Record<string, unknown>;
-      } catch {
-        healthBody = {};
+        const healthUrl = `${url}/health`;
+        const resp = await fetch(healthUrl, {
+          method: "GET",
+          redirect: "error",
+          signal: controller.signal,
+        });
+        const text = await resp.text();
+        try {
+          healthBody = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          healthBody = {};
+        }
+        healthOk = resp.ok && healthBody.status === "ok";
+        const rules = healthBody.rules_loaded;
+        const scanner = healthBody.scanner_version;
+        healthDetail = healthOk
+          ? `GET ${healthUrl} → ok` +
+            (typeof rules === "number" ? `, rules_loaded=${rules}` : "") +
+            (scanner ? `, scanner=${String(scanner)}` : "")
+          : `GET ${healthUrl} → HTTP ${resp.status} status=${String(healthBody.status ?? "?")}`;
+      } finally {
+        clearTimeout(timer);
       }
-      healthOk = resp.ok && healthBody.status === "ok";
-      const rules = healthBody.rules_loaded;
-      const scanner = healthBody.scanner_version;
-      healthDetail = healthOk
-        ? `GET ${url}/health → ok` +
-          (typeof rules === "number" ? `, rules_loaded=${rules}` : "") +
-          (scanner ? `, scanner=${String(scanner)}` : "")
-        : `GET ${url}/health → HTTP ${resp.status} status=${String(healthBody.status ?? "?")}`;
-    } finally {
-      clearTimeout(timer);
+    } catch (err) {
+      healthOk = false;
+      healthDetail = `GET ${url}/health failed: ${err instanceof Error ? err.message : String(err)}`;
     }
-  } catch (err) {
-    healthOk = false;
-    healthDetail = `GET ${url}/health failed: ${err instanceof Error ? err.message : String(err)}`;
   }
   checks.push({ name: "scan service health", ok: healthOk, detail: healthDetail });
 
@@ -184,14 +184,14 @@ export async function runVerify(opts: {
         ok: match,
         detail: match
           ? `plugin and scan agree on ${pluginIssuer}`
-          : `mismatch: plugin=${pluginIssuer} scan=${scanIssuer} — set SENTROOK_OIDC_ISSUER on both OpenClaw ~/.openclaw/.env and Sentrook deploy .env (dig vs prod)`,
+          : `mismatch: plugin=${pluginIssuer} scan=${scanIssuer} — set SENTROOK_OIDC_ISSUER on both OpenClaw ~/.openclaw/.env and Sentrook deploy .env (dev vs prod)`,
       });
     } else {
       checks.push({
         name: "OIDC issuer alignment",
         ok: true,
         detail:
-          "scan /health has no oidc_issuer yet — redeploy Sentrook to enable dig/prod mismatch detection",
+          "scan /health has no oidc_issuer yet — redeploy Sentrook to enable dev/prod mismatch detection",
       });
     }
   }

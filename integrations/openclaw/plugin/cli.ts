@@ -26,7 +26,6 @@ export interface CliCommand {
 
 export interface ConfigureCliOptions {
   nonInteractive?: boolean;
-  url?: string;
   timeoutMs?: string;
   /** true|false — contribute sanitized review feedback to community corpus */
   contributeCorpus?: string;
@@ -38,7 +37,6 @@ export interface ConfigureCliOptions {
 }
 
 export interface VerifyCliOptions {
-  url?: string;
   stateDir?: string;
   timeoutMs?: string;
 }
@@ -59,7 +57,6 @@ function parseTimeout(raw?: string): number | undefined {
 
 function seedFromOptions(opts: ConfigureCliOptions): Partial<ConfigureAnswers> {
   return {
-    url: opts.url,
     timeoutMs: parseTimeout(opts.timeoutMs),
     contributeCorpus: parseBool(opts.contributeCorpus),
     clientId: opts.clientId || process.env.SENTROOK_SCAN_CLIENT_ID,
@@ -92,7 +89,6 @@ export async function runConfigureCommand(opts: ConfigureCliOptions): Promise<vo
 
 export async function runVerifyCommand(opts: VerifyCliOptions): Promise<void> {
   const result = await runVerify({
-    url: opts.url,
     stateDir: opts.stateDir,
     timeoutMs: parseTimeout(opts.timeoutMs),
   });
@@ -111,7 +107,6 @@ export function registerSentrookCli(program: CliProgram): void {
       "Configure Sentrook plugin for hosted scan (OIDC credentials + openclaw.json). Does not restart the gateway.",
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
-    .option("--url <url>", "Scan service base URL")
     .option("--timeout-ms <ms>", "Scan POST timeout in ms")
     .option(
       "--contribute-corpus <bool>",
@@ -139,7 +134,6 @@ export function registerSentrookCli(program: CliProgram): void {
     .description(
       "Check plugin config, scan credentials, and hosted /health (no Python sentrook CLI required).",
     )
-    .option("--url <url>", "Scan service base URL (default: from config or hosted default)")
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .option("--timeout-ms <ms>", "Health request timeout (default 8000)")
     .action(async (opts: VerifyCliOptions) => {

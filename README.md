@@ -58,7 +58,7 @@ the scan API backed by the live rules library.
 - **In this repo:** scanner engine, TestNest harness, OpenClaw plugin, DEMO `examples/` (format + smoke only)
 - **Not in this repo:** production rules and corpus (not publicly available)
 - Gitignored `rules/`, `corpus/`, `eval/` may appear locally for FIDU maintainers — they are not part of the public checkout
-- Hosted scan: `https://sentrook.firstdataunion.org` (plugin default)
+- Hosted scan: `https://sentrook.firstdataunion.org` (pinned plugin origin)
 
 ## Install
 
@@ -79,7 +79,7 @@ the scan API backed by the live rules library.
 # 1. Install the plugin (tracks npm latest — see Updates below)
 openclaw plugins install npm:@firstdataunion/sentrook-openclaw
 
-# 2. Interactive setup: scan URL, data-sharing prefs, FIDU credentials
+# 2. Interactive setup: data-sharing prefs, FIDU credentials
 openclaw sentrook configure
 
 # 3. Restart the gateway so it picks up ~/.openclaw/.env and the plugin config

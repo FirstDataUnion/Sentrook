@@ -16,6 +16,7 @@ import {
 } from "./index.ts";
 import { buildPlanirSnapshot, type PlanIR } from "./planir.ts";
 import { recordAllowAlways } from "./localAllowlist.ts";
+import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 const noopLogger = {
   info: () => {},
@@ -45,7 +46,7 @@ function plan(overrides: {
 function ctx(overrides: Record<string, unknown> = {}) {
   return {
     plan: plan(),
-    url: "http://sentrook-scan:9099",
+    url: SCAN_BASE_URL,
     auth: { apiKey: null, oidc: null },
     feedbackMode: "off" as const,
     approval: resolveApprovalPolicyConfig({}),
@@ -61,21 +62,14 @@ afterEach(() => {
 });
 
 describe("scan timing helpers", () => {
-  it("defaults to 3000ms for HTTPS scan URLs", () => {
-    assert.equal(
-      resolveScanTimeoutMs(undefined, "https://sentrook.firstdataunion.org", {}),
-      3000,
-    );
-  });
-
-  it("defaults to 1500ms for local HTTP sidecar URLs", () => {
-    assert.equal(resolveScanTimeoutMs(undefined, "http://sentrook-scan:9099", {}), 1500);
+  it("defaults to 3000ms", () => {
+    assert.equal(resolveScanTimeoutMs(undefined, {}), 3000);
   });
 
   it("prefers explicit config and env timeout overrides", () => {
-    assert.equal(resolveScanTimeoutMs(5000, "http://sentrook-scan:9099", {}), 5000);
+    assert.equal(resolveScanTimeoutMs(5000, {}), 5000);
     assert.equal(
-      resolveScanTimeoutMs(undefined, "http://sentrook-scan:9099", {
+      resolveScanTimeoutMs(undefined, {
         SENTROOK_SCAN_TIMEOUT_MS: "4000",
       }),
       4000,
@@ -122,7 +116,7 @@ describe("postScan timing", () => {
         { status: 200, headers: { "content-type": "application/json" } },
       )) as typeof fetch;
 
-    const result = await postScan("http://sentrook-scan:9099", 1500, plan({ toolCallId: "exec:abc" }), null, );
+    const result = await postScan(SCAN_BASE_URL, 1500, plan({ toolCallId: "exec:abc" }), null, );
     assert.ok(result);
     assert.equal(result.scan.decision, "allow");
     assert.ok(result.timing.pluginE2eMs >= 0);
@@ -148,7 +142,7 @@ describe("postScan timing", () => {
     }) as typeof fetch;
 
     const result = await postScan(
-      "http://sentrook-scan:9099",
+      SCAN_BASE_URL,
       1500,
       plan({
         pending: {

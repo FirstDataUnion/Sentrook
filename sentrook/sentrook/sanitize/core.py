@@ -22,8 +22,8 @@ _ENV_ASSIGNMENT = re.compile(
     ([A-Za-z_][A-Za-z0-9_]*)          # var name
     \s*=\s*
     (?:
-        "(?:\\.|[^"\\])*"             # double-quoted
-      | '(?:\\.|[^'\\])*'             # single-quoted
+        "[^"\\]*(?:\\.[^"\\]*)*"      # double-quoted (unrolled; avoids ReDoS)
+      | '[^'\\]*(?:\\.[^'\\]*)*'      # single-quoted (unrolled; avoids ReDoS)
       | [^\s;|&]+                     # bare value
     )
     """
@@ -35,8 +35,8 @@ _CLI_SECRET_FLAG = re.compile(
         (?:-\w+)?)
     (\s*=\s*|\s+)
     (?:
-        "(?:\\.|[^"\\])*"
-      | '(?:\\.|[^'\\])*'
+        "[^"\\]*(?:\\.[^"\\]*)*"
+      | '[^'\\]*(?:\\.[^'\\]*)*'
       | [^\s;|&]+
     )
     """

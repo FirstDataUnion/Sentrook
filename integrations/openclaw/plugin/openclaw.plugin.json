@@ -1,7 +1,7 @@
 {
   "id": "sentrook-openclaw",
   "name": "Sentrook OpenClaw",
-  "description": "Sentrook trajectory scanner (hosted HTTPS or local URL). Scans tool calls and can allow, require human approval, or block flagged actions.",
+  "description": "Sentrook trajectory scanner (hosted HTTPS). Scans tool calls and can allow, require human approval, or block flagged actions.",
   "activation": {
     "onCapabilities": [
       "hook"
@@ -11,10 +11,6 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "url": {
-        "type": "string",
-        "description": "Sentrook scan service base URL (e.g. http://sentrook-scan:9099 or https://sentrook.example). Falls back to SENTROOK_SCAN_URL env, then http://sentrook-scan:9099."
-      },
       "apiKey": {
         "type": "string",
         "description": "Shared scan API key (optional override). Preferred: SENTROOK_SCAN_API_KEY in ~/.openclaw/.env \u2014 do not use SecretRefs here (unresolved refs fail-close the gateway)."
@@ -41,7 +37,7 @@
       },
       "timeoutMs": {
         "type": "integer",
-        "description": "Scan request timeout in ms. Gates the agent while awaiting /scan. Default 1500 for local HTTP, 3000 for HTTPS (or SENTROOK_SCAN_TIMEOUT_MS)."
+        "description": "Scan request timeout in ms. Gates the agent while awaiting /scan. Default 3000 (or SENTROOK_SCAN_TIMEOUT_MS)."
       },
       "onScanError": {
         "type": "string",

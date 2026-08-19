@@ -38,6 +38,21 @@ def test_redacts_library_bot_pass_export(rules) -> None:
     assert 'PATH="$HOME/.local/bin:$PATH"' in cleaned
 
 
+def test_redacts_export_value_with_escaped_quotes(rules) -> None:
+    secret = r"x9fake\"botpass"
+    command = f'export LIBRARY_BOT_PASS="{secret}"'
+    cleaned = apply_secret_patterns(command, rules)
+    assert "botpass" not in cleaned
+    assert cleaned == "export LIBRARY_BOT_PASS=[REDACTED]"
+
+
+def test_redacts_cli_password_flag_quoted_value(rules) -> None:
+    secret = "x9fakebotpassvalue32charsxxxxxx"
+    cleaned = apply_secret_patterns(f'curl --password "{secret}" https://example', rules)
+    assert secret not in cleaned
+    assert cleaned == "curl --password [REDACTED] https://example"
+
+
 def test_redacts_discord_webhook_after_pii_bitten_id(rules) -> None:
     """Snowflake IDs can be PII-replaced first; leftover token must still scrub."""
     token = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN0123456789"

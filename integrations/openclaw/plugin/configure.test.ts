@@ -6,7 +6,6 @@ import { describe, it } from "node:test";
 import {
   CLIENT_ID_VAR,
   CLIENT_SECRET_VAR,
-  DEFAULT_SCAN_URL,
   DEFAULT_TIMEOUT_MS,
   PLUGIN_ID,
   applyConfigPatch,
@@ -43,7 +42,6 @@ describe("sanitizeSecretInput", () => {
 describe("buildPluginEntryConfig", () => {
   it("omits credentials from openclaw.json (env-only auth)", () => {
     const cfg = buildPluginEntryConfig({
-      url: DEFAULT_SCAN_URL,
       timeoutMs: 3000,
       contributeCorpus: true,
       clientId: "cid",
@@ -52,7 +50,7 @@ describe("buildPluginEntryConfig", () => {
     assert.equal(cfg.clientId, undefined);
     assert.equal(cfg.clientSecret, undefined);
     assert.equal(cfg.apiKey, undefined);
-    assert.equal(cfg.url, DEFAULT_SCAN_URL);
+    assert.equal("url" in cfg, false);
     assert.equal("mode" in cfg, false);
     assert.equal("sanitization" in cfg, false);
     assert.deepEqual(cfg.feedback, { mode: "submit" });
@@ -61,7 +59,6 @@ describe("buildPluginEntryConfig", () => {
 
   it("sets feedback off when user opts out of corpus contribution", () => {
     const cfg = buildPluginEntryConfig({
-      url: DEFAULT_SCAN_URL,
       timeoutMs: 3000,
       contributeCorpus: false,
     });
@@ -70,7 +67,6 @@ describe("buildPluginEntryConfig", () => {
 
   it("also omits apiKey from config", () => {
     const cfg = buildPluginEntryConfig({
-      url: DEFAULT_SCAN_URL,
       timeoutMs: 1500,
       contributeCorpus: true,
       apiKey: "k",
@@ -84,7 +80,6 @@ describe("buildPluginEntryConfig", () => {
 describe("buildConfigPatchDocument", () => {
   it("does not declare SecretRefs or secrets.providers", () => {
     const doc = buildConfigPatchDocument({
-      url: DEFAULT_SCAN_URL,
       timeoutMs: DEFAULT_TIMEOUT_MS,
       contributeCorpus: true,
       clientId: "cid",
@@ -102,7 +97,6 @@ describe("dotenv helpers", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sentrook-cfg-"));
     try {
       writeScanCredentials(dir, {
-        url: DEFAULT_SCAN_URL,
         timeoutMs: DEFAULT_TIMEOUT_MS,
         contributeCorpus: true,
         clientId: "cid",
@@ -122,7 +116,6 @@ describe("dotenv helpers", () => {
       const dotenv = dotenvPath(dir);
       upsertDotenvVar(dotenv, "OTHER", "keep");
       writeScanCredentials(dir, {
-        url: DEFAULT_SCAN_URL,
         timeoutMs: 3000,
         contributeCorpus: true,
         clientId: "id1",
@@ -133,7 +126,6 @@ describe("dotenv helpers", () => {
       assert.match(text, new RegExp(`^${CLIENT_ID_VAR}=id1$`, "m"));
       assert.match(text, new RegExp(`^${CLIENT_SECRET_VAR}=sec1$`, "m"));
       writeScanCredentials(dir, {
-        url: DEFAULT_SCAN_URL,
         timeoutMs: 3000,
         contributeCorpus: true,
         clientId: "id2",
@@ -153,7 +145,6 @@ describe("dotenv helpers", () => {
       assert.throws(
         () =>
           writeScanCredentials(dir, {
-            url: DEFAULT_SCAN_URL,
             timeoutMs: 3000,
             contributeCorpus: true,
             clientId: "id",
@@ -173,7 +164,6 @@ describe("dotenv helpers", () => {
     try {
       process.env.SENTROOK_DOTENV = composeEnv;
       writeScanCredentials(path.join(dir, "state"), {
-        url: DEFAULT_SCAN_URL,
         timeoutMs: 3000,
         contributeCorpus: true,
         clientId: "id1",
@@ -239,7 +229,7 @@ describe("collectAnswersNonInteractive", () => {
       clientId: "c",
       clientSecret: "s",
     });
-    assert.equal(a.url, DEFAULT_SCAN_URL);
+    assert.equal("url" in a, false);
     assert.equal(a.clientId, "c");
     assert.equal(a.contributeCorpus, true);
     assert.equal(a.onScanError, "allow");
@@ -256,7 +246,6 @@ describe("collectAnswersNonInteractive", () => {
 
   it("plugin entry config never includes mode or sanitization", () => {
     const cfg = buildPluginEntryConfig({
-      url: DEFAULT_SCAN_URL,
       timeoutMs: DEFAULT_TIMEOUT_MS,
       contributeCorpus: true,
       clientId: "c",
@@ -290,7 +279,6 @@ describe("applyConfigPatch json fallback", () => {
       const result = await applyConfigPatch(
         dir,
         {
-          url: DEFAULT_SCAN_URL,
           timeoutMs: 3000,
           contributeCorpus: true,
           clientId: "cid",
@@ -305,7 +293,7 @@ describe("applyConfigPatch json fallback", () => {
         };
       };
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.enabled, true);
-      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.url, DEFAULT_SCAN_URL);
+      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.url, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.clientSecret, undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -344,7 +332,7 @@ describe("stripStalePluginConfigKeys", () => {
               [PLUGIN_ID]: {
                 enabled: true,
                 config: {
-                  url: DEFAULT_SCAN_URL,
+                  url: "https://old.example",
                   mode: "observe",
                   sanitization: { enabled: false },
                   clientId: `\${${CLIENT_ID_VAR}}`,
@@ -359,11 +347,20 @@ describe("stripStalePluginConfigKeys", () => {
       const cfg = JSON.parse(readFileSync(openclawConfigPath(dir), "utf8")) as {
         plugins: { entries: Record<string, { config: Record<string, unknown> }> };
       };
-      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.url, DEFAULT_SCAN_URL);
+      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.url, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.clientId, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.clientSecret, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.mode, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.sanitization, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false when openclaw.json is missing", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-strip-missing-"));
+    try {
+      assert.equal(stripStalePluginConfigKeys(dir), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

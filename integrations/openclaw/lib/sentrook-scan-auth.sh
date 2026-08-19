@@ -97,15 +97,6 @@ sentrook_scan_auth_configured() {
   sentrook_scan_oidc_configured || sentrook_scan_api_key_configured
 }
 
-sentrook_scan_url_requires_api_key() {
-  local url="${1:-${SIDECAR_URL:-}}"
-  [[ "${url}" == https://* ]]
-}
-
-sentrook_scan_url_requires_auth() {
-  sentrook_scan_url_requires_api_key "$@"
-}
-
 _sentrook_stat_owner() {
   # Print "uid:gid" for a path, portable across GNU (Linux) and BSD (macOS) stat.
   stat -c '%u:%g' "$1" 2>/dev/null || stat -f '%u:%g' "$1" 2>/dev/null || true

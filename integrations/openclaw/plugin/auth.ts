@@ -174,13 +174,59 @@ export function resolveScanAuthConfig(
 
   const oidc =
     clientId && clientSecret
-      ? { clientId, clientSecret, issuer: issuer.replace(/\/+$/, ""), audience, scope }
+      ? { clientId, clientSecret, issuer: stripTrailingSlashes(issuer), audience, scope }
       : null;
 
   return { apiKey, oidc };
 }
 
-/** HTTPS scan endpoints need credentials; local Docker HTTP does not. */
+/** Linear-time trailing-slash trim. `/\/+$/` is polynomial ReDoS on backtracking engines. */
+export function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+export type ParsedScanUrl =
+  | { ok: true; href: string; https: boolean }
+  | { ok: false; reason: string };
+
+/**
+ * Rebuild a scan base URL from URL components so file-derived config cannot be
+ * forwarded as an arbitrary fetch target (SSRF / file-data-in-request).
+ */
+export function parseScanBaseUrl(raw: string): ParsedScanUrl {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    return { ok: false, reason: "invalid scan URL" };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, reason: `scan URL must be http or https (got ${parsed.protocol})` };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: "scan URL must not include credentials" };
+  }
+  const host = parsed.hostname;
+  if (!host || !/^[A-Za-z0-9._:-]+$/.test(host)) {
+    return { ok: false, reason: "scan URL hostname is invalid" };
+  }
+  if (host === "169.254.169.254" || host === "::ffff:169.254.169.254") {
+    return { ok: false, reason: "scan URL must not target link-local metadata addresses" };
+  }
+  parsed.hash = "";
+  parsed.search = "";
+  return {
+    ok: true,
+    href: stripTrailingSlashes(parsed.origin + parsed.pathname),
+    https: parsed.protocol === "https:",
+  };
+}
+
+/** HTTPS scan endpoints need credentials; HTTP (forks pinning SCAN_BASE_URL) does not. */
 export function urlRequiresScanApiKey(url: string): boolean {
   try {
     return new URL(url).protocol === "https:";
@@ -209,7 +255,7 @@ async function fetchTokenEndpoint(
   issuer: string,
   fetchImpl: typeof fetch,
 ): Promise<string> {
-  const discoveryUrl = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
+  const discoveryUrl = `${stripTrailingSlashes(issuer)}/.well-known/openid-configuration`;
   const response = await fetchImpl(discoveryUrl);
   if (!response.ok) {
     throw new Error(`OIDC discovery failed: HTTP ${response.status}`);

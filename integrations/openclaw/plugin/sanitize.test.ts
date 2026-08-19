@@ -159,6 +159,46 @@ describe("sanitizePlanir", () => {
     assert.ok(command.includes("TODAY=$(date +%Y-%m-%d)"));
   });
 
+  it("redacts export values that contain escaped quotes", () => {
+    const fake = 'x9fake\\"botpass';
+    const { plan } = sanitizePlanir({
+      version: "1.0",
+      run_id: "r1",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: `export LIBRARY_BOT_PASS="${fake}"` },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+    });
+    const command = String(pendingStep(plan)?.args.command);
+    assert.ok(!command.includes("botpass"));
+    assert.equal(command, "export LIBRARY_BOT_PASS=[REDACTED]");
+  });
+
+  it("redacts --password flag values", () => {
+    const fake = "x9fakebotpassvalue32charsxxxxxx";
+    const { plan } = sanitizePlanir({
+      version: "1.0",
+      run_id: "r1",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: `curl --password "${fake}" https://example` },
+        },
+      ],
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+    });
+    const command = String(pendingStep(plan)?.args.command);
+    assert.ok(!command.includes(fake));
+    assert.match(command, /--password\s+"?\[REDACTED\]"?/);
+  });
+
   it("redacts emails in nested exec env values", () => {
     const { plan } = sanitizePlanir({
       version: "1.0",

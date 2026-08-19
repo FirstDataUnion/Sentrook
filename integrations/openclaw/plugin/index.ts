@@ -10,6 +10,7 @@ import {
   buildScanAuthHeadersAsync,
   envWithOpenclawDotenv,
   hasScanCredentials,
+  parseScanBaseUrl,
   resolveScanAuthConfig,
   type ScanAuthConfig,
   urlRequiresScanAuth,
@@ -42,6 +43,7 @@ import {
   type PlanIR,
   type SnapshotCall,
 } from "./planir.ts";
+import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 export type { PlanIR } from "./planir.ts";
 
@@ -160,9 +162,9 @@ export interface ScanResponse {
 export interface ScanTiming {
   /** Wall-clock time for the full plugin POST /scan round trip (ms). */
   pluginE2eMs: number;
-  /** Engine processing time reported by the sidecar (ms). */
+  /** Engine processing time reported by the scan service (ms). */
   engineMs: number | null;
-  /** Sidecar handler time including JSON parse/serialize (ms). */
+  /** Scan-service handler time including JSON parse/serialize (ms). */
   requestMs: number | null;
   /** Estimated transport overhead: pluginE2eMs - engineMs (ms). */
   transportMs: number | null;
@@ -188,6 +190,7 @@ export interface PostScanResult {
 }
 
 interface PluginConfig {
+  /** Pinned SCAN_BASE_URL origin — not read from pluginConfig. */
   url: string;
   auth: ScanAuthConfig;
   timeoutMs: number;
@@ -208,13 +211,11 @@ interface SessionState {
 
 const MAX_TRAJECTORY = 200;
 const MAX_RESULT_TEXT = 20_000;
-const DEFAULT_LOCAL_TIMEOUT_MS = 1500;
-const DEFAULT_ONLINE_TIMEOUT_MS = 3000;
+const DEFAULT_SCAN_TIMEOUT_MS = 3000;
 
-/** Scan POST timeout: explicit config/env, else 3000ms for HTTPS and 1500ms for local HTTP. */
+/** Scan POST timeout: explicit config/env, else 3000ms. */
 export function resolveScanTimeoutMs(
   cfgTimeout: unknown,
-  url: string,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   if (typeof cfgTimeout === "number" && Number.isFinite(cfgTimeout) && cfgTimeout > 0) {
@@ -224,7 +225,7 @@ export function resolveScanTimeoutMs(
   if (Number.isFinite(envMs) && envMs > 0) {
     return Math.round(envMs);
   }
-  return urlRequiresScanAuth(url) ? DEFAULT_ONLINE_TIMEOUT_MS : DEFAULT_LOCAL_TIMEOUT_MS;
+  return DEFAULT_SCAN_TIMEOUT_MS;
 }
 
 function classifyIntent(text: string): IntentKind {
@@ -242,13 +243,12 @@ function resolveRunId(eventRunId?: string, ctxRunId?: string): string {
 function resolveConfig(api: OpenClawPluginApi): PluginConfig {
   const cfg = api.pluginConfig ?? {};
 
-  const url = (
-    (typeof cfg.url === "string" && cfg.url) ||
-    process.env.SENTROOK_SCAN_URL ||
-    "http://sentrook-scan:9099"
-  ).replace(/\/+$/, "");
-
-  const timeoutMs = resolveScanTimeoutMs(cfg.timeoutMs, url, process.env);
+  const parsed = parseScanBaseUrl(SCAN_BASE_URL);
+  if (!parsed.ok) {
+    throw new Error(`SCAN_BASE_URL is invalid (${parsed.reason}): ${SCAN_BASE_URL}`);
+  }
+  const url = parsed.href;
+  const timeoutMs = resolveScanTimeoutMs(cfg.timeoutMs, process.env);
 
   const feedbackCfg =
     cfg.feedback && typeof cfg.feedback === "object"
@@ -719,7 +719,7 @@ const plugin = {
   id: "sentrook-openclaw",
   name: "Sentrook OpenClaw",
   description:
-    "Sentrook trajectory scanner (hosted HTTPS or local URL). Scans tool calls and can allow, require approval, or block flagged actions.",
+    "Sentrook trajectory scanner (hosted HTTPS). Scans tool calls and can allow, require approval, or block flagged actions.",
 
   register(api: OpenClawPluginApi) {
     const mode = api.registrationMode ?? "full";
@@ -751,7 +751,7 @@ const plugin = {
 
     if (urlRequiresScanAuth(config.url) && !hasScanCredentials(config.auth)) {
       api.logger.warn(
-        "[sentrook-openclaw] HTTPS scan URL configured without credentials — " +
+        "[sentrook-openclaw] hosted scan URL has no credentials — " +
           "run: openclaw sentrook configure  (or set SENTROOK_SCAN_CLIENT_ID + " +
           "SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env)",
       );

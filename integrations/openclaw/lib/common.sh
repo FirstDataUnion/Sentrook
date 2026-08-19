@@ -12,8 +12,6 @@ openclaw_common_init() {
   # Official OpenClaw compose *service* name (not the docker ps container name).
   OPENCLAW_GATEWAY_SERVICE="${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}"
   OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME}/.openclaw}"
-  SENTROOK_SCAN_URL="${SENTROOK_SCAN_URL:-${SIDECAR_URL:-https://sentrook.firstdataunion.org}}"
-  SIDECAR_URL="${SENTROOK_SCAN_URL}"
 }
 
 docker_compose() {
