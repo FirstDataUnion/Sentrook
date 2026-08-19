@@ -6,24 +6,29 @@
 
 import { spawn } from "node:child_process";
 import {
-  chmodSync,
-  chownSync,
-  existsSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fchownSync,
+  fstatSync,
+  ftruncateSync,
   mkdirSync,
+  openSync,
   readFileSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
-import { urlRequiresScanAuth } from "./auth.ts";
 import { parseOnScanError, type OnScanError } from "./scanErrorPolicy.ts";
+import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 export const PLUGIN_ID = "sentrook-openclaw";
 
-export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
+export { SCAN_BASE_URL };
 export const DEFAULT_TIMEOUT_MS = 3000;
 /** Contribute sanitized review feedback to the community corpus (opt-out). */
 export const DEFAULT_CONTRIBUTE_CORPUS = true;
@@ -36,7 +41,6 @@ export const API_KEY_VAR = "SENTROOK_SCAN_API_KEY";
 export type FeedbackMode = "off" | "submit";
 
 export interface ConfigureAnswers {
-  url: string;
   timeoutMs: number;
   /**
    * When true, review allow-once/deny resolutions are POSTed to hosted Sentrook
@@ -95,9 +99,9 @@ export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string
   // Credentials intentionally omitted from openclaw.json. Unresolved SecretRefs on an
   // enabled plugin fail-close the entire gateway; scan auth is read from
   // SENTROOK_SCAN_* in process env / ~/.openclaw/.env instead (see auth.ts).
-  // mode / sanitization are not configurable — always enforce + scrub.
+  // mode / sanitization / url are not configurable — always enforce + scrub,
+  // and the scan origin is pinned in scanEndpoint.ts.
   return {
-    url: answers.url,
     timeoutMs: answers.timeoutMs,
     feedback: { mode: feedbackModeFromContribute(answers.contributeCorpus) },
     onScanError: answers.onScanError ?? "allow",
@@ -125,42 +129,92 @@ export function buildConfigPatchDocument(answers: ConfigureAnswers): string {
 `;
 }
 
+function errnoCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err && typeof err.code === "string") {
+    return err.code;
+  }
+  return undefined;
+}
+
+/** Open path once so a symlink swap cannot retarget the later read/write (TOCTOU). */
+function openReadWriteSync(
+  filePath: string,
+  opts: { create: boolean; mode?: number },
+): { fd: number; created: boolean } | null {
+  try {
+    return { fd: openSync(filePath, constants.O_RDWR), created: false };
+  } catch (err) {
+    if (errnoCode(err) !== "ENOENT") throw err;
+    if (!opts.create) return null;
+  }
+  try {
+    return {
+      fd: openSync(
+        filePath,
+        constants.O_RDWR | constants.O_CREAT | constants.O_EXCL,
+        opts.mode ?? 0o666,
+      ),
+      created: true,
+    };
+  } catch (err) {
+    if (errnoCode(err) !== "EEXIST") throw err;
+    return { fd: openSync(filePath, constants.O_RDWR), created: false };
+  }
+}
+
+function writeAllFdSync(fd: number, text: string): void {
+  const buf = Buffer.from(text, "utf8");
+  ftruncateSync(fd, buf.byteLength);
+  writeSync(fd, buf, 0, buf.byteLength, 0);
+}
+
+function stripTrailingNewlines(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === "\n" || text[end - 1] === "\r")) {
+    end -= 1;
+  }
+  return text.slice(0, end);
+}
+
 export function upsertDotenvVar(dotenvFile: string, key: string, value: string): void {
   mkdirSync(path.dirname(dotenvFile), { recursive: true });
   const prefix = `${key}=`;
-  let lines: string[] = [];
-  if (existsSync(dotenvFile)) {
-    lines = readFileSync(dotenvFile, "utf8").split(/\r?\n/);
-  } else {
-    lines = ["# OpenClaw gateway secrets (loaded at startup)"];
-  }
-  let found = false;
-  const out: string[] = [];
-  for (const line of lines) {
-    if (line.startsWith(prefix)) {
-      out.push(prefix + value);
-      found = true;
-    } else {
-      out.push(line);
+  const opened = openReadWriteSync(dotenvFile, { create: true, mode: 0o600 });
+  if (!opened) throw new Error(`could not open ${dotenvFile}`);
+  const { fd, created } = opened;
+  try {
+    const lines = created
+      ? ["# OpenClaw gateway secrets (loaded at startup)"]
+      : readFileSync(fd, "utf8").split(/\r?\n/);
+    let found = false;
+    const out: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith(prefix)) {
+        out.push(prefix + value);
+        found = true;
+      } else {
+        out.push(line);
+      }
     }
+    if (!found) {
+      if (out.length && out[out.length - 1]!.trim() !== "") out.push("");
+      out.push(prefix + value);
+    }
+    writeAllFdSync(fd, `${stripTrailingNewlines(out.join("\n"))}\n`);
+    fchmodSync(fd, 0o600);
+    alignDotenvOwnerFd(fd, dotenvFile);
+  } finally {
+    closeSync(fd);
   }
-  if (!found) {
-    if (out.length && out[out.length - 1]!.trim() !== "") out.push("");
-    out.push(prefix + value);
-  }
-  writeFileSync(dotenvFile, `${out.join("\n").replace(/\n+$/, "")}\n`, { mode: 0o600 });
-  chmodSync(dotenvFile, 0o600);
-  alignDotenvOwner(dotenvFile);
 }
 
-function alignDotenvOwner(file: string): void {
+function alignDotenvOwnerFd(fd: number, file: string): void {
   try {
     if (typeof process.getuid === "function" && process.getuid() !== 0) return;
-    const dir = path.dirname(file);
-    const dirStat = statSync(dir);
-    const fileStat = statSync(file);
+    const dirStat = statSync(path.dirname(file));
+    const fileStat = fstatSync(fd);
     if (dirStat.uid === fileStat.uid && dirStat.gid === fileStat.gid) return;
-    chownSync(file, dirStat.uid, dirStat.gid);
+    fchownSync(fd, dirStat.uid, dirStat.gid);
   } catch {
     // Best-effort; SecretRef EACCES is the failure mode if this cannot run.
   }
@@ -314,33 +368,41 @@ export async function applyConfigPatch(
 
 /**
  * Remove stale plugin config keys that older configure versions wrote:
- * credential SecretRefs, plus removed `mode` / `sanitization` toggles.
+ * credential SecretRefs, removed `mode` / `sanitization` toggles, and `url`
+ * (scan origin is pinned in scanEndpoint.ts).
  */
 export function stripStalePluginConfigKeys(stateDir: string): boolean {
   const cfgPath = openclawConfigPath(stateDir);
-  if (!existsSync(cfgPath)) return false;
-  let cfg: Record<string, unknown>;
+  const opened = openReadWriteSync(cfgPath, { create: false });
+  if (!opened) return false;
+  const { fd } = opened;
   try {
-    cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
-  } catch {
-    return false;
-  }
-  const plugins = cfg.plugins as Record<string, unknown> | undefined;
-  const entries = plugins?.entries as Record<string, unknown> | undefined;
-  const entry = entries?.[PLUGIN_ID] as Record<string, unknown> | undefined;
-  const config = entry?.config as Record<string, unknown> | undefined;
-  if (!config) return false;
-
-  let changed = false;
-  for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization"] as const) {
-    if (key in config) {
-      delete config[key];
-      changed = true;
+    let cfg: Record<string, unknown>;
+    try {
+      cfg = JSON.parse(readFileSync(fd, "utf8")) as Record<string, unknown>;
+    } catch (err) {
+      if (err instanceof SyntaxError) return false;
+      throw err;
     }
+    const plugins = cfg.plugins as Record<string, unknown> | undefined;
+    const entries = plugins?.entries as Record<string, unknown> | undefined;
+    const entry = entries?.[PLUGIN_ID] as Record<string, unknown> | undefined;
+    const config = entry?.config as Record<string, unknown> | undefined;
+    if (!config) return false;
+
+    let changed = false;
+    for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization", "url"] as const) {
+      if (key in config) {
+        delete config[key];
+        changed = true;
+      }
+    }
+    if (!changed) return false;
+    writeAllFdSync(fd, `${JSON.stringify(cfg, null, 2)}\n`);
+    return true;
+  } finally {
+    closeSync(fd);
   }
-  if (!changed) return false;
-  writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8" });
-  return true;
 }
 
 /** @deprecated Use {@link stripStalePluginConfigKeys}. */
@@ -350,34 +412,41 @@ export function stripCredentialKeysFromPluginConfig(stateDir: string): boolean {
 
 function mergeOpenclawJsonFallback(stateDir: string, answers: ConfigureAnswers): void {
   const cfgPath = openclawConfigPath(stateDir);
-  let cfg: Record<string, unknown> = {};
-  if (existsSync(cfgPath)) {
-    try {
-      cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      throw new Error(
-        `Could not run openclaw config patch and ${cfgPath} is not strict JSON. ` +
-          "Fix config manually or ensure openclaw is on PATH.",
-      );
+  const opened = openReadWriteSync(cfgPath, { create: true });
+  if (!opened) throw new Error(`could not open ${cfgPath}`);
+  const { fd, created } = opened;
+  try {
+    let cfg: Record<string, unknown> = {};
+    if (!created) {
+      try {
+        cfg = JSON.parse(readFileSync(fd, "utf8")) as Record<string, unknown>;
+      } catch {
+        throw new Error(
+          `Could not run openclaw config patch and ${cfgPath} is not strict JSON. ` +
+            "Fix config manually or ensure openclaw is on PATH.",
+        );
+      }
     }
+    const plugins = (cfg.plugins as Record<string, unknown>) ?? {};
+    const entries = (plugins.entries as Record<string, unknown>) ?? {};
+    const prev = entries[PLUGIN_ID] as Record<string, unknown> | undefined;
+    const prevConfig =
+      prev?.config && typeof prev.config === "object"
+        ? { ...(prev.config as Record<string, unknown>) }
+        : {};
+    for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization", "url"] as const) {
+      delete prevConfig[key];
+    }
+    entries[PLUGIN_ID] = {
+      enabled: true,
+      config: { ...prevConfig, ...buildPluginEntryConfig(answers) },
+    };
+    plugins.entries = entries;
+    cfg.plugins = plugins;
+    writeAllFdSync(fd, `${JSON.stringify(cfg, null, 2)}\n`);
+  } finally {
+    closeSync(fd);
   }
-  const plugins = (cfg.plugins as Record<string, unknown>) ?? {};
-  const entries = (plugins.entries as Record<string, unknown>) ?? {};
-  const prev = entries[PLUGIN_ID] as Record<string, unknown> | undefined;
-  const prevConfig =
-    prev?.config && typeof prev.config === "object"
-      ? { ...(prev.config as Record<string, unknown>) }
-      : {};
-  for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization"] as const) {
-    delete prevConfig[key];
-  }
-  entries[PLUGIN_ID] = {
-    enabled: true,
-    config: { ...prevConfig, ...buildPluginEntryConfig(answers) },
-  };
-  plugins.entries = entries;
-  cfg.plugins = plugins;
-  writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`, { encoding: "utf8" });
 }
 
 export function restartHint(dotenvWritten?: string): string {
@@ -496,14 +565,7 @@ export async function collectAnswersInteractive(
   seed: Partial<ConfigureAnswers> = {},
 ): Promise<ConfigureAnswers> {
   io.log("==> Sentrook configure");
-  io.log("    Defaults are tuned for hosted scan at sentrook.firstdataunion.org.");
-
-  let url = seed.url ?? DEFAULT_SCAN_URL;
-  if (!seed.url) {
-    if (!(await io.confirm(`Use default scan URL (${DEFAULT_SCAN_URL})?`, true))) {
-      url = (await io.prompt("Scan URL", DEFAULT_SCAN_URL)).trim() || DEFAULT_SCAN_URL;
-    }
-  }
+  io.log(`    Scan endpoint is pinned to ${SCAN_BASE_URL} (not configurable).`);
 
   let timeoutMs = seed.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (seed.timeoutMs === undefined) {
@@ -543,7 +605,7 @@ export async function collectAnswersInteractive(
     clientSecret = sanitizeSecretInput(await io.promptSecret("OAuth client_secret"));
   }
 
-  let onScanError: OnScanError = seed.onScanError ?? recommendOnScanError(url);
+  let onScanError: OnScanError = seed.onScanError ?? "review";
   if (seed.onScanError === undefined) {
     io.log("");
     io.log("==> When Sentrook is unreachable or rate-limited");
@@ -554,15 +616,10 @@ export async function collectAnswersInteractive(
     onScanError = parseOnScanError(raw, onScanError);
   }
 
-  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
-}
-
-export function recommendOnScanError(url: string): OnScanError {
-  return urlRequiresScanAuth(url) ? "review" : "allow";
+  return { timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
 }
 
 export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): ConfigureAnswers {
-  const url = seed.url?.trim() || DEFAULT_SCAN_URL;
   const timeoutMs =
     typeof seed.timeoutMs === "number" && seed.timeoutMs > 0
       ? seed.timeoutMs
@@ -578,7 +635,7 @@ export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): C
         `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR}); --api-key also accepted`,
     );
   }
-  return { url, timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
+  return { timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
 }
 
 export async function runConfigure(

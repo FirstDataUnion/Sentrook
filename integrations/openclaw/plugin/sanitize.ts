@@ -31,11 +31,13 @@ export interface SanitizeRules {
 const CREDENTIAL_VAR_SEGMENT =
   /(?:^|_)(pass(?:wd|word)?|secret|token|api[_-]?key|auth|credential|bearer)(?:_|$)/i;
 
+// Quoted values use the unrolled form `[^"\\]*(?:\\.[^"\\]*)*` so each character
+// has one match path (`(?:\\.|[^"\\])*` is polynomial ReDoS on backtracking engines).
 const ENV_ASSIGNMENT =
-  /((?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;|&]+)/gi;
+  /((?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
 
 const CLI_SECRET_FLAG =
-  /(--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:-\w+)?)(\s*=\s*|\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;|&]+)/gi;
+  /(--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:-\w+)?)(\s*=\s*|\s+)(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
 
 export const DEFAULT_RULES: SanitizeRules = {
   version: 1,

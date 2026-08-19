@@ -10,10 +10,13 @@ import {
   clearScanTokenCache,
   envWithOpenclawDotenv,
   getScanAccessToken,
+  parseScanBaseUrl,
   resolveApiKey,
   resolveScanAuthConfig,
+  stripTrailingSlashes,
   urlRequiresScanApiKey,
 } from "./auth.ts";
+import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 afterEach(() => {
   clearScanTokenCache();
@@ -37,10 +40,37 @@ describe("resolveApiKey", () => {
   });
 });
 
+describe("stripTrailingSlashes", () => {
+  it("strips one or more trailing slashes without a regex", () => {
+    assert.equal(stripTrailingSlashes("https://example.com"), "https://example.com");
+    assert.equal(stripTrailingSlashes("https://example.com/"), "https://example.com");
+    assert.equal(stripTrailingSlashes("https://example.com///"), "https://example.com");
+    assert.equal(stripTrailingSlashes(""), "");
+    assert.equal(stripTrailingSlashes("/"), "");
+  });
+});
+
+describe("parseScanBaseUrl", () => {
+  it("rebuilds http(s) base URLs and rejects other schemes", () => {
+    const ok = parseScanBaseUrl("https://sentrook.example/v1/?x=1#frag");
+    assert.deepEqual(ok, { ok: true, href: "https://sentrook.example/v1", https: true });
+    const local = parseScanBaseUrl("http://localhost:9099/");
+    assert.deepEqual(local, { ok: true, href: "http://localhost:9099", https: false });
+    const file = parseScanBaseUrl("file:///etc/passwd");
+    assert.equal(file.ok, false);
+    const creds = parseScanBaseUrl("https://user:pass@sentrook.example");
+    assert.equal(creds.ok, false);
+    const meta = parseScanBaseUrl("http://169.254.169.254/latest/meta-data");
+    assert.equal(meta.ok, false);
+    const pinned = parseScanBaseUrl(SCAN_BASE_URL);
+    assert.deepEqual(pinned, { ok: true, href: SCAN_BASE_URL, https: true });
+  });
+});
+
 describe("urlRequiresScanApiKey", () => {
   it("requires auth for https URLs only", () => {
     assert.equal(urlRequiresScanApiKey("https://sentrook.example/scan"), true);
-    assert.equal(urlRequiresScanApiKey("http://sentrook-scan:9099"), false);
+    assert.equal(urlRequiresScanApiKey("http://localhost:9099"), false);
   });
 });
 
@@ -51,7 +81,7 @@ describe("buildScanAuthHeaders", () => {
     assert.equal(headers["content-type"], "application/json");
   });
 
-  it("omits authorization for local unauthenticated scans", () => {
+  it("omits authorization when no key is present", () => {
     const headers = buildScanAuthHeaders(null);
     assert.equal(headers.authorization, undefined);
   });

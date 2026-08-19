@@ -85,7 +85,7 @@ openclaw sentrook configure
 
 Interactive flow:
 
-1. Accept defaults for scan URL / timeout (or override)
+1. Accept the default scan timeout (or override)
 2. Community corpus: contribute sanitized allow-once/deny reviews by default
    (opt out with `n`, or later `feedback.mode: "off"` / `--contribute-corpus false`)
 3. Paste FIDU ID OAuth `client_id` + `client_secret` (link printed in the wizard)
@@ -102,7 +102,7 @@ For CI / scripted hosts (skips the wizard):
 openclaw sentrook configure --non-interactive \
   --client-id "$SENTROOK_SCAN_CLIENT_ID" \
   --client-secret "$SENTROOK_SCAN_CLIENT_SECRET"
-# optional: --url --timeout-ms --contribute-corpus false
+# optional: --timeout-ms --contribute-corpus false
 ```
 
 Then restart the gateway and run `openclaw sentrook verify`.
@@ -125,15 +125,19 @@ setup or after credential changes.
 | Location | Contents |
 |----------|----------|
 | `~/.openclaw/.env` | `SENTROOK_SCAN_CLIENT_ID` / `SENTROOK_SCAN_CLIENT_SECRET`. Prefer this over compose `env_file` so a normal **restart** reloads secrets |
-| `~/.openclaw/openclaw.json` → `plugins.entries.sentrook-openclaw` | `enabled`, `url`, `timeoutMs`, `feedback`, and related plugin settings. **No** credentials in this file |
+| `~/.openclaw/openclaw.json` → `plugins.entries.sentrook-openclaw` | `enabled`, `timeoutMs`, `feedback`, and related plugin settings. **No** credentials or scan URL in this file |
 
 ### Plugin settings
+
+The scan / feedback origin is **pinned in plugin code**
+(`scanEndpoint.ts` → `SCAN_BASE_URL` = `https://sentrook.firstdataunion.org`).
+It is not read from `openclaw.json` or `SENTROOK_SCAN_URL`. Self-hosted forks
+change that constant and rebuild.
 
 Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 
 | Setting | Default | Role |
 |---------|---------|------|
-| `url` | `https://sentrook.firstdataunion.org` (set by configure) | Scan service base URL |
 | `timeoutMs` | `3000` | Bounds the `/scan` wait. On timeout or transport error the plugin follows `onScanError` — see [Timeouts](#timeouts) |
 | `onScanError` | `allow` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive). Env: `SENTROOK_ON_SCAN_ERROR`. Hosted configure recommends `review`. |
 | `feedback.mode` | `submit` (wizard default) | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
