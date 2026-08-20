@@ -10,9 +10,11 @@ On each `before_tool_call`, the plugin builds a short **PlanIR** trajectory
 `/scan`. The pending step is the tool under review.
 
 The plugin waits for the decision and maps **allow** / **review** / **block** to
-OpenClaw continue / approval UI / veto. Review cards are filled from the **local**
-pending command (secret patterns scrubbed, packed to OpenClaw's title/description
-caps) so a long `exec` is still readable.
+OpenClaw continue / approval UI / veto. Review cards are rebuilt from the **local**
+pending command (secret-scrubbed). OpenClaw shows `title` as **Command** (80 chars)
+and `description` as **Shell Preview** (256). Copy uses a structural ladder
+(destination / sensitive path / packed argv) rather than rule ids, so a long
+`exec` is still decidable. Hosted `/scan` still receives length-bounded PlanIR.
 
 PlanIR is always scrubbed before egress (not configurable). Optional review
 feedback can `POST /feedback` with a sanitized resolution for the community
