@@ -21,6 +21,7 @@ from typing import Any
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
+    CollectorRegistry,
     Gauge,
     Histogram,
     generate_latest,
@@ -30,6 +31,8 @@ from prometheus_client import (
 )
 
 CONTENT_TYPE = CONTENT_TYPE_LATEST
+# Private registry so Rookery tests (same process, same metric names) do not collide.
+REGISTRY = CollectorRegistry(auto_describe=True)
 _WINDOWS = (("5m", 300.0), ("1h", 3600.0), ("24h", 86_400.0))
 _MAX_WINDOW_SEC = 86_400.0
 _KNOWN_ENDPOINTS = frozenset({"/health", "/healthz", "/scan", "/feedback", "/latency"})
@@ -38,55 +41,67 @@ HTTP_REQUESTS = PromCounter(
     "http_requests_total",
     "Total number of HTTP requests",
     ["method", "endpoint", "status"],
+    registry=REGISTRY,
 )
 HTTP_REQUEST_DURATION = Histogram(
     "http_request_duration_seconds",
     "HTTP request duration in seconds",
     ["method", "endpoint"],
+    registry=REGISTRY,
 )
 SCAN_DECISIONS = PromCounter(
     "sentrook_scan_decisions_total",
     "Scan decisions returned by the engine",
     ["decision"],
+    registry=REGISTRY,
 )
 SCAN_FAIL_OPEN = PromCounter(
     "sentrook_scan_fail_open_total",
     "Scan responses that failed open (HTTP 200 with error, decision forced allow)",
+    registry=REGISTRY,
 )
 FEEDBACK = PromCounter(
     "sentrook_feedback_total",
     "Feedback handler outcomes",
     ["status"],
+    registry=REGISTRY,
 )
 SCAN_LATENCY = Histogram(
     "sentrook_scan_latency_seconds",
     "Scan request duration in seconds (handler wall time)",
+    registry=REGISTRY,
 )
 PLUGIN_E2E_LATENCY = Histogram(
     "sentrook_plugin_e2e_latency_seconds",
     "Plugin-reported end-to-end scan round-trip in seconds",
+    registry=REGISTRY,
 )
 ACTIVE_CALLERS = Gauge(
     "sentrook_active_callers",
     "Distinct hashed OIDC callers observed in the rolling window (no identities)",
     ["window"],
+    registry=REGISTRY,
 )
 TOP_CALLER_SHARE = Gauge(
     "sentrook_top_caller_share",
     "Fraction of OIDC scans from the single busiest hashed caller (0-1, approximate)",
     ["window"],
+    registry=REGISTRY,
 )
 RULES_LOADED = Gauge(
     "sentrook_rules_loaded",
     "Number of YAIRA rules currently loaded in the warm scanner",
+    registry=REGISTRY,
 )
 LIBRARY_SYNC_OK = Gauge(
     "sentrook_library_sync_ok",
     "1 if the last library sync/status check succeeded, else 0",
+    registry=REGISTRY,
 )
 LIBRARY_SYNC_AGE = Gauge(
     "sentrook_library_sync_age_seconds",
     "Seconds since last successful library sync; -1 if unknown",
+    registry=REGISTRY,
 )
 
 
@@ -197,7 +212,7 @@ def _sync_age_seconds(last_sync_at: str | None) -> float:
 
 
 def exposition() -> bytes:
-    return generate_latest()
+    return generate_latest(REGISTRY)
 
 
 def contains_forbidden_ids(body: bytes, candidates: Iterable[str]) -> list[str]:
