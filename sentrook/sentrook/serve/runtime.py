@@ -18,6 +18,7 @@ from sentrook.sanitize.ingress import maybe_sanitize_planir
 from sentrook.serve.auth import oidc_available, scan_auth_health_label
 from sentrook.serve.config import ServeConfig
 from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
+from sentrook.serve.metrics import CallerMixTracker, record_feedback, record_scan_decision
 from sentrook.serve.oidc import normalize_oidc_url
 from sentrook.serve.rate_limit import MemoryTokenBucketLimiter
 from sentrook.serve.service import ScanService
@@ -53,6 +54,7 @@ class ServeRuntime:
         self._sync_thread: threading.Thread | None = None
         self._ops_lock = threading.Lock()
         self.limiter = MemoryTokenBucketLimiter() if config.rate_limit_enabled else None
+        self.caller_mix = CallerMixTracker()
         self._seed_last_sync_from_manifest()
         self._refresh_library_status()
 
@@ -108,6 +110,7 @@ class ServeRuntime:
             record,
             log_content=self.config.log_content,
         )
+        record_scan_decision(result.decision, request_ms=request_ms)
         return result, record
 
     def reload_from_disk(self) -> None:
@@ -217,6 +220,7 @@ class ServeRuntime:
             self._last_feedback_status = status
             self._last_feedback_reason = str(reason) if reason else None
             self._last_feedback_resolution = resolution
+        record_feedback(status)
 
     def health_payload(self) -> dict[str, Any]:
         latency = self._latency.snapshot()

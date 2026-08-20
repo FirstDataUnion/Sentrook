@@ -14,6 +14,7 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",
     # SCA (Trivy) requires cryptography>=50; see [tool.uv] override below.
     "cryptography>=50.0.0",
+    "prometheus-client>=0.26.0",
     "pyyaml>=6.0.2",
     "typer>=0.15.0",
     "fastembed>=0.8.0",
