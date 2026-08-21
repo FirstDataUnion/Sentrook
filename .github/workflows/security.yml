@@ -95,14 +95,14 @@ jobs:
       # "Loaded a configuration file for version X, but running version Y".
       # Python + JS/TS need no compile step; autobuild is for compiled languages.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.6
         with:
           languages: javascript-typescript, python
           queries: security-extended
           build-mode: none
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.6
         with:
           category: "/language:python-js"
           upload: true
