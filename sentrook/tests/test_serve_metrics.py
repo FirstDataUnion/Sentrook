@@ -370,3 +370,12 @@ def test_caller_mix_tracker_unique_and_share() -> None:
     assert share == pytest.approx(2 / 3)
     digest = hashlib.sha256(b"alice").hexdigest()
     assert digest in tracker.hashed_ids()
+
+
+def test_metrics_use_private_registry() -> None:
+    from prometheus_client import REGISTRY as default_registry
+
+    from sentrook.serve import metrics as serve_metrics
+
+    assert serve_metrics.REGISTRY is not default_registry
+    serve_metrics.exposition()
