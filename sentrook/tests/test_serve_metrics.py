@@ -159,10 +159,129 @@ def test_scan_records_http_and_decision_metrics(serve_config: ServeConfig) -> No
         decisions = _metric_sample(text, "sentrook_scan_decisions_total", decision="allow")
         assert decisions is not None and decisions >= 1
         assert "sentrook_scan_latency_seconds_bucket" in text
+        assert "sentrook_scan_matched_rules_total" in text
+        assert "sentrook_scan_winning_rules_total" in text
+        assert "sentrook_scan_l3_outcomes_total" in text
     finally:
         httpd.shutdown()
         httpd.server_close()
 
+
+def test_review_scan_records_matched_rule_and_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A soft AIRA-010-style match should label authority=soft on match counters."""
+    from sentrook.config import L2Authority
+    from sentrook.layers.pass_kind import L2PassKind
+    from sentrook.result import (
+        DebugInfo,
+        LayerInfo,
+        MatchedRule,
+        PlanEcho,
+        ScanResult,
+        TimingInfo,
+    )
+    from sentrook.rules.compiler import compile_rule
+
+    config = ServeConfig(
+        mode="observe",
+        rules_path=RULES,
+        corpus_dir=tmp_path / "corpus",
+        log_path=tmp_path / "scan.log.jsonl",
+        latency_log_path=tmp_path / "latency.log.jsonl",
+        l3_policy=L3Policy.OFF,
+        oidc_issuer="",
+        scan_auth_mode="auto",
+        scan_api_key=None,
+    )
+    httpd, base_url, runtime = _start_server(config)
+    try:
+        soft_rule = compile_rule(
+            {
+                "rule": "AIRA-010",
+                "meta": {
+                    "name": "pending shell exec",
+                    "severity": "medium",
+                    "action": "review",
+                    "authority": "soft",
+                },
+                "condition": {"pending_tool": "exec"},
+            }
+        )
+        assert soft_rule.meta.authority == L2Authority.SOFT
+        runtime.scanner.rules = [soft_rule]
+
+        fake = ScanResult(
+            decision="review",
+            risk=0.5,
+            summary="matched soft exec",
+            matched_rules=[
+                MatchedRule(
+                    id="AIRA-010",
+                    name="pending shell exec",
+                    severity="medium",
+                    action="review",
+                    reason="pending exec",
+                    confidence=1.0,
+                    pass_id=L2PassKind.PENDING_TOOL,
+                )
+            ],
+            winning_rule_id="AIRA-010",
+            layers=LayerInfo(),
+            plan=PlanEcho(run_id="metrics-review", plan_size=1, tools=["exec"]),
+            timing=TimingInfo(),
+            debug=DebugInfo(scanner_version="test", rules_loaded=1),
+        )
+        monkeypatch.setattr(runtime.scanner, "scan", lambda _plan: fake)
+
+        status, payload = _request(
+            base_url,
+            "/scan",
+            body=json.dumps(
+                {
+                    "version": "1.0",
+                    "run_id": "metrics-review:run_1",
+                    "intent": "list files",
+                    "steps": [
+                        {
+                            "id": "s1",
+                            "tool": "exec",
+                            "status": "pending",
+                            "args": {"command": "ls -la"},
+                        }
+                    ],
+                    "metadata": {
+                        "adapter": "fixture",
+                        "hook": "before_tool_call",
+                        "session_id": "metrics-review",
+                    },
+                }
+            ).encode(),
+        )
+        assert status == 200
+        assert json.loads(payload)["decision"] == "review"
+
+        _status, body = _request(base_url, "/metrics")
+        text = body.decode()
+        matched = _metric_sample(
+            text,
+            "sentrook_scan_matched_rules_total",
+            rule_id="AIRA-010",
+            authority="soft",
+            action="review",
+        )
+        winning = _metric_sample(
+            text,
+            "sentrook_scan_winning_rules_total",
+            rule_id="AIRA-010",
+            authority="soft",
+            decision="review",
+        )
+        assert matched is not None and matched >= 1
+        assert winning is not None and winning >= 1
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 def test_fail_open_increments_counter(
     serve_config: ServeConfig, monkeypatch: pytest.MonkeyPatch

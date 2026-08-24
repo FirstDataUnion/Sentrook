@@ -17,8 +17,14 @@ from sentrook.result import ScanResult
 from sentrook.sanitize.ingress import maybe_sanitize_planir
 from sentrook.serve.auth import oidc_available, scan_auth_health_label
 from sentrook.serve.config import ServeConfig
+from sentrook.serve.feedback import FeedbackSessionCapTracker
 from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
-from sentrook.serve.metrics import CallerMixTracker, record_feedback, record_scan_decision
+from sentrook.serve.metrics import (
+    CallerMixTracker,
+    record_feedback,
+    record_scan_decision,
+    record_scan_rule_breakdown,
+)
 from sentrook.serve.oidc import normalize_oidc_url
 from sentrook.serve.rate_limit import MemoryTokenBucketLimiter
 from sentrook.serve.service import ScanService
@@ -55,9 +61,9 @@ class ServeRuntime:
         self._ops_lock = threading.Lock()
         self.limiter = MemoryTokenBucketLimiter() if config.rate_limit_enabled else None
         self.caller_mix = CallerMixTracker()
+        self.feedback_session_caps = FeedbackSessionCapTracker()
         self._seed_last_sync_from_manifest()
         self._refresh_library_status()
-
     @property
     def scanner_config(self):
         return self.scanner.scanner_config
@@ -111,6 +117,20 @@ class ServeRuntime:
             log_content=self.config.log_content,
         )
         record_scan_decision(result.decision, request_ms=request_ms)
+        default_authority = self.scanner.scanner_config.default_l2_authority.value
+        authority_by_rule_id = {
+            rule.id: (
+                rule.meta.authority.value
+                if rule.meta.authority is not None
+                else default_authority
+            )
+            for rule in self.scanner.rules
+        }
+        record_scan_rule_breakdown(
+            result,
+            authority_by_rule_id=authority_by_rule_id,
+            default_authority=default_authority,
+        )
         return result, record
 
     def reload_from_disk(self) -> None:

@@ -55,6 +55,24 @@ SCAN_DECISIONS = PromCounter(
     ["decision"],
     registry=REGISTRY,
 )
+SCAN_MATCHED_RULES = PromCounter(
+    "sentrook_scan_matched_rules_total",
+    "Rules matched per scan (one increment per matched rule per request)",
+    ["rule_id", "authority", "action"],
+    registry=REGISTRY,
+)
+SCAN_WINNING_RULES = PromCounter(
+    "sentrook_scan_winning_rules_total",
+    "Winning rule after L2/L3 aggregate (absent when decision is allow with no matches)",
+    ["rule_id", "authority", "decision"],
+    registry=REGISTRY,
+)
+SCAN_L3_OUTCOMES = PromCounter(
+    "sentrook_scan_l3_outcomes_total",
+    "Per-rule L3 tie-breaker outcomes for soft reviews considered during a scan",
+    ["rule_id", "outcome"],
+    registry=REGISTRY,
+)
 SCAN_FAIL_OPEN = PromCounter(
     "sentrook_scan_fail_open_total",
     "Scan responses that failed open (HTTP 200 with error, decision forced allow)",
@@ -164,6 +182,52 @@ def record_scan_decision(decision: str, request_ms: int | None = None) -> None:
     SCAN_DECISIONS.labels(decision=decision).inc()
     if request_ms is not None:
         SCAN_LATENCY.observe(max(request_ms, 0) / 1000.0)
+
+
+def record_scan_rule_breakdown(
+    result: Any,
+    *,
+    authority_by_rule_id: dict[str, str] | None = None,
+    default_authority: str = "hard",
+) -> None:
+    """Record per-rule match, winning-rule, and L3 outcome counters.
+
+    Authority labels are resolved from the warm rule set when provided; unknown
+    rules fall back to ``default_authority`` (scanner default). Rule-id cardinality
+    is bounded by the shipped YAIRA library (~tens of rules), not by traffic.
+    """
+    auth_map = authority_by_rule_id or {}
+
+    def _authority(rule_id: str) -> str:
+        return auth_map.get(rule_id) or default_authority
+
+    for matched in getattr(result, "matched_rules", None) or []:
+        rule_id = getattr(matched, "id", None) or "unknown"
+        action = getattr(matched, "action", None) or "unknown"
+        SCAN_MATCHED_RULES.labels(
+            rule_id=rule_id,
+            authority=_authority(rule_id),
+            action=action,
+        ).inc()
+
+    winning_id = getattr(result, "winning_rule_id", None)
+    decision = getattr(result, "decision", None) or "unknown"
+    if winning_id:
+        SCAN_WINNING_RULES.labels(
+            rule_id=winning_id,
+            authority=_authority(winning_id),
+            decision=decision,
+        ).inc()
+
+    debug = getattr(result, "debug", None)
+    traces = getattr(debug, "l3_traces", None) if debug is not None else None
+    for trace in traces or []:
+        rule_id = getattr(trace, "rule_id", None) or "unknown"
+        if not getattr(trace, "ran", False):
+            outcome = "skipped"
+        else:
+            outcome = getattr(trace, "decision", None) or "no_change"
+        SCAN_L3_OUTCOMES.labels(rule_id=rule_id, outcome=outcome).inc()
 
 
 def record_fail_open() -> None:

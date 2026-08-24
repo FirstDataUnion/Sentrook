@@ -20,7 +20,7 @@ from sentrook import __version__
 from sentrook.planir import PlanIR
 from sentrook.serve.auth import scan_auth_health_label, verify_scan_auth
 from sentrook.serve.config import ServeConfig, validate_production_logging
-from sentrook.serve.feedback import FeedbackRequest, process_feedback
+from sentrook.serve.feedback import FeedbackRequest, FeedbackSessionCapTracker, process_feedback
 from sentrook.serve.latency import LatencyReport, append_latency_log, build_latency_record
 from sentrook.serve.metrics import (
     CONTENT_TYPE,
@@ -281,7 +281,11 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 return
 
             try:
-                result = process_feedback(runtime.config, request)
+                result = process_feedback(
+                    runtime.config,
+                    request,
+                    session_caps=runtime.feedback_session_caps,
+                )
             except Exception as exc:
                 logger.exception("feedback processing failed")
                 runtime.note_feedback(
