@@ -35,7 +35,9 @@ FeedbackResolution = Literal["allow-once", "allow-always", "deny", "timeout", "c
 class FeedbackSessionCapTracker:
     """In-memory caps for community allow-once mints per session+rule+fingerprint."""
 
-    def __init__(self, *, max_per_session_rule: int = DEFAULT_MAX_COMMUNITY_PER_SESSION_RULE) -> None:
+    def __init__(
+        self, *, max_per_session_rule: int = DEFAULT_MAX_COMMUNITY_PER_SESSION_RULE
+    ) -> None:
         self._lock = threading.Lock()
         self._max = max(0, max_per_session_rule)
         self._fp_seen: set[tuple[str, str, str]] = set()
@@ -341,6 +343,7 @@ def _cofirer_has_ingest_match(
     matched_ids = keep_step_ids_for_rule(plan, log, rule_id)
     return matched_steps_include_ingest(list(plan.steps), matched_ids)
 
+
 _SUMMARY_WINNING_RE = re.compile(r"^(?:Review triggered|Blocked) by (?P<rule_id>[A-Za-z0-9_-]+)\b")
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
@@ -615,6 +618,7 @@ def _submit_feedback(
         label=label,
         submissions=submissions,
     )
+
 
 def _aggregate_submission_results(
     *,

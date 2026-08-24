@@ -64,6 +64,7 @@ class ServeRuntime:
         self.feedback_session_caps = FeedbackSessionCapTracker()
         self._seed_last_sync_from_manifest()
         self._refresh_library_status()
+
     @property
     def scanner_config(self):
         return self.scanner.scanner_config
@@ -120,9 +121,7 @@ class ServeRuntime:
         default_authority = self.scanner.scanner_config.default_l2_authority.value
         authority_by_rule_id = {
             rule.id: (
-                rule.meta.authority.value
-                if rule.meta.authority is not None
-                else default_authority
+                rule.meta.authority.value if rule.meta.authority is not None else default_authority
             )
             for rule in self.scanner.rules
         }

@@ -29,9 +29,7 @@ SENSITIVE_PATH_RE = re.compile(
     r"openclaw-auth-intake"
     r")"
 )
-PIPE_SINK_RE = re.compile(
-    r"(?i)\|\s*(?:curl|wget|nc|ncat|bash|sh|zsh|python3?|node)\b"
-)
+PIPE_SINK_RE = re.compile(r"(?i)\|\s*(?:curl|wget|nc|ncat|bash|sh|zsh|python3?|node)\b")
 ENV_PROBE_RE = re.compile(r"(?i)\benv\s*\|\s*grep\b|\bprintenv\b")
 INGEST_TOOLS = frozenset({"web_fetch", "web_search", "read"})
 
@@ -39,7 +37,9 @@ INGEST_TOOLS = frozenset({"web_fetch", "web_search", "read"})
 DEFAULT_MAX_COMMUNITY_PER_SESSION_RULE = 2
 
 
-def pending_step(steps: list[CorpusStep] | list[dict[str, Any]]) -> CorpusStep | dict[str, Any] | None:
+def pending_step(
+    steps: list[CorpusStep] | list[dict[str, Any]],
+) -> CorpusStep | dict[str, Any] | None:
     for step in reversed(steps):
         status = step.status if isinstance(step, CorpusStep) else step.get("status")
         if status == "pending":

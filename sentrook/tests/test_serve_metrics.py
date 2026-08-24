@@ -283,6 +283,7 @@ def test_review_scan_records_matched_rule_and_authority(
         httpd.shutdown()
         httpd.server_close()
 
+
 def test_fail_open_increments_counter(
     serve_config: ServeConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

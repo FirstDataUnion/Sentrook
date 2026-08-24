@@ -115,9 +115,7 @@ def test_fingerprint_separates_sensitive_paths() -> None:
         CorpusStep(
             tool="exec",
             status="pending",
-            args={
-                "command": "cat /home/node/.openclaw/agents/main/agent/auth-profiles.json"
-            },
+            args={"command": "cat /home/node/.openclaw/agents/main/agent/auth-profiles.json"},
         )
     ]
     fp_r = command_fingerprint(rule_id="AIRA-010", label="benign", steps=routine)
@@ -131,9 +129,7 @@ def test_fingerprint_separates_sensitive_paths() -> None:
 def test_session_cap_skips_duplicate_fingerprints() -> None:
     tracker = FeedbackSessionCapTracker(max_per_session_rule=2)
     fp = "AIRA-010:benign:ls:openclaw"
-    ok, _ = tracker.allow(
-        session_id="s1", rule_id="AIRA-010", fingerprint=fp, sensitive=False
-    )
+    ok, _ = tracker.allow(session_id="s1", rule_id="AIRA-010", fingerprint=fp, sensitive=False)
     assert ok
     ok2, reason = tracker.allow(
         session_id="s1", rule_id="AIRA-010", fingerprint=fp, sensitive=False
