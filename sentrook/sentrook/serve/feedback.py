@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import urllib.request
 from typing import Any, Literal
 
@@ -20,8 +21,53 @@ from sentrook.sanitize.corpus import policy_reject, sanitize_corpus_example
 from sentrook.sanitize.ingress import maybe_sanitize_planir
 from sentrook.sanitize.text import scrub_text
 from sentrook.serve.config import FeedbackConfig, ServeConfig
+from sentrook.serve.fingerprint import (
+    DEFAULT_MAX_COMMUNITY_PER_SESSION_RULE,
+    command_fingerprint,
+    derive_community_intent,
+    is_sensitive_fingerprint,
+    matched_steps_include_ingest,
+)
 
 FeedbackResolution = Literal["allow-once", "allow-always", "deny", "timeout", "cancelled"]
+
+
+class FeedbackSessionCapTracker:
+    """In-memory caps for community allow-once mints per session+rule+fingerprint."""
+
+    def __init__(
+        self, *, max_per_session_rule: int = DEFAULT_MAX_COMMUNITY_PER_SESSION_RULE
+    ) -> None:
+        self._lock = threading.Lock()
+        self._max = max(0, max_per_session_rule)
+        self._fp_seen: set[tuple[str, str, str]] = set()
+        self._rule_counts: dict[tuple[str, str], int] = {}
+
+    def allow(
+        self,
+        *,
+        session_id: str | None,
+        rule_id: str,
+        fingerprint: str,
+        sensitive: bool,
+    ) -> tuple[bool, str | None]:
+        """Return whether to submit; reason when skipped."""
+        if self._max <= 0:
+            return True, None
+        if sensitive or is_sensitive_fingerprint(fingerprint):
+            return True, None
+        session = (session_id or "").strip() or "unknown"
+        key_fp = (session, rule_id, fingerprint)
+        key_rule = (session, rule_id)
+        with self._lock:
+            if key_fp in self._fp_seen:
+                return False, "session_fingerprint_duplicate"
+            count = self._rule_counts.get(key_rule, 0)
+            if count >= self._max:
+                return False, "session_rule_cap"
+            self._fp_seen.add(key_fp)
+            self._rule_counts[key_rule] = count + 1
+            return True, None
 
 
 class FeedbackRequest(BaseModel):
@@ -128,38 +174,6 @@ def _select_plan_steps(plan: PlanIR, keep_step_ids: list[str] | None) -> list[Pl
         return selected
     pending = primary_pending_step(plan)
     return [pending] if pending is not None else list(plan.steps)
-
-
-def derive_community_intent(
-    *,
-    intent_kind: str | None,
-    steps: list[CorpusStep],
-) -> str:
-    """Build a short intent from trajectory + pending args (no chat prompt).
-
-    Used for community corpus submissions so Rookery reviewers never see the
-    raw agent prompt. Format: ``{kind}: {tool→…} — {brief args}``.
-    """
-    kind = intent_kind or "user"
-    tools = [step.tool for step in steps]
-    traj = "→".join(tools) if tools else "unknown"
-    pending = next(
-        (step for step in reversed(steps) if step.status == "pending"),
-        steps[-1] if steps else None,
-    )
-    brief = ""
-    if pending is not None:
-        args = pending.args or {}
-        for key in ("command", "url", "path", "file_path", "query"):
-            if key in args and args[key] is not None:
-                brief = str(args[key]).replace("\n", " ").strip()
-                break
-        if not brief:
-            brief = pending.tool
-    if len(brief) > 80:
-        brief = brief[:77] + "..."
-    text = f"{kind}: {traj} — {brief}".strip(" —")
-    return text[:200]
 
 
 def plan_to_corpus_example(
@@ -294,9 +308,10 @@ def pick_feedback_rule_ids(
 
     - ``deny`` (attack): winning/causal rule only — avoid painting co-firers
       with an operator decision framed by the winner's review copy.
-    - ``allow-once`` / ``allow-always`` (fatigue): every post-L3 kept review
-      rule, primary first — so co-firing soft rules all learn the benign
-      neighbor. Never includes L3-allowed matches.
+    - ``allow-once`` / ``allow-always`` (fatigue): winning rule always; other
+      post-L3 kept soft rules only when their matched subgraph includes an
+      ingest tool (read/fetch/search). Avoids 3× clones of a bare ``ls`` on
+      AIRA-010+058+064. Never includes L3-allowed matches.
     """
     primary = pick_rule_id(plan, log)
     if primary is None:
@@ -310,9 +325,23 @@ def pick_feedback_rule_ids(
 
     ordered = [primary]
     for rule_id in kept:
-        if rule_id not in ordered:
+        if rule_id in ordered:
+            continue
+        if plan is not None and _cofirer_has_ingest_match(plan, log, rule_id):
+            ordered.append(rule_id)
+        elif plan is None:
+            # Harvest path without PlanIR: keep prior multi-kept behaviour.
             ordered.append(rule_id)
     return ordered
+
+
+def _cofirer_has_ingest_match(
+    plan: PlanIR,
+    log: dict[str, Any] | None,
+    rule_id: str,
+) -> bool:
+    matched_ids = keep_step_ids_for_rule(plan, log, rule_id)
+    return matched_steps_include_ingest(list(plan.steps), matched_ids)
 
 
 _SUMMARY_WINNING_RE = re.compile(r"^(?:Review triggered|Blocked) by (?P<rule_id>[A-Za-z0-9_-]+)\b")
@@ -426,12 +455,14 @@ def submit_to_rookery(
 def process_feedback(
     config: ServeConfig,
     request: FeedbackRequest,
+    *,
+    session_caps: FeedbackSessionCapTracker | None = None,
 ) -> dict[str, Any]:
     """Sanitize, label, submit, or persist personal corpus from a review."""
     if request.resolution == "allow-always":
         return _process_allow_always(config, request)
 
-    return _submit_feedback(config, request)
+    return _submit_feedback(config, request, session_caps=session_caps)
 
 
 def _submit_feedback(
@@ -442,6 +473,7 @@ def _submit_feedback(
     rule_id: str | None = None,
     rule_ids: list[str] | None = None,
     plan: PlanIR | None = None,
+    session_caps: FeedbackSessionCapTracker | None = None,
 ) -> dict[str, Any]:
     """Submit labelled corpus example(s) to Rookery (shared by allow/deny)."""
     feedback_cfg = config.feedback
@@ -491,6 +523,12 @@ def _submit_feedback(
         if request.resolution == "allow-always"
         else f"Live review feedback ({request.resolution})"
     )
+    session_id = None
+    if plan.metadata is not None:
+        session_id = plan.metadata.session_id
+    if not session_id and isinstance(request.log, dict):
+        session_id = request.log.get("session_id")
+
     submissions: list[dict[str, Any]] = []
     for rid in rule_ids:
         if example is not None and rid == primary:
@@ -515,6 +553,27 @@ def _submit_feedback(
                 }
             )
             continue
+
+        fp = command_fingerprint(rule_id=rid, label=label, example=ex)
+        if session_caps is not None and request.resolution == "allow-once":
+            allowed, skip_reason = session_caps.allow(
+                session_id=session_id if isinstance(session_id, str) else None,
+                rule_id=rid,
+                fingerprint=fp,
+                sensitive=is_sensitive_fingerprint(fp),
+            )
+            if not allowed:
+                submissions.append(
+                    {
+                        "status": "skipped",
+                        "reason": skip_reason or "session_cap",
+                        "rule_id": rid,
+                        "label": label,
+                        "command_fingerprint": fp,
+                    }
+                )
+                continue
+
         provenance = _build_provenance(
             config,
             request,
@@ -523,6 +582,7 @@ def _submit_feedback(
             primary_rule_id=primary,
             co_fired_rules=rule_ids,
         )
+        provenance["command_fingerprint"] = fp
         body = build_submission_body(ex, rule_id=rid, provenance=provenance)
         try:
             result = submit_to_rookery(
@@ -549,6 +609,7 @@ def _submit_feedback(
                 "rule_id": rid,
                 "label": label,
                 "submission_id": submission.get("id"),
+                "command_fingerprint": fp,
             }
         )
 

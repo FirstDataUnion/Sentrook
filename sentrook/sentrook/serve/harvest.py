@@ -16,6 +16,7 @@ from sentrook.serve.feedback import (
     pick_rule_id,
     submit_to_rookery,
 )
+from sentrook.serve.fingerprint import derive_community_intent
 from sentrook.serve.log import load_scan_log
 
 
@@ -32,6 +33,7 @@ def log_row_to_corpus_example(
     rule_id: str,
     label: CorpusLabel | None = None,
     example_id_suffix: str = "scan-harvest",
+    derive_intent: bool = True,
 ) -> CorpusExample | None:
     pending_tool = row.get("pending_tool")
     if not pending_tool:
@@ -52,11 +54,19 @@ def log_row_to_corpus_example(
     if label is None:
         return None
 
+    if derive_intent:
+        intent = derive_community_intent(
+            intent_kind=row.get("intent_kind") if isinstance(row.get("intent_kind"), str) else None,
+            steps=steps,
+        )
+    else:
+        intent = row.get("intent")
+
     example = CorpusExample(
         id=example_id,
         label=label,
         trust="community",
-        intent=row.get("intent"),
+        intent=intent,
         intent_kind=row.get("intent_kind"),
         notes=str(row.get("summary") or "scan log harvest candidate"),
         steps=steps,

@@ -281,7 +281,11 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 return
 
             try:
-                result = process_feedback(runtime.config, request)
+                result = process_feedback(
+                    runtime.config,
+                    request,
+                    session_caps=runtime.feedback_session_caps,
+                )
             except Exception as exc:
                 logger.exception("feedback processing failed")
                 runtime.note_feedback(
