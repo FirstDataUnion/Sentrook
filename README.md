@@ -169,11 +169,6 @@ Running the Python scanner yourself against a custom ruleset is possible from
 this repo (`sentrook scan` / `sentrook serve`) but is **not** the supported
 product path yet — docs and packaging for that come later. Watch this space.
 
-To review how a pending `exec` would appear on the OpenClaw approval card
-(Command + Shell Preview), run `sentrook review-copy show --command '…'` or
-`--file sentrook/tests/fixtures/review_copy/examples.jsonl`. `--scan-log` pulls
-review rows from a live scan JSONL.
-
 ## How it works
 
 Sentrook's goal is simple: before your agent runs a
