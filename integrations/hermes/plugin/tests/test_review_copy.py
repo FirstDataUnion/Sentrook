@@ -58,7 +58,8 @@ def test_scrubs_secrets_on_operator_card() -> None:
     )
     assert token not in msg
     assert "[REDACTED]" in msg
-    urls = [part for part in msg.split() if "://" in part]
+    # Command is markdown-wrapped, so split tokens may carry a trailing backtick.
+    urls = [part.strip("`'\"") for part in msg.split() if "://" in part]
     assert any(urlparse(url).hostname == "api.github.com" for url in urls)
 
 
