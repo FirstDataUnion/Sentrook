@@ -127,13 +127,17 @@ jobs:
           stage="${RUNNER_TEMP}/hermes-mirror"
           work="${RUNNER_TEMP}/hermes-mirror-git"
           rm -rf "${work}"
+          # Drop credentials that actions/checkout may have set globally for
+          # FirstDataUnion/Sentrook — otherwise git can mix tokens.
+          git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
           # x-access-token works for fine-grained PATs and GitHub App tokens.
-          clone_url="https://x-access-token:${MIRROR_GITHUB_TOKEN}@github.com/${MIRROR_REPO}.git"
-          git clone --depth 1 "${clone_url}" "${work}"
+          # Keep the token only in the remote URL used for fetch/push (not printed).
+          authed_remote="https://x-access-token:${MIRROR_GITHUB_TOKEN}@github.com/${MIRROR_REPO}.git"
+          git clone --depth 1 "${authed_remote}" "${work}"
           cd "${work}"
-          # Avoid leaking the token into remote logs on later commands.
+          # Redact token from `git remote -v` / logs; re-auth per push via GIT_CONFIG.
           git remote set-url origin "https://github.com/${MIRROR_REPO}.git"
-          git config http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "${MIRROR_GITHUB_TOKEN}" | base64 | tr -d '\n')"
 
           # Keep mirror-authored docs; replace everything else with the stage.
           keep_readme=0
@@ -180,16 +184,16 @@ jobs:
               echo "Source: integrations/hermes/plugin"
             } > "${msg_file}"
             git commit -F "${msg_file}"
-            git push origin HEAD:main
+            git push "${authed_remote}" HEAD:main
           fi
 
           if [ "${CREATE_TAG}" = "true" ]; then
-            if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+            if git ls-remote --tags "${authed_remote}" "refs/tags/${TAG}" | grep -q "${TAG}"; then
               echo "Tag ${TAG} already exists on mirror — refusing to move it" >&2
               exit 1
             fi
             git tag -a "${TAG}" -m "Sentrook Hermes plugin ${VERSION} (upstream ${UPSTREAM_SHA})"
-            git push origin "refs/tags/${TAG}"
+            git push "${authed_remote}" "refs/tags/${TAG}"
           fi
 
       - name: Summary

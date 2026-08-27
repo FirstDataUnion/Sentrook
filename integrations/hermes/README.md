@@ -10,7 +10,9 @@ Hermes `pre_tool_call` directives (`approve` + `rule_key` for human review).
 
 ## Requirements
 
-- Hermes Agent **≥ 0.18.2** (approve + `rule_key` + gateway Discord notify proven)
+- Hermes Agent **≥ 0.18.2** (approve + `rule_key` + gateway Discord notify proven).
+  Plugin declares `manifest_version: 1` so `hermes plugins install` works on
+  that floor (some Hermes builds still reject install of manifest v2).
 - Network reachability to hosted Sentrook
 - Scan credentials in `~/.hermes/.env` (OIDC client or API key)
 
