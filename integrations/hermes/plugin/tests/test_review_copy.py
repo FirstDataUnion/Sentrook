@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from ..review_copy import (
     REVIEW_MESSAGE_MAX,
     build_review_message,
@@ -56,7 +58,8 @@ def test_scrubs_secrets_on_operator_card() -> None:
     )
     assert token not in msg
     assert "[REDACTED]" in msg
-    assert "api.github.com" in msg
+    urls = [part for part in msg.split() if "://" in part]
+    assert any(urlparse(url).hostname == "api.github.com" for url in urls)
 
 
 def test_fallback_likely_when_scan_description_missing() -> None:
