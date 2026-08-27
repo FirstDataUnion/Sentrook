@@ -103,9 +103,21 @@ function collapseWs(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 
+/** Strip trailing ``).,;]`` without a quantified regex (CodeQL js/polynomial-redos). */
+function stripUrlTrailingPunct(raw: string): string {
+  let end = raw.length;
+  while (end > 0) {
+    const code = raw.charCodeAt(end - 1);
+    // ) . , ; ]
+    if (code !== 41 && code !== 46 && code !== 44 && code !== 59 && code !== 93) break;
+    end -= 1;
+  }
+  return raw.slice(0, end);
+}
+
 function redactWebhookUrls(text: string): string {
   return text.replace(URL_RE, (raw) => {
-    const url = raw.replace(/[).,;\]]+$/, "");
+    const url = stripUrlTrailingPunct(raw);
     const trailing = raw.slice(url.length);
     if (!isWebhookUrl(url)) return raw;
     const host = hostFromUrl(url) || "host";
@@ -122,7 +134,7 @@ function commandUrls(command: string): string[] {
   const seen = new Set<string>();
   URL_RE.lastIndex = 0;
   for (const match of command.matchAll(URL_RE)) {
-    const url = (match[0] ?? "").replace(/[).,;\]]+$/, "");
+    const url = stripUrlTrailingPunct(match[0] ?? "");
     const key = url.toLowerCase();
     if (!url || seen.has(key)) continue;
     seen.add(key);

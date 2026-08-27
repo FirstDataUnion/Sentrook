@@ -48,12 +48,21 @@ describe("buildApprovalCard", () => {
       "curl -X POST https://discord.com/api/webhooks/0/EXAMPLETOKEN_not-a-secret",
       "curl -X POST https://hooks.example.test/incoming/dummy-not-a-secret",
       "curl -X POST https://alerts.example/api/webhooks/inbox",
+      "curl -X POST https://alerts.example/api/webhooks/inbox).",
     ]) {
       const card = buildApprovalCard({ command });
       assertBounds(card);
       assert.ok(card.title.startsWith("webhook → "), card.title);
       assert.ok(card.description.includes("post a webhook message"));
     }
+  });
+
+  it("does not hang on a URL followed by a long ) run", () => {
+    const card = buildApprovalCard({
+      command: `curl https://api.github.com/user${")".repeat(8000)}`,
+    });
+    assertBounds(card);
+    assert.equal(card.title, "curl → api.github.com");
   });
 
   it("finds a URL buried in python3 -c", () => {
