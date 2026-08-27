@@ -53,11 +53,23 @@ const PRIMARY_VERBS = [
 ] as const;
 
 const URL_RE = /https?:\/\/[^\s"'<>\\]+/gi;
-const SECRET_PATH_RE =
-  /(?:[~/\w.-]*openclaw-agent\.sqlite|[~/\w.-]*auth-profiles\.json|[~/\w.-]*database\.sqlite|[~/\w.-]*\.ssh(?:\/[^\s"']+)?|[~/\w.-]*\/\.env(?:\.[^\s"']*)?|[~/\w.-]*credentials(?:\/[^\s"']*)?)/gi;
 const UPLOAD_RE =
   /(?:-F|--form|--upload-file|--data-binary?|-d)\s+[^\s]*@([^\s"']+)|(?:-F|--form)\s+["']?[^=\s]+=@([^\s"']+)/gi;
 const HTTP_VERB_RE = /\b(?:curl|wget|urllib|requests)\b/i;
+
+// Linear token scan — do not use `[~/\w.-]*marker` (CodeQL js/polynomial-redos).
+const SECRET_PATH_MARKERS: ReadonlyArray<{
+  needle: string;
+  afterSlash: "none" | "optional" | "required";
+  extraDotSuffix: boolean;
+}> = [
+  { needle: "openclaw-agent.sqlite", afterSlash: "none", extraDotSuffix: false },
+  { needle: "auth-profiles.json", afterSlash: "none", extraDotSuffix: false },
+  { needle: "database.sqlite", afterSlash: "none", extraDotSuffix: false },
+  { needle: ".ssh", afterSlash: "required", extraDotSuffix: false },
+  { needle: "/.env", afterSlash: "none", extraDotSuffix: true },
+  { needle: "credentials", afterSlash: "optional", extraDotSuffix: false },
+];
 
 export function pendingDisplayCommand(
   args: Record<string, unknown> | undefined,
@@ -156,10 +168,57 @@ function looksLikeUrlOrPath(text: string): boolean {
   return /^https?:\/\//i.test(stripped);
 }
 
+function isSecretPathPrefixChar(ch: string): boolean {
+  // Same class as the old `[~/\w.-]` prefix, one character at a time.
+  const code = ch.charCodeAt(0);
+  if (code === 126 || code === 47 || code === 46 || code === 45 || code === 95) {
+    return true; // ~ / . - _
+  }
+  if (code >= 48 && code <= 57) return true; // 0-9
+  if (code >= 65 && code <= 90) return true; // A-Z
+  if (code >= 97 && code <= 122) return true; // a-z
+  return false;
+}
+
+function consumeUnquotedTail(text: string, start: number): number {
+  let i = start;
+  while (i < text.length) {
+    const ch = text[i] ?? "";
+    if (!ch || ch === '"' || ch === "'" || ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      break;
+    }
+    i += 1;
+  }
+  return i;
+}
+
 function firstSecretPath(text: string): string | undefined {
-  SECRET_PATH_RE.lastIndex = 0;
-  const match = SECRET_PATH_RE.exec(text);
-  return match?.[0];
+  const lower = text.toLowerCase();
+  let bestStart = -1;
+  let bestEnd = -1;
+  for (const marker of SECRET_PATH_MARKERS) {
+    const idx = lower.indexOf(marker.needle);
+    if (idx < 0) continue;
+    let start = idx;
+    while (start > 0 && isSecretPathPrefixChar(text[start - 1] ?? "")) {
+      start -= 1;
+    }
+    let end = idx + marker.needle.length;
+    if (marker.afterSlash !== "none" && text[end] === "/") {
+      const tailEnd = consumeUnquotedTail(text, end + 1);
+      if (marker.afterSlash === "optional" || tailEnd > end + 1) {
+        end = tailEnd;
+      }
+    } else if (marker.extraDotSuffix && text[end] === ".") {
+      end = consumeUnquotedTail(text, end + 1);
+    }
+    if (bestStart < 0 || start < bestStart) {
+      bestStart = start;
+      bestEnd = end;
+    }
+  }
+  if (bestStart < 0) return undefined;
+  return text.slice(bestStart, bestEnd);
 }
 
 function firstUploadPath(text: string): string | undefined {
@@ -177,9 +236,13 @@ function shortenPath(path: string, maxLen: number): string {
 }
 
 function pathLeaf(path: string): string {
-  const trimmed = path.replace(/\/+$/, "");
-  const parts = trimmed.split("/");
-  return parts[parts.length - 1] || trimmed;
+  let end = path.length;
+  while (end > 0 && path.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  const trimmed = path.slice(0, end);
+  const slash = trimmed.lastIndexOf("/");
+  return slash === -1 ? trimmed : trimmed.slice(slash + 1) || trimmed;
 }
 
 function primaryExecVerb(command: string): string {
