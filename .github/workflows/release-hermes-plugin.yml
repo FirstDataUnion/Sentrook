@@ -1,0 +1,215 @@
+# Gated promote of integrations/hermes/plugin → FirstDataUnion/Sentrook-hermes.
+# Manual only. Merging to main never updates the mirror.
+#
+# Operator: dispatch this workflow → approve Environment release-hermes.
+# Auth: Environment secret MIRROR_GITHUB_TOKEN — fine-grained PAT (or GitHub App
+# installation token) with Contents: Read and write on Sentrook-hermes only.
+# Prefer that over enabling org-wide deploy keys.
+#
+# Mirror is install-only. Source of truth remains this monorepo.
+name: release-hermes-plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run tests + assemble tree only; skip push/tag to mirror
+        required: false
+        type: boolean
+        default: false
+      create_tag:
+        description: Create annotated tag hermes-plugin-v* on the mirror from plugin.yaml version
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sentrook-release-hermes-plugin
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  PLUGIN_DIR: integrations/hermes/plugin
+  MIRROR_REPO: FirstDataUnion/Sentrook-hermes
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: release-hermes
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Sentrook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pytest + PyYAML
+        run: |
+          set -euo pipefail
+          uv venv .venv
+          # shellcheck disable=SC1091
+          source .venv/bin/activate
+          uv pip install pytest pyyaml
+
+      - name: Hermes plugin tests
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source .venv/bin/activate
+          make hermes-plugin-test
+
+      - name: Read plugin version
+        id: meta
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source .venv/bin/activate
+          version="$(python - <<'PY'
+          from pathlib import Path
+          import yaml
+          doc = yaml.safe_load(Path("integrations/hermes/plugin/plugin.yaml").read_text())
+          print(doc["version"])
+          PY
+          )"
+          {
+            echo "version=${version}"
+            echo "tag=hermes-plugin-v${version}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Will promote plugin.yaml version ${version}"
+
+      - name: Assemble mirror tree
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/hermes-mirror"
+          mkdir -p "${stage}"
+          # Runtime plugin only — tests stay in the monorepo.
+          rsync -a \
+            --exclude '__pycache__/' \
+            --exclude '*.py[cod]' \
+            --exclude 'tests/' \
+            --exclude '.pytest_cache/' \
+            "${PLUGIN_DIR}/" "${stage}/"
+          test -f "${stage}/plugin.yaml"
+          test -f "${stage}/__init__.py"
+          # Preserve / restore install-mirror docs from the live mirror tip when
+          # promoting; they are authored on the mirror seed, not in PLUGIN_DIR.
+          echo "Assembled $(find "${stage}" -type f | wc -l | tr -d ' ') plugin files"
+
+      - name: Push promote to mirror
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          CREATE_TAG: ${{ inputs.create_tag }}
+          UPSTREAM_SHA: ${{ github.sha }}
+          MIRROR_GITHUB_TOKEN: ${{ secrets.MIRROR_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MIRROR_GITHUB_TOKEN}" ]; then
+            echo "MIRROR_GITHUB_TOKEN is empty on Environment release-hermes." >&2
+            echo "Create a fine-grained PAT with Contents: Read and write on" >&2
+            echo "FirstDataUnion/Sentrook-hermes only, then:" >&2
+            echo "  gh secret set MIRROR_GITHUB_TOKEN --repo FirstDataUnion/Sentrook --env release-hermes" >&2
+            exit 1
+          fi
+          stage="${RUNNER_TEMP}/hermes-mirror"
+          work="${RUNNER_TEMP}/hermes-mirror-git"
+          rm -rf "${work}"
+          # x-access-token works for fine-grained PATs and GitHub App tokens.
+          clone_url="https://x-access-token:${MIRROR_GITHUB_TOKEN}@github.com/${MIRROR_REPO}.git"
+          git clone --depth 1 "${clone_url}" "${work}"
+          cd "${work}"
+          # Avoid leaking the token into remote logs on later commands.
+          git remote set-url origin "https://github.com/${MIRROR_REPO}.git"
+          git config http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "${MIRROR_GITHUB_TOKEN}" | base64 | tr -d '\n')"
+
+          # Keep mirror-authored docs; replace everything else with the stage.
+          keep_readme=0
+          keep_contributing=0
+          keep_security=0
+          keep_license=0
+          keep_github=0
+          [ -f README.md ] && keep_readme=1 && cp README.md "${RUNNER_TEMP}/keep-README.md"
+          [ -f CONTRIBUTING.md ] && keep_contributing=1 && cp CONTRIBUTING.md "${RUNNER_TEMP}/keep-CONTRIBUTING.md"
+          [ -f SECURITY.md ] && keep_security=1 && cp SECURITY.md "${RUNNER_TEMP}/keep-SECURITY.md"
+          [ -f LICENSE ] && keep_license=1 && cp LICENSE "${RUNNER_TEMP}/keep-LICENSE"
+          [ -d .github ] && keep_github=1 && cp -a .github "${RUNNER_TEMP}/keep-github"
+
+          # Wipe tracked content except .git
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          rsync -a "${stage}/" ./
+
+          if [ "${keep_readme}" = 1 ]; then cp "${RUNNER_TEMP}/keep-README.md" README.md; fi
+          if [ "${keep_contributing}" = 1 ]; then cp "${RUNNER_TEMP}/keep-CONTRIBUTING.md" CONTRIBUTING.md; fi
+          if [ "${keep_security}" = 1 ]; then cp "${RUNNER_TEMP}/keep-SECURITY.md" SECURITY.md; fi
+          if [ "${keep_license}" = 1 ]; then cp "${RUNNER_TEMP}/keep-LICENSE" LICENSE; fi
+          if [ "${keep_github}" = 1 ]; then rm -rf .github && cp -a "${RUNNER_TEMP}/keep-github" .github; fi
+
+          # Provenance marker (safe to overwrite each promote)
+          {
+            echo "upstream_repo=FirstDataUnion/Sentrook"
+            echo "upstream_path=integrations/hermes/plugin"
+            echo "upstream_sha=${UPSTREAM_SHA}"
+            echo "plugin_version=${VERSION}"
+            echo "promoted_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > .release-mirror
+
+          git config user.name "Sentrook Release Bot"
+          git config user.email "noreply@firstdataunion.org"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No file changes vs mirror tip — still retagging if requested."
+          else
+            msg_file="$(mktemp)"
+            {
+              echo "release: promote Sentrook Hermes plugin v${VERSION}"
+              echo ""
+              echo "Upstream: FirstDataUnion/Sentrook@${UPSTREAM_SHA}"
+              echo "Source: integrations/hermes/plugin"
+            } > "${msg_file}"
+            git commit -F "${msg_file}"
+            git push origin HEAD:main
+          fi
+
+          if [ "${CREATE_TAG}" = "true" ]; then
+            if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+              echo "Tag ${TAG} already exists on mirror — refusing to move it" >&2
+              exit 1
+            fi
+            git tag -a "${TAG}" -m "Sentrook Hermes plugin ${VERSION} (upstream ${UPSTREAM_SHA})"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DRY: ${{ inputs.dry_run }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Hermes plugin mirror release"
+            echo ""
+            echo "- Upstream SHA: \`${SHA}\`"
+            echo "- plugin.yaml version: \`${VERSION}\`"
+            echo "- Mirror: https://github.com/${MIRROR_REPO}"
+            if [[ "${DRY}" == "true" ]]; then
+              echo "- Mode: **dry_run** (mirror not updated)"
+            else
+              echo "- Tag: \`${TAG}\` (if create_tag=true)"
+              echo "- Install: \`hermes plugins install ${MIRROR_REPO} --enable\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

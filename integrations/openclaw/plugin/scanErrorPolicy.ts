@@ -63,6 +63,13 @@ export function isAuthFailure(failure: ScanFailure): boolean {
   );
 }
 
+function detailSnippet(failure: ScanFailure, limit = 100): string {
+  const raw = (failure.detail || "").trim().replace(/\n/g, " ");
+  if (!raw) return "";
+  if (raw.length <= limit) return raw;
+  return `${raw.slice(0, Math.max(0, limit - 3))}...`;
+}
+
 export function scanErrorCopy(failure: ScanFailure): { title: string; description: string } {
   if (failure.kind === "rate_limited") {
     return {
@@ -73,8 +80,11 @@ export function scanErrorCopy(failure: ScanFailure): { title: string; descriptio
   }
   if (isAuthFailure(failure)) {
     return {
-      title: "Sentrook credentials rejected",
-      description: "Sentrook rejected the scan credentials. The tool will not run.",
+      title: "Sentrook authentication failed",
+      description:
+        "Sentrook could not authenticate to the scan service " +
+        "(configuration error — not a security policy block). " +
+        "Continue this tool without scanning?",
     };
   }
   return {
@@ -84,11 +94,36 @@ export function scanErrorCopy(failure: ScanFailure): { title: string; descriptio
   };
 }
 
+function blockReasonFor(failure: ScanFailure): string {
+  const snippet = detailSnippet(failure);
+  if (isAuthFailure(failure)) {
+    const base =
+      "Sentrook could not authenticate to the scan service " +
+      "(configuration error, not a security policy deny). " +
+      "Re-run `openclaw sentrook configure` / `verify`, and ensure " +
+      "SENTROOK_OIDC_ISSUER matches this Sentrook environment. " +
+      "The tool was not scanned or run.";
+    return snippet ? `${base} Detail: ${snippet}` : base;
+  }
+  if (failure.kind === "rate_limited") {
+    const base = "Sentrook rate-limited this scan; the tool was not scanned or run.";
+    return snippet ? `${base} Detail: ${snippet}` : base;
+  }
+  const base =
+    "Sentrook did not scan this tool call (unreachable or timed out). " +
+    "This is a connectivity/service issue, not a security policy deny. " +
+    "The tool was not run.";
+  return snippet ? `${base} Detail: ${snippet}` : base;
+}
+
 /**
  * Map a failed /scan attempt to an OpenClaw before_tool_call result.
  *
- * 401/403 always deny (misconfigured auth must not silently skip scans).
- * Unattended `review` applies scheduledTimeoutBehavior immediately (no 30 min wait).
+ * Auth failures (401/403) never fail-open: ``onScanError=allow`` still blocks,
+ * and unattended ``review`` never applies ``scheduledTimeoutBehavior: allow``.
+ * Interactive ``review`` escalates with a configuration-error card.
+ * Unattended ``review`` applies scheduledTimeoutBehavior immediately for
+ * non-auth failures only (no 30 min wait).
  */
 export function scanErrorToHookResult(
   failure: ScanFailure,
@@ -100,9 +135,24 @@ export function scanErrorToHookResult(
   },
 ): ScanErrorHookResult | undefined {
   if (isAuthFailure(failure)) {
+    const policy = opts.onScanError;
+    if (policy === "review" && !opts.unattended) {
+      const copy = scanErrorCopy(failure);
+      return {
+        requireApproval: {
+          title: copy.title,
+          description: copy.description,
+          severity: "warning",
+          timeoutMs: opts.interactiveTimeoutMs,
+          timeoutBehavior: "deny",
+          allowedDecisions: ["allow-once", "deny"],
+        },
+      };
+    }
+    // allow, deny, or unattended review — never silently skip scans on bad auth
     return {
       block: true,
-      blockReason: "Sentrook rejected scan credentials",
+      blockReason: blockReasonFor(failure),
     };
   }
 
@@ -134,13 +184,6 @@ export function scanErrorToHookResult(
       allowedDecisions: ["allow-once", "deny"],
     },
   };
-}
-
-function blockReasonFor(failure: ScanFailure): string {
-  if (failure.kind === "rate_limited") {
-    return "Sentrook rate-limited this scan; the tool was not scanned";
-  }
-  return "Sentrook did not scan this tool call (unreachable or timed out)";
 }
 
 export function parseRetryAfterSeconds(header: string | null): number | undefined {
