@@ -37,7 +37,7 @@
       },
       "timeoutMs": {
         "type": "integer",
-        "description": "Scan request timeout in ms. Gates the agent while awaiting /scan. Default 3000 (or SENTROOK_SCAN_TIMEOUT_MS)."
+        "description": "Wait for POST /scan in ms (OIDC mint is a separate 30s budget). Default 60000. Env: SENTROOK_SCAN_TIMEOUT_MS."
       },
       "onScanError": {
         "type": "string",
@@ -46,7 +46,7 @@
           "deny",
           "review"
         ],
-        "description": "When /scan times out, cannot connect, returns 5xx, or is rate-limited after retry. allow = continue without scanning (default for existing installs). deny = block the tool. review = ask (interactive); unattended uses approval.scheduledTimeoutBehavior immediately. Env: SENTROOK_ON_SCAN_ERROR."
+        "description": "When /scan times out, cannot connect, returns 5xx, is rate-limited after retry, auth fails (401/403), or a 200 body has invalid JSON / a missing or unknown decision. allow = continue without scanning (auth still blocks). deny = block the tool. review = ask (interactive); unattended always blocks. Default review. Unexpected plugin errors always block. Env: SENTROOK_ON_SCAN_ERROR."
       },
       "feedback": {
         "type": "object",

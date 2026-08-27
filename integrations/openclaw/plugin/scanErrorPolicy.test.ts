@@ -5,6 +5,7 @@ import {
   parseOnScanError,
   parseRetryAfterSeconds,
   resolveOnScanError,
+  scanAuthErrorToFailure,
   scanErrorToHookResult,
   type ScanFailure,
 } from "./scanErrorPolicy.ts";
@@ -27,13 +28,13 @@ const unauthorized: ScanFailure = {
   ok: false,
   kind: "http",
   status: 401,
-  detail: "unauthorized",
+  detail: 'client_credentials token mint failed: HTTP 401: {"error":"invalid_client"}',
 };
 
 describe("parseOnScanError", () => {
-  it("defaults to allow", () => {
-    assert.equal(parseOnScanError(undefined), "allow");
-    assert.equal(resolveOnScanError({}), "allow");
+  it("defaults to review", () => {
+    assert.equal(parseOnScanError(undefined), "review");
+    assert.equal(resolveOnScanError({}), "review");
   });
 
   it("reads plugin config then env", () => {
@@ -48,7 +49,6 @@ describe("parseOnScanError", () => {
 describe("scanErrorToHookResult", () => {
   const interactive = {
     unattended: false,
-    scheduledTimeoutBehavior: "deny" as const,
     interactiveTimeoutMs: 300_000,
   };
 
@@ -70,6 +70,7 @@ describe("scanErrorToHookResult", () => {
     });
     assert.equal(blocked?.block, true);
     assert.match(blocked?.blockReason || "", /did not scan/);
+    assert.match(blocked?.blockReason || "", /not a security policy deny/i);
     const limited = scanErrorToHookResult(rateLimited, {
       onScanError: "deny",
       ...interactive,
@@ -99,33 +100,69 @@ describe("scanErrorToHookResult", () => {
     assert.equal(result?.requireApproval?.title, "Sentrook rate limited");
   });
 
-  it("review unattended follows scheduledTimeoutBehavior immediately", () => {
+  it("review unattended always blocks (ignores scheduledTimeoutBehavior)", () => {
     const denied = scanErrorToHookResult(timeoutFailure, {
       onScanError: "review",
       unattended: true,
-      scheduledTimeoutBehavior: "deny",
       interactiveTimeoutMs: 300_000,
     });
     assert.equal(denied?.block, true);
     assert.equal(denied?.requireApproval, undefined);
-
-    const allowed = scanErrorToHookResult(timeoutFailure, {
-      onScanError: "review",
-      unattended: true,
-      scheduledTimeoutBehavior: "allow",
-      interactiveTimeoutMs: 300_000,
-    });
-    assert.equal(allowed, undefined);
   });
 
-  it("401 always denies and never uses the unreachable card", () => {
+  it("401 never fail-opens on allow", () => {
     const result = scanErrorToHookResult(unauthorized, {
       onScanError: "allow",
       ...interactive,
     });
     assert.equal(result?.block, true);
-    assert.match(result?.blockReason || "", /credentials/);
+    assert.match(result?.blockReason || "", /configuration error/i);
+    assert.match(result?.blockReason || "", /not a security policy deny/i);
+    assert.match(result?.blockReason || "", /invalid_client/);
     assert.equal(result?.requireApproval, undefined);
+  });
+
+  it("401 review interactive escalates with config-error card", () => {
+    const result = scanErrorToHookResult(unauthorized, {
+      onScanError: "review",
+      ...interactive,
+    });
+    assert.equal(result?.block, undefined);
+    assert.equal(result?.requireApproval?.title, "Sentrook authentication failed");
+    assert.match(result?.requireApproval?.description || "", /configuration error/i);
+    assert.match(result?.requireApproval?.description || "", /Continue this tool without scanning/);
+  });
+
+  it("401 review unattended blocks even when scheduledTimeoutBehavior is allow", () => {
+    const result = scanErrorToHookResult(unauthorized, {
+      onScanError: "review",
+      unattended: true,
+      interactiveTimeoutMs: 300_000,
+    });
+    assert.equal(result?.block, true);
+    assert.equal(result?.requireApproval, undefined);
+    assert.match(result?.blockReason || "", /configuration error/i);
+  });
+});
+
+describe("scanAuthErrorToFailure", () => {
+  it("maps HTTP 401 mint errors to auth failures", () => {
+    const failure = scanAuthErrorToFailure(
+      new Error('client_credentials token mint failed: HTTP 401: {"error":"invalid_client"}'),
+    );
+    assert.equal(failure.kind, "http");
+    assert.equal(failure.status, 401);
+    assert.match(failure.detail, /invalid_client/);
+  });
+
+  it("maps hung mint to timeout", () => {
+    const failure = scanAuthErrorToFailure(new Error("OIDC request timed out after 30000ms"));
+    assert.equal(failure.kind, "timeout");
+  });
+
+  it("maps other mint errors to network", () => {
+    const failure = scanAuthErrorToFailure(new Error("ECONNREFUSED"));
+    assert.equal(failure.kind, "network");
   });
 });
 

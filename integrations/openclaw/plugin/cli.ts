@@ -6,6 +6,7 @@ import {
   collectAnswersInteractive,
   collectAnswersNonInteractive,
   createStdioIo,
+  DEFAULT_TIMEOUT_MS,
   runConfigure,
   type ConfigureAnswers,
 } from "./configure.ts";
@@ -31,7 +32,6 @@ export interface ConfigureCliOptions {
   contributeCorpus?: string;
   clientId?: string;
   clientSecret?: string;
-  apiKey?: string;
   stateDir?: string;
   onScanError?: string;
 }
@@ -61,7 +61,6 @@ function seedFromOptions(opts: ConfigureCliOptions): Partial<ConfigureAnswers> {
     contributeCorpus: parseBool(opts.contributeCorpus),
     clientId: opts.clientId || process.env.SENTROOK_SCAN_CLIENT_ID,
     clientSecret: opts.clientSecret || process.env.SENTROOK_SCAN_CLIENT_SECRET,
-    apiKey: opts.apiKey || process.env.SENTROOK_SCAN_API_KEY,
     onScanError: opts.onScanError
       ? parseOnScanError(opts.onScanError)
       : undefined,
@@ -107,17 +106,16 @@ export function registerSentrookCli(program: CliProgram): void {
       "Configure Sentrook plugin for hosted scan (OIDC credentials + openclaw.json). Does not restart the gateway.",
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
-    .option("--timeout-ms <ms>", "Scan POST timeout in ms")
+    .option("--timeout-ms <ms>", `Scan POST timeout in ms (default ${DEFAULT_TIMEOUT_MS})`)
     .option(
       "--contribute-corpus <bool>",
       "Contribute sanitized review feedback to the community corpus (true|false; default true / opt-out)",
     )
     .option("--client-id <id>", "FIDU ID OAuth client_id")
     .option("--client-secret <secret>", "FIDU ID OAuth client_secret")
-    .option("--api-key <key>", "Shared scan API key (optional)")
     .option(
       "--on-scan-error <mode>",
-      "When Sentrook is unreachable or rate-limited: allow | deny | review (default allow)",
+      "When Sentrook cannot scan (unreachable, timeout, rate-limit, or auth): allow | deny | review (default review)",
     )
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .action(async (opts: ConfigureCliOptions) => {

@@ -24,19 +24,21 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
 import { parseOnScanError, type OnScanError } from "./scanErrorPolicy.ts";
-import { SCAN_BASE_URL } from "./scanEndpoint.ts";
+import { DEFAULT_OIDC_ISSUER, SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 export const PLUGIN_ID = "sentrook-openclaw";
 
-export { SCAN_BASE_URL };
-export const DEFAULT_TIMEOUT_MS = 3000;
+export { SCAN_BASE_URL, DEFAULT_OIDC_ISSUER };
+export const DEFAULT_TIMEOUT_MS = 60_000;
 /** Contribute sanitized review feedback to the community corpus (opt-out). */
 export const DEFAULT_CONTRIBUTE_CORPUS = true;
-export const DEFAULT_IDENTITY_URL = "https://identity.firstdataunion.org";
+/** Identity portal matching this plugin build's pinned scan deploy. */
+export const DEFAULT_IDENTITY_URL = DEFAULT_OIDC_ISSUER;
 
 export const CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID";
 export const CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET";
 export const API_KEY_VAR = "SENTROOK_SCAN_API_KEY";
+export const OIDC_ISSUER_VAR = "SENTROOK_OIDC_ISSUER";
 
 export type FeedbackMode = "off" | "submit";
 
@@ -49,11 +51,12 @@ export interface ConfigureAnswers {
   contributeCorpus: boolean;
   clientId?: string;
   clientSecret?: string;
-  /** Optional shared API key (soak / closed beta) */
+  /** Optional shared API key — not collected by configure; auth may still read env. */
   apiKey?: string;
   /**
-   * When Sentrook is unreachable or rate-limited: allow (fail-open), deny
-   * (fail-closed), or review (ask, interactive only).
+   * When Sentrook cannot scan (unreachable, timeout, rate-limit, auth).
+   * Default review (ask interactive; block unattended). allow is opt-in
+   * fail-open; auth still blocks. deny always blocks.
    */
   onScanError?: OnScanError;
 }
@@ -104,7 +107,7 @@ export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string
   return {
     timeoutMs: answers.timeoutMs,
     feedback: { mode: feedbackModeFromContribute(answers.contributeCorpus) },
-    onScanError: answers.onScanError ?? "allow",
+    onScanError: answers.onScanError ?? "review",
   };
 }
 
@@ -237,38 +240,24 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
   const clientSecret = answers.clientSecret
     ? sanitizeSecretInput(answers.clientSecret)
     : "";
-  const apiKey = answers.apiKey ? sanitizeSecretInput(answers.apiKey) : "";
 
-  if (answers.clientId != null || answers.clientSecret != null) {
-    if (!clientId || !clientSecret) {
-      throw new Error("client_id and client_secret must be non-empty");
-    }
-  } else if (answers.apiKey != null) {
-    if (!apiKey) {
-      throw new Error("api key must be non-empty");
-    }
-  } else {
-    throw new Error("OIDC client_id + client_secret are required (or --api-key)");
+  if (!clientId || !clientSecret) {
+    throw new Error("OIDC client_id and client_secret are required");
   }
 
   const dotenv = dotenvPath(stateDir);
-  if (clientId && clientSecret) {
-    upsertDotenvVar(dotenv, CLIENT_ID_VAR, clientId);
-    upsertDotenvVar(dotenv, CLIENT_SECRET_VAR, clientSecret);
-  } else if (apiKey) {
-    upsertDotenvVar(dotenv, API_KEY_VAR, apiKey);
-  }
+  upsertDotenvVar(dotenv, CLIENT_ID_VAR, clientId);
+  upsertDotenvVar(dotenv, CLIENT_SECRET_VAR, clientSecret);
+  // Pin issuer to the Identity env that matches this plugin build's SCAN_BASE_URL.
+  upsertDotenvVar(dotenv, OIDC_ISSUER_VAR, DEFAULT_OIDC_ISSUER);
 
   // Extra write target: compose project .env (Docker). Only works if the path is
   // visible inside this process (host-side configure, or a mounted OPENCLAW_DIR).
   const extra = process.env.SENTROOK_DOTENV?.trim() || process.env.OPENCLAW_COMPOSE_ENV?.trim();
   if (extra && path.resolve(extra) !== path.resolve(dotenv)) {
-    if (clientId && clientSecret) {
-      upsertDotenvVar(extra, CLIENT_ID_VAR, clientId);
-      upsertDotenvVar(extra, CLIENT_SECRET_VAR, clientSecret);
-    } else if (apiKey) {
-      upsertDotenvVar(extra, API_KEY_VAR, apiKey);
-    }
+    upsertDotenvVar(extra, CLIENT_ID_VAR, clientId);
+    upsertDotenvVar(extra, CLIENT_SECRET_VAR, clientSecret);
+    upsertDotenvVar(extra, OIDC_ISSUER_VAR, DEFAULT_OIDC_ISSUER);
   }
 
   return dotenv;
@@ -564,9 +553,6 @@ export async function collectAnswersInteractive(
   io: ConfigureIo,
   seed: Partial<ConfigureAnswers> = {},
 ): Promise<ConfigureAnswers> {
-  io.log("==> Sentrook configure");
-  io.log(`    Scan endpoint is pinned to ${SCAN_BASE_URL} (not configurable).`);
-
   let timeoutMs = seed.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (seed.timeoutMs === undefined) {
     if (!(await io.confirm(`Use default timeout (${DEFAULT_TIMEOUT_MS}ms)?`, true))) {
@@ -592,15 +578,20 @@ export async function collectAnswersInteractive(
 
   let clientId = seed.clientId;
   let clientSecret = seed.clientSecret;
-  const apiKey = seed.apiKey;
 
-  if (!apiKey && (!clientId || !clientSecret)) {
+  if (!clientId || !clientSecret) {
     io.log("");
     io.log("==> Scan auth (OIDC client credentials)");
-    io.log(`    Create a Sentrook scan OAuth client at:`);
-    io.log(`      ${DEFAULT_IDENTITY_URL}`);
-    io.log("      → Sentrook tab → grant_types=client_credentials, scope sentrook.scan");
-    io.log("    Paste client_id and client_secret below (access tokens are minted at runtime).");
+    io.log("    To use the hosted Sentrook instance, you need a free FIDU membership");
+    io.log("    with a Sentrook OAuth client.");
+    io.log("");
+    io.log(`    Visit ${DEFAULT_IDENTITY_URL} , and log in or create an`);
+    io.log("    account (free membership is all that's required).");
+    io.log("    Use the Identity environment that matches this Sentrook build");
+    io.log("    (prod Identity for prod Sentrook; *dev* Identity for *dev* Sentrook).");
+    io.log("    On your dashboard, click the Sentrook tab");
+    io.log("    Click 'Create Credentials'");
+    io.log("    Paste the client_id and client_secret when prompted below.");
     clientId = sanitizeSecretInput(await io.prompt("OAuth client_id"));
     clientSecret = sanitizeSecretInput(await io.promptSecret("OAuth client_secret"));
   }
@@ -608,15 +599,15 @@ export async function collectAnswersInteractive(
   let onScanError: OnScanError = seed.onScanError ?? "review";
   if (seed.onScanError === undefined) {
     io.log("");
-    io.log("==> When Sentrook is unreachable or rate-limited");
-    io.log("    allow  = continue the tool without scanning (old default)");
+    io.log("==> When Sentrook cannot scan (unreachable, timeout, rate-limit, auth)");
+    io.log("    allow  = continue without scanning (auth failures still block)");
     io.log("    deny   = block the tool");
     io.log("    review = ask you first (recommended for hosted HTTPS)");
     const raw = await io.prompt(`onScanError [${onScanError}]`, onScanError);
     onScanError = parseOnScanError(raw, onScanError);
   }
 
-  return { timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
+  return { timeoutMs, contributeCorpus, clientId, clientSecret, onScanError };
 }
 
 export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): ConfigureAnswers {
@@ -627,15 +618,14 @@ export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): C
   const contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
   const clientId = seed.clientId?.trim();
   const clientSecret = seed.clientSecret?.trim();
-  const apiKey = seed.apiKey?.trim();
-  const onScanError = seed.onScanError ?? "allow";
-  if (!apiKey && (!clientId || !clientSecret)) {
+  const onScanError = seed.onScanError ?? "review";
+  if (!clientId || !clientSecret) {
     throw new Error(
       "non-interactive configure requires --client-id and --client-secret " +
-        `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR}); --api-key also accepted`,
+        `(or env ${CLIENT_ID_VAR}/${CLIENT_SECRET_VAR})`,
     );
   }
-  return { timeoutMs, contributeCorpus, clientId, clientSecret, apiKey, onScanError };
+  return { timeoutMs, contributeCorpus, clientId, clientSecret, onScanError };
 }
 
 export async function runConfigure(

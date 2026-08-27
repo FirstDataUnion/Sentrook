@@ -1,0 +1,53 @@
+name: sentrook
+version: 0.1.0-beta.2
+# v1: Hermes installers through at least 0.18.x–0.20.x cap install at
+# manifest_version 1 even when the runtime loader accepts 2 (upstream
+# installer/loader drift). We do not use v2-only fields — stay on 1 so
+# `hermes plugins install` works on the Hermes floor we document.
+manifest_version: 1
+api_version: 1
+description: >
+  Sentrook trajectory scanner (hosted HTTPS). Scans tool calls and can allow,
+  escalate to Hermes native approval, or block flagged actions.
+author: First Data Union
+license: Apache-2.0
+homepage: https://github.com/FirstDataUnion/Sentrook
+tags:
+  - security
+  - gateway
+  - scan
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - post_approval_response
+  - on_session_finalize
+  - on_session_reset
+  - subagent_start
+# Credentials are optional at load time so `verify` can report "not covering"
+# honestly when unset. Prefer ~/.hermes/.env (see README / configure).
+config_schema:
+  timeout_ms:
+    type: int
+    default: 60000
+    description: >
+      Wait for POST /scan in ms (OIDC mint is a separate 30s budget).
+      Default 60000. Env override: SENTROOK_SCAN_TIMEOUT_MS.
+  on_scan_error:
+    type: str
+    default: review
+    description: >
+      When /scan times out, cannot connect, returns 5xx, is rate-limited,
+      auth fails (401/403), or a 200 body has invalid JSON / a missing or
+      unknown decision. allow | deny | review. Default review (escalate).
+      Auth never fail-opens: allow still blocks on 401/403. Unattended
+      cron/subagent still blocks. Unexpected plugin errors always block.
+      Env: SENTROOK_ON_SCAN_ERROR.
+  feedback_mode:
+    type: str
+    default: submit
+    description: >
+      off | submit. submit POSTs sanitized review resolutions to hosted
+      /feedback. Env: SENTROOK_FEEDBACK_MODE.
+  # scan_base_url is intentionally NOT configurable — pinned in scan_endpoint.py
+  # to prevent agent/config retargeting of /scan and /feedback.

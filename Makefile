@@ -1,5 +1,5 @@
 .PHONY: install install-dev test test-sentrook test-testnest sanitize-gate lint lint-fix plugin-test \
-	plugin-changeset plugin-version smoke \
+	hermes-plugin-test plugin-changeset plugin-version smoke \
 	sync-library testnest-core testnest-all require-library-mirror require-rookery test-engine
 
 VENV ?= .venv
@@ -74,8 +74,14 @@ sanitize-gate: require-rookery
 		tests/engine/test_scan_sanitize_parity.py \
 		tests/engine/test_sanitize_replay_gate.py -q
 
+# OpenClaw: unit tests, then publish-surface (dist/index.js + openclaw.plugin.json in the tarball).
 plugin-test:
 	cd integrations/openclaw/plugin && npm test && npm run pack:check
+
+# Hermes Sentrook plugin (light Python twin; no full sentrook package required).
+# Includes test_pack_check.py — plugin.yaml hooks/version vs the tree promoted to the install mirror.
+hermes-plugin-test:
+	PYTHONPATH=integrations/hermes $(PYTHON) -m pytest integrations/hermes/plugin/tests -q
 
 # Interactive: add a changeset for the OpenClaw plugin (does not publish).
 plugin-changeset:
@@ -86,11 +92,11 @@ plugin-version:
 	npm run version
 
 lint:
-	$(VENV)/bin/ruff check sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
+	$(VENV)/bin/ruff check sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts integrations/hermes/plugin
 	$(VENV)/bin/ruff format --check sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
 
 lint-fix:
-	$(VENV)/bin/ruff check --fix sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
+	$(VENV)/bin/ruff check --fix sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts integrations/hermes/plugin
 	$(VENV)/bin/ruff format sentrook/sentrook testnest/testnest sentrook/tests testnest/tests scripts
 
 scan-demo:

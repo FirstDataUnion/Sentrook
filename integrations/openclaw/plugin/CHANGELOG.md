@@ -1,9 +1,18 @@
 # @firstdataunion/sentrook-openclaw
 
+## 1.0.4
+
+### Patch Changes
+
+- Fail closed like Hermes: default onScanError is review, default scan timeout is 60s, plugin exceptions and unknown/missing scan decisions block, and unattended scan errors never proceed. OIDC mint uses its own 30s budget outside the scan abort timer. Blocked and denied tool calls no longer linger in the session pending map.
+- 56ed9a8: Rebuild exec review cards from local argv: Command is a structural summary (destination / path / packed excerpt), never a rule id. Shell Preview drops allow-hint and AIRA ids so long commands stay decidable.
+
 ## 1.0.3
 
 ### Patch Changes
 
+- Auth failures (401/403) honor `onScanError` for interactive `review` (config-error card) and `deny`; `allow` and unattended paths still never fail-open. Agent-facing block reasons distinguish configuration/connectivity from policy denies.
+- Configure writes `SENTROOK_OIDC_ISSUER` beside scan credentials (matches pinned `DEFAULT_OIDC_ISSUER` / `SCAN_BASE_URL`).
 - 391bf75: Exec review cards show a secret-scrubbed local command excerpt instead of the PlanIR `[TRUNCATED]` placeholder. Hosted `/scan` and `/feedback` still receive length-bounded, secret/PII-scrubbed PlanIR.
 - 391bf75: Configure restart hints note that `openclaw-gateway` is OpenClaw's default Compose service name and may differ (`docker compose ps`).
 - b150aa3: Pin the scan/feedback origin in plugin code (`SCAN_BASE_URL`) so it cannot be retargeted via openclaw.json or SENTROOK_SCAN_URL.

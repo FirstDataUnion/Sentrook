@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { resolveApprovalPolicyConfig } from "./approvalPolicy.ts";
+import { clearScanTokenCache } from "./auth.ts";
 import {
   buildScanTiming,
   computeTransportMs,
   extractEngineMs,
+  parseScanResponse,
   postScan,
   resolveScanTimeoutMs,
   translateScanResponse,
@@ -59,11 +61,12 @@ function ctx(overrides: Record<string, unknown> = {}) {
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  clearScanTokenCache();
 });
 
 describe("scan timing helpers", () => {
-  it("defaults to 3000ms", () => {
-    assert.equal(resolveScanTimeoutMs(undefined, {}), 3000);
+  it("defaults to 60000ms", () => {
+    assert.equal(resolveScanTimeoutMs(undefined, {}), 60_000);
   });
 
   it("prefers explicit config and env timeout overrides", () => {
@@ -194,6 +197,35 @@ describe("postScan failure logging", () => {
     assert.ok(warns[0]!.includes("x".repeat(200)));
   });
 
+  it("treats invalid JSON 200 as a scan failure", async () => {
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    globalThis.fetch = (async () =>
+      new Response("not-json", { status: 200 })) as typeof fetch;
+    const result = await postScan("https://scan.test", 1500, plan(), { apiKey: "k", oidc: null }, logger);
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "http");
+    assert.match(result.detail, /invalid scan JSON/);
+    assert.ok(warns.some((w) => /invalid JSON/.test(w)));
+  });
+
+  it("treats unknown decision 200 as a scan failure", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ block: false, decision: "maybe" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const result = await postScan("https://scan.test", 1500, plan(), { apiKey: "k", oidc: null });
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.match(result.detail, /unknown scan decision/);
+  });
+
   it("retries once on 429 when Retry-After fits in the timeout", async () => {
     let calls = 0;
     globalThis.fetch = (async () => {
@@ -283,6 +315,99 @@ describe("postScan failure logging", () => {
     assert.match(warns[0] || "", /scan failed: ECONNREFUSED/);
     assert.ok(!warns[0]!.includes("failing open"));
   });
+
+  it("maps OIDC mint 401 to scan auth failure without POSTing /scan", async () => {
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    const urls: string[] = [];
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("openid-configuration")) {
+        return new Response(JSON.stringify({ token_endpoint: "https://identity.test/oauth/token" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/oauth/token")) {
+        return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await postScan(
+      "https://scan.test",
+      1500,
+      plan(),
+      {
+        apiKey: null,
+        oidc: {
+          clientId: "c",
+          clientSecret: "s",
+          issuer: "https://identity.test",
+          audience: "sentrook",
+          scope: "sentrook.scan",
+        },
+      },
+      logger,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "http");
+    assert.equal(result.status, 401);
+    assert.ok(warns.some((w) => /scan auth failed/.test(w)));
+    assert.ok(!urls.some((u) => u.includes("/scan")));
+  });
+
+  it("does not spend the scan timeout on OIDC mint", async () => {
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const access = `aaa.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.bbb`;
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      if (url.includes("openid-configuration")) {
+        await new Promise((r) => setTimeout(r, 80));
+        return new Response(JSON.stringify({ token_endpoint: "https://identity.test/oauth/token" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/oauth/token")) {
+        return new Response(JSON.stringify({ access_token: access, expires_in: 3600 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.includes("/scan")) {
+        return new Response(JSON.stringify({ decision: "allow", block: false }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await postScan(
+      "https://scan.test",
+      20,
+      plan(),
+      {
+        apiKey: null,
+        oidc: {
+          clientId: "c",
+          clientSecret: "s",
+          issuer: "https://identity.test",
+          audience: "sentrook",
+          scope: "sentrook.scan",
+        },
+      },
+    );
+    assert.ok(!("ok" in result && (result as { ok?: false }).ok === false));
+    assert.equal((result as { scan: { decision: string } }).scan.decision, "allow");
+  });
 });
 
 describe("translateScanResponse — block mapping", () => {
@@ -328,11 +453,14 @@ describe("translateScanResponse — review mapping", () => {
       review_description: "read → exec chain flagged",
       review_severity: "critical",
     };
-    const result = translateScanResponse(scan, ctx());
+    const result = translateScanResponse(
+      scan,
+      ctx({ pendingArgs: { command: "ls /tmp" } }),
+    );
     assert.ok(result?.requireApproval);
     const approval = result.requireApproval!;
-    assert.equal(approval.title, "Sentrook review: exec");
-    assert.equal(approval.description, "read → exec chain flagged");
+    assert.equal(approval.title, "ls /tmp");
+    assert.ok(approval.description.includes("ls /tmp"));
     assert.equal(approval.severity, "critical");
     assert.deepEqual(approval.allowedDecisions, [
       "allow-once",
@@ -355,8 +483,8 @@ describe("translateScanResponse — review mapping", () => {
     assert.ok(approval);
     assert.notEqual(approval.title, "[TRUNCATED]");
     assert.ok(!approval.description.includes("[TRUNCATED]"));
-    assert.ok(approval.description.includes("wiki.py"));
-    assert.ok(approval.description.includes("(010)"));
+    assert.ok(approval.description.includes("wiki.py") || approval.title.includes("wiki.py"));
+    assert.ok(!approval.description.includes("(010)"));
   });
 
   it("uses fallback title/description/severity when copy is missing", () => {
@@ -368,7 +496,7 @@ describe("translateScanResponse — review mapping", () => {
     const result = translateScanResponse(scan, ctx());
     const approval = result?.requireApproval;
     assert.ok(approval);
-    assert.equal(approval.title, "Sentrook review: exec");
+    assert.equal(approval.title, "exec: no command preview");
     assert.equal(approval.description, "Review triggered by AIRA-064");
     assert.equal(approval.severity, "warning");
   });
@@ -402,6 +530,39 @@ describe("translateScanResponse — allow mapping", () => {
   it("returns undefined so the tool call proceeds untouched", () => {
     const scan: ScanResponse = { block: false, decision: "allow" };
     assert.equal(translateScanResponse(scan, ctx()), undefined);
+  });
+});
+
+describe("parseScanResponse", () => {
+  it("normalizes decision case", () => {
+    const parsed = parseScanResponse({ decision: "BLOCK", block: true });
+    assert.equal("ok" in parsed && parsed.ok === false, false);
+    if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
+    assert.equal(parsed.decision, "block");
+  });
+
+  it("treats block flag without decision as block", () => {
+    const parsed = parseScanResponse({ block: true });
+    if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
+    assert.equal(parsed.decision, "block");
+  });
+
+  it("fails closed on unknown or missing decision", () => {
+    const unknown = parseScanResponse({ decision: "maybe", block: false });
+    assert.equal("ok" in unknown && unknown.ok === false, true);
+    if (!("ok" in unknown) || unknown.ok !== false) throw new Error("expected failure");
+    assert.equal(unknown.kind, "http");
+    assert.match(unknown.detail, /unknown/);
+
+    const missing = parseScanResponse({ block: false });
+    assert.equal("ok" in missing && missing.ok === false, true);
+    if (!("ok" in missing) || missing.ok !== false) throw new Error("expected failure");
+    assert.match(missing.detail, /missing/);
+  });
+
+  it("fails closed on a non-object body", () => {
+    const parsed = parseScanResponse(["allow"]);
+    assert.equal("ok" in parsed && parsed.ok === false, true);
   });
 });
 

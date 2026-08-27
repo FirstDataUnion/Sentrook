@@ -14,20 +14,26 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
+import { DEFAULT_OIDC_ISSUER } from "./scanEndpoint.ts";
+
 export type ScanApiKeyRef = {
   source?: string;
   provider?: string;
   id?: string;
 };
 
-export const DEFAULT_SCAN_ISSUER = "https://identity.firstdataunion.org";
+/** Default follows the pinned scan deploy (prod vs *dev*). */
+export const DEFAULT_SCAN_ISSUER = DEFAULT_OIDC_ISSUER;
 export const DEFAULT_SCAN_AUDIENCE = "sentrook";
 export const DEFAULT_SCAN_SCOPE = "sentrook.scan";
 const TOKEN_EXPIRY_SKEW_SEC = 60;
+/** Per-request budget for OIDC discovery + token mint (Hermes uses 30s). */
+export const DEFAULT_AUTH_TIMEOUT_MS = 30_000;
 
 export const CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID";
 export const CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET";
 export const API_KEY_VAR = "SENTROOK_SCAN_API_KEY";
+export const OIDC_ISSUER_VAR = "SENTROOK_OIDC_ISSUER";
 
 export type ScanOidcCredentials = {
   clientId: string;
@@ -164,7 +170,7 @@ export function resolveScanAuthConfig(
     CLIENT_SECRET_VAR,
   );
   const issuer =
-    resolveSecretString(cfg.oidcIssuer, env, "SENTROOK_OIDC_ISSUER") ||
+    resolveSecretString(cfg.oidcIssuer, env, OIDC_ISSUER_VAR) ||
     DEFAULT_SCAN_ISSUER;
   const audience =
     resolveSecretString(cfg.oidcAudience, env, "SENTROOK_OIDC_AUDIENCE") ||
@@ -251,12 +257,48 @@ type DiscoveryDoc = {
   token_endpoint?: string;
 };
 
+function fetchWithTimeout(
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  let settled = false;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      controller.abort();
+      if (settled) return;
+      settled = true;
+      reject(new Error(`OIDC request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    Promise.resolve(fetchImpl(input, { ...init, signal: controller.signal })).then(
+      (res) => finish(() => resolve(res)),
+      (err) =>
+        finish(() => {
+          reject(
+            controller.signal.aborted
+              ? new Error(`OIDC request timed out after ${timeoutMs}ms`)
+              : err,
+          );
+        }),
+    );
+  });
+}
+
 async function fetchTokenEndpoint(
   issuer: string,
   fetchImpl: typeof fetch,
+  timeoutMs: number,
 ): Promise<string> {
   const discoveryUrl = `${stripTrailingSlashes(issuer)}/.well-known/openid-configuration`;
-  const response = await fetchImpl(discoveryUrl);
+  const response = await fetchWithTimeout(fetchImpl, timeoutMs, discoveryUrl);
   if (!response.ok) {
     throw new Error(`OIDC discovery failed: HTTP ${response.status}`);
   }
@@ -286,6 +328,7 @@ function decodeJwtExpMs(accessToken: string): number | null {
 export async function getScanAccessToken(
   oidc: ScanOidcCredentials,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = DEFAULT_AUTH_TIMEOUT_MS,
 ): Promise<string> {
   const key = cacheKeyFor(oidc);
   const now = Date.now();
@@ -297,7 +340,7 @@ export async function getScanAccessToken(
     return tokenCache.accessToken;
   }
 
-  const tokenEndpoint = await fetchTokenEndpoint(oidc.issuer, fetchImpl);
+  const tokenEndpoint = await fetchTokenEndpoint(oidc.issuer, fetchImpl, timeoutMs);
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: oidc.clientId,
@@ -306,7 +349,7 @@ export async function getScanAccessToken(
     audience: oidc.audience,
   });
 
-  const response = await fetchImpl(tokenEndpoint, {
+  const response = await fetchWithTimeout(fetchImpl, timeoutMs, tokenEndpoint, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
@@ -351,9 +394,10 @@ export async function getScanAccessToken(
 export async function resolveScanBearerToken(
   auth: ScanAuthConfig,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = DEFAULT_AUTH_TIMEOUT_MS,
 ): Promise<string | null> {
   if (auth.oidc) {
-    return getScanAccessToken(auth.oidc, fetchImpl);
+    return getScanAccessToken(auth.oidc, fetchImpl, timeoutMs);
   }
   return auth.apiKey;
 }
@@ -362,12 +406,13 @@ export async function buildScanAuthHeadersAsync(
   auth: ScanAuthConfig,
   extra: Record<string, string> = {},
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = DEFAULT_AUTH_TIMEOUT_MS,
 ): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     ...extra,
   };
-  const bearer = await resolveScanBearerToken(auth, fetchImpl);
+  const bearer = await resolveScanBearerToken(auth, fetchImpl, timeoutMs);
   if (bearer) {
     headers.authorization = `Bearer ${bearer}`;
   }

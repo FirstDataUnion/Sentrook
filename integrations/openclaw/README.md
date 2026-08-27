@@ -10,9 +10,11 @@ On each `before_tool_call`, the plugin builds a short **PlanIR** trajectory
 `/scan`. The pending step is the tool under review.
 
 The plugin waits for the decision and maps **allow** / **review** / **block** to
-OpenClaw continue / approval UI / veto. Review cards are filled from the **local**
-pending command (secret patterns scrubbed, packed to OpenClaw's title/description
-caps) so a long `exec` is still readable.
+OpenClaw continue / approval UI / veto. Review cards are rebuilt from the **local**
+pending command (secret-scrubbed). OpenClaw shows `title` as **Command** (80 chars)
+and `description` as **Shell Preview** (256). Copy uses a structural ladder
+(destination / sensitive path / packed argv) rather than rule ids, so a long
+`exec` is still decidable. Hosted `/scan` still receives length-bounded PlanIR.
 
 PlanIR is always scrubbed before egress (not configurable). Optional review
 feedback can `POST /feedback` with a sanitized resolution for the community
@@ -138,9 +140,9 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 
 | Setting | Default | Role |
 |---------|---------|------|
-| `timeoutMs` | `3000` | Bounds the `/scan` wait. On timeout or transport error the plugin follows `onScanError` — see [Timeouts](#timeouts) |
-| `onScanError` | `allow` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive). Env: `SENTROOK_ON_SCAN_ERROR`. Hosted configure recommends `review`. |
-| `feedback.mode` | `submit` (wizard default) | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
+| `timeoutMs` | `60000` | Wait for `POST /scan` only. OIDC mint is a separate 30s budget — see [Timeouts](#timeouts) |
+| `onScanError` | `review` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive; unattended blocks). Env: `SENTROOK_ON_SCAN_ERROR`. Set `allow` only if the agent must proceed when Sentrook is unreachable (auth failures still block). |
+| `feedback.mode` | `submit` after configure | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). The wizard default is `submit`. If you enable the plugin without configure, feedback stays `off`. Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
 | `allowlist.enabled` | `true` | Local short-circuit for “allow every time” — see [Allow every time](#allow-every-time-local-allowlist) |
 | `allowlist.path` | `~/.openclaw/sentrook-allowlist.json` | Override store path |
 | `approval.interactiveTimeoutMs` | `300000` (5 min) | Review timeout for interactive sessions (deny on timeout) |
@@ -152,26 +154,34 @@ review / block) — there is no observe-only or sanitization-off toggle.
 
 ### Timeouts
 
-Two different options:
+Two different options, plus a separate mint budget:
 
-1. **`timeoutMs` (scan)** — how long to wait for hosted `/scan`. If the request
-   times out, cannot connect, returns 5xx, or is still rate-limited after one
-   `Retry-After` retry, the plugin applies **`onScanError`**:
-   - `allow` — continue the tool without scanning (legacy fail-open; default
-     when the key is missing so existing installs do not change behaviour)
+1. **`timeoutMs` (scan)** — how long to wait for hosted `POST /scan` (default
+   `60000`). This does **not** include OIDC discovery or token mint: those each
+   have a **30s** budget of their own, so a hung Identity host cannot stall the
+   hook forever. Mint failures are scan errors (401/403 never fail-open).
+
+   If `/scan` times out, cannot connect, returns 5xx, is still rate-limited after
+   one `Retry-After` retry, or returns HTTP 200 with invalid JSON or a missing /
+   unknown `decision`, the plugin applies **`onScanError`**:
+   - `allow` — continue the tool without scanning (explicit opt-in fail-open;
+     auth failures still block)
    - `deny` — block the tool
    - `review` — interactive `requireApproval` (“Sentrook is unreachable…” /
-     rate-limit copy). Decisions are **allow-once** or **deny** only (no
-     allow-always, no local allowlist, no `/feedback`). Cron/subagent does
-     **not** wait the human-review window; it applies
-     `approval.scheduledTimeoutBehavior` immediately (default deny).
-   HTTP 401/403 always deny — bad credentials must not silently skip scans.
-   This is *not* the same as a human-review timeout.
+     rate-limit / auth-config copy). Decisions are **allow-once** or **deny**
+     only (no allow-always, no local allowlist, no `/feedback`). Cron/subagent
+     **blocks** immediately on scan errors (same as Hermes). Default is
+     `review`.
+   Auth failures (HTTP 401/403, including a failed OIDC mint) never fail-open:
+   `allow` still **blocks**. Interactive `review` escalates with a
+   configuration-error card. This is *not* the same as a human-review timeout.
+   Unexpected plugin errors in `before_tool_call` always **block** (not gated
+   by `onScanError`).
 2. **`approval.*` (human review)** — after Sentrook returns `review`, how long
    to wait for allow / deny. Interactive and scheduled (cron / subagent) both
    **fail closed** (`deny`) by default. Opt into
    `approval.scheduledTimeoutBehavior: "allow"` only if unattended jobs must
-   proceed without a human.
+   proceed without a human. That knob is **not** applied to scan errors.
 
 ### Where secrets live (Docker vs native)
 
@@ -190,7 +200,9 @@ Avoid putting Sentrook scan secrets **only** in a compose `env_file`
 credential changes need a recreate. State-dir `.env` reloads on a normal
 **restart**.
 
-Missing credentials → the plugin warns and soft-fails scans; the gateway stays up.
+Missing credentials: the plugin warns at register. Tool calls still hit `/scan`,
+get HTTP 401, and follow the auth-failure path (never fail-open). The gateway
+stays up.
 
 ## Chat-channel approvals
 
@@ -320,22 +332,22 @@ loaded in-process, restart the gateway and run verify again.
 
 After a green verify, **still** have the agent run a tool call and watch the
 gateway logs. Scans run only on **tool calls** — chat-only turns produce no
-scan lines — and fail-open paths only show up live:
+scan lines — and `onScanError=allow` paths only show up live:
 
 ```bash
 # default Compose service name; docker compose ps if yours differs
 docker compose logs -f openclaw-gateway 2>&1 | grep --line-buffered sentrook-openclaw
 ```
 
-Healthy traffic looks like timing / decision lines. `scan failed: … failing open`
-means the tool proceeded without a Sentrook decision — fix auth or connectivity,
-then retry a tool call.
+Healthy traffic looks like timing / decision lines. `continuing without scan (onScanError=allow)`
+means the tool proceeded without a Sentrook decision — that is opt-in; default
+`review` will ask or block instead.
 
 ## Privacy (plugin side)
 
-The plugin **always** scrubs PlanIR before `POST /scan` and `/feedback` when set
-up via configure. Pattern scrubbing catches credentials and common PII shapes; it
-is **not** a full guarantee that no personal detail remains in free-form text.
+The plugin **always** scrubs PlanIR before `POST /scan` and `/feedback`.
+Pattern scrubbing catches credentials and common PII shapes; it is **not** a
+full guarantee that no personal detail remains in free-form text.
 
 On the hosted scan path, the execution plan is evaluated in memory and is **not**
 stored as PlanIR. Opt-in review feedback is a separate path (derived intent,
