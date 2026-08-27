@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,9 +59,18 @@ assert.ok(
 );
 
 const distJs = join(root, "dist/index.js");
-assert.ok(existsSync(distJs), "build did not produce dist/index.js");
-assert.ok(statSync(distJs).size > 1024, "dist/index.js is empty or implausibly small");
-const distText = readFileSync(distJs, "utf8");
+let distBuf: Buffer;
+try {
+  distBuf = readFileSync(distJs);
+} catch (err) {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === "ENOENT") {
+    throw new Error("build did not produce dist/index.js");
+  }
+  throw err;
+}
+assert.ok(distBuf.length > 1024, "dist/index.js is empty or implausibly small");
+const distText = distBuf.toString("utf8");
 assert.ok(
   distText.includes("before_tool_call"),
   "dist/index.js must register before_tool_call (bundle looks incomplete)",
