@@ -29,7 +29,7 @@ import { DEFAULT_OIDC_ISSUER, SCAN_BASE_URL } from "./scanEndpoint.ts";
 export const PLUGIN_ID = "sentrook-openclaw";
 
 export { SCAN_BASE_URL, DEFAULT_OIDC_ISSUER };
-export const DEFAULT_TIMEOUT_MS = 3000;
+export const DEFAULT_TIMEOUT_MS = 60_000;
 /** Contribute sanitized review feedback to the community corpus (opt-out). */
 export const DEFAULT_CONTRIBUTE_CORPUS = true;
 /** Identity portal matching this plugin build's pinned scan deploy. */
@@ -54,9 +54,9 @@ export interface ConfigureAnswers {
   /** Optional shared API key — not collected by configure; auth may still read env. */
   apiKey?: string;
   /**
-   * When Sentrook cannot scan (unreachable, timeout, rate-limit, auth):
-   * allow (fail-open; auth still blocks), deny (fail-closed), or review
-   * (ask, interactive only).
+   * When Sentrook cannot scan (unreachable, timeout, rate-limit, auth).
+   * Default review (ask interactive; block unattended). allow is opt-in
+   * fail-open; auth still blocks. deny always blocks.
    */
   onScanError?: OnScanError;
 }
@@ -107,7 +107,7 @@ export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string
   return {
     timeoutMs: answers.timeoutMs,
     feedback: { mode: feedbackModeFromContribute(answers.contributeCorpus) },
-    onScanError: answers.onScanError ?? "allow",
+    onScanError: answers.onScanError ?? "review",
   };
 }
 
@@ -618,7 +618,7 @@ export function collectAnswersNonInteractive(seed: Partial<ConfigureAnswers>): C
   const contributeCorpus = seed.contributeCorpus ?? DEFAULT_CONTRIBUTE_CORPUS;
   const clientId = seed.clientId?.trim();
   const clientSecret = seed.clientSecret?.trim();
-  const onScanError = seed.onScanError ?? "allow";
+  const onScanError = seed.onScanError ?? "review";
   if (!clientId || !clientSecret) {
     throw new Error(
       "non-interactive configure requires --client-id and --client-secret " +

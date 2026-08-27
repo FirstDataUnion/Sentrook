@@ -8,8 +8,8 @@ import logging
 from .. import scan_client as scan_client_mod
 from ..auth import ScanAuthConfig
 from ..planir import SnapshotCall, build_planir_snapshot, planir_to_dict
-from ..scan_client import post_feedback
 from ..sanitize import sanitize_planir_dict
+from ..scan_client import post_feedback
 
 
 def test_post_feedback_sends_expected_wire_body(monkeypatch) -> None:

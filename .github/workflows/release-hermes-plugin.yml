@@ -103,6 +103,9 @@ jobs:
             "${PLUGIN_DIR}/" "${stage}/"
           test -f "${stage}/plugin.yaml"
           test -f "${stage}/__init__.py"
+          test ! -e "${stage}/tests"
+          # Semantic checks (version, provides_hooks == EXPECTED_HOOKS) run in
+          # make hermes-plugin-test (tests/test_pack_check.py) before this step.
           # Preserve / restore install-mirror docs from the live mirror tip when
           # promoting; they are authored on the mirror seed, not in PLUGIN_DIR.
           echo "Assembled $(find "${stage}" -type f | wc -l | tr -d ' ') plugin files"

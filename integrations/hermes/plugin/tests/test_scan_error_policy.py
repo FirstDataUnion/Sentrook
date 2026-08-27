@@ -6,6 +6,7 @@ from ..scan_error_policy import (
     ScanFailure,
     parse_on_scan_error,
     resolve_on_scan_error,
+    scan_auth_error_to_failure,
     scan_error_to_directive,
 )
 
@@ -135,3 +136,22 @@ def test_auth_failure_deny_blocks() -> None:
     assert directive is not None
     assert directive.action == "block"
     assert "configuration error" in directive.message.lower()
+
+
+def test_scan_auth_error_to_failure_maps_401() -> None:
+    failure = scan_auth_error_to_failure(
+        RuntimeError('client_credentials token mint failed: HTTP 401: {"error":"invalid_client"}')
+    )
+    assert failure.kind == "http"
+    assert failure.status == 401
+    assert "invalid_client" in failure.detail
+
+
+def test_scan_auth_error_to_failure_maps_timeout() -> None:
+    failure = scan_auth_error_to_failure(TimeoutError("OIDC request timed out after 30s"))
+    assert failure.kind == "timeout"
+
+
+def test_scan_auth_error_to_failure_maps_network() -> None:
+    failure = scan_auth_error_to_failure(OSError("ECONNREFUSED"))
+    assert failure.kind == "network"

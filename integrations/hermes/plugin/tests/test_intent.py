@@ -59,6 +59,14 @@ def test_is_unattended_cron_wins_over_discord(monkeypatch) -> None:
     assert is_unattended(platform="discord") is True
 
 
+def test_is_unattended_webhook_and_homeassistant_non_tty(monkeypatch) -> None:
+    monkeypatch.setattr(intent_mod, "is_non_tty", lambda: True)
+    monkeypatch.setattr(intent_mod, "is_hermes_approval_bypass", lambda env=None: False)
+    assert is_unattended(platform="webhook") is True
+    assert is_unattended(platform="homeassistant") is True
+    assert is_unattended(platform="discord") is False
+
+
 def test_is_unattended_non_tty_cli_still_unattended(monkeypatch) -> None:
     monkeypatch.setattr(intent_mod, "is_non_tty", lambda: True)
     monkeypatch.setattr(intent_mod, "is_hermes_approval_bypass", lambda env=None: False)

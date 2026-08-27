@@ -1,12 +1,14 @@
 /**
  * Scan-error policy when hosted Sentrook does not return a decision.
  *
- * Distinct from human-review timeouts (`approval.*`). Missing config keeps
- * today's fail-open (`allow`).
+ * Distinct from human-review timeouts (`approval.*`). Missing config defaults
+ * to ``review`` (ask interactive; block unattended) — same as Hermes.
  */
 
 export type OnScanError = "allow" | "deny" | "review";
 export type ScanFailureKind = "rate_limited" | "http" | "timeout" | "network";
+
+export const DEFAULT_ON_SCAN_ERROR: OnScanError = "review";
 
 export interface ScanFailure {
   ok: false;
@@ -31,7 +33,10 @@ export interface ScanErrorHookResult {
 
 const AUTH_STATUSES = new Set([401, 403]);
 
-export function parseOnScanError(raw: unknown, fallback: OnScanError = "allow"): OnScanError {
+export function parseOnScanError(
+  raw: unknown,
+  fallback: OnScanError = DEFAULT_ON_SCAN_ERROR,
+): OnScanError {
   if (raw === "allow" || raw === "deny" || raw === "review") return raw;
   if (typeof raw === "string") {
     const normalized = raw.trim().toLowerCase();
@@ -48,7 +53,7 @@ export function resolveOnScanError(sources: {
 }): OnScanError {
   const cfg = sources.pluginConfig;
   const env = sources.env ?? {};
-  return parseOnScanError(cfg ?? env.SENTROOK_ON_SCAN_ERROR, "allow");
+  return parseOnScanError(cfg ?? env.SENTROOK_ON_SCAN_ERROR, DEFAULT_ON_SCAN_ERROR);
 }
 
 export function isScanFailure(value: unknown): value is ScanFailure {
@@ -61,6 +66,32 @@ export function isAuthFailure(failure: ScanFailure): boolean {
     typeof failure.status === "number" &&
     AUTH_STATUSES.has(failure.status)
   );
+}
+
+/** Map OIDC mint / discovery errors to a scan failure (Hermes scan-auth path). */
+export function scanAuthErrorToFailure(err: unknown): ScanFailure {
+  const detail = (err instanceof Error ? err.message : String(err))
+    .replace(/\n/g, " ")
+    .trim()
+    .slice(0, 200);
+  const lower = detail.toLowerCase();
+  const statusMatch = detail.match(/\bHTTP (\d{3})\b/i);
+  const status = statusMatch ? Number(statusMatch[1]) : undefined;
+  if (
+    (status != null && AUTH_STATUSES.has(status)) ||
+    lower.includes("unauthorized")
+  ) {
+    return {
+      ok: false,
+      kind: "http",
+      status: status && AUTH_STATUSES.has(status) ? status : 401,
+      detail: detail || "scan auth failed",
+    };
+  }
+  if (lower.includes("timed out") || lower.includes("abort")) {
+    return { ok: false, kind: "timeout", detail: detail || "scan auth timed out" };
+  }
+  return { ok: false, kind: "network", detail: detail || "scan auth failed" };
 }
 
 function detailSnippet(failure: ScanFailure, limit = 100): string {
@@ -119,18 +150,16 @@ function blockReasonFor(failure: ScanFailure): string {
 /**
  * Map a failed /scan attempt to an OpenClaw before_tool_call result.
  *
- * Auth failures (401/403) never fail-open: ``onScanError=allow`` still blocks,
- * and unattended ``review`` never applies ``scheduledTimeoutBehavior: allow``.
+ * Auth failures (401/403) never fail-open: ``onScanError=allow`` still blocks.
  * Interactive ``review`` escalates with a configuration-error card.
- * Unattended ``review`` applies scheduledTimeoutBehavior immediately for
- * non-auth failures only (no 30 min wait).
+ * Unattended ``review`` always blocks (no ``scheduledTimeoutBehavior: allow``
+ * on the scan-error path — that knob is only for Sentrook *policy* reviews).
  */
 export function scanErrorToHookResult(
   failure: ScanFailure,
   opts: {
     onScanError: OnScanError;
     unattended: boolean;
-    scheduledTimeoutBehavior: "allow" | "deny";
     interactiveTimeoutMs: number;
   },
 ): ScanErrorHookResult | undefined {
@@ -166,7 +195,6 @@ export function scanErrorToHookResult(
   }
 
   if (opts.unattended) {
-    if (opts.scheduledTimeoutBehavior === "allow") return undefined;
     return {
       block: true,
       blockReason: blockReasonFor(failure),

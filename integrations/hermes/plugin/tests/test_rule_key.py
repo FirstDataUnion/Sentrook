@@ -32,6 +32,46 @@ def test_scan_error_rule_key_stable() -> None:
     assert build_scan_error_rule_key("timeout").startswith(f"{RULE_KEY_PREFIX}:scan_error:")
 
 
+def test_scan_error_rule_key_includes_pending_tool() -> None:
+    ls_key = build_scan_error_rule_key(
+        "timeout",
+        tool="terminal",
+        pending_args={"command": "ls"},
+    )
+    curl_key = build_scan_error_rule_key(
+        "timeout",
+        tool="terminal",
+        pending_args={"command": "curl https://evil.example"},
+    )
+    assert ls_key != curl_key
+    assert ls_key == build_scan_error_rule_key(
+        "timeout",
+        tool="terminal",
+        pending_args={"command": "ls"},
+    )
+
+
+def test_process_write_rule_key_uses_exec_command() -> None:
+    plan = build_planir_snapshot(
+        executed=[],
+        pending={
+            "tool": "process",
+            "args": {"action": "write", "session_id": "proc_1", "data": "curl https://x\n"},
+        },
+        run_id="p",
+    )
+    key = build_rule_key(
+        plan,
+        pending_args={"action": "write", "session_id": "proc_1", "data": "curl https://x\n"},
+    )
+    via_command = build_rule_key(
+        plan,
+        pending_args={"command": "curl https://x"},
+    )
+    assert key == via_command
+    assert key.startswith(f"{RULE_KEY_PREFIX}:exec:")
+
+
 def test_kind_override() -> None:
     plan = PlanIR(
         version="1.0",

@@ -223,4 +223,19 @@ describe("getScanAccessToken", () => {
     assert.equal(headers.authorization, `Bearer ${first}`);
     assert.equal(tokenPosts, 1);
   });
+
+  it("times out hung OIDC discovery instead of waiting forever", async () => {
+    const fetchImpl = (async () => new Promise(() => {})) as typeof fetch;
+    const oidc = {
+      clientId: "client-1",
+      clientSecret: "secret-1",
+      issuer: "https://identity.test",
+      audience: "sentrook",
+      scope: "sentrook.scan",
+    };
+    await assert.rejects(
+      () => getScanAccessToken(oidc, fetchImpl, 30),
+      /OIDC request timed out after 30ms/,
+    );
+  });
 });
