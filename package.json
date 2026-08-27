@@ -10,7 +10,7 @@
     "version": "changeset version && npm install --package-lock-only"
   },
   "devDependencies": {
-    "@changesets/cli": "3.0.0",
+    "@changesets/cli": "3.0.1",
     "@types/node": "26.2.0"
   }
 }
