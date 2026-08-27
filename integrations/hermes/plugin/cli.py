@@ -308,7 +308,7 @@ def _collect_configure_answers(args: argparse.Namespace, *, interactive: bool) -
     if not (client_id and client_secret):
         print(
             "sentrook configure: provide --client-id + --client-secret "
-            f"(or env {CLIENT_ID_VAR}/{CLIENT_SECRET_VAR}).\n"
+            "(or set the required credential environment variables).\n"
             "Use --non-interactive only when flags/env are already set.",
             file=sys.stderr,
         )
