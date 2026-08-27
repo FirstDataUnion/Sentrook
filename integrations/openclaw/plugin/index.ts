@@ -26,6 +26,7 @@ import {
   isScanFailure,
   parseRetryAfterSeconds,
   resolveOnScanError,
+  scanAuthErrorToFailure,
   scanErrorToHookResult,
 } from "./scanErrorPolicy.ts";
 import { maybeSanitizePlanir } from "./sanitize.ts";
@@ -184,6 +185,63 @@ const DISABLED_SANITIZE_TIMING: SanitizeTiming = { enabled: false, ms: 0 };
 export type { OnScanError, ScanFailure } from "./scanErrorPolicy.ts";
 export { scanErrorToHookResult } from "./scanErrorPolicy.ts";
 
+const SCAN_DECISIONS = new Set(["allow", "review", "block"]);
+
+/** Parse a 200 ``/scan`` body. Unknown or missing decisions fail closed. */
+export function parseScanResponse(body: unknown): ScanResponse | ScanFailure {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return {
+      ok: false,
+      kind: "http",
+      status: 200,
+      detail: "scan response is not an object",
+    };
+  }
+  const doc = body as Record<string, unknown>;
+  const raw = doc.decision;
+  let decision = typeof raw === "string" ? raw.trim().toLowerCase() : undefined;
+  const block = Boolean(doc.block);
+  if (!decision || !SCAN_DECISIONS.has(decision)) {
+    if (block) {
+      decision = "block";
+    } else {
+      return {
+        ok: false,
+        kind: "http",
+        status: 200,
+        detail: `unknown scan decision: ${raw ?? "missing"}`,
+      };
+    }
+  }
+  const log = doc.log && typeof doc.log === "object" && !Array.isArray(doc.log) ? (doc.log as Json) : undefined;
+  const timing =
+    doc.timing && typeof doc.timing === "object" && !Array.isArray(doc.timing)
+      ? (doc.timing as ScanResponse["timing"])
+      : undefined;
+  return {
+    block,
+    decision: decision as ScanResponse["decision"],
+    risk: typeof doc.risk === "number" ? doc.risk : undefined,
+    summary: typeof doc.summary === "string" ? doc.summary : undefined,
+    pending_tool: typeof doc.pending_tool === "string" ? doc.pending_tool : undefined,
+    matched_rules: Array.isArray(doc.matched_rules)
+      ? doc.matched_rules.filter((id): id is string => typeof id === "string")
+      : undefined,
+    block_reason: typeof doc.block_reason === "string" ? doc.block_reason : undefined,
+    review_title: typeof doc.review_title === "string" ? doc.review_title : undefined,
+    review_description: typeof doc.review_description === "string" ? doc.review_description : undefined,
+    review_severity:
+      doc.review_severity === "info" ||
+      doc.review_severity === "warning" ||
+      doc.review_severity === "critical"
+        ? doc.review_severity
+        : undefined,
+    log,
+    timing,
+    error: typeof doc.error === "string" ? doc.error : undefined,
+  };
+}
+
 export interface PostScanResult {
   scan: ScanResponse;
   timing: ScanTiming;
@@ -211,9 +269,9 @@ interface SessionState {
 
 const MAX_TRAJECTORY = 200;
 const MAX_RESULT_TEXT = 20_000;
-const DEFAULT_SCAN_TIMEOUT_MS = 3000;
+const DEFAULT_SCAN_TIMEOUT_MS = 60_000;
 
-/** Scan POST timeout: explicit config/env, else 3000ms. */
+/** Scan POST timeout: explicit config/env, else 60000ms. */
 export function resolveScanTimeoutMs(
   cfgTimeout: unknown,
   env: NodeJS.ProcessEnv = process.env,
@@ -427,6 +485,18 @@ export async function postScan(
     enabled: true,
     ms: sanitizeMs,
   };
+  const body = JSON.stringify(outbound);
+
+  // Mint OIDC outside the scan AbortController. Cold discovery+token can take
+  // a couple of seconds; a hung Identity host must not stall the hook forever.
+  let headers: Record<string, string>;
+  try {
+    headers = await buildScanAuthHeadersAsync(resolvedAuth);
+  } catch (err) {
+    const failure = scanAuthErrorToFailure(err);
+    logger?.warn(`[sentrook-openclaw] scan auth failed: ${failure.detail}`);
+    return failure;
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -434,8 +504,6 @@ export async function postScan(
   const deadline = started + timeoutMs;
   let retried429 = false;
   try {
-    const headers = await buildScanAuthHeadersAsync(resolvedAuth);
-    const body = JSON.stringify(outbound);
     while (true) {
       const response = await fetch(`${url}/scan`, {
         method: "POST",
@@ -444,9 +512,26 @@ export async function postScan(
         signal: controller.signal,
       });
       if (response.ok) {
-        const scan = (await response.json()) as ScanResponse;
+        let raw: unknown;
+        try {
+          raw = await response.json();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger?.warn(`[sentrook-openclaw] scan HTTP 200: invalid JSON: ${msg}`);
+          return {
+            ok: false,
+            kind: "http",
+            status: 200,
+            detail: `invalid scan JSON: ${msg}`,
+          };
+        }
+        const parsed = parseScanResponse(raw);
+        if (isScanFailure(parsed)) {
+          logger?.warn(`[sentrook-openclaw] scan HTTP 200: ${parsed.detail}`);
+          return parsed;
+        }
         const pluginE2eMs = Math.round(performance.now() - started);
-        return { scan, timing: buildScanTiming(scan, pluginE2eMs, sanitizeTiming) };
+        return { scan: parsed, timing: buildScanTiming(parsed, pluginE2eMs, sanitizeTiming) };
       }
 
       let detail = "";
@@ -715,6 +800,41 @@ export function translateScanResponse(
   return undefined;
 }
 
+function rememberPending(
+  st: SessionState,
+  toolCallId: string | undefined,
+  pendingCall: SnapshotCall,
+): void {
+  if (!toolCallId) return;
+  st.pending.set(toolCallId, { tool: pendingCall.tool, args: pendingCall.args });
+}
+
+function dropPending(st: SessionState, toolCallId: string | undefined): void {
+  if (!toolCallId) return;
+  st.pending.delete(toolCallId);
+}
+
+/** Keep session pending only for allow / in-flight review; drop on block/deny. */
+function applyPendingLifecycle(
+  result: BeforeToolCallResult | undefined,
+  st: SessionState,
+  toolCallId: string | undefined,
+  pendingCall: SnapshotCall,
+): BeforeToolCallResult | undefined {
+  if (result?.block) return result;
+  rememberPending(st, toolCallId, pendingCall);
+  const approval = result?.requireApproval;
+  if (!approval || !toolCallId) return result;
+  const inner = approval.onResolution;
+  approval.onResolution = async (decision) => {
+    if (decision === "deny" || decision === "timeout" || decision === "cancelled") {
+      dropPending(st, toolCallId);
+    }
+    if (inner) await inner(decision);
+  };
+  return result;
+}
+
 const plugin = {
   id: "sentrook-openclaw",
   name: "Sentrook OpenClaw",
@@ -817,13 +937,6 @@ const plugin = {
             batchSize: batchSize > 1 ? batchSize : undefined,
           });
 
-          if (event.toolCallId) {
-            st.pending.set(event.toolCallId, {
-              tool: pendingCall.tool,
-              args: pendingCall.args,
-            });
-          }
-
           // Re-resolve auth per call so ~/.openclaw/.env updates apply without
           // relying on Compose-injected process env (printenv won't show those).
           const liveAuth = resolveLiveAuth();
@@ -843,7 +956,6 @@ const plugin = {
             const mapped = scanErrorToHookResult(scanResult, {
               onScanError: config.onScanError,
               unattended: timing.unattended,
-              scheduledTimeoutBehavior: config.approval.scheduledTimeoutBehavior,
               interactiveTimeoutMs: config.approval.interactiveTimeoutMs,
             });
             if (mapped == null) {
@@ -851,26 +963,37 @@ const plugin = {
                 `[sentrook-openclaw] scan error (${scanResult.kind}); continuing without scan (onScanError=allow)`,
               );
             }
-            return mapped;
+            return applyPendingLifecycle(mapped, st, event.toolCallId, pendingCall);
           }
 
           const { scan, timing } = scanResult;
           api.logger.info(`[sentrook-openclaw] ${formatScanTimingLog(plan, scan, timing)}`);
           recordScanLatency(config.url, liveAuth, plan, scan, timing);
 
-          return translateScanResponse(scan, {
-            plan,
-            url: config.url,
-            auth: liveAuth,
-            feedbackMode: config.feedbackMode,
-            approval: config.approval,
-            allowlist: config.allowlist,
-            logger: api.logger,
-            pendingArgs: pendingCall.args,
-          });
+          return applyPendingLifecycle(
+            translateScanResponse(scan, {
+              plan,
+              url: config.url,
+              auth: liveAuth,
+              feedbackMode: config.feedbackMode,
+              approval: config.approval,
+              allowlist: config.allowlist,
+              logger: api.logger,
+              pendingArgs: pendingCall.args,
+            }),
+            st,
+            event.toolCallId,
+            pendingCall,
+          );
         } catch (err) {
           api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);
-          return undefined;
+          const detail = String(err).replace(/\n/g, " ").trim().slice(0, 160);
+          return {
+            block: true,
+            blockReason: detail
+              ? `Sentrook plugin error; this tool was not scanned or run. Detail: ${detail}`
+              : "Sentrook plugin error; this tool was not scanned or run.",
+          };
         }
       },
       { priority: 10 },

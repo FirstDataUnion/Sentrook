@@ -21,9 +21,11 @@ contributing to these it is not yet ready, but we'd still love to hear your thou
 
 1. Fork (or branch) from `main`.
 2. Make the change; keep public paths green: `make lint`, unit tests, smoke
-   TestNest, and plugin tests when you touch the plugin (`npm ci` at the repo
-   root, then `make plugin-test`). Use `make lint-fix` to autofix ruff findings.
-   GitHub Actions runs these on every PR (`.github/workflows/ci.yml`).
+   TestNest, and plugin tests when you touch a host plugin (`npm ci` at the repo
+   root, then `make plugin-test` and/or `make hermes-plugin-test`). Those targets
+   include a publish-surface check (npm tarball / Hermes promote tree), not a
+   live gateway. Use `make lint-fix` to autofix ruff findings. GitHub Actions
+   runs these on every PR (`.github/workflows/ci.yml`).
 3. If you change scanner decisions (L1/L2/`scan_plan`, PlanIR, serve), also run
    the full policy-bound engine regression if you have FIDU maintainer access
    (`make test-engine` from this repo). Do not copy production rules or engine

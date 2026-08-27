@@ -54,7 +54,7 @@ describe("buildPluginEntryConfig", () => {
     assert.equal("mode" in cfg, false);
     assert.equal("sanitization" in cfg, false);
     assert.deepEqual(cfg.feedback, { mode: "submit" });
-    assert.equal(cfg.onScanError, "allow");
+    assert.equal(cfg.onScanError, "review");
   });
 
   it("sets feedback off when user opts out of corpus contribution", () => {
@@ -233,7 +233,8 @@ describe("collectAnswersNonInteractive", () => {
     assert.equal("url" in a, false);
     assert.equal(a.clientId, "c");
     assert.equal(a.contributeCorpus, true);
-    assert.equal(a.onScanError, "allow");
+    assert.equal(a.onScanError, "review");
+    assert.equal(a.timeoutMs, DEFAULT_TIMEOUT_MS);
   });
 
   it("honours contributeCorpus opt-out", () => {

@@ -259,10 +259,13 @@ describe("plugin.register — scan fail logging", () => {
       const result = (await beforeTool(
         { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
         { sessionId: "s1" },
-      )) as { block?: boolean; blockReason?: string } | undefined;
-      assert.equal(result?.block, true);
-      assert.match(result?.blockReason || "", /configuration error/i);
-      assert.match(result?.blockReason || "", /unauthorized/);
+      )) as {
+        block?: boolean;
+        requireApproval?: { title?: string; description?: string };
+      } | undefined;
+      assert.equal(result?.block, undefined);
+      assert.equal(result?.requireApproval?.title, "Sentrook authentication failed");
+      assert.match(result?.requireApproval?.description || "", /configuration error/i);
       await flushAsyncWork();
       assert.ok(warns.some((w) => /scan HTTP 401:.*"unauthorized"/.test(w)));
       assert.ok(!warns.some((w) => /failing open/.test(w)));
@@ -291,12 +294,217 @@ describe("plugin.register — scan fail logging", () => {
       const beforeTool = handlers.get("before_tool_call");
       assert.ok(beforeTool);
 
-      await beforeTool(
+      const result = (await beforeTool(
         { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
         { sessionId: "s1" },
-      );
+      )) as { requireApproval?: unknown; block?: boolean } | undefined;
+      assert.ok(result?.requireApproval);
+      assert.equal(result?.block, undefined);
       await flushAsyncWork();
       assert.ok(warns.some((w) => /scan failed: ECONNREFUSED/.test(w)));
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks when before_tool_call throws instead of failing open", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ decision: "allow", block: false }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof fetch;
+
+      const { api, handlers, warns } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      api.logger.info = () => {
+        throw new Error("boom");
+      };
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "s1" },
+      )) as { block?: boolean; blockReason?: string } | undefined;
+      assert.equal(result?.block, true);
+      assert.match(result?.blockReason || "", /plugin error/i);
+      assert.match(result?.blockReason || "", /boom/);
+      assert.ok(warns.some((w) => /before_tool_call failed/.test(w)));
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("plugin.register — session pending", () => {
+  function pendingCommands(body: string): string[] {
+    const plan = JSON.parse(body) as {
+      steps?: Array<{ status?: string; args?: { command?: string } }>;
+    };
+    return (plan.steps ?? [])
+      .filter((step) => step.status === "pending")
+      .map((step) => String(step.args?.command ?? ""));
+  }
+
+  it("does not keep blocked calls as co-pending", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    const scanBodies: string[] = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          const body = String(init?.body ?? "");
+          scanBodies.push(body);
+          const commands = pendingCommands(body);
+          const decision = commands.some((c) => c.includes("evil")) ? "block" : "allow";
+          return new Response(
+            JSON.stringify({
+              decision,
+              block: decision === "block",
+              block_reason: decision === "block" ? "policy" : undefined,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+
+      const blocked = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://evil.example" }, toolCallId: "t-block" },
+        { sessionId: "s1" },
+      )) as { block?: boolean };
+      assert.equal(blocked?.block, true);
+
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t-next" },
+        { sessionId: "s1" },
+      );
+      assert.equal(scanBodies.length, 2);
+      assert.deepEqual(pendingCommands(scanBodies[1]!), ["ls"]);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops pending on review deny", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    const scanBodies: string[] = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          scanBodies.push(String(init?.body ?? ""));
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_title: "review",
+              review_description: "flagged",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+
+      const first = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://example.com" }, toolCallId: "t-deny" },
+        { sessionId: "s1" },
+      )) as { requireApproval?: { onResolution?: (d: string) => Promise<void> } };
+      assert.ok(first?.requireApproval?.onResolution);
+      await first.requireApproval!.onResolution!("deny");
+
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t-next" },
+        { sessionId: "s1" },
+      );
+      assert.equal(scanBodies.length, 2);
+      assert.deepEqual(pendingCommands(scanBodies[1]!), ["ls"]);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps allow pending until after_tool_call", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    const scanBodies: string[] = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          scanBodies.push(String(init?.body ?? ""));
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      const afterTool = handlers.get("after_tool_call");
+      assert.ok(beforeTool);
+      assert.ok(afterTool);
+
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t-allow" },
+        { sessionId: "s1" },
+      );
+      await beforeTool(
+        { toolName: "exec", params: { command: "pwd" }, toolCallId: "t-peer" },
+        { sessionId: "s1" },
+      );
+      assert.deepEqual(pendingCommands(scanBodies[1]!).sort(), ["ls", "pwd"]);
+
+      afterTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t-allow", result: "ok" },
+        { sessionId: "s1" },
+      );
+      await beforeTool(
+        { toolName: "exec", params: { command: "whoami" }, toolCallId: "t-third" },
+        { sessionId: "s1" },
+      );
+      const thirdPending = pendingCommands(scanBodies[2]!);
+      assert.deepEqual(thirdPending.filter((c) => c === "ls"), []);
+      assert.ok(thirdPending.includes("whoami"));
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

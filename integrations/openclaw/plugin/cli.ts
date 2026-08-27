@@ -6,6 +6,7 @@ import {
   collectAnswersInteractive,
   collectAnswersNonInteractive,
   createStdioIo,
+  DEFAULT_TIMEOUT_MS,
   runConfigure,
   type ConfigureAnswers,
 } from "./configure.ts";
@@ -105,7 +106,7 @@ export function registerSentrookCli(program: CliProgram): void {
       "Configure Sentrook plugin for hosted scan (OIDC credentials + openclaw.json). Does not restart the gateway.",
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
-    .option("--timeout-ms <ms>", "Scan POST timeout in ms")
+    .option("--timeout-ms <ms>", `Scan POST timeout in ms (default ${DEFAULT_TIMEOUT_MS})`)
     .option(
       "--contribute-corpus <bool>",
       "Contribute sanitized review feedback to the community corpus (true|false; default true / opt-out)",
@@ -114,7 +115,7 @@ export function registerSentrookCli(program: CliProgram): void {
     .option("--client-secret <secret>", "FIDU ID OAuth client_secret")
     .option(
       "--on-scan-error <mode>",
-      "When Sentrook is unreachable or rate-limited: allow | deny | review (default allow)",
+      "When Sentrook cannot scan (unreachable, timeout, rate-limit, or auth): allow | deny | review (default review)",
     )
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .action(async (opts: ConfigureCliOptions) => {

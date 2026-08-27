@@ -31,8 +31,7 @@ your interests first, is one of the key goals of FIDU — see
 
 Sentrook aims to be easy to set up and use, with easy install and minimal
 configuration. The main path today is FIDU's hosted instance of Sentrook,
-backed by the community library: install a thin plugin for your agent (OpenClaw
-first; more to come — see [Roadmap](#roadmap)), authorise it with a free FIDU
+backed by the community library: install a thin plugin for your agent (OpenClaw first, then Hermes; more to come — see [Roadmap](#roadmap)), authorise it with a free FIDU
 account, and you're good to go. The plugin scrubs sensitive data from the
 execution path and securely shares the sanitised version with our scanner API,
 which returns an allow, block, or review decision in less than a second.
@@ -55,7 +54,8 @@ and build their own rule library eventually (docs are still WIP). The primary
 offering right now is the hosted scanner: a free FIDU account gets you access to
 the scan API backed by the live rules library.
 
-- **In this repo:** scanner engine, TestNest harness, OpenClaw plugin, DEMO `examples/` (format + smoke only)
+- **In this repo:** scanner engine, TestNest harness, OpenClaw plugin, Hermes
+  plugin, DEMO `examples/` (format + smoke only)
 - **Not in this repo:** production rules and corpus (not publicly available)
 - Gitignored `rules/`, `corpus/`, `eval/` may appear locally for FIDU maintainers — they are not part of the public checkout
 - Hosted scan: `https://sentrook.firstdataunion.org` (pinned plugin origin)
@@ -150,10 +150,18 @@ privacy, non-interactive configure, CLI:
 
 ### Other agents
 
-**Hermes Agent (beta):** thin Python plugin under
-[`integrations/hermes/`](integrations/hermes/README.md) — hosted `/scan`, native
-`approve` + `rule_key`, `hermes sentrook configure|verify`. Install from a clone
-until the community index lists it; see that README for Discord/cron/YOLO notes.
+**Hermes Agent (beta):** thin Python plugin —
+[`integrations/hermes/`](integrations/hermes/README.md). Install from the public
+mirror:
+
+```bash
+hermes plugins install FirstDataUnion/Sentrook-hermes --enable
+hermes sentrook configure
+hermes sentrook verify
+```
+
+Then restart the Hermes gateway and exercise a tool call. Full notes (Discord /
+cron / YOLO, settings): that README.
 
 More adapters (Pi and others) are on the roadmap. Suggestions or help:
 hello@firstdataunion.org, or open an issue.
@@ -209,8 +217,10 @@ You stay in the loop for the interesting cases. The three outcomes are:
 Most everyday traffic is allowed quickly. Review is for "this looks risky —
 you should see it." Block is reserved for the clearer high-severity matches.
 
-If the scan host is unreachable or times out, the plugin **fails open** so the
-agent keeps working (see [Timeouts](integrations/openclaw/README.md#timeouts)).
+If the scan host is unreachable or times out, both host plugins default to
+`review` (ask interactive; block unattended). `allow` is an explicit opt-in
+fail-open. Unexpected plugin errors always block the tool. See each
+integration README.
 Once a `review` is on screen, timeouts **fail closed** by default — no answer
 means the call does not run.
 
@@ -270,7 +280,8 @@ humans** before anything is published — nothing goes live automatically. Opt o
 in the wizard or with `feedback.mode: "off"`.
 
 More detail on scrubbing, logs, and channel approvals:
-[integrations/openclaw/README.md](integrations/openclaw/README.md).
+[integrations/openclaw/README.md](integrations/openclaw/README.md) ·
+[integrations/hermes/README.md](integrations/hermes/README.md).
 
 ### Rule library
 
@@ -303,7 +314,8 @@ yet, but here is what we are looking at next:
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 Public CI on this repo covers lint, unit tests, DEMO smoke TestNest, OpenClaw
-plugin tests, and Hermes plugin unit tests. Full policy-bound eval stays with
+plugin tests (including npm pack surface), and Hermes plugin unit tests
+(including the promote-tree surface). Full policy-bound eval stays with
 FIDU maintainers (not required for a clean public checkout).
 
 Harness details: [testnest/README.md](testnest/README.md).

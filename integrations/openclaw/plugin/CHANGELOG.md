@@ -1,5 +1,12 @@
 # @firstdataunion/sentrook-openclaw
 
+## 1.0.4
+
+### Patch Changes
+
+- Fail closed like Hermes: default onScanError is review, default scan timeout is 60s, plugin exceptions and unknown/missing scan decisions block, and unattended scan errors never proceed. OIDC mint uses its own 30s budget outside the scan abort timer. Blocked and denied tool calls no longer linger in the session pending map.
+- 56ed9a8: Rebuild exec review cards from local argv: Command is a structural summary (destination / path / packed excerpt), never a rule id. Shell Preview drops allow-hint and AIRA ids so long commands stay decidable.
+
 ## 1.0.3
 
 ### Patch Changes
