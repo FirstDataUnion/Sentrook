@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from ..review_copy import (
     REVIEW_MESSAGE_MAX,
     build_review_message,
+    collapse_long_payloads,
     pending_display_command,
 )
 
@@ -15,6 +16,11 @@ def test_pending_display_command_reads_aliases_and_skips_truncated() -> None:
     assert pending_display_command({"command": "ls /tmp"}) == "ls /tmp"
     assert pending_display_command({"cmd": "pwd"}) == "pwd"
     assert pending_display_command({"code": "print(1)"}) == "print(1)"
+    assert pending_display_command({"script": "curl https://x"}) == "curl https://x"
+    assert pending_display_command({"shell": "wget https://x"}) == "wget https://x"
+    assert pending_display_command({"command": ["curl", "-X", "POST", "https://api.example/v1"]}) == (
+        "curl -X POST https://api.example/v1"
+    )
     assert pending_display_command({"command": "[TRUNCATED]"}) is None
     assert pending_display_command({"command": "   "}) is None
     assert pending_display_command(None) is None
@@ -45,6 +51,35 @@ def test_long_command_keeps_signal_and_stays_under_budget() -> None:
     assert msg.startswith("Likely:")
     assert "(AIRA-010)" not in msg
     assert len(msg) <= REVIEW_MESSAGE_MAX
+
+
+def test_payload_collapse_keeps_destination() -> None:
+    payload = '{"content": "' + ("hello from the agent. " * 20) + '"}'
+    command = f"curl -X POST https://alerts.example/api/webhooks/x -d '{payload}'"
+    collapsed = collapse_long_payloads(command)
+    assert "alerts.example" in collapsed
+    assert "hello from the agent" in collapsed
+    assert payload not in collapsed
+    msg = build_review_message(
+        pending_tool="exec",
+        pending_args={"command": command},
+        scan_description="Likely: post a webhook message",
+    )
+    assert "alerts.example" in msg
+    assert payload not in msg
+    assert len(msg) <= REVIEW_MESSAGE_MAX
+
+
+def test_quoted_url_is_not_collapsed() -> None:
+    url = "https://api.example.com/v1/very/long/path/that/is/over/forty-eight-characters"
+    command = f'curl -X GET "{url}"'
+    assert url in collapse_long_payloads(command)
+    msg = build_review_message(
+        pending_tool="exec",
+        pending_args={"command": command},
+        scan_description="Likely: send an outbound HTTP request to api.example.com",
+    )
+    assert "api.example.com" in msg
 
 
 def test_scrubs_secrets_on_operator_card() -> None:

@@ -29,7 +29,7 @@ import {
   scanErrorToHookResult,
 } from "./scanErrorPolicy.ts";
 import { maybeSanitizePlanir } from "./sanitize.ts";
-import { overlayApprovalCopy } from "./reviewCopy.ts";
+import { honestMissTitle, overlayApprovalCopy } from "./reviewCopy.ts";
 import {
   type AllowlistConfig,
   matchAllowlist,
@@ -662,7 +662,7 @@ export function translateScanResponse(
     const copy = overlayApprovalCopy({
       scanTitle: scan.review_title,
       scanDescription: scan.review_description,
-      fallbackTitle: `Sentrook review: ${pendingTool}`,
+      fallbackTitle: honestMissTitle(pendingTool),
       fallbackDescription:
         scan.summary || "Sentrook flagged this tool call for human review",
       pendingTool,

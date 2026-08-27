@@ -328,11 +328,14 @@ describe("translateScanResponse — review mapping", () => {
       review_description: "read → exec chain flagged",
       review_severity: "critical",
     };
-    const result = translateScanResponse(scan, ctx());
+    const result = translateScanResponse(
+      scan,
+      ctx({ pendingArgs: { command: "ls /tmp" } }),
+    );
     assert.ok(result?.requireApproval);
     const approval = result.requireApproval!;
-    assert.equal(approval.title, "Sentrook review: exec");
-    assert.equal(approval.description, "read → exec chain flagged");
+    assert.equal(approval.title, "ls /tmp");
+    assert.ok(approval.description.includes("ls /tmp"));
     assert.equal(approval.severity, "critical");
     assert.deepEqual(approval.allowedDecisions, [
       "allow-once",
@@ -355,8 +358,8 @@ describe("translateScanResponse — review mapping", () => {
     assert.ok(approval);
     assert.notEqual(approval.title, "[TRUNCATED]");
     assert.ok(!approval.description.includes("[TRUNCATED]"));
-    assert.ok(approval.description.includes("wiki.py"));
-    assert.ok(approval.description.includes("(010)"));
+    assert.ok(approval.description.includes("wiki.py") || approval.title.includes("wiki.py"));
+    assert.ok(!approval.description.includes("(010)"));
   });
 
   it("uses fallback title/description/severity when copy is missing", () => {
@@ -368,7 +371,7 @@ describe("translateScanResponse — review mapping", () => {
     const result = translateScanResponse(scan, ctx());
     const approval = result?.requireApproval;
     assert.ok(approval);
-    assert.equal(approval.title, "Sentrook review: exec");
+    assert.equal(approval.title, "exec: no command preview");
     assert.equal(approval.description, "Review triggered by AIRA-064");
     assert.equal(approval.severity, "warning");
   });

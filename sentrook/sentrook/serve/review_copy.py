@@ -1,12 +1,13 @@
 """Human-readable copy for enforce-mode review and block prompts.
 
 OpenClaw's ``plugin.approval.request`` hard-caps ``description`` at 256 chars and
-fail-closes (blocks the call) when exceeded. Copy prioritises:
+fail-closes (blocks the call) when exceeded. The approval UI maps ``title`` to
+the Command field (80) and ``description`` to Shell Preview (256).
 
-1. A short *likely intent* line (rule + argv/script signals)
-2. A *smart excerpt* that keeps high-signal spans (URLs, secret paths, uploads),
-   including a dedicated mode for large inline ``python3 -c`` / ``bash -c`` scripts
-3. Compact rule ids; allow/deny hint only if budget remains
+Operator cards are built from pending argv with a structural ladder (destination,
+sensitive path, packed excerpt) — never rule ids. Long quoted JSON/message
+payloads are collapsed so destinations stay visible. Generic "run a shell
+command" intent is omitted; an honest miss is used when argv is unavailable.
 
 Head-truncating long commands hid exfil URLs and sqlite paths in live red-team
 runs (A3); this module middle-elides and prefers those spans instead.
@@ -15,13 +16,16 @@ runs (A3); this module middle-elides and prefers those spans instead.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from sentrook.planir.args import canonicalize_tool_args, stringify_arg_value
 from sentrook.result import MatchedRule, ScanResult
 from sentrook.sanitize.core import apply_secret_patterns
 from sentrook.sanitize.rules import load_rules
+from sentrook.sanitize.signal_excerpt import pack_signal_excerpt
 from sentrook.serve.log import ScanLogRecord
 
 # OpenClaw plugin.approval.request limits (verified on 2026.6.x): description
@@ -30,6 +34,34 @@ DESCRIPTION_MAX = 256
 TITLE_MAX = 80
 _MIN_COMMAND_CHARS = 16
 _MIN_EXCERPT_CHARS = 24
+_PAYLOAD_COLLAPSE_MIN = 48
+_PAYLOAD_PREVIEW = 40
+_EXEC_COMMAND_KEYS = ("command", "cmd", "shell", "script", "line")
+_BODY_FLAGS = frozenset(
+    {
+        "-d",
+        "--data",
+        "--data-raw",
+        "--data-binary",
+        "--data-urlencode",
+        "--data-ascii",
+        "-F",
+        "--form",
+        "-m",
+        "--message",
+        "--content",
+        "--body",
+        "--json",
+        "--payload",
+    }
+)
+_GENERIC_INTENTS = frozenset(
+    {
+        "run a shell command",
+        "use the exec tool",
+        "use the tool tool",
+    }
+)
 
 # Prefer specific credential/exfil rules over broad fetch→exec / bare exec when
 # choosing operator-facing copy (scan decision merge is unchanged).
@@ -164,6 +196,15 @@ class _Span:
     kind: str
 
 
+@dataclass(frozen=True)
+class ApprovalCard:
+    """Operator-facing OpenClaw title (Command) and description (Shell Preview)."""
+
+    title: str
+    description: str
+    command_found: bool = True
+
+
 def _truncate(text: str, limit: int) -> str:
     text = text.strip()
     if len(text) <= limit:
@@ -188,10 +229,53 @@ def _collapse_ws(text: str) -> str:
 
 
 def _scrub_secrets(text: str) -> str:
-    # Shared policy first (env PASS/PASSWORD assignments, known token shapes, …).
+    # Keep webhook host/path shape before shared secret patterns, which would
+    # otherwise replace the entire Discord/Slack URL with ``[REDACTED]``.
+    text = _redact_webhook_urls(text)
     text = apply_secret_patterns(text, load_rules())
     text = _SECRET_TOKEN_RE.sub("[redacted]", text)
     return _WEBHOOK_SECRET_RE.sub(r"\1[redacted]", text)
+
+
+def _redact_webhook_urls(text: str) -> str:
+    """Replace webhook URLs with ``https://{host}/[redacted-webhook]`` (host kept)."""
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        url = raw.rstrip(").,;]")
+        trailing = raw[len(url) :]
+        if not _is_webhook_url(url):
+            return raw
+        host = _host_from_url(url) or "host"
+        return f"https://{host}/[redacted-webhook]{trailing}"
+
+    return _URL_RE.sub(repl, text)
+
+
+def _command_urls(command: str) -> list[str]:
+    """URLs from argv and inline-script literals, before secret wiping."""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(url: str) -> None:
+        cleaned = url.rstrip(").,;]")
+        key = cleaned.lower()
+        if not cleaned or key in seen:
+            return
+        seen.add(key)
+        found.append(cleaned)
+
+    for url in _URL_RE.findall(command):
+        add(url)
+    split = _split_inline_script(command)
+    if split:
+        _interp, body = split
+        for url in _URL_RE.findall(body):
+            add(url)
+        for lit in _python_string_literals(body):
+            for url in _URL_RE.findall(lit):
+                add(url)
+    return found
 
 
 def _shorten_google_ids(text: str) -> str:
@@ -434,16 +518,16 @@ def _order_by_appearance(command: str, spans: list[_Span]) -> list[_Span]:
 
 def _pending_args(record: ScanLogRecord, result: ScanResult) -> dict:
     pending = result.debug.pending_step
-    if pending is not None and pending.args:
-        return dict(pending.args)
-    return {}
+    if pending is None or not pending.args:
+        return {}
+    return canonicalize_tool_args(pending.tool, dict(pending.args))
 
 
 def _usable_command_text(raw: object | None) -> str | None:
     """Return stripped argv, ignoring the PlanIR length placeholder."""
     if raw is None:
         return None
-    text = str(raw).strip()
+    text = raw.strip() if isinstance(raw, str) else stringify_arg_value(raw).strip()
     if not text or text == "[TRUNCATED]":
         return None
     return text
@@ -452,7 +536,7 @@ def _usable_command_text(raw: object | None) -> str | None:
 def _full_pending_command(record: ScanLogRecord, result: ScanResult) -> str | None:
     """Prefer full pending argv from scan debug; fall back to log excerpt."""
     args = _pending_args(record, result)
-    for key in ("command", "cmd"):
+    for key in _EXEC_COMMAND_KEYS:
         command = _usable_command_text(args.get(key))
         if command is not None:
             return command
@@ -629,6 +713,238 @@ def _is_loopback_host(host: str | None) -> bool:
         return False
     lower = host.lower().split("%", 1)[0]
     return lower in _LOOPBACK_HOSTS or lower.endswith(".localhost")
+
+
+def _is_webhook_url(url: str) -> bool:
+    """True for webhook-shaped URLs (path or hooks.* host), any provider."""
+    try:
+        parsed = urlparse(url)
+        path = (parsed.path or "").lower()
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        lower = url.lower()
+        return "/webhook" in lower or "/hooks/" in lower
+    if host.startswith("hooks."):
+        return True
+    return "/webhook" in path or "/hooks/" in path
+
+
+def _looks_like_url_or_path(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("@", "/", "~")):
+        return True
+    if re.match(r"(?i)^https?://", stripped):
+        return True
+    return bool(_URL_RE.search(stripped))
+
+
+def _payload_stub(body: str, quote: str) -> str:
+    """Short stand-in for a long quoted payload; keep a content/text preview when JSON."""
+    stripped = body.strip()
+    preview = "…"
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        preview = "{…}"
+        for key in ("content", "text", "body", "message", "caption"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                shown = _collapse_ws(value).replace(quote, "")
+                if len(shown) > _PAYLOAD_PREVIEW:
+                    shown = shown[: _PAYLOAD_PREVIEW - 1] + "…"
+                preview = f"{{{key}: {shown}}}"
+                break
+    elif isinstance(data, list):
+        preview = "[…]"
+    return f"{quote}{preview}{quote}"
+
+
+def _should_collapse_payload(previous_token: str, body: str) -> bool:
+    if len(body) < _PAYLOAD_COLLAPSE_MIN:
+        return False
+    if _looks_like_url_or_path(body):
+        return False
+    flag = previous_token.split("=", 1)[0].lower()
+    if flag in _BODY_FLAGS:
+        return True
+    stripped = body.strip()
+    return stripped.startswith("{") or stripped.startswith("[")
+
+
+def collapse_long_payloads(command: str) -> str:
+    """Replace long quoted JSON/message bodies; keep URLs, paths, and destinations.
+
+    Linear scan (no nested quote regex) so long payloads cannot trip ReDoS.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(command)
+    prev_token = ""
+    token: list[str] = []
+
+    def flush_token() -> None:
+        nonlocal prev_token
+        if token:
+            prev_token = "".join(token)
+            token.clear()
+
+    while i < n:
+        ch = command[i]
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            body_chars: list[str] = []
+            while i < n:
+                cur = command[i]
+                if cur == "\\" and i + 1 < n:
+                    body_chars.append(cur)
+                    body_chars.append(command[i + 1])
+                    i += 2
+                    continue
+                if cur == quote:
+                    i += 1
+                    break
+                body_chars.append(cur)
+                i += 1
+            body = "".join(body_chars)
+            if _should_collapse_payload(prev_token, body):
+                out.append(_payload_stub(body, quote))
+            else:
+                out.append(f"{quote}{body}{quote}")
+            prev_token = ""
+            token.clear()
+            continue
+        if ch.isspace() or ch in ";|&":
+            flush_token()
+            out.append(ch)
+            i += 1
+            continue
+        token.append(ch)
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def honest_miss_title(tool: str) -> str:
+    if tool == "exec":
+        return "exec: no command preview"
+    return _truncate(f"{tool}: no preview", TITLE_MAX)
+
+
+def is_policy_headline(title: str) -> bool:
+    """Sidecar titles that name a rule/tool instead of the pending action."""
+    return title.strip().lower().startswith("sentrook review:")
+
+
+def structural_intent(command: str, *, tool: str = "exec") -> str | None:
+    """Short why-it-matters line from argv shape, or None when we would only say 'exec'."""
+    urls = _command_urls(command)
+    spans = extract_salient_spans(command)
+    uploads = [s for s in spans if s.kind == "upload"]
+    secrets = [s for s in spans if s.kind in ("secret_path", "sqlite_connect", "literal_path")]
+    if urls:
+        url = urls[0]
+        host = _host_from_url(url)
+        if _is_webhook_url(url):
+            return "post a webhook message"
+        if _is_loopback_host(host):
+            return "call a local service"
+        if uploads:
+            return f"upload a file to {host}" if host else "upload a file"
+        if re.search(r"(?i)\b(?:curl|wget|urllib|requests)\b", command):
+            return (
+                f"send an outbound HTTP request to {host}"
+                if host
+                else "send an outbound HTTP request"
+            )
+        return f"contact {host}" if host else None
+    if uploads:
+        return "upload a file"
+    if secrets:
+        return "access a sensitive path"
+    if tool == "exec":
+        return None
+    return None
+
+
+def build_command_title(command: str, *, tool: str = "exec") -> str:
+    """Command-field copy (≤80 chars) from local argv."""
+    urls = _command_urls(command)
+    spans = extract_salient_spans(command)
+    secrets = [
+        s for s in spans if s.kind in ("secret_path", "sqlite_connect", "literal_path", "upload")
+    ]
+    collapsed = collapse_long_payloads(_collapse_ws(_scrub_secrets(command)))
+    verb = _primary_exec_verb(collapsed)
+
+    if urls and secrets:
+        host = _host_from_url(urls[0]) or urls[0]
+        leaf = secrets[0].text.rstrip("/").split("/")[-1]
+        if _is_loopback_host(host):
+            return _truncate(f"local: {leaf}", TITLE_MAX)
+        return _truncate(f"{leaf} → {host}", TITLE_MAX)
+    if urls:
+        url = urls[0]
+        host = _host_from_url(url) or url
+        if _is_webhook_url(url):
+            return _truncate(f"webhook → {host}", TITLE_MAX)
+        if _is_loopback_host(host):
+            return _truncate(f"local → {host}", TITLE_MAX)
+        return _truncate(f"{verb} → {host}", TITLE_MAX)
+    if secrets:
+        return _truncate(f"{verb} {_shorten_path(secrets[0].text, 40)}", TITLE_MAX)
+    return _truncate(build_smart_excerpt(command, limit=TITLE_MAX), TITLE_MAX)
+
+
+def build_command_description(command: str, *, tool: str = "exec") -> str:
+    """Shell-preview copy (≤256 chars) from local argv."""
+    intent = structural_intent(command, tool=tool)
+    if intent in _GENERIC_INTENTS:
+        intent = None
+    collapsed = collapse_long_payloads(_collapse_ws(_scrub_secrets(command)))
+    if intent:
+        intent_line = f"Likely: {intent}"
+        budget = DESCRIPTION_MAX - len(intent_line) - 1
+        if budget >= _MIN_COMMAND_CHARS:
+            excerpt = pack_signal_excerpt(collapsed, budget)
+            body = f"{intent_line}\n{excerpt}"
+            if len(body) <= DESCRIPTION_MAX:
+                return body
+        return _truncate(intent_line, DESCRIPTION_MAX)
+    return pack_signal_excerpt(collapsed, DESCRIPTION_MAX)
+
+
+def build_approval_card(
+    *,
+    command: str | None,
+    tool: str = "exec",
+    path: str | None = None,
+) -> ApprovalCard:
+    """Build OpenClaw Command / Shell Preview copy from pending argv."""
+    usable = _usable_command_text(command)
+    if usable:
+        return ApprovalCard(
+            title=build_command_title(usable, tool=tool),
+            description=build_command_description(usable, tool=tool),
+            command_found=True,
+        )
+    if path and str(path).strip():
+        leaf = _shorten_path(str(path).strip(), 48)
+        return ApprovalCard(
+            title=_truncate(f"{tool}: {leaf}", TITLE_MAX),
+            description=_truncate(f"`{tool}` `{leaf}`", DESCRIPTION_MAX),
+            command_found=False,
+        )
+    miss = honest_miss_title(tool)
+    return ApprovalCard(
+        title=miss,
+        description=_truncate(f"{tool}: command was not available to summarise", DESCRIPTION_MAX),
+        command_found=False,
+    )
 
 
 def _pending_path(record: ScanLogRecord, result: ScanResult) -> str | None:
@@ -939,47 +1255,11 @@ def _rule_risk_line(rule: MatchedRule) -> str:
 
 
 def build_review_title(record: ScanLogRecord, result: ScanResult) -> str:
-    tool = _pending_tool(record, result)
-    command = _full_pending_command(record, result)
-    matched = [r for r in result.matched_rules if r.action in ("review", "block")]
-    winning = winning_rule_for_copy(matched)
-
-    if tool == "exec" and command:
-        spans = extract_salient_spans(command)
-        urls = [s for s in spans if s.kind == "url"]
-        secrets = [
-            s
-            for s in spans
-            if s.kind in ("secret_path", "sqlite_connect", "literal_path", "upload")
-        ]
-        if urls and secrets:
-            host = _host_from_url(urls[0].text) or urls[0].text
-            leaf = secrets[0].text.rstrip("/").split("/")[-1]
-            if _is_loopback_host(host):
-                title = f"Local gateway: {leaf}"
-            else:
-                title = f"{leaf} → {host}"
-        elif urls:
-            host = _host_from_url(urls[0].text) or urls[0].text
-            if _is_loopback_host(host):
-                title = "Local OpenClaw gateway request"
-            else:
-                title = f"Outbound request → {host}"
-        elif secrets:
-            title = f"Sensitive path: {_shorten_path(secrets[0].text, 40)}"
-        else:
-            title = build_smart_excerpt(command, limit=56)
-        return _truncate(title, TITLE_MAX)
-
-    path = _pending_path(record, result)
-    if path:
-        leaf = path.rstrip("/").split("/")[-1] or path
-        title = f"{tool}: {_shorten_path(path if len(leaf) < 8 else leaf, 48)}"
-        return _truncate(title, TITLE_MAX)
-
-    if winning:
-        return _truncate(f"Sentrook review: {winning.id}", TITLE_MAX)
-    return _truncate(f"Sentrook review: {tool} call", TITLE_MAX)
+    return build_approval_card(
+        command=_full_pending_command(record, result),
+        tool=_pending_tool(record, result),
+        path=_pending_path(record, result),
+    ).title
 
 
 def build_review_description(
@@ -988,64 +1268,13 @@ def build_review_description(
     *,
     max_len: int = DESCRIPTION_MAX,
 ) -> str:
-    """Approval body, guaranteed to fit within ``max_len`` (OpenClaw caps at 256).
-
-    Budget order: likely-intent line first, then smart excerpt, then rule ids;
-    allow/deny hint only if space remains.
-    """
-    tool = _pending_tool(record, result)
-    command = _full_pending_command(record, result)
-    matched = [r for r in result.matched_rules if r.action in ("review", "block")]
-    winning = winning_rule_for_copy(matched)
-
-    intent = estimate_likely_intent(command, winning, tool=tool)
-    intent_line = f"Likely: {intent}"
-    ids = ", ".join(r.id.replace("AIRA-", "") for r in matched[:3])
-    id_clause = f"({ids})" if ids else ""
-    hint = "Allow once to run it, or deny to stop the agent."
-
-    if not command:
-        path = _pending_path(record, result)
-        if path:
-            leaf = _shorten_path(path, 72)
-            body = f"{intent_line}\n`{tool}` `{leaf}` {id_clause}\n{hint}".strip()
-            return _truncate(body, max_len)
-        body = f"{intent_line}\nuse `{tool}` {id_clause}\n{hint}".strip()
-        return _truncate(body, max_len)
-
-    # Prefer: Likely + excerpt + ids; drop hint if needed.
-    prefix = "run: " if tool == "exec" else f"`{tool}`: "
-
-    def _assemble(excerpt: str, *, with_hint: bool) -> str:
-        lines = [intent_line, f"{prefix}`{excerpt}`"]
-        if id_clause:
-            lines.append(id_clause)
-        if with_hint:
-            lines.append(hint)
-        return "\n".join(lines)
-
-    # Reserve intent + ids + wrappers; give the rest to excerpt.
-    for with_hint in (True, False):
-        fixed = len(intent_line) + 1 + len(prefix) + 2 + 1  # backticks + newlines
-        if id_clause:
-            fixed += len(id_clause) + 1
-        if with_hint:
-            fixed += len(hint) + 1
-        budget = max_len - fixed
-        if budget < _MIN_COMMAND_CHARS:
-            continue
-        excerpt = build_smart_excerpt(command, limit=budget)
-        body = _assemble(excerpt, with_hint=with_hint)
-        if len(body) <= max_len:
-            return body
-        # Tighten excerpt if newlines/ids pushed over
-        overflow = len(body) - max_len
-        excerpt = build_smart_excerpt(command, limit=max(budget - overflow - 3, _MIN_COMMAND_CHARS))
-        body = _assemble(excerpt, with_hint=with_hint)
-        if len(body) <= max_len:
-            return body
-
-    return _truncate(f"{intent_line}\n{id_clause}".strip(), max_len)
+    """Approval body, guaranteed to fit within ``max_len`` (OpenClaw caps at 256)."""
+    card = build_approval_card(
+        command=_full_pending_command(record, result),
+        tool=_pending_tool(record, result),
+        path=_pending_path(record, result),
+    )
+    return _truncate(card.description, max_len)
 
 
 def build_block_reason(
