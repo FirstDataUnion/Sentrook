@@ -57,18 +57,49 @@ def is_auth_failure(failure: ScanFailure) -> bool:
     return failure.kind == "http" and failure.status in AUTH_STATUSES
 
 
+def _detail_snippet(failure: ScanFailure, limit: int = 100) -> str:
+    raw = (failure.detail or "").strip().replace("\n", " ")
+    if not raw:
+        return ""
+    if len(raw) <= limit:
+        return raw
+    return f"{raw[: max(0, limit - 3)]}..."
+
+
 def scan_error_copy(failure: ScanFailure) -> str:
+    """Operator-facing body for interactive scan-error review cards."""
     if failure.kind == "rate_limited":
         return "Sentrook rate-limited this scan. Continue this tool without a security scan?"
     if is_auth_failure(failure):
-        return "Sentrook rejected the scan credentials. The tool will not run."
+        return (
+            "Sentrook could not authenticate to the scan service "
+            "(configuration error — not a security policy block). "
+            "Continue this tool without scanning?"
+        )
     return "Sentrook is unreachable. Continue without scanning?"
 
 
 def _block_reason_for(failure: ScanFailure) -> str:
+    """Agent-facing block message when the tool must not run."""
+    snippet = _detail_snippet(failure)
+    if is_auth_failure(failure):
+        base = (
+            "Sentrook could not authenticate to the scan service "
+            "(configuration error, not a security policy deny). "
+            "Re-run `hermes sentrook configure` / `verify`, and ensure "
+            "SENTROOK_OIDC_ISSUER matches this Sentrook environment. "
+            "The tool was not scanned or run."
+        )
+        return f"{base} Detail: {snippet}" if snippet else base
     if failure.kind == "rate_limited":
-        return "Sentrook rate-limited this scan; the tool was not scanned"
-    return "Sentrook did not scan this tool call (unreachable or timed out)"
+        base = "Sentrook rate-limited this scan; the tool was not scanned or run."
+        return f"{base} Detail: {snippet}" if snippet else base
+    base = (
+        "Sentrook did not scan this tool call (unreachable or timed out). "
+        "This is a connectivity/service issue, not a security policy deny. "
+        "The tool was not run."
+    )
+    return f"{base} Detail: {snippet}" if snippet else base
 
 
 def scan_error_to_directive(
@@ -78,12 +109,15 @@ def scan_error_to_directive(
     unattended: bool,
     rule_key: str,
 ) -> HermesDirective | None:
-    """Map a failed /scan attempt to a Hermes pre_tool_call directive."""
-    if is_auth_failure(failure):
-        return HermesDirective(
-            action="block",
-            message="Sentrook rejected scan credentials",
-        )
+    """Map a failed /scan attempt to a Hermes pre_tool_call directive.
+
+    Auth failures (401/403) never fail-open: ``on_scan_error=allow`` still
+    blocks. ``deny`` and ``review`` follow the same policy as other scan
+    errors so operators get a clear config-error card instead of a silent
+    hard block that looks like a policy deny.
+    """
+    if is_auth_failure(failure) and on_scan_error == "allow":
+        return HermesDirective(action="block", message=_block_reason_for(failure))
 
     policy = on_scan_error
     if policy == "allow":
@@ -116,7 +150,7 @@ def parse_retry_after_seconds(header: str | None) -> float | None:
         when = datetime.fromisoformat(trimmed.replace("Z", "+00:00"))
         if when.tzinfo is None:
             when = when.replace(tzinfo=UTC)
-        delta = (when.timestamp() - datetime.now(UTC).timestamp())
+        delta = when.timestamp() - datetime.now(UTC).timestamp()
         return max(0.0, delta)
     except ValueError:
         return None

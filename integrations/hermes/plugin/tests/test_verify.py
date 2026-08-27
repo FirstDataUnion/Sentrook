@@ -119,13 +119,26 @@ def test_run_verify_local_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyP
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    result = run_verify(
-        settings={"scan_base_url": "http://127.0.0.1:9"},
-        env={},
-        state_dir=tmp_path,
-        skip_health=True,
-        skip_mint=True,
-    )
+    with patch(
+        "plugin.verify.resolve_scan_auth_config",
+        return_value=__import__("plugin.auth", fromlist=["ScanAuthConfig"]).ScanAuthConfig(
+            api_key=None,
+            oidc=__import__("plugin.auth", fromlist=["ScanOidcCredentials"]).ScanOidcCredentials(
+                client_id="cid",
+                client_secret="csec",
+                issuer="https://identity.example",
+                audience="sentrook",
+                scope="sentrook.scan",
+            ),
+        ),
+    ), patch("plugin.verify.has_scan_credentials", return_value=True):
+        result = run_verify(
+            settings={},
+            env={},
+            state_dir=tmp_path,
+            skip_health=True,
+            skip_mint=True,
+        )
     assert result.ok is True
     assert result.covering is True
     names = {c.name for c in result.checks}
@@ -145,7 +158,7 @@ def test_run_verify_https_missing_creds(tmp_path: Path) -> None:
     )
     with patch("plugin.verify.env_with_hermes_dotenv", return_value={}):
         result = run_verify(
-            settings={"scan_base_url": "https://sentrook.example"},
+            settings={},
             env={},
             state_dir=tmp_path,
             skip_health=True,
@@ -162,12 +175,13 @@ def test_run_verify_not_installed(tmp_path: Path) -> None:
         "plugins:\n  enabled:\n    - sentrook\n",
         encoding="utf-8",
     )
-    result = run_verify(
-        settings={"scan_base_url": "http://127.0.0.1:9"},
-        env={},
-        state_dir=tmp_path,
-        skip_health=True,
-        skip_mint=True,
-    )
+    with patch("plugin.verify.has_scan_credentials", return_value=True):
+        result = run_verify(
+            settings={},
+            env={},
+            state_dir=tmp_path,
+            skip_health=True,
+            skip_mint=True,
+        )
     assert result.ok is False
     assert result.covering is False

@@ -45,8 +45,8 @@ def is_non_tty() -> bool:
 
 
 # Gateway / chat surfaces have a human in-band even when stdin is not a TTY.
-# Treating non-TTY alone as unattended wrongly blocks Discord (and similar)
-# reviews into silent deny instead of escalate-to-approve.
+# Treating non-TTY alone as unattended wrongly escalates review→block on any
+# chat gateway (Discord, Telegram, Slack, Feishu, …) instead of an approve card.
 ATTENDED_PLATFORMS = frozenset(
     {
         "discord",
@@ -59,6 +59,13 @@ ATTENDED_PLATFORMS = frozenset(
         "email",
         "web",
         "webhook",
+        "feishu",
+        "lark",
+        "yuanbao",
+        "dingtalk",
+        "wecom",
+        "mattermost",
+        "homeassistant",
     }
 )
 

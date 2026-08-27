@@ -11,9 +11,42 @@ from .sanitize import pack_signal_excerpt
 IntentKind = Literal["user", "cron", "subagent", "system"]
 Json = dict[str, Any]
 
-EXEC_COMMAND_ALIASES = ("cmd", "shell", "script", "line")
+EXEC_COMMAND_ALIASES = ("cmd", "shell", "script", "line", "code", "data")
 WRITE_PATH_ALIASES = ("file", "filepath", "target")
-MESSAGE_BODY_ALIASES = ("body", "content", "message", "msg")
+# Body keys that fold into PlanIR ``message.text`` (channel-agnostic).
+MESSAGE_BODY_ALIASES = ("body", "content", "message", "msg", "comment")
+
+# Hermes host tool → PlanIR vocabulary (OpenClaw / hosted rules).
+# Missed entries fail open at L1 (“No matching rules”) — keep this table
+# complete for any high-risk Hermes tool we intend to cover.
+# Conditional aliases (e.g. process write/submit) live in canonical_tool_name.
+#
+# Messaging: every tool whose job is *delivering an outbound body* maps to
+# PlanIR ``message``. Platform/channel belongs in ``target`` / ``channel`` args
+# — YAIRA rules must not key on transport. Unified Hermes ``send_message``
+# already covers Discord, Telegram, Slack, Matrix, Signal, … Host-specific
+# send twins (DM / comment reply) alias here too. Do **not** alias fetch/list/
+# admin tools (e.g. Hermes ``discord`` fetch_messages) — those are not sinks.
+TOOL_NAME_ALIASES: dict[str, str] = {
+    "terminal": "exec",
+    "execute_code": "exec",  # Python sandbox; emit as exec so command/code rules apply
+    "write_file": "write",
+    "patch": "edit",
+    "send_message": "message",
+    "read_file": "read",
+    "web_extract": "web_fetch",
+    "yb_send_dm": "message",
+    "feishu_drive_reply_comment": "message",
+    "feishu_drive_add_comment": "message",
+}
+
+# process(action=write|submit) injects stdin into a background terminal without a
+# new terminal/exec call — fold onto exec so command regexes still fire.
+PROCESS_EXEC_ACTIONS = frozenset({"write", "submit"})
+
+# Tools whose args are treated as shell/code for review-card “run:” prefix.
+EXEC_TOOLS = frozenset({"exec", "terminal", "execute_code", "process"})
+
 
 URL_RE = __import__("re").compile(r"https?://[^\s\"'<>]+")
 PATH_RE = __import__("re").compile(r"(?:/[\w.\-]+)+")
@@ -38,10 +71,7 @@ CREDENTIAL_FIELD = __import__("re").compile(
     r"(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)",
     __import__("re").IGNORECASE,
 )
-CONTENT_LIKE_KEYS = frozenset({"content", "text", "body", "message", "command", "cmd"})
-
-# Hermes ``terminal`` maps to OpenClaw ``exec`` for command aliases.
-EXEC_TOOLS = frozenset({"exec", "terminal"})
+CONTENT_LIKE_KEYS = frozenset({"content", "text", "body", "message", "command", "cmd", "code"})
 
 
 @dataclass
@@ -128,13 +158,14 @@ def _write_body_text(args: Json) -> str:
         pieces.append(stringify_arg_value(args["content"]))
     if "edits" in args:
         pieces.append(stringify_arg_value(args["edits"]))
-    for key in ("newText", "new_string", "text", "body"):
+    # Hermes ``patch`` (replace + V4A) and OpenClaw edit shapes.
+    for key in ("newText", "new_string", "old_string", "text", "body", "patch"):
         if key in args:
             pieces.append(stringify_arg_value(args[key]))
     return " ".join(p for p in pieces if p)
 
 
-def canonical_tool_name(tool: str) -> str:
+def canonical_tool_name(tool: str, args: Json | None = None) -> str:
     """Map Hermes host tool names onto PlanIR tools the hosted rules know.
 
     Coverage-critical: PlanIR ``steps[].tool`` / pending_tool must use the
@@ -142,17 +173,24 @@ def canonical_tool_name(tool: str) -> str:
     ``terminal`` is the ``exec`` equivalent. Emitting ``terminal`` caused a
     silent L1 early-exit allow (“No matching rules”) for obvious exfil curls —
     verify/health still green, shell coverage effectively off. Every new host
-    tool alias needs an explicit mapping + regression test.
+    tool alias needs an explicit entry in ``TOOL_NAME_ALIASES`` + a regression
+    test.
+
+    ``process`` is conditional: only ``action`` in {write, submit} (stdin inject)
+    maps to ``exec``; list/poll/log/wait/kill/close stay as ``process``.
     """
-    if tool == "terminal":
-        return "exec"
-    return tool
+    if tool == "process":
+        action = str((args or {}).get("action") or "").strip().lower()
+        if action in PROCESS_EXEC_ACTIONS:
+            return "exec"
+        return "process"
+    return TOOL_NAME_ALIASES.get(tool, tool)
 
 
 def canonicalize_tool_args(tool: str, args: Json) -> Json:
     if not args:
         return {}
-    canonical_tool = canonical_tool_name(tool)
+    canonical_tool = canonical_tool_name(tool, args)
     if canonical_tool == "exec":
         out = dict(args)
         if "command" not in out:
@@ -176,7 +214,7 @@ def canonicalize_tool_args(tool: str, args: Json) -> Json:
         if body:
             out["content"] = body
         return out
-    if tool == "message":
+    if canonical_tool == "message":
         out = dict(args)
         if "text" not in out:
             for alias in MESSAGE_BODY_ALIASES:
@@ -271,7 +309,7 @@ def make_plan_step(
 ) -> PlanStep:
     return PlanStep(
         id=step_id,
-        tool=canonical_tool_name(tool),
+        tool=canonical_tool_name(tool, args),
         status=status,
         args=redact_args(canonicalize_tool_args(tool, args)),
         result_summary=result_summary,

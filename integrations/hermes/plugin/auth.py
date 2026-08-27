@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SCAN_ISSUER = "https://identity.firstdataunion.org"
+from .scan_endpoint import DEFAULT_OIDC_ISSUER
+
+# Re-export: default follows the pinned scan deploy (prod vs *dev*).
+DEFAULT_SCAN_ISSUER = DEFAULT_OIDC_ISSUER
 DEFAULT_SCAN_AUDIENCE = "sentrook"
 DEFAULT_SCAN_SCOPE = "sentrook.scan"
 TOKEN_EXPIRY_SKEW_SEC = 60

@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- Auth failures (401/403) honor `onScanError` for interactive `review` (config-error card) and `deny`; `allow` and unattended paths still never fail-open. Agent-facing block reasons distinguish configuration/connectivity from policy denies.
+- Configure writes `SENTROOK_OIDC_ISSUER` beside scan credentials (matches pinned `DEFAULT_OIDC_ISSUER` / `SCAN_BASE_URL`).
 - 391bf75: Exec review cards show a secret-scrubbed local command excerpt instead of the PlanIR `[TRUNCATED]` placeholder. Hosted `/scan` and `/feedback` still receive length-bounded, secret/PII-scrubbed PlanIR.
 - 391bf75: Configure restart hints note that `openclaw-gateway` is OpenClaw's default Compose service name and may differ (`docker compose ps`).
 - b150aa3: Pin the scan/feedback origin in plugin code (`SCAN_BASE_URL`) so it cannot be retargeted via openclaw.json or SENTROOK_SCAN_URL.

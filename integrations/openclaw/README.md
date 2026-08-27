@@ -161,12 +161,15 @@ Two different options:
      when the key is missing so existing installs do not change behaviour)
    - `deny` — block the tool
    - `review` — interactive `requireApproval` (“Sentrook is unreachable…” /
-     rate-limit copy). Decisions are **allow-once** or **deny** only (no
-     allow-always, no local allowlist, no `/feedback`). Cron/subagent does
-     **not** wait the human-review window; it applies
-     `approval.scheduledTimeoutBehavior` immediately (default deny).
-   HTTP 401/403 always deny — bad credentials must not silently skip scans.
-   This is *not* the same as a human-review timeout.
+     rate-limit / auth-config copy). Decisions are **allow-once** or **deny**
+     only (no allow-always, no local allowlist, no `/feedback`). Cron/subagent
+     does **not** wait the human-review window; it applies
+     `approval.scheduledTimeoutBehavior` immediately (default deny) for
+     transport/timeout/429 errors.
+   Auth failures (HTTP 401/403) never fail-open: `allow` still **blocks**, and
+   unattended `review` never applies `scheduledTimeoutBehavior: allow`.
+   Interactive `review` escalates with a configuration-error card. This is
+   *not* the same as a human-review timeout.
 2. **`approval.*` (human review)** — after Sentrook returns `review`, how long
    to wait for allow / deny. Interactive and scheduled (cron / subagent) both
    **fail closed** (`deny`) by default. Opt into

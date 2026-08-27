@@ -44,6 +44,7 @@ def test_deny_blocks() -> None:
     assert directive is not None
     assert directive.action == "block"
     assert "did not scan" in directive.message
+    assert "not a security policy deny" in directive.message.lower()
 
 
 def test_review_interactive_escalates() -> None:
@@ -71,10 +72,16 @@ def test_review_unattended_blocks() -> None:
     assert directive is not None
     assert directive.action == "block"
     assert directive.rule_key is None
+    assert "connectivity" in directive.message.lower() or "timed out" in directive.message.lower()
 
 
-def test_auth_failure_always_blocks() -> None:
-    failure = ScanFailure(ok=False, kind="http", status=401, detail="unauthorized")
+def test_auth_failure_never_fail_open() -> None:
+    failure = ScanFailure(
+        ok=False,
+        kind="http",
+        status=401,
+        detail='client_credentials token mint failed: HTTP 401: {"error":"invalid_client"}',
+    )
     directive = scan_error_to_directive(
         failure,
         on_scan_error="allow",
@@ -83,4 +90,48 @@ def test_auth_failure_always_blocks() -> None:
     )
     assert directive is not None
     assert directive.action == "block"
-    assert "credentials" in directive.message.lower()
+    assert "configuration error" in directive.message.lower()
+    assert "not a security policy deny" in directive.message.lower()
+    assert "invalid_client" in directive.message
+
+
+def test_auth_failure_review_interactive_escalates() -> None:
+    failure = ScanFailure(ok=False, kind="http", status=401, detail="unauthorized")
+    directive = scan_error_to_directive(
+        failure,
+        on_scan_error="review",
+        unattended=False,
+        rule_key="sentrook:scan_error:abc",
+    )
+    assert directive is not None
+    assert directive.action == "approve"
+    assert directive.rule_key == "sentrook:scan_error:abc"
+    assert "configuration error" in directive.message.lower()
+    assert "continue" in directive.message.lower()
+
+
+def test_auth_failure_review_unattended_blocks_clearly() -> None:
+    failure = ScanFailure(ok=False, kind="http", status=403, detail="forbidden")
+    directive = scan_error_to_directive(
+        failure,
+        on_scan_error="review",
+        unattended=True,
+        rule_key="sentrook:scan_error:abc",
+    )
+    assert directive is not None
+    assert directive.action == "block"
+    assert "configuration error" in directive.message.lower()
+    assert "forbidden" in directive.message
+
+
+def test_auth_failure_deny_blocks() -> None:
+    failure = ScanFailure(ok=False, kind="http", status=401, detail="unauthorized")
+    directive = scan_error_to_directive(
+        failure,
+        on_scan_error="deny",
+        unattended=False,
+        rule_key="sentrook:scan_error:abc",
+    )
+    assert directive is not None
+    assert directive.action == "block"
+    assert "configuration error" in directive.message.lower()

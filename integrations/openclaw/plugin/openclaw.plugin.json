@@ -46,7 +46,7 @@
           "deny",
           "review"
         ],
-        "description": "When /scan times out, cannot connect, returns 5xx, or is rate-limited after retry. allow = continue without scanning (default for existing installs). deny = block the tool. review = ask (interactive); unattended uses approval.scheduledTimeoutBehavior immediately. Env: SENTROOK_ON_SCAN_ERROR."
+        "description": "When /scan times out, cannot connect, returns 5xx, is rate-limited after retry, or auth fails (401/403). allow = continue without scanning (default for existing installs; auth still blocks). deny = block the tool. review = ask (interactive); unattended uses approval.scheduledTimeoutBehavior immediately for non-auth failures (auth never fail-opens). Env: SENTROOK_ON_SCAN_ERROR."
       },
       "feedback": {
         "type": "object",

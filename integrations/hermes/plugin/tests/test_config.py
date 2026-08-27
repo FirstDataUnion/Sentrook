@@ -7,59 +7,48 @@ from pathlib import Path
 import pytest
 
 from ..config import resolve_plugin_config
-from ..scan_endpoint import DEFAULT_SCAN_BASE_URL, resolve_scan_base_url
+from ..scan_endpoint import SCAN_BASE_URL, resolve_scan_base_url
 
 
-def test_resolve_scan_base_url_prefers_settings() -> None:
+def test_resolve_scan_base_url_is_pinned() -> None:
     assert (
         resolve_scan_base_url(
             {"scan_base_url": "https://settings.example/"},
             {"SENTROOK_SCAN_BASE_URL": "https://env.example"},
         )
-        == "https://settings.example"
+        == SCAN_BASE_URL
     )
 
 
-def test_resolve_scan_base_url_uses_env_map_not_only_os() -> None:
-    """Regression: ~/.hermes/.env values must win even when not in os.environ."""
+def test_resolve_scan_base_url_ignores_env_map() -> None:
     assert (
         resolve_scan_base_url(
             {},
             {"SENTROOK_SCAN_BASE_URL": "https://dev.sentrook.example"},
         )
-        == "https://dev.sentrook.example"
+        == SCAN_BASE_URL
     )
 
 
 def test_resolve_scan_base_url_default() -> None:
-    assert resolve_scan_base_url({}, {}) == DEFAULT_SCAN_BASE_URL
+    assert resolve_scan_base_url({}, {}) == SCAN_BASE_URL
 
 
-def test_resolve_plugin_config_reads_dotenv_base_url(
+def test_resolve_plugin_config_uses_pinned_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hermes_home = tmp_path
-    state = hermes_home / ".hermes"
+    """Dotenv SENTROOK_SCAN_BASE_URL must not retarget the scan origin."""
+    state = tmp_path / ".hermes"
     state.mkdir()
     (state / ".env").write_text(
         "SENTROOK_SCAN_BASE_URL=https://dev.sentrook.firstdataunion.org\n"
-        "SENTROOK_SCAN_CLIENT_ID=dev-client\n"
-        "SENTROOK_SCAN_CLIENT_SECRET=dev-secret\n"
-        "SENTROOK_OIDC_ISSUER=https://dev.identity.firstdataunion.org\n",
+        "SENTROOK_SCAN_CLIENT_ID=cid\n"
+        "SENTROOK_SCAN_CLIENT_SECRET=csec\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    for key in (
-        "SENTROOK_SCAN_BASE_URL",
-        "SENTROOK_SCAN_CLIENT_ID",
-        "SENTROOK_SCAN_CLIENT_SECRET",
-        "SENTROOK_OIDC_ISSUER",
-        "HERMES_STATE_DIR",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-    cfg = resolve_plugin_config({})
-    assert cfg.url == "https://dev.sentrook.firstdataunion.org"
-    assert cfg.auth.oidc is not None
-    assert cfg.auth.oidc.issuer == "https://dev.identity.firstdataunion.org"
-    assert cfg.auth.oidc.client_id == "dev-client"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_STATE_DIR", raising=False)
+    monkeypatch.delenv("SENTROOK_SCAN_BASE_URL", raising=False)
+    config = resolve_plugin_config({})
+    assert config.url == SCAN_BASE_URL

@@ -336,5 +336,5 @@ def get_health(url: str, auth: ScanAuthConfig | None = None, timeout_sec: float 
         if status == 200:
             return True, payload.decode("utf-8", errors="replace")[:200]
         return False, f"HTTP {status}"
-    except OSError as exc:
+    except Exception as exc:
         return False, str(exc)

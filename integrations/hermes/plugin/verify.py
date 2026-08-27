@@ -302,7 +302,7 @@ def run_verify(
                 detail=(
                     ("oidc client_credentials" if auth.oidc else "api_key")
                     if creds_ok
-                    else "missing SENTROOK_SCAN_CLIENT_ID+SECRET or SENTROOK_SCAN_API_KEY in ~/.hermes/.env"
+                    else "missing SENTROOK_SCAN_CLIENT_ID+SECRET in ~/.hermes/.env"
                 ),
             )
         )
