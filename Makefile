@@ -1,5 +1,5 @@
 .PHONY: install install-dev test test-sentrook test-testnest sanitize-gate lint lint-fix plugin-test \
-	plugin-changeset plugin-version smoke \
+	hermes-plugin-test plugin-changeset plugin-version smoke \
 	sync-library testnest-core testnest-all require-library-mirror require-rookery test-engine
 
 VENV ?= .venv
@@ -76,6 +76,10 @@ sanitize-gate: require-rookery
 
 plugin-test:
 	cd integrations/openclaw/plugin && npm test && npm run pack:check
+
+# Hermes Sentrook plugin (light Python twin; no full sentrook package required).
+hermes-plugin-test:
+	PYTHONPATH=integrations/hermes $(PYTHON) -m pytest integrations/hermes/plugin/tests -q
 
 # Interactive: add a changeset for the OpenClaw plugin (does not publish).
 plugin-changeset:

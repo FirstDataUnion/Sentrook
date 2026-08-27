@@ -27,7 +27,7 @@ const unauthorized: ScanFailure = {
   ok: false,
   kind: "http",
   status: 401,
-  detail: "unauthorized",
+  detail: 'client_credentials token mint failed: HTTP 401: {"error":"invalid_client"}',
 };
 
 describe("parseOnScanError", () => {
@@ -70,6 +70,7 @@ describe("scanErrorToHookResult", () => {
     });
     assert.equal(blocked?.block, true);
     assert.match(blocked?.blockReason || "", /did not scan/);
+    assert.match(blocked?.blockReason || "", /not a security policy deny/i);
     const limited = scanErrorToHookResult(rateLimited, {
       onScanError: "deny",
       ...interactive,
@@ -118,14 +119,39 @@ describe("scanErrorToHookResult", () => {
     assert.equal(allowed, undefined);
   });
 
-  it("401 always denies and never uses the unreachable card", () => {
+  it("401 never fail-opens on allow", () => {
     const result = scanErrorToHookResult(unauthorized, {
       onScanError: "allow",
       ...interactive,
     });
     assert.equal(result?.block, true);
-    assert.match(result?.blockReason || "", /credentials/);
+    assert.match(result?.blockReason || "", /configuration error/i);
+    assert.match(result?.blockReason || "", /not a security policy deny/i);
+    assert.match(result?.blockReason || "", /invalid_client/);
     assert.equal(result?.requireApproval, undefined);
+  });
+
+  it("401 review interactive escalates with config-error card", () => {
+    const result = scanErrorToHookResult(unauthorized, {
+      onScanError: "review",
+      ...interactive,
+    });
+    assert.equal(result?.block, undefined);
+    assert.equal(result?.requireApproval?.title, "Sentrook authentication failed");
+    assert.match(result?.requireApproval?.description || "", /configuration error/i);
+    assert.match(result?.requireApproval?.description || "", /Continue this tool without scanning/);
+  });
+
+  it("401 review unattended blocks even when scheduledTimeoutBehavior is allow", () => {
+    const result = scanErrorToHookResult(unauthorized, {
+      onScanError: "review",
+      unattended: true,
+      scheduledTimeoutBehavior: "allow",
+      interactiveTimeoutMs: 300_000,
+    });
+    assert.equal(result?.block, true);
+    assert.equal(result?.requireApproval, undefined);
+    assert.match(result?.blockReason || "", /configuration error/i);
   });
 });
 

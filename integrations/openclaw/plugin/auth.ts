@@ -14,13 +14,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
+import { DEFAULT_OIDC_ISSUER } from "./scanEndpoint.ts";
+
 export type ScanApiKeyRef = {
   source?: string;
   provider?: string;
   id?: string;
 };
 
-export const DEFAULT_SCAN_ISSUER = "https://identity.firstdataunion.org";
+/** Default follows the pinned scan deploy (prod vs *dev*). */
+export const DEFAULT_SCAN_ISSUER = DEFAULT_OIDC_ISSUER;
 export const DEFAULT_SCAN_AUDIENCE = "sentrook";
 export const DEFAULT_SCAN_SCOPE = "sentrook.scan";
 const TOKEN_EXPIRY_SKEW_SEC = 60;
@@ -28,6 +31,7 @@ const TOKEN_EXPIRY_SKEW_SEC = 60;
 export const CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID";
 export const CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET";
 export const API_KEY_VAR = "SENTROOK_SCAN_API_KEY";
+export const OIDC_ISSUER_VAR = "SENTROOK_OIDC_ISSUER";
 
 export type ScanOidcCredentials = {
   clientId: string;
@@ -164,7 +168,7 @@ export function resolveScanAuthConfig(
     CLIENT_SECRET_VAR,
   );
   const issuer =
-    resolveSecretString(cfg.oidcIssuer, env, "SENTROOK_OIDC_ISSUER") ||
+    resolveSecretString(cfg.oidcIssuer, env, OIDC_ISSUER_VAR) ||
     DEFAULT_SCAN_ISSUER;
   const audience =
     resolveSecretString(cfg.oidcAudience, env, "SENTROOK_OIDC_AUDIENCE") ||

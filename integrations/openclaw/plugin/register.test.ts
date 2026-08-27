@@ -261,7 +261,8 @@ describe("plugin.register — scan fail logging", () => {
         { sessionId: "s1" },
       )) as { block?: boolean; blockReason?: string } | undefined;
       assert.equal(result?.block, true);
-      assert.match(result?.blockReason || "", /credentials/);
+      assert.match(result?.blockReason || "", /configuration error/i);
+      assert.match(result?.blockReason || "", /unauthorized/);
       await flushAsyncWork();
       assert.ok(warns.some((w) => /scan HTTP 401:.*"unauthorized"/.test(w)));
       assert.ok(!warns.some((w) => /failing open/.test(w)));

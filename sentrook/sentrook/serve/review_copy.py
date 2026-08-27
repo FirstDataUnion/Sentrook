@@ -130,8 +130,14 @@ _SECRET_TOKEN_RE = re.compile(
     r"|fidu_[a-z0-9_-]{8,}"
     r")\b"
 )
-# Discord (and similar) webhook path tokens — keep host, drop secret segment.
+# Chat / gateway webhook path tokens — keep host, drop secret segment
+# (Discord ``/api/webhooks/<id>/<token>`` and similar shapes).
 _WEBHOOK_SECRET_RE = re.compile(r"(?i)(/api/webhooks/(?:\d+|\[REDACTED\])/)([A-Za-z0-9_-]{20,})")
+_CHAT_WEBHOOK_RE = re.compile(
+    r"(?i)(?:discord(?:app)?\.com/api/webhooks|hooks\.slack\.com/"
+    r"|(?:outlook\.office(?:365)?\.com|webhook\.office\.com)/webhookb2"
+    r"|/api/webhooks/)"
+)
 _PIPE_TO_SHELL_RE = re.compile(
     r"(?i)(?:curl|wget|fetch)\s+[^\n]*\|\s*(?:ba)?sh\b"
     r"|base64\s+[^\n]*\|\s*(?:ba)?sh\b"
@@ -172,12 +178,11 @@ _CURL_BARE_HOST_RE = re.compile(
 # Google Drive/Docs ids are long opaque tokens; they blow the 256-char card budget.
 _GOOGLE_DOC_ID_RE = re.compile(r"\b[A-Za-z0-9_-]{33,44}\b")
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-_ENV_PIPE_GREP_RE = re.compile(r"(?i)\benv\s*\|\s*grep\b")
+_ENV_PIPE_GREP_RE = re.compile(r"(?i)\benv\b[^\n]*\|\s*grep\b")
 _ENV_CRED_NEEDLE_RE = re.compile(
-    r"(?i)(?:token|secret|password|api[_-]?key|auth|credential|bearer|passwd)"
+    r"(?i)\b(?:api[_-]?key|token|secret|password|passwd|credential|auth|bearer)\b"
 )
 _EMBEDDED_CURL_RE = re.compile(r"(?i)\$\(\s*(?:curl|wget)\b")
-_DISCORD_WEBHOOK_RE = re.compile(r"(?i)discord\.com/api/webhooks|/api/webhooks/")
 _CONNECT_RE = re.compile(
     r"sqlite3\.connect\s*\(\s*(?P<q>['\"])(?P<path>.+?)(?P=q)",
     re.IGNORECASE | re.DOTALL,
@@ -1155,8 +1160,8 @@ def estimate_likely_intent(
             return "call the local OpenClaw gateway"
         return f"upload a file to {host}"
     if urls and host and re.search(r"(?i)\b(?:curl|wget|urllib|requests)\b", text):
-        if _DISCORD_WEBHOOK_RE.search(text):
-            return "post a Discord webhook message"
+        if _CHAT_WEBHOOK_RE.search(text):
+            return "post a chat webhook message"
         if _is_loopback_host(host):
             return "call the local OpenClaw gateway"
         if _API_TOKEN_HEADER_RE.search(text):

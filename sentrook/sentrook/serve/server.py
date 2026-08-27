@@ -1,7 +1,8 @@
 """Loopback/in-network HTTP daemon for live scan serving.
 
-Built on the standard library only (no extra deps in the sidecar image). The
-scanner is created and warmed once at startup; each ``POST /scan`` reuses it.
+Built on the standard library HTTP server (no Flask/FastAPI). The scanner is
+created and warmed once at startup; each ``POST /scan`` reuses it.
+Prometheus metrics are exposed at ``GET /metrics`` via ``prometheus_client``.
 In observe mode the response always reports ``block: false``; in enforce mode
 ``block`` and review metadata reflect the scanner decision.
 """
@@ -21,6 +22,16 @@ from sentrook.serve.auth import scan_auth_health_label, verify_scan_auth
 from sentrook.serve.config import ServeConfig, validate_production_logging
 from sentrook.serve.feedback import FeedbackRequest, process_feedback
 from sentrook.serve.latency import LatencyReport, append_latency_log, build_latency_record
+from sentrook.serve.metrics import (
+    CONTENT_TYPE,
+    endpoint_label,
+    exposition,
+    record_fail_open,
+    record_http,
+    record_oidc_scan_caller,
+    record_plugin_e2e_ms,
+    refresh_from_runtime,
+)
 from sentrook.serve.oidc import OIDCError, oidc_enabled, validate_oidc_configuration
 from sentrook.serve.rate_limit import check_request, rate_limit_headers
 from sentrook.serve.response import build_scan_response
@@ -68,14 +79,43 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                     self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
+            self._record_http(status)
+
+        def _record_http(self, status: int) -> None:
+            started = getattr(self, "_metrics_started", None)
+            endpoint = getattr(self, "_metrics_endpoint", None)
+            if started is None or endpoint is None:
+                return
+            record_http(
+                self.command,
+                endpoint,
+                status,
+                time.perf_counter() - started,
+            )
+            self._metrics_started = None
+
+        def _write_metrics(self) -> None:
+            refresh_from_runtime(runtime)
+            body = exposition()
+            self.send_response(200)
+            self.send_header("Content-Type", CONTENT_TYPE)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path.rstrip("/") in ("/health", "/healthz"):
+            self._metrics_started = time.perf_counter()
+            path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            self._metrics_endpoint = endpoint_label(path)
+            if path in ("/health", "/healthz"):
                 self._write_json(200, runtime.health_payload())
+                return
+            if path == "/metrics":
+                self._write_metrics()
                 return
             self._write_json(404, {"error": "not found"})
 
-        def _require_scan_auth(self) -> bool:
+        def _require_scan_auth(self):
             result = verify_scan_auth(runtime.config, self.headers)
             if not result.ok:
                 status = 403 if result.error == "insufficient_scope" else 401
@@ -83,7 +123,7 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                     "insufficient scope" if result.error == "insufficient_scope" else "unauthorized"
                 )
                 self._write_json(status, {"error": detail})
-                return False
+                return None
             decision = check_request(
                 runtime.limiter,
                 result,
@@ -100,13 +140,19 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                     {"error": "rate limited"},
                     extra_headers=dict(rate_limit_headers(decision)),
                 )
-                return False
-            return True
+                return None
+            return result
 
         def do_POST(self) -> None:  # noqa: N802
-            path = self.path.rstrip("/")
-            if path in ("/scan", "/feedback", "/latency") and not self._require_scan_auth():
-                return
+            self._metrics_started = time.perf_counter()
+            path = self.path.split("?", 1)[0].rstrip("/")
+            self._metrics_endpoint = endpoint_label(path)
+            if path in ("/scan", "/feedback", "/latency"):
+                auth = self._require_scan_auth()
+                if auth is None:
+                    return
+                if path == "/scan" and auth.method == "oidc":
+                    record_oidc_scan_caller(runtime.caller_mix, auth.caller_id)
             if path == "/scan":
                 self._handle_scan()
                 return
@@ -188,8 +234,11 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                             "error": f"scan failed: {exc}",
                         },
                     )
+                    record_fail_open()
                     return
 
+            if payload.get("error"):
+                record_fail_open()
             self._write_json(200, payload)
 
         def _handle_latency(self) -> None:
@@ -215,6 +264,7 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 self._write_json(500, {"error": f"latency log failed: {exc}"})
                 return
 
+            record_plugin_e2e_ms(report.plugin_e2e_ms)
             self._write_json(200, {"status": "ok"})
 
         def _handle_feedback(self) -> None:
@@ -231,7 +281,11 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 return
 
             try:
-                result = process_feedback(runtime.config, request)
+                result = process_feedback(
+                    runtime.config,
+                    request,
+                    session_caps=runtime.feedback_session_caps,
+                )
             except Exception as exc:
                 logger.exception("feedback processing failed")
                 runtime.note_feedback(

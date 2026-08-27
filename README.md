@@ -150,10 +150,13 @@ privacy, non-interactive configure, CLI:
 
 ### Other agents
 
-More agent integrations coming soon. We're working towards native support for
-Hermes and Pi too. If you have suggestions for other platforms, or would like to
-help us support more, we'd love to hear from you: hello@firstdataunion.org, or
-open an issue.
+**Hermes Agent (beta):** thin Python plugin under
+[`integrations/hermes/`](integrations/hermes/README.md) — hosted `/scan`, native
+`approve` + `rule_key`, `hermes sentrook configure|verify`. Install from a clone
+until the community index lists it; see that README for Discord/cron/YOLO notes.
+
+More adapters (Pi and others) are on the roadmap. Suggestions or help:
+hello@firstdataunion.org, or open an issue.
 
 ## Configuration
 
@@ -294,7 +297,7 @@ plugin, and DEMO format examples are what this repo ships.
 Sentrook is in early stages of development, and we have big plans. No exact timelines 
 yet, but here is what we are looking at next:
 
-- More native agent adapters beyond OpenClaw (Hermes and Pi are high on the list)
+- More native agent adapters beyond OpenClaw and Hermes (Pi is high on the list)
 - More public documentation of the rule library format, so self-hosted setups get easier
 - An offline-only mode for people who want stronger locality and are willing to do a bit more setup
 - Static config checkers / audits built into each agent plugin to further harden the agent environment
@@ -304,9 +307,9 @@ yet, but here is what we are looking at next:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-Public CI on this repo covers lint, unit tests, DEMO smoke TestNest, and OpenClaw
-plugin tests. Full policy-bound eval stays with FIDU maintainers (not required
-for a clean public checkout).
+Public CI on this repo covers lint, unit tests, DEMO smoke TestNest, OpenClaw
+plugin tests, and Hermes plugin unit tests. Full policy-bound eval stays with
+FIDU maintainers (not required for a clean public checkout).
 
 Harness details: [testnest/README.md](testnest/README.md).
 
@@ -329,3 +332,4 @@ open public issues for security reports.
 | `examples/rules`, `examples/corpus` | Synthetic DEMO-* format examples |
 | `fixtures/plans` | Minimal PlanIR 1.0 smoke inputs |
 | `integrations/openclaw/` | OpenClaw plugin — builds PlanIR 1.0 and POSTs `/scan` |
+| `integrations/hermes/` | Hermes Agent plugin (Python) — same hosted `/scan` path |

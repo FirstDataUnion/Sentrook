@@ -125,6 +125,7 @@ describe("dotenv helpers", () => {
       assert.match(text, /^OTHER=keep$/m);
       assert.match(text, new RegExp(`^${CLIENT_ID_VAR}=id1$`, "m"));
       assert.match(text, new RegExp(`^${CLIENT_SECRET_VAR}=sec1$`, "m"));
+      assert.match(text, /^SENTROOK_OIDC_ISSUER=https:\/\/identity\.firstdataunion\.org$/m);
       writeScanCredentials(dir, {
         timeoutMs: 3000,
         contributeCorpus: true,
@@ -150,7 +151,7 @@ describe("dotenv helpers", () => {
             clientId: "id",
             clientSecret: "   ",
           }),
-        /non-empty/,
+        /required/,
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -220,7 +221,7 @@ describe("restartHint", () => {
 });
 
 describe("collectAnswersNonInteractive", () => {
-  it("requires OIDC or api key", () => {
+  it("requires OIDC client credentials", () => {
     assert.throws(() => collectAnswersNonInteractive({}), /client-id/);
   });
 
