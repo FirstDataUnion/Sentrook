@@ -26,7 +26,7 @@ class SanitizeRules:
     session_hash_prefix: str
     session_hash_hex_chars: int
     credential_field: re.Pattern[str]
-    secret_value_patterns: tuple[tuple[str, re.Pattern[str]], ...]
+    secret_value_patterns: tuple[tuple[str, re.Pattern[str], bool], ...]
     pii_patterns: tuple[tuple[str, re.Pattern[str]], ...]
     pii_arg_keys: frozenset[str]
     allowed_result_keys: frozenset[str]
@@ -42,6 +42,20 @@ def _compile_patterns(
         name = str(item["name"])
         pattern = re.compile(str(item["pattern"]), flags)
         compiled.append((name, pattern))
+    return tuple(compiled)
+
+
+def _compile_secret_patterns(
+    items: list[dict[str, Any]],
+    *,
+    flags: int = 0,
+) -> tuple[tuple[str, re.Pattern[str], bool], ...]:
+    compiled: list[tuple[str, re.Pattern[str], bool]] = []
+    for item in items:
+        name = str(item["name"])
+        pattern = re.compile(str(item["pattern"]), flags)
+        keep_prefix = bool(item.get("keep_prefix", False))
+        compiled.append((name, pattern, keep_prefix))
     return tuple(compiled)
 
 
@@ -75,7 +89,7 @@ def load_rules(path: Path | None = None) -> SanitizeRules:
             str(raw.get("credential_field_pattern", "")),
             re.IGNORECASE,
         ),
-        secret_value_patterns=_compile_patterns(secret_items, flags=re.IGNORECASE),
+        secret_value_patterns=_compile_secret_patterns(secret_items, flags=re.IGNORECASE),
         pii_patterns=_compile_patterns(pii_items),
         pii_arg_keys=frozenset(str(k) for k in (raw.get("pii_arg_keys") or [])),
         allowed_result_keys=frozenset(str(k) for k in (raw.get("allowed_result_keys") or [])),

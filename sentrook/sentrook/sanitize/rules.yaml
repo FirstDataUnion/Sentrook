@@ -32,53 +32,75 @@ credential_field_pattern: "(token|password|passwd|(?<![a-z])pass(?![a-z])|secret
 # Prefer unique provider prefixes (gitleaks / GitHub secret-scanning style).
 # Do not mirror the full gitleaks catalog — labeled generics have high FP rates
 # for a redactor that runs on every command string.
+#
+# keep_prefix: true — replacement is (first participating capture) + [REDACTED]
+# so L2 rules can still see sk-ant- / Bearer / webhook path without the secret.
+# Capture the stable prefix; omit keep_prefix to replace the whole match.
 secret_value_patterns:
   - name: labeled_secret
     # Avoid eating CLI flags (--password) and assignment LHS already scrubbed
     # (PASSWORD=[REDACTED]); keyword-only replacement never redacted values.
-    pattern: '(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)|bearer\s+[A-Za-z0-9._=-]+'
+    pattern: '(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)'
+  - name: bearer_token
+    pattern: '(bearer\s+)[A-Za-z0-9._=-]+'
+    keep_prefix: true
   - name: openai_key
-    # Classic user keys (T3BlbkFJ = base64 "OpenAI"), project/svc/admin keys,
+    # Classic user keys (T3BlbkFJ = base64 "OpenAI"), project/svc/admin/live keys,
     # plus a short sk- fallback for fixtures / short keys (no hyphen body).
-    pattern: 'sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|sk-[a-z0-9]{10,}'
+    pattern: '(sk-(?:proj|svcacct|admin|live)-)[A-Za-z0-9_-]{8,}|(sk-)[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|(sk-)[a-z0-9]{10,}'
+    keep_prefix: true
   - name: anthropic_key
-    pattern: 'sk-ant-[a-z0-9-]{10,}'
+    pattern: '(sk-ant-)[a-z0-9-]{10,}'
+    keep_prefix: true
   - name: github_token
-    pattern: 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'
+    pattern: '(gh[pousr]_)[A-Za-z0-9]{20,}|(github_pat_)[A-Za-z0-9_]{20,}'
+    keep_prefix: true
   - name: gitlab_token
-    pattern: 'glpat-[A-Za-z0-9_-]{20,}'
+    pattern: '(glpat-)[A-Za-z0-9_-]{20,}'
+    keep_prefix: true
   - name: slack_token
     # Bot/user/app tokens (xox*) plus app-level (xapp) and config (xoxe).
-    pattern: 'xox[baprs]-[A-Za-z0-9-]{10,}|xoxe(?:\.xox[bp])?-\d-[A-Za-z0-9]+|xapp-\d-[A-Za-z0-9-]+'
+    pattern: '(xox[baprs]-)[A-Za-z0-9-]{10,}|(xoxe(?:\.xox[bp])?-\d-)[A-Za-z0-9]+|(xapp-\d-)[A-Za-z0-9-]+'
+    keep_prefix: true
   - name: slack_webhook
-    pattern: 'https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9+/_-]+'
+    pattern: '(https://hooks\.slack\.com/(?:services|workflows|triggers)/)[A-Za-z0-9+/_-]+'
+    keep_prefix: true
   - name: discord_bot_token
     # id.timestamp.hmac (base64url); first segment is snowflake → M/N/O.
     pattern: '[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}'
   - name: discord_webhook
     # Digit snowflake OR already-PII-bitten [REDACTED] id — token segment must never remain.
-    pattern: 'https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/(?:\d+|\[REDACTED\])/[A-Za-z0-9_-]+'
+    pattern: '(https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/)(?:\d+|\[REDACTED\])/[A-Za-z0-9_-]+'
+    keep_prefix: true
   - name: telegram_bot_token
     pattern: '\b\d{5,16}:A[A-Za-z0-9_-]{34}\b'
   - name: npm_token
-    pattern: '\bnpm_[A-Za-z0-9]{36}\b'
+    pattern: '\b(npm_)[A-Za-z0-9]{36}\b'
+    keep_prefix: true
   - name: twilio_api_key
     # Often used for WhatsApp Business / SMS agent channels.
-    pattern: '\bSK[0-9a-fA-F]{32}\b'
+    pattern: '\b(SK)[0-9a-fA-F]{32}\b'
+    keep_prefix: true
   - name: meta_access_token
     # WhatsApp Cloud / Facebook Graph tokens commonly start with EAA.
-    pattern: '\bEAA[A-Za-z0-9]{40,}\b'
+    pattern: '\b(EAA)[A-Za-z0-9]{40,}\b'
+    keep_prefix: true
   - name: aws_access_key
-    pattern: '(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}'
+    pattern: '((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA))[A-Z0-9]{16}'
+    keep_prefix: true
   - name: google_api_key
-    pattern: 'AIza[0-9A-Za-z_-]{35}'
+    pattern: '(AIza)[0-9A-Za-z_-]{35}'
+    keep_prefix: true
   - name: stripe_secret_key
     # Publishable pk_* keys are intentional public; only secret/restricted.
-    pattern: '(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}'
+    pattern: '((?:sk|rk)_(?:live|test)_)[A-Za-z0-9]{20,}'
+    keep_prefix: true
   - name: huggingface_token
-    pattern: 'hf_[A-Za-z0-9]{20,}'
+    pattern: '(hf_)[A-Za-z0-9]{20,}'
+    keep_prefix: true
   - name: groq_api_key
-    pattern: 'gsk_[A-Za-z0-9]{20,}'
+    pattern: '(gsk_)[A-Za-z0-9]{20,}'
+    keep_prefix: true
   - name: pem_private_key
     pattern: '-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----'
 

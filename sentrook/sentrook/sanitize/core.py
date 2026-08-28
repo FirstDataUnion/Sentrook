@@ -132,11 +132,26 @@ def apply_secret_patterns_with_hits(text: str, rules: SanitizeRules) -> tuple[st
     if cli_hits:
         hits.append("cli_secret_flag")
 
-    for name, pattern in rules.secret_value_patterns:
+    for name, pattern, keep_prefix in rules.secret_value_patterns:
         if pattern.search(cleaned):
             hits.append(name)
-            cleaned = pattern.sub(rules.redacted, cleaned)
+            cleaned = pattern.sub(
+                lambda match, *, keep=keep_prefix: _prefix_preserving_repl(
+                    match, rules.redacted, keep
+                ),
+                cleaned,
+            )
     return cleaned, hits
+
+
+def _prefix_preserving_repl(match: re.Match[str], placeholder: str, keep_prefix: bool) -> str:
+    """Replace a secret match, optionally keeping the first capturing group."""
+    if keep_prefix:
+        for index in range(1, (match.lastindex or 0) + 1):
+            group = match.group(index)
+            if group:
+                return f"{group}{placeholder}"
+    return placeholder
 
 
 def apply_pii_patterns(text: str, rules: SanitizeRules) -> str:

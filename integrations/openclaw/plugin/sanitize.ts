@@ -11,6 +11,11 @@ import { createHash } from "node:crypto";
 
 import type { PlanIR } from "./planir.ts";
 
+export interface SecretValuePattern {
+  pattern: RegExp;
+  keepPrefix?: boolean;
+}
+
 export interface SanitizeRules {
   version: number;
   redacted: string;
@@ -21,7 +26,7 @@ export interface SanitizeRules {
   sessionHashPrefix: string;
   sessionHashHexChars: number;
   credentialField: RegExp;
-  secretValuePatterns: RegExp[];
+  secretValuePatterns: SecretValuePattern[];
   piiPatterns: RegExp[];
   piiArgKeys: ReadonlySet<string>;
   allowedResultKeys: ReadonlySet<string>;
@@ -54,25 +59,41 @@ export const DEFAULT_RULES: SanitizeRules = {
   // Bounded ``pass`` — see rules.yaml credential_field_pattern.
   credentialField: /(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)/i,
   secretValuePatterns: [
-    /(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)|bearer\s+[A-Za-z0-9._=-]+/gi,
-    /sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|sk-[a-z0-9]{10,}/g,
-    /sk-ant-[a-z0-9-]{10,}/g,
-    /gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/g,
-    /glpat-[A-Za-z0-9_-]{20,}/g,
-    /xox[baprs]-[A-Za-z0-9-]{10,}|xoxe(?:\.xox[bp])?-\d-[A-Za-z0-9]+|xapp-\d-[A-Za-z0-9-]+/gi,
-    /https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9+/_-]+/g,
-    /[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}/g,
-    /https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/(?:\d+|\[REDACTED\])\/[A-Za-z0-9_-]+/g,
-    /\b\d{5,16}:A[A-Za-z0-9_-]{34}\b/g,
-    /\bnpm_[A-Za-z0-9]{36}\b/g,
-    /\bSK[0-9a-fA-F]{32}\b/g,
-    /\bEAA[A-Za-z0-9]{40,}\b/g,
-    /(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}/g,
-    /AIza[0-9A-Za-z_-]{35}/g,
-    /(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}/g,
-    /hf_[A-Za-z0-9]{20,}/g,
-    /gsk_[A-Za-z0-9]{20,}/g,
-    /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g,
+    { pattern: /(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)/gi },
+    { pattern: /(bearer\s+)[A-Za-z0-9._=-]+/gi, keepPrefix: true },
+    {
+      pattern:
+        /(sk-(?:proj|svcacct|admin|live)-)[A-Za-z0-9_-]{8,}|(sk-)[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|(sk-)[a-z0-9]{10,}/g,
+      keepPrefix: true,
+    },
+    { pattern: /(sk-ant-)[a-z0-9-]{10,}/g, keepPrefix: true },
+    { pattern: /(gh[pousr]_)[A-Za-z0-9]{20,}|(github_pat_)[A-Za-z0-9_]{20,}/g, keepPrefix: true },
+    { pattern: /(glpat-)[A-Za-z0-9_-]{20,}/g, keepPrefix: true },
+    {
+      pattern:
+        /(xox[baprs]-)[A-Za-z0-9-]{10,}|(xoxe(?:\.xox[bp])?-\d-)[A-Za-z0-9]+|(xapp-\d-)[A-Za-z0-9-]+/gi,
+      keepPrefix: true,
+    },
+    {
+      pattern: /(https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/)[A-Za-z0-9+/_-]+/g,
+      keepPrefix: true,
+    },
+    { pattern: /[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}/g },
+    {
+      pattern:
+        /(https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/)(?:\d+|\[REDACTED\])\/[A-Za-z0-9_-]+/g,
+      keepPrefix: true,
+    },
+    { pattern: /\b\d{5,16}:A[A-Za-z0-9_-]{34}\b/g },
+    { pattern: /\b(npm_)[A-Za-z0-9]{36}\b/g, keepPrefix: true },
+    { pattern: /\b(SK)[0-9a-fA-F]{32}\b/g, keepPrefix: true },
+    { pattern: /\b(EAA)[A-Za-z0-9]{40,}\b/g, keepPrefix: true },
+    { pattern: /((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA))[A-Z0-9]{16}/g, keepPrefix: true },
+    { pattern: /(AIza)[0-9A-Za-z_-]{35}/g, keepPrefix: true },
+    { pattern: /((?:sk|rk)_(?:live|test)_)[A-Za-z0-9]{20,}/g, keepPrefix: true },
+    { pattern: /(hf_)[A-Za-z0-9]{20,}/g, keepPrefix: true },
+    { pattern: /(gsk_)[A-Za-z0-9]{20,}/g, keepPrefix: true },
+    { pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g },
   ],
   piiPatterns: [
     /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
@@ -337,10 +358,36 @@ function applyPatterns(text: string, patterns: RegExp[], replacement: string): s
   return out;
 }
 
+function applySecretValuePatterns(
+  text: string,
+  patterns: SecretValuePattern[],
+  redacted: string,
+): string {
+  let out = text;
+  for (const { pattern, keepPrefix } of patterns) {
+    pattern.lastIndex = 0;
+    out = out.replace(pattern, (match, ...args: unknown[]) => {
+      if (!keepPrefix) {
+        return redacted;
+      }
+      for (const arg of args) {
+        if (typeof arg === "number") {
+          break;
+        }
+        if (typeof arg === "string" && arg.length > 0) {
+          return `${arg}${redacted}`;
+        }
+      }
+      return redacted;
+    });
+  }
+  return out;
+}
+
 function applySecretPatterns(text: string, rules: SanitizeRules): string {
   let cleaned = redactEnvSecretAssignments(text, rules.redacted);
   cleaned = redactCliSecretFlags(cleaned, rules.redacted);
-  return applyPatterns(cleaned, rules.secretValuePatterns, rules.redacted);
+  return applySecretValuePatterns(cleaned, rules.secretValuePatterns, rules.redacted);
 }
 
 /** Secret-pattern scrub for operator-facing copy (no PII, no length placeholder). */

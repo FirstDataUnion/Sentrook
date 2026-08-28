@@ -91,6 +91,7 @@ def test_redacts_openai_key_in_args() -> None:
     assert "[REDACTED]" in cmd
     assert (
         "openai_key" in result.report.pattern_counts
+        or "bearer_token" in result.report.pattern_counts
         or "labeled_secret" in result.report.pattern_counts
     )
     assert result.report.to_dict()
