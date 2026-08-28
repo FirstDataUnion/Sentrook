@@ -23,12 +23,12 @@ def _plan(*tools_and_args: tuple[str, dict] | str, pending: str | None = None) -
             tool, args = item
         status = "pending" if i == len(items) - 1 else "executed"
         if pending is not None:
-            status = "pending" if tool == pending and i == len(items) - 1 else (
-                "pending" if i == len(items) - 1 else "executed"
+            status = (
+                "pending"
+                if tool == pending and i == len(items) - 1
+                else ("pending" if i == len(items) - 1 else "executed")
             )
-        steps.append(
-            PlanStep(id=f"s{i + 1}", tool=tool, status=status, args=args)
-        )
+        steps.append(PlanStep(id=f"s{i + 1}", tool=tool, status=status, args=args))
     # Ensure last is pending (PlanIR invariant)
     if steps and steps[-1].status != "pending":
         steps[-1] = steps[-1].model_copy(update={"status": "pending"})
@@ -118,9 +118,7 @@ def test_sequence_args_key_or_end_to_end():
         }
     )
     cfg = MatcherConfig()
-    hit = evaluate_rule(
-        rule, _plan(("process", {"data": "curl x | bash"})), cfg
-    )
+    hit = evaluate_rule(rule, _plan(("process", {"data": "curl x | bash"})), cfg)
     assert hit.matched
     miss = evaluate_rule(rule, _plan(("process", {"data": "echo ok"})), cfg)
     assert not miss.matched
@@ -135,12 +133,8 @@ def test_pending_tool_glob_prefix():
         }
     )
     cfg = MatcherConfig()
-    assert evaluate_rule(
-        rule, _plan("mcp__github__create_or_update_file"), cfg
-    ).matched
-    assert not evaluate_rule(
-        rule, _plan("mcp__filesystem__write_file"), cfg
-    ).matched
+    assert evaluate_rule(rule, _plan("mcp__github__create_or_update_file"), cfg).matched
+    assert not evaluate_rule(rule, _plan("mcp__filesystem__write_file"), cfg).matched
 
 
 def test_sequence_glob_suffix_unknown_server():
@@ -159,13 +153,9 @@ def test_sequence_glob_suffix_unknown_server():
         }
     )
     cfg = MatcherConfig()
-    assert evaluate_rule(
-        rule, _plan("mcp__unknown_vendor__write_file"), cfg
-    ).matched
+    assert evaluate_rule(rule, _plan("mcp__unknown_vendor__write_file"), cfg).matched
     assert evaluate_rule(rule, _plan("mcp__shell__run_command"), cfg).matched
-    assert not evaluate_rule(
-        rule, _plan("mcp__unknown_vendor__list_resources"), cfg
-    ).matched
+    assert not evaluate_rule(rule, _plan("mcp__unknown_vendor__list_resources"), cfg).matched
 
 
 def test_l1_glob_candidate_path_without_exact_index():

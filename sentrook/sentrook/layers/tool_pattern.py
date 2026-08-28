@@ -47,31 +47,23 @@ def _validate_single_alternate(alternate: str) -> None:
     if "*" not in alternate:
         return
     if alternate.count("*") != 1:
-        raise InvalidToolPatternError(
-            f"unsupported tool glob (at most one '*'): {alternate!r}"
-        )
+        raise InvalidToolPatternError(f"unsupported tool glob (at most one '*'): {alternate!r}")
     if alternate == "*":
         return
     if alternate.startswith("*") ^ alternate.endswith("*"):
         # Exactly one of prefix (foo*) or suffix (*foo).
         return
-    raise InvalidToolPatternError(
-        f"unsupported mid-string tool glob: {alternate!r}"
-    )
+    raise InvalidToolPatternError(f"unsupported mid-string tool glob: {alternate!r}")
 
 
 def exact_index_keys(pattern: str) -> frozenset[str]:
     """Exact tool names to put in the L1 exact index (glob alternates excluded)."""
-    return frozenset(
-        alt for alt in split_tool_alternates(pattern) if not is_glob_alternate(alt)
-    )
+    return frozenset(alt for alt in split_tool_alternates(pattern) if not is_glob_alternate(alt))
 
 
 def glob_alternates(pattern: str) -> frozenset[str]:
     """Glob alternates that need the L1 parallel glob candidate path."""
-    return frozenset(
-        alt for alt in split_tool_alternates(pattern) if is_glob_alternate(alt)
-    )
+    return frozenset(alt for alt in split_tool_alternates(pattern) if is_glob_alternate(alt))
 
 
 def tool_pattern_matches(pattern: str, tool: str) -> bool:

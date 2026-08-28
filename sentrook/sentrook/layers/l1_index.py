@@ -101,9 +101,7 @@ def _plan_satisfies_rule(
     if isinstance(node, PendingToolCondition):
         return pattern_matches_any_plan_tool(node.tool, plan_tools)
     if isinstance(node, (SequenceCondition, SequenceWithGapCondition)):
-        return all(
-            pattern_matches_any_plan_tool(slot.tool, plan_tools) for slot in node.steps
-        )
+        return all(pattern_matches_any_plan_tool(slot.tool, plan_tools) for slot in node.steps)
     if isinstance(node, AllCondition):
         return all(
             _plan_satisfies_rule(plan_tools, child, intent_kind=intent_kind)

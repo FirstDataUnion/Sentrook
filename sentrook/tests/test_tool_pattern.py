@@ -44,9 +44,7 @@ def test_exact_index_keys_exclude_globs():
     assert exact_index_keys("exec|process") == frozenset({"exec", "process"})
     assert exact_index_keys("mcp__*") == frozenset()
     assert exact_index_keys("exec|mcp__*") == frozenset({"exec"})
-    assert glob_alternates("exec|mcp__*| *__write_file") == frozenset(
-        {"mcp__*", "*__write_file"}
-    )
+    assert glob_alternates("exec|mcp__*| *__write_file") == frozenset({"mcp__*", "*__write_file"})
 
 
 def test_pattern_matches_any_plan_tool():

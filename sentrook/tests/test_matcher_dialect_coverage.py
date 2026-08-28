@@ -204,9 +204,7 @@ def test_sequence_status_pending_ignores_executed_mcp():
         {
             "rule": "T-PEND-ONLY",
             "meta": {"name": "p", "action": "review"},
-            "condition": {
-                "sequence": [{"tool": "mcp__github__*", "status": "pending"}]
-            },
+            "condition": {"sequence": [{"tool": "mcp__github__*", "status": "pending"}]},
         }
     )
     cfg = MatcherConfig()
@@ -240,9 +238,7 @@ def test_compile_rejects_mid_glob_in_sequence_slot():
             {
                 "rule": "T-BAD-SEQ",
                 "meta": {"name": "b"},
-                "condition": {
-                    "sequence": [{"tool": "mcp__*__write*", "status": "pending"}]
-                },
+                "condition": {"sequence": [{"tool": "mcp__*__write*", "status": "pending"}]},
             }
         )
 
