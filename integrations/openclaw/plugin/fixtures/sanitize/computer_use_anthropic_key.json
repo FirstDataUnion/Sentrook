@@ -1,0 +1,30 @@
+{
+  "input": {
+    "version": "1.0",
+    "run_id": "hermes:computer_use_type_secret",
+    "intent": "Type API key via desktop computer_use",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "computer_use",
+        "status": "pending",
+        "args": { "action": "type", "text": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz" }
+      }
+    ],
+    "metadata": { "adapter": "hermes", "hook": "pre_tool_call" }
+  },
+  "expected": {
+    "version": "1.0",
+    "run_id": "hermes:computer_use_type_secret",
+    "intent": "Type API key via desktop computer_use",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "computer_use",
+        "status": "pending",
+        "args": { "action": "type", "text": "sk-ant-[REDACTED]" }
+      }
+    ],
+    "metadata": { "adapter": "hermes", "hook": "pre_tool_call" }
+  }
+}

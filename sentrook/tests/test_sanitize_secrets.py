@@ -23,6 +23,37 @@ def test_redacts_intact_discord_webhook(rules) -> None:
     cleaned = apply_secret_patterns(f"curl {hook}", rules)
     assert token not in cleaned
     assert "[REDACTED]" in cleaned
+    assert "https://discord.com/api/webhooks/[REDACTED]" in cleaned
+
+
+def test_keeps_anthropic_prefix(rules) -> None:
+    secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+    cleaned = apply_secret_patterns(secret, rules)
+    assert secret not in cleaned
+    assert cleaned == "sk-ant-[REDACTED]"
+
+
+def test_keeps_openai_project_and_live_prefixes(rules) -> None:
+    proj = "sk-proj-ab12cd34ef56ghijklmnop"
+    live = "sk-live-abcdef12ABCDEFGH"
+    assert apply_secret_patterns(proj, rules) == "sk-proj-[REDACTED]"
+    assert apply_secret_patterns(live, rules) == "sk-live-[REDACTED]"
+    assert apply_secret_patterns(f"apiKey={proj}", rules) == "apiKey=sk-proj-[REDACTED]"
+
+
+def test_keeps_bearer_prefix(rules) -> None:
+    cleaned = apply_secret_patterns(
+        "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz012345", rules
+    )
+    assert "sk-abcdefghijklmnopqrstuvwxyz" not in cleaned
+    assert cleaned == "Authorization: Bearer [REDACTED]"
+
+
+def test_keeps_github_token_prefix(rules) -> None:
+    token = "ghp_1234567890abcdefghij"
+    cleaned = apply_secret_patterns(f"Authorization: token {token}", rules)
+    assert token not in cleaned
+    assert cleaned == "Authorization: token ghp_[REDACTED]"
 
 
 def test_redacts_library_bot_pass_export(rules) -> None:
@@ -59,4 +90,4 @@ def test_redacts_discord_webhook_after_pii_bitten_id(rules) -> None:
     broken = f"https://discord.com/api/webhooks/[REDACTED]/{token}"
     cleaned = apply_secret_patterns(broken, rules)
     assert token not in cleaned
-    assert cleaned == "[REDACTED]"
+    assert cleaned == "https://discord.com/api/webhooks/[REDACTED]"

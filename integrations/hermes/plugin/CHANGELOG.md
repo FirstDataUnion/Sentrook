@@ -1,5 +1,11 @@
 # sentrook (Hermes plugin)
 
+## 0.1.0-beta.3
+
+- Keep provider prefixes when redacting secrets (`sk-ant-[REDACTED]`,
+  `Bearer [REDACTED]`, webhook path) so hosted scan can still match
+  secret-shaped rules without receiving key material.
+
 ## 0.1.0-beta.2
 
 - Unexpected `pre_tool_call` errors and HTTP 200 bodies with missing/unknown

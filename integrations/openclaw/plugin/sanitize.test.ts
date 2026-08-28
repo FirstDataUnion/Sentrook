@@ -103,8 +103,8 @@ describe("sanitizePlanir", () => {
       metadata: { adapter: "openclaw", hook: "before_tool_call" },
     });
     const command = String(pendingStep(plan)?.args.command);
-    assert.ok(!command.includes("ghp_"));
-    assert.ok(command.includes("[REDACTED]"));
+    assert.ok(!command.includes("1234567890abcdefghij"));
+    assert.ok(command.includes("ghp_[REDACTED]"));
   });
 
   it("packs long exec commands instead of replacing them with [TRUNCATED]", () => {
@@ -239,8 +239,8 @@ describe("sanitizePlanir", () => {
       metadata: { adapter: "openclaw", hook: "before_tool_call" },
     });
     const text = String(pendingStep(plan)?.args.text);
-    assert.ok(!text.includes("sk-proj-"));
-    assert.ok(text.includes("[REDACTED]"));
+    assert.ok(!text.includes("ab12cd34ef56ghijklmnop"));
+    assert.ok(text.includes("sk-proj-[REDACTED]"));
   });
 
   it("redacts discord bot tokens and telegram bot tokens", () => {

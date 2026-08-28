@@ -1,5 +1,11 @@
 # @firstdataunion/sentrook-openclaw
 
+## 1.0.5
+
+### Patch Changes
+
+- Keep provider prefixes when redacting secrets (`sk-ant-[REDACTED]`, `Bearer [REDACTED]`, webhook path) so hosted scan can still match secret-shaped rules without receiving key material.
+
 ## 1.0.4
 
 ### Patch Changes

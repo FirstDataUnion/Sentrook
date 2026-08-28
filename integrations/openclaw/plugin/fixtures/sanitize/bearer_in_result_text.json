@@ -58,8 +58,8 @@
         "result_summary": {
           "ok": true,
           "content_type": null,
-          "byte_size": 35,
-          "excerpt": "curl -H 'Authorization: [REDACTED]'",
+          "byte_size": 42,
+          "excerpt": "curl -H 'Authorization: Bearer [REDACTED]'",
           "extracted": {
             "urls": [],
             "paths": [],
