@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from sentrook.config import MatcherConfig
 from sentrook.layers.normalize import match_text_with_normalization
 from sentrook.layers.pass_kind import L2PassKind
+from sentrook.layers.tool_pattern import (
+    exact_index_keys,
+    tool_pattern_matches,
+)
 from sentrook.planir import PlanIR, PlanStep, ResultSummary, stringify_arg_value
 from sentrook.rules.models import (
     AllCondition,
@@ -73,11 +77,11 @@ def _match_pending_tool(node: PendingToolCondition, plan: PlanIR) -> MatchOutcom
     from sentrook.adapters.snapshot import primary_pending_step
 
     step = primary_pending_step(plan)
-    if step is not None and step.tool == node.tool:
+    if step is not None and tool_pattern_matches(node.tool, step.tool):
         return MatchOutcome(
             True,
             1.0,
-            f"pending tool is {node.tool}",
+            f"pending tool is {step.tool} (pattern {node.tool})",
             [step.id],
             L2PassKind.PENDING_TOOL,
         )
@@ -137,7 +141,7 @@ def _match_window(
     matched_ids: list[str] = []
     for slot, step in zip(slots, window, strict=True):
         if not _slot_matches(slot, step):
-            if step.tool not in _slot_tool_names(slot.tool):
+            if not tool_pattern_matches(slot.tool, step.tool):
                 return MatchOutcome(False, 0.0, f"tool mismatch at {step.id}", [], pass_kind)
             if slot.status != "any" and step.status != slot.status:
                 return MatchOutcome(
@@ -266,14 +270,16 @@ def _best_partial_sequence(
 
 
 def _slot_tool_names(tool: str) -> frozenset[str]:
-    """Expand a rule slot tool name; ``write|edit`` matches either tool."""
-    if "|" in tool:
-        return frozenset(tool.split("|"))
-    return frozenset({tool})
+    """Exact alternates for L1 exact-index keys; globs are excluded.
+
+    Prefer :func:`tool_pattern_matches` for L2 matching. Kept for callers that
+    need the exact-name expansion (``write|edit`` → ``{write, edit}``).
+    """
+    return exact_index_keys(tool)
 
 
 def _slot_matches(slot: SequenceSlot, step: PlanStep) -> bool:
-    if step.tool not in _slot_tool_names(slot.tool):
+    if not tool_pattern_matches(slot.tool, step.tool):
         return False
     if slot.status != "any" and step.status != slot.status:
         return False
@@ -377,16 +383,28 @@ def _match_any(node: AnyCondition, plan: PlanIR, config: MatcherConfig) -> Match
 
 
 def _args_match(patterns: dict[str, str], args: dict) -> bool:
+    """Match args against YAIRA ``args_match`` patterns.
+
+    Multiple entries are AND. A key containing ``|`` is OR across those arg
+    names with the same regex (e.g. ``command|data: "curl"``).
+    """
     for key, pattern in patterns.items():
-        if key not in args:
+        keys = [part.strip() for part in key.split("|") if part.strip()]
+        if not keys:
             return False
-        value = stringify_arg_value(args[key])
-        if not value:
-            return False
-        # Search raw + lightly deobfuscated variant (base64 echo|d, \\xNN, quote concat).
-        if not match_text_with_normalization(pattern, value):
+        if not any(_arg_value_matches(k, pattern, args) for k in keys):
             return False
     return True
+
+
+def _arg_value_matches(key: str, pattern: str, args: dict) -> bool:
+    if key not in args:
+        return False
+    value = stringify_arg_value(args[key])
+    if not value:
+        return False
+    # Search raw + lightly deobfuscated variant (base64 echo|d, \\xNN, quote concat).
+    return match_text_with_normalization(pattern, value)
 
 
 def _pending_steps(plan: PlanIR) -> list[PlanStep]:
