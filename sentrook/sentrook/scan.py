@@ -210,7 +210,7 @@ def scan_plan(
             rules_loaded=len(rules),
             rules_source=rules_source,
             plan_source=plan_source,
-            l1_index_keys=sorted(index.keys()),
+            l1_index_keys=sorted(index.by_tool.keys()),
             plan_tools=sorted(plan_tools),
             plan_metadata=PlanMetadataEcho(
                 adapter=redacted_plan.metadata.adapter,

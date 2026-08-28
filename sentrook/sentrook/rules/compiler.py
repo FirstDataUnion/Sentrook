@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sentrook.layers.tool_pattern import InvalidToolPatternError, validate_tool_pattern
 from sentrook.rules.models import (
     AllCondition,
     AnyCondition,
@@ -20,9 +21,12 @@ from sentrook.rules.models import (
 
 def _compile_slot(slot: Any) -> SequenceSlot:
     if isinstance(slot, str):
+        validate_tool_pattern(slot)
         return SequenceSlot(tool=slot)
+    tool = str(slot["tool"])
+    validate_tool_pattern(tool)
     return SequenceSlot(
-        tool=str(slot["tool"]),
+        tool=tool,
         status=slot.get("status", "any"),
         args_match=slot.get("args_match"),
         result_flags=slot.get("result_flags"),
@@ -33,7 +37,9 @@ def _compile_condition(node: dict[str, Any]) -> ConditionNode:
     if "intent_kind" in node:
         return IntentKindCondition(kind=node["intent_kind"])
     if "pending_tool" in node:
-        return PendingToolCondition(tool=str(node["pending_tool"]))
+        tool = str(node["pending_tool"])
+        validate_tool_pattern(tool)
+        return PendingToolCondition(tool=tool)
     if "sequence" in node:
         return SequenceCondition(steps=[_compile_slot(slot) for slot in node["sequence"]])
     if "sequence_with_gap" in node:
@@ -86,9 +92,14 @@ def compile_rule(doc: dict[str, Any], source_path: str | None = None) -> Rule:
     if not isinstance(condition_raw, dict):
         raise ValueError(f"Rule {rule_id}: condition must be a mapping")
 
+    try:
+        condition = _compile_condition(condition_raw)
+    except InvalidToolPatternError as exc:
+        raise ValueError(f"Rule {rule_id}: {exc}") from exc
+
     return Rule(
         id=rule_id,
         meta=meta,
-        condition=_compile_condition(condition_raw),
+        condition=condition,
         raw=doc,
     )
