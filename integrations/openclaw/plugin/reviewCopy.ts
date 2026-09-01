@@ -2,8 +2,8 @@
  * Operator-facing exec review copy for OpenClaw requireApproval.
  *
  * OpenClaw maps ``title`` → Command (80 chars) and ``description`` → Shell
- * Preview (256). Cards are rebuilt from local pending args so hosted PlanIR
- * truncation cannot hide the action. Secrets are still scrubbed because
+ * Preview (host cap 512). Cards are rebuilt from local pending args so hosted
+ * PlanIR truncation cannot hide the action. Secrets are still scrubbed because
  * Discord/Telegram forward the same strings.
  *
  * Title ladder (structural, not product-specific): destination, sensitive
@@ -14,14 +14,14 @@ import { stringifyArgValue } from "./planir.ts";
 import { packSignalExcerpt, scrubSecrets } from "./sanitize.ts";
 
 export const REVIEW_TITLE_MAX = 80;
-export const REVIEW_DESCRIPTION_MAX = 256;
+export const REVIEW_DESCRIPTION_MAX = 512;
 
 const TRUNCATED_TOKEN = "[TRUNCATED]";
 const MIN_COMMAND_CHARS = 16;
 const PAYLOAD_COLLAPSE_MIN = 48;
 const PAYLOAD_PREVIEW = 40;
 
-const EXEC_COMMAND_KEYS = ["command", "cmd", "shell", "script", "line"] as const;
+const EXEC_COMMAND_KEYS = ["command", "cmd", "shell", "script", "line", "code", "source"] as const;
 const BODY_FLAGS = new Set([
   "-d",
   "--data",

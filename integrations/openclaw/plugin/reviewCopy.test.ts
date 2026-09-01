@@ -27,6 +27,8 @@ describe("pendingDisplayCommand", () => {
     assert.equal(pendingDisplayCommand({ command: "ls /tmp" }), "ls /tmp");
     assert.equal(pendingDisplayCommand({ cmd: "pwd" }), "pwd");
     assert.equal(pendingDisplayCommand({ script: "curl https://x" }), "curl https://x");
+    assert.equal(pendingDisplayCommand({ code: "fetch('https://x')" }), "fetch('https://x')");
+    assert.equal(pendingDisplayCommand({ source: "console.log(1)" }), "console.log(1)");
     assert.equal(pendingDisplayCommand({ command: ["curl", "https://x"] }), "curl https://x");
     assert.equal(pendingDisplayCommand({ command: "[TRUNCATED]" }), undefined);
     assert.equal(pendingDisplayCommand({ command: "   " }), undefined);
@@ -151,6 +153,15 @@ describe("buildApprovalCard", () => {
     assertBounds(card);
     assert.ok(!card.description.includes("Likely:"));
     assert.ok(card.description.includes("ls /tmp"));
+  });
+
+  it("keeps argv that used to overflow the old 256-char Shell Preview budget", () => {
+    const command = `rg -n TODO src/${"x".repeat(300)}`;
+    const card = buildApprovalCard({ command });
+    assertBounds(card);
+    assert.ok(card.description.length > 256, String(card.description.length));
+    assert.ok(card.description.includes("rg -n TODO"));
+    assert.ok(card.description.includes("xxx"));
   });
 });
 

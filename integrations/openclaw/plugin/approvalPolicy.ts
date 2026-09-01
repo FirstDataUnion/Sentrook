@@ -1,21 +1,25 @@
 /**
  * Human approval timeouts for enforce-mode Sentrook reviews.
  *
- * Interactive sessions keep a short timeout with deny-on-timeout (always fail-closed;
- * not configurable). Cron and subagent runs use a longer window but also default to
- * deny-on-timeout — opt into allow via scheduledTimeoutBehavior if unattended jobs
- * must proceed without a human.
+ * OpenClaw 2.0 caps plugin-approval waits at 10 minutes and always denies
+ * unresolved reviews (`timeoutBehavior` is ignored by the host). Interactive
+ * and unattended (cron/subagent) reviews share that 10-minute default and cap.
+ * `scheduledTimeoutBehavior: "allow"` is still accepted so older configs load,
+ * but it has no effect.
  */
 
 export type IntentKind = "user" | "cron" | "subagent" | "system";
 export type TimeoutBehavior = "allow" | "deny";
 
 export interface ApprovalPolicyConfig {
-  /** Interactive review timeout (ms). Default 300_000 (5 min). */
+  /** Interactive review timeout (ms). Default 600_000 (10 min). Capped at 10 min. */
   interactiveTimeoutMs: number;
-  /** Unattended review timeout (ms). Default 1_800_000 (30 min). */
+  /** Unattended review timeout (ms). Default 600_000 (10 min). Capped at 10 min. */
   scheduledTimeoutMs: number;
-  /** When an unattended review times out. Default deny (fail-closed). */
+  /**
+   * Deprecated. Parsed for compatibility and diagnostics only.
+   * Unresolved reviews always deny (OpenClaw 2.0).
+   */
   scheduledTimeoutBehavior: TimeoutBehavior;
   /** Apply scheduled policy to these intent kinds. Default cron + subagent. */
   scheduledIntentKinds: IntentKind[];
@@ -23,12 +27,15 @@ export interface ApprovalPolicyConfig {
 
 export interface ApprovalTiming {
   timeoutMs: number;
-  timeoutBehavior: TimeoutBehavior;
+  /** Always `deny` — OpenClaw 2.0 ignores timeoutBehavior. */
+  timeoutBehavior: "deny";
   unattended: boolean;
 }
 
-export const DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS = 300_000;
-export const DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS = 1_800_000;
+/** OpenClaw 2.0 host cap for `requireApproval.timeoutMs`. */
+export const MAX_APPROVAL_TIMEOUT_MS = 600_000;
+export const DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS = MAX_APPROVAL_TIMEOUT_MS;
+export const DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS = MAX_APPROVAL_TIMEOUT_MS;
 
 const DEFAULT_SCHEDULED_INTENT_KINDS: IntentKind[] = ["cron", "subagent"];
 
@@ -43,6 +50,10 @@ function parsePositiveInt(raw: unknown, fallback: number): number {
     }
   }
   return fallback;
+}
+
+function parseClampedTimeoutMs(raw: unknown, fallback: number): number {
+  return Math.min(parsePositiveInt(raw, fallback), MAX_APPROVAL_TIMEOUT_MS);
 }
 
 function parseTimeoutBehavior(raw: unknown, fallback: TimeoutBehavior): TimeoutBehavior {
@@ -86,11 +97,11 @@ export function resolveApprovalPolicyConfig(sources: {
   const env = sources.env ?? {};
 
   return {
-    interactiveTimeoutMs: parsePositiveInt(
+    interactiveTimeoutMs: parseClampedTimeoutMs(
       cfg.interactiveTimeoutMs ?? env.SENTROOK_APPROVAL_TIMEOUT_MS,
       DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS,
     ),
-    scheduledTimeoutMs: parsePositiveInt(
+    scheduledTimeoutMs: parseClampedTimeoutMs(
       cfg.scheduledTimeoutMs ?? env.SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS,
       DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS,
     ),
@@ -114,7 +125,7 @@ export function resolveApprovalTiming(
   if (unattended) {
     return {
       timeoutMs: policy.scheduledTimeoutMs,
-      timeoutBehavior: policy.scheduledTimeoutBehavior,
+      timeoutBehavior: "deny",
       unattended: true,
     };
   }

@@ -5,7 +5,7 @@ Discord/Slack/Telegram **Reason**). The host hardcodes Requested command to
 ``<tool> (plugin approval rule)``, so the real argv and likely-intent must live
 in this one field.
 
-Budget is Discord Reason (300). OpenClaw uses title 80 + description 256; we
+Budget is Discord Reason (300). OpenClaw uses title 80 + description 512; we
 mirror description structure (Likely + packed command + hint) without rule IDs
 and without forcing a title/description split.
 """

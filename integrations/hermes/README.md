@@ -161,12 +161,12 @@ matched-step slice, human-gated community corpus) — see the root
 
 | | Hermes | OpenClaw |
 |---|---|---|
-| Install | `hermes plugins install FirstDataUnion/Sentrook-hermes` | `openclaw plugins install npm:@firstdataunion/sentrook-openclaw` |
+| Install | `hermes plugins install FirstDataUnion/Sentrook-hermes` | `openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force` |
 | Gate | native Once / Session / Always / Deny | `requireApproval` cards |
 | “Allow always” | Hermes approval store via `rule_key` | host + optional local allowlist |
-| Unattended review | block immediately | scheduled wait policy |
+| Unattended review | block immediately | 10 min wait, then deny |
 | Scan error default | `review` | `review` |
-| Scan timeout | `60000` | `60000` |
+| Scan timeout | `60000` | `14000` |
 
 ## Maintainers
 

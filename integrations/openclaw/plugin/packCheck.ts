@@ -152,10 +152,15 @@ export function runPackCheck(): void {
   const manifest = JSON.parse(manifestRaw) as {
     id?: string;
     name?: string;
-    activation?: { onCapabilities?: string[] };
+    activation?: { onStartup?: boolean; onCapabilities?: string[] };
   };
   assert.equal(manifest.id, "sentrook-openclaw");
   assert.equal(typeof manifest.name, "string");
+  assert.equal(
+    manifest.activation?.onStartup,
+    true,
+    "openclaw.plugin.json must set activation.onStartup (OpenClaw 2.0 no longer implied-loads hooks)",
+  );
   assert.ok(
     manifest.activation?.onCapabilities?.includes("hook"),
     "openclaw.plugin.json must activate on the hook capability",

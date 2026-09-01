@@ -12,7 +12,7 @@ On each `before_tool_call`, the plugin builds a short **PlanIR** trajectory
 The plugin waits for the decision and maps **allow** / **review** / **block** to
 OpenClaw continue / approval UI / veto. Review cards are rebuilt from the **local**
 pending command (secret-scrubbed). OpenClaw shows `title` as **Command** (80 chars)
-and `description` as **Shell Preview** (256). Copy uses a structural ladder
+and `description` as **Shell Preview** (512). Copy uses a structural ladder
 (destination / sensitive path / packed argv) rather than rule ids, so a long
 `exec` is still decidable. Hosted `/scan` still receives length-bounded PlanIR.
 
@@ -33,7 +33,9 @@ on public npmjs — no `.npmrc` or GitHub token.
 
 ```bash
 # 1. Install (tracks npm latest — see Updates below)
-openclaw plugins install npm:@firstdataunion/sentrook-openclaw
+#    npm: is an arbitrary source. Interactive installs prompt; noninteractive
+#    (Docker compose exec) needs --force after you trust the package.
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force
 
 # 2. Configure (OIDC + defaults)
 openclaw sentrook configure
@@ -51,7 +53,7 @@ Docker Compose (typical VPS layout):
 ```bash
 cd ~/openclaw
 docker compose exec openclaw-gateway \
-  openclaw plugins install npm:@firstdataunion/sentrook-openclaw
+  openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force
 docker compose exec openclaw-gateway openclaw sentrook configure
 docker compose restart openclaw-gateway
 docker compose exec openclaw-gateway openclaw sentrook verify
@@ -75,7 +77,9 @@ openclaw plugins update @firstdataunion/sentrook-openclaw
 ```
 
 OpenClaw does not auto-update plugins on restart. Prefer staying on `latest`
-unless you deliberately pin a version for a frozen host.
+unless you deliberately pin a version for a frozen host. First-time npm
+installs from an arbitrary source need `--force` in noninteractive shells;
+tracked `plugins update` does not.
 
 ## Configure
 
@@ -140,26 +144,29 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 
 | Setting | Default | Role |
 |---------|---------|------|
-| `timeoutMs` | `60000` | Wait for `POST /scan` only. OIDC mint is a separate 30s budget — see [Timeouts](#timeouts) |
+| `timeoutMs` | `14000` | Wait for `POST /scan` including OIDC mint. Default stays inside OpenClaw 2.0's 15s fail-closed hook. Env: `SENTROOK_SCAN_TIMEOUT_MS`. Raising this also raises the plugin-authored hook budget (host cap 10 min). |
 | `onScanError` | `review` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive; unattended blocks). Env: `SENTROOK_ON_SCAN_ERROR`. Set `allow` only if the agent must proceed when Sentrook is unreachable (auth failures still block). |
 | `feedback.mode` | `submit` after configure | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). The wizard default is `submit`. If you enable the plugin without configure, feedback stays `off`. Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
 | `allowlist.enabled` | `true` | Local short-circuit for “allow every time” — see [Allow every time](#allow-every-time-local-allowlist) |
 | `allowlist.path` | `~/.openclaw/sentrook-allowlist.json` | Override store path |
-| `approval.interactiveTimeoutMs` | `300000` (5 min) | Review timeout for interactive sessions (deny on timeout) |
-| `approval.scheduledTimeoutMs` | `1800000` (30 min) | Review timeout for unattended cron / subagent runs |
-| `approval.scheduledTimeoutBehavior` | `deny` | What happens when an unattended review times out (`deny` or `allow`) |
+| `approval.interactiveTimeoutMs` | `600000` (10 min) | Review timeout for interactive sessions. Capped at 10 min (OpenClaw 2.0). Deny on timeout. |
+| `approval.scheduledTimeoutMs` | `600000` (10 min) | Review timeout for unattended cron / subagent runs. Same 10 min cap. |
+| `approval.scheduledTimeoutBehavior` | `deny` | **Deprecated.** Unresolved reviews always deny. The key is still accepted so older configs load; `allow` is ignored. |
 
 PlanIR is always scrubbed before egress. Decisions are always enforced (allow /
 review / block) — there is no observe-only or sanitization-off toggle.
 
 ### Timeouts
 
-Two different options, plus a separate mint budget:
+Two different options. Both fail closed.
 
-1. **`timeoutMs` (scan)** — how long to wait for hosted `POST /scan` (default
-   `60000`). This does **not** include OIDC discovery or token mint: those each
-   have a **30s** budget of their own, so a hung Identity host cannot stall the
-   hook forever. Mint failures are scan errors (401/403 never fail-open).
+1. **`timeoutMs` (scan)** — how long to wait for hosted `POST /scan`, **including**
+   OIDC discovery and token mint (default `14000`). Mint and scan share that
+   budget so a hung Identity host cannot overrun OpenClaw 2.0's **15s**
+   fail-closed `before_tool_call` wait. The plugin registers the hook with a 1s
+   slack (`15000` by default). Raising `timeoutMs` also raises that hook budget
+   (OpenClaw caps it at 10 minutes). Mint failures are scan errors (401/403
+   never fail-open).
 
    If `/scan` times out, cannot connect, returns 5xx, is still rate-limited after
    one `Retry-After` retry, or returns HTTP 200 with invalid JSON or a missing /
@@ -179,9 +186,9 @@ Two different options, plus a separate mint budget:
    by `onScanError`).
 2. **`approval.*` (human review)** — after Sentrook returns `review`, how long
    to wait for allow / deny. Interactive and scheduled (cron / subagent) both
-   **fail closed** (`deny`) by default. Opt into
-   `approval.scheduledTimeoutBehavior: "allow"` only if unattended jobs must
-   proceed without a human. That knob is **not** applied to scan errors.
+   default to **10 minutes** and **always deny** if nobody answers (OpenClaw 2.0
+   ignores `timeoutBehavior`). `approval.scheduledTimeoutBehavior: "allow"` is
+   still accepted so older configs load; it has no effect.
 
 ### Where secrets live (Docker vs native)
 

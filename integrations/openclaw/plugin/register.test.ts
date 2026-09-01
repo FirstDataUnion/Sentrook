@@ -58,6 +58,7 @@ type ToolHandler = (
 
 function createMockApi(pluginConfig: Record<string, unknown>) {
   const handlers = new Map<string, ToolHandler>();
+  const hookOpts = new Map<string, { priority?: number; timeoutMs?: number } | undefined>();
   const warns: string[] = [];
   const infos: string[] = [];
   const api = {
@@ -68,11 +69,16 @@ function createMockApi(pluginConfig: Record<string, unknown>) {
       warn: (m: string) => warns.push(m),
       error: () => {},
     },
-    on(event: string, handler: ToolHandler) {
+    on(
+      event: string,
+      handler: ToolHandler,
+      opts?: { priority?: number; timeoutMs?: number },
+    ) {
       handlers.set(event, handler);
+      hookOpts.set(event, opts);
     },
   };
-  return { api, handlers, warns, infos };
+  return { api, handlers, hookOpts, warns, infos };
 }
 
 function writeApiKeyDotenv(stateDir: string, apiKey: string): void {
@@ -83,6 +89,30 @@ function writeApiKeyDotenv(stateDir: string, apiKey: string): void {
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+});
+
+describe("plugin.register — OpenClaw 2.0 hook budget", () => {
+  it("registers before_tool_call with scan timeout plus 1s slack", () => {
+    const { api, hookOpts, infos } = createMockApi({ timeoutMs: 1500 });
+    plugin.register(api as never);
+    assert.deepEqual(hookOpts.get("before_tool_call"), {
+      priority: 10,
+      timeoutMs: 2500,
+    });
+    assert.ok(infos.some((m) => /hook=2500ms/.test(m)));
+  });
+
+  it("warns when deprecated scheduledTimeoutBehavior=allow is set, without failing", () => {
+    const { api, warns, infos } = createMockApi({
+      timeoutMs: 1500,
+      approval: { scheduledTimeoutBehavior: "allow" },
+    });
+    plugin.register(api as never);
+    assert.ok(
+      warns.some((w) => /scheduledTimeoutBehavior=allow is ignored/.test(w)),
+    );
+    assert.ok(infos.some((m) => /scheduled=600000ms\/deny/.test(m)));
+  });
 });
 
 describe("plugin.register — per-call dotenv auth", () => {
