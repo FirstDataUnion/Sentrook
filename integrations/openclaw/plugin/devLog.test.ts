@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -139,6 +139,7 @@ describe("appendDevLog", () => {
       const first = JSON.parse(lines[0]) as { schema_version: string; event: string };
       assert.equal(first.schema_version, DEV_LOG_SCHEMA);
       assert.equal(first.event, "register");
+      assert.equal(statSync(path).mode & 0o777, 0o600);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

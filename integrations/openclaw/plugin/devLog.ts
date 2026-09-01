@@ -17,13 +17,15 @@
  */
 
 import {
-  appendFileSync,
-  chmodSync,
-  existsSync,
+  closeSync,
+  constants,
+  fchmodSync,
   mkdirSync,
+  openSync,
   renameSync,
   statSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
@@ -168,7 +170,6 @@ function pendingCommandFromPlan(plan: PlanIR | undefined): string | undefined {
 }
 
 function rotateIfNeeded(path: string): void {
-  if (!existsSync(path)) return;
   let size = 0;
   try {
     size = statSync(path).size;
@@ -183,6 +184,25 @@ function rotateIfNeeded(path: string): void {
     /* no previous rotation */
   }
   renameSync(path, bak);
+}
+
+/** Append without an exists-then-write race; fchmod the same fd (umask-safe). */
+function appendLineSync(path: string, line: string): void {
+  const fd = openSync(
+    path,
+    constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY,
+    0o600,
+  );
+  try {
+    writeSync(fd, line, null, "utf8");
+    try {
+      fchmodSync(fd, 0o600);
+    } catch {
+      /* best-effort */
+    }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function appendDevLog(
@@ -208,15 +228,7 @@ export function appendDevLog(
   try {
     mkdirSync(dirname(path), { recursive: true });
     rotateIfNeeded(path);
-    const created = !existsSync(path);
-    appendFileSync(path, line, { encoding: "utf8", mode: 0o600 });
-    if (created) {
-      try {
-        chmodSync(path, 0o600);
-      } catch {
-        /* best-effort */
-      }
-    }
+    appendLineSync(path, line);
   } catch (err) {
     logger?.warn(`[sentrook-openclaw] dev log write failed: ${String(err)}`);
   }
