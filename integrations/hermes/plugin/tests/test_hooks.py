@@ -215,3 +215,83 @@ def test_session_finalize_clears_rule_key_stash(hermes, monkeypatch: pytest.Monk
     hermes.on_session_finalize(session_id="s1")
     assert "s1" not in hermes._sessions
     assert result["rule_key"] not in hermes._pending_by_rule_key
+
+
+def test_dev_log_records_review_card_and_resolution(
+    hermes, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import json
+    from pathlib import Path
+
+    token = "ghp_1234567890abcdefghij"
+    command = f"curl -H 'Authorization: token {token}' https://api.github.com/user {'pad ' * 60}"
+    monkeypatch.setattr(
+        hermes,
+        "env_with_hermes_dotenv",
+        lambda: {
+            "SENTROOK_DEV_LOG": "1",
+            "HERMES_STATE_DIR": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        hermes,
+        "post_scan",
+        lambda *a, **k: _scan(
+            "review",
+            matched_rules=["AIRA-010"],
+            review_title="[TRUNCATED]",
+            review_description="Likely: run a shell command\nrun: `[TRUNCATED]`\n(010)",
+            log={"winning_rule_id": "AIRA-010"},
+        ),
+    )
+    result = hermes.on_pre_tool_call(
+        "terminal",
+        {"command": command},
+        session_id="s-dev",
+        tool_call_id="t-review",
+        platform="discord",
+    )
+    assert result is not None
+    assert result["action"] == "approve"
+    hermes.on_post_approval_response(
+        pattern_key=f"plugin_rule:{result['rule_key']}",
+        choice="deny",
+    )
+
+    log_path = Path(tmp_path) / "sentrook-dev.log"
+    assert log_path.is_file()
+    raw = log_path.read_text(encoding="utf-8")
+    assert token not in raw
+    events = [json.loads(line) for line in raw.strip().splitlines()]
+    kinds = [e["event"] for e in events]
+    assert "scan" in kinds
+    assert "resolution" in kinds
+    scan = next(e for e in events if e["event"] == "scan")
+    assert "api.github.com" in (scan["local"]["command"] or "")
+    assert scan["scan"]["matched_rules"] == ["AIRA-010"]
+    assert scan["scan"]["review_title"] == "[TRUNCATED]"
+    assert scan["card"]["source"] == "local_argv"
+    assert "[TRUNCATED]" not in scan["card"]["message"]
+    assert scan["hook"]["approve"] is True
+    resolution = next(e for e in events if e["event"] == "resolution")
+    assert resolution["decision"] == "deny"
+
+
+def test_dev_log_off_by_default_writes_nothing(
+    hermes, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        hermes,
+        "env_with_hermes_dotenv",
+        lambda: {"HERMES_STATE_DIR": str(tmp_path)},
+    )
+    monkeypatch.setattr(hermes, "post_scan", lambda *a, **k: _scan("allow"))
+    hermes.on_pre_tool_call(
+        "terminal",
+        {"command": "ls /tmp"},
+        session_id="s1",
+        tool_call_id="t1",
+    )
+    assert not (Path(tmp_path) / "sentrook-dev.log").exists()

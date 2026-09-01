@@ -1,6 +1,6 @@
 {
   "name": "@firstdataunion/sentrook-openclaw",
-  "version": "1.0.5",
+  "version": "1.0.6-rc.1",
   "description": "OpenClaw plugin: Sentrook trajectory scanner for hosted scan.",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,6 +16,7 @@
     "approvalPolicy.ts",
     "scanErrorPolicy.ts",
     "localAllowlist.ts",
+    "devLog.ts",
     "allowlistCli.ts",
     "configure.ts",
     "scanEndpoint.ts",
@@ -40,7 +41,7 @@
   "scripts": {
     "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --legal-comments=none",
     "prepack": "npm run build",
-    "test": "node --experimental-strip-types --test approvalPolicy.test.ts auth.test.ts sanitize.test.ts configure.test.ts verify.test.ts localAllowlist.test.ts allowlistCli.test.ts scanErrorPolicy.test.ts index.test.ts register.test.ts planir.test.ts reviewCopy.test.ts packCheck.test.ts",
+    "test": "node --experimental-strip-types --test approvalPolicy.test.ts auth.test.ts sanitize.test.ts configure.test.ts verify.test.ts localAllowlist.test.ts allowlistCli.test.ts scanErrorPolicy.test.ts index.test.ts register.test.ts planir.test.ts reviewCopy.test.ts packCheck.test.ts devLog.test.ts",
     "pack:check": "npm run build && node --experimental-strip-types packCheck.ts"
   },
   "openclaw": {

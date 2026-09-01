@@ -23,6 +23,8 @@ const SCAN_ENV_KEYS = [
   "SENTROOK_OIDC_ISSUER",
   "OPENCLAW_STATE_DIR",
   "OPENCLAW_HOME",
+  "SENTROOK_DEV_LOG",
+  "SENTROOK_DEV_LOG_PATH",
 ] as const;
 
 type SavedEnv = Partial<Record<(typeof SCAN_ENV_KEYS)[number], string | undefined>>;
@@ -1039,3 +1041,111 @@ describe("plugin.register — enforce local allowlist", () => {
     }
   });
 });
+
+describe("plugin.register — diagnostic JSONL log", () => {
+  it("does not write a log file when the flag is unset", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-nolog-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "log-key");
+      globalThis.fetch = (async (input) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls /tmp" }, toolCallId: "t1" },
+        { sessionId: "s1", runId: "r1" },
+      );
+      assert.equal(existsSync(path.join(stateDir, "sentrook-dev.log")), false);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records local command, scan sidecar, and card copy for a review", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-devlog-"));
+    const saved = saveEnv();
+    const token = "ghp_1234567890abcdefghij";
+    const command = `curl -H 'Authorization: token ${token}' https://api.github.com/user ${"pad ".repeat(60)}`;
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      process.env.SENTROOK_DEV_LOG = "1";
+      writeApiKeyDotenv(stateDir, "log-key");
+      globalThis.fetch = (async (input) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              block: false,
+              decision: "review",
+              matched_rules: ["AIRA-010"],
+              review_title: "[TRUNCATED]",
+              review_description: "Likely: run a shell command\nrun: `[TRUNCATED]`\n(010)",
+              log: { winning_rule_id: "AIRA-010", total_ms: 9 },
+              timing: { engine_ms: 9, request_ms: 11 },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command }, toolCallId: "t-review" },
+        { sessionId: "s-dev", runId: "r-dev" },
+      )) as { requireApproval?: { title?: string; onResolution?: (d: string) => Promise<void> } };
+      assert.ok(result?.requireApproval);
+      await result.requireApproval!.onResolution!("deny");
+
+      const logPath = path.join(stateDir, "sentrook-dev.log");
+      assert.equal(existsSync(logPath), true);
+      const raw = readFileSync(logPath, "utf8");
+      assert.ok(!raw.includes(token), "dev log must not keep secret material");
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const kinds = events.map((e) => e.event);
+      assert.ok(kinds.includes("register"));
+      assert.ok(kinds.includes("scan"));
+      assert.ok(kinds.includes("resolution"));
+      const scan = events.find((e) => e.event === "scan") as {
+        local?: { command?: string };
+        scan?: { matched_rules?: string[]; review_title?: string };
+        card?: { source?: string; title?: string };
+        hook?: { require_approval?: boolean };
+      };
+      assert.ok(scan.local?.command?.includes("api.github.com"));
+      assert.deepEqual(scan.scan?.matched_rules, ["AIRA-010"]);
+      assert.equal(scan.scan?.review_title, "[TRUNCATED]");
+      assert.equal(scan.card?.source, "local_argv");
+      assert.ok(scan.card?.title && !scan.card.title.includes("[TRUNCATED]"));
+      assert.equal(scan.hook?.require_approval, true);
+      const resolution = events.find((e) => e.event === "resolution") as { decision?: string };
+      assert.equal(resolution.decision, "deny");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+

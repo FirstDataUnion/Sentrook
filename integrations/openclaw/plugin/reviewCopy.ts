@@ -455,6 +455,15 @@ export function buildApprovalCard(input: {
  * Local argv always wins. Sidecar copy is kept only when there is no local
  * command *and* the sidecar title is not a policy headline.
  */
+export type ApprovalCopySource = "local_argv" | "sidecar" | "honest_miss";
+
+export interface ApprovalCopy {
+  title: string;
+  description: string;
+  source: ApprovalCopySource;
+  commandFound: boolean;
+}
+
 export function overlayApprovalCopy(input: {
   scanTitle?: string;
   scanDescription?: string;
@@ -462,20 +471,32 @@ export function overlayApprovalCopy(input: {
   fallbackDescription: string;
   pendingTool: string;
   pendingArgs?: Record<string, unknown>;
-}): { title: string; description: string } {
+}): ApprovalCopy {
   const localCommand = pendingDisplayCommand(input.pendingArgs);
   if (localCommand) {
     const card = buildApprovalCard({ command: localCommand, tool: input.pendingTool });
-    return { title: card.title, description: card.description };
+    return {
+      title: card.title,
+      description: card.description,
+      source: "local_argv",
+      commandFound: true,
+    };
   }
 
   const titleIn = input.scanTitle?.trim() || input.fallbackTitle;
   const descriptionIn = input.scanDescription?.trim() || input.fallbackDescription;
-  const title = isPolicyHeadline(titleIn)
-    ? honestMissTitle(input.pendingTool)
-    : clip(titleIn, REVIEW_TITLE_MAX);
+  if (isPolicyHeadline(titleIn)) {
+    return {
+      title: honestMissTitle(input.pendingTool),
+      description: clip(descriptionIn, REVIEW_DESCRIPTION_MAX),
+      source: "honest_miss",
+      commandFound: false,
+    };
+  }
   return {
-    title,
+    title: clip(titleIn, REVIEW_TITLE_MAX),
     description: clip(descriptionIn, REVIEW_DESCRIPTION_MAX),
+    source: "sidecar",
+    commandFound: false,
   };
 }
