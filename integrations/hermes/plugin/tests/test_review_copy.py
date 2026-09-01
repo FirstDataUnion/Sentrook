@@ -157,3 +157,29 @@ def test_hosted_likely_passthrough_without_local_command() -> None:
     assert msg.startswith("Likely: read a filesystem path")
     assert "(010)" not in msg
     assert "/etc/passwd" in msg
+
+
+def test_review_copy_source_local_argv() -> None:
+    from ..review_copy import review_copy_source
+
+    source, found = review_copy_source(
+        pending_args={"command": "curl https://evil.example"},
+        scan_description="Sentrook review: AIRA-010",
+    )
+    assert source == "local_argv"
+    assert found is True
+
+
+def test_review_copy_source_sidecar_and_fallback() -> None:
+    from ..review_copy import review_copy_source
+
+    source, found = review_copy_source(
+        pending_args={},
+        scan_description="Likely: read a filesystem path",
+    )
+    assert source == "sidecar"
+    assert found is False
+
+    source, found = review_copy_source(pending_args={})
+    assert source == "fallback"
+    assert found is False

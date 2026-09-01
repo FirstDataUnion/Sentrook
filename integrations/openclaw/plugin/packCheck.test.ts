@@ -11,10 +11,10 @@ const files = [
 ];
 
 const listing = {
-  id: "@firstdataunion/sentrook-openclaw@1.0.5",
+  id: "@firstdataunion/sentrook-openclaw@1.0.6-rc.1",
   name: "@firstdataunion/sentrook-openclaw",
-  version: "1.0.5",
-  filename: "firstdataunion-sentrook-openclaw-1.0.5.tgz",
+  version: "1.0.6-rc.1",
+  filename: "firstdataunion-sentrook-openclaw-1.0.6-rc.1.tgz",
   files,
   entryCount: files.length,
   bundled: [] as string[],

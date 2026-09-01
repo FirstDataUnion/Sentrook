@@ -1,5 +1,11 @@
 # @firstdataunion/sentrook-openclaw
 
+## 1.0.6-rc.1
+
+### Patch Changes
+
+- Internal: optional local JSONL diagnostic log for maintainers investigating review-card copy and scan decisions (off by default).
+
 ## 1.0.5
 
 ### Patch Changes

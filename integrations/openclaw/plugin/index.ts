@@ -45,6 +45,13 @@ import {
   type SnapshotCall,
 } from "./planir.ts";
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
+import {
+  appendDevLog,
+  buildScanDevEvent,
+  buildScanErrorDevEvent,
+  resolveDevLogConfig,
+  scrubDevText,
+} from "./devLog.ts";
 
 export type { PlanIR } from "./planir.ts";
 
@@ -835,6 +842,33 @@ function applyPendingLifecycle(
   return result;
 }
 
+function attachDevLogResolution(
+  result: BeforeToolCallResult | undefined,
+  plan: PlanIR,
+  pendingCall: SnapshotCall,
+  logger?: PluginLogger,
+): BeforeToolCallResult | undefined {
+  const approval = result?.requireApproval;
+  if (!approval?.onResolution) return result;
+  const inner = approval.onResolution;
+  approval.onResolution = async (decision) => {
+    appendDevLog(
+      resolveDevLogConfig(),
+      {
+        event: "resolution",
+        session_id: plan.metadata.session_id ?? null,
+        run_id: plan.run_id,
+        tool_call_id: plan.metadata.tool_call_id ?? null,
+        tool: pendingCall.tool,
+        decision,
+      },
+      logger,
+    );
+    await inner(decision);
+  };
+  return result;
+}
+
 const plugin = {
   id: "sentrook-openclaw",
   name: "Sentrook OpenClaw",
@@ -894,6 +928,16 @@ const plugin = {
         (api.pluginConfig ?? {}) as Record<string, unknown>,
         envWithOpenclawDotenv(process.env),
       );
+
+    const bootDevLog = resolveDevLogConfig();
+    if (bootDevLog.enabled) {
+      api.logger.info(`[sentrook-openclaw] diagnostic log ${bootDevLog.path}`);
+      appendDevLog(
+        bootDevLog,
+        { event: "register", path: bootDevLog.path },
+        api.logger,
+      );
+    }
 
     api.on("before_prompt_build", (event: BeforePromptBuildEvent, ctx: AgentContext) => {
       const st = getSession(sessionKeyOf(ctx));
@@ -963,31 +1007,70 @@ const plugin = {
                 `[sentrook-openclaw] scan error (${scanResult.kind}); continuing without scan (onScanError=allow)`,
               );
             }
-            return applyPendingLifecycle(mapped, st, event.toolCallId, pendingCall);
+            appendDevLog(
+              resolveDevLogConfig(),
+              buildScanErrorDevEvent({
+                plan,
+                pendingArgs: pendingCall.args,
+                failure: scanResult,
+                hookResult: mapped,
+              }),
+              api.logger,
+            );
+            return attachDevLogResolution(
+              applyPendingLifecycle(mapped, st, event.toolCallId, pendingCall),
+              plan,
+              pendingCall,
+              api.logger,
+            );
           }
 
           const { scan, timing } = scanResult;
           api.logger.info(`[sentrook-openclaw] ${formatScanTimingLog(plan, scan, timing)}`);
           recordScanLatency(config.url, liveAuth, plan, scan, timing);
 
-          return applyPendingLifecycle(
-            translateScanResponse(scan, {
+          const translated = translateScanResponse(scan, {
+            plan,
+            url: config.url,
+            auth: liveAuth,
+            feedbackMode: config.feedbackMode,
+            approval: config.approval,
+            allowlist: config.allowlist,
+            logger: api.logger,
+            pendingArgs: pendingCall.args,
+          });
+          const allowlistHit = scan.decision === "review" && translated == null;
+          appendDevLog(
+            resolveDevLogConfig(),
+            buildScanDevEvent({
               plan,
-              url: config.url,
-              auth: liveAuth,
-              feedbackMode: config.feedbackMode,
-              approval: config.approval,
-              allowlist: config.allowlist,
-              logger: api.logger,
               pendingArgs: pendingCall.args,
+              scan,
+              timing,
+              hookResult: translated,
+              allowlistHit,
             }),
-            st,
-            event.toolCallId,
+            api.logger,
+          );
+          return attachDevLogResolution(
+            applyPendingLifecycle(translated, st, event.toolCallId, pendingCall),
+            plan,
             pendingCall,
+            api.logger,
           );
         } catch (err) {
           api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);
           const detail = String(err).replace(/\n/g, " ").trim().slice(0, 160);
+          appendDevLog(
+            resolveDevLogConfig(),
+            {
+              event: "plugin_error",
+              tool: event.toolName,
+              tool_call_id: event.toolCallId ?? null,
+              detail,
+            },
+            api.logger,
+          );
           return {
             block: true,
             blockReason: detail
@@ -1011,16 +1094,32 @@ const plugin = {
             ? String((call.args.command ?? call.args.cmd ?? "") as string) || undefined
             : undefined;
 
+        const resultText = resultToText(event.result, event.error);
         st.executed.push({
           tool: call.tool,
           args: call.args,
-          resultText: resultToText(event.result, event.error),
+          resultText,
           resultOk: !event.error,
           command,
         });
         if (st.executed.length > MAX_TRAJECTORY) {
           st.executed.splice(0, st.executed.length - MAX_TRAJECTORY);
         }
+        appendDevLog(
+          resolveDevLogConfig(),
+          {
+            event: "action",
+            session_id: ctx.sessionId ?? ctx.sessionKey ?? null,
+            run_id: ctx.runId ?? null,
+            tool_call_id: event.toolCallId ?? null,
+            tool: call.tool,
+            command: command ? scrubDevText(command) : null,
+            result_ok: !event.error,
+            result_chars: resultText.length,
+            error: event.error ? scrubDevText(String(event.error), 200) : null,
+          },
+          api.logger,
+        );
       } catch (err) {
         api.logger.warn(`[sentrook-openclaw] after_tool_call failed: ${String(err)}`);
       }
