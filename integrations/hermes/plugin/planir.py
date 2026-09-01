@@ -40,9 +40,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "feishu_drive_add_comment": "message",
 }
 
-# process(action=write|submit) injects stdin into a background terminal without a
+# process(action=write|submit|start|spawn) injects or starts a command without a
 # new terminal/exec call — fold onto exec so command regexes still fire.
-PROCESS_EXEC_ACTIONS = frozenset({"write", "submit"})
+PROCESS_EXEC_ACTIONS = frozenset({"write", "submit", "start", "spawn"})
 
 # Tools whose args are treated as shell/code for review-card “run:” prefix.
 EXEC_TOOLS = frozenset({"exec", "terminal", "execute_code", "process"})
@@ -176,7 +176,7 @@ def canonical_tool_name(tool: str, args: Json | None = None) -> str:
     tool alias needs an explicit entry in ``TOOL_NAME_ALIASES`` + a regression
     test.
 
-    ``process`` is conditional: only ``action`` in {write, submit} (stdin inject)
+    ``process`` is conditional: ``action`` in {write, submit, start, spawn}
     maps to ``exec``; list/poll/log/wait/kill/close stay as ``process``.
     """
     if tool == "process":
@@ -244,11 +244,7 @@ def redact_args(args: Json) -> Json:
             out[key] = [
                 redact_args(item)
                 if isinstance(item, dict)
-                else (
-                    TRUNCATED
-                    if isinstance(item, str) and len(item) > STRING_LEAF_MAX
-                    else item
-                )
+                else (TRUNCATED if isinstance(item, str) and len(item) > STRING_LEAF_MAX else item)
                 for item in value
             ]
         else:
@@ -276,7 +272,9 @@ def build_result_summary(
         byte_size=byte_size,
         excerpt=excerpt,
         extracted=ResultSummaryExtracted(urls=urls, paths=paths, commands=commands),
-        flags=ResultSummaryFlags(truncated=truncated, injection_markers=bool(INJECTION_MARKERS.search(body))),
+        flags=ResultSummaryFlags(
+            truncated=truncated, injection_markers=bool(INJECTION_MARKERS.search(body))
+        ),
     )
 
 

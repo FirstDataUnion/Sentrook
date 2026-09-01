@@ -2,6 +2,10 @@
 
 ## 0.1.1-rc.1
 
+- Review cards summarise local pending args when there is no shell command:
+  `process action=log` shows the session and limit instead of falling back to
+  sidecar "no preview" copy. `process` write/submit/start/spawn are scanned as
+  `exec`.
 - Internal: optional local JSONL diagnostic log for maintainers investigating
   review-card copy and scan decisions (off by default).
 

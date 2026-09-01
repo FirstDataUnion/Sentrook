@@ -21,7 +21,38 @@ const MIN_COMMAND_CHARS = 16;
 const PAYLOAD_COLLAPSE_MIN = 48;
 const PAYLOAD_PREVIEW = 40;
 
-const EXEC_COMMAND_KEYS = ["command", "cmd", "shell", "script", "line", "code", "source"] as const;
+const EXEC_COMMAND_KEYS = [
+  "command",
+  "cmd",
+  "shell",
+  "script",
+  "line",
+  "code",
+  "source",
+  "data",
+] as const;
+const PATH_KEYS = ["path", "file", "file_path", "target", "destination"] as const;
+const SESSION_KEYS = ["sessionId", "session_id", "session"] as const;
+const STRUCTURED_LEAD_KEYS = [
+  "action",
+  "sessionId",
+  "session_id",
+  "session",
+  "limit",
+  "timeout",
+  "offset",
+] as const;
+const SECRET_ARG_KEY =
+  /(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)/i;
+const PROCESS_LIFECYCLE_INTENTS: Record<string, string> = {
+  log: "read output from a background session",
+  poll: "poll a background session",
+  wait: "wait on a background session",
+  list: "list background sessions",
+  kill: "stop a background session",
+  close: "close a background session",
+  clear: "clear a background session",
+};
 const BODY_FLAGS = new Set([
   "-d",
   "--data",
@@ -81,6 +112,107 @@ export function pendingDisplayCommand(
     if (text && text !== TRUNCATED_TOKEN) return text;
   }
   return undefined;
+}
+
+function argText(args: Record<string, unknown> | undefined, key: string): string | undefined {
+  if (!args || !(key in args)) return undefined;
+  const text = stringifyArgValue(args[key]).trim();
+  if (!text || text === TRUNCATED_TOKEN) return undefined;
+  return text;
+}
+
+export function pendingDisplayPath(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined;
+  for (const key of PATH_KEYS) {
+    const text = argText(args, key);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function processAction(args: Record<string, unknown> | undefined): string | undefined {
+  const raw = argText(args, "action");
+  return raw ? raw.toLowerCase() : undefined;
+}
+
+function processSession(args: Record<string, unknown> | undefined): string | undefined {
+  for (const key of SESSION_KEYS) {
+    const text = argText(args, key);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function displayArgPair(key: string, value: unknown): string | undefined {
+  const raw = stringifyArgValue(value).trim();
+  if (!raw || raw === TRUNCATED_TOKEN) return undefined;
+  const shown = SECRET_ARG_KEY.test(key) ? "[REDACTED]" : displayScrub(raw);
+  return `${key}=${shown}`;
+}
+
+function packStructuredArgs(args: Record<string, unknown>, limit: number): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const emit = (key: string) => {
+    if (seen.has(key) || !(key in args)) return;
+    seen.add(key);
+    const pair = displayArgPair(key, args[key]);
+    if (pair) parts.push(pair);
+  };
+  for (const key of STRUCTURED_LEAD_KEYS) emit(key);
+  for (const key of Object.keys(args)) emit(key);
+  return packSignalExcerpt(parts.join(" "), limit);
+}
+
+export function hasStructuredPreview(args: Record<string, unknown> | undefined): boolean {
+  if (!args) return false;
+  for (const value of Object.values(args)) {
+    const text = stringifyArgValue(value).trim();
+    if (text && text !== TRUNCATED_TOKEN) return true;
+  }
+  return false;
+}
+
+function buildStructuredCard(
+  tool: string,
+  args: Record<string, unknown>,
+): { title: string; description: string; commandFound: false } {
+  const action = processAction(args);
+  const session = processSession(args);
+  if (tool === "process" && action) {
+    const intent = PROCESS_LIFECYCLE_INTENTS[action];
+    const title = session
+      ? clip(`process ${action}: ${session}`, REVIEW_TITLE_MAX)
+      : clip(`process ${action}`, REVIEW_TITLE_MAX);
+    if (intent) {
+      const intentLine = `Likely: ${intent}`;
+      const budget = Math.max(
+        MIN_COMMAND_CHARS,
+        REVIEW_DESCRIPTION_MAX - intentLine.length - 1,
+      );
+      const excerpt = packStructuredArgs(args, budget);
+      const body = `${intentLine}\n${excerpt}`;
+      return {
+        title,
+        description:
+          body.length <= REVIEW_DESCRIPTION_MAX ? body : clip(intentLine, REVIEW_DESCRIPTION_MAX),
+        commandFound: false,
+      };
+    }
+    return {
+      title,
+      description: clip(packStructuredArgs(args, REVIEW_DESCRIPTION_MAX), REVIEW_DESCRIPTION_MAX),
+      commandFound: false,
+    };
+  }
+  const title = action
+    ? clip(`${tool} ${action}`, REVIEW_TITLE_MAX)
+    : clip(tool, REVIEW_TITLE_MAX);
+  return {
+    title,
+    description: clip(packStructuredArgs(args, REVIEW_DESCRIPTION_MAX), REVIEW_DESCRIPTION_MAX),
+    commandFound: false,
+  };
 }
 
 export function isPolicyHeadline(title: string): boolean {
@@ -423,9 +555,13 @@ export function buildApprovalCard(input: {
   command?: string;
   tool?: string;
   path?: string;
+  args?: Record<string, unknown>;
 }): { title: string; description: string; commandFound: boolean } {
   const tool = input.tool ?? "exec";
-  const usable = input.command?.trim();
+  const usable =
+    input.command?.trim() && input.command.trim() !== TRUNCATED_TOKEN
+      ? input.command.trim()
+      : pendingDisplayCommand(input.args);
   if (usable && usable !== TRUNCATED_TOKEN) {
     return {
       title: buildCommandTitle(usable),
@@ -433,13 +569,17 @@ export function buildApprovalCard(input: {
       commandFound: true,
     };
   }
-  if (input.path?.trim()) {
-    const leaf = shortenPath(input.path.trim(), 48);
+  const path = input.path?.trim() || pendingDisplayPath(input.args);
+  if (path) {
+    const leaf = shortenPath(path, 48);
     return {
       title: clip(`${tool}: ${leaf}`, REVIEW_TITLE_MAX),
       description: clip(`\`${tool}\` \`${leaf}\``, REVIEW_DESCRIPTION_MAX),
       commandFound: false,
     };
+  }
+  if (input.args && hasStructuredPreview(input.args)) {
+    return buildStructuredCard(tool, input.args);
   }
   const miss = honestMissTitle(tool);
   return {
@@ -452,8 +592,9 @@ export function buildApprovalCard(input: {
 /**
  * Build OpenClaw title/description from local pending args when available.
  *
- * Local argv always wins. Sidecar copy is kept only when there is no local
- * command *and* the sidecar title is not a policy headline.
+ * Local args always win (command, path, or structured action/session). Sidecar
+ * copy is kept only when there is nothing local *and* the sidecar title is not
+ * a policy headline.
  */
 export type ApprovalCopySource = "local_argv" | "sidecar" | "honest_miss";
 
@@ -473,13 +614,18 @@ export function overlayApprovalCopy(input: {
   pendingArgs?: Record<string, unknown>;
 }): ApprovalCopy {
   const localCommand = pendingDisplayCommand(input.pendingArgs);
-  if (localCommand) {
-    const card = buildApprovalCard({ command: localCommand, tool: input.pendingTool });
+  const localArgs = hasStructuredPreview(input.pendingArgs);
+  if (localCommand || localArgs) {
+    const card = buildApprovalCard({
+      command: localCommand,
+      tool: input.pendingTool,
+      args: input.pendingArgs,
+    });
     return {
       title: card.title,
       description: card.description,
       source: "local_argv",
-      commandFound: true,
+      commandFound: card.commandFound,
     };
   }
 

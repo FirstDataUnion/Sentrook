@@ -186,4 +186,7 @@ exercise a tool call.
 Release notes: [`plugin/CHANGELOG.md`](plugin/CHANGELOG.md).
 
 PlanIR host→corpus tool aliases live in `plugin/planir.py`
-(`TOOL_NAME_ALIASES`) and `plugin/tests/test_planir.py`.
+(`TOOL_NAME_ALIASES`, plus conditional `process` write/submit/start/spawn →
+`exec`) and `plugin/tests/test_planir.py`. Review copy is rebuilt from local
+pending args: a command when present, otherwise a compact action/session
+preview for lifecycle `process` calls.
