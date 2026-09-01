@@ -9,9 +9,11 @@ import { clearScanTokenCache } from "./auth.ts";
 import {
   buildScanTiming,
   computeTransportMs,
+  DEFAULT_SCAN_TIMEOUT_MS,
   extractEngineMs,
   parseScanResponse,
   postScan,
+  resolveBeforeToolCallTimeoutMs,
   resolveScanTimeoutMs,
   translateScanResponse,
   type ScanResponse,
@@ -65,8 +67,9 @@ afterEach(() => {
 });
 
 describe("scan timing helpers", () => {
-  it("defaults to 60000ms", () => {
-    assert.equal(resolveScanTimeoutMs(undefined, {}), 60_000);
+  it("defaults to 14000ms", () => {
+    assert.equal(resolveScanTimeoutMs(undefined, {}), DEFAULT_SCAN_TIMEOUT_MS);
+    assert.equal(DEFAULT_SCAN_TIMEOUT_MS, 14_000);
   });
 
   it("prefers explicit config and env timeout overrides", () => {
@@ -77,6 +80,20 @@ describe("scan timing helpers", () => {
       }),
       4000,
     );
+  });
+
+  it("caps explicit scan timeouts at the 10 minute hook max", () => {
+    assert.equal(resolveScanTimeoutMs(1_800_000, {}), 600_000);
+    assert.equal(
+      resolveScanTimeoutMs(undefined, { SENTROOK_SCAN_TIMEOUT_MS: "9999999" }),
+      600_000,
+    );
+  });
+
+  it("sets the hook budget 1s above the scan timeout, capped at 10 min", () => {
+    assert.equal(resolveBeforeToolCallTimeoutMs(14_000), 15_000);
+    assert.equal(resolveBeforeToolCallTimeoutMs(60_000), 61_000);
+    assert.equal(resolveBeforeToolCallTimeoutMs(600_000), 600_000);
   });
 
   it("prefers timing.engine_ms over log.total_ms", () => {
@@ -297,6 +314,29 @@ describe("postScan failure logging", () => {
     assert.ok(!warns[0]!.includes("failing open"));
   });
 
+  it("returns timeout when the tool-call abort signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const warns: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (m: string) => warns.push(m),
+      error: () => {},
+    };
+    const result = await postScan(
+      "https://scan.test",
+      1500,
+      plan(),
+      null,
+      logger,
+      controller.signal,
+    );
+    assert.equal(result.ok, false);
+    if (result.ok !== false) throw new Error("expected failure");
+    assert.equal(result.kind, "timeout");
+    assert.ok(warns.some((w) => /aborted before request/.test(w)));
+  });
+
   it("warns scan failed on network errors", async () => {
     const warns: string[] = [];
     const logger = {
@@ -363,7 +403,7 @@ describe("postScan failure logging", () => {
     assert.ok(!urls.some((u) => u.includes("/scan")));
   });
 
-  it("does not spend the scan timeout on OIDC mint", async () => {
+  it("shares the scan timeout with OIDC mint so a hung Identity host cannot overrun the hook", async () => {
     const exp = Math.floor(Date.now() / 1000) + 3600;
     const access = `aaa.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.bbb`;
     globalThis.fetch = (async (input) => {
@@ -390,23 +430,25 @@ describe("postScan failure logging", () => {
       throw new Error(`unexpected fetch: ${url}`);
     }) as typeof fetch;
 
-    const result = await postScan(
-      "https://scan.test",
-      20,
-      plan(),
-      {
-        apiKey: null,
-        oidc: {
-          clientId: "c",
-          clientSecret: "s",
-          issuer: "https://identity.test",
-          audience: "sentrook",
-          scope: "sentrook.scan",
-        },
+    const oidc = {
+      apiKey: null,
+      oidc: {
+        clientId: "c",
+        clientSecret: "s",
+        issuer: "https://identity.test",
+        audience: "sentrook",
+        scope: "sentrook.scan",
       },
-    );
-    assert.ok(!("ok" in result && (result as { ok?: false }).ok === false));
-    assert.equal((result as { scan: { decision: string } }).scan.decision, "allow");
+    } as const;
+
+    const tight = await postScan("https://scan.test", 20, plan(), oidc);
+    assert.equal(tight.ok, false);
+    if (tight.ok !== false) throw new Error("expected failure");
+    assert.equal(tight.kind, "timeout");
+
+    const ok = await postScan("https://scan.test", 1500, plan(), oidc);
+    assert.ok(!("ok" in ok && (ok as { ok?: false }).ok === false));
+    assert.equal((ok as { scan: { decision: string } }).scan.decision, "allow");
   });
 });
 
@@ -507,6 +549,7 @@ describe("translateScanResponse — review mapping", () => {
     const approval = result?.requireApproval;
     assert.ok(approval);
     assert.equal(approval.timeoutBehavior, "deny");
+    assert.equal(approval.timeoutMs, 600_000);
   });
 
   it("applies scheduled deny timing for cron intents", () => {
@@ -523,6 +566,7 @@ describe("translateScanResponse — review mapping", () => {
     const approval = result?.requireApproval;
     assert.ok(approval);
     assert.equal(approval.timeoutBehavior, "deny");
+    assert.equal(approval.timeoutMs, 600_000);
   });
 });
 

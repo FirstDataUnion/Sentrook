@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS,
   DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS,
+  MAX_APPROVAL_TIMEOUT_MS,
   resolveApprovalPolicyConfig,
   resolveApprovalTiming,
   resolveIntentKind,
@@ -60,16 +61,17 @@ describe("resolveApprovalTiming", () => {
     assert.equal(timing.timeoutBehavior, "deny");
   });
 
-  it("honours scheduledTimeoutBehavior allow override", () => {
+  it("ignores scheduledTimeoutBehavior allow (OpenClaw 2.0 always deny)", () => {
     const open = resolveApprovalPolicyConfig({
       pluginApproval: { scheduledTimeoutBehavior: "allow" },
     });
+    assert.equal(open.scheduledTimeoutBehavior, "allow");
     const timing = resolveApprovalTiming(
       open,
       "cron",
       "[cron:abc] Daily Brief",
     );
-    assert.equal(timing.timeoutBehavior, "allow");
+    assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.unattended, true);
   });
 
@@ -89,7 +91,14 @@ describe("resolveApprovalTiming", () => {
 });
 
 describe("resolveApprovalPolicyConfig", () => {
-  it("reads env overrides", () => {
+  it("defaults both review windows to the 10 minute cap", () => {
+    const policy = resolveApprovalPolicyConfig({});
+    assert.equal(policy.interactiveTimeoutMs, MAX_APPROVAL_TIMEOUT_MS);
+    assert.equal(policy.scheduledTimeoutMs, MAX_APPROVAL_TIMEOUT_MS);
+    assert.equal(policy.scheduledTimeoutBehavior, "deny");
+  });
+
+  it("reads env overrides and still parses deprecated allow", () => {
     const policy = resolveApprovalPolicyConfig({
       env: {
         SENTROOK_APPROVAL_TIMEOUT_MS: "60000",
@@ -102,8 +111,16 @@ describe("resolveApprovalPolicyConfig", () => {
     assert.equal(policy.scheduledTimeoutBehavior, "allow");
   });
 
-  it("defaults scheduledTimeoutBehavior to deny", () => {
-    const policy = resolveApprovalPolicyConfig({});
-    assert.equal(policy.scheduledTimeoutBehavior, "deny");
+  it("caps review timeouts at 10 minutes without erroring", () => {
+    const policy = resolveApprovalPolicyConfig({
+      pluginApproval: {
+        interactiveTimeoutMs: 1_800_000,
+        scheduledTimeoutMs: 9_999_999,
+        scheduledTimeoutBehavior: "allow",
+      },
+    });
+    assert.equal(policy.interactiveTimeoutMs, MAX_APPROVAL_TIMEOUT_MS);
+    assert.equal(policy.scheduledTimeoutMs, MAX_APPROVAL_TIMEOUT_MS);
+    assert.equal(policy.scheduledTimeoutBehavior, "allow");
   });
 });

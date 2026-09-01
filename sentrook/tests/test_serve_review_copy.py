@@ -297,6 +297,49 @@ def test_policy_headline_detector() -> None:
     assert honest_miss_title("write").startswith("write:")
 
 
+def test_process_log_uses_structured_args_not_honest_miss() -> None:
+    plan = PlanIR(
+        version="1.0",
+        run_id="sess:run_1",
+        steps=[
+            PlanStep(
+                id="s1",
+                tool="process",
+                status="pending",
+                args={"action": "log", "sessionId": "delta-reef", "limit": 100},
+            )
+        ],
+        metadata=PlanMetadata(adapter="openclaw", hook="before_tool_call"),
+    )
+    result = _result(plan)
+    record = _record(plan)
+    title = build_review_title(record, result)
+    description = build_review_description(record, result)
+    _assert_card_bounds(ApprovalCard(title=title, description=description, command_found=False))
+    assert title == "process log: delta-reef"
+    assert "not available" not in description
+    assert "delta-reef" in description
+    assert "background session" in description
+    card = build_approval_card(
+        command=None,
+        tool="process",
+        args={"action": "log", "sessionId": "delta-reef", "limit": 100},
+    )
+    assert card.title == "process log: delta-reef"
+    assert card.command_found is False
+
+
+def test_process_poll_structured_preview() -> None:
+    card = build_approval_card(
+        command=None,
+        tool="process",
+        args={"action": "poll", "sessionId": "delta-reef", "timeout": 5000},
+    )
+    _assert_card_bounds(card)
+    assert card.title == "process poll: delta-reef"
+    assert "not available" not in card.description
+
+
 def test_structural_intent_omits_generic_exec() -> None:
     assert structural_intent("ls /tmp") is None
     assert (

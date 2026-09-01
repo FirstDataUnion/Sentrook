@@ -77,7 +77,7 @@ the scan API backed by the live rules library.
 
 ```bash
 # 1. Install the plugin (tracks npm latest — see Updates below)
-openclaw plugins install npm:@firstdataunion/sentrook-openclaw
+openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force
 
 # 2. Interactive setup: data-sharing prefs, FIDU credentials
 openclaw sentrook configure

@@ -2,7 +2,9 @@
  * Scan-error policy when hosted Sentrook does not return a decision.
  *
  * Distinct from human-review timeouts (`approval.*`). Missing config defaults
- * to ``review`` (ask interactive; block unattended) — same as Hermes.
+ * to ``review`` (ask interactive; unattended blocks) — same as Hermes.
+ * Unattended scan errors always block; the deprecated
+ * ``scheduledTimeoutBehavior`` knob is ignored. Auth failures never fail-open.
  */
 
 export type OnScanError = "allow" | "deny" | "review";
@@ -152,8 +154,8 @@ function blockReasonFor(failure: ScanFailure): string {
  *
  * Auth failures (401/403) never fail-open: ``onScanError=allow`` still blocks.
  * Interactive ``review`` escalates with a configuration-error card.
- * Unattended ``review`` always blocks (no ``scheduledTimeoutBehavior: allow``
- * on the scan-error path — that knob is only for Sentrook *policy* reviews).
+ * Unattended ``review`` always blocks (the deprecated
+ * ``scheduledTimeoutBehavior: allow`` knob is ignored on this path too).
  */
 export function scanErrorToHookResult(
   failure: ScanFailure,

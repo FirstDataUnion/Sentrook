@@ -32,6 +32,30 @@ def test_pending_display_command_reads_aliases_and_skips_truncated() -> None:
     assert pending_display_command(None) is None
 
 
+def test_process_log_review_uses_session_not_honest_miss() -> None:
+    msg = build_review_message(
+        pending_tool="process",
+        pending_args={"action": "log", "session_id": "delta-reef", "limit": 100},
+        scan_description="process: command was not available to summarise",
+    )
+    assert "not available" not in msg
+    assert "delta-reef" in msg
+    assert "background session" in msg
+    assert "limit=100" in msg
+    assert len(msg) <= REVIEW_MESSAGE_MAX
+
+
+def test_process_poll_review_mentions_session() -> None:
+    msg = build_review_message(
+        pending_tool="process",
+        pending_args={"action": "poll", "sessionId": "delta-reef", "timeout": 5000},
+    )
+    assert "delta-reef" in msg
+    assert "poll" in msg.lower()
+    assert "not available" not in msg
+    assert len(msg) <= REVIEW_MESSAGE_MAX
+
+
 def test_process_write_review_includes_stdin_payload() -> None:
     msg = build_review_message(
         pending_tool="exec",
@@ -182,4 +206,11 @@ def test_review_copy_source_sidecar_and_fallback() -> None:
 
     source, found = review_copy_source(pending_args={})
     assert source == "fallback"
+    assert found is False
+
+    source, found = review_copy_source(
+        pending_args={"action": "log", "session_id": "delta-reef", "limit": 100},
+        scan_description="process: command was not available to summarise",
+    )
+    assert source == "local_argv"
     assert found is False

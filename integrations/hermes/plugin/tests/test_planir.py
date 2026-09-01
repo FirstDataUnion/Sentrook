@@ -133,7 +133,11 @@ def test_host_specific_send_twins_map_to_message() -> None:
         executed=[],
         pending={
             "tool": "yb_send_dm",
-            "args": {"action": "send", "target": "yuanbao:direct:1", "message": "secret sk-live-abcdef12"},
+            "args": {
+                "action": "send",
+                "target": "yuanbao:direct:1",
+                "message": "secret sk-live-abcdef12",
+            },
         },
         run_id="yb",
     )
@@ -213,3 +217,15 @@ def test_process_poll_stays_process() -> None:
     assert plan.steps[0].tool == "process"
     assert plan.steps[0].args.get("action") == "poll"
 
+
+def test_process_start_maps_to_exec() -> None:
+    plan = build_planir_snapshot(
+        executed=[],
+        pending={
+            "tool": "process",
+            "args": {"action": "start", "command": "ls /tmp"},
+        },
+        run_id="proc-start",
+    )
+    assert plan.steps[0].tool == "exec"
+    assert plan.steps[0].args.get("command") == "ls /tmp"

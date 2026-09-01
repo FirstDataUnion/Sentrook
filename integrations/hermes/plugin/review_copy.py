@@ -5,7 +5,7 @@ Discord/Slack/Telegram **Reason**). The host hardcodes Requested command to
 ``<tool> (plugin approval rule)``, so the real argv and likely-intent must live
 in this one field.
 
-Budget is Discord Reason (300). OpenClaw uses title 80 + description 256; we
+Budget is Discord Reason (300). OpenClaw uses title 80 + description 512; we
 mirror description structure (Likely + packed command + hint) without rule IDs
 and without forcing a title/description split.
 """
@@ -50,6 +50,29 @@ _BODY_FLAGS = frozenset(
 _URL_RE = re.compile(r"https?://", re.IGNORECASE)
 
 _ID_LINE_RE = re.compile(r"^\([A-Za-z0-9,.\s-]+\)$")
+_SESSION_KEYS = ("sessionId", "session_id", "session")
+_STRUCTURED_LEAD_KEYS = (
+    "action",
+    "sessionId",
+    "session_id",
+    "session",
+    "limit",
+    "timeout",
+    "offset",
+)
+_SECRET_ARG_KEY = re.compile(
+    r"(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)",
+    re.IGNORECASE,
+)
+_PROCESS_LIFECYCLE_INTENTS = {
+    "log": "read output from a background session",
+    "poll": "poll a background session",
+    "wait": "wait on a background session",
+    "list": "list background sessions",
+    "kill": "stop a background session",
+    "close": "close a background session",
+    "clear": "clear a background session",
+}
 
 
 def pending_display_command(args: dict[str, Any] | None) -> str | None:
@@ -62,6 +85,82 @@ def pending_display_command(args: dict[str, Any] | None) -> str | None:
         if text and text != TRUNCATED_TOKEN:
             return text
     return None
+
+
+def _arg_text(args: dict[str, Any] | None, key: str) -> str | None:
+    if not args or key not in args:
+        return None
+    text = stringify_arg_value(args[key]).strip()
+    if not text or text == TRUNCATED_TOKEN:
+        return None
+    return text
+
+
+def has_structured_preview(args: dict[str, Any] | None) -> bool:
+    if not args:
+        return False
+    for value in args.values():
+        text = stringify_arg_value(value).strip()
+        if text and text != TRUNCATED_TOKEN:
+            return True
+    return False
+
+
+def _process_action(args: dict[str, Any] | None) -> str | None:
+    raw = _arg_text(args, "action")
+    return raw.lower() if raw else None
+
+
+def _process_session(args: dict[str, Any] | None) -> str | None:
+    for key in _SESSION_KEYS:
+        text = _arg_text(args, key)
+        if text:
+            return text
+    return None
+
+
+def _display_arg_pair(key: str, value: Any) -> str | None:
+    raw = stringify_arg_value(value).strip()
+    if not raw or raw == TRUNCATED_TOKEN:
+        return None
+    shown = "[REDACTED]" if _SECRET_ARG_KEY.search(key) else scrub_secrets(raw)
+    return f"{key}={shown}"
+
+
+def pack_structured_args(args: dict[str, Any], limit: int) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def emit(key: str) -> None:
+        if key in seen or key not in args:
+            return
+        seen.add(key)
+        pair = _display_arg_pair(key, args[key])
+        if pair:
+            parts.append(pair)
+
+    for key in _STRUCTURED_LEAD_KEYS:
+        emit(key)
+    for key in args:
+        emit(key)
+    return pack_signal_excerpt(" ".join(parts), limit)
+
+
+def structured_review_lines(pending_tool: str, args: dict[str, Any]) -> tuple[str, str]:
+    """Return (likely_line, packed_args) for non-command pending args."""
+    action = _process_action(args)
+    session = _process_session(args)
+    packed = pack_structured_args(args, REVIEW_MESSAGE_MAX)
+    if pending_tool == "process" and action:
+        intent = _PROCESS_LIFECYCLE_INTENTS.get(action)
+        if intent:
+            return f"Likely: {intent}", packed
+        if session:
+            return f"Likely: use the process tool ({action} {session})", packed
+        return f"Likely: use the process tool ({action})", packed
+    if action:
+        return f"Likely: use the {pending_tool} tool ({action})", packed
+    return f"Likely: use the {pending_tool} tool", packed
 
 
 def _collapse_ws(text: str) -> str:
@@ -244,6 +343,35 @@ def build_review_message(
             description = _clip(likely, max_len)
         return _clip(description, max_len)
 
+    if pending_args and has_structured_preview(pending_args):
+        likely, packed = structured_review_lines(pending_tool, pending_args)
+        description = ""
+        for with_hint in (True, False):
+            fixed = len(likely) + 1
+            if with_hint:
+                fixed += len(HINT) + 1
+            budget = max(MIN_COMMAND_CHARS, max_len - fixed)
+            excerpt = pack_signal_excerpt(packed, budget)
+            lines = [likely, excerpt]
+            if with_hint:
+                lines.append(HINT)
+            body = "\n".join(lines)
+            if len(body) <= max_len:
+                description = body
+                break
+            overflow = len(body) - max_len
+            excerpt = pack_signal_excerpt(packed, max(budget - overflow - 3, MIN_COMMAND_CHARS))
+            lines = [likely, excerpt]
+            if with_hint:
+                lines.append(HINT)
+            body = "\n".join(lines)
+            if len(body) <= max_len:
+                description = body
+                break
+        if not description:
+            description = _clip(likely, max_len)
+        return _clip(description, max_len)
+
     for candidate in (scan_description, scan_summary):
         if isinstance(candidate, str) and candidate.strip():
             body = _strip_rule_id_lines(candidate.strip())
@@ -268,6 +396,8 @@ def review_copy_source(
     """Where Hermes Reason copy came from: local_argv, sidecar, or fallback."""
     if pending_display_command(pending_args):
         return "local_argv", True
+    if has_structured_preview(pending_args):
+        return "local_argv", False
     for candidate in (scan_description, scan_summary):
         if isinstance(candidate, str) and candidate.strip():
             if _strip_rule_id_lines(candidate.strip()):

@@ -98,6 +98,7 @@ interface AgentContext {
   sessionId?: string;
   sessionKey?: string;
   runId?: string;
+  abortSignal?: AbortSignal;
 }
 interface SessionContext {
   sessionId?: string;
@@ -132,7 +133,11 @@ interface OpenClawPluginApi {
     | "setup-only"
     | "setup-runtime"
     | "tool-discovery";
-  on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
+  on: (
+    hook: string,
+    handler: (event: any, ctx: any) => unknown,
+    opts?: { priority?: number; timeoutMs?: number },
+  ) => void;
   registerCli?: (
     registrar: (ctx: { program: any }) => void | Promise<void>,
     opts?: {
@@ -276,21 +281,36 @@ interface SessionState {
 
 const MAX_TRAJECTORY = 200;
 const MAX_RESULT_TEXT = 20_000;
-const DEFAULT_SCAN_TIMEOUT_MS = 60_000;
+/** Default scan wait. 14s leaves 1s slack under OpenClaw 2.0's 15s fail-closed hook. */
+export const DEFAULT_SCAN_TIMEOUT_MS = 14_000;
+/** OpenClaw host cap for `api.on(..., { timeoutMs })`. */
+export const OPENCLAW_HOOK_TIMEOUT_CAP_MS = 600_000;
+/** JS / mint-cached slack so the host await outlasts the scan abort. */
+const BEFORE_TOOL_CALL_SLACK_MS = 1_000;
 
-/** Scan POST timeout: explicit config/env, else 60000ms. */
+function clampPositiveMs(value: number, cap: number): number {
+  if (!Number.isFinite(value) || value <= 0) return DEFAULT_SCAN_TIMEOUT_MS;
+  return Math.min(Math.round(value), cap);
+}
+
+/** Scan POST timeout: explicit config/env, else 14000ms. Capped at the hook max. */
 export function resolveScanTimeoutMs(
   cfgTimeout: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   if (typeof cfgTimeout === "number" && Number.isFinite(cfgTimeout) && cfgTimeout > 0) {
-    return Math.round(cfgTimeout);
+    return clampPositiveMs(cfgTimeout, OPENCLAW_HOOK_TIMEOUT_CAP_MS);
   }
   const envMs = Number(env.SENTROOK_SCAN_TIMEOUT_MS);
   if (Number.isFinite(envMs) && envMs > 0) {
-    return Math.round(envMs);
+    return clampPositiveMs(envMs, OPENCLAW_HOOK_TIMEOUT_CAP_MS);
   }
   return DEFAULT_SCAN_TIMEOUT_MS;
+}
+
+/** Host `before_tool_call` await budget: scan timeout plus 1s slack, capped at 10 min. */
+export function resolveBeforeToolCallTimeoutMs(scanTimeoutMs: number): number {
+  return clampPositiveMs(scanTimeoutMs + BEFORE_TOOL_CALL_SLACK_MS, OPENCLAW_HOOK_TIMEOUT_CAP_MS);
 }
 
 function classifyIntent(text: string): IntentKind {
@@ -485,6 +505,7 @@ export async function postScan(
   plan: PlanIR,
   auth: ScanAuthConfig | null = null,
   logger?: PluginLogger,
+  abortSignal?: AbortSignal,
 ): Promise<PostScanResult | ScanFailure> {
   const resolvedAuth: ScanAuthConfig = auth ?? { apiKey: null, oidc: null };
   const { plan: outbound, sanitizeMs } = maybeSanitizePlanir(plan);
@@ -494,11 +515,20 @@ export async function postScan(
   };
   const body = JSON.stringify(outbound);
 
-  // Mint OIDC outside the scan AbortController. Cold discovery+token can take
-  // a couple of seconds; a hung Identity host must not stall the hook forever.
+  if (abortSignal?.aborted) {
+    logger?.warn("[sentrook-openclaw] scan aborted before request");
+    return { ok: false, kind: "timeout", detail: "aborted" };
+  }
+
+  // Mint + POST share one budget so a hung Identity host cannot overrun
+  // OpenClaw 2.0's fail-closed before_tool_call wait (default 15s).
+  const started = performance.now();
+  const deadline = started + timeoutMs;
+  const remainingMs = (): number => Math.max(1, Math.ceil(deadline - performance.now()));
+
   let headers: Record<string, string>;
   try {
-    headers = await buildScanAuthHeadersAsync(resolvedAuth);
+    headers = await buildScanAuthHeadersAsync(resolvedAuth, {}, fetch, remainingMs());
   } catch (err) {
     const failure = scanAuthErrorToFailure(err);
     logger?.warn(`[sentrook-openclaw] scan auth failed: ${failure.detail}`);
@@ -506,9 +536,12 @@ export async function postScan(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const started = performance.now();
-  const deadline = started + timeoutMs;
+  const onParentAbort = () => controller.abort();
+  if (abortSignal) {
+    if (abortSignal.aborted) controller.abort();
+    else abortSignal.addEventListener("abort", onParentAbort, { once: true });
+  }
+  const timer = setTimeout(() => controller.abort(), remainingMs());
   let retried429 = false;
   try {
     while (true) {
@@ -611,6 +644,7 @@ export async function postScan(
       detail: msg,
     };
   } finally {
+    abortSignal?.removeEventListener("abort", onParentAbort);
     clearTimeout(timer);
   }
 }
@@ -929,6 +963,13 @@ const plugin = {
         envWithOpenclawDotenv(process.env),
       );
 
+    if (config.approval.scheduledTimeoutBehavior === "allow") {
+      api.logger.warn(
+        "[sentrook-openclaw] approval.scheduledTimeoutBehavior=allow is ignored; " +
+          "unresolved reviews always deny (OpenClaw 2.0)",
+      );
+    }
+
     const bootDevLog = resolveDevLogConfig();
     if (bootDevLog.enabled) {
       api.logger.info(`[sentrook-openclaw] diagnostic log ${bootDevLog.path}`);
@@ -990,6 +1031,7 @@ const plugin = {
             plan,
             liveAuth,
             api.logger,
+            ctx.abortSignal,
           );
           if (isScanFailure(scanResult)) {
             const timing = resolveApprovalTiming(
@@ -1079,7 +1121,7 @@ const plugin = {
           };
         }
       },
-      { priority: 10 },
+      { priority: 10, timeoutMs: resolveBeforeToolCallTimeoutMs(config.timeoutMs) },
     );
 
     api.on("after_tool_call", (event: AfterToolCallEvent, ctx: AgentContext) => {
@@ -1131,7 +1173,7 @@ const plugin = {
 
     const approvalSummary =
       `interactive=${config.approval.interactiveTimeoutMs}ms/deny, ` +
-      `scheduled=${config.approval.scheduledTimeoutMs}ms/${config.approval.scheduledTimeoutBehavior} ` +
+      `scheduled=${config.approval.scheduledTimeoutMs}ms/deny ` +
       `(${config.approval.scheduledIntentKinds.join("+")})`;
     const scanAuthSummary = hasScanCredentials(config.auth)
       ? config.auth.oidc
@@ -1142,7 +1184,9 @@ const plugin = {
         : "scan-auth=off";
     api.logger.info(
       `[sentrook-openclaw] registered (url=${config.url}, ` +
-        `${scanAuthSummary}, timeout=${config.timeoutMs}ms, onScanError=${config.onScanError}, ` +
+        `${scanAuthSummary}, timeout=${config.timeoutMs}ms, ` +
+        `hook=${resolveBeforeToolCallTimeoutMs(config.timeoutMs)}ms, ` +
+        `onScanError=${config.onScanError}, ` +
         `feedback=${config.feedbackMode}, ` +
         `sanitization=on, approval: ${approvalSummary})`,
     );

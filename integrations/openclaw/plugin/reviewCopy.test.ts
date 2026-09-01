@@ -27,6 +27,9 @@ describe("pendingDisplayCommand", () => {
     assert.equal(pendingDisplayCommand({ command: "ls /tmp" }), "ls /tmp");
     assert.equal(pendingDisplayCommand({ cmd: "pwd" }), "pwd");
     assert.equal(pendingDisplayCommand({ script: "curl https://x" }), "curl https://x");
+    assert.equal(pendingDisplayCommand({ code: "fetch('https://x')" }), "fetch('https://x')");
+    assert.equal(pendingDisplayCommand({ source: "console.log(1)" }), "console.log(1)");
+    assert.equal(pendingDisplayCommand({ data: "curl https://x" }), "curl https://x");
     assert.equal(pendingDisplayCommand({ command: ["curl", "https://x"] }), "curl https://x");
     assert.equal(pendingDisplayCommand({ command: "[TRUNCATED]" }), undefined);
     assert.equal(pendingDisplayCommand({ command: "   " }), undefined);
@@ -152,6 +155,51 @@ describe("buildApprovalCard", () => {
     assert.ok(!card.description.includes("Likely:"));
     assert.ok(card.description.includes("ls /tmp"));
   });
+
+  it("keeps argv that used to overflow the old 256-char Shell Preview budget", () => {
+    const command = `rg -n TODO src/${"x".repeat(300)}`;
+    const card = buildApprovalCard({ command });
+    assertBounds(card);
+    assert.ok(card.description.length > 256, String(card.description.length));
+    assert.ok(card.description.includes("rg -n TODO"));
+    assert.ok(card.description.includes("xxx"));
+  });
+
+  it("summarises process log from structured args instead of honest-miss", () => {
+    const card = buildApprovalCard({
+      tool: "process",
+      args: { action: "log", sessionId: "delta-reef", limit: 100 },
+    });
+    assertBounds(card);
+    assert.equal(card.title, "process log: delta-reef");
+    assert.ok(card.description.includes("background session"));
+    assert.ok(card.description.includes("delta-reef"));
+    assert.ok(card.description.includes("limit=100"));
+    assert.ok(!card.description.includes("not available"));
+    assert.equal(card.commandFound, false);
+  });
+
+  it("summarises process poll with a session id", () => {
+    const card = buildApprovalCard({
+      tool: "process",
+      args: { action: "poll", sessionId: "delta-reef", timeout: 5000 },
+    });
+    assertBounds(card);
+    assert.equal(card.title, "process poll: delta-reef");
+    assert.ok(card.description.includes("poll"));
+    assert.ok(!card.description.includes("not available"));
+  });
+
+  it("uses a generic structured preview for unknown tools with args", () => {
+    const card = buildApprovalCard({
+      tool: "browser",
+      args: { action: "click", selector: "#submit" },
+    });
+    assertBounds(card);
+    assert.equal(card.title, "browser click");
+    assert.ok(card.description.includes("selector=#submit"));
+    assert.ok(!card.description.includes("not available"));
+  });
 });
 
 describe("overlayApprovalCopy", () => {
@@ -241,6 +289,22 @@ describe("overlayApprovalCopy", () => {
     assert.equal(copy.title, "curl → evil.example");
     assert.equal(copy.source, "sidecar");
     assert.equal(copy.commandFound, false);
+  });
+
+  it("rebuilds process log from local args when sidecar honest-missed", () => {
+    const copy = overlayApprovalCopy({
+      scanTitle: "process: no preview",
+      scanDescription: "process: command was not available to summarise",
+      fallbackTitle: "process: no preview",
+      fallbackDescription: "flagged",
+      pendingTool: "process",
+      pendingArgs: { action: "log", sessionId: "delta-reef", limit: 100 },
+    });
+    assert.equal(copy.title, "process log: delta-reef");
+    assert.equal(copy.source, "local_argv");
+    assert.equal(copy.commandFound, false);
+    assert.ok(copy.description.includes("delta-reef"));
+    assert.ok(!copy.description.includes("not available"));
   });
 });
 

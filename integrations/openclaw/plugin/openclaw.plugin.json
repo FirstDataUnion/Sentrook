@@ -3,6 +3,7 @@
   "name": "Sentrook OpenClaw",
   "description": "Sentrook trajectory scanner (hosted HTTPS). Scans tool calls and can allow, require human approval, or block flagged actions.",
   "activation": {
+    "onStartup": true,
     "onCapabilities": [
       "hook"
     ]
@@ -37,7 +38,7 @@
       },
       "timeoutMs": {
         "type": "integer",
-        "description": "Wait for POST /scan in ms (OIDC mint is a separate 30s budget). Default 60000. Env: SENTROOK_SCAN_TIMEOUT_MS."
+        "description": "Wait for POST /scan including OIDC mint (ms). Default 14000 so the hook stays inside OpenClaw 2.0's 15s fail-closed before_tool_call budget. Env: SENTROOK_SCAN_TIMEOUT_MS. Values above 10 minutes are capped."
       },
       "onScanError": {
         "type": "string",
@@ -65,15 +66,15 @@
       "approval": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Human approval timeouts for review decisions. Unattended cron/subagent runs get a longer window; both interactive and scheduled reviews default to deny-on-timeout (fail-closed).",
+        "description": "Human approval timeouts for review decisions. Interactive and unattended reviews both default to 10 minutes and deny on timeout (OpenClaw 2.0 cap). Values above 600000 ms are capped.",
         "properties": {
           "interactiveTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for interactive sessions (ms). Default 300000 (5 min). Env: SENTROOK_APPROVAL_TIMEOUT_MS."
+            "description": "Review timeout for interactive sessions (ms). Default 600000 (10 min). Capped at 10 min. Env: SENTROOK_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for unattended cron/subagent runs (ms). Default 1800000 (30 min). Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
+            "description": "Review timeout for unattended cron/subagent runs (ms). Default 600000 (10 min). Capped at 10 min. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutBehavior": {
             "type": "string",
@@ -81,7 +82,7 @@
               "allow",
               "deny"
             ],
-            "description": "When an unattended review times out. Default deny (fail-closed). Set allow if cron/subagent jobs must proceed without a human. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR."
+            "description": "Deprecated. Unresolved reviews always deny (OpenClaw 2.0 ignores timeoutBehavior). The key is still accepted so older configs load. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR."
           },
           "scheduledIntentKinds": {
             "type": "array",

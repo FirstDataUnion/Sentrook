@@ -27,8 +27,12 @@ export const DEFAULT_SCAN_ISSUER = DEFAULT_OIDC_ISSUER;
 export const DEFAULT_SCAN_AUDIENCE = "sentrook";
 export const DEFAULT_SCAN_SCOPE = "sentrook.scan";
 const TOKEN_EXPIRY_SKEW_SEC = 60;
-/** Per-request budget for OIDC discovery + token mint (Hermes uses 30s). */
-export const DEFAULT_AUTH_TIMEOUT_MS = 30_000;
+/**
+ * Cap for OIDC discovery + token mint when the caller does not pass a tighter
+ * remaining budget. The `before_tool_call` path remaining-bounds this to the
+ * scan timeout so a hung Identity host cannot overrun OpenClaw 2.0's 15s hook.
+ */
+export const DEFAULT_AUTH_TIMEOUT_MS = 14_000;
 
 export const CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID";
 export const CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET";

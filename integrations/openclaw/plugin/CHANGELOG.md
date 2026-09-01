@@ -4,6 +4,9 @@
 
 ### Patch Changes
 
+- OpenClaw 2.0 (2026.8.1): default scan timeout is 14s (OIDC mint shares that budget) so `before_tool_call` stays inside the host's 15s fail-closed wait. Approval waits default to 10 minutes for interactive and unattended reviews and are capped there. Unresolved reviews always deny; `scheduledTimeoutBehavior: allow` is ignored but still accepted. Review-card Shell Preview uses the host's 512-char cap.
+- Review cards summarise local pending args when there is no shell command: `process action=log` shows the session and limit instead of "command was not available to summarise". `process` write/submit/start/spawn are scanned as `exec`.
+- Manifest sets `activation.onStartup: true`. First-time `npm:` installs document `--force` for noninteractive hosts.
 - Internal: optional local JSONL diagnostic log for maintainers investigating review-card copy and scan decisions (off by default).
 
 ## 1.0.5

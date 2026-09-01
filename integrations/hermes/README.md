@@ -161,12 +161,12 @@ matched-step slice, human-gated community corpus) — see the root
 
 | | Hermes | OpenClaw |
 |---|---|---|
-| Install | `hermes plugins install FirstDataUnion/Sentrook-hermes` | `openclaw plugins install npm:@firstdataunion/sentrook-openclaw` |
+| Install | `hermes plugins install FirstDataUnion/Sentrook-hermes` | `openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force` |
 | Gate | native Once / Session / Always / Deny | `requireApproval` cards |
 | “Allow always” | Hermes approval store via `rule_key` | host + optional local allowlist |
-| Unattended review | block immediately | scheduled wait policy |
+| Unattended review | block immediately | 10 min wait, then deny |
 | Scan error default | `review` | `review` |
-| Scan timeout | `60000` | `60000` |
+| Scan timeout | `60000` | `14000` |
 
 ## Maintainers
 
@@ -186,4 +186,7 @@ exercise a tool call.
 Release notes: [`plugin/CHANGELOG.md`](plugin/CHANGELOG.md).
 
 PlanIR host→corpus tool aliases live in `plugin/planir.py`
-(`TOOL_NAME_ALIASES`) and `plugin/tests/test_planir.py`.
+(`TOOL_NAME_ALIASES`, plus conditional `process` write/submit/start/spawn →
+`exec`) and `plugin/tests/test_planir.py`. Review copy is rebuilt from local
+pending args: a command when present, otherwise a compact action/session
+preview for lifecycle `process` calls.

@@ -7,7 +7,8 @@ the Command field (80) and ``description`` to Shell Preview (256).
 Operator cards are built from pending argv with a structural ladder (destination,
 sensitive path, packed excerpt) — never rule ids. Long quoted JSON/message
 payloads are collapsed so destinations stay visible. Generic "run a shell
-command" intent is omitted; an honest miss is used when argv is unavailable.
+command" intent is omitted; an honest miss is used when neither argv nor
+structured args (for example ``process action=log``) are available.
 
 Head-truncating long commands hid exfil URLs and sqlite paths in live red-team
 runs (A3); this module middle-elides and prefers those spans instead.
@@ -36,7 +37,31 @@ _MIN_COMMAND_CHARS = 16
 _MIN_EXCERPT_CHARS = 24
 _PAYLOAD_COLLAPSE_MIN = 48
 _PAYLOAD_PREVIEW = 40
-_EXEC_COMMAND_KEYS = ("command", "cmd", "shell", "script", "line")
+_EXEC_COMMAND_KEYS = ("command", "cmd", "shell", "script", "line", "data", "code", "source")
+_PATH_KEYS = ("path", "file", "file_path", "target", "destination")
+_SESSION_KEYS = ("sessionId", "session_id", "session")
+_STRUCTURED_LEAD_KEYS = (
+    "action",
+    "sessionId",
+    "session_id",
+    "session",
+    "limit",
+    "timeout",
+    "offset",
+)
+_SECRET_ARG_KEY = re.compile(
+    r"(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)",
+    re.IGNORECASE,
+)
+_PROCESS_LIFECYCLE_INTENTS = {
+    "log": "read output from a background session",
+    "poll": "poll a background session",
+    "wait": "wait on a background session",
+    "list": "list background sessions",
+    "kill": "stop a background session",
+    "close": "close a background session",
+    "clear": "clear a background session",
+}
 _BODY_FLAGS = frozenset(
     {
         "-d",
@@ -543,6 +568,102 @@ def _full_pending_command(record: ScanLogRecord, result: ScanResult) -> str | No
     return _usable_command_text(record.pending_command_excerpt)
 
 
+def _arg_text(args: dict, key: str) -> str | None:
+    if key not in args:
+        return None
+    return _usable_command_text(stringify_arg_value(args.get(key)))
+
+
+def _pending_path_from_args(args: dict) -> str | None:
+    for key in _PATH_KEYS:
+        text = _arg_text(args, key)
+        if text:
+            return text
+    return None
+
+
+def _process_action(args: dict) -> str | None:
+    raw = _arg_text(args, "action")
+    return raw.lower() if raw else None
+
+
+def _process_session(args: dict) -> str | None:
+    for key in _SESSION_KEYS:
+        text = _arg_text(args, key)
+        if text:
+            return text
+    return None
+
+
+def _display_arg_pair(key: str, value: object) -> str | None:
+    raw = stringify_arg_value(value).strip()
+    if not raw or raw == "[TRUNCATED]":
+        return None
+    shown = "[REDACTED]" if _SECRET_ARG_KEY.search(key) else _scrub_secrets(raw)
+    return f"{key}={shown}"
+
+
+def pack_structured_args(args: dict, limit: int) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def emit(key: str) -> None:
+        if key in seen or key not in args:
+            return
+        seen.add(key)
+        pair = _display_arg_pair(key, args[key])
+        if pair:
+            parts.append(pair)
+
+    for key in _STRUCTURED_LEAD_KEYS:
+        emit(key)
+    for key in args:
+        emit(key)
+    return pack_signal_excerpt(" ".join(parts), limit)
+
+
+def has_structured_preview(args: dict | None) -> bool:
+    if not args:
+        return False
+    for value in args.values():
+        text = stringify_arg_value(value).strip()
+        if text and text != "[TRUNCATED]":
+            return True
+    return False
+
+
+def _build_structured_card(tool: str, args: dict) -> ApprovalCard:
+    action = _process_action(args)
+    session = _process_session(args)
+    if tool == "process" and action:
+        intent = _PROCESS_LIFECYCLE_INTENTS.get(action)
+        title = (
+            _truncate(f"process {action}: {session}", TITLE_MAX)
+            if session
+            else _truncate(f"process {action}", TITLE_MAX)
+        )
+        if intent:
+            intent_line = f"Likely: {intent}"
+            budget = max(_MIN_COMMAND_CHARS, DESCRIPTION_MAX - len(intent_line) - 1)
+            excerpt = pack_structured_args(args, budget)
+            body = f"{intent_line}\n{excerpt}"
+            description = (
+                body if len(body) <= DESCRIPTION_MAX else _truncate(intent_line, DESCRIPTION_MAX)
+            )
+            return ApprovalCard(title=title, description=description, command_found=False)
+        return ApprovalCard(
+            title=title,
+            description=_truncate(pack_structured_args(args, DESCRIPTION_MAX), DESCRIPTION_MAX),
+            command_found=False,
+        )
+    title = _truncate(f"{tool} {action}", TITLE_MAX) if action else _truncate(tool, TITLE_MAX)
+    return ApprovalCard(
+        title=title,
+        description=_truncate(pack_structured_args(args, DESCRIPTION_MAX), DESCRIPTION_MAX),
+        command_found=False,
+    )
+
+
 def _pending_tool(record: ScanLogRecord, result: ScanResult) -> str:
     return record.pending_tool or result.plan.pending_tool or "tool"
 
@@ -923,22 +1044,33 @@ def build_approval_card(
     command: str | None,
     tool: str = "exec",
     path: str | None = None,
+    args: dict | None = None,
 ) -> ApprovalCard:
-    """Build OpenClaw Command / Shell Preview copy from pending argv."""
+    """Build OpenClaw Command / Shell Preview copy from pending argv or structured args."""
     usable = _usable_command_text(command)
+    if usable is None and args:
+        for key in _EXEC_COMMAND_KEYS:
+            usable = _usable_command_text(args.get(key))
+            if usable is not None:
+                break
     if usable:
         return ApprovalCard(
             title=build_command_title(usable, tool=tool),
             description=build_command_description(usable, tool=tool),
             command_found=True,
         )
-    if path and str(path).strip():
-        leaf = _shorten_path(str(path).strip(), 48)
+    resolved_path = (str(path).strip() if path else "") or (
+        _pending_path_from_args(args) if args else None
+    )
+    if resolved_path:
+        leaf = _shorten_path(str(resolved_path).strip(), 48)
         return ApprovalCard(
             title=_truncate(f"{tool}: {leaf}", TITLE_MAX),
             description=_truncate(f"`{tool}` `{leaf}`", DESCRIPTION_MAX),
             command_found=False,
         )
+    if args and has_structured_preview(args):
+        return _build_structured_card(tool, args)
     miss = honest_miss_title(tool)
     return ApprovalCard(
         title=miss,
@@ -948,12 +1080,7 @@ def build_approval_card(
 
 
 def _pending_path(record: ScanLogRecord, result: ScanResult) -> str | None:
-    args = _pending_args(record, result)
-    for key in ("path", "file", "file_path", "target", "destination"):
-        raw = args.get(key)
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
-    return None
+    return _pending_path_from_args(_pending_args(record, result))
 
 
 def _format_script_excerpt(
@@ -1222,6 +1349,17 @@ def describe_pending_action(record: ScanLogRecord, result: ScanResult) -> str:
         return f"run: `{build_smart_excerpt(command, limit=100)}`"
     if command:
         return f"use `{tool}` with: `{build_smart_excerpt(command, limit=80)}`"
+    args = _pending_args(record, result)
+    if tool == "process":
+        action = _process_action(args)
+        session = _process_session(args)
+        intent = _PROCESS_LIFECYCLE_INTENTS.get(action or "")
+        if intent and session:
+            return f"{intent} ({session})"
+        if intent:
+            return intent
+        if action:
+            return f"use the `process` tool ({action})"
     return f"use the `{tool}` tool"
 
 
@@ -1259,6 +1397,7 @@ def build_review_title(record: ScanLogRecord, result: ScanResult) -> str:
         command=_full_pending_command(record, result),
         tool=_pending_tool(record, result),
         path=_pending_path(record, result),
+        args=_pending_args(record, result),
     ).title
 
 
@@ -1273,6 +1412,7 @@ def build_review_description(
         command=_full_pending_command(record, result),
         tool=_pending_tool(record, result),
         path=_pending_path(record, result),
+        args=_pending_args(record, result),
     )
     return _truncate(card.description, max_len)
 

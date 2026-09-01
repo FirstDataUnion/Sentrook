@@ -29,7 +29,8 @@ import { DEFAULT_OIDC_ISSUER, SCAN_BASE_URL } from "./scanEndpoint.ts";
 export const PLUGIN_ID = "sentrook-openclaw";
 
 export { SCAN_BASE_URL, DEFAULT_OIDC_ISSUER };
-export const DEFAULT_TIMEOUT_MS = 60_000;
+/** Keep in sync with DEFAULT_SCAN_TIMEOUT_MS in index.ts (OpenClaw 2.0 15s hook). */
+export const DEFAULT_TIMEOUT_MS = 14_000;
 /** Contribute sanitized review feedback to the community corpus (opt-out). */
 export const DEFAULT_CONTRIBUTE_CORPUS = true;
 /** Identity portal matching this plugin build's pinned scan deploy. */
