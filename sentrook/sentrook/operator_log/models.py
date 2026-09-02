@@ -19,6 +19,7 @@ LabelSource = Literal[
     "quiet",
     "lenient",
     "allowlist",
+    "allow-all",
     "timeout",
     "unattended",
 ]
@@ -33,6 +34,7 @@ ResolutionKind = Literal[
     "quiet-skip",
     "lenient-skip",
     "allowlist-hit",
+    "allow-all-skip",
 ]
 
 

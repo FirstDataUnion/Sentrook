@@ -38,6 +38,7 @@
         "quiet",
         "lenient",
         "allowlist",
+        "allow-all",
         "timeout",
         "unattended",
         null

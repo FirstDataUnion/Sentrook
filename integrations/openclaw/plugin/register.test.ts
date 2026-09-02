@@ -28,6 +28,7 @@ const SCAN_ENV_KEYS = [
   "SENTROOK_DEV_LOG_PATH",
   "SENTROOK_OPERATOR_LOG",
   "SENTROOK_OPERATOR_LOG_PATH",
+  "SENTROOK_SENSITIVITY",
 ] as const;
 
 type SavedEnv = Partial<Record<(typeof SCAN_ENV_KEYS)[number], string | undefined>>;
@@ -64,6 +65,14 @@ function createMockApi(pluginConfig: Record<string, unknown>) {
   const hookOpts = new Map<string, { priority?: number; timeoutMs?: number } | undefined>();
   const warns: string[] = [];
   const infos: string[] = [];
+  const commands: Array<{
+    name: string;
+    description: string;
+    acceptsArgs?: boolean;
+    requireAuth?: boolean;
+    requiredScopes?: string[];
+    handler: (ctx: Record<string, unknown>) => { text: string } | Promise<{ text: string }>;
+  }> = [];
   const api = {
     pluginConfig,
     registrationMode: "full" as const,
@@ -80,8 +89,11 @@ function createMockApi(pluginConfig: Record<string, unknown>) {
       handlers.set(event, handler);
       hookOpts.set(event, opts);
     },
+    registerCommand(command: (typeof commands)[number]) {
+      commands.push(command);
+    },
   };
-  return { api, handlers, hookOpts, warns, infos };
+  return { api, handlers, hookOpts, warns, infos, commands };
 }
 
 function writeApiKeyDotenv(stateDir: string, apiKey: string): void {
@@ -1526,6 +1538,211 @@ describe("plugin.register — operator log", () => {
         { sessionId: "s1" },
       );
       assert.equal(existsSync(path.join(stateDir, "sentrook-operator.jsonl")), false);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("plugin.register — /sentrook session policy", () => {
+  function reviewFetch() {
+    globalThis.fetch = (async (input) => {
+      if (String(input).endsWith("/scan")) {
+        return new Response(
+          JSON.stringify({
+            decision: "review",
+            block: false,
+            review_severity: "warning",
+            summary: "Review triggered by AIRA-010",
+            matched_rules: ["AIRA-010"],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+  }
+
+  it("registers an owner-only /sentrook command", () => {
+    const { api, commands } = createMockApi({ timeoutMs: 1500 });
+    plugin.register(api as never);
+    assert.equal(commands.length, 1);
+    assert.equal(commands[0]?.name, "sentrook");
+    assert.equal(commands[0]?.requireAuth, true);
+    assert.deepEqual(commands[0]?.requiredScopes, ["operator.admin"]);
+  });
+
+  it("handler refuses non-owners", async () => {
+    const { api, commands } = createMockApi({ timeoutMs: 1500 });
+    plugin.register(api as never);
+    const reply = await commands[0]!.handler({ args: "status", senderIsOwner: false });
+    assert.match(reply.text, /owner-only/);
+  });
+
+  it("allow-all skips hosted review cards but still POSTs /scan", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-allowall-"));
+    const saved = saveEnv();
+    let scans = 0;
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          scans += 1;
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "warning",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "main",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      assert.equal(scans, 1);
+      assert.equal(result, undefined);
+      const raw = readFileSync(path.join(stateDir, "sentrook-operator.jsonl"), "utf8");
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const scan = events.find((e) => e.event === "scan") as {
+        hook?: { skip_reason?: string };
+        label_source?: string;
+      };
+      const resolution = events.find((e) => e.event === "resolution") as {
+        resolution?: { decision?: string };
+      };
+      assert.equal(scan.hook?.skip_reason, "allow-all");
+      assert.equal(scan.label_source, "allow-all");
+      assert.equal(resolution.resolution?.decision, "allow-all-skip");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not skip unattended reviews even with allow-all", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-unattended-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const prompt = handlers.get("before_prompt_build") as
+        | ((event: { prompt: string; runId?: string }, ctx: Record<string, unknown>) => void)
+        | undefined;
+      assert.ok(prompt);
+      prompt(
+        { prompt: "[cron: nightly] check mail", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "main",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      )) as { requireApproval?: unknown; block?: boolean };
+      assert.ok(result?.requireApproval);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks hosted block under allow-all", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-block-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({ decision: "block", block: true, block_reason: "denied" }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "rm -rf /" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", runId: "r1" },
+      )) as { block?: boolean };
+      assert.equal(result?.block, true);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lenient skips info reviews but not warnings", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-lenient-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "info",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({ args: "sensitivity lenient", senderIsOwner: true });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", runId: "r1" },
+      );
+      assert.equal(result, undefined);
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

@@ -61,6 +61,7 @@ export type OperatorLogEvent = Record<string, unknown> & {
 export interface OperatorLogQuery {
   sessionId?: string;
   sessionKey?: string;
+  id?: string;
   decision?: string;
   event?: OperatorEventKind | OperatorEventKind[];
   since?: Date;
@@ -114,18 +115,37 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
 
 export function resolveOperatorLogConfig(
   env: NodeJS.ProcessEnv = process.env,
+  pluginCfg?: Record<string, unknown>,
 ): OperatorLogConfig {
   const merged = envWithOpenclawDotenv(env);
-  const enabled = parseEnabled(merged.SENTROOK_OPERATOR_LOG, true);
+  const raw =
+    pluginCfg?.operatorLog && typeof pluginCfg.operatorLog === "object"
+      ? (pluginCfg.operatorLog as Record<string, unknown>)
+      : {};
+  const enabled = parseEnabled(
+    merged.SENTROOK_OPERATOR_LOG ?? raw.enabled,
+    true,
+  );
   const override = merged.SENTROOK_OPERATOR_LOG_PATH?.trim();
+  const cfgPath = typeof raw.path === "string" ? raw.path.trim() : "";
   const path = override
     ? pathResolve(expandHome(override))
-    : pathResolve(defaultStateDir(merged), DEFAULT_OPERATOR_LOG_NAME);
+    : cfgPath
+      ? pathResolve(expandHome(cfgPath))
+      : pathResolve(defaultStateDir(merged), DEFAULT_OPERATOR_LOG_NAME);
+  const daysFallback =
+    typeof raw.maxAgeDays === "number" && Number.isFinite(raw.maxAgeDays)
+      ? Math.max(0, Math.round(raw.maxAgeDays))
+      : DEFAULT_MAX_AGE_DAYS;
+  const bytesFallback =
+    typeof raw.maxBytes === "number" && Number.isFinite(raw.maxBytes)
+      ? Math.max(0, Math.round(raw.maxBytes))
+      : DEFAULT_MAX_BYTES;
   return {
     enabled,
     path,
-    maxAgeDays: parsePositiveInt(merged.SENTROOK_OPERATOR_LOG_MAX_DAYS, DEFAULT_MAX_AGE_DAYS),
-    maxBytes: parsePositiveInt(merged.SENTROOK_OPERATOR_LOG_MAX_BYTES, DEFAULT_MAX_BYTES),
+    maxAgeDays: parsePositiveInt(merged.SENTROOK_OPERATOR_LOG_MAX_DAYS, daysFallback),
+    maxBytes: parsePositiveInt(merged.SENTROOK_OPERATOR_LOG_MAX_BYTES, bytesFallback),
   };
 }
 
@@ -206,22 +226,23 @@ export function appendOperatorLog(
   event: Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> &
     Partial<Pick<OperatorLogEvent, "ts" | "schema_version" | "id">>,
   logger?: LoggerLike,
-): void {
-  if (!config.enabled) return;
+): string | undefined {
+  const id = event.id ?? mintOperatorLogId();
+  if (!config.enabled) return id;
   const path = config.path;
-  if (!path || !isAbsolute(path)) return;
-  const record: OperatorLogEvent = {
+  if (!path || !isAbsolute(path)) return id;
+  const record = {
     ...event,
     ts: event.ts ?? new Date().toISOString(),
     schema_version: OPERATOR_LOG_SCHEMA,
-    id: event.id ?? mintOperatorLogId(),
+    id,
   };
   let line: string;
   try {
     line = `${JSON.stringify(record)}\n`;
   } catch (err) {
     logger?.warn(`[sentrook-openclaw] operator log serialize failed: ${String(err)}`);
-    return;
+    return id;
   }
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -230,6 +251,7 @@ export function appendOperatorLog(
   } catch (err) {
     logger?.warn(`[sentrook-openclaw] operator log write failed: ${String(err)}`);
   }
+  return id;
 }
 
 export function queryOperatorLog(
@@ -247,6 +269,11 @@ export function queryOperatorLog(
   const needle = query.commandSubstring?.toLowerCase();
   const matched = events.filter((event) => {
     const meta = event.metadata ?? {};
+    if (query.id) {
+      const needle = query.id.trim().toLowerCase();
+      const id = String(event.id ?? "").toLowerCase();
+      if (id !== needle && !id.startsWith(needle)) return false;
+    }
     if (query.sessionId && meta.session_id !== query.sessionId) return false;
     if (query.sessionKey && meta.session_key !== query.sessionKey) return false;
     if (kinds && !kinds.has(event.event)) return false;
@@ -263,6 +290,20 @@ export function queryOperatorLog(
   matched.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
   if (query.limit && query.limit > 0) return matched.slice(0, query.limit);
   return matched;
+}
+
+export function getOperatorLogEvent(
+  config: OperatorLogConfig,
+  id: string,
+): OperatorLogEvent | undefined {
+  const needle = id.trim();
+  if (!needle) return undefined;
+  const matches = queryOperatorLog(config, { id: needle });
+  if (matches.length === 0) return undefined;
+  const exact = matches.find((event) => event.id.toLowerCase() === needle.toLowerCase());
+  if (exact) return exact;
+  if (matches.length === 1) return matches[0];
+  return undefined;
 }
 
 export function purgeOperatorLog(
@@ -424,13 +465,14 @@ export function buildScanOperatorEvent(input: {
   scan: OperatorScanResponse;
   hookResult?: OperatorHookResult;
   allowlistHit?: boolean;
+  skipReason?: "allowlist" | "quiet" | "lenient" | "allow-all";
   coPendingIds?: string[];
   unattended?: boolean;
   contributeEligible?: boolean;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
   const pending = pendingStepForLog(input.plan, input.hostTool, input.pendingArgs);
-  const skipReason = input.allowlistHit ? "allowlist" : undefined;
-  const labelSource = input.allowlistHit ? "allowlist" : "scanner";
+  const skipReason = input.skipReason ?? (input.allowlistHit ? "allowlist" : undefined);
+  const labelSource = skipReason ?? "scanner";
   return {
     event: "scan",
     run_id: input.plan.run_id,
@@ -512,13 +554,25 @@ export function buildResolutionOperatorEvent(input: {
   decision: string;
   feedbackPosted?: boolean;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
-  const ran = input.decision === "allow-once" || input.decision === "allow-always";
+  const ran =
+    input.decision === "allow-once" ||
+    input.decision === "allow-always" ||
+    input.decision.endsWith("-skip") ||
+    input.decision === "allowlist-hit";
   const labelSource =
     input.decision === "timeout"
       ? "timeout"
-      : input.decision === "cancelled"
-        ? "human"
-        : "human";
+      : input.decision === "quiet-skip"
+        ? "quiet"
+        : input.decision === "lenient-skip"
+          ? "lenient"
+          : input.decision === "allowlist-hit"
+            ? "allowlist"
+            : input.decision === "allow-all-skip"
+              ? "allow-all"
+              : input.decision === "cancelled"
+                ? "human"
+                : "human";
   return {
     event: "resolution",
     run_id: input.plan.run_id,

@@ -141,7 +141,7 @@ function errnoCode(err: unknown): string | undefined {
 }
 
 /** Open path once so a symlink swap cannot retarget the later read/write (TOCTOU). */
-function openReadWriteSync(
+export function openReadWriteSync(
   filePath: string,
   opts: { create: boolean; mode?: number },
 ): { fd: number; created: boolean } | null {
@@ -166,7 +166,7 @@ function openReadWriteSync(
   }
 }
 
-function writeAllFdSync(fd: number, text: string): void {
+export function writeAllFdSync(fd: number, text: string): void {
   const buf = Buffer.from(text, "utf8");
   ftruncateSync(fd, buf.byteLength);
   writeSync(fd, buf, 0, buf.byteLength, 0);

@@ -99,6 +99,37 @@
           }
         }
       },
+      "sensitivity": {
+        "type": "string",
+        "enum": [
+          "strict",
+          "lenient"
+        ],
+        "description": "Local review preset after hosted review. strict (default) always prompts. lenient skips info-only reviews. Never skips block, scan-error, or unattended. Env: SENTROOK_SENSITIVITY."
+      },
+      "operatorLog": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Local operator JSONL (on by default). Path $OPENCLAW_STATE_DIR/sentrook-operator.jsonl. Env: SENTROOK_OPERATOR_LOG, SENTROOK_OPERATOR_LOG_PATH, SENTROOK_OPERATOR_LOG_MAX_DAYS, SENTROOK_OPERATOR_LOG_MAX_BYTES.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "When false, scanning still works but history is empty after restart. Env: SENTROOK_OPERATOR_LOG=0."
+          },
+          "path": {
+            "type": "string",
+            "description": "Override operator log path. Env: SENTROOK_OPERATOR_LOG_PATH."
+          },
+          "maxAgeDays": {
+            "type": "integer",
+            "description": "Drop lines older than this many days (default 14). 0 disables age purge. Env: SENTROOK_OPERATOR_LOG_MAX_DAYS."
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "Rotate the live file near this size (default 33554432). Env: SENTROOK_OPERATOR_LOG_MAX_BYTES."
+          }
+        }
+      },
       "allowlist": {
         "type": "object",
         "additionalProperties": false,
