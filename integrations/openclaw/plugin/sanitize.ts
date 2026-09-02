@@ -395,6 +395,49 @@ export function scrubSecrets(text: string, rules: SanitizeRules = DEFAULT_RULES)
   return applySecretPatterns(text, rules);
 }
 
+/** Secret + PII scrub with no length cap (local operator log). */
+export function scrubSecretsAndPii(text: string, rules: SanitizeRules = DEFAULT_RULES): string {
+  let cleaned = applySecretPatterns(text, rules);
+  cleaned = applyPatterns(cleaned, rules.piiPatterns, rules.redacted);
+  return cleaned;
+}
+
+const OPERATOR_SCRUB_MAX_DEPTH = 16;
+
+/** Redact credential fields and secret/PII patterns; never truncate. */
+export function scrubOperatorValue(
+  value: unknown,
+  rules: SanitizeRules = DEFAULT_RULES,
+  options: { parentKey?: string | null; pii?: boolean; depth?: number } = {},
+): unknown {
+  const depth = options.depth ?? 0;
+  const parentKey = options.parentKey ?? null;
+  const pii = options.pii ?? false;
+  if (depth > OPERATOR_SCRUB_MAX_DEPTH) return "[…]";
+  if (parentKey && isCredentialField(parentKey, rules)) return rules.redacted;
+  if (typeof value === "string") {
+    return scrubSecretsAndPii(value, rules);
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const nestedPii = pii || (parentKey != null && parentKey.toLowerCase() === "env");
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = scrubOperatorValue(child, rules, {
+        parentKey: key,
+        pii: nestedPii,
+        depth: depth + 1,
+      });
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      scrubOperatorValue(item, rules, { pii, depth: depth + 1 }),
+    );
+  }
+  return value;
+}
+
 function scrubString(
   text: string,
   rules: SanitizeRules,

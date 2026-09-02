@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://firstdataunion.org/schema/sentrook.operator.log/v1",
+  "title": "sentrook.operator.log/v1",
+  "description": "Local operator JSONL: one PlanIR-shaped event per line. event is a discriminator, not a PlanIR document. Local log keeps raw session ids; hosted /scan hashes them.",
+  "type": "object",
+  "required": ["schema_version", "id", "ts", "event", "run_id", "metadata"],
+  "properties": {
+    "schema_version": { "const": "sentrook.operator.log/v1" },
+    "id": { "type": "string", "pattern": "^sr_" },
+    "ts": { "type": "string", "format": "date-time" },
+    "event": { "enum": ["scan", "result", "resolution", "scan_error"] },
+    "run_id": { "type": "string", "minLength": 1 },
+    "intent": { "type": ["string", "null"] },
+    "intent_kind": { "enum": ["user", "cron", "subagent", "system", null] },
+    "metadata": {
+      "type": "object",
+      "required": ["adapter", "hook"],
+      "properties": {
+        "adapter": { "type": "string" },
+        "agent_id": { "type": ["string", "null"] },
+        "session_id": { "type": ["string", "null"] },
+        "session_key": { "type": ["string", "null"] },
+        "hook": { "type": "string" },
+        "tool_call_id": { "type": ["string", "null"] },
+        "step_seq": { "type": ["integer", "null"] },
+        "batch_size": { "type": ["integer", "null"] }
+      }
+    },
+    "parent_session_id": { "type": ["string", "null"] },
+    "host": { "type": ["object", "null"] },
+    "plugin_version": { "type": ["string", "null"] },
+    "effect": { "enum": ["ran", "blocked", "never_ran", null] },
+    "label_source": {
+      "enum": [
+        "scanner",
+        "human",
+        "quiet",
+        "lenient",
+        "allowlist",
+        "timeout",
+        "unattended",
+        null
+      ]
+    },
+    "unattended": { "type": ["boolean", "null"] },
+    "feedback_posted": { "type": ["boolean", "null"] },
+    "contribute_eligible": { "type": ["boolean", "null"] },
+    "host_tool": { "type": ["string", "null"] },
+    "host_truncated": { "type": ["boolean", "null"] },
+    "pending": { "type": ["object", "null"] },
+    "co_pending": { "type": "array", "items": { "type": "string" } },
+    "scan": { "type": ["object", "null"] },
+    "hook": { "type": ["object", "null"] },
+    "result": { "type": ["object", "null"] },
+    "resolution": { "type": ["object", "null"] },
+    "scan_error": { "type": ["object", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event": { "const": "scan" } } },
+      "then": {
+        "required": ["pending", "scan"],
+        "properties": {
+          "pending": { "type": "object" },
+          "scan": {
+            "type": "object",
+            "required": ["decision"],
+            "properties": {
+              "decision": { "enum": ["allow", "review", "block"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event": { "const": "result" } } },
+      "then": { "required": ["result"] }
+    },
+    {
+      "if": { "properties": { "event": { "const": "resolution" } } },
+      "then": { "required": ["resolution"] }
+    },
+    {
+      "if": { "properties": { "event": { "const": "scan_error" } } },
+      "then": { "required": ["pending", "scan_error"] }
+    }
+  ]
+}
