@@ -204,12 +204,15 @@ export function buildResultSummary(
     ok?: boolean;
     contentType?: string | null;
     command?: string | null;
+    excerptLimit?: number;
+    hostTruncated?: boolean;
   } = {},
 ): ResultSummary {
   const body = text || "";
   const byteSize = Buffer.byteLength(body, "utf8");
-  const excerpt = body.slice(0, EXCERPT_LIMIT);
-  const truncated = body.length > EXCERPT_LIMIT;
+  const limit = opts.excerptLimit ?? EXCERPT_LIMIT;
+  const excerpt = body.length <= limit ? body : body.slice(0, limit);
+  const truncated = opts.hostTruncated ?? body.length > limit;
   const urls = [...new Set(body.match(URL_RE) ?? [])].slice(0, EXTRACTED_LIMIT);
   const paths = [...new Set(body.match(PATH_RE) ?? [])].slice(0, EXTRACTED_LIMIT);
   const commands = opts.command ? [String(opts.command)] : [];

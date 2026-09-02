@@ -47,6 +47,16 @@ import {
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 import { DualIndexMap, runIdPrefix, sessionIdsOf } from "./sessionStore.ts";
 import {
+  appendOperatorLog,
+  buildResolutionOperatorEvent,
+  buildResultOperatorEvent,
+  buildScanErrorOperatorEvent,
+  buildScanOperatorEvent,
+  purgeOperatorLog,
+  resolveOperatorLogConfig,
+  scrubOperatorArgs,
+} from "./operatorLog.ts";
+import {
   appendDevLog,
   buildScanDevEvent,
   buildScanErrorDevEvent,
@@ -276,7 +286,7 @@ interface PluginConfig {
 interface SessionState {
   runIntents: Map<string, RunIntent>;
   executed: SnapshotCall[];
-  pending: Map<string, { tool: string; args: Json }>;
+  pending: Map<string, { tool: string; args: Json; stepSeq: number; runId: string }>;
   stepSeq: number;
 }
 
@@ -383,17 +393,21 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
   };
 }
 
-function resultToText(result: unknown, error?: string): string {
-  let text = "";
-  if (error) text = String(error);
-  else if (typeof result === "string") text = result;
-  else if (result != null) {
+function resultBody(result: unknown, error?: string): string {
+  if (error) return String(error);
+  if (typeof result === "string") return result;
+  if (result != null) {
     try {
-      text = JSON.stringify(result);
+      return JSON.stringify(result);
     } catch {
-      text = String(result);
+      return String(result);
     }
   }
+  return "";
+}
+
+function resultToText(result: unknown, error?: string): string {
+  const text = resultBody(result, error);
   return text.length > MAX_RESULT_TEXT ? text.slice(0, MAX_RESULT_TEXT) : text;
 }
 
@@ -846,9 +860,15 @@ function rememberPending(
   st: SessionState,
   toolCallId: string | undefined,
   pendingCall: SnapshotCall,
+  meta: { stepSeq: number; runId: string },
 ): void {
   if (!toolCallId) return;
-  st.pending.set(toolCallId, { tool: pendingCall.tool, args: pendingCall.args });
+  st.pending.set(toolCallId, {
+    tool: pendingCall.tool,
+    args: pendingCall.args,
+    stepSeq: meta.stepSeq,
+    runId: meta.runId,
+  });
 }
 
 function dropPending(st: SessionState, toolCallId: string | undefined): void {
@@ -862,9 +882,10 @@ function applyPendingLifecycle(
   st: SessionState,
   toolCallId: string | undefined,
   pendingCall: SnapshotCall,
+  meta: { stepSeq: number; runId: string },
 ): BeforeToolCallResult | undefined {
   if (result?.block) return result;
-  rememberPending(st, toolCallId, pendingCall);
+  rememberPending(st, toolCallId, pendingCall, meta);
   const approval = result?.requireApproval;
   if (!approval || !toolCallId) return result;
   const inner = approval.onResolution;
@@ -897,6 +918,32 @@ function attachDevLogResolution(
         tool: pendingCall.tool,
         decision,
       },
+      logger,
+    );
+    await inner(decision);
+  };
+  return result;
+}
+
+function attachOperatorLogResolution(
+  result: BeforeToolCallResult | undefined,
+  plan: PlanIR,
+  logger?: PluginLogger,
+  contributeEligible?: boolean,
+): BeforeToolCallResult | undefined {
+  const approval = result?.requireApproval;
+  if (!approval?.onResolution) return result;
+  const inner = approval.onResolution;
+  approval.onResolution = async (decision) => {
+    const feedbackPosted =
+      decision === "allow-always" || Boolean(contributeEligible);
+    appendOperatorLog(
+      resolveOperatorLogConfig(),
+      buildResolutionOperatorEvent({
+        plan,
+        decision,
+        feedbackPosted,
+      }),
       logger,
     );
     await inner(decision);
@@ -979,6 +1026,12 @@ const plugin = {
       );
     }
 
+    const operatorLog = resolveOperatorLogConfig();
+    if (operatorLog.enabled) {
+      purgeOperatorLog(operatorLog, api.logger);
+      api.logger.info(`[sentrook-openclaw] operator log ${operatorLog.path}`);
+    }
+
     api.on("before_prompt_build", (event: BeforePromptBuildEvent, ctx: AgentContext) => {
       const st = getSession(ctx);
       const runId = resolveRunId(event.runId, ctx.runId);
@@ -999,13 +1052,16 @@ const plugin = {
             args: (event.params as Json) ?? {},
           };
           const coPending: SnapshotCall[] = [];
+          const coPendingIds: string[] = [];
           for (const [id, peer] of st.pending) {
             if (event.toolCallId && id === event.toolCallId) continue;
             coPending.push({ tool: peer.tool, args: peer.args });
+            coPendingIds.push(id);
           }
           const batchSize = coPending.length + 1;
           st.stepSeq += 1;
           const runId = resolveRunId(event.runId, ctx.runId);
+          const pendingMeta = { stepSeq: st.stepSeq, runId };
           const runIntent = st.runIntents.get(runId);
           const plan = buildPlanirSnapshot({
             executed: st.executed.slice(-MAX_TRAJECTORY),
@@ -1059,11 +1115,36 @@ const plugin = {
               }),
               api.logger,
             );
-            return attachDevLogResolution(
-              applyPendingLifecycle(mapped, st, event.toolCallId, pendingCall),
-              plan,
-              pendingCall,
+            appendOperatorLog(
+              resolveOperatorLogConfig(),
+              buildScanErrorOperatorEvent({
+                plan,
+                pendingArgs: pendingCall.args,
+                hostTool: event.toolName,
+                failure: scanResult,
+                hookResult: mapped,
+                coPendingIds,
+                unattended: timing.unattended,
+                contributeEligible: config.feedbackMode === "submit",
+              }),
               api.logger,
+            );
+            return attachOperatorLogResolution(
+              attachDevLogResolution(
+                applyPendingLifecycle(
+                  mapped,
+                  st,
+                  event.toolCallId,
+                  pendingCall,
+                  pendingMeta,
+                ),
+                plan,
+                pendingCall,
+                api.logger,
+              ),
+              plan,
+              api.logger,
+              config.feedbackMode === "submit",
             );
           }
 
@@ -1094,11 +1175,41 @@ const plugin = {
             }),
             api.logger,
           );
-          return attachDevLogResolution(
-            applyPendingLifecycle(translated, st, event.toolCallId, pendingCall),
-            plan,
-            pendingCall,
+          appendOperatorLog(
+            resolveOperatorLogConfig(),
+            buildScanOperatorEvent({
+              plan,
+              pendingArgs: pendingCall.args,
+              hostTool: event.toolName,
+              scan,
+              hookResult: translated,
+              allowlistHit,
+              coPendingIds,
+              unattended: resolveApprovalTiming(
+                config.approval,
+                plan.intent_kind ?? undefined,
+                plan.intent ?? undefined,
+              ).unattended,
+              contributeEligible: config.feedbackMode === "submit",
+            }),
             api.logger,
+          );
+          return attachOperatorLogResolution(
+            attachDevLogResolution(
+              applyPendingLifecycle(
+                translated,
+                st,
+                event.toolCallId,
+                pendingCall,
+                pendingMeta,
+              ),
+              plan,
+              pendingCall,
+              api.logger,
+            ),
+            plan,
+            api.logger,
+            config.feedbackMode === "submit",
           );
         } catch (err) {
           api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);
@@ -1110,6 +1221,34 @@ const plugin = {
               tool: event.toolName,
               tool_call_id: event.toolCallId ?? null,
               detail,
+            },
+            api.logger,
+          );
+          const ids = sessionIdsOf(ctx);
+          const runId = resolveRunId(event.runId, ctx.runId);
+          appendOperatorLog(
+            resolveOperatorLogConfig(),
+            {
+              event: "scan_error",
+              run_id: `${runIdPrefix(ids)}:${runId}`,
+              metadata: {
+                adapter: "openclaw",
+                agent_id: ctx.agentId ?? null,
+                session_id: ids.sessionId ?? null,
+                session_key: ids.sessionKey ?? null,
+                hook: "before_tool_call",
+                tool_call_id: event.toolCallId ?? null,
+              },
+              pending: {
+                id: "s0",
+                tool: event.toolName,
+                status: "pending",
+                args: scrubOperatorArgs((event.params as Json) ?? {}),
+              },
+              scan_error: { kind: "plugin_error", detail, status: null },
+              hook: { action: "block" },
+              effect: "blocked",
+              label_source: "scanner",
             },
             api.logger,
           );
@@ -1127,15 +1266,40 @@ const plugin = {
     api.on("after_tool_call", (event: AfterToolCallEvent, ctx: AgentContext) => {
       try {
         const st = getSession(ctx);
-        let call = event.toolCallId ? st.pending.get(event.toolCallId) : undefined;
-        if (call && event.toolCallId) st.pending.delete(event.toolCallId);
-        if (!call) call = { tool: event.toolName, args: (event.params as Json) ?? {} };
+        const ids = sessionIdsOf(ctx);
+        let remembered = event.toolCallId ? st.pending.get(event.toolCallId) : undefined;
+        if (remembered && event.toolCallId) st.pending.delete(event.toolCallId);
+        const runId = remembered?.runId ?? resolveRunId(event.runId, ctx.runId);
+        const call = remembered ?? {
+          tool: event.toolName,
+          args: (event.params as Json) ?? {},
+          stepSeq: st.stepSeq,
+          runId,
+        };
 
         const command =
           call.tool === "exec"
             ? String((call.args.command ?? call.args.cmd ?? "") as string) || undefined
             : undefined;
 
+        const rawResult = resultBody(event.result, event.error);
+        appendOperatorLog(
+          resolveOperatorLogConfig(),
+          buildResultOperatorEvent({
+            runId: `${runIdPrefix(ids)}:${runId}`,
+            metadata: {
+              session_id: ids.sessionId ?? null,
+              session_key: ids.sessionKey ?? null,
+              agent_id: ctx.agentId ?? null,
+              tool_call_id: event.toolCallId ?? null,
+              step_seq: remembered?.stepSeq ?? null,
+            },
+            resultText: rawResult,
+            ok: !event.error,
+            command,
+          }),
+          api.logger,
+        );
         const resultText = resultToText(event.result, event.error);
         st.executed.push({
           tool: call.tool,

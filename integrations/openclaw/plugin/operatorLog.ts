@@ -26,7 +26,14 @@ import { dirname, isAbsolute, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 
 import { envWithOpenclawDotenv } from "./auth.ts";
-import { scrubOperatorValue } from "./sanitize.ts";
+import {
+  buildResultSummary,
+  canonicalToolName,
+  lastPendingStep,
+  type PlanIR,
+} from "./planir.ts";
+import { DEFAULT_RULES, scrubOperatorValue, scrubSecretsAndPii } from "./sanitize.ts";
+import type { ScanFailure } from "./scanErrorPolicy.ts";
 
 export const OPERATOR_LOG_SCHEMA = "sentrook.operator.log/v1";
 export const DEFAULT_OPERATOR_LOG_NAME = "sentrook-operator.jsonl";
@@ -316,4 +323,251 @@ export function scrubOperatorArgs(args: Record<string, unknown>): Record<string,
   return cleaned && typeof cleaned === "object" && !Array.isArray(cleaned)
     ? (cleaned as Record<string, unknown>)
     : {};
+}
+
+type Json = Record<string, unknown>;
+
+export interface OperatorScanResponse {
+  decision: "allow" | "review" | "block";
+  risk?: number;
+  summary?: string;
+  matched_rules?: string[];
+  block_reason?: string;
+  review_severity?: string;
+  log?: Json;
+}
+
+export interface OperatorHookResult {
+  block?: boolean;
+  requireApproval?: unknown;
+}
+
+let cachedPluginVersion: string | undefined;
+
+export function operatorPluginVersion(): string {
+  if (cachedPluginVersion) return cachedPluginVersion;
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+    ) as { version?: string };
+    cachedPluginVersion = typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    cachedPluginVersion = "unknown";
+  }
+  return cachedPluginVersion;
+}
+
+function hookAction(result: OperatorHookResult | undefined): "requireApproval" | "block" | "continue" {
+  if (result?.block) return "block";
+  if (result?.requireApproval) return "requireApproval";
+  return "continue";
+}
+
+function scanEffect(
+  result: OperatorHookResult | undefined,
+): "ran" | "blocked" | "never_ran" {
+  if (result?.block) return "blocked";
+  if (result?.requireApproval) return "never_ran";
+  return "ran";
+}
+
+function operatorMetadata(plan: PlanIR, hook = "before_tool_call"): Record<string, unknown> {
+  return {
+    adapter: plan.metadata.adapter ?? "openclaw",
+    agent_id: plan.metadata.agent_id ?? null,
+    session_id: plan.metadata.session_id ?? null,
+    session_key: plan.metadata.session_key ?? null,
+    hook,
+    tool_call_id: plan.metadata.tool_call_id ?? null,
+    step_seq: plan.metadata.step_seq ?? null,
+    batch_size: plan.metadata.batch_size ?? null,
+  };
+}
+
+function pendingStepForLog(
+  plan: PlanIR,
+  hostTool: string,
+  rawArgs: Json,
+): Record<string, unknown> {
+  const pending = lastPendingStep(plan);
+  return {
+    id: pending?.id ?? "s1",
+    tool: pending?.tool ?? canonicalToolName(hostTool, rawArgs),
+    status: "pending",
+    args: scrubOperatorArgs(rawArgs),
+  };
+}
+
+function envelopeExtras(input: {
+  unattended?: boolean;
+  contributeEligible?: boolean;
+  hostTool?: string;
+  planTool?: string;
+}): Record<string, unknown> {
+  const hostTool =
+    input.hostTool && input.planTool && input.hostTool !== input.planTool
+      ? input.hostTool
+      : undefined;
+  return {
+    plugin_version: operatorPluginVersion(),
+    rules_version: DEFAULT_RULES.version,
+    unattended: input.unattended ?? false,
+    contribute_eligible: input.contributeEligible ?? false,
+    ...(hostTool ? { host_tool: hostTool } : {}),
+  };
+}
+
+export function buildScanOperatorEvent(input: {
+  plan: PlanIR;
+  pendingArgs: Json;
+  hostTool: string;
+  scan: OperatorScanResponse;
+  hookResult?: OperatorHookResult;
+  allowlistHit?: boolean;
+  coPendingIds?: string[];
+  unattended?: boolean;
+  contributeEligible?: boolean;
+}): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
+  const pending = pendingStepForLog(input.plan, input.hostTool, input.pendingArgs);
+  const skipReason = input.allowlistHit ? "allowlist" : undefined;
+  const labelSource = input.allowlistHit ? "allowlist" : "scanner";
+  return {
+    event: "scan",
+    run_id: input.plan.run_id,
+    intent: input.plan.intent ? scrubSecretsAndPii(input.plan.intent) : null,
+    intent_kind: input.plan.intent_kind ?? null,
+    metadata: operatorMetadata(input.plan),
+    pending,
+    co_pending: input.coPendingIds ?? [],
+    scan: {
+      decision: input.scan.decision,
+      risk: input.scan.risk ?? null,
+      summary: input.scan.summary ? scrubSecretsAndPii(input.scan.summary) : null,
+      matched_rules: input.scan.matched_rules ?? [],
+      review_severity: input.scan.review_severity ?? null,
+      block_reason: input.scan.block_reason
+        ? scrubSecretsAndPii(input.scan.block_reason)
+        : null,
+      winning_rule_id:
+        typeof input.scan.log?.winning_rule_id === "string"
+          ? input.scan.log.winning_rule_id
+          : null,
+      log: input.scan.log ? (scrubOperatorValue(input.scan.log) as Json) : null,
+    },
+    hook: {
+      action: hookAction(input.hookResult),
+      ...(skipReason ? { skip_reason: skipReason } : {}),
+    },
+    effect: scanEffect(input.hookResult),
+    label_source: labelSource,
+    feedback_posted: false,
+    ...envelopeExtras({
+      unattended: input.unattended,
+      contributeEligible: input.contributeEligible,
+      hostTool: input.hostTool,
+      planTool: String(pending.tool),
+    }),
+  };
+}
+
+export function buildScanErrorOperatorEvent(input: {
+  plan: PlanIR;
+  pendingArgs: Json;
+  hostTool: string;
+  failure: ScanFailure;
+  hookResult?: OperatorHookResult;
+  coPendingIds?: string[];
+  unattended?: boolean;
+  contributeEligible?: boolean;
+}): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
+  const pending = pendingStepForLog(input.plan, input.hostTool, input.pendingArgs);
+  return {
+    event: "scan_error",
+    run_id: input.plan.run_id,
+    intent: input.plan.intent ? scrubSecretsAndPii(input.plan.intent) : null,
+    intent_kind: input.plan.intent_kind ?? null,
+    metadata: operatorMetadata(input.plan),
+    pending,
+    co_pending: input.coPendingIds ?? [],
+    scan_error: {
+      kind: input.failure.kind,
+      detail: input.failure.detail ? scrubSecretsAndPii(input.failure.detail) : null,
+      status: input.failure.status ?? null,
+    },
+    hook: { action: hookAction(input.hookResult) },
+    effect: scanEffect(input.hookResult),
+    label_source: "scanner",
+    feedback_posted: false,
+    ...envelopeExtras({
+      unattended: input.unattended,
+      contributeEligible: input.contributeEligible,
+      hostTool: input.hostTool,
+      planTool: String(pending.tool),
+    }),
+  };
+}
+
+export function buildResolutionOperatorEvent(input: {
+  plan: PlanIR;
+  decision: string;
+  feedbackPosted?: boolean;
+}): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
+  const ran = input.decision === "allow-once" || input.decision === "allow-always";
+  const labelSource =
+    input.decision === "timeout"
+      ? "timeout"
+      : input.decision === "cancelled"
+        ? "human"
+        : "human";
+  return {
+    event: "resolution",
+    run_id: input.plan.run_id,
+    intent_kind: input.plan.intent_kind ?? null,
+    metadata: operatorMetadata(input.plan),
+    resolution: {
+      decision: input.decision,
+      feedback_posted: Boolean(input.feedbackPosted),
+    },
+    effect: ran ? "ran" : "never_ran",
+    label_source: labelSource,
+    feedback_posted: Boolean(input.feedbackPosted),
+    plugin_version: operatorPluginVersion(),
+    rules_version: DEFAULT_RULES.version,
+  };
+}
+
+export function buildResultOperatorEvent(input: {
+  runId: string;
+  metadata: Record<string, unknown>;
+  resultText: string;
+  ok: boolean;
+  command?: string;
+}): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
+  const summary = buildResultSummary(input.resultText, {
+    ok: input.ok,
+    command: input.command,
+    excerptLimit: Number.POSITIVE_INFINITY,
+    hostTruncated: false,
+  });
+  summary.excerpt = scrubSecretsAndPii(summary.excerpt);
+  if (summary.extracted.commands.length) {
+    summary.extracted.commands = summary.extracted.commands.map((item) =>
+      scrubSecretsAndPii(item),
+    );
+  }
+  return {
+    event: "result",
+    run_id: input.runId,
+    metadata: {
+      adapter: "openclaw",
+      hook: "after_tool_call",
+      ...input.metadata,
+    },
+    result: summary,
+    effect: "ran",
+    label_source: "scanner",
+    host_truncated: false,
+    plugin_version: operatorPluginVersion(),
+    rules_version: DEFAULT_RULES.version,
+  };
 }
