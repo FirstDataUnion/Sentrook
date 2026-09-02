@@ -8,6 +8,8 @@ intended for open-source AI agents: it catches, reviews, and blocks dangerous ac
 before they happen, backed by an ever-evolving, community-grown library of attack patterns 
 and execution examples. Shared knowledge keeps the flock safe.
 
+Note: Sentrook is in early stages of development, and is currently available as a beta. Expect some rough edges, some friction, and frequent updates and improvements. If you'd like to use it in this time and help us with feedback and suggestions, it would be a massive help to our mission and the security of the open source agentic community as a whole! 
+
 ## What is Sentrook
 
 Sentrook is a trajectory scanner that runs against pending agent actions at
@@ -300,14 +302,22 @@ plugin, and DEMO format examples are what this repo ships.
 
 ## Roadmap
 
-Sentrook is in early stages of development, and we have big plans. No exact timelines 
-yet, but here is what we are looking at next:
+Sentrook is in early stages of development. We aren't publishing expected dates just yet, but here is what we plan to deliver next:
+
+**Easier to live with day to day**
+
+- A history of tool calls and decisions, so you can look back at what the agent tried
+- Chat commands to check status, configuration, and recent history without leaving the agent
+- A review dashboard: pending approvals, recent high-risk calls, a full timeline, and a way to flag something as unsafe
+- Plain-language explanations of what a held tool call is trying to do — not just raw arguments
+
+**Available in more places**
 
 - More native agent adapters beyond OpenClaw and Hermes (Pi is high on the list)
-- More public documentation of the rule library format, so self-hosted setups get easier
+- Public documentation of the rule library format, to enable self-hosted setups.
 - An offline-only mode for people who want stronger locality and are willing to do a bit more setup
-- Static config checkers / audits built into each agent plugin to further harden the agent environment
-- Better channels for the community to contribute attack rules and related code
+- Static config checkers / audits in each plugin, to further harden the agent environment
+- Better channels for the community to contribute attack patterns and related code
 
 ## Contributing
 
