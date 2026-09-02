@@ -216,6 +216,7 @@ def scan_plan(
                 adapter=redacted_plan.metadata.adapter,
                 agent_id=redacted_plan.metadata.agent_id,
                 session_id=redacted_plan.metadata.session_id,
+                session_key=redacted_plan.metadata.session_key,
                 hook=redacted_plan.metadata.hook,
             ),
             intent=redacted_plan.intent,

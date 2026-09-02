@@ -541,6 +541,22 @@ function rewriteRunId(runId: string, originalSessionId: string, hashedSessionId:
   return runId;
 }
 
+function hashMetadataId(
+  data: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+  field: string,
+  rules: SanitizeRules,
+  rewriteRunIdField: boolean,
+): void {
+  const original = metadata[field];
+  if (typeof original !== "string" || !original) return;
+  const hashed = hashSessionId(original, rules);
+  metadata[field] = hashed;
+  if (rewriteRunIdField && typeof data.run_id === "string") {
+    data.run_id = rewriteRunId(data.run_id, original, hashed);
+  }
+}
+
 export function sanitizePlanirDict(
   payload: Record<string, unknown>,
   rules: SanitizeRules = DEFAULT_RULES,
@@ -554,13 +570,11 @@ export function sanitizePlanirDict(
   data.metadata = metadata;
 
   const originalSessionId = metadata.session_id;
-  if (typeof originalSessionId === "string" && originalSessionId) {
-    const hashed = hashSessionId(originalSessionId, rules);
-    metadata.session_id = hashed;
-    if (typeof data.run_id === "string") {
-      data.run_id = rewriteRunId(data.run_id, originalSessionId, hashed);
-    }
-  }
+  const hasSessionId = typeof originalSessionId === "string" && Boolean(originalSessionId);
+  hashMetadataId(data, metadata, "session_id", rules, true);
+  // ``run_id`` is ``{episode||key}:{run}``. Hash ``session_key`` always; only
+  // rewrite ``run_id`` from it when there is no episode id.
+  hashMetadataId(data, metadata, "session_key", rules, !hasSessionId);
 
   if (typeof data.intent === "string") {
     data.intent = scrubString(data.intent, rules, {

@@ -120,4 +120,16 @@ describe("buildPlanirSnapshot", () => {
     assert.equal(poll.steps[0].tool, "process");
     assert.equal(poll.steps[0].args.action, "poll");
   });
+
+  it("sets session_id and session_key independently", () => {
+    const plan = buildPlanirSnapshot({
+      executed: [],
+      pending: { tool: "exec", args: { command: "ls" } },
+      runId: "uuid-1:run_1",
+      sessionId: "uuid-1",
+      sessionKey: "main",
+    });
+    assert.equal(plan.metadata.session_id, "uuid-1");
+    assert.equal(plan.metadata.session_key, "main");
+  });
 });

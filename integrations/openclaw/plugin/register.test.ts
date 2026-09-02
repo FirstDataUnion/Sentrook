@@ -12,6 +12,7 @@ import { afterEach, describe, it } from "node:test";
 
 import plugin from "./index.ts";
 import { loadAllowlist } from "./localAllowlist.ts";
+import { hashSessionId } from "./sanitize.ts";
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 
 const realFetch = globalThis.fetch;
@@ -53,7 +54,7 @@ async function flushAsyncWork(): Promise<void> {
 
 type ToolHandler = (
   event: { toolName: string; params?: Record<string, unknown>; toolCallId?: string },
-  ctx: { sessionId?: string; agentId?: string; runId?: string },
+  ctx: { sessionId?: string; sessionKey?: string; agentId?: string; runId?: string },
 ) => Promise<unknown> | unknown;
 
 function createMockApi(pluginConfig: Record<string, unknown>) {
@@ -1172,6 +1173,168 @@ describe("plugin.register — diagnostic JSONL log", () => {
       assert.equal(scan.hook?.require_approval, true);
       const resolution = events.find((e) => e.event === "resolution") as { decision?: string };
       assert.equal(resolution.decision, "deny");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("plugin.register — session identity", () => {
+  function parsePlan(body: string): {
+    run_id?: string;
+    metadata?: { session_id?: string | null; session_key?: string | null };
+    steps?: Array<{ status?: string; tool?: string; args?: { command?: string } }>;
+  } {
+    return JSON.parse(body) as {
+      run_id?: string;
+      metadata?: { session_id?: string | null; session_key?: string | null };
+      steps?: Array<{ status?: string; tool?: string; args?: { command?: string } }>;
+    };
+  }
+
+  it("emits episode session_id and routing session_key separately", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    const scanBodies: string[] = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          scanBodies.push(String(init?.body ?? ""));
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      const plan = parsePlan(scanBodies[0]!);
+      assert.equal(plan.metadata?.session_id, hashSessionId("uuid-1"));
+      assert.equal(plan.metadata?.session_key, hashSessionId("main"));
+      assert.equal(plan.run_id, `${hashSessionId("uuid-1")}:r1`);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not carry prior-episode executed tools across /new with the same sessionKey", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    const scanBodies: string[] = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          scanBodies.push(String(init?.body ?? ""));
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      const afterTool = handlers.get("after_tool_call");
+      assert.ok(beforeTool);
+      assert.ok(afterTool);
+
+      const ctx1 = { sessionId: "uuid-1", sessionKey: "main", runId: "r1" };
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        ctx1,
+      );
+      afterTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1", result: "ok" },
+        ctx1,
+      );
+
+      await beforeTool(
+        { toolName: "exec", params: { command: "pwd" }, toolCallId: "t2" },
+        { sessionId: "uuid-2", sessionKey: "main", runId: "r2" },
+      );
+      const second = parsePlan(scanBodies[1]!);
+      const executed = (second.steps ?? []).filter((s) => s.status === "executed");
+      assert.equal(executed.length, 0);
+      assert.equal(second.metadata?.session_id, hashSessionId("uuid-2"));
+      assert.equal(second.metadata?.session_key, hashSessionId("main"));
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sessionKey-only lookups share the live episode trajectory", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-"));
+    const saved = saveEnv();
+    const scanBodies: string[] = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          scanBodies.push(String(init?.body ?? ""));
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      const afterTool = handlers.get("after_tool_call");
+      assert.ok(beforeTool);
+      assert.ok(afterTool);
+
+      const ctx = { sessionId: "uuid-1", sessionKey: "main", runId: "r1" };
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        ctx,
+      );
+      afterTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1", result: "ok" },
+        ctx,
+      );
+
+      await beforeTool(
+        { toolName: "exec", params: { command: "pwd" }, toolCallId: "t2" },
+        { sessionKey: "main", runId: "r2" },
+      );
+      const second = parsePlan(scanBodies[1]!);
+      const executed = (second.steps ?? []).filter((s) => s.status === "executed");
+      assert.equal(executed.length, 1);
+      assert.equal(executed[0]?.args?.command, "ls");
+      assert.equal(second.metadata?.session_id, null);
+      assert.equal(second.metadata?.session_key, hashSessionId("main"));
+      assert.equal(second.run_id, `${hashSessionId("main")}:r2`);
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

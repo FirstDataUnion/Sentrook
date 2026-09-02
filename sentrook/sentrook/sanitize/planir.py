@@ -157,6 +157,25 @@ def _rewrite_run_id(run_id: str, original_session_id: str, hashed_session_id: st
     return run_id
 
 
+def _hash_metadata_id(
+    data: dict[str, Any],
+    metadata: dict[str, Any],
+    field: str,
+    rules: SanitizeRules,
+    *,
+    rewrite_run_id: bool,
+) -> None:
+    original = metadata.get(field)
+    if not isinstance(original, str) or not original:
+        return
+    hashed = hash_session_id(original, rules)
+    metadata[field] = hashed
+    if rewrite_run_id:
+        run_id = data.get("run_id")
+        if isinstance(run_id, str):
+            data["run_id"] = _rewrite_run_id(run_id, original, hashed)
+
+
 def sanitize_planir_dict(
     payload: dict[str, Any],
     rules: SanitizeRules | None = None,
@@ -170,13 +189,11 @@ def sanitize_planir_dict(
         metadata = {}
         data["metadata"] = metadata
 
-    original_session_id = metadata.get("session_id")
-    if isinstance(original_session_id, str) and original_session_id:
-        hashed = hash_session_id(original_session_id, rules)
-        metadata["session_id"] = hashed
-        run_id = data.get("run_id")
-        if isinstance(run_id, str):
-            data["run_id"] = _rewrite_run_id(run_id, original_session_id, hashed)
+    has_session_id = isinstance(metadata.get("session_id"), str) and bool(metadata.get("session_id"))
+    _hash_metadata_id(data, metadata, "session_id", rules, rewrite_run_id=True)
+    # ``run_id`` is ``{episode||key}:{run}``. Hash ``session_key`` always; only
+    # rewrite ``run_id`` from it when there is no episode id.
+    _hash_metadata_id(data, metadata, "session_key", rules, rewrite_run_id=not has_session_id)
 
     intent = data.get("intent")
     if isinstance(intent, str):

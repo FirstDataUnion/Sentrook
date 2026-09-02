@@ -112,6 +112,7 @@ class PlanMetadata:
     hook: str
     agent_id: str | None = None
     session_id: str | None = None
+    session_key: str | None = None
     tool_call_id: str | None = None
     step_seq: int | None = None
     batch_size: int | None = None
@@ -344,6 +345,7 @@ def build_planir_snapshot(
     intent: str | None = None,
     intent_kind: IntentKind | None = None,
     session_id: str | None = None,
+    session_key: str | None = None,
     agent_id: str | None = None,
     adapter: str = "hermes",
     hook: str = "pre_tool_call",
@@ -382,6 +384,7 @@ def build_planir_snapshot(
             adapter=adapter,
             agent_id=agent_id or "main",
             session_id=session_id,
+            session_key=session_key,
             hook=hook,
             tool_call_id=tool_call_id,
             step_seq=step_seq,
@@ -416,6 +419,7 @@ def planir_to_dict(plan: PlanIR) -> dict[str, Any]:
             "adapter": meta.adapter,
             "agent_id": meta.agent_id,
             "session_id": meta.session_id,
+            "session_key": meta.session_key,
             "hook": meta.hook,
             "tool_call_id": meta.tool_call_id,
             "step_seq": meta.step_seq,

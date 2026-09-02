@@ -45,6 +45,7 @@ import {
   type SnapshotCall,
 } from "./planir.ts";
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
+import { DualIndexMap, runIdPrefix, sessionIdsOf } from "./sessionStore.ts";
 import {
   appendDevLog,
   buildScanDevEvent,
@@ -935,7 +936,7 @@ const plugin = {
     }
 
     const config = resolveConfig(api);
-    const sessions = new Map<string, SessionState>();
+    const sessions = new DualIndexMap<SessionState>();
 
     if (urlRequiresScanAuth(config.url) && !hasScanCredentials(config.auth)) {
       api.logger.warn(
@@ -945,17 +946,15 @@ const plugin = {
       );
     }
 
-    const sessionKeyOf = (ctx: AgentContext | SessionContext): string =>
-      ctx.sessionId || ctx.sessionKey || "unknown";
+    const emptySession = (): SessionState => ({
+      runIntents: new Map(),
+      executed: [],
+      pending: new Map(),
+      stepSeq: 0,
+    });
 
-    const getSession = (key: string): SessionState => {
-      let st = sessions.get(key);
-      if (!st) {
-        st = { runIntents: new Map(), executed: [], pending: new Map(), stepSeq: 0 };
-        sessions.set(key, st);
-      }
-      return st;
-    };
+    const getSession = (ctx: AgentContext | SessionContext): SessionState =>
+      sessions.getOrCreate(sessionIdsOf(ctx), emptySession);
 
     const resolveLiveAuth = (): ScanAuthConfig =>
       resolveScanAuthConfig(
@@ -981,7 +980,7 @@ const plugin = {
     }
 
     api.on("before_prompt_build", (event: BeforePromptBuildEvent, ctx: AgentContext) => {
-      const st = getSession(sessionKeyOf(ctx));
+      const st = getSession(ctx);
       const runId = resolveRunId(event.runId, ctx.runId);
       if (typeof event?.prompt === "string" && event.prompt.trim()) {
         const intent = event.prompt.trim();
@@ -993,8 +992,8 @@ const plugin = {
       "before_tool_call",
       async (event: BeforeToolCallEvent, ctx: AgentContext) => {
         try {
-          const sid = ctx.sessionId || ctx.sessionKey;
-          const st = getSession(sessionKeyOf(ctx));
+          const ids = sessionIdsOf(ctx);
+          const st = getSession(ctx);
           const pendingCall: SnapshotCall = {
             tool: event.toolName,
             args: (event.params as Json) ?? {},
@@ -1012,10 +1011,11 @@ const plugin = {
             executed: st.executed.slice(-MAX_TRAJECTORY),
             pending: pendingCall,
             coPending: coPending.length ? coPending : undefined,
-            runId: `${sid ?? "session"}:${runId}`,
+            runId: `${runIdPrefix(ids)}:${runId}`,
             intent: runIntent?.intent,
             intentKind: runIntent?.kind,
-            sessionId: sid,
+            sessionId: ids.sessionId,
+            sessionKey: ids.sessionKey,
             agentId: ctx.agentId,
             toolCallId: event.toolCallId,
             stepSeq: st.stepSeq,
@@ -1126,7 +1126,7 @@ const plugin = {
 
     api.on("after_tool_call", (event: AfterToolCallEvent, ctx: AgentContext) => {
       try {
-        const st = getSession(sessionKeyOf(ctx));
+        const st = getSession(ctx);
         let call = event.toolCallId ? st.pending.get(event.toolCallId) : undefined;
         if (call && event.toolCallId) st.pending.delete(event.toolCallId);
         if (!call) call = { tool: event.toolName, args: (event.params as Json) ?? {} };
@@ -1151,7 +1151,8 @@ const plugin = {
           resolveDevLogConfig(),
           {
             event: "action",
-            session_id: ctx.sessionId ?? ctx.sessionKey ?? null,
+            session_id: ctx.sessionId ?? null,
+            session_key: ctx.sessionKey ?? null,
             run_id: ctx.runId ?? null,
             tool_call_id: event.toolCallId ?? null,
             tool: call.tool,
@@ -1168,7 +1169,7 @@ const plugin = {
     });
 
     api.on("session_end", (_event: unknown, ctx: SessionContext) => {
-      sessions.delete(sessionKeyOf(ctx));
+      sessions.delete(sessionIdsOf(ctx));
     });
 
     const approvalSummary =

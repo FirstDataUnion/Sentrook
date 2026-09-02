@@ -229,3 +229,15 @@ def test_process_start_maps_to_exec() -> None:
     )
     assert plan.steps[0].tool == "exec"
     assert plan.steps[0].args.get("command") == "ls /tmp"
+
+
+def test_session_key_independent_of_session_id() -> None:
+    plan = build_planir_snapshot(
+        executed=[],
+        pending={"tool": "exec", "args": {"command": "ls"}},
+        run_id="uuid-1:run_1",
+        session_id="uuid-1",
+        session_key="main",
+    )
+    assert plan.metadata.session_id == "uuid-1"
+    assert plan.metadata.session_key == "main"

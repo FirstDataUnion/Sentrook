@@ -40,6 +40,7 @@ export interface PlanMetadata {
   adapter: string;
   agent_id?: string | null;
   session_id?: string | null;
+  session_key?: string | null;
   hook: string;
   tool_call_id?: string | null;
   step_seq?: number | null;
@@ -258,6 +259,7 @@ export function buildPlanirSnapshot(input: {
   intent?: string | null;
   intentKind?: IntentKind | null;
   sessionId?: string | null;
+  sessionKey?: string | null;
   agentId?: string | null;
   adapter?: string;
   hook?: string;
@@ -297,6 +299,7 @@ export function buildPlanirSnapshot(input: {
       adapter: input.adapter ?? "openclaw",
       agent_id: input.agentId ?? "main",
       session_id: input.sessionId ?? null,
+      session_key: input.sessionKey ?? null,
       hook: input.hook ?? "before_tool_call",
       tool_call_id: input.toolCallId ?? null,
       step_seq: input.stepSeq ?? null,
