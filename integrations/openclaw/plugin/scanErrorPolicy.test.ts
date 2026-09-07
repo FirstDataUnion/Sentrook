@@ -90,6 +90,7 @@ describe("scanErrorToHookResult", () => {
     assert.match(approval.description, /continue anyway without scanning/);
     assert.deepEqual(approval.allowedDecisions, ["allow-once", "deny"]);
     assert.equal(approval.timeoutBehavior, "deny");
+    assert.equal(approval.pluginId, "sentrook-openclaw");
   });
 
   it("review interactive 429 uses rate-limit copy", () => {

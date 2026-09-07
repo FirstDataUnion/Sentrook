@@ -103,6 +103,11 @@ After this, Sentrook will begin scanning tool calls — allowing them, asking yo
 to review, or blocking where appropriate. A green verify means config + Identity
 token mint look good; a tool call in the logs is the end-to-end check.
 
+Owner-only `/sentrook` in chat lists status, pending reviews, and history.
+The same gateway also serves a panel at `/sentrook` (Control UI port, default
+18789). Details:
+[integrations/openclaw/README.md](integrations/openclaw/README.md#operator-dashboard).
+
 > [!IMPORTANT]
 > If you talk to your agent over a messaging channel (Discord, Slack, Telegram,
 > …), configure OpenClaw so **approval / review prompts are delivered on that
@@ -142,12 +147,14 @@ openclaw plugins uninstall sentrook-openclaw
 
 That removes the managed plugin install and the
 `plugins.entries.sentrook-openclaw` config entry. Scan credentials in
-`~/.openclaw/.env` (`SENTROOK_SCAN_*`) and the local allowlist
-(`~/.openclaw/sentrook-allowlist.json`) are left in place — delete those by hand
+`~/.openclaw/.env` (`SENTROOK_SCAN_*`), the local allowlist
+(`~/.openclaw/sentrook-allowlist.json`), and the operator log
+(`~/.openclaw/sentrook-operator.jsonl`) are left in place — delete those by hand
 if you want a full purge.
 
-Config reference, Docker notes, channel approvals, local allowlist, sanitisation /
-privacy, non-interactive configure, CLI:
+Config reference, Docker notes, channel approvals, `/sentrook` commands,
+dashboard, operator log, local allowlist, sanitisation / privacy,
+non-interactive configure, CLI:
 [integrations/openclaw/README.md](integrations/openclaw/README.md).
 
 ### Other agents
@@ -170,7 +177,8 @@ hello@firstdataunion.org, or open an issue.
 
 ## Configuration
 
-OpenClaw plugin settings (what configure writes, timeouts, feedback, allowlist):
+OpenClaw plugin settings (what configure writes, timeouts, feedback, allowlist,
+sensitivity, operator log):
 [integrations/openclaw/README.md#configuration](integrations/openclaw/README.md#configuration).
 
 ### Self-host / local engine
@@ -270,6 +278,12 @@ evaluates the plan **in memory and does not store or log the execution plan** �
 the PlanIR body is not written to disk. (A separate ops decision log may record
 ids, outcome, and matched rule ids without the plan itself.)
 
+OpenClaw also keeps a **local operator log** on the gateway host (on by default,
+same secret/PII scrub, 14-day / 32 MiB retention). That file is never
+auto-uploaded to hosted Sentrook or Rookery. Chat `/sentrook` replies are
+scrubbed but still ordinary channel messages — prefer a DM or the gateway
+dashboard in a public room.
+
 **Community contribution (on by default, easy to opt out):** when you resolve a
 review (allow-once or deny) and contribution is on (`feedback.mode: "submit"`,
 the configure default), a sanitized copy of that outcome can be sent as a
@@ -281,7 +295,7 @@ steps the rule matched** (the pending action plus any prior steps that fired it)
 humans** before anything is published — nothing goes live automatically. Opt out
 in the wizard or with `feedback.mode: "off"`.
 
-More detail on scrubbing, logs, and channel approvals:
+More detail on scrubbing, the local operator log, and channel approvals:
 [integrations/openclaw/README.md](integrations/openclaw/README.md) ·
 [integrations/hermes/README.md](integrations/hermes/README.md).
 
@@ -306,10 +320,8 @@ Sentrook is in early stages of development. We aren't publishing expected dates 
 
 **Easier to live with day to day**
 
-- A history of tool calls and decisions, so you can look back at what the agent tried
-- Chat commands to check status, configuration, and recent history without leaving the agent
-- A review dashboard: pending approvals, recent high-risk calls, a full timeline, and a way to flag something as unsafe
 - Plain-language explanations of what a held tool call is trying to do — not just raw arguments
+- The same operator log, chat commands, and dashboard on Hermes and other adapters (OpenClaw has these today — [OpenClaw README](integrations/openclaw/README.md#operator-dashboard))
 
 **Available in more places**
 

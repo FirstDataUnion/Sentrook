@@ -98,4 +98,16 @@ export class DualIndexMap<T extends object> {
       if (targets.has(st)) this.buckets.delete(key);
     }
   }
+
+  /** Unique states (episode and routing aliases collapse). */
+  uniqueValues(): T[] {
+    const seen = new Set<T>();
+    const out: T[] = [];
+    for (const st of this.buckets.values()) {
+      if (seen.has(st)) continue;
+      seen.add(st);
+      out.push(st);
+    }
+    return out;
+  }
 }

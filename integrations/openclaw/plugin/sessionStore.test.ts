@@ -76,4 +76,12 @@ describe("DualIndexMap", () => {
     assert.notEqual(next, st);
     assert.equal(next.label, "fresh");
   });
+
+  it("uniqueValues collapses episode and routing aliases", () => {
+    const map = new DualIndexMap<State>();
+    const st = map.getOrCreate({ sessionId: "uuid-1", sessionKey: "main" }, empty);
+    st.label = "one";
+    assert.equal(map.uniqueValues().length, 1);
+    assert.equal(map.uniqueValues()[0], st);
+  });
 });

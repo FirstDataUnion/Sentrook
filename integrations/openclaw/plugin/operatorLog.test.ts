@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
 import {
   DEFAULT_OPERATOR_LOG_NAME,
+  DEFAULT_TIMELINE_SCAN_LIMIT,
   OPERATOR_LOG_SCHEMA,
   appendOperatorLog,
   operatorLogStats,
@@ -13,6 +14,8 @@ import {
   queryOperatorLog,
   resolveOperatorLogConfig,
   scrubOperatorArgs,
+  tailOperatorLog,
+  wipeOperatorLog,
   type OperatorLogConfig,
 } from "./operatorLog.ts";
 
@@ -106,6 +109,7 @@ describe("appendOperatorLog", () => {
       const parsed = JSON.parse(line) as { schema_version?: string; id?: string };
       assert.equal(parsed.schema_version, OPERATOR_LOG_SCHEMA);
       assert.equal(parsed.id, "sr_test1");
+      assert.equal(statSync(cfg.path).mode & 0o777, 0o600);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -199,6 +203,14 @@ describe("queryOperatorLog + purge", () => {
           id: "sr_old",
           ts: "2026-09-01T00:00:00.000Z",
           scan: { decision: "allow" },
+          metadata: {
+            adapter: "openclaw",
+            hook: "before_tool_call",
+            session_id: "uuid-other",
+            session_key: "other",
+            tool_call_id: "t0",
+            step_seq: 0,
+          },
         }),
       );
       appendOperatorLog(
@@ -225,6 +237,15 @@ describe("queryOperatorLog + purge", () => {
       );
       const newest = queryOperatorLog(cfg, { sessionId: "uuid-1" });
       assert.equal(newest[0]?.id, "sr_new");
+      const viaKey = queryOperatorLog(cfg, { sessionKey: "main" });
+      assert.equal(viaKey.length, 1);
+      assert.equal(viaKey[0]?.id, "sr_new");
+      const windowed = queryOperatorLog(cfg, {
+        since: new Date("2026-09-01T12:00:00.000Z"),
+        until: new Date("2026-09-03T00:00:00.000Z"),
+      });
+      assert.equal(windowed.length, 1);
+      assert.equal(windowed[0]?.id, "sr_new");
       const reviews = queryOperatorLog(cfg, { decision: "review" });
       assert.equal(reviews.length, 1);
       const curls = queryOperatorLog(cfg, { commandSubstring: "curl" });
@@ -255,6 +276,157 @@ describe("queryOperatorLog + purge", () => {
       assert.equal(left[0]?.id, "sr_fresh");
       const stats = operatorLogStats(cfg);
       assert.equal(stats.lines, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("wipeOperatorLog deletes the live file and rotation", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-oplog-wipe-"));
+    const cfg: OperatorLogConfig = {
+      enabled: true,
+      path: path.join(dir, "sentrook-operator.jsonl"),
+      maxAgeDays: 14,
+      maxBytes: 32 * 1024 * 1024,
+    };
+    try {
+      appendOperatorLog(cfg, baseEvent({ id: "sr_wipe" }));
+      const dropped = wipeOperatorLog(cfg);
+      assert.equal(dropped, 1);
+      assert.equal(queryOperatorLog(cfg).length, 0);
+      assert.equal(operatorLogStats(cfg).lines, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tailOperatorLog", () => {
+  function tmpLog(): { dir: string; cfg: OperatorLogConfig } {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-oplog-"));
+    return {
+      dir,
+      cfg: {
+        enabled: true,
+        path: path.join(dir, "sentrook-operator.jsonl"),
+        maxAgeDays: 14,
+        maxBytes: 32 * 1024 * 1024,
+      },
+    };
+  }
+
+  function scanEvent(id: string, extra: Record<string, unknown> = {}) {
+    return baseEvent({
+      id,
+      run_id: `uuid-1:${id}`,
+      metadata: {
+        adapter: "openclaw",
+        hook: "before_tool_call",
+        session_id: "uuid-1",
+        session_key: "main",
+        tool_call_id: id,
+        step_seq: 1,
+      },
+      ...extra,
+    });
+  }
+
+  it("returns newest scans first and caps at scanLimit", () => {
+    const { dir, cfg } = tmpLog();
+    try {
+      for (let i = 0; i < 5; i++) {
+        appendOperatorLog(cfg, scanEvent(`sr_${i}`));
+      }
+      const events = tailOperatorLog(cfg, { scanLimit: 3, chunkBytes: 32 });
+      const scans = events.filter((e) => e.event === "scan");
+      assert.deepEqual(
+        scans.map((e) => e.id),
+        ["sr_4", "sr_3", "sr_2"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes a result written after the scan when walking backward", () => {
+    const { dir, cfg } = tmpLog();
+    try {
+      appendOperatorLog(cfg, scanEvent("sr_s"));
+      appendOperatorLog(cfg, {
+        event: "result",
+        id: "sr_r",
+        run_id: "uuid-1:sr_s",
+        metadata: {
+          adapter: "openclaw",
+          hook: "after_tool_call",
+          session_id: "uuid-1",
+          session_key: "main",
+          tool_call_id: "sr_s",
+        },
+        result: { excerpt: "ok", ok: true, byte_size: 2 },
+      });
+      const events = tailOperatorLog(cfg, { scanLimit: 1, chunkBytes: 32 });
+      assert.deepEqual(
+        events.map((e) => e.event),
+        ["result", "scan"],
+      );
+      assert.equal(events[0]!.id, "sr_r");
+      assert.equal(events[1]!.id, "sr_s");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("walks the live file then .1", () => {
+    const { dir, cfg } = tmpLog();
+    try {
+      for (const id of ["sr_1", "sr_2", "sr_3"]) {
+        appendOperatorLog(cfg, scanEvent(id));
+      }
+      renameSync(cfg.path, `${cfg.path}.1`);
+      for (const id of ["sr_4", "sr_5"]) {
+        appendOperatorLog(cfg, scanEvent(id));
+      }
+      const scans = tailOperatorLog(cfg, { scanLimit: 4, chunkBytes: 32 }).filter(
+        (e) => e.event === "scan",
+      );
+      assert.deepEqual(
+        scans.map((e) => e.id),
+        ["sr_5", "sr_4", "sr_3", "sr_2"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops after 100 scans when more exist", () => {
+    const { dir, cfg } = tmpLog();
+    try {
+      for (let i = 0; i < 120; i++) {
+        appendOperatorLog(cfg, scanEvent(`sr_${String(i).padStart(3, "0")}`));
+      }
+      const scans = tailOperatorLog(cfg, { chunkBytes: 32 }).filter(
+        (e) => e.event === "scan" || e.event === "scan_error",
+      );
+      assert.equal(scans.length, DEFAULT_TIMELINE_SCAN_LIMIT);
+      assert.equal(scans[0]!.id, "sr_119");
+      assert.equal(scans[99]!.id, "sr_020");
+      assert.ok(!scans.some((e) => e.id === "sr_019"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stats use first/last line and newline counts, not a full JSON parse", () => {
+    const { dir, cfg } = tmpLog();
+    try {
+      appendOperatorLog(cfg, scanEvent("sr_old", { ts: "2026-09-01T00:00:00.000Z" }));
+      appendOperatorLog(cfg, scanEvent("sr_new", { ts: "2026-09-07T12:00:00.000Z" }));
+      const stats = operatorLogStats(cfg);
+      assert.equal(stats.lines, 2);
+      assert.ok(stats.bytes > 0);
+      assert.equal(stats.oldestTs, "2026-09-01T00:00:00.000Z");
+      assert.equal(stats.newestTs, "2026-09-07T12:00:00.000Z");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

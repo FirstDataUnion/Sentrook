@@ -1,13 +1,32 @@
 /**
  * Local session policy after a hosted ``review``: allow-all, quiet TTL, and
- * lenient (info-only). Never overrides block, scan-error, or unattended.
+ * persisted attended / unattended severity floors (legacy ``lenient`` = info).
+ * Never overrides block or scan-error. Allow-all and quiet stay attended-only.
+ * Hard L2 reviews are included — the hosted scan already finished; if it still
+ * returned review, the matching floor applies.
  */
 
 export const QUIET_CAP_MS = 8 * 60 * 60 * 1000;
-export const DEFAULT_HISTORY_LIMIT = 10;
 
-export type Sensitivity = "strict" | "lenient";
+export type ReviewSeverity = "info" | "warning" | "critical";
+/** ``strict`` prompts every hosted review. Otherwise auto-approve that severity and below. */
+export type Sensitivity = "strict" | ReviewSeverity;
+export type SensitivityScope = "attended" | "unattended";
 export type ReviewSkipReason = "allowlist" | "quiet" | "lenient" | "allow-all";
+export type SensitivityHighlight = "on" | "covered" | "off";
+
+export const SENSITIVITY_BUTTONS: Sensitivity[] = ["strict", "info", "warning", "critical"];
+
+const REVIEW_SEV_RANK: Record<ReviewSeverity, number> = { info: 0, warning: 1, critical: 2 };
+
+const SENSITIVITY_ALIASES: Record<string, Sensitivity> = {
+  strict: "strict",
+  info: "info",
+  lenient: "info",
+  warning: "warning",
+  warn: "warning",
+  critical: "critical",
+};
 
 export type SessionPolicyFlags = {
   allowAll: boolean;
@@ -17,11 +36,57 @@ export type SessionPolicyFlags = {
 const DURATION_RE =
   /^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)$/i;
 
+/** Canonical sensitivity, or undefined when the token is not recognised. ``lenient`` → ``info``. */
+export function parseSensitivityToken(raw: unknown): Sensitivity | undefined {
+  if (typeof raw !== "string") return undefined;
+  return SENSITIVITY_ALIASES[raw.trim().toLowerCase()];
+}
+
 export function parseSensitivity(raw: unknown, fallback: Sensitivity = "strict"): Sensitivity {
-  if (typeof raw !== "string") return fallback;
-  const n = raw.trim().toLowerCase();
-  if (n === "strict" || n === "lenient") return n;
-  return fallback;
+  return parseSensitivityToken(raw) ?? fallback;
+}
+
+/** Hosted default when ``review_severity`` is missing is warning (see serve/response.py). */
+export function reviewSeverityOf(raw: string | undefined): ReviewSeverity {
+  const n = (raw ?? "").trim().toLowerCase();
+  if (n === "info" || n === "warning" || n === "critical") return n;
+  return "warning";
+}
+
+function severityRank(value: Sensitivity): number {
+  if (value === "strict") return -1;
+  return REVIEW_SEV_RANK[value];
+}
+
+export function sensitivityCoversReview(
+  sensitivity: Sensitivity,
+  reviewSeverity: string | undefined,
+): boolean {
+  if (sensitivity === "strict") return false;
+  return REVIEW_SEV_RANK[reviewSeverityOf(reviewSeverity)] <= REVIEW_SEV_RANK[sensitivity];
+}
+
+/** Selected button plus every lower auto-accept level (not strict). */
+export function sensitivityFloorHighlight(
+  selected: Sensitivity,
+  button: Sensitivity,
+): SensitivityHighlight {
+  if (button === selected) return "on";
+  if (selected === "strict" || button === "strict") return "off";
+  return severityRank(button) < severityRank(selected) ? "covered" : "off";
+}
+
+export function resolveUnattendedSensitivity(
+  pluginCfg: Record<string, unknown> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): Sensitivity {
+  if (
+    typeof env.SENTROOK_UNATTENDED_SENSITIVITY === "string" &&
+    env.SENTROOK_UNATTENDED_SENSITIVITY.trim()
+  ) {
+    return parseSensitivity(env.SENTROOK_UNATTENDED_SENSITIVITY, "strict");
+  }
+  return parseSensitivity(pluginCfg?.unattendedSensitivity, "strict");
 }
 
 export function resolveSensitivity(
@@ -76,6 +141,21 @@ export function quietRemainingMs(
   return Math.max(0, quietUntilMs - nowMs);
 }
 
+/** True when either the gateway-wide or session allow-all flag is on. */
+export function combinedAllowAll(globalOn: boolean, sessionOn: boolean): boolean {
+  return globalOn || sessionOn;
+}
+
+/** The later of two quiet deadlines (null means unset). */
+export function laterQuietUntil(
+  globalUntilMs: number | null,
+  sessionUntilMs: number | null,
+): number | null {
+  if (globalUntilMs == null) return sessionUntilMs;
+  if (sessionUntilMs == null) return globalUntilMs;
+  return Math.max(globalUntilMs, sessionUntilMs);
+}
+
 export function formatDuration(ms: number): string {
   if (ms <= 0) return "0s";
   const totalSec = Math.round(ms / 1000);
@@ -93,17 +173,23 @@ export function resolveReviewSkip(input: {
   allowAll: boolean;
   quietUntilMs: number | null;
   sensitivity: Sensitivity;
+  unattendedSensitivity?: Sensitivity;
   reviewSeverity?: string;
   allowlistHit: boolean;
   nowMs?: number;
 }): ReviewSkipReason | undefined {
   if (input.hostedDecision !== "review") return undefined;
   if (input.allowlistHit) return "allowlist";
-  if (input.unattended) return undefined;
+  if (input.unattended) {
+    if (sensitivityCoversReview(input.unattendedSensitivity ?? "strict", input.reviewSeverity)) {
+      return "lenient";
+    }
+    return undefined;
+  }
   if (input.allowAll) return "allow-all";
   const now = input.nowMs ?? Date.now();
   if (input.quietUntilMs != null && now < input.quietUntilMs) return "quiet";
-  if (input.sensitivity === "lenient" && input.reviewSeverity === "info") return "lenient";
+  if (sensitivityCoversReview(input.sensitivity, input.reviewSeverity)) return "lenient";
   return undefined;
 }
 

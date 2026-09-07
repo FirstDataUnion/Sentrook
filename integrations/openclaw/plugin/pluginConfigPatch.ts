@@ -47,7 +47,7 @@ export function patchSentrookPluginConfig(
   if (!opened) {
     return {
       ok: false,
-      error: `Could not open ${cfgPath} (live setting applies until gateway restart).`,
+      error: `openclaw.json was not found at ${cfgPath}. Setting applies until gateway restart.`,
     };
   }
   const { fd } = opened;

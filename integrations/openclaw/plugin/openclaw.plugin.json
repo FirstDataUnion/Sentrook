@@ -103,9 +103,23 @@
         "type": "string",
         "enum": [
           "strict",
+          "info",
+          "warning",
+          "critical",
           "lenient"
         ],
-        "description": "Local review preset after hosted review. strict (default) always prompts. lenient skips info-only reviews. Never skips block, scan-error, or unattended. Env: SENTROOK_SENSITIVITY."
+        "description": "Attended review floor after hosted review. strict always prompts. info / warning / critical auto-approve that severity and below (legacy lenient = info). Includes hard L2 reviews. Never skips block or scan-error. Env: SENTROOK_SENSITIVITY."
+      },
+      "unattendedSensitivity": {
+        "type": "string",
+        "enum": [
+          "strict",
+          "info",
+          "warning",
+          "critical",
+          "lenient"
+        ],
+        "description": "Cron/subagent review floor after hosted review. Same tokens as sensitivity. Default strict. Allow-all and quiet do not apply. Env: SENTROOK_UNATTENDED_SENSITIVITY."
       },
       "operatorLog": {
         "type": "object",

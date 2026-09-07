@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, describe, it } from "node:test";
 
 import plugin from "./index.ts";
@@ -60,7 +62,12 @@ type ToolHandler = (
   ctx: { sessionId?: string; sessionKey?: string; agentId?: string; runId?: string },
 ) => Promise<unknown> | unknown;
 
-function createMockApi(pluginConfig: Record<string, unknown>) {
+function createMockApi(
+  pluginConfig: Record<string, unknown>,
+  opts?: {
+    gatewayRequest?: (method: string, params?: unknown) => Promise<unknown>;
+  },
+) {
   const handlers = new Map<string, ToolHandler>();
   const hookOpts = new Map<string, { priority?: number; timeoutMs?: number } | undefined>();
   const warns: string[] = [];
@@ -73,6 +80,14 @@ function createMockApi(pluginConfig: Record<string, unknown>) {
     requiredScopes?: string[];
     handler: (ctx: Record<string, unknown>) => { text: string } | Promise<{ text: string }>;
   }> = [];
+  const httpRoutes: Array<{
+    path: string;
+    auth: string;
+    match?: string;
+    handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => unknown;
+  }> = [];
+  const controlUi: Array<Record<string, unknown>> = [];
+  const gatewayCalls: Array<{ method: string; params?: unknown }> = [];
   const api = {
     pluginConfig,
     registrationMode: "full" as const,
@@ -92,8 +107,50 @@ function createMockApi(pluginConfig: Record<string, unknown>) {
     registerCommand(command: (typeof commands)[number]) {
       commands.push(command);
     },
+    registerHttpRoute(route: (typeof httpRoutes)[number]) {
+      httpRoutes.push(route);
+    },
+    runtime: {
+      gateway: {
+        isAvailable: async () => true,
+        request: async (method: string, params?: unknown) => {
+          gatewayCalls.push({ method, params });
+          if (opts?.gatewayRequest) return opts.gatewayRequest(method, params);
+          if (method === "plugin.approval.list") return [];
+          return { ok: true };
+        },
+      },
+    },
+    session: {
+      controls: {
+        registerControlUiDescriptor(descriptor: Record<string, unknown>) {
+          controlUi.push(descriptor);
+        },
+      },
+    },
   };
-  return { api, handlers, hookOpts, warns, infos, commands };
+  return { api, handlers, hookOpts, warns, infos, commands, httpRoutes, controlUi, gatewayCalls };
+}
+
+async function withHttpHandler(
+  handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => unknown,
+  fn: (base: string) => Promise<void>,
+): Promise<void> {
+  const server = createServer((req, res) => {
+    void Promise.resolve(handler(req, res)).catch((err) => {
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.end(String(err));
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
 function writeApiKeyDotenv(stateDir: string, apiKey: string): void {
@@ -1354,6 +1411,50 @@ describe("plugin.register — session identity", () => {
       rmSync(stateDir, { recursive: true, force: true });
     }
   });
+
+  it("hashes session ids on POST /latency as well as /scan", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-latency-"));
+    const saved = saveEnv();
+    const latencyBodies: Array<Record<string, unknown>> = [];
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.endsWith("/latency")) {
+          latencyBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+          return new Response("{}", { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      await flushAsyncWork();
+      assert.equal(latencyBodies.length, 1);
+      const body = latencyBodies[0]!;
+      assert.equal(body.session_id, hashSessionId("uuid-1"));
+      assert.equal(body.run_id, `${hashSessionId("uuid-1")}:r1`);
+      assert.notEqual(body.session_id, "uuid-1");
+      assert.equal(body.tool_call_id, "t1");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("plugin.register — operator log", () => {
@@ -1580,6 +1681,13 @@ describe("plugin.register — /sentrook session policy", () => {
     assert.match(reply.text, /owner-only/);
   });
 
+  it("handler does not refuse when senderIsOwner is omitted", async () => {
+    const { api, commands } = createMockApi({ timeoutMs: 1500 });
+    plugin.register(api as never);
+    const reply = await commands[0]!.handler({ args: "status" });
+    assert.doesNotMatch(reply.text, /owner-only/);
+  });
+
   it("allow-all skips hosted review cards but still POSTs /scan", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-allowall-"));
     const saved = saveEnv();
@@ -1677,6 +1785,41 @@ describe("plugin.register — /sentrook session policy", () => {
     }
   });
 
+  it("unattended sensitivity warning skips cron warning reviews", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-unatt-sens-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const prompt = handlers.get("before_prompt_build") as
+        | ((event: { prompt: string; runId?: string }, ctx: Record<string, unknown>) => void)
+        | undefined;
+      assert.ok(prompt);
+      prompt(
+        { prompt: "[cron: nightly] check mail", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      await commands[0]!.handler({
+        args: "sensitivity unattended warning",
+        senderIsOwner: true,
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const skipped = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      assert.equal(skipped, undefined);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("still blocks hosted block under allow-all", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-block-"));
     const saved = saveEnv();
@@ -1743,6 +1886,368 @@ describe("plugin.register — /sentrook session policy", () => {
         { sessionId: "uuid-1", runId: "r1" },
       );
       assert.equal(result, undefined);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("quiet skips hosted review cards but still POSTs /scan", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-quiet-"));
+    const saved = saveEnv();
+    let scans = 0;
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          scans += 1;
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "warning",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({
+        args: "quiet 30m",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "main",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      assert.equal(scans, 1);
+      assert.equal(result, undefined);
+      const raw = readFileSync(path.join(stateDir, "sentrook-operator.jsonl"), "utf8");
+      const events = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const scan = events.find((e) => e.event === "scan") as {
+        hook?: { skip_reason?: string };
+      };
+      const resolution = events.find((e) => e.event === "resolution") as {
+        resolution?: { decision?: string };
+      };
+      assert.equal(scan.hook?.skip_reason, "quiet");
+      assert.equal(resolution.resolution?.decision, "quiet-skip");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allow-all does not resolve an already-open review card", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-open-card-"));
+    const saved = saveEnv();
+    let scans = 0;
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          scans += 1;
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "warning",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return realFetch(input, init);
+      }) as typeof fetch;
+      const { api, handlers, commands, httpRoutes } = createMockApi(
+        { timeoutMs: 1500 },
+        {
+          gatewayRequest: async (method) => {
+            if (method === "plugin.approval.list") {
+              return [
+                {
+                  id: "plugin:open",
+                  request: { pluginId: "sentrook-openclaw", toolCallId: "t1" },
+                },
+              ];
+            }
+            return { ok: true };
+          },
+        },
+      );
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const first = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      )) as { requireApproval?: unknown };
+      assert.ok(first?.requireApproval);
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "main",
+      });
+      const second = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://y" }, toolCallId: "t2" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      assert.equal(second, undefined);
+      assert.equal(scans, 2);
+      const handler = httpRoutes[0]?.handler;
+      assert.ok(handler);
+      await withHttpHandler(handler, async (base) => {
+        const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+          pending: Array<{ toolCallId: string }>;
+        };
+        assert.equal(state.pending.some((c) => c.toolCallId === "t1"), true);
+        assert.equal(state.pending.some((c) => c.toolCallId === "t2"), false);
+      });
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not skip scan-error cards under allow-all", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-scanerr-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as typeof fetch;
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", runId: "r1" },
+      )) as { requireApproval?: { pluginId?: string } };
+      assert.ok(result?.requireApproval);
+      assert.equal(result.requireApproval?.pluginId, "sentrook-openclaw");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lenient still prompts on warning reviews", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-lenient-warn-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({ args: "sensitivity lenient", senderIsOwner: true });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", runId: "r1" },
+      )) as { requireApproval?: unknown };
+      assert.ok(result?.requireApproval);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("warning floor skips warning reviews but still prompts critical", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-sens-warn-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({ args: "sensitivity warning", senderIsOwner: true });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const skipped = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t-warn" },
+        { sessionId: "uuid-1", runId: "r1" },
+      );
+      assert.equal(skipped, undefined);
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "critical",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const prompted = (await beforeTool(
+        { toolName: "exec", params: { command: "rm -rf /tmp/x" }, toolCallId: "t-crit" },
+        { sessionId: "uuid-1", runId: "r2" },
+      )) as { requireApproval?: unknown };
+      assert.ok(prompted?.requireApproval);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("critical floor skips critical reviews", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-sens-crit-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "critical",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({ args: "sensitivity critical confirm", senderIsOwner: true });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = await beforeTool(
+        { toolName: "exec", params: { command: "rm -rf /tmp/x" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", runId: "r1" },
+      );
+      assert.equal(result, undefined);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("plugin.register — /sentrook dashboard", () => {
+  it("registers a gateway-auth prefix route and Control UI tab", () => {
+    const { api, httpRoutes, controlUi, infos } = createMockApi({ timeoutMs: 1500 });
+    plugin.register(api as never);
+    assert.equal(httpRoutes.length, 1);
+    assert.equal(httpRoutes[0]?.path, "/sentrook");
+    assert.equal(httpRoutes[0]?.auth, "gateway");
+    assert.equal(httpRoutes[0]?.match, "prefix");
+    assert.equal(controlUi[0]?.id, "sentrook");
+    assert.equal(controlUi[0]?.path, "/sentrook");
+    assert.deepEqual(controlUi[0]?.requiredScopes, ["operator.admin"]);
+    assert.ok(infos.some((m) => /dashboard \/sentrook/.test(m)));
+  });
+
+  it("stashes a review card and resolve calls plugin.approval.resolve", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-dash-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "warning",
+              summary: "Review triggered by AIRA-010",
+              matched_rules: ["AIRA-010"],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return realFetch(input, init);
+      }) as typeof fetch;
+
+      const { api, handlers, httpRoutes, gatewayCalls } = createMockApi(
+        { timeoutMs: 1500 },
+        {
+          gatewayRequest: async (method) => {
+            if (method === "plugin.approval.list") {
+              return [
+                {
+                  id: "plugin:abc",
+                  request: { pluginId: "sentrook-openclaw", toolCallId: "t1" },
+                },
+              ];
+            }
+            return { ok: true };
+          },
+        },
+      );
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        {
+          toolName: "exec",
+          params: { command: "curl https://evil.example" },
+          toolCallId: "t1",
+        },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      )) as { requireApproval?: { pluginId?: string } };
+      assert.equal(result?.requireApproval?.pluginId, "sentrook-openclaw");
+
+      const handler = httpRoutes[0]?.handler;
+      assert.ok(handler);
+      await withHttpHandler(handler, async (base) => {
+        const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+          pending: Array<{ command: string; approvalId?: string; toolCallId: string }>;
+        };
+        assert.equal(state.pending.length, 1);
+        assert.match(state.pending[0]!.command, /curl https:\/\/evil\.example/);
+        assert.equal(state.pending[0]!.approvalId, "plugin:abc");
+
+        const res = await fetch(`${base}/sentrook/api/resolve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ toolCallId: "t1", decision: "allow-once" }),
+        });
+        assert.equal(res.status, 200);
+      });
+      assert.ok(
+        gatewayCalls.some(
+          (c) =>
+            c.method === "plugin.approval.resolve" &&
+            (c.params as { id?: string }).id === "plugin:abc",
+        ),
+      );
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

@@ -23,6 +23,12 @@ PlanIR is always scrubbed before egress (not configurable). Optional review
 feedback can `POST /feedback` with a sanitized resolution for the community
 corpus (human-gated publish).
 
+Operators can inspect pending reviews and history with `/sentrook` in chat
+(owner-only; bare command is a snapshot, `/sentrook help` lists verbs) or open
+`/sentrook` on the gateway (same port as Control UI).
+See [Operator dashboard](#operator-dashboard) and
+[`/sentrook` chat commands](#sentrook-chat-commands).
+
 For the bigger picture (layers, privacy, community contribution) see the root
 [README — How it works](../../README.md#how-it-works).
 
@@ -124,6 +130,10 @@ Then restart the gateway and run `openclaw sentrook verify`.
 | `openclaw sentrook verify` | Confirm plugin config, credentials, and scan connectivity |
 | `openclaw sentrook allowlist list\|path\|clear --yes` | Inspect / wipe local allow-always store |
 
+Chat (owner-only, not the CLI): `/sentrook` — see
+[`/sentrook` chat commands](#sentrook-chat-commands). Gateway panel: `/sentrook`
+on the Control UI port — see [Operator dashboard](#operator-dashboard).
+
 ## Configuration
 
 Configure does **not** restart the gateway — do that yourself after the first
@@ -152,6 +162,12 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 | `feedback.mode` | `submit` after configure | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). The wizard default is `submit`. If you enable the plugin without configure, feedback stays `off`. Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
 | `allowlist.enabled` | `true` | Local short-circuit for “allow every time” — see [Allow every time](#allow-every-time-local-allowlist) |
 | `allowlist.path` | `~/.openclaw/sentrook-allowlist.json` | Override store path |
+| `sensitivity` | `strict` | Attended review floor after hosted `review`: `strict` always prompts; `info` / `warning` / `critical` auto-approve that severity and below (legacy `lenient` = `info`). Includes hard L2 reviews. Never skips `block` or scan errors. Env: `SENTROOK_SENSITIVITY`. See [Session policy](#session-policy). |
+| `unattendedSensitivity` | `strict` | Same floor for cron / subagent runs. Allow-all and quiet do not apply. Env: `SENTROOK_UNATTENDED_SENSITIVITY`. |
+| `operatorLog.enabled` | `true` | Local JSONL history on the OpenClaw host. Env: `SENTROOK_OPERATOR_LOG=0` to disable. See [Operator log](#operator-log). |
+| `operatorLog.path` | `$OPENCLAW_STATE_DIR/sentrook-operator.jsonl` | Override path. Env: `SENTROOK_OPERATOR_LOG_PATH`. |
+| `operatorLog.maxAgeDays` | `14` | Drop lines older than this many days (`0` = no age purge). Env: `SENTROOK_OPERATOR_LOG_MAX_DAYS`. |
+| `operatorLog.maxBytes` | `33554432` (32 MiB) | Rotate the live file near this size. Env: `SENTROOK_OPERATOR_LOG_MAX_BYTES`. |
 | `approval.interactiveTimeoutMs` | `600000` (10 min) | Review timeout for interactive sessions. Capped at 10 min (OpenClaw 2.0). Deny on timeout. |
 | `approval.scheduledTimeoutMs` | `600000` (10 min) | Review timeout for unattended cron / subagent runs. Same 10 min cap. |
 | `approval.scheduledTimeoutBehavior` | `deny` | **Deprecated.** Unresolved reviews always deny. The key is still accepted so older configs load; `allow` is ignored. |
@@ -274,6 +290,112 @@ OpenClaw docs linked above.
 After changing approvals, trigger a tool call that Sentrook would `review` and
 confirm the card or `/approve` prompt appears where you expect.
 
+## Operator dashboard
+
+The plugin serves a panel at **`/sentrook` on the OpenClaw gateway** — same
+port as Control UI (default **18789**). Auth is the gateway’s own
+(`operator.admin`). If the host supports plugin Control UI tabs, a **Sentrook**
+tab opens that path.
+
+The page is server-rendered HTML (no extra port, no SPA), tabbed:
+
+- **Reviews** (home) — pending cards with severity and risk, the run’s intent,
+  a compact episode trail (last two calls, older history behind “Show earlier
+  calls”) that ends on the pending command (dangerous spans highlighted),
+  human-readable policy labels (not AIRA ids), session key (linked into
+  Timeline), and allow / deny. The page polls `/api/state` and reloads only
+  when pending reviews or timeline rows actually change; open timeline cards
+  stay open across that reload.
+- **Timeline** — the newest 100 scans from the [operator log](#operator-log)
+  (live file, then `.1` if needed). Counts are for those loaded rows. Search,
+  stream or per-session layout, expandable rows that lead with the command
+  (or the URL for browser args), then decision, how it was resolved, tool,
+  time (date when it is not today), session, and whether the call ran. Expand
+  for scan (severity, risk, policy labels, dangerous spans in the command),
+  decision (allowlist / you / timeout, and how long you waited), result
+  (output, size, URLs and paths), extra arguments, and earlier calls in the
+  same run. Filter by allow / review / block / error and session. Reviews
+  link in with `?session=` and `#timeline`.
+- **Allowlist** — local allow-always entries. A collapsed “How matchers work”
+  note at the top explains skeleton vs script-bind. Remove one to start
+  reviewing that shape again.
+- **Settings** — allow-all (off / on for all; per-session toggles live in the
+  table below) and quiet (global TTL or per session); attended and unattended
+  sensitivity floors (strict / info / warning / critical, with lower levels
+  highlighted); `feedback.mode` and `onScanError`; operator-log path, retention,
+  max size, aged-line purge, and full delete. Allow-all and quiet stay in memory
+  (cleared on restart). Sensitivity, feedback, scan-error policy, and log
+  retention write into `plugins.entries.sentrook-openclaw.config` when the
+  gateway can save `openclaw.json`. Scan origin and credentials are not editable
+  here. Older `#sessions` / `#log` / `#set-sessions` hashes open Settings.
+
+To iterate on layout without a running gateway, from `plugin/`:
+`npm run preview:dashboard` (fixture data at http://127.0.0.1:3456).
+
+Approve / deny calls OpenClaw `plugin.approval.resolve` so the waiting tool
+actually continues. If the host has not minted a `plugin:` id yet, the panel
+returns an error and tells you to use `/approve plugin:…` in chat.
+
+Control UI plugin-tab cookies are **GET/HEAD only**. Buttons still POST; from
+the sandboxed iframe that can 401. Direct bearer access to `/sentrook` (or
+curl against the gateway) is the mutation path that always works. Keep
+`/approve` in chat as the fallback.
+
+## `/sentrook` chat commands
+
+Owner-only (`requireAuth` + `operator.admin`). Replies are ordinary channel
+messages (`{ text }`). In a **public** Discord/Telegram room anyone present can
+read them — secrets are scrubbed, that is not a guarantee. Prefer a DM, a
+private channel, or the [dashboard](#operator-dashboard).
+
+| Command | What it does |
+|---------|----------------|
+| `/sentrook` | Snapshot: policy knobs + pending leads. Ends with `More commands: /sentrook help` |
+| `/sentrook help` | Short catalog (same verbs as this table) + public-channel warning |
+| `/sentrook status` | Policy knobs only (no pending list) |
+| `/sentrook policy` | All settings with the same current-choice lines as the dashboard |
+| `/sentrook pending [all\|id]` | This session; `all` = every card on the gateway; `<id>` = full scrubbed command |
+| `/sentrook history [all\|gateway\|before <id>\|n\|id]` | Newest 8 (max 20) review/block/scan-error this session; `all` includes allows; `gateway` is every session; `before <id>` older page; `<id>` is the investigation |
+| `/sentrook sessions` | Live session allow-all / quiet flags |
+| `/sentrook allow-all [all\|session <key>] [on\|off]` | Skip future attended reviews. Bare = this session on. `all` = gateway-wide (`off` also clears every session flag). In-memory |
+| `/sentrook quiet [all\|session <key>] <duration\|off>` | Same skip with a TTL (`30m`, `2h`, `8h` max). In-memory |
+| `/sentrook sensitivity [attended\|unattended] [strict\|info\|warning\|critical]` | Persist the review floor (`lenient` = `info`). `critical` needs a trailing `confirm` |
+| `/sentrook feedback [submit\|off]` | Persist whether sanitized reviews are posted to the community corpus |
+| `/sentrook scan-error [review\|deny\|allow]` | Persist what happens when `/scan` fails. `allow` needs a trailing `confirm` |
+| `/sentrook allowlist [rm n]` | List / remove a 1-based local allowlist entry |
+| `/sentrook log [retention\|purge]` | Stats; `retention 7d` / `32MiB`; `purge confirm` / `purge all confirm` |
+
+Every verb accepts `help` (or `?` / `-h`) as its first argument — options, scopes, and the value in effect right now. That in-chat page is the source of truth; this table is only the catalog. `/sentrook help` matches it.
+
+Lists stay short: no AIRA ids, no matched-rule dumps, no full tool results.
+`pending <id>` / `history <id>` is the investigation (command, hosted decision, what happened next, whether it ran). OpenClaw `/approve` is still how you resolve a card from chat (there is no `/sentrook allow`).
+
+Allow-all and quiet do **not** resolve cards already waiting on `/approve`.
+Turn them on, then still approve or deny the open ones.
+
+## Session policy
+
+After hosted Sentrook returns **`review`** only (scan still always `POST`s).
+Order: local allowlist → (attended only) allow-all → quiet TTL → the matching
+sensitivity floor (`review_severity` at or below `info` / `warning` /
+`critical`). Attended and unattended floors are independent. Legacy `lenient`
+is `info`. The floor includes **hard** L2 reviews: Layer 3 already ran on the
+host, so a remaining `review` is eligible.
+
+Never skipped: hosted **`block`**, **scan errors**. Unattended (cron/subagent)
+reviews ignore allow-all and quiet; they follow `unattendedSensitivity`
+instead. A matching local allowlist entry can still skip an unattended review.
+
+Allow-all and quiet live in memory for the current gateway process (global
+and/or per session). `session_end` clears that session’s flags; a restart
+clears globals too. Sensitivity, unattended sensitivity, `feedback.mode`,
+`onScanError`, and operator-log retention persist in
+`plugins.entries.sentrook-openclaw.config`. Environment variables
+(`SENTROOK_SENSITIVITY`, `SENTROOK_UNATTENDED_SENSITIVITY`,
+`SENTROOK_FEEDBACK_MODE`, `SENTROOK_ON_SCAN_ERROR`, …) still win after a
+restart. Sensitivity `critical` is the standing equivalent of allow-all for
+that scope (still never block / scan-error).
+
 ## Allow every time (local allowlist)
 
 Sentrook `review` decisions surface OpenClaw’s approval UI (`allow-once` /
@@ -306,6 +428,31 @@ openclaw sentrook allowlist list              # show entries
 openclaw sentrook allowlist clear --yes       # wipe all entries
 ```
 
+Chat: `/sentrook allowlist` / `/sentrook allowlist rm n`. Dashboard: remove
+from the Allowlist section.
+
+## Operator log
+
+A local JSONL history (`sentrook.operator.log/v1`) is **on by default**. It is
+a product feature, not a maintainer debug dump.
+
+| | |
+| --- | --- |
+| Path | `$OPENCLAW_STATE_DIR/sentrook-operator.jsonl` (usually `~/.openclaw/sentrook-operator.jsonl`) |
+| Mode | `0600`, append-only |
+| Retention | 14 days and 32 MiB (whichever bites first). Tune with `operatorLog.*` or `/sentrook log retention` |
+| Payload | Full scrubbed command and result (no 500-char pack). Same secret/PII patterns as scan egress |
+| Hook | Log I/O never fail-closes a tool call |
+
+It is **never** uploaded to hosted Sentrook or Rookery. Opt-in `/feedback` is a
+separate, human-gated path. Disable with `SENTROOK_OPERATOR_LOG=0` or
+`operatorLog.enabled: false` if you want scans without on-disk history
+(history is empty after restart either way).
+
+`/sentrook history` and the dashboard timeline read this file. Gateway
+`[sentrook-openclaw]` log lines are still the live scan trace — see
+[Verify & logs](#verify--logs).
+
 ## Uninstall
 
 ```bash
@@ -318,6 +465,7 @@ manual purge afterwards:
 
 - `SENTROOK_SCAN_*` lines in `~/.openclaw/.env`
 - `~/.openclaw/sentrook-allowlist.json` (or `openclaw sentrook allowlist clear --yes` before uninstall)
+- `~/.openclaw/sentrook-operator.jsonl` (and a `.1` rotate sibling if present)
 
 ## Verify & logs
 
@@ -353,11 +501,20 @@ Healthy traffic looks like timing / decision lines. `continuing without scan (on
 means the tool proceeded without a Sentrook decision — that is opt-in; default
 `review` will ask or block instead.
 
+For a durable, queryable history of what the agent tried, use the
+[operator log](#operator-log) (`/sentrook history` or the dashboard timeline) —
+not only the gateway stream.
+
 ## Privacy (plugin side)
 
 The plugin **always** scrubs PlanIR before `POST /scan` and `/feedback`.
 Pattern scrubbing catches credentials and common PII shapes; it is **not** a
 full guarantee that no personal detail remains in free-form text.
+
+The **operator log** uses the same scrubbers and stays on the OpenClaw host.
+It is never auto-uploaded. Chat `/sentrook` replies are scrubbed the same way
+but are still ordinary channel messages. The **dashboard** shows unsanitized
+local argv for pending cards — treat gateway access like `openclaw.json`.
 
 On the hosted scan path, the execution plan is evaluated in memory and is **not**
 stored as PlanIR. Opt-in review feedback is a separate path (derived intent,

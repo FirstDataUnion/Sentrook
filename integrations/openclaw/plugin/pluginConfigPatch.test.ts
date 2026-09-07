@@ -50,13 +50,45 @@ describe("patchSentrookPluginConfig", () => {
     const saved = saveEnv();
     try {
       process.env.OPENCLAW_STATE_DIR = dir;
-      const result = patchSentrookPluginConfig({ sensitivity: "lenient" });
+      const result = patchSentrookPluginConfig({ sensitivity: "warning" });
       assert.equal(result.ok, true);
       const cfg = JSON.parse(readFileSync(join(dir, "openclaw.json"), "utf8")) as {
         plugins: { entries: Record<string, { config: Record<string, unknown> }> };
       };
-      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.sensitivity, "lenient");
+      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.sensitivity, "warning");
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.timeoutMs, 14000);
+    } finally {
+      restoreEnv(saved);
+    }
+  });
+
+  it("reports when openclaw.json is missing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-patch-missing-"));
+    tempDirs.push(dir);
+    const saved = saveEnv();
+    try {
+      process.env.OPENCLAW_STATE_DIR = dir;
+      const result = patchSentrookPluginConfig({ sensitivity: "warning" });
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /openclaw\.json was not found/);
+      assert.match(result.error, /until gateway restart/);
+    } finally {
+      restoreEnv(saved);
+    }
+  });
+
+  it("reports when openclaw.json is not strict JSON", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-patch-json5-"));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "openclaw.json"), "{ plugins: {} }\n", "utf8");
+    const saved = saveEnv();
+    try {
+      process.env.OPENCLAW_STATE_DIR = dir;
+      const result = patchSentrookPluginConfig({ sensitivity: "warning" });
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /not strict JSON/);
     } finally {
       restoreEnv(saved);
     }

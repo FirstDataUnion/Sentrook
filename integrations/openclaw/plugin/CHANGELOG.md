@@ -1,12 +1,16 @@
 # @firstdataunion/sentrook-openclaw
 
-## 1.0.6-rc.1
+## 1.1.0-rc.1
 
-### Patch Changes
+### Minor Changes
 
 - OpenClaw 2.0 (2026.8.1): default scan timeout is 14s (OIDC mint shares that budget) so `before_tool_call` stays inside the host's 15s fail-closed wait. Approval waits default to 10 minutes for interactive and unattended reviews and are capped there. Unresolved reviews always deny; `scheduledTimeoutBehavior: allow` is ignored but still accepted. Review-card Shell Preview uses the host's 512-char cap.
 - Review cards summarise local pending args when there is no shell command: `process action=log` shows the session and limit instead of "command was not available to summarise". `process` write/submit/start/spawn are scanned as `exec`.
 - Manifest sets `activation.onStartup: true`. First-time `npm:` installs document `--force` for noninteractive hosts.
+- Owner-only `/sentrook` chat commands. Bare `/sentrook` is a snapshot (policy + pending); `/sentrook help` is the catalog; each verb accepts `help` for options and current state. Status, policy, pending (`all` for every session), history (8 per reply, max 20, `before <id>` for older, `gateway` for cross-session), sessions, log, sensitivity, allow-all/quiet (session, named session, or `all` for the gateway), feedback, scan-error, allowlist. `critical` and scan-error `allow` need a trailing `confirm`. Replies are channel messages: lists stay short; `pending <id>` / `history <id>` reconstruct the review. Cards still resolve with `/approve`. Public rooms can read them — prefer a DM or the dashboard.
+- Gateway panel at `/sentrook` (same port as Control UI): tabbed operator UI with Reviews as home (severity + risk, intent, compact episode trail ending on the pending command, dangerous-span highlighting, human-readable policy labels). Timeline is an audit stream of the newest 100 scans (search, per-session layout, expandable command/output/resolution). Settings covers allow-all / quiet (global or per session), sensitivity, `feedback.mode`, `onScanError`, and operator-log retention / purge. Polls `/api/state` instead of a blind reload. Allow/deny via `plugin.approval.resolve`. Control UI iframe cookies are GET-only; `/approve plugin:…` remains the fallback.
+- Local operator log (`sentrook.operator.log/v1`) on by default at `$OPENCLAW_STATE_DIR/sentrook-operator.jsonl` (`0600`, 14 days / 32 MiB). Secret/PII-scrubbed, no per-field truncation, never auto-uploaded. Hook I/O never fail-closes a tool call.
+- After hosted `review` only: global or per-session allow-all, quiet TTL (cap 8h), and persisted attended / unattended `sensitivity` floors `strict` / `info` / `warning` / `critical` (legacy `lenient` = info). The floor includes hard L2 reviews. Never skip block or scan-error. Allow-all/quiet are attended-only and in-memory (cleared on `session_end` / gateway restart) and do not resolve already-open cards.
 - Internal: optional local JSONL diagnostic log for maintainers investigating review-card copy and scan decisions (off by default).
 
 ## 1.0.5

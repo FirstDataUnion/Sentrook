@@ -46,6 +46,8 @@ import {
 } from "./planir.ts";
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 import { DualIndexMap, runIdPrefix, sessionIdsOf } from "./sessionStore.ts";
+import { ReviewCardStore, snapshotReviewPrior } from "./reviewCards.ts";
+import { DASHBOARD_PATH, handleSentrookHttp } from "./dashboard.ts";
 import {
   appendOperatorLog,
   buildResolutionOperatorEvent,
@@ -61,7 +63,10 @@ import { patchSentrookPluginConfig } from "./pluginConfigPatch.ts";
 import {
   resolveReviewSkip,
   resolveSensitivity,
+  resolveUnattendedSensitivity,
   skipResolutionDecision,
+  combinedAllowAll,
+  laterQuietUntil,
   type Sensitivity,
 } from "./sessionPolicy.ts";
 import {
@@ -137,6 +142,7 @@ interface RequireApproval {
   timeoutMs?: number;
   timeoutBehavior?: "allow" | "deny";
   allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
+  pluginId?: string;
   onResolution?: (decision: ApprovalResolution) => void | Promise<void>;
 }
 
@@ -186,6 +192,36 @@ interface OpenClawPluginApi {
       agentId?: string;
     }) => { text: string } | Promise<{ text: string }>;
   }) => void;
+  registerHttpRoute?: (params: {
+    path: string;
+    auth: "gateway" | "plugin";
+    match?: "exact" | "prefix";
+    handler: (
+      req: import("node:http").IncomingMessage,
+      res: import("node:http").ServerResponse,
+    ) => Promise<boolean | void> | boolean | void;
+  }) => void;
+  runtime?: {
+    gateway?: {
+      isAvailable?: () => Promise<boolean>;
+      request: (method: string, params?: unknown, opts?: { timeoutMs?: number }) => Promise<unknown>;
+    };
+  };
+  config?: unknown;
+  session?: {
+    controls?: {
+      registerControlUiDescriptor?: (descriptor: {
+        surface: string;
+        id: string;
+        label: string;
+        description?: string;
+        path?: string;
+        auth?: string;
+        group?: string;
+        requiredScopes?: string[];
+      }) => void;
+    };
+  };
 }
 
 interface RunIntent {
@@ -309,11 +345,14 @@ interface PluginConfig {
   allowlist: AllowlistConfig;
   onScanError: OnScanError;
   sensitivity: Sensitivity;
+  unattendedSensitivity: Sensitivity;
 }
 
 // ---- Per-session trajectory state -------------------------------------------
 
 interface SessionState {
+  sessionId?: string;
+  sessionKey?: string;
   runIntents: Map<string, RunIntent>;
   executed: SnapshotCall[];
   pending: Map<
@@ -433,6 +472,7 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
     allowlist,
     onScanError,
     sensitivity: resolveSensitivity(cfg, process.env),
+    unattendedSensitivity: resolveUnattendedSensitivity(cfg, process.env),
   };
 }
 
@@ -533,15 +573,16 @@ function recordScanLatency(
 ): void {
   void (async () => {
     try {
+      const { plan: outbound } = maybeSanitizePlanir(plan);
       const headers = await buildScanAuthHeadersAsync(auth);
       await fetch(`${url}/latency`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          tool_call_id: plan.metadata.tool_call_id ?? null,
-          session_id: plan.metadata.session_id ?? null,
-          run_id: plan.run_id,
-          pending_tool: pendingToolName(plan),
+          tool_call_id: outbound.metadata.tool_call_id ?? null,
+          session_id: outbound.metadata.session_id ?? null,
+          run_id: outbound.run_id,
+          pending_tool: pendingToolName(outbound),
           decision: scan.decision,
           plugin_e2e_ms: timing.pluginE2eMs,
           engine_ms: timing.engineMs,
@@ -798,6 +839,8 @@ export function translateScanResponse(
     logger: PluginLogger;
     /** Unredacted pending tool args from the live hook (operator review only). */
     pendingArgs?: Json;
+    /** Set when a local allowlist entry short-circuits a hosted review. */
+    allowlistHitLabel?: string;
   },
 ): BeforeToolCallResult | undefined {
   if (scan.block || scan.decision === "block") {
@@ -828,6 +871,10 @@ export function translateScanResponse(
         ctx.logger.warn(
           `[sentrook-openclaw] local allowlist hit (${match.kind ?? "unknown"}); skipping requireApproval; rules=${rules}; ${detail}`,
         );
+        ctx.allowlistHitLabel =
+          (detail.startsWith("skeleton=") ? detail.slice("skeleton=".length) : detail) ||
+          match.kind ||
+          "";
         return undefined;
       }
     }
@@ -860,6 +907,7 @@ export function translateScanResponse(
         timeoutMs: timing.timeoutMs,
         timeoutBehavior: timing.timeoutBehavior,
         allowedDecisions: ["allow-once", "allow-always", "deny"],
+        pluginId: "sentrook-openclaw",
         onResolution: async (decision) => {
           if (decision === "allow-always" && ctx.allowlist?.enabled) {
             try {
@@ -933,6 +981,7 @@ function applyPendingLifecycle(
   toolCallId: string | undefined,
   pendingCall: SnapshotCall,
   meta: { stepSeq: number; runId: string; eventId?: string },
+  cards?: ReviewCardStore,
 ): BeforeToolCallResult | undefined {
   if (result?.block) return result;
   rememberPending(st, toolCallId, pendingCall, {
@@ -945,6 +994,7 @@ function applyPendingLifecycle(
   approval.onResolution = async (decision) => {
     const remembered = st.pending.get(toolCallId);
     if (remembered) remembered.awaitingApproval = false;
+    cards?.take(toolCallId);
     if (decision === "deny" || decision === "timeout" || decision === "cancelled") {
       dropPending(st, toolCallId);
     }
@@ -1057,11 +1107,23 @@ const plugin = {
       quietUntilMs: null,
     });
 
-    const getSession = (ctx: AgentContext | SessionContext): SessionState =>
-      sessions.getOrCreate(sessionIdsOf(ctx), emptySession);
+    const getSession = (ctx: AgentContext | SessionContext): SessionState => {
+      const ids = sessionIdsOf(ctx);
+      const st = sessions.getOrCreate(ids, emptySession);
+      if (ids.sessionId) st.sessionId = ids.sessionId;
+      if (ids.sessionKey) st.sessionKey = ids.sessionKey;
+      return st;
+    };
+
+    const reviewCards = new ReviewCardStore();
 
     const live = {
       sensitivity: config.sensitivity,
+      unattendedSensitivity: config.unattendedSensitivity,
+      feedbackMode: config.feedbackMode,
+      onScanError: config.onScanError,
+      allowAll: false,
+      quietUntilMs: null as number | null,
     };
 
     const pluginCfgNow = (): Record<string, unknown> =>
@@ -1072,44 +1134,145 @@ const plugin = {
     const slashSessionOf = (ids: ReturnType<typeof sessionIdsOf>): SlashSession =>
       getSession(ids) as SlashSession;
 
+    const persistResult = (persisted: ReturnType<typeof patchSentrookPluginConfig>) =>
+      persisted.ok
+        ? { persisted: true as const }
+        : { persisted: false as const, error: persisted.error };
+
+    const setSensitivity = (value: typeof live.sensitivity) => {
+      live.sensitivity = value;
+      const cfg = pluginCfgNow();
+      cfg.sensitivity = value;
+      api.pluginConfig = cfg;
+      return persistResult(patchSentrookPluginConfig({ sensitivity: value }));
+    };
+
+    const setUnattendedSensitivity = (value: typeof live.unattendedSensitivity) => {
+      live.unattendedSensitivity = value;
+      const cfg = pluginCfgNow();
+      cfg.unattendedSensitivity = value;
+      api.pluginConfig = cfg;
+      return persistResult(patchSentrookPluginConfig({ unattendedSensitivity: value }));
+    };
+
+    const setFeedbackMode = (value: typeof live.feedbackMode) => {
+      live.feedbackMode = value;
+      const cfg = pluginCfgNow();
+      const prev =
+        cfg.feedback && typeof cfg.feedback === "object"
+          ? { ...(cfg.feedback as Record<string, unknown>) }
+          : {};
+      cfg.feedback = { ...prev, mode: value };
+      api.pluginConfig = cfg;
+      return persistResult(patchSentrookPluginConfig({ feedback: { mode: value } }));
+    };
+
+    const setOnScanError = (value: typeof live.onScanError) => {
+      live.onScanError = value;
+      const cfg = pluginCfgNow();
+      cfg.onScanError = value;
+      api.pluginConfig = cfg;
+      return persistResult(patchSentrookPluginConfig({ onScanError: value }));
+    };
+
+    const setOperatorLogRetention = (patch: { maxAgeDays?: number; maxBytes?: number }) => {
+      const current = operatorLogNow();
+      if (patch.maxAgeDays != null) current.maxAgeDays = patch.maxAgeDays;
+      if (patch.maxBytes != null) current.maxBytes = patch.maxBytes;
+      const cfg = pluginCfgNow();
+      const prev =
+        cfg.operatorLog && typeof cfg.operatorLog === "object"
+          ? { ...(cfg.operatorLog as Record<string, unknown>) }
+          : {};
+      cfg.operatorLog = { ...prev, ...patch };
+      api.pluginConfig = cfg;
+      return persistResult(patchSentrookPluginConfig({ operatorLog: patch }));
+    };
+
     if (api.registerCommand) {
       api.registerCommand({
         ...SENTROOK_COMMAND_DEF,
         handler: (ctx) =>
           handleSentrookCommand(ctx, {
             sessionOf: slashSessionOf,
+            listSessions: () => sessions.uniqueValues() as SlashSession[],
+            listCards: () =>
+              reviewCards.list().map((card) => ({
+                eventId: card.eventId,
+                toolCallId: card.toolCallId,
+                tool: card.tool,
+                args: card.args,
+                sessionId: card.sessionId,
+                sessionKey: card.sessionKey,
+              })),
             sensitivity: () => live.sensitivity,
-            setSensitivity: (value) => {
-              live.sensitivity = value;
-              const cfg = pluginCfgNow();
-              cfg.sensitivity = value;
-              api.pluginConfig = cfg;
-              const persisted = patchSentrookPluginConfig({ sensitivity: value });
-              return persisted.ok
-                ? { persisted: true }
-                : { persisted: false, error: persisted.error };
+            setSensitivity,
+            unattendedSensitivity: () => live.unattendedSensitivity,
+            setUnattendedSensitivity,
+            allowAll: () => live.allowAll,
+            setAllowAll: (value) => {
+              live.allowAll = value;
             },
+            quietUntilMs: () => live.quietUntilMs,
+            setQuietUntilMs: (value) => {
+              live.quietUntilMs = value;
+            },
+            feedbackMode: () => live.feedbackMode,
+            setFeedbackMode,
+            onScanError: () => live.onScanError,
+            setOnScanError,
             operatorLog: operatorLogNow,
-            setOperatorLogRetention: (patch) => {
-              const current = operatorLogNow();
-              if (patch.maxAgeDays != null) current.maxAgeDays = patch.maxAgeDays;
-              if (patch.maxBytes != null) current.maxBytes = patch.maxBytes;
-              const cfg = pluginCfgNow();
-              const prev =
-                cfg.operatorLog && typeof cfg.operatorLog === "object"
-                  ? { ...(cfg.operatorLog as Record<string, unknown>) }
-                  : {};
-              cfg.operatorLog = { ...prev, ...patch };
-              api.pluginConfig = cfg;
-              const persisted = patchSentrookPluginConfig({ operatorLog: patch });
-              return persisted.ok
-                ? { persisted: true }
-                : { persisted: false, error: persisted.error };
-            },
+            setOperatorLogRetention,
             allowlist: config.allowlist,
             now: () => Date.now(),
           }),
       });
+    }
+
+    if (api.registerHttpRoute) {
+      api.registerHttpRoute({
+        path: DASHBOARD_PATH,
+        auth: "gateway",
+        match: "prefix",
+        handler: (req, res) =>
+          handleSentrookHttp(req, res, {
+            cards: reviewCards,
+            sessions,
+            sessionFactory: emptySession,
+            sensitivity: () => live.sensitivity,
+            setSensitivity,
+            unattendedSensitivity: () => live.unattendedSensitivity,
+            setUnattendedSensitivity,
+            allowAll: () => live.allowAll,
+            setAllowAll: (value) => {
+              live.allowAll = value;
+            },
+            quietUntilMs: () => live.quietUntilMs,
+            setQuietUntilMs: (value) => {
+              live.quietUntilMs = value;
+            },
+            feedbackMode: () => live.feedbackMode,
+            setFeedbackMode,
+            onScanError: () => live.onScanError,
+            setOnScanError,
+            operatorLog: operatorLogNow,
+            setOperatorLogRetention,
+            allowlist: config.allowlist,
+            gateway: api.runtime?.gateway,
+            config: api.config,
+          }),
+      });
+      api.session?.controls?.registerControlUiDescriptor?.({
+        surface: "tab",
+        id: "sentrook",
+        label: "Sentrook",
+        description: "Pending reviews, timeline, allowlist, and settings",
+        path: DASHBOARD_PATH,
+        auth: "gateway",
+        group: "control",
+        requiredScopes: ["operator.admin"],
+      });
+      api.logger.info(`[sentrook-openclaw] dashboard ${DASHBOARD_PATH} on this gateway`);
     }
 
     const resolveLiveAuth = (): ScanAuthConfig =>
@@ -1206,7 +1369,7 @@ const plugin = {
               plan.intent ?? undefined,
             );
             const mapped = scanErrorToHookResult(scanResult, {
-              onScanError: config.onScanError,
+              onScanError: live.onScanError,
               unattended: timing.unattended,
               interactiveTimeoutMs: config.approval.interactiveTimeoutMs,
             });
@@ -1236,12 +1399,33 @@ const plugin = {
                   hookResult: mapped,
                   coPendingIds,
                   unattended: timing.unattended,
-                  contributeEligible: config.feedbackMode === "submit",
+                  contributeEligible: live.feedbackMode === "submit",
                 }),
                 id: eventId,
               },
               api.logger,
             );
+            if (mapped?.requireApproval && event.toolCallId) {
+              mapped.requireApproval.pluginId ??= "sentrook-openclaw";
+              reviewCards.put({
+                eventId,
+                toolCallId: event.toolCallId,
+                tool: event.toolName,
+                args: pendingCall.args,
+                scan: {
+                  decision: "scan_error",
+                  summary: mapped.requireApproval.description,
+                  block_reason: scanResult.kind,
+                },
+                sessionId: ids.sessionId,
+                sessionKey: ids.sessionKey,
+                agentId: ctx.agentId,
+                timeoutMs: mapped.requireApproval.timeoutMs ?? 600_000,
+                intent: plan.intent,
+                intentKind: plan.intent_kind,
+                ...snapshotReviewPrior(st.executed),
+              });
+            }
             return attachOperatorLogResolution(
               attachDevLogResolution(
                 applyPendingLifecycle(
@@ -1250,6 +1434,7 @@ const plugin = {
                   event.toolCallId,
                   pendingCall,
                   pendingMeta,
+                  reviewCards,
                 ),
                 plan,
                 pendingCall,
@@ -1257,7 +1442,7 @@ const plugin = {
               ),
               plan,
               api.logger,
-              config.feedbackMode === "submit",
+              live.feedbackMode === "submit",
             );
           }
 
@@ -1265,16 +1450,18 @@ const plugin = {
           api.logger.info(`[sentrook-openclaw] ${formatScanTimingLog(plan, scan, timing)}`);
           recordScanLatency(config.url, liveAuth, plan, scan, timing);
 
-          const translated = translateScanResponse(scan, {
+          const scanCtx = {
             plan,
             url: config.url,
             auth: liveAuth,
-            feedbackMode: config.feedbackMode,
+            feedbackMode: live.feedbackMode,
             approval: config.approval,
             allowlist: config.allowlist,
             logger: api.logger,
             pendingArgs: pendingCall.args,
-          });
+            allowlistHitLabel: undefined as string | undefined,
+          };
+          const translated = translateScanResponse(scan, scanCtx);
           const unattended = resolveApprovalTiming(
             config.approval,
             plan.intent_kind ?? undefined,
@@ -1284,9 +1471,10 @@ const plugin = {
           const skipReason = resolveReviewSkip({
             hostedDecision: scan.decision,
             unattended,
-            allowAll: st.allowAll,
-            quietUntilMs: st.quietUntilMs,
+            allowAll: combinedAllowAll(live.allowAll, st.allowAll),
+            quietUntilMs: laterQuietUntil(live.quietUntilMs, st.quietUntilMs),
             sensitivity: live.sensitivity,
+            unattendedSensitivity: live.unattendedSensitivity,
             reviewSeverity: scan.review_severity,
             allowlistHit,
           });
@@ -1319,9 +1507,10 @@ const plugin = {
                 scan,
                 hookResult,
                 skipReason,
+                allowlistLabel: scanCtx.allowlistHitLabel,
                 coPendingIds,
                 unattended,
-                contributeEligible: config.feedbackMode === "submit",
+                contributeEligible: live.feedbackMode === "submit",
               }),
               id: eventId,
             },
@@ -1338,6 +1527,30 @@ const plugin = {
               api.logger,
             );
           }
+          if (hookResult?.requireApproval && event.toolCallId) {
+            hookResult.requireApproval.pluginId ??= "sentrook-openclaw";
+            reviewCards.put({
+              eventId,
+              toolCallId: event.toolCallId,
+              tool: event.toolName,
+              args: pendingCall.args,
+              scan: {
+                decision: scan.decision,
+                risk: scan.risk,
+                summary: scan.summary,
+                matched_rules: scan.matched_rules,
+                review_severity: scan.review_severity,
+                block_reason: scan.block_reason,
+              },
+              sessionId: ids.sessionId,
+              sessionKey: ids.sessionKey,
+              agentId: ctx.agentId,
+              timeoutMs: hookResult.requireApproval.timeoutMs ?? 600_000,
+              intent: plan.intent,
+              intentKind: plan.intent_kind,
+              ...snapshotReviewPrior(st.executed),
+            });
+          }
           return attachOperatorLogResolution(
             attachDevLogResolution(
               applyPendingLifecycle(
@@ -1346,6 +1559,7 @@ const plugin = {
                 event.toolCallId,
                 pendingCall,
                 pendingMeta,
+                reviewCards,
               ),
               plan,
               pendingCall,
@@ -1353,7 +1567,7 @@ const plugin = {
             ),
             plan,
             api.logger,
-            config.feedbackMode === "submit",
+            live.feedbackMode === "submit",
           );
         } catch (err) {
           api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);
@@ -1496,9 +1710,10 @@ const plugin = {
       `[sentrook-openclaw] registered (url=${config.url}, ` +
         `${scanAuthSummary}, timeout=${config.timeoutMs}ms, ` +
         `hook=${resolveBeforeToolCallTimeoutMs(config.timeoutMs)}ms, ` +
-        `onScanError=${config.onScanError}, ` +
-        `feedback=${config.feedbackMode}, ` +
+        `onScanError=${live.onScanError}, ` +
+        `feedback=${live.feedbackMode}, ` +
         `sensitivity=${live.sensitivity}, ` +
+        `unattendedSensitivity=${live.unattendedSensitivity}, ` +
         `sanitization=on, approval: ${approvalSummary})`,
     );
   },

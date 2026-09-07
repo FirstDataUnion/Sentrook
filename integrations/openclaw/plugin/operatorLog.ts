@@ -13,9 +13,11 @@ import {
   closeSync,
   constants,
   fchmodSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -39,6 +41,10 @@ export const OPERATOR_LOG_SCHEMA = "sentrook.operator.log/v1";
 export const DEFAULT_OPERATOR_LOG_NAME = "sentrook-operator.jsonl";
 export const DEFAULT_MAX_AGE_DAYS = 14;
 export const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+/** Newest scan/scan_error rows the dashboard timeline loads. */
+export const DEFAULT_TIMELINE_SCAN_LIMIT = 100;
+const JSONL_TAIL_CHUNK = 64 * 1024;
+const NEWLINE = 0x0a;
 
 export type OperatorEventKind = "scan" | "result" | "resolution" | "scan_error";
 
@@ -192,6 +198,18 @@ function appendLineSync(path: string, line: string): void {
   }
 }
 
+function parseOperatorLine(line: string): OperatorLogEvent | undefined {
+  const trimmed = line.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as OperatorLogEvent;
+    if (parsed && typeof parsed === "object" && parsed.event) return parsed;
+  } catch {
+    /* skip malformed */
+  }
+  return undefined;
+}
+
 function readJsonl(path: string): OperatorLogEvent[] {
   let raw = "";
   try {
@@ -201,15 +219,162 @@ function readJsonl(path: string): OperatorLogEvent[] {
   }
   const out: OperatorLogEvent[] = [];
   for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const parsed = JSON.parse(line) as OperatorLogEvent;
-      if (parsed && typeof parsed === "object" && parsed.event) out.push(parsed);
-    } catch {
-      /* skip malformed */
-    }
+    const parsed = parseOperatorLine(line);
+    if (parsed) out.push(parsed);
   }
   return out;
+}
+
+/**
+ * Walk a JSONL file from EOF (newest first). ``visit`` returning false stops.
+ * Handles lines larger than the read chunk.
+ */
+export function forEachJsonlFromEnd(
+  filePath: string,
+  visit: (event: OperatorLogEvent) => boolean,
+  chunkBytes: number = JSONL_TAIL_CHUNK,
+): void {
+  let fd: number;
+  try {
+    fd = openSync(filePath, constants.O_RDONLY);
+  } catch {
+    return;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    if (size <= 0) return;
+    const chunk = Math.max(1, chunkBytes);
+    let pos = size;
+    let newerCarry = Buffer.alloc(0);
+    while (pos > 0) {
+      const n = Math.min(chunk, pos);
+      pos -= n;
+      const buf = Buffer.alloc(n);
+      const got = readSync(fd, buf, 0, n, pos);
+      const olderChunk = got === n ? buf : buf.subarray(0, got);
+      const joined = Buffer.concat([olderChunk, newerCarry]);
+      const firstNl = joined.indexOf(NEWLINE);
+      if (firstNl === -1) {
+        newerCarry = joined;
+        continue;
+      }
+      const rest = joined.subarray(firstNl + 1);
+      const complete: Buffer[] = [];
+      let start = 0;
+      for (let i = 0; i < rest.length; i++) {
+        if (rest[i] === NEWLINE) {
+          complete.push(rest.subarray(start, i));
+          start = i + 1;
+        }
+      }
+      if (start < rest.length) complete.push(rest.subarray(start));
+      for (let i = complete.length - 1; i >= 0; i--) {
+        const event = parseOperatorLine(complete[i]!.toString("utf8"));
+        if (event && !visit(event)) return;
+      }
+      newerCarry = joined.subarray(0, firstNl);
+    }
+    const event = parseOperatorLine(newerCarry.toString("utf8"));
+    if (event) visit(event);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function operatorLogPaths(config: OperatorLogConfig): string[] {
+  return [config.path, `${config.path}.1`];
+}
+
+/**
+ * Newest-first events from the live JSONL then ``.1``, stopping after
+ * ``scanLimit`` scan / scan_error rows. Resolution and result lines closer
+ * to EOF (written after the scan) are included so the dashboard can join them.
+ */
+export function tailOperatorLog(
+  config: OperatorLogConfig,
+  opts: { scanLimit?: number; chunkBytes?: number } = {},
+): OperatorLogEvent[] {
+  const limit = Math.max(1, opts.scanLimit ?? DEFAULT_TIMELINE_SCAN_LIMIT);
+  const out: OperatorLogEvent[] = [];
+  let scans = 0;
+  for (const path of operatorLogPaths(config)) {
+    let stop = false;
+    forEachJsonlFromEnd(
+      path,
+      (event) => {
+        out.push(event);
+        if (event.event === "scan" || event.event === "scan_error") {
+          scans += 1;
+          if (scans >= limit) {
+            stop = true;
+            return false;
+          }
+        }
+        return true;
+      },
+      opts.chunkBytes,
+    );
+    if (stop) break;
+  }
+  return out;
+}
+
+function firstOperatorEvent(path: string): OperatorLogEvent | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY);
+  } catch {
+    return undefined;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    if (size <= 0) return undefined;
+    const buf = Buffer.alloc(Math.min(JSONL_TAIL_CHUNK, size));
+    const got = readSync(fd, buf, 0, buf.length, 0);
+    const slice = buf.subarray(0, got);
+    const nl = slice.indexOf(NEWLINE);
+    const line = (nl === -1 ? slice : slice.subarray(0, nl)).toString("utf8");
+    return parseOperatorLine(line);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function lastOperatorEvent(path: string): OperatorLogEvent | undefined {
+  let found: OperatorLogEvent | undefined;
+  forEachJsonlFromEnd(path, (event) => {
+    found = event;
+    return false;
+  });
+  return found;
+}
+
+function countNewlines(path: string): number {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY);
+  } catch {
+    return 0;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    if (size <= 0) return 0;
+    const buf = Buffer.alloc(JSONL_TAIL_CHUNK);
+    let pos = 0;
+    let lines = 0;
+    while (pos < size) {
+      const n = Math.min(buf.length, size - pos);
+      const got = readSync(fd, buf, 0, n, pos);
+      if (got <= 0) break;
+      for (let i = 0; i < got; i++) {
+        if (buf[i] === NEWLINE) lines += 1;
+      }
+      pos += got;
+    }
+    return lines;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function pendingCommand(event: OperatorLogEvent): string {
@@ -338,21 +503,42 @@ export function purgeOperatorLog(
   return dropped;
 }
 
+/** Delete the live JSONL and the rotated `.1` copy. Returns lines that were present. */
+export function wipeOperatorLog(
+  config: OperatorLogConfig,
+  logger?: LoggerLike,
+): number {
+  const before = operatorLogStats(config).lines;
+  for (const path of [config.path, `${config.path}.1`]) {
+    try {
+      unlinkSync(path);
+    } catch {
+      /* missing */
+    }
+  }
+  if (before > 0) {
+    logger?.info(`[sentrook-openclaw] operator log cleared (${before} lines)`);
+  }
+  return before;
+}
+
 export function operatorLogStats(config: OperatorLogConfig): OperatorLogStats {
-  const events = queryOperatorLog(config);
+  const live = config.path;
+  const rotated = `${live}.1`;
   let bytes = 0;
   try {
-    bytes = statSync(config.path).size;
+    bytes = statSync(live).size;
   } catch {
     bytes = 0;
   }
-  const oldest = events.length ? events[events.length - 1] : null;
-  const newest = events.length ? events[0] : null;
+  const lines = countNewlines(live) + countNewlines(rotated);
+  const newest = lastOperatorEvent(live) ?? lastOperatorEvent(rotated);
+  const oldest = firstOperatorEvent(rotated) ?? firstOperatorEvent(live);
   return {
-    path: config.path,
+    path: live,
     enabled: config.enabled,
     bytes,
-    lines: events.length,
+    lines,
     oldestTs: oldest?.ts ?? null,
     newestTs: newest?.ts ?? null,
   };
@@ -466,6 +652,7 @@ export function buildScanOperatorEvent(input: {
   hookResult?: OperatorHookResult;
   allowlistHit?: boolean;
   skipReason?: "allowlist" | "quiet" | "lenient" | "allow-all";
+  allowlistLabel?: string;
   coPendingIds?: string[];
   unattended?: boolean;
   contributeEligible?: boolean;
@@ -499,6 +686,9 @@ export function buildScanOperatorEvent(input: {
     hook: {
       action: hookAction(input.hookResult),
       ...(skipReason ? { skip_reason: skipReason } : {}),
+      ...(input.allowlistLabel
+        ? { allowlist_label: scrubSecretsAndPii(input.allowlistLabel) }
+        : {}),
     },
     effect: scanEffect(input.hookResult),
     label_source: labelSource,

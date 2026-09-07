@@ -30,6 +30,7 @@ export interface ScanErrorHookResult {
     timeoutMs: number;
     timeoutBehavior: "allow" | "deny";
     allowedDecisions: Array<"allow-once" | "deny">;
+    pluginId?: string;
   };
 }
 
@@ -177,6 +178,7 @@ export function scanErrorToHookResult(
           timeoutMs: opts.interactiveTimeoutMs,
           timeoutBehavior: "deny",
           allowedDecisions: ["allow-once", "deny"],
+          pluginId: "sentrook-openclaw",
         },
       };
     }
@@ -212,6 +214,7 @@ export function scanErrorToHookResult(
       timeoutMs: opts.interactiveTimeoutMs,
       timeoutBehavior: "deny",
       allowedDecisions: ["allow-once", "deny"],
+      pluginId: "sentrook-openclaw",
     },
   };
 }
