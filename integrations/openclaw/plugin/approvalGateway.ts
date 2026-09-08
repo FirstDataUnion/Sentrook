@@ -21,8 +21,21 @@ export type ApprovalListItem = {
     toolCallId?: string | null;
     toolName?: string | null;
     title?: string | null;
+    description?: string | null;
+    severity?: string | null;
+    timeoutMs?: number | null;
   };
 };
+
+export const SENTROOK_PLUGIN_ID = "sentrook-openclaw";
+
+export function isSentrookApproval(
+  item: ApprovalListItem,
+  pluginId = SENTROOK_PLUGIN_ID,
+): boolean {
+  const id = item.request?.pluginId;
+  return !id || id === pluginId;
+}
 
 export type ResolveDecision = "allow-once" | "allow-always" | "deny";
 

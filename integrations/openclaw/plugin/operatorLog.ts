@@ -573,14 +573,20 @@ let cachedPluginVersion: string | undefined;
 
 export function operatorPluginVersion(): string {
   if (cachedPluginVersion) return cachedPluginVersion;
-  try {
-    const pkg = JSON.parse(
-      readFileSync(new URL("./package.json", import.meta.url), "utf8"),
-    ) as { version?: string };
-    cachedPluginVersion = typeof pkg.version === "string" ? pkg.version : "unknown";
-  } catch {
-    cachedPluginVersion = "unknown";
+  const candidates = [new URL("./package.json", import.meta.url), new URL("../package.json", import.meta.url)];
+  for (const url of candidates) {
+    try {
+      const pkg = JSON.parse(readFileSync(url, "utf8")) as { name?: string; version?: string };
+      if (pkg.name !== "@firstdataunion/sentrook-openclaw") continue;
+      if (typeof pkg.version === "string" && pkg.version) {
+        cachedPluginVersion = pkg.version;
+        return cachedPluginVersion;
+      }
+    } catch {
+      /* try the next candidate */
+    }
   }
+  cachedPluginVersion = "unknown";
   return cachedPluginVersion;
 }
 
@@ -814,4 +820,29 @@ export function buildResultOperatorEvent(input: {
     plugin_version: operatorPluginVersion(),
     rules_version: DEFAULT_RULES.version,
   };
+}
+
+/** Newest waiting ``requireApproval`` scan for a tool call, or undefined if it already resolved. */
+export function waitingOperatorReview(
+  log: OperatorLogConfig,
+  toolCallId: string,
+): OperatorLogEvent | undefined {
+  const id = toolCallId.trim();
+  if (!id) return undefined;
+  let found: OperatorLogEvent | undefined;
+  forEachJsonlFromEnd(log.path, (event) => {
+    const meta = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
+    const tid = typeof meta.tool_call_id === "string" ? meta.tool_call_id : "";
+    if (tid !== id) return true;
+    if (event.event === "resolution" || event.event === "result") return false;
+    if (event.event === "scan" || event.event === "scan_error") {
+      const hook = event.hook && typeof event.hook === "object" ? (event.hook as { action?: unknown }) : {};
+      if (hook.action === "requireApproval") {
+        found = event;
+        return false;
+      }
+    }
+    return true;
+  });
+  return found;
 }

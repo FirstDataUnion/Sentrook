@@ -568,7 +568,7 @@ export async function collectAnswersInteractive(
     io.log("");
     io.log("==> Community corpus");
     io.log("    When you allow-once or deny a Sentrook review, a sanitized trajectory");
-    io.log("    example can be submitted to the community corpus (via hosted Sentrook");
+    io.log("    example can be submitted to the community corpus (via Sentrook");
     io.log("    → Rookery). Humans still approve before anything is published.");
     io.log("    Secrets/PII are redacted; you can change this later in openclaw.json.");
     contributeCorpus = await io.confirm(
@@ -583,7 +583,7 @@ export async function collectAnswersInteractive(
   if (!clientId || !clientSecret) {
     io.log("");
     io.log("==> Scan auth (OIDC client credentials)");
-    io.log("    To use the hosted Sentrook instance, you need a free FIDU membership");
+    io.log("    To use Sentrook, you need a free FIDU membership");
     io.log("    with a Sentrook OAuth client.");
     io.log("");
     io.log(`    Visit ${DEFAULT_IDENTITY_URL} , and log in or create an`);
@@ -603,7 +603,7 @@ export async function collectAnswersInteractive(
     io.log("==> When Sentrook cannot scan (unreachable, timeout, rate-limit, auth)");
     io.log("    allow  = continue without scanning (auth failures still block)");
     io.log("    deny   = block the tool");
-    io.log("    review = ask you first (recommended for hosted HTTPS)");
+    io.log("    review = ask you first (recommended)");
     const raw = await io.prompt(`onScanError [${onScanError}]`, onScanError);
     onScanError = parseOnScanError(raw, onScanError);
   }

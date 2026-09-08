@@ -29,9 +29,9 @@ export function quietHint(untilMs: number | null | undefined, now: number): stri
 
 export function allowAllHint(mode: AllowAllMode): string {
   if (mode === "on") {
-    return "Skipping hosted reviews for every attended session until you turn this off or the gateway restarts. Cards already waiting are not resolved.";
+    return "Skipping reviews for every attended session until you turn this off or the gateway restarts. Cards already waiting are not resolved.";
   }
-  return "No gateway-wide allow-all. Hosted reviews still prompt unless quiet or a per-session allow-all is on. Off also clears every session allow-all flag.";
+  return "No gateway-wide allow-all. Reviews still prompt unless quiet or a per-session allow-all is on. Off also clears every session allow-all flag.";
 }
 
 export function feedbackHint(mode: FeedbackMode): string {
@@ -61,17 +61,17 @@ export function sensitivityHint(scope: SensitivityScope, selected: Sensitivity):
       case "warning":
         return "Auto-accept info and warning reviews on cron and subagent runs. Critical still waits.";
       case "critical":
-        return "Auto-accept every hosted review on cron and subagent runs, including critical. Nobody will be asked. Blocks and scan errors still stop.";
+        return "Auto-accept every review on cron and subagent runs, including critical. Nobody will be asked. Blocks and scan errors still stop.";
     }
   }
   switch (selected) {
     case "strict":
-      return "Prompt every hosted review while you are present. Nothing is auto-accepted.";
+      return "Prompt every review while you are present. Nothing is auto-accepted.";
     case "info":
       return "Auto-accept info reviews. Warning and critical still wait for you.";
     case "warning":
       return "Auto-accept info and warning reviews. Critical still waits for you.";
     case "critical":
-      return "Auto-accept every hosted review while you are present, including critical. Blocks and scan errors still stop.";
+      return "Auto-accept every review while you are present, including critical. Blocks and scan errors still stop.";
   }
 }

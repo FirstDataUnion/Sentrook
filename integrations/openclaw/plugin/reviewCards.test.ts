@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 
+import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
 import { ReviewCardStore, snapshotReviewPrior } from "./reviewCards.ts";
 
 const stores: ReviewCardStore[] = [];
@@ -52,6 +56,26 @@ describe("ReviewCardStore", () => {
     assert.equal(store.size(), 1);
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(store.size(), 0);
+  });
+
+  it("persists so another store instance can list the same card", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-pending-"));
+    const persistPath = join(dir, "sentrook-pending.json");
+    try {
+      const writer = new ReviewCardStore({ persistPath });
+      stores.push(writer);
+      writer.put(sample({ args: { command: "openclaw plugins update brave discord" } }));
+      const raw = readFileSync(persistPath, "utf8");
+      assert.match(raw, /openclaw plugins update brave discord/);
+      const reader = new ReviewCardStore({ persistPath });
+      stores.push(reader);
+      assert.equal(reader.list().length, 1);
+      assert.equal(reader.list()[0]?.args.command, "openclaw plugins update brave discord");
+      writer.take("t1");
+      assert.equal(reader.list().length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

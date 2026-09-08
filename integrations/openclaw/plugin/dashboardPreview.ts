@@ -242,7 +242,7 @@ function restOfState(now: number): Omit<DashboardViewState, "pending" | "resolve
         tool: "browser",
         command: '{"url":"https://intranet.example/admin"}',
         args: { url: "https://intranet.example/admin" },
-        summary: "Hosted /scan timed out",
+        summary: "/scan timed out",
         sessionKey: "main",
         errorKind: "timeout",
         errorDetail: "scan aborted after 14s",
@@ -300,8 +300,8 @@ function restOfState(now: number): Omit<DashboardViewState, "pending" | "resolve
         pending: 1,
       },
       {
-        sessionId: "b91e",
-        sessionKey: "discord:guild:ops",
+        sessionId: "b91e4c22-7d18-4a01-bb44-9c1f0e2a7d33",
+        sessionKey: "agent:main:discord:channel:1384729102847192847",
         allowAll: true,
         quietUntilMs: null,
         pending: 0,
@@ -311,6 +311,41 @@ function restOfState(now: number): Omit<DashboardViewState, "pending" | "resolve
         sessionKey: "cron:nightly",
         allowAll: false,
         quietUntilMs: now + 25 * 60_000,
+        pending: 0,
+      },
+      {
+        sessionId: "c0ffee00-1111-4e2a-9c0d-aaaaaaaaaaaa",
+        sessionKey: "agent:main:telegram:direct:482910338821",
+        allowAll: false,
+        quietUntilMs: null,
+        pending: 0,
+      },
+      {
+        sessionId: "deadbeef-2222-4e2a-9c0d-bbbbbbbbbbbb",
+        sessionKey: "agent:work:whatsapp:group:120363401928473829",
+        allowAll: false,
+        quietUntilMs: null,
+        pending: 2,
+      },
+      {
+        sessionId: "feedface-3333-4e2a-9c0d-cccccccccccc",
+        sessionKey: "agent:main:slack:channel:C07Q1ABCDEF",
+        allowAll: false,
+        quietUntilMs: null,
+        pending: 0,
+      },
+      {
+        sessionId: "0badf00d-4444-4e2a-9c0d-dddddddddddd",
+        sessionKey: "agent:ops:discord:thread:1384729102847192847:1384991002003004001",
+        allowAll: false,
+        quietUntilMs: null,
+        pending: 0,
+      },
+      {
+        sessionId: "1cec01d0-5555-4e2a-9c0d-eeeeeeeeeeee",
+        sessionKey: "subagent:review-pr-1842",
+        allowAll: false,
+        quietUntilMs: null,
         pending: 0,
       },
     ],
@@ -340,6 +375,7 @@ function restOfState(now: number): Omit<DashboardViewState, "pending" | "resolve
         createdAt: "2026-08-18T00:00:00.000Z",
       },
     ],
+    setupNeeded: false,
   };
 }
 
@@ -382,10 +418,27 @@ function empty(): DashboardViewState {
     },
     allowlist: [],
     resolveAvailable: false,
+    setupNeeded: false,
+  };
+}
+
+function unconfigured(): DashboardViewState {
+  return {
+    ...empty(),
+    feedbackMode: "off",
+    setupNeeded: true,
   };
 }
 
 let state: DashboardViewState = populated();
+let fixture: "populated" | "many" | "empty" | "unconfigured" = "populated";
+
+function fixtureView(): DashboardViewState {
+  if (fixture === "unconfigured") return unconfigured();
+  if (fixture === "empty") return empty();
+  if (fixture === "many") return many();
+  return state;
+}
 
 async function renderHtml(view: DashboardViewState): Promise<string> {
   const href = `${pathToFileURL(join(import.meta.dirname, "dashboardPage.ts")).href}?t=${Date.now()}`;
@@ -403,6 +456,7 @@ async function renderHtml(view: DashboardViewState): Promise<string> {
     <a href="/reset" style="color:#fff">one review</a>
     <a href="/many" style="color:#fff">many</a>
     <a href="/?empty=1" style="color:#fff">empty</a>
+    <a href="/unconfigured" style="color:#fff">unconfigured</a>
   </div>`;
   return html.replace(/<body([^>]*)>/, `<body$1>\n${banner}`);
 }
@@ -418,13 +472,17 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   send(res, status, JSON.stringify(body), "application/json; charset=utf-8");
 }
 
-function route(req: IncomingMessage): { rest: string; empty: boolean } {
+function route(req: IncomingMessage): { rest: string; empty: boolean; unconfigured: boolean } {
   const url = new URL(req.url ?? "/", `http://${HOST}`);
   let pathname = url.pathname;
   if (pathname.length > 1 && pathname.endsWith("/")) pathname = pathname.slice(0, -1);
   if (pathname === "/sentrook") pathname = "";
   else if (pathname.startsWith("/sentrook/")) pathname = pathname.slice("/sentrook".length);
-  return { rest: pathname || "/", empty: url.searchParams.get("empty") === "1" };
+  return {
+    rest: pathname || "/",
+    empty: url.searchParams.get("empty") === "1",
+    unconfigured: url.searchParams.get("unconfigured") === "1",
+  };
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -450,24 +508,31 @@ const server = createServer((req, res) => {
   void (async () => {
     const method = (req.method ?? "GET").toUpperCase();
     const { rest, empty: emptyQuery } = route(req);
-    const view = emptyQuery ? empty() : state;
 
     if (method === "GET" && rest === "/reset") {
+      fixture = "populated";
       state = populated();
       redirect(res, "/");
       return;
     }
     if (method === "GET" && rest === "/many") {
+      fixture = "many";
       state = many();
       redirect(res, "/");
       return;
     }
+    if (method === "GET" && rest === "/unconfigured") {
+      fixture = "unconfigured";
+      send(res, 200, await renderHtml(unconfigured()), "text/html; charset=utf-8");
+      return;
+    }
     if (method === "GET" && (rest === "/" || rest === "")) {
-      send(res, 200, await renderHtml(view), "text/html; charset=utf-8");
+      if (emptyQuery) fixture = "empty";
+      send(res, 200, await renderHtml(fixtureView()), "text/html; charset=utf-8");
       return;
     }
     if (method === "GET" && rest === "/api/state") {
-      sendJson(res, 200, view);
+      sendJson(res, 200, fixtureView());
       return;
     }
     if (emptyQuery) {
@@ -545,6 +610,38 @@ const server = createServer((req, res) => {
       sendJson(res, 200, { ok: true, preview: true });
       return;
     }
+    if (method === "POST" && rest === "/api/setup") {
+      const body = await readJson(req);
+      const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
+      const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";
+      if (!clientId || !clientSecret) {
+        sendJson(res, 400, { ok: false, error: "client_id and client_secret are required" });
+        return;
+      }
+      state = { ...state, setupNeeded: false };
+      if (body.feedbackMode === "off" || body.feedbackMode === "submit") {
+        state.feedbackMode = body.feedbackMode;
+      }
+      if (body.onScanError === "allow" || body.onScanError === "deny" || body.onScanError === "review") {
+        state.onScanError = body.onScanError;
+      }
+      fixture = "populated";
+      sendJson(res, 200, { ok: true, minted: true, persisted: true, preview: true });
+      return;
+    }
+    if (method === "POST" && rest === "/api/verify") {
+      sendJson(res, 200, {
+        ok: true,
+        url: "https://sentrook.firstdataunion.org",
+        checks: [
+          { name: "plugin config", ok: true, detail: "preview fixture" },
+          { name: "scan credentials", ok: true, detail: "preview fixture" },
+          { name: "scan service health", ok: true, detail: "preview fixture" },
+          { name: "OIDC token mint", ok: true, detail: "preview fixture" },
+        ],
+      });
+      return;
+    }
     sendJson(res, 404, { error: "unknown preview route" });
   })().catch((err) => {
     if (!res.headersSent) {
@@ -558,6 +655,7 @@ server.listen(PORT, HOST, () => {
     `Sentrook dashboard preview  http://${HOST}:${PORT}\n` +
       `  many reviews              http://${HOST}:${PORT}/many\n` +
       `  empty state               http://${HOST}:${PORT}/?empty=1\n` +
+      `  unconfigured setup        http://${HOST}:${PORT}/unconfigured\n` +
       `Edit dashboardPage.ts and refresh the browser.\n`,
   );
 });

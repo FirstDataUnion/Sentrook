@@ -21,6 +21,8 @@ import {
   scanErrorHint,
   sensitivityHint,
 } from "./policyCopy.ts";
+import { ACCESS_QUERY, DASHBOARD_TAB_PREFIX } from "./dashboardAuth.ts";
+import { DEFAULT_OIDC_ISSUER } from "./scanEndpoint.ts";
 
 export type DashboardViewState = {
   pending: Array<{
@@ -133,6 +135,7 @@ export type DashboardViewState = {
     createdAt?: string;
   }>;
   resolveAvailable: boolean;
+  setupNeeded?: boolean;
 };
 
 type Severity = "info" | "warning" | "critical";
@@ -230,6 +233,36 @@ function commandExcerpt(command: string, max = 64): string {
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
+/** OpenClaw Control UI plugin-tab cookies authorize GET/HEAD only (CSRF). */
+export const GATEWAY_TAB_WRITE_HINT =
+  "Control UI plugin-tab cookies are GET-only, so this change was not saved. Use /sentrook in chat, or open /sentrook with gateway auth in a full browser tab.";
+
+export const GATEWAY_TAB_READ_HINT =
+  "This Control UI tab can show the dashboard but cannot save settings or resolve reviews. Use /sentrook in chat, or open /sentrook with gateway auth in a full browser tab.";
+
+function errorField(value: unknown, fallback = ""): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object") {
+    const msg = (value as { message?: unknown }).message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  }
+  return fallback;
+}
+
+/** Operator copy for a plugin HTTP JSON error (gateway 401 bodies are `{ error: { message, type } }`). */
+export function formatHttpError(data: unknown, status: number, statusText = ""): string {
+  const rec = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
+  if (status === 401 || status === 403) {
+    if (typeof rec?.error === "string" && rec.error.trim()) return rec.error.trim();
+    return GATEWAY_TAB_WRITE_HINT;
+  }
+  const fromError = errorField(rec?.error);
+  if (fromError) return fromError;
+  const fromMessage = errorField(rec?.message);
+  if (fromMessage) return fromMessage;
+  return statusText.trim() || `HTTP ${status}`;
+}
+
 const DASHBOARD_CSS = `
 :root {
   color-scheme: dark;
@@ -285,6 +318,14 @@ h1 {
   font-size: 0.98rem; font-weight: 700; letter-spacing: 0.24em; margin: 0;
   text-transform: uppercase; line-height: 1;
 }
+.ver {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
 .meta { margin-left: auto; display: flex; align-items: center; gap: 1rem; }
 .tabs { display: flex; flex-wrap: wrap; gap: 0.1rem; flex: 1; align-self: stretch; }
 .tabs a {
@@ -304,14 +345,41 @@ h1 {
 .count.critical { background: var(--critical-bg); color: var(--critical); }
 #flash:empty { display: none; }
 #flash:not(:empty) {
-  position: fixed; top: 0.85rem; right: 0.85rem; z-index: 50;
-  max-width: min(28rem, calc(100vw - 1.7rem));
-  padding: 0.7rem 0.95rem; border-radius: 8px;
+  position: fixed; left: 50%; top: 0.85rem; transform: translate(-50%, 0);
+  z-index: 80; width: min(36rem, calc(100vw - 2rem));
+  padding: 1rem 1.15rem; border-radius: 10px;
   border: 1px solid var(--line); background: var(--card); color: var(--fg);
-  font-size: 0.85rem; line-height: 1.4; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  font-size: 0.95rem; line-height: 1.45; text-align: center;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  cursor: pointer;
 }
-#flash.flash-error { border-color: var(--critical); background: var(--critical-bg); color: #ffc1c5; }
-#flash.flash-ok { border-color: var(--accent); background: var(--accent-dim); color: var(--fg); }
+#flash.flash-error { border-color: var(--critical); background: #4a1822; color: #ffc1c5; }
+#flash.flash-ok { border-color: var(--accent); background: #0d3a4d; color: var(--fg); }
+#confirm[hidden] { display: none !important; }
+#confirm {
+  position: fixed; inset: 0; z-index: 90; display: flex; align-items: flex-start;
+  justify-content: center; padding: 12vh 1rem 1rem; background: rgba(0, 0, 0, 0.45);
+}
+#confirm .confirm-card {
+  width: min(36rem, 100%); padding: 1.1rem 1.2rem 1rem; border-radius: 10px;
+  border: 1px solid var(--warning-line); background: var(--card); color: var(--fg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+#confirm .confirm-card p { margin: 0 0 0.9rem; font-size: 0.95rem; line-height: 1.45; }
+#confirm .confirm-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+.iframe-note, .iframe-note-url { display: none; }
+body.in-frame .iframe-note {
+  display: block; margin: 0; padding: 0.65rem 1.5rem 0.35rem;
+  border-bottom: 0; background: var(--warning-bg);
+  color: var(--fg); font-size: 0.86rem; line-height: 1.45;
+}
+body.in-frame .iframe-note-url {
+  display: block; margin: 0; padding: 0 1.5rem 0.65rem; border: 0;
+  border-bottom: 1px solid var(--warning-line); background: var(--warning-bg);
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 0.78rem;
+  color: var(--muted); letter-spacing: 0;
+}
+.iframe-note code { font-size: 0.86em; }
 .page {
   width: 100%;
   max-width: 110rem;
@@ -351,6 +419,24 @@ h1 {
 }
 .empty h2 { margin: 0.4rem 0 0.5rem; font-size: 1.5rem; font-weight: 650; letter-spacing: -0.02em; }
 .empty p { margin: 0 auto; max-width: 32rem; color: var(--muted); }
+.setup {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 1.75rem 1.5rem; max-width: 38rem; text-align: left;
+}
+.setup .empty-kicker { margin: 0; }
+.setup h2 { margin: 0.4rem 0 0.75rem; font-size: 1.5rem; font-weight: 650; letter-spacing: -0.02em; }
+.setup .setup-copy { margin: 0 0 0.85rem; color: var(--muted); font-size: 0.95rem; line-height: 1.55; }
+.setup .setup-copy a { color: var(--accent); }
+.setup .lead { margin: 0 0 0.5rem; color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+.setup-fields { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 1.15rem; }
+.setup .field input { width: 100%; max-width: 100%; }
+.setup-actions { margin-top: 1.15rem; }
+.verify-result { margin-top: 0.85rem; padding: 0.7rem 0.85rem; background: var(--inset); border-radius: 8px; }
+.verify-result ul { margin: 0; padding: 0; list-style: none; }
+.verify-result li { margin: 0.35rem 0 0; font-size: 0.88rem; line-height: 1.45; color: var(--muted); }
+.verify-result li:first-child { margin-top: 0; }
+.verify-result li.ok { color: var(--ok); }
+.verify-result li.fail { color: var(--critical); }
 .review {
   background: var(--card); border: 1px solid var(--line); border-left-width: 4px;
   border-radius: var(--radius); margin: 0 0 1.5rem; overflow: hidden;
@@ -649,6 +735,35 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; vertical-align: top; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--line); }
 th { font-size: 0.72rem; color: var(--faint); font-weight: 650; }
 tr:last-child td { border-bottom: 0; }
+.sess-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+.sess-row {
+  display: flex; flex-wrap: wrap; gap: 0.65rem 1rem;
+  align-items: flex-start; justify-content: space-between;
+  background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.75rem 0.9rem;
+}
+.sess-id { flex: 1 1 14rem; min-width: 0; }
+.sess-key {
+  display: block;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-size: 0.82rem;
+}
+.sess-meta { display: block; margin-top: 0.22rem; color: var(--faint); font-size: 0.78rem; }
+.sess-meta code { font-size: inherit; overflow-wrap: anywhere; word-break: break-all; }
+.sess-actions { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.sess-more { margin: 0.45rem 0 0; }
+.sess-more > summary {
+  cursor: pointer; list-style: none; color: var(--accent);
+  font-size: 0.88rem; font-weight: 550; padding: 0.4rem 0.1rem;
+}
+.sess-more > summary::-webkit-details-marker { display: none; }
+.sess-more > summary::before { content: "▸ "; color: var(--faint); }
+.sess-more[open] > summary::before { content: "▾ "; }
+.sess-more-open { display: none; }
+.sess-more[open] > summary .sess-more-closed { display: none; }
+.sess-more[open] > summary .sess-more-open { display: inline; }
+.sess-more .sess-list { margin-top: 0.55rem; }
 pre.lead { max-height: none; overflow: visible; margin: 0.2rem 0; background: var(--inset); padding: 0.5rem 0.6rem; border-radius: 8px; }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.8rem; }
 .allow-kinds {
@@ -697,7 +812,7 @@ pre.lead { max-height: none; overflow: visible; margin: 0.2rem 0; background: va
 .allow-meta { margin: 0.28rem 0 0; color: var(--faint); font-size: 0.78rem; }
 .allow-list code { font-size: 0.85rem; }
 .log-meta { color: var(--muted); }
-.settings { display: flex; flex-direction: column; gap: 1rem; max-width: 52rem; }
+.settings { display: flex; flex-direction: column; gap: 1rem; max-width: 72rem; }
 .set-card {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 1.15rem 1.25rem;
@@ -785,35 +900,43 @@ pre.lead { max-height: none; overflow: visible; margin: 0.2rem 0; background: va
 
 const DASHBOARD_JS = `
 (function () {
+  try {
+    if (window.parent !== window) document.body.classList.add("in-frame");
+  } catch {
+    document.body.classList.add("in-frame");
+  }
+  const panelUrl = document.querySelector("[data-panel-url]");
+  if (panelUrl instanceof HTMLInputElement) {
+    panelUrl.value = location.href;
+    panelUrl.addEventListener("focus", () => panelUrl.select());
+    panelUrl.addEventListener("click", () => panelUrl.select());
+  }
   const TABS = ["reviews", "timeline", "allowlist", "settings"];
   const TAB_ALIAS = { sessions: "settings", log: "settings", configure: "settings", "set-sessions": "settings" };
   const SCROLL_STORE = "sentrook-page-scroll";
   const FLASH_STORE = "sentrook-flash";
-  const flashEl = document.getElementById("flash");
+  const GATEWAY_TAB_WRITE_HINT = ${JSON.stringify(GATEWAY_TAB_WRITE_HINT)};
   let flashTimer;
 
+  function flashNode() {
+    return document.getElementById("flash");
+  }
+
   function applyFlash(text, kind) {
-    if (!flashEl) return;
-    flashEl.textContent = text || "";
-    flashEl.className = kind === "error" ? "flash-error" : kind === "ok" ? "flash-ok" : "";
+    const el = flashNode();
+    if (!el) return;
+    el.textContent = text || "";
+    el.className = kind === "error" ? "flash-error" : kind === "ok" ? "flash-ok" : "";
     if (flashTimer) clearTimeout(flashTimer);
     if (!text) return;
     flashTimer = setTimeout(() => {
-      flashEl.textContent = "";
-      flashEl.className = "";
-    }, kind === "error" ? 12000 : 5000);
+      el.textContent = "";
+      el.className = "";
+    }, kind === "error" ? 14000 : 5000);
   }
 
   function flash(m, kind) {
     applyFlash(String(m || ""), kind);
-  }
-
-  function rememberFlash(text, kind) {
-    try {
-      sessionStorage.setItem(FLASH_STORE, JSON.stringify({ text: String(text), kind: kind || "" }));
-    } catch {
-      /* private mode / iframe */
-    }
   }
 
   function restoreFlash() {
@@ -833,46 +956,80 @@ const DASHBOARD_JS = `
     return page instanceof HTMLElement ? page : null;
   }
 
+  let savedScroll = null;
+
   function savePageScroll() {
     const page = pageEl();
     if (!page) return;
+    savedScroll = { hash: location.hash, top: page.scrollTop };
     try {
-      sessionStorage.setItem(SCROLL_STORE, JSON.stringify({ hash: location.hash, top: page.scrollTop }));
+      sessionStorage.setItem(SCROLL_STORE, JSON.stringify(savedScroll));
     } catch {
       /* private mode / iframe */
     }
   }
 
   function restorePageScroll() {
+    let saved = savedScroll;
+    savedScroll = null;
     try {
       const raw = sessionStorage.getItem(SCROLL_STORE);
-      if (!raw) return false;
-      sessionStorage.removeItem(SCROLL_STORE);
-      const saved = JSON.parse(raw);
-      if (!saved || saved.hash !== location.hash) return false;
-      if (location.hash === "#set-sessions") return false;
-      const page = pageEl();
-      const top = Number(saved.top);
-      if (page && Number.isFinite(top)) {
-        page.scrollTop = top;
-        return true;
+      if (raw) {
+        sessionStorage.removeItem(SCROLL_STORE);
+        if (!saved) saved = JSON.parse(raw);
       }
     } catch {
       /* ignore bad store */
     }
+    if (!saved || saved.hash !== location.hash) return false;
+    if (location.hash === "#set-sessions") return false;
+    const page = pageEl();
+    const top = Number(saved.top);
+    if (page && Number.isFinite(top)) {
+      page.scrollTop = top;
+      return true;
+    }
     return false;
   }
 
-  function reloadKeepingScroll() {
-    savePageScroll();
-    location.reload();
+  function errorField(value, fallback) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value && typeof value === "object" && typeof value.message === "string" && value.message.trim()) {
+      return value.message.trim();
+    }
+    return fallback || "";
   }
 
-  function reloadAfter(data) {
-    if (data && data.persisted === false) {
-      rememberFlash(data.error || "Applied now, but not saved to openclaw.json.", "error");
+  function errorFromResponse(data, res) {
+    if (res.status === 401 || res.status === 403) {
+      if (data && typeof data.error === "string" && data.error.trim()) return data.error.trim();
+      return GATEWAY_TAB_WRITE_HINT;
     }
-    reloadKeepingScroll();
+    return errorField(data && data.error, errorField(data && data.message, res.statusText || ("HTTP " + res.status)));
+  }
+
+  function escText(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  async function reloadAfter(data) {
+    if (data && data.persisted === false) {
+      applyFlash(errorField(data.error, "Applied now, but not saved to openclaw.json."), "error");
+    } else {
+      applyFlash("Saved", "ok");
+    }
+  }
+
+  function setPressed(clicked, selector) {
+    if (!(clicked instanceof HTMLElement)) return;
+    const group = clicked.closest("[role='group']") || clicked.parentElement || document;
+    group.querySelectorAll(selector).forEach((btn) => {
+      btn.setAttribute("aria-pressed", btn === clicked ? "true" : "false");
+    });
   }
 
   function resolveTab(id) {
@@ -1036,6 +1193,7 @@ const DASHBOARD_JS = `
     if (key) url.searchParams.set("session", key);
     else url.searchParams.delete("session");
     url.searchParams.delete("q");
+    url.hash = "timeline";
     const panel = document.querySelector('[data-panel="timeline"]');
     if (panel instanceof HTMLElement) {
       panel.setAttribute("data-filter-session", key || "");
@@ -1074,34 +1232,72 @@ const DASHBOARD_JS = `
     });
   }
 
-  async function post(path, body) {
-    const res = await fetch(path, {
+  let ACCESS = (document.body.getAttribute("data-access") || new URLSearchParams(location.search).get(${JSON.stringify(ACCESS_QUERY)}) || "").trim();
+  const TAB_PREFIX = ${JSON.stringify(DASHBOARD_TAB_PREFIX)};
+
+  function apiUrl() {
+    return ACCESS ? TAB_PREFIX + encodeURIComponent(ACCESS) : "/sentrook";
+  }
+
+  async function post(srk, body) {
+    const res = await fetch(apiUrl(), {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body || {}),
+      credentials: "omit",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ _srk: srk, _tok: ACCESS, ...(body || {}) }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (!res.ok) throw new Error(errorFromResponse(data, res));
     return data;
   }
 
   async function postAndReload(path, body) {
-    reloadAfter(await post(path, body));
+    await reloadAfter(await post(path, body));
+  }
+
+  function askConfirm(message) {
+    return new Promise((resolve) => {
+      const box = document.getElementById("confirm");
+      const msg = document.getElementById("confirm-msg");
+      if (!(box instanceof HTMLElement) || !(msg instanceof HTMLElement)) {
+        resolve(true);
+        return;
+      }
+      msg.textContent = message;
+      box.hidden = false;
+      const done = (ok) => {
+        box.hidden = true;
+        box.removeEventListener("click", onClick, true);
+        resolve(ok);
+      };
+      function onClick(e) {
+        const el = e.target;
+        if (!(el instanceof HTMLElement)) return;
+        if (el.closest("[data-confirm-ok]")) { e.preventDefault(); e.stopPropagation(); done(true); }
+        else if (el.closest("[data-confirm-cancel]")) { e.preventDefault(); e.stopPropagation(); done(false); }
+      }
+      box.addEventListener("click", onClick, true);
+    });
   }
 
   async function resolveCard(btn, decision) {
     const card = btn.closest("article.review");
     if (decision === "allow-always" && card && card.getAttribute("data-severity") === "critical") {
-      if (!confirm("Allow always on a critical review? Only confirm if you trust this pattern.")) return;
+      if (!(await askConfirm("Allow always on a critical review? Only confirm if you trust this pattern."))) return;
     }
-    await post("/sentrook/api/resolve", { toolCallId: btn.getAttribute("data-tool"), decision: decision });
-    rememberFlash("Resolved " + decision, "ok");
-    reloadKeepingScroll();
+    await post("resolve", { toolCallId: btn.getAttribute("data-tool"), decision: decision });
+    card?.remove();
+    applyFlash("Resolved " + decision, "ok");
   }
 
   document.addEventListener("click", async (e) => {
     const t = e.target;
     if (!(t instanceof HTMLElement)) return;
+    if (t.id === "flash") {
+      applyFlash("", "");
+      return;
+    }
+    if (t.closest("#confirm")) return;
     try {
       const tab = t.closest("[data-tab]");
       if (tab instanceof HTMLElement && tab.dataset.tab) {
@@ -1156,11 +1352,13 @@ const DASHBOARD_JS = `
         const modeBtn = t.closest("[data-allow-mode]");
         const mode = modeBtn instanceof HTMLElement ? modeBtn.dataset.allowMode : "";
         if (mode !== "off" && mode !== "on") return;
-        await postAndReload("/sentrook/api/policy", { allowAllMode: mode });
+        await postAndReload("policy", { allowAllMode: mode });
+        setPressed(modeBtn, "[data-allow-mode]");
       } else if (t.dataset.quietGlobal) {
-        await postAndReload("/sentrook/api/policy", { globalQuiet: t.dataset.quietGlobal });
+        await postAndReload("policy", { globalQuiet: t.dataset.quietGlobal });
+        setPressed(t, "[data-quiet-global]");
       } else if (t.dataset.policy) {
-        await postAndReload("/sentrook/api/policy", {
+        await postAndReload("policy", {
           sessionId: t.dataset.sid, sessionKey: t.dataset.skey,
           allowAll: t.dataset.policy === "allow-all" ? t.dataset.on === "1" : undefined,
           quiet: t.dataset.policy === "quiet" ? (t.dataset.on === "1" ? "30m" : "off") : undefined,
@@ -1169,38 +1367,98 @@ const DASHBOARD_JS = `
         const scope = t.dataset.sensScope === "unattended" ? "unattended" : "attended";
         if (t.dataset.sens === "critical") {
           const msg = scope === "unattended"
-            ? "Auto-approve every hosted review on cron and subagent runs, including critical? Nobody will be asked. Blocks and scan errors still stop. This persists in openclaw.json."
-            : "Auto-approve every hosted review, including critical ones? Blocks, scan errors, and the unattended floor are separate. This persists in openclaw.json (unlike allow-all).";
-          if (!confirm(msg)) return;
+            ? "Auto-approve every review on cron and subagent runs, including critical? Nobody will be asked. Blocks and scan errors still stop. This persists in openclaw.json."
+            : "Auto-approve every review, including critical ones? Blocks, scan errors, and the unattended floor are separate. This persists in openclaw.json (unlike allow-all).";
+          if (!(await askConfirm(msg))) return;
         }
         const body = scope === "unattended"
           ? { unattendedSensitivity: t.dataset.sens }
           : { sensitivity: t.dataset.sens };
-        await postAndReload("/sentrook/api/policy", body);
+        await postAndReload("policy", body);
+        setPressed(t, t.dataset.sensScope === "unattended" ? "[data-sens-scope='unattended']" : "[data-sens]:not([data-sens-scope='unattended'])");
       } else if (t.dataset.feedback) {
-        await postAndReload("/sentrook/api/policy", { feedbackMode: t.dataset.feedback });
+        await postAndReload("policy", { feedbackMode: t.dataset.feedback });
+        setPressed(t, "[data-feedback]");
       } else if (t.dataset.scanError) {
         if (t.dataset.scanError === "allow") {
-          if (!confirm("Continue tool calls without scanning when Sentrook is unreachable? Auth failures still block.")) return;
+          if (!(await askConfirm("Continue tool calls without scanning when Sentrook is unreachable? Auth failures still block."))) return;
         }
-        await postAndReload("/sentrook/api/policy", { onScanError: t.dataset.scanError });
+        await postAndReload("policy", { onScanError: t.dataset.scanError });
+        setPressed(t, "[data-scan-error]");
       } else if (t.dataset.log === "save") {
         const daysEl = document.querySelector("[data-log-days]");
         const mibEl = document.querySelector("[data-log-mib]");
         const maxAgeDays = daysEl instanceof HTMLInputElement ? Number(daysEl.value) : undefined;
         const mib = mibEl instanceof HTMLInputElement ? Number(mibEl.value) : undefined;
-        await postAndReload("/sentrook/api/log", {
+        await postAndReload("log", {
           maxAgeDays,
           maxBytes: Number.isFinite(mib) ? Math.round(mib * 1024 * 1024) : undefined,
         });
       } else if (t.dataset.log === "purge") {
-        if (!confirm("Drop operator-log lines older than the retention window? This cannot be undone.")) return;
-        await postAndReload("/sentrook/api/log", { purge: "confirm" });
+        if (!(await askConfirm("Drop operator-log lines older than the retention window? This cannot be undone."))) return;
+        await postAndReload("log", { purge: "confirm" });
       } else if (t.dataset.log === "wipe") {
-        if (!confirm("Delete the entire local operator log, including the rotated copy? Timeline will go empty. This cannot be undone.")) return;
-        await postAndReload("/sentrook/api/log", { wipe: "confirm" });
+        if (!(await askConfirm("Delete the entire local operator log, including the rotated copy? Timeline will go empty. This cannot be undone."))) return;
+        await postAndReload("log", { wipe: "confirm" });
       } else if (t.dataset.allowRm) {
-        await postAndReload("/sentrook/api/allowlist/rm", { index: Number(t.dataset.allowRm) });
+        const row = t.closest("li");
+        await post("allowlist/rm", { index: Number(t.dataset.allowRm) });
+        row?.remove();
+        applyFlash("Removed from allowlist", "ok");
+      } else if (t.dataset.setupFeedback) {
+        const group = t.closest("[data-setup-feedback-group]");
+        if (group) {
+          group.querySelectorAll("[data-setup-feedback]").forEach((btn) => {
+            btn.setAttribute("aria-pressed", btn === t ? "true" : "false");
+          });
+        }
+      } else if (t.dataset.setupScanError) {
+        if (t.dataset.setupScanError === "allow") {
+          if (!(await askConfirm("Continue tool calls without scanning when Sentrook is unreachable? Auth failures still block."))) return;
+        }
+        const group = t.closest("[data-setup-scan-error-group]");
+        if (group) {
+          group.querySelectorAll("[data-setup-scan-error]").forEach((btn) => {
+            btn.setAttribute("aria-pressed", btn === t ? "true" : "false");
+          });
+        }
+      } else if (t.dataset.setupSave) {
+        const idEl = document.querySelector("[data-setup-client-id]");
+        const secretEl = document.querySelector("[data-setup-client-secret]");
+        const feedbackBtn = document.querySelector("[data-setup-feedback][aria-pressed='true']");
+        const scanBtn = document.querySelector("[data-setup-scan-error][aria-pressed='true']");
+        const clientId = idEl instanceof HTMLInputElement ? idEl.value : "";
+        const clientSecret = secretEl instanceof HTMLInputElement ? secretEl.value : "";
+        const data = await post("setup", {
+          clientId,
+          clientSecret,
+          feedbackMode: feedbackBtn instanceof HTMLElement ? feedbackBtn.dataset.setupFeedback : "submit",
+          onScanError: scanBtn instanceof HTMLElement ? scanBtn.dataset.setupScanError : "review",
+        });
+        const panel = document.querySelector('[data-panel="reviews"]');
+        if (panel instanceof HTMLElement) {
+          panel.innerHTML = "<div class='section-head'><h2>Identity saved</h2><p>Reload Control UI, or paste this panel URL in a normal browser tab, to load reviews.</p></div>";
+        }
+        applyFlash(
+          data.restartHint
+            ? "Identity accepted this client. Restart the gateway so scans pick up the new credentials."
+            : "Identity accepted this client. Tool calls can scan without a restart in the usual case.",
+          "ok",
+        );
+      } else if (t.dataset.verify) {
+        const box = document.querySelector("[data-verify-result]");
+        const data = await post("verify", {});
+        if (box instanceof HTMLElement) {
+          const checks = Array.isArray(data.checks) ? data.checks : [];
+          box.hidden = false;
+          box.innerHTML = "<ul>" + checks.map((c) => {
+            const name = escText(c && c.name);
+            const detail = escText(c && c.detail);
+            return "<li class='" + (c && c.ok ? "ok" : "fail") + "'>" + (c && c.ok ? "Pass" : "Fail") + " · " + name + " — " + detail + "</li>";
+          }).join("") + "</ul>";
+        }
+        if (data.ok) flash("Connection checks passed.", "ok");
+        else flash("Connection checks failed. See the list below.", "error");
       }
     } catch (err) {
       flash(String(err.message || err), "error");
@@ -1310,32 +1568,12 @@ const DASHBOARD_JS = `
     savePageScroll();
   });
 
-  function pendingKey(state) {
-    const pending = (state.pending || []).map((p) => (p.eventId || "") + ":" + (p.toolCallId || "")).sort().join("|");
-    const hist = (state.history || []).map((h) => {
-      const ok = h.resultOk === true ? "1" : h.resultOk === false ? "0" : "";
-      return (h.id || "") + ":" + (h.resolution || "") + ":" + ok + ":" + (h.decision || "");
-    }).join("|");
-    return pending + "#" + hist;
-  }
-  const seed = document.body.getAttribute("data-pending") || "";
-  let lastPending = seed;
-  async function pollState() {
-    if (document.hidden) return;
-    try {
-      const res = await fetch("/sentrook/api/state", { headers: { accept: "application/json" } });
-      if (!res.ok) return;
-      const state = await res.json();
-      const next = pendingKey(state);
-      if (next === lastPending) return;
-      lastPending = next;
-      persistOpenDetails();
-      reloadKeepingScroll();
-    } catch {
-      /* stay on this render */
-    }
-  }
-  setInterval(pollState, 4000);
+  window.addEventListener("keydown", (e) => {
+    const reloadKey = e.key === "F5" || ((e.metaKey || e.ctrlKey) && (e.key === "r" || e.key === "R"));
+    if (!reloadKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
 })();
 `;
 
@@ -1877,11 +2115,11 @@ function renderReviewCard(
         <button type="button" class="btn-always" data-act="allow-always" data-tool="${escapeHtml(card.toolCallId)}">Allow always</button>
         <button type="button" class="btn-deny" data-act="deny" data-tool="${escapeHtml(card.toolCallId)}">Deny</button>
         <p class="legend">Once = this call. Always = local allowlist (skipped for high-risk shapes). Deny = veto; the claw moves on.</p>
-        <p class="fallback">If buttons fail in the Control UI iframe, use <code>${escapeHtml(approveCmd)}</code> in chat. Control UI iframe cookies are GET-only.</p>
+        <p class="fallback">If allow/deny fails, use <code>${escapeHtml(approveCmd)}</code> in chat.</p>
       </div>`
     : `<div class="decide">
         <p class="legend">Once = this call. Always = local allowlist (skipped for high-risk shapes). Deny = veto; the claw moves on.</p>
-        <p class="fallback">Approve via <code>${escapeHtml(approveCmd)}</code> in chat if these buttons fail (Control UI iframe cookies are GET-only).</p>
+        <p class="fallback">Approve via <code>${escapeHtml(approveCmd)}</code> in chat if these buttons fail.</p>
       </div>`;
 
   return `<article class="review sev-${sev}" id="${escapeHtml(card.eventId)}"
@@ -2006,7 +2244,7 @@ function renderAllowlist(state: DashboardViewState): string {
     .join("\n");
   return `<div class="section-head">
       <h2>Allowlist</h2>
-      <p>Local short-circuit after a hosted <strong>review</strong>. Matching calls skip the prompt; they still go to /scan. Hosted blocks always win.</p>
+      <p>Local short-circuit after a <strong>review</strong>. Matching calls skip the prompt; they still go to /scan. Blocks always win.</p>
     </div>
     <details class="help-fold" id="allow-help">
       <summary>How skeleton and script-bind matchers work</summary>
@@ -2028,6 +2266,46 @@ function renderAllowlist(state: DashboardViewState): string {
     }`;
 }
 
+const SESSION_PREVIEW_LIMIT = 5;
+
+function renderSessionRow(
+  s: DashboardViewState["sessions"][number],
+  now: number,
+): string {
+  const quietOn = Boolean(s.quietUntilMs && s.quietUntilMs > now);
+  const sessionQuiet = quietOn ? quietLeftLabel(s.quietUntilMs, now) : "off";
+  const key = s.sessionKey?.trim() || "—";
+  const id = s.sessionId?.trim() || "";
+  const showId = Boolean(id && id !== key);
+  const pending = s.pending === 1 ? "1 pending" : `${s.pending} pending`;
+  return `<li class="sess-row">
+        <div class="sess-id">
+          <code class="sess-key">${escapeHtml(key)}</code>
+          <span class="sess-meta">${showId ? `<code>${escapeHtml(id)}</code> · ` : ""}${pending}</span>
+        </div>
+        <div class="sess-actions seg">
+          ${segBtn(s.allowAll, `data-policy="allow-all" data-on="${s.allowAll ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"`, s.allowAll ? "Allow-all on" : "Allow-all off")}
+          ${segBtn(quietOn, `data-policy="quiet" data-on="${quietOn ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"`, quietOn ? `Quiet ${sessionQuiet}` : "Quiet 30m")}
+        </div>
+      </li>`;
+}
+
+function renderSessionList(sessions: DashboardViewState["sessions"], now: number): string {
+  if (!sessions.length) {
+    return `<p class="hint">No sessions in the OpenClaw store.</p>`;
+  }
+  const head = sessions.slice(0, SESSION_PREVIEW_LIMIT);
+  const rest = sessions.slice(SESSION_PREVIEW_LIMIT);
+  const headList = `<ul class="sess-list">${head.map((s) => renderSessionRow(s, now)).join("\n")}</ul>`;
+  if (!rest.length) return headList;
+  const n = rest.length;
+  return `${headList}
+        <details class="sess-more" id="sess-more">
+          <summary><span class="sess-more-closed">Show ${n} more session${n === 1 ? "" : "s"}</span><span class="sess-more-open">Show fewer</span></summary>
+          <ul class="sess-list">${rest.map((s) => renderSessionRow(s, now)).join("\n")}</ul>
+        </details>`;
+}
+
 function renderSettings(state: DashboardViewState, now: number): string {
   const mode = allowAllModeOf(state);
   const quietOn = Boolean(state.quietUntilMs && state.quietUntilMs > now);
@@ -2035,21 +2313,6 @@ function renderSettings(state: DashboardViewState, now: number): string {
   const feedback = state.feedbackMode === "off" ? "off" : "submit";
   const scanErr = state.onScanError === "allow" || state.onScanError === "deny" ? state.onScanError : "review";
   const mib = Math.max(1, Math.round(state.log.maxBytes / (1024 * 1024)));
-  const sessions = state.sessions
-    .map((s) => {
-      const quietOn = Boolean(s.quietUntilMs && s.quietUntilMs > now);
-      const sessionQuiet = quietOn ? quietLeftLabel(s.quietUntilMs, now) : "off";
-      return `<tr>
-        <td><code>${escapeHtml(s.sessionKey ?? "—")}</code></td>
-        <td><code>${escapeHtml(s.sessionId ?? "—")}</code></td>
-        <td>${s.pending} pending</td>
-        <td>
-          ${segBtn(s.allowAll, `data-policy="allow-all" data-on="${s.allowAll ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"`, s.allowAll ? "Allow-all on" : "Allow-all off")}
-          ${segBtn(quietOn, `data-policy="quiet" data-on="${quietOn ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"`, quietOn ? `Quiet ${sessionQuiet}` : "Quiet 30m")}
-        </td>
-      </tr>`;
-    })
-    .join("\n");
 
   return `<div class="section-head">
       <h2>Settings</h2>
@@ -2058,7 +2321,7 @@ function renderSettings(state: DashboardViewState, now: number): string {
     <div class="settings">
       <section class="set-card">
         <h3>Attended tool review sensitivity</h3>
-        <p class="lead">Auto-accept hosted reviews at or below the selected severity while you are present. Each step includes every lower level. Blocks and scan errors still stop. Unlike allow-all, this persists across restarts.</p>
+        <p class="lead">Auto-accept reviews at or below the selected severity while you are present. Each step includes every lower level. Blocks and scan errors still stop. Unlike allow-all, this persists across restarts.</p>
         ${renderSensitivityFloor("attended", state.sensitivity)}
       </section>
       <section class="set-card">
@@ -2068,7 +2331,7 @@ function renderSettings(state: DashboardViewState, now: number): string {
       </section>
       <section class="set-card">
         <h3>Allow-all</h3>
-        <p class="lead">Skip future hosted <strong>reviews</strong> without resolving cards already waiting. Never skips block or scan errors. Unattended runs use the unattended sensitivity above, not this switch. Per session Allow-all/Quiet controls can be set in the Per session section below.</p>
+        <p class="lead">Skip future <strong>reviews</strong> without resolving cards already waiting. Never skips block or scan errors. Unattended runs use the unattended sensitivity above, not this switch. Per session Allow-all/Quiet controls can be set in the Per session section below.</p>
         <div class="seg">
           ${segBtn(mode !== "on", `data-allow-mode="off"`, "Off")}
           ${segBtn(mode === "on", `data-allow-mode="on"`, "On for all")}
@@ -2088,13 +2351,8 @@ function renderSettings(state: DashboardViewState, now: number): string {
       </section>
       <section class="set-card" id="set-sessions">
         <h3>Per session</h3>
-        <p class="lead">Allow-all and quiet for a single live session. Extra quiet windows work even if global quiet is off.</p>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>key</th><th>id</th><th></th><th></th></tr></thead>
-            <tbody>${sessions || `<tr><td colspan="4" class="hint">No live sessions.</td></tr>`}</tbody>
-          </table>
-        </div>
+        <p class="lead">OpenClaw sessions from the same store as Control UI. Allow-all and quiet flags are Sentrook’s and stay in memory (cleared on restart / session end). Extra quiet windows work even if global quiet is off.</p>
+        ${renderSessionList(state.sessions, now)}
         ${
           mode === "on"
             ? choiceHint("Global allow-all is on — session allow-all flags are ignored until you switch off.")
@@ -2117,6 +2375,14 @@ function renderSettings(state: DashboardViewState, now: number): string {
           ${segBtn(scanErr === "allow", `data-scan-error="allow" class="set-warn"`, "allow")}
         </div>
         ${choiceHint(scanErrorHint(scanErr))}
+        ${
+          state.setupNeeded
+            ? `<p class="lead" style="margin-top:1rem">Save credentials on Reviews first, then you can test the connection here.</p>`
+            : `<p class="lead" style="margin-top:1rem">Connection</p>
+        <p class="lead">Mint a token against FIDU Identity and ping hosted /health. Same checks as <code>openclaw sentrook verify</code>.</p>
+        <button type="button" data-verify="1">Test connection</button>
+        <div class="verify-result" data-verify-result hidden></div>`
+        }
       </section>
       <section class="set-card">
         <h3>Operator log</h3>
@@ -2140,6 +2406,43 @@ function renderSettings(state: DashboardViewState, now: number): string {
     </div>`;
 }
 
+function renderSetup(state: DashboardViewState): string {
+  const identity = DEFAULT_OIDC_ISSUER;
+  const scanErr =
+    state.onScanError === "allow" || state.onScanError === "deny" ? state.onScanError : "review";
+  return `<div class="setup">
+      <p class="empty-kicker">First-run setup</p>
+      <h2>Connect hosted Sentrook</h2>
+      <p class="setup-copy">To use hosted Sentrook you need a free FIDU membership with a Sentrook OAuth client.</p>
+      <p class="setup-copy">Visit <a href="${escapeHtml(identity)}" target="_blank" rel="noopener noreferrer">${escapeHtml(identity)}</a> — log in or create an account (free membership is all that's required). Use the Identity environment that matches this Sentrook build (prod Identity for prod Sentrook).</p>
+      <p class="setup-copy">On your dashboard, open the Sentrook tab, click Create Credentials, then paste the client_id and client_secret below.</p>
+      <div class="setup-fields">
+        <label class="field"><span>OAuth client_id</span>
+          <input type="text" autocomplete="off" spellcheck="false" data-setup-client-id>
+        </label>
+        <label class="field"><span>OAuth client_secret</span>
+          <input type="password" autocomplete="new-password" spellcheck="false" data-setup-client-secret>
+        </label>
+      </div>
+      <p class="lead" style="margin-top:1.15rem">Submit feedback</p>
+      <div class="seg" data-setup-feedback-group role="group" aria-label="Feedback">
+        ${segBtn(true, `data-setup-feedback="submit"`, "submit")}
+        ${segBtn(false, `data-setup-feedback="off"`, "off")}
+      </div>
+      ${choiceHint(feedbackHint("submit"))}
+      <p class="lead" style="margin-top:1rem">When /scan fails</p>
+      <div class="seg" data-setup-scan-error-group role="group" aria-label="When scan fails">
+        ${segBtn(scanErr === "review", `data-setup-scan-error="review"`, "review")}
+        ${segBtn(scanErr === "deny", `data-setup-scan-error="deny"`, "deny")}
+        ${segBtn(scanErr === "allow", `data-setup-scan-error="allow" class="set-warn"`, "allow")}
+      </div>
+      ${choiceHint(scanErrorHint(scanErr))}
+      <div class="setup-actions">
+        <button type="button" data-setup-save="1">Save and test</button>
+      </div>
+    </div>`;
+}
+
 function renderReviews(state: DashboardViewState, now: number): string {
   const pending = state.pending.slice().sort((a, b) => {
     const rank =
@@ -2151,7 +2454,7 @@ function renderReviews(state: DashboardViewState, now: number): string {
     return `<div class="empty">
       <p class="empty-kicker">Reviews</p>
       <h2>All clear</h2>
-      <p>Nothing waiting. When the claw hits a hosted review, the full command and scan details land here — no channel character limit.</p>
+      <p>Nothing waiting. When a review is needed, the full command and scan details land here — no channel character limit.</p>
     </div>`;
   }
   const jump =
@@ -2177,7 +2480,12 @@ function renderReviews(state: DashboardViewState, now: number): string {
   return `${jump}${cards}`;
 }
 
-export function renderDashboardPage(state: DashboardViewState, now: number = Date.now()): string {
+export function renderDashboardPage(
+  state: DashboardViewState,
+  now: number = Date.now(),
+  access: string = "",
+  version: string = "",
+): string {
   const pendingCount = state.pending.length;
   const worst = state.pending.reduce<Severity | null>((acc, card) => {
     const sev = severityOf(card.scan.review_severity ?? card.scan.decision);
@@ -2197,7 +2505,7 @@ export function renderDashboardPage(state: DashboardViewState, now: number = Dat
   <title>${escapeHtml(title)}</title>
   <style>${DASHBOARD_CSS}</style>
 </head>
-<body data-pending="${escapeHtml(dashboardFingerprint(state))}">
+<body data-pending="${escapeHtml(dashboardFingerprint(state))}" data-access="${escapeHtml(access)}">
   <header class="top">
     <div class="brand">
     <h1>Sentrook</h1>
@@ -2212,17 +2520,31 @@ export function renderDashboardPage(state: DashboardViewState, now: number = Dat
       <a href="#allowlist" data-tab="allowlist">Allowlist</a>
       <a href="#settings" data-tab="settings">Settings</a>
     </nav>
-    <div class="meta">
-    <span id="flash" role="status" aria-live="polite"></span>
-    </div>
+    ${version ? `<p class="ver" title="Plugin version">${escapeHtml(version)}</p>` : ""}
   </header>
+  <p class="iframe-note">This Control UI tab is sandboxed. Switching away can freeze it — reload Control UI if it goes blank. Select the URL below and paste it in a normal browser tab (clipboard is often blocked here). Settings also work via <code>/sentrook</code> in chat.</p>
+  <input class="iframe-note-url" data-panel-url readonly spellcheck="false" />
+  <div id="flash" role="status" aria-live="assertive"></div>
+  <div id="confirm" hidden>
+    <div class="confirm-card">
+      <p id="confirm-msg"></p>
+      <div class="confirm-actions">
+        <button type="button" data-confirm-cancel>Cancel</button>
+        <button type="button" data-confirm-ok>Confirm</button>
+      </div>
+    </div>
+  </div>
   <div class="page">
     <section class="panel" data-panel="reviews">
-      <div class="section-head">
+      ${
+        state.setupNeeded
+          ? renderSetup(state)
+          : `<div class="section-head">
         <h2>Pending reviews</h2>
         <p>Full local command and scan detail — not bound by chat card limits.</p>
       </div>
-      ${renderReviews(state, now)}
+      ${renderReviews(state, now)}`
+      }
     </section>
     <section class="panel" data-panel="timeline" hidden>
       ${renderTimeline(state, now)}

@@ -129,6 +129,14 @@ describe("dashboardFingerprint", () => {
     });
     assert.notEqual(before, after);
   });
+
+  it("changes when setupNeeded flips", () => {
+    const pending = [{ eventId: "e1", toolCallId: "t1" }];
+    const configured = dashboardFingerprint({ pending, history: [] });
+    const needsSetup = dashboardFingerprint({ pending, history: [], setupNeeded: true });
+    assert.notEqual(configured, needsSetup);
+    assert.match(needsSetup, /#1$/);
+  });
 });
 
 describe("escapeHtml", () => {

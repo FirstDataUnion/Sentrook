@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -20,12 +20,18 @@ import {
 } from "./operatorLog.ts";
 import { ReviewCardStore } from "./reviewCards.ts";
 import { DualIndexMap } from "./sessionStore.ts";
-import { escapeHtml, severityOf } from "./dashboardPage.ts";
+import { escapeHtml, severityOf, formatHttpError, GATEWAY_TAB_WRITE_HINT } from "./dashboardPage.ts";
+import { ACCESS_HEADER, ACCESS_MISSING } from "./dashboardAuth.ts";
 import { dashboardFingerprint } from "./dashboardPresent.ts";
 import type { Sensitivity } from "./sessionPolicy.ts";
 
 const tempDirs: string[] = [];
 const stores: ReviewCardStore[] = [];
+
+function pluginPackageVersion(): string {
+  return (JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string })
+    .version;
+}
 
 afterEach(() => {
   while (stores.length) stores.pop()?.shutdown();
@@ -43,6 +49,7 @@ function makeDeps(opts?: {
   approvals?: Array<{ id: string; request?: { toolCallId?: string; pluginId?: string } }>;
   rejectResolve?: boolean;
   persist?: DashboardPersistResult;
+  hostSessions?: Array<{ sessionKey: string; sessionId?: string; updatedAtMs?: number }>;
 }): {
   deps: DashboardDeps;
   cards: ReviewCardStore;
@@ -109,6 +116,8 @@ function makeDeps(opts?: {
       return persistOk;
     },
     allowlist: { enabled: true, path: allowlistPath, scriptBind: true },
+    listHostSessions: opts?.hostSessions ? () => opts.hostSessions ?? [] : undefined,
+    accessToken: "test-access-token",
     gateway: {
       isAvailable: async () => true,
       request: async (method, params) => {
@@ -128,7 +137,10 @@ function makeDeps(opts?: {
 async function withServer(
   deps: DashboardDeps,
   fn: (base: string) => Promise<void>,
+  opts?: { injectAccess?: boolean },
 ): Promise<void> {
+  const injectAccess = opts?.injectAccess !== false;
+  const access = injectAccess ? (deps.accessToken ?? "") : "";
   const server = createServer((req, res) => {
     void handleSentrookHttp(req, res, deps).catch((err) => {
       if (!res.headersSent) {
@@ -139,9 +151,19 @@ async function withServer(
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const headers = new Headers(init?.headers);
+    if (injectAccess && access && !headers.has(ACCESS_HEADER)) {
+      headers.set(ACCESS_HEADER, access);
+      return origFetch(input, { ...init, headers });
+    }
+    return origFetch(input, init);
+  }) as typeof fetch;
   try {
     await fn(`http://127.0.0.1:${port}`);
   } finally {
+    globalThis.fetch = origFetch;
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
@@ -237,16 +259,50 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /data-sens="warning"/);
       assert.match(html, /data-sens="critical"/);
       assert.match(html, /data-sens-scope="unattended"/);
-      assert.match(html, /reloadKeepingScroll/);
+      assert.match(html, /data-verify="1"/);
+      assert.doesNotMatch(html, /First-run setup/);
+      assert.doesNotMatch(html, /data-setup-save/);
+      assert.doesNotMatch(html, /reloadKeepingScroll/);
       assert.match(html, /reloadAfter/);
+      assert.doesNotMatch(html, /copyDashboardBody/);
+      assert.doesNotMatch(html, /DOMParser/);
+      assert.doesNotMatch(html, /location\.reload\(/);
+      assert.doesNotMatch(html, /location\.pathname/);
+      assert.match(html, /e\.key === "F5"/);
+      assert.match(html, /e\.metaKey \|\| e\.ctrlKey/);
       assert.match(html, /sentrook-flash/);
       assert.match(html, /flash-error/);
+      assert.match(html, /function apiUrl/);
+      assert.match(html, /TAB_PREFIX/);
+      assert.match(html, /_srk/);
+      assert.match(html, /class="ver"/);
+      assert.match(html, new RegExp(pluginPackageVersion().replace(/\./g, "\\.")));
+      assert.match(html, /credentials: "omit"/);
+      assert.doesNotMatch(html, /credentials: "include"/);
+      assert.match(html, /iframe-note/);
+      assert.match(html, /data-panel-url/);
+      assert.match(html, /in-frame/);
+      assert.doesNotMatch(html, /pollOk/);
+      assert.doesNotMatch(html, /pollState/);
+      assert.doesNotMatch(html, /data-copy-url/);
+      assert.match(html, /askConfirm/);
+      assert.match(html, /data-confirm-ok/);
+      assert.doesNotMatch(html, /!confirm\(/);
+      assert.match(html, /content-type": "text\/plain"/);
+      assert.match(html, /_tok: ACCESS/);
+      assert.match(html, /errorFromResponse/);
+      assert.match(html, /translate\(-50%, 0\)/);
+      assert.match(html, /data-access="/);
+      assert.doesNotMatch(html, /x-sentrook-access/);
+      assert.ok(html.includes(GATEWAY_TAB_WRITE_HINT));
+      assert.doesNotMatch(html, /throw new Error\(data\.error/);
+      assert.doesNotMatch(html, /Control UI iframe cookies are GET-only/);
       assert.match(html, /sentrook-page-scroll/);
       assert.doesNotMatch(html, /data-sens="lenient"/);
-      assert.match(html, /Auto-accept hosted reviews at or below the selected severity/);
-      assert.match(html, /Prompt every hosted review while you are present/);
+      assert.match(html, /Auto-accept reviews at or below the selected severity/);
+      assert.match(html, /Prompt every review while you are present/);
       assert.match(html, /Cron and subagent reviews are never auto-accepted/);
-      assert.match(html, /Auto-approve every hosted review, including critical ones/);
+      assert.match(html, /Auto-approve every review, including critical ones/);
       assert.match(html, /data-severity="warning"/);
       assert.match(html, /<span class="risk-num">80<\/span>/);
       assert.match(html, /curl /);
@@ -262,16 +318,14 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /spine-now/);
       assert.doesNotMatch(html, /No earlier tool calls in this episode/);
       assert.match(html, /Once = this call/);
-      assert.match(html, /\/sentrook\/api\/state/);
       assert.doesNotMatch(html, /setTimeout\(\(\) => location\.reload\(\), 15000\)/);
-      assert.match(html, /if \(next === lastPending\) return/);
       assert.match(html, /sentrook-open-details/);
       assert.match(html, /<dt>Session<\/dt><dd>/);
       assert.match(html, /data-tl-open-session="main"/);
       assert.match(html, /<dt>Session id<\/dt><dd><code>uuid-1<\/code><\/dd>/);
       assert.match(html, /Allow once/);
       assert.match(html, /\/approve plugin:abc/);
-      assert.match(html, /Control UI iframe cookies are GET-only/);
+      assert.match(html, /If allow\/deny fails/);
       const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
         pending: Array<{ command: string; approvalId?: string; eventId?: string; toolCallId?: string }>;
         history: Array<{ id?: string; decision?: string }>;
@@ -286,6 +340,181 @@ describe("handleSentrookHttp", () => {
       };
       assert.equal(stripped.pending.length, 1);
     });
+  });
+
+  it("Reviews lists a waiting OpenClaw approval even when the in-memory stash is empty", async () => {
+    const { deps } = makeDeps({
+      approvals: [
+        {
+          id: "plugin:live",
+          request: {
+            pluginId: "sentrook-openclaw",
+            toolCallId: "t-live",
+            toolName: "exec",
+            title: "openclaw plugins update brave discord",
+            description: "To see the full command and scan results, check the Sentrook tab on the OpenClaw page, or type /sentrook pending sr_live01.",
+            severity: "warning",
+          },
+        },
+      ],
+    });
+    await withServer(deps, async (base) => {
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        pending: Array<{ command: string; approvalId?: string; toolCallId: string }>;
+      };
+      assert.equal(state.pending.length, 1);
+      assert.equal(state.pending[0]?.toolCallId, "t-live");
+      assert.equal(state.pending[0]?.approvalId, "plugin:live");
+      assert.match(state.pending[0]?.command ?? "", /openclaw plugins update brave discord/);
+      const html = await (await fetch(`${base}/sentrook`)).text();
+      assert.match(html, /<title>Sentrook · 1 review<\/title>/);
+      assert.doesNotMatch(html, /Nothing waiting/);
+    });
+  });
+
+  it("API routes require the Control UI access token, not a page CSRF session", async () => {
+    const { deps } = makeDeps();
+    await withServer(
+      deps,
+      async (base) => {
+        const ok = await fetch(`${base}/sentrook/api/state`);
+        assert.equal(ok.status, 200);
+      },
+    );
+  });
+
+  it("rejects dashboard requests without the Control UI access token", async () => {
+    const { deps } = makeDeps();
+    await withServer(
+      deps,
+      async (base) => {
+        const denied = await fetch(`${base}/sentrook`);
+        assert.equal(denied.status, 401);
+        const body = (await denied.json()) as { error?: string };
+        assert.equal(body.error, ACCESS_MISSING);
+        const apiDenied = await fetch(`${base}/sentrook/api/state`);
+        assert.equal(apiDenied.status, 401);
+      },
+      { injectAccess: false },
+    );
+  });
+
+  it("loads the Control UI tab pathname and GET cookie without a query token", async () => {
+    const { deps } = makeDeps();
+    await withServer(
+      deps,
+      async (base) => {
+        const tab = await fetch(`${base}/sentrook/tab/${deps.accessToken}`);
+        assert.equal(tab.status, 200);
+        assert.equal(tab.headers.get("set-cookie"), null);
+        const stripped = await fetch(`${base}/tab/${deps.accessToken}`);
+        assert.equal(stripped.status, 200);
+        const nested = await fetch(`${base}/sentrook/tab/${deps.accessToken}/api/state`);
+        assert.equal(nested.status, 200);
+        const nestedPolicy = await fetch(`${base}/sentrook/tab/${deps.accessToken}/api/policy`, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: JSON.stringify({ allowAllMode: "on" }),
+        });
+        assert.equal(nestedPolicy.status, 200);
+        const viaTabJson = await fetch(`${base}/sentrook/tab/${deps.accessToken}`, {
+          headers: { accept: "application/json" },
+        });
+        assert.equal(viaTabJson.status, 200);
+        assert.equal(((await viaTabJson.json()) as { allowAll?: boolean }).allowAll, true);
+        const viaTabPost = await fetch(`${base}/sentrook/tab/${deps.accessToken}`, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: JSON.stringify({ _srk: "policy", allowAllMode: "off" }),
+        });
+        assert.equal(viaTabPost.status, 200);
+        const viaTabState = await fetch(`${base}/sentrook/tab/${deps.accessToken}`, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: JSON.stringify({ _srk: "state", _tok: deps.accessToken }),
+        });
+        assert.equal(viaTabState.status, 200);
+        assert.equal(((await viaTabState.json()) as { allowAll?: boolean }).allowAll, false);
+        const viaBodyTok = await fetch(`${base}/sentrook`, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: JSON.stringify({ _srk: "policy", _tok: deps.accessToken, allowAllMode: "off" }),
+        });
+        assert.equal(viaBodyTok.status, 200);
+        const viaCookie = await fetch(`${base}/sentrook`, {
+          headers: { cookie: `sentrook_access=${deps.accessToken}` },
+        });
+        assert.equal(viaCookie.status, 200);
+        const posted = await fetch(`${base}/sentrook/api/policy`, {
+          method: "POST",
+          headers: {
+            cookie: `sentrook_access=${deps.accessToken}`,
+            "content-type": "text/plain",
+          },
+          body: JSON.stringify({ allowAllMode: "on" }),
+        });
+        assert.equal(posted.status, 401);
+      },
+      { injectAccess: false },
+    );
+  });
+
+  it("answers CORS preflight from a sandboxed Control UI iframe without the token", async () => {
+    const { deps } = makeDeps();
+    await withServer(
+      deps,
+      async (base) => {
+        const preflight = await fetch(`${base}/sentrook/api/policy`, {
+          method: "OPTIONS",
+          headers: {
+            origin: "null",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "content-type, x-sentrook-access",
+          },
+        });
+        assert.equal(preflight.status, 204);
+        assert.equal(preflight.headers.get("access-control-allow-origin"), "null");
+        assert.equal(preflight.headers.get("access-control-allow-credentials"), "true");
+        assert.match(preflight.headers.get("access-control-allow-headers") || "", /x-sentrook-access/i);
+        assert.match(preflight.headers.get("access-control-allow-methods") || "", /POST/);
+
+        const denied = await fetch(`${base}/sentrook/api/state`, {
+          headers: { origin: "null" },
+        });
+        assert.equal(denied.status, 401);
+        assert.equal(denied.headers.get("access-control-allow-origin"), "null");
+      },
+      { injectAccess: false },
+    );
+  });
+
+  it("lets a sandboxed tab POST policy with the access query and no custom header", async () => {
+    const { deps } = makeDeps();
+    await withServer(
+      deps,
+      async (base) => {
+        const res = await fetch(`${base}/sentrook/api/policy?access=${deps.accessToken}`, {
+          method: "POST",
+          headers: { origin: "null", "content-type": "text/plain" },
+          body: JSON.stringify({ allowAllMode: "on" }),
+        });
+        assert.equal(res.status, 200);
+        assert.equal(res.headers.get("access-control-allow-origin"), "null");
+        const state = (await (
+          await fetch(`${base}/sentrook/api/state?access=${deps.accessToken}`, {
+            headers: { origin: "null" },
+          })
+        ).json()) as { allowAll?: boolean };
+        assert.equal(state.allowAll, true);
+
+        const foreign = await fetch(`${base}/sentrook/api/state?access=${deps.accessToken}`, {
+          headers: { origin: "https://evil.example" },
+        });
+        assert.equal(foreign.status, 200);
+        assert.equal(foreign.headers.get("access-control-allow-origin"), null);
+      },
+      { injectAccess: false },
+    );
   });
 
   it("POST /api/resolve 200 calls plugin.approval.resolve", async () => {
@@ -373,6 +602,73 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /Auto-accept info and warning reviews\. Critical still waits for you/);
       assert.equal(state.allowAll, false);
       assert.equal(state.sessions.some((s) => s.sessionId === "uuid-1" && s.allowAll), true);
+    });
+  });
+
+  it("Per session table lists OpenClaw host sessions before any scan", async () => {
+    const { deps } = makeDeps({
+      hostSessions: [
+        { sessionKey: "main", sessionId: "uuid-1", updatedAtMs: 2 },
+        { sessionKey: "discord:ops", sessionId: "d1", updatedAtMs: 1 },
+      ],
+    });
+    await withServer(deps, async (base) => {
+      const html = await (await fetch(`${base}/sentrook`)).text();
+      assert.match(html, /discord:ops/);
+      assert.doesNotMatch(html, /No sessions in the OpenClaw store/);
+      assert.doesNotMatch(html, /id="sess-more"/);
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        sessions: Array<{ sessionKey?: string; allowAll: boolean; pending: number }>;
+      };
+      assert.equal(state.sessions.length, 2);
+      assert.equal(state.sessions[0]?.sessionKey, "main");
+      assert.equal(state.sessions[0]?.allowAll, false);
+    });
+  });
+
+  it("Per session list shows five rows and folds the rest", async () => {
+    const { deps } = makeDeps({
+      hostSessions: Array.from({ length: 7 }, (_, i) => ({
+        sessionKey: `agent:main:discord:channel:${String(i).padStart(18, "9")}`,
+        sessionId: `00000000-0000-4000-8000-00000000000${i}`,
+        updatedAtMs: 10 - i,
+      })),
+    });
+    await withServer(deps, async (base) => {
+      const html = await (await fetch(`${base}/sentrook`)).text();
+      assert.match(html, /class="sess-list"/);
+      assert.match(html, /class="sess-key"/);
+      assert.match(html, /class="sess-actions seg"/);
+      assert.match(html, /overflow-wrap: anywhere/);
+      assert.match(html, /id="sess-more"/);
+      assert.match(html, /Show 2 more sessions/);
+      assert.doesNotMatch(html, /<th>key<\/th>/);
+      const visible = html.split('id="sess-more"')[0] ?? "";
+      const folded = html.split('id="sess-more"')[1] ?? "";
+      assert.match(visible, /agent:main:discord:channel:999999999999999990/);
+      assert.match(visible, /agent:main:discord:channel:999999999999999994/);
+      assert.doesNotMatch(visible, /agent:main:discord:channel:999999999999999995/);
+      assert.match(folded, /agent:main:discord:channel:999999999999999995/);
+      assert.match(folded, /agent:main:discord:channel:999999999999999996/);
+    });
+  });
+
+  it("Per session table overlays in-memory allow-all onto a host session", async () => {
+    const { deps } = makeDeps({
+      hostSessions: [{ sessionKey: "main", sessionId: "uuid-1", updatedAtMs: 1 }],
+    });
+    await withServer(deps, async (base) => {
+      await fetch(`${base}/sentrook/api/policy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionKey: "main", sessionId: "uuid-1", allowAll: true }),
+      });
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        sessions: Array<{ sessionKey?: string; allowAll: boolean }>;
+      };
+      assert.equal(state.sessions.length, 1);
+      assert.equal(state.sessions[0]?.sessionKey, "main");
+      assert.equal(state.sessions[0]?.allowAll, true);
     });
   });
 
@@ -479,7 +775,7 @@ describe("handleSentrookHttp", () => {
       assert.equal(state.onScanError, "deny");
       const quietHtml = await (await fetch(`${base}/sentrook`)).text();
       const allowBtnAt = quietHtml.indexOf('data-allow-mode="on"');
-      const allowOnHintAt = quietHtml.indexOf("Skipping hosted reviews for every attended session");
+      const allowOnHintAt = quietHtml.indexOf("Skipping reviews for every attended session");
       assert.ok(allowBtnAt >= 0 && allowOnHintAt > allowBtnAt);
       const quietBtnAt = quietHtml.indexOf('data-quiet-global="8h"');
       const quietOnHintAt = quietHtml.indexOf("Quiet for every session");
@@ -908,6 +1204,143 @@ describe("handleSentrookHttp", () => {
       assert.equal(afterWipe.history.length, 0);
       assert.equal(afterWipe.log.lines, 0);
     });
+  });
+
+  it("GET /sentrook shows first-run setup when setupNeeded", async () => {
+    const { deps } = makeDeps();
+    deps.setupNeeded = () => true;
+    await withServer(deps, async (base) => {
+      const html = await (await fetch(`${base}/sentrook`)).text();
+      assert.match(html, /First-run setup/);
+      assert.match(html, /data-setup-save/);
+      assert.match(html, /data-setup-client-secret/);
+      assert.match(html, /type="password"/);
+      assert.match(html, /identity\.firstdataunion\.org/);
+      assert.match(html, /data-setup-feedback="submit"/);
+      assert.doesNotMatch(html, /data-verify="/);
+      assert.doesNotMatch(html, /All clear/);
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        setupNeeded: boolean;
+      };
+      assert.equal(state.setupNeeded, true);
+    });
+  });
+
+  it("POST /api/setup writes via saveSetup and never echoes the secret", async () => {
+    const { deps } = makeDeps();
+    let received: { clientId: string; clientSecret: string } | undefined;
+    deps.setupNeeded = () => !received;
+    deps.saveSetup = async (input) => {
+      received = { clientId: input.clientId, clientSecret: input.clientSecret };
+      assert.equal(input.feedbackMode, "submit");
+      assert.equal(input.onScanError, "review");
+      return {
+        ok: true,
+        minted: true,
+        persisted: true,
+        dotenvPath: "/tmp/.env",
+      };
+    };
+    await withServer(deps, async (base) => {
+      const missing = await fetch(`${base}/sentrook/api/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientId: "", clientSecret: "" }),
+      });
+      assert.equal(missing.status, 400);
+      const res = await fetch(`${base}/sentrook/api/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: "cid",
+          clientSecret: "super-secret-value",
+          feedbackMode: "submit",
+          onScanError: "review",
+        }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body.ok, true);
+      assert.equal(body.minted, true);
+      assert.equal(received?.clientSecret, "super-secret-value");
+      assert.doesNotMatch(JSON.stringify(body), /super-secret-value/);
+    });
+  });
+
+  it("POST /api/setup requires confirm-style allow and rejects unknown onScanError", async () => {
+    const { deps } = makeDeps();
+    deps.saveSetup = async () => ({ ok: true, minted: true, persisted: true });
+    await withServer(deps, async (base) => {
+      const bad = await fetch(`${base}/sentrook/api/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: "cid",
+          clientSecret: "sec",
+          onScanError: "skip",
+        }),
+      });
+      assert.equal(bad.status, 400);
+      const allow = await fetch(`${base}/sentrook/api/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientId: "cid",
+          clientSecret: "sec",
+          onScanError: "allow",
+        }),
+      });
+      assert.equal(allow.status, 200);
+    });
+  });
+
+  it("POST /api/verify returns runVerify checks", async () => {
+    const { deps } = makeDeps();
+    deps.verifyConnection = async () => ({
+      ok: false,
+      url: "https://sentrook.example",
+      checks: [{ name: "OIDC token mint", ok: false, detail: "invalid_client" }],
+    });
+    await withServer(deps, async (base) => {
+      const html = await (await fetch(`${base}/sentrook`)).text();
+      assert.match(html, /Test connection/);
+      const res = await fetch(`${base}/sentrook/api/verify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean }>;
+      };
+      assert.equal(body.ok, false);
+      assert.equal(body.checks[0]?.name, "OIDC token mint");
+    });
+  });
+});
+
+describe("formatHttpError", () => {
+  it("maps gateway 401 object bodies to the Control UI cookie hint", () => {
+    const msg = formatHttpError(
+      { error: { message: "Unauthorized", type: "unauthorized" } },
+      401,
+      "Unauthorized",
+    );
+    assert.equal(msg, GATEWAY_TAB_WRITE_HINT);
+    assert.doesNotMatch(msg, /\[object Object\]/);
+  });
+
+  it("keeps a string 401 body from the plugin access check", () => {
+    assert.equal(formatHttpError({ error: ACCESS_MISSING }, 401, "Unauthorized"), ACCESS_MISSING);
+  });
+
+  it("uses error.message for non-auth object bodies", () => {
+    assert.equal(formatHttpError({ error: { message: "No pending review" } }, 404, "Not Found"), "No pending review");
+  });
+
+  it("keeps string error bodies", () => {
+    assert.equal(formatHttpError({ error: "sensitivity must be strict, info, warning, or critical" }, 400), "sensitivity must be strict, info, warning, or critical");
   });
 });
 

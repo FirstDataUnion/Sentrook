@@ -52,6 +52,7 @@ function makeSession(overrides: Partial<SlashSession> = {}): SlashSession {
 function makeDeps(opts: {
   session?: SlashSession;
   sessions?: SlashSession[];
+  hostSessions?: Array<{ sessionKey: string; sessionId?: string }>;
   cards?: SlashCard[];
   log?: OperatorLogConfig;
   sensitivity?: Sensitivity;
@@ -83,9 +84,22 @@ function makeDeps(opts: {
     feedbackMode: opts.feedbackMode ?? ("submit" as const),
     onScanError: opts.onScanError ?? ("review" as const),
   };
+  const named = new Map<string, SlashSession>();
   const deps: SlashDeps = {
-    sessionOf: () => session,
-    listSessions: () => opts.sessions ?? [session],
+    sessionOf: (ids) => {
+      if (!opts.hostSessions) return session;
+      const key = ids.sessionKey ?? ids.sessionId;
+      if (!key) return session;
+      if (key === session.sessionKey || key === session.sessionId) return session;
+      let st = named.get(key);
+      if (!st) {
+        st = makeSession({ sessionKey: ids.sessionKey, sessionId: ids.sessionId });
+        named.set(key, st);
+      }
+      return st;
+    },
+    listSessions: () => [...(opts.sessions ?? [session]), ...named.values()],
+    listHostSessions: opts.hostSessions ? () => opts.hostSessions ?? [] : undefined,
     listCards: opts.cards ? () => opts.cards ?? [] : undefined,
     sensitivity: () => sensitivity,
     setSensitivity: (value) => {
@@ -249,7 +263,7 @@ describe("handleSentrookCommand", () => {
       deps,
     );
     assert.match(detail.text, /curl https:\/\/x/);
-    assert.match(detail.text, /hosted: review/);
+    assert.match(detail.text, /scan: review/);
     assert.match(detail.text, /then: waiting/);
     assert.match(detail.text, /ran: waiting/);
     assert.doesNotMatch(detail.text, /AIRA-010/);
@@ -495,7 +509,7 @@ describe("handleSentrookCommand", () => {
       { args: "history sr_hist01", senderIsOwner: true, sessionId: "uuid-1" },
       deps,
     );
-    assert.match(detail.text, /hosted: review/);
+    assert.match(detail.text, /scan: review/);
     assert.match(detail.text, /then: deny \(human\)/);
     assert.match(detail.text, /ran: no/);
     assert.match(detail.text, /curl https:\/\/x/);
@@ -547,6 +561,30 @@ describe("handleSentrookCommand", () => {
     const reply = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, deps);
     assert.match(reply.text, /main/);
     assert.match(reply.text, /allow-all/);
+  });
+
+  it("sessions lists OpenClaw host keys Sentrook has not scanned", () => {
+    const { deps } = makeDeps({
+      session: makeSession({ sessionKey: "other" }),
+      hostSessions: [{ sessionKey: "discord:ops", sessionId: "d1" }],
+    });
+    const reply = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, deps);
+    assert.match(reply.text, /discord:ops/);
+    assert.match(reply.text, /OpenClaw sessions/);
+  });
+
+  it("allow-all session targets a host session that is not yet in memory", () => {
+    const { deps } = makeDeps({
+      session: makeSession({ sessionKey: "other" }),
+      hostSessions: [{ sessionKey: "main", sessionId: "uuid-1" }],
+    });
+    const reply = handleSentrookCommand(
+      { args: "allow-all session main on", senderIsOwner: true },
+      deps,
+    );
+    assert.match(reply.text, /Allow-all on for session main/);
+    const listed = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, deps);
+    assert.match(listed.text, /main  uuid-1  0  on/);
   });
 
   it("quiet help shows current TTL copy", () => {

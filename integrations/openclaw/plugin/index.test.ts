@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
+import { dashboardReviewHint } from "./reviewCopy.ts";
 import { resolveApprovalPolicyConfig } from "./approvalPolicy.ts";
 import { clearScanTokenCache } from "./auth.ts";
 import {
@@ -535,11 +536,14 @@ describe("translateScanResponse — review mapping", () => {
       decision: "review",
       summary: "Review triggered by AIRA-064",
     };
-    const result = translateScanResponse(scan, ctx());
+    const result = translateScanResponse(scan, ctx({ eventId: "sr_aabbccddeeff" }));
     const approval = result?.requireApproval;
     assert.ok(approval);
     assert.equal(approval.title, "exec: no command preview");
-    assert.equal(approval.description, "Review triggered by AIRA-064");
+    assert.equal(
+      approval.description,
+      `Review triggered by AIRA-064\n${dashboardReviewHint("sr_aabbccddeeff")}`,
+    );
     assert.equal(approval.severity, "warning");
   });
 

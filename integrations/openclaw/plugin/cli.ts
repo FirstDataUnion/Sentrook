@@ -98,12 +98,12 @@ export async function runVerifyCommand(opts: VerifyCliOptions): Promise<void> {
 export function registerSentrookCli(program: CliProgram): void {
   const sentrook = program
     .command("sentrook")
-    .description("Sentrook hosted scan plugin helpers");
+    .description("Sentrook plugin helpers");
 
   sentrook
     .command("configure")
     .description(
-      "Configure Sentrook plugin for hosted scan (OIDC credentials + openclaw.json). Does not restart the gateway.",
+      "Configure Sentrook plugin (OIDC credentials + openclaw.json). Does not restart the gateway.",
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
     .option("--timeout-ms <ms>", `Scan POST timeout in ms (default ${DEFAULT_TIMEOUT_MS})`)
@@ -130,7 +130,7 @@ export function registerSentrookCli(program: CliProgram): void {
   sentrook
     .command("verify")
     .description(
-      "Check plugin config, scan credentials, and hosted /health (no Python sentrook CLI required).",
+      "Check plugin config, scan credentials, and /health (no Python sentrook CLI required).",
     )
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .option("--timeout-ms <ms>", "Health request timeout (default 8000)")

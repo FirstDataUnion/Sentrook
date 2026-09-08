@@ -7,34 +7,55 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   listPluginApprovals,
   matchApprovalId,
-  resolvePluginApproval,
+  isSentrookApproval,
   type PluginRuntimeGateway,
-  type ResolveDecision,
+  type ApprovalListItem,
 } from "./approvalGateway.ts";
-import { loadAllowlist, saveAllowlist, type AllowlistConfig } from "./localAllowlist.ts";
+import { loadAllowlist, type AllowlistConfig } from "./localAllowlist.ts";
 import {
   operatorLogStats,
-  purgeOperatorLog,
   tailOperatorLog,
-  wipeOperatorLog,
   DEFAULT_TIMELINE_SCAN_LIMIT,
+  waitingOperatorReview,
+  operatorPluginVersion,
   type OperatorLogConfig,
   type OperatorLogEvent,
 } from "./operatorLog.ts";
 import { renderDashboardPage } from "./dashboardPage.ts";
-import { ReviewCardStore } from "./reviewCards.ts";
-import { parseOnScanError, type OnScanError } from "./scanErrorPolicy.ts";
 import {
-  parseQuietDuration,
-  parseSensitivityToken,
-  type Sensitivity,
-} from "./sessionPolicy.ts";
-import { sessionIdsOf, type SessionIds } from "./sessionStore.ts";
+  ACCESS_MISSING,
+  DASHBOARD_PATH,
+  accessFromRequest,
+  accessTokensEqual,
+  applyDashboardCors,
+  dashboardRestFromPathname,
+} from "./dashboardAuth.ts";
+import { ReviewCardStore, type ReviewCard } from "./reviewCards.ts";
+import { type OnScanError } from "./scanErrorPolicy.ts";
+import { type Sensitivity } from "./sessionPolicy.ts";
+import { type SessionIds } from "./sessionStore.ts";
+import {
+  FeatureOperationError,
+  httpStatusForCode,
+  opAllowlistRemove,
+  opLog,
+  opPolicy,
+  opResolve,
+  opSetup,
+  opVerify,
+} from "./dashboardOperations.ts";
+import type { FeatureHandlers } from "./featureOperations.ts";
+import { mergeSessionRows, type HostSession } from "./hostSessions.ts";
+import type {
+  DashboardSetupInput,
+  DashboardSetupResult,
+} from "./dashboardSetup.ts";
+import type { VerifyResult } from "./verify.ts";
 
 export type DashboardFeedbackMode = "off" | "submit";
 export type AllowAllMode = "off" | "session" | "on";
 
-export const DASHBOARD_PATH = "/sentrook";
+export { DASHBOARD_API_PATH, DASHBOARD_PATH } from "./dashboardAuth.ts";
 
 export type DashboardSession = {
   sessionId?: string;
@@ -72,7 +93,14 @@ export type DashboardDeps = {
   allowlist: AllowlistConfig;
   gateway?: PluginRuntimeGateway;
   config?: unknown;
+  listHostSessions?: () => HostSession[];
   now?: () => number;
+  /** Process token from the Control UI tab path. When set, every request must present it. */
+  accessToken?: string;
+  /** Live credential check — not the boot-time resolveConfig snapshot. */
+  setupNeeded?: () => boolean;
+  saveSetup?: (input: DashboardSetupInput) => Promise<DashboardSetupResult>;
+  verifyConnection?: () => Promise<VerifyResult>;
 };
 
 function send(res: ServerResponse, status: number, body: string, type: string): void {
@@ -90,15 +118,33 @@ function routePath(req: IncomingMessage): { rest: string; handled: boolean } {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   let pathname = url.pathname;
   if (pathname.length > 1 && pathname.endsWith("/")) pathname = pathname.slice(0, -1);
-  if (pathname === DASHBOARD_PATH) return { rest: "", handled: true };
-  if (pathname.startsWith(`${DASHBOARD_PATH}/`)) {
+  if (pathname === DASHBOARD_PATH || pathname === "") return { rest: "", handled: true };
+  const tab = dashboardRestFromPathname(pathname);
+  if (tab) return tab;
+  if (pathname.startsWith(`${DASHBOARD_PATH}/api/`)) {
     return { rest: pathname.slice(DASHBOARD_PATH.length), handled: true };
   }
-  // Host already stripped the /sentrook prefix (common for match: "prefix").
-  if (pathname === "/" || pathname.startsWith("/api/")) {
-    return { rest: pathname === "/" ? "" : pathname, handled: true };
+  if (pathname.startsWith("/api/")) return { rest: pathname, handled: true };
+  // Host stripped ``/sentrook/api`` (match: "prefix") → ``/state``, ``/policy``, …
+  if (
+    pathname === "/state" ||
+    pathname === "/resolve" ||
+    pathname === "/policy" ||
+    pathname === "/log" ||
+    pathname === "/setup" ||
+    pathname === "/verify" ||
+    pathname.startsWith("/allowlist")
+  ) {
+    return { rest: `/api${pathname}`, handled: true };
   }
   return { rest: pathname, handled: false };
+}
+
+const TAB_RPC = new Set(["state", "policy", "resolve", "log", "setup", "verify", "allowlist/rm"]);
+
+function acceptWantsJson(req: IncomingMessage): boolean {
+  const accept = typeof req.headers.accept === "string" ? req.headers.accept : "";
+  return accept.includes("application/json") && !accept.includes("text/html");
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -114,55 +160,23 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     : {};
 }
 
-function parseAllowAllMode(raw: unknown): AllowAllMode | { error: string } | undefined {
-  if (raw == null) return undefined;
-  if (raw === "off" || raw === "session" || raw === "on") return raw;
-  return { error: "allowAllMode must be off, session, or on" };
-}
-
-function parseFeedbackMode(raw: unknown): DashboardFeedbackMode | { error: string } | undefined {
-  if (raw == null) return undefined;
-  if (raw === "off" || raw === "submit") return raw;
-  return { error: "feedbackMode must be submit or off" };
-}
-
-function parseRetentionDays(raw: unknown): number | { error: string } | undefined {
-  if (raw == null) return undefined;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 3650) {
-    return { error: "maxAgeDays must be an integer from 0 to 3650 (0 = no age purge)" };
+/**
+ * Runs a shared dashboard operation and replies as the HTTP panel always has.
+ * Operation errors carry a code so both surfaces agree on what went wrong.
+ */
+async function runOperation<T>(
+  res: ServerResponse,
+  run: () => T | Promise<T>,
+  statusOf: (value: T) => number = () => 200,
+): Promise<true> {
+  try {
+    const value = await run();
+    sendJson(res, statusOf(value), value);
+  } catch (err) {
+    if (!(err instanceof FeatureOperationError)) throw err;
+    sendJson(res, httpStatusForCode(err.code), { error: err.message });
   }
-  return raw;
-}
-
-function parseRetentionBytes(raw: unknown): number | { error: string } | undefined {
-  if (raw == null) return undefined;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1024 || raw > 1024 * 1024 * 1024) {
-    return { error: "maxBytes must be between 1 KiB and 1 GiB" };
-  }
-  return Math.round(raw);
-}
-
-function foldPersist(
-  acc: DashboardPersistResult | undefined,
-  next: DashboardPersistResult,
-): DashboardPersistResult {
-  if (!acc) return { persisted: next.persisted, error: next.error };
-  if (acc.persisted && next.persisted) return { persisted: true };
-  return { persisted: false, error: acc.error || next.error };
-}
-
-function persistPayload(persist: DashboardPersistResult | undefined): {
-  ok: true;
-  persisted?: boolean;
-  error?: string;
-} {
-  if (!persist) return { ok: true };
-  if (persist.persisted) return { ok: true, persisted: true };
-  return {
-    ok: true,
-    persisted: false,
-    error: persist.error || "Applied now, but not saved to openclaw.json.",
-  };
+  return true;
 }
 
 function eventCommand(event: OperatorLogEvent): string {
@@ -386,46 +400,164 @@ function buildTimeline(log: OperatorLogConfig) {
   return { history, audit };
 }
 
-async function buildState(deps: DashboardDeps) {
+function nonemptyStr(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function commandFromArgs(args: Record<string, unknown>): string {
+  if (typeof args.command === "string") return args.command;
+  if (typeof args.cmd === "string") return args.cmd;
+  try {
+    return JSON.stringify(args);
+  } catch {
+    return "";
+  }
+}
+
+function argsFromOperatorPending(event: OperatorLogEvent | undefined): Record<string, unknown> {
+  const pending = event?.pending;
+  if (!pending || typeof pending !== "object") return {};
+  const args = (pending as { args?: unknown }).args;
+  if (args && typeof args === "object" && !Array.isArray(args)) {
+    return { ...(args as Record<string, unknown>) };
+  }
+  return {};
+}
+
+function cardFromWaitingApproval(
+  item: ApprovalListItem,
+  logEvent: OperatorLogEvent | undefined,
+  now: number,
+): ReviewCard {
+  const req = item.request ?? {};
+  const toolCallId = nonemptyStr(req.toolCallId) ?? item.id;
+  const args = argsFromOperatorPending(logEvent);
+  if (!args.command && !args.cmd && nonemptyStr(req.title)) {
+    args.command = req.title as string;
+  }
+  const pendingTool = logEvent?.pending && typeof logEvent.pending === "object"
+    ? nonemptyStr((logEvent.pending as { tool?: unknown }).tool)
+    : undefined;
+  const scanDoc = logEvent?.scan && typeof logEvent.scan === "object"
+    ? (logEvent.scan as Record<string, unknown>)
+    : {};
+  const createdAtMs = logEvent?.ts ? Date.parse(String(logEvent.ts)) : now;
+  return {
+    eventId: nonemptyStr(logEvent?.id) ?? `approval:${item.id}`,
+    toolCallId,
+    tool: pendingTool ?? nonemptyStr(req.toolName) ?? "exec",
+    args,
+    scan: {
+      decision: nonemptyStr(scanDoc.decision) ?? (logEvent?.event === "scan_error" ? "scan_error" : "review"),
+      risk: typeof scanDoc.risk === "number" ? scanDoc.risk : undefined,
+      summary: nonemptyStr(scanDoc.summary) ?? nonemptyStr(req.description) ?? undefined,
+      matched_rules: Array.isArray(scanDoc.matched_rules)
+        ? scanDoc.matched_rules.filter((id): id is string => typeof id === "string")
+        : undefined,
+      review_severity: nonemptyStr(scanDoc.review_severity) ?? nonemptyStr(req.severity) ?? undefined,
+      block_reason: nonemptyStr(scanDoc.block_reason),
+    },
+    sessionId: nonemptyStr(logEvent?.metadata && (logEvent.metadata as { session_id?: unknown }).session_id),
+    sessionKey: nonemptyStr(logEvent?.metadata && (logEvent.metadata as { session_key?: unknown }).session_key),
+    timeoutMs: typeof req.timeoutMs === "number" && req.timeoutMs > 0 ? req.timeoutMs : 600_000,
+    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : now,
+    intent: nonemptyStr(logEvent?.intent) ?? null,
+    intentKind: nonemptyStr(logEvent?.intent_kind) ?? null,
+  };
+}
+
+function presentPendingCard(
+  card: ReviewCard,
+  listed: ApprovalListItem[],
+  approvalId?: string,
+): DashboardViewPending {
+  const args = card.args ?? {};
+  return {
+    eventId: card.eventId,
+    toolCallId: card.toolCallId,
+    approvalId: approvalId || matchApprovalId(listed, card.toolCallId),
+    tool: card.tool,
+    command: commandFromArgs(args),
+    args,
+    scan: card.scan,
+    sessionId: card.sessionId,
+    sessionKey: card.sessionKey,
+    agentId: card.agentId,
+    timeoutMs: card.timeoutMs,
+    createdAtMs: card.createdAtMs,
+    intent: card.intent ?? null,
+    intentKind: card.intentKind ?? null,
+    priorSteps: card.priorSteps ?? [],
+    priorOmitted: card.priorOmitted ?? 0,
+  };
+}
+
+type DashboardViewPending = {
+  eventId: string;
+  toolCallId: string;
+  approvalId?: string;
+  tool: string;
+  command: string;
+  args: Record<string, unknown>;
+  scan: ReviewCard["scan"];
+  sessionId?: string;
+  sessionKey?: string;
+  agentId?: string;
+  timeoutMs: number;
+  createdAtMs: number;
+  intent: string | null;
+  intentKind: string | null;
+  priorSteps: NonNullable<ReviewCard["priorSteps"]>;
+  priorOmitted: number;
+};
+
+function collectPending(
+  deps: DashboardDeps,
+  listed: ApprovalListItem[],
+  now: number,
+): DashboardViewPending[] {
+  const fromStore = deps.cards.list();
+  const seen = new Set(fromStore.map((card) => card.toolCallId));
+  const extras: Array<{ card: ReviewCard; approvalId: string }> = [];
+  const log = deps.operatorLog();
+  for (const item of listed) {
+    if (!isSentrookApproval(item)) continue;
+    const toolCallId = nonemptyStr(item.request?.toolCallId) ?? item.id;
+    if (seen.has(toolCallId) || seen.has(item.id)) continue;
+    seen.add(toolCallId);
+    extras.push({
+      card: cardFromWaitingApproval(item, waitingOperatorReview(log, toolCallId), now),
+      approvalId: item.id,
+    });
+  }
+  for (const row of extras) {
+    deps.cards.put(row.card);
+  }
+  return [
+    ...fromStore.map((card) => presentPendingCard(card, listed)),
+    ...extras.map((row) => presentPendingCard(row.card, listed, row.approvalId)),
+  ].sort((a, b) => b.createdAtMs - a.createdAtMs);
+}
+
+export async function buildState(deps: DashboardDeps) {
   const listed = await listPluginApprovals(deps.gateway);
-  const pending = deps.cards.list().map((card) => {
-    const args = card.args;
-    const command =
-      typeof args.command === "string"
-        ? args.command
-        : typeof args.cmd === "string"
-          ? args.cmd
-          : JSON.stringify(args);
-    return {
-      eventId: card.eventId,
-      toolCallId: card.toolCallId,
-      approvalId: matchApprovalId(listed, card.toolCallId),
-      tool: card.tool,
-      command,
-      args: card.args,
-      scan: card.scan,
-      sessionId: card.sessionId,
-      sessionKey: card.sessionKey,
-      agentId: card.agentId,
-      timeoutMs: card.timeoutMs,
-      createdAtMs: card.createdAtMs,
-      intent: card.intent ?? null,
-      intentKind: card.intentKind ?? null,
-      priorSteps: card.priorSteps ?? [],
-      priorOmitted: card.priorOmitted ?? 0,
-    };
-  });
+  const now = deps.now?.() ?? Date.now();
+  const pending = collectPending(deps, listed, now);
   const log = deps.operatorLog();
   const stats = operatorLogStats(log);
-  const now = deps.now?.() ?? Date.now();
   const { history, audit } = buildTimeline(log);
-  const sessions = deps.sessions.uniqueValues().map((st) => ({
-    sessionId: st.sessionId,
-    sessionKey: st.sessionKey,
-    allowAll: st.allowAll,
-    quietUntilMs: st.quietUntilMs,
-    pending: [...st.pending.values()].filter((call) => call.awaitingApproval).length,
-  }));
+  const sessions = mergeSessionRows(
+    deps.listHostSessions?.() ?? [],
+    deps.sessions.uniqueValues().map((st) => ({
+      sessionId: st.sessionId,
+      sessionKey: st.sessionKey,
+      allowAll: st.allowAll,
+      quietUntilMs: st.quietUntilMs,
+      pending: [...st.pending.values()].filter((call) => call.awaitingApproval).length,
+    })),
+  );
   const file = loadAllowlist(deps.allowlist.path);
   const allowlist = file.entries.map((entry, i) => {
     if (entry.kind === "script_bind") {
@@ -468,7 +600,27 @@ async function buildState(deps: DashboardDeps) {
     },
     allowlist,
     resolveAvailable: Boolean(deps.gateway) || pending.some((card) => card.approvalId),
+    setupNeeded: deps.setupNeeded?.() ?? false,
   };
+}
+
+function sendAccessDenied(req: IncomingMessage, res: ServerResponse, method: string, rest: string): void {
+  const dest = req.headers["sec-fetch-dest"];
+  const accept = req.headers.accept;
+  const destStr = typeof dest === "string" ? dest : "";
+  const acceptStr = typeof accept === "string" ? accept : "";
+  const pageGet = method === "GET" && (rest === "" || rest === "/");
+  const wantsHtml = destStr === "iframe" || destStr === "document" || acceptStr.includes("text/html");
+  if (pageGet && wantsHtml) {
+    send(
+      res,
+      401,
+      `<!doctype html><meta charset="utf-8"/><title>Sentrook</title><p>${ACCESS_MISSING}</p>`,
+      "text/html; charset=utf-8",
+    );
+    return;
+  }
+  sendJson(res, 401, { error: ACCESS_MISSING });
 }
 
 export async function handleSentrookHttp(
@@ -476,178 +628,88 @@ export async function handleSentrookHttp(
   res: ServerResponse,
   deps: DashboardDeps,
 ): Promise<boolean> {
-  const { rest, handled } = routePath(req);
-  if (!handled) {
+  const routed = routePath(req);
+  if (!routed.handled) {
     return false;
   }
+  let rest = routed.rest;
   const method = (req.method ?? "GET").toUpperCase();
+  applyDashboardCors(req, res);
+  if (method === "OPTIONS") {
+    res.statusCode = 204;
+    res.setHeader("cache-control", "no-store");
+    res.end();
+    return true;
+  }
+  let parsedBody: Record<string, unknown> | undefined;
+  const bodyOf = async (): Promise<Record<string, unknown>> => {
+    parsedBody ??= await readJson(req);
+    return parsedBody;
+  };
   try {
-    if (method === "GET" && (rest === "" || rest === "/")) {
-      const state = await buildState(deps);
-      send(res, 200, renderDashboardPage(state, deps.now?.() ?? Date.now()), "text/html; charset=utf-8");
+    const allowCookie = method === "GET" || method === "HEAD";
+    let presented = accessFromRequest(req, { allowCookie });
+    if (method === "POST") {
+      const tok = (await bodyOf())._tok;
+      if (typeof tok === "string" && tok.trim()) presented = tok.trim();
+    }
+    if (deps.accessToken && !accessTokensEqual(deps.accessToken, presented)) {
+      sendAccessDenied(req, res, method, rest);
       return true;
     }
-    if (method === "GET" && rest === "/api/state") {
+    if ((rest === "" || rest === "/") && method === "GET" && acceptWantsJson(req)) {
+      rest = "/api/state";
+    }
+    if ((rest === "" || rest === "/") && method === "POST") {
+      const rpc = String((await bodyOf())._srk ?? "").trim();
+      if (TAB_RPC.has(rpc)) rest = `/api/${rpc}`;
+    }
+    if (method === "GET" && (rest === "" || rest === "/")) {
+      const state = await buildState(deps);
+      send(
+        res,
+        200,
+        renderDashboardPage(
+          state,
+          deps.now?.() ?? Date.now(),
+          deps.accessToken ?? "",
+          operatorPluginVersion(),
+        ),
+        "text/html; charset=utf-8",
+      );
+      return true;
+    }
+    if ((method === "GET" || method === "POST") && rest === "/api/state") {
       sendJson(res, 200, await buildState(deps));
       return true;
     }
     if (method === "POST" && rest === "/api/resolve") {
-      const body = await readJson(req);
-      const decision = body.decision;
-      if (decision !== "allow-once" && decision !== "allow-always" && decision !== "deny") {
-        sendJson(res, 400, { error: "decision must be allow-once, allow-always, or deny" });
-        return true;
-      }
-      const id = typeof body.toolCallId === "string" ? body.toolCallId : typeof body.eventId === "string" ? body.eventId : "";
-      const card = deps.cards.get(id);
-      if (!card) {
-        sendJson(res, 404, { error: "No pending review for that id" });
-        return true;
-      }
-      const listed = await listPluginApprovals(deps.gateway);
-      const approvalId =
-        (typeof body.approvalId === "string" && body.approvalId) ||
-        matchApprovalId(listed, card.toolCallId);
-      if (!approvalId) {
-        sendJson(res, 409, {
-          error: "OpenClaw has not exposed a plugin: approval id yet. Use /approve in chat.",
-        });
-        return true;
-      }
-      await resolvePluginApproval({
-        gateway: deps.gateway,
-        config: deps.config,
-        approvalId,
-        decision: decision as ResolveDecision,
-      });
-      deps.cards.take(card.toolCallId);
-      sendJson(res, 200, { ok: true, id: approvalId, decision });
-      return true;
+      const body = await bodyOf();
+      return runOperation(res, () => opResolve(deps, body as never));
     }
     if (method === "POST" && rest === "/api/policy") {
-      const body = await readJson(req);
-      let persist: DashboardPersistResult | undefined;
-      if (typeof body.sensitivity === "string") {
-        const value = parseSensitivityToken(body.sensitivity);
-        if (!value) {
-          sendJson(res, 400, { error: "sensitivity must be strict, info, warning, or critical" });
-          return true;
-        }
-        persist = foldPersist(persist, deps.setSensitivity(value));
-      }
-      if (typeof body.unattendedSensitivity === "string") {
-        const value = parseSensitivityToken(body.unattendedSensitivity);
-        if (!value) {
-          sendJson(res, 400, { error: "unattendedSensitivity must be strict, info, warning, or critical" });
-          return true;
-        }
-        persist = foldPersist(persist, deps.setUnattendedSensitivity(value));
-      }
-      const feedback = parseFeedbackMode(body.feedbackMode);
-      if (typeof feedback === "object") {
-        sendJson(res, 400, { error: feedback.error });
-        return true;
-      }
-      if (feedback) persist = foldPersist(persist, deps.setFeedbackMode(feedback));
-      if (body.onScanError != null) {
-        const value = parseOnScanError(body.onScanError, deps.onScanError());
-        if (typeof body.onScanError !== "string" || body.onScanError.trim().toLowerCase() !== value) {
-          sendJson(res, 400, { error: "onScanError must be review, deny, or allow" });
-          return true;
-        }
-        persist = foldPersist(persist, deps.setOnScanError(value));
-      }
-      const mode = parseAllowAllMode(body.allowAllMode);
-      if (typeof mode === "object") {
-        sendJson(res, 400, { error: mode.error });
-        return true;
-      }
-      if (mode === "on") {
-        deps.setAllowAll(true);
-      } else if (mode === "off") {
-        deps.setAllowAll(false);
-        for (const st of deps.sessions.uniqueValues()) st.allowAll = false;
-      } else if (mode === "session") {
-        deps.setAllowAll(false);
-      }
-      if (typeof body.globalQuiet === "string") {
-        const parsed = parseQuietDuration(body.globalQuiet, deps.now?.() ?? Date.now());
-        if ("error" in parsed) {
-          sendJson(res, 400, { error: parsed.error });
-          return true;
-        }
-        deps.setQuietUntilMs(parsed.untilMs);
-      }
-      const ids = sessionIdsOf({
-        sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
-        sessionKey: typeof body.sessionKey === "string" ? body.sessionKey : undefined,
-      });
-      if (typeof body.allowAll === "boolean" || typeof body.quiet === "string") {
-        const st = deps.sessions.getOrCreate(ids, deps.sessionFactory);
-        if (ids.sessionId) st.sessionId = ids.sessionId;
-        if (ids.sessionKey) st.sessionKey = ids.sessionKey;
-        if (typeof body.allowAll === "boolean") {
-          deps.setAllowAll(false);
-          st.allowAll = body.allowAll;
-        }
-        if (typeof body.quiet === "string") {
-          const parsed = parseQuietDuration(body.quiet, deps.now?.() ?? Date.now());
-          if ("error" in parsed) {
-            sendJson(res, 400, { error: parsed.error });
-            return true;
-          }
-          st.quietUntilMs = parsed.untilMs;
-        }
-      }
-      sendJson(res, 200, persistPayload(persist));
-      return true;
+      const body = await bodyOf();
+      return runOperation(res, () => opPolicy(deps, body as never));
     }
     if (method === "POST" && rest === "/api/log") {
-      const body = await readJson(req);
-      const days = parseRetentionDays(body.maxAgeDays);
-      if (days && typeof days === "object") {
-        sendJson(res, 400, { error: days.error });
-        return true;
-      }
-      const bytes = parseRetentionBytes(body.maxBytes);
-      if (bytes && typeof bytes === "object") {
-        sendJson(res, 400, { error: bytes.error });
-        return true;
-      }
-      let persist: DashboardPersistResult | undefined;
-      if (typeof days === "number" || typeof bytes === "number") {
-        persist = deps.setOperatorLogRetention({
-          maxAgeDays: typeof days === "number" ? days : undefined,
-          maxBytes: typeof bytes === "number" ? bytes : undefined,
-        });
-      }
-      if (body.wipe === "confirm") {
-        wipeOperatorLog(deps.operatorLog());
-      } else if (body.purge === "confirm" || body.purge === true) {
-        purgeOperatorLog(deps.operatorLog());
-      }
-      sendJson(res, 200, persistPayload(persist));
-      return true;
+      const body = await bodyOf();
+      return runOperation(res, () => opLog(deps, body as never));
     }
     if (method === "POST" && rest === "/api/allowlist/rm") {
-      const body = await readJson(req);
-      const index = typeof body.index === "number" ? body.index : Number(body.index);
-      const file = loadAllowlist(deps.allowlist.path);
-      if (!Number.isInteger(index) || index < 1 || index > file.entries.length) {
-        sendJson(res, 400, { error: "invalid allowlist index" });
-        return true;
-      }
-      file.entries.splice(index - 1, 1);
-      try {
-        saveAllowlist(deps.allowlist.path, file);
-      } catch (err) {
-        sendJson(res, 500, {
-          error: `Could not write allowlist: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        return true;
-      }
-      sendJson(res, 200, { ok: true });
-      return true;
+      const body = await bodyOf();
+      return runOperation(res, () => opAllowlistRemove(deps, body as never));
+    }
+    if (method === "POST" && rest === "/api/setup") {
+      const body = await bodyOf();
+      // Setup reports a rejected credential in the body, not by throwing.
+      return runOperation(
+        res,
+        () => opSetup(deps, body as never),
+        (result) => (result.ok ? 200 : 400),
+      );
+    }
+    if (method === "POST" && rest === "/api/verify") {
+      return runOperation(res, () => opVerify(deps));
     }
     sendJson(res, 404, { error: "unknown /sentrook route" });
     return true;
@@ -655,4 +717,49 @@ export async function handleSentrookHttp(
     sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
     return true;
   }
+}
+
+/**
+ * The contract handlers backing the native Control UI page.
+ *
+ * Same functions the HTTP panel routes to, so the two surfaces cannot drift.
+ * ``onChange`` fires after a mutation lands so the plugin can emit the event
+ * that makes watching clients refetch instead of poll.
+ */
+export function createSentrookFeatureHandlers(
+  deps: DashboardDeps,
+  onChange?: (event: "reviews_changed" | "policy_changed" | "log_changed") => void,
+): FeatureHandlers {
+  const changed = (event: "reviews_changed" | "policy_changed" | "log_changed") => {
+    onChange?.(event);
+  };
+  return {
+    state: () => buildState(deps) as never,
+    resolve: async (input) => {
+      const result = await opResolve(deps, input);
+      changed("reviews_changed");
+      return result;
+    },
+    policy: (input) => {
+      const result = opPolicy(deps, input);
+      changed("policy_changed");
+      return result;
+    },
+    log: (input) => {
+      const result = opLog(deps, input);
+      changed("log_changed");
+      return result;
+    },
+    "allowlist.rm": (input) => {
+      const result = opAllowlistRemove(deps, input);
+      changed("policy_changed");
+      return result;
+    },
+    setup: async (input) => {
+      const result = await opSetup(deps, input);
+      changed("policy_changed");
+      return result;
+    },
+    verify: () => opVerify(deps),
+  };
 }

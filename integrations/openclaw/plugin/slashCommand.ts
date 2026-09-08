@@ -44,6 +44,7 @@ import {
   type SessionPolicyFlags,
 } from "./sessionPolicy.ts";
 import { sessionIdsOf, type SessionIds } from "./sessionStore.ts";
+import { mergeSessionRows, type HostSession } from "./hostSessions.ts";
 
 export const SENTROOK_COMMAND_NAME = "sentrook";
 export const CHANNEL_DISCLOSURE =
@@ -96,6 +97,7 @@ export type SlashPersistResult = { persisted: boolean; error?: string };
 export type SlashDeps = {
   sessionOf: (ids: SessionIds) => SlashSession;
   listSessions: () => SlashSession[];
+  listHostSessions?: () => HostSession[];
   listCards?: () => SlashCard[];
   sensitivity: () => Sensitivity;
   setSensitivity: (value: Sensitivity) => SlashPersistResult;
@@ -129,7 +131,7 @@ const HELP_TEXT = [
   "/sentrook policy             all settings + current-choice lines",
   "/sentrook pending [all|id]   this session; all = gateway; <id> = full command",
   "/sentrook history [all|gateway|before <id>|n|id]  newest 8, max 20",
-  "/sentrook sessions           live session allow-all / quiet",
+  "/sentrook sessions           OpenClaw sessions + allow-all / quiet flags",
   "/sentrook allow-all [all|session <key>] [on|off]",
   "/sentrook quiet [all|session <key>] <duration|off>",
   "/sentrook sensitivity [attended|unattended] [strict|info|warning|critical]",
@@ -142,7 +144,7 @@ const HELP_TEXT = [
   "still need /approve. Unattended uses /sentrook sensitivity unattended.",
   "Block and scan errors are never skipped.",
   "",
-  "Dashboard: /sentrook on this gateway (same port as Control UI, usually 18789).",
+  "Dashboard: Control UI Sentrook tab is a sandboxed preview (leaving it can freeze the iframe). Prefer these verbs for settings, or copy the panel URL into a normal browser tab. Same gateway port as Control UI (usually 18789).",
   CHANNEL_DISCLOSURE,
 ].join("\n");
 
@@ -277,8 +279,26 @@ function findNamedSession(deps: SlashDeps, token: string): SlashSession | undefi
     (s) => s.sessionKey?.toLowerCase() === needle || s.sessionId?.toLowerCase() === needle,
   );
   if (exact) return exact;
-  if (needle.length < 4) return undefined;
-  return sessions.find((s) => s.sessionId?.toLowerCase().startsWith(needle));
+  if (needle.length >= 4) {
+    const prefix = sessions.find((s) => s.sessionId?.toLowerCase().startsWith(needle));
+    if (prefix) return prefix;
+  }
+  const host = deps.listHostSessions?.() ?? [];
+  const hostHit =
+    host.find(
+      (s) => s.sessionKey.toLowerCase() === needle || s.sessionId?.toLowerCase() === needle,
+    ) ??
+    (needle.length >= 4
+      ? host.find((s) => s.sessionId?.toLowerCase().startsWith(needle))
+      : undefined);
+  if (!hostHit) return undefined;
+  const created = deps.sessionOf({
+    sessionId: hostHit.sessionId,
+    sessionKey: hostHit.sessionKey,
+  });
+  if (hostHit.sessionId) created.sessionId = hostHit.sessionId;
+  if (hostHit.sessionKey) created.sessionKey = hostHit.sessionKey;
+  return created;
 }
 
 function sessionLabel(session: SlashSession): string {
@@ -406,8 +426,8 @@ function formatEventDetail(event: OperatorLogEvent, outcome: ScanOutcome | undef
   const severity = (event.scan as { review_severity?: string } | undefined)?.review_severity;
   const hostedLine =
     hosted === "review" && typeof severity === "string" && severity.trim()
-      ? `hosted: review (${severity.trim()})`
-      : `hosted: ${hosted}`;
+      ? `scan: review (${severity.trim()})`
+      : `scan: ${hosted}`;
   const lines = [
     `${event.id}  ${event.ts}  ${eventTool(event)}`,
     hostedLine,
@@ -551,13 +571,13 @@ function formatSnapshot(deps: SlashDeps, ids: SessionIds, session: SlashSession)
     "Sentrook",
     ...formatPolicyBlock(deps, ids, session),
     ...pendingBlock,
-    `dashboard: /sentrook on this gateway`,
+    `dashboard: Control UI Sentrook tab (preview) or /sentrook verbs`,
     MORE_COMMANDS,
   ].join("\n");
 }
 
 function formatStatus(deps: SlashDeps, ids: SessionIds, session: SlashSession): string {
-  return ["Sentrook status", ...formatPolicyBlock(deps, ids, session), `dashboard: /sentrook on this gateway`].join(
+  return ["Sentrook status", ...formatPolicyBlock(deps, ids, session), `dashboard: Control UI Sentrook tab (preview) or /sentrook verbs`].join(
     "\n",
   );
 }
@@ -582,17 +602,25 @@ function formatPolicyShow(deps: SlashDeps, ids: SessionIds, session: SlashSessio
 
 function formatSessions(deps: SlashDeps): string {
   const now = deps.now();
-  const rows = deps.listSessions();
+  const rows = mergeSessionRows(
+    deps.listHostSessions?.() ?? [],
+    deps.listSessions().map((s) => ({
+      sessionId: s.sessionId,
+      sessionKey: s.sessionKey,
+      allowAll: s.allowAll,
+      quietUntilMs: s.quietUntilMs,
+      pending: pendingRows(s).length,
+    })),
+  );
   if (rows.length === 0) {
-    return "No live sessions.";
+    return "No sessions in the OpenClaw store.";
   }
   const lines = [
-    "Live sessions",
+    "OpenClaw sessions",
     "key  id  pending  allow-all  quiet",
     ...rows.map((s) => {
-      const pending = pendingRows(s).length;
       const quiet = quietLeftLabel(s.quietUntilMs, now);
-      return `${s.sessionKey ?? "—"}  ${s.sessionId ?? "—"}  ${pending}  ${s.allowAll ? "on" : "off"}  ${quiet}`;
+      return `${s.sessionKey ?? "—"}  ${s.sessionId ?? "—"}  ${s.pending}  ${s.allowAll ? "on" : "off"}  ${quiet}`;
     }),
     "",
     "/sentrook allow-all session <key> on|off    /sentrook quiet session <key> 30m|off",
@@ -621,7 +649,7 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
     case "pending":
       return [
         "Usage: /sentrook pending [all|id]",
-        "Short list of hosted reviews waiting on a human. <id> posts the full scrubbed command.",
+        "Short list of reviews waiting on a human. <id> posts the full scrubbed command.",
         "all = every session on this gateway. Default is this session.",
         "Already-open cards still need /approve. Allow-all/quiet do not close them.",
         `This session: ${pendingRows(session).length} pending.`,
@@ -631,13 +659,13 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
         "Usage: /sentrook history [all|gateway|before <id>|n|id]",
         "Newest first, 8 per reply (max 20). Default = review/block/scan-error for this session.",
         "all = every scan in this session (includes allows). gateway = interesting events across sessions.",
-        "before <id> = older than that row. <id> = hosted decision, what happened next, whether it ran, full command.",
+        "before <id> = older than that row. <id> = scan decision, what happened next, whether it ran, full command.",
         "Lists never include rule ids. Not a dump of the dashboard timeline.",
       ].join("\n");
     case "sessions":
       return [
         "Usage: /sentrook sessions",
-        "Live sessions and their in-memory allow-all / quiet flags (dashboard Per session table).",
+        "OpenClaw sessions (Control UI store) with Sentrook allow-all / quiet flags. Flags are in-memory.",
         "Set with /sentrook allow-all session <key> on|off and /sentrook quiet session <key> 30m|off.",
         "",
         formatSessions(deps),
@@ -645,7 +673,7 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
     case "allow-all":
     case "allowall":
       return [
-        "Allow-all skips future hosted reviews (still scanned). Never skips block, scan errors, or unattended runs.",
+        "Allow-all skips future reviews (still scanned). Never skips block, scan errors, or unattended runs.",
         "In-memory: gateway restart clears gateway flags; session_end clears that session. Cards already waiting still need /approve.",
         "",
         "Usage:",
@@ -670,7 +698,7 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
       ].join("\n");
     case "sensitivity":
       return [
-        "Persisted review floors after hosted review. Each step includes every lower level. Blocks and scan errors still stop.",
+        "Persisted review floors. Each step includes every lower level. Blocks and scan errors still stop.",
         "Environment SENTROOK_SENSITIVITY / SENTROOK_UNATTENDED_SENSITIVITY still win after a restart.",
         "critical requires a trailing confirm.",
         "",
@@ -690,7 +718,7 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
     case "scan-error":
     case "scanerror":
       return [
-        "What happens if hosted /scan fails. Auth failures still block. allow requires a trailing confirm. Persists in plugin config.",
+        "What happens if /scan fails. Auth failures still block. allow requires a trailing confirm. Persists in plugin config.",
         "",
         "Usage: /sentrook scan-error [review|deny|allow] [confirm]",
         `Now: ${deps.onScanError()}. ${scanErrorHint(deps.onScanError())}`,
@@ -699,7 +727,7 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
       const path = deps.allowlist.path || resolveAllowlistCliPath();
       const n = loadAllowlist(path).entries.length;
       return [
-        "Local short-circuit after a hosted review. Matching calls skip the prompt; they still go to /scan. Hosted blocks always win.",
+        "Local short-circuit after a review. Matching calls skip the prompt; they still go to /scan. Blocks always win.",
         "",
         "Skeleton: same tool and argument shape. Volatile bits (dates, UUIDs, integers) may change. A new flag or a different binary is a different skeleton.",
         "Script bind: interpreter + path + content hash, plus a narrow args skeleton. Editing the file breaks the bind. Not inline -c / curl | bash.",
@@ -1046,12 +1074,12 @@ function applyAllowAll(target: SlashSession | "gateway", on: boolean, deps: Slas
       for (const st of deps.listSessions()) st.allowAll = false;
     }
     return on
-      ? "Allow-all on for every attended session. Future hosted reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve. Gateway restart clears this."
+      ? "Allow-all on for every attended session. Future reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve. Gateway restart clears this."
       : "Allow-all off gateway-wide. Session allow-all flags cleared. Future reviews will prompt again.";
   }
   target.allowAll = on;
   return on
-    ? "Allow-all on for this session. Future hosted reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve. Gateway restart or session end clears this."
+    ? "Allow-all on for this session. Future reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve. Gateway restart or session end clears this."
     : "Allow-all off. Future reviews will prompt again.";
 }
 
@@ -1084,12 +1112,12 @@ function applyQuiet(target: SlashSession | "gateway", untilMs: number | null, de
     deps.setQuietUntilMs(untilMs);
     if (untilMs == null) return "Quiet off gateway-wide. Future reviews will prompt again.";
     const left = formatDuration(quietRemainingMs(untilMs, deps.now()));
-    return `Quiet on for ${left} on every attended session. Future hosted reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve.`;
+    return `Quiet on for ${left} on every attended session. Future reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve.`;
   }
   target.quietUntilMs = untilMs;
   if (untilMs == null) return "Quiet off. Future reviews will prompt again.";
   const left = formatDuration(quietRemainingMs(untilMs, deps.now()));
-  return `Quiet on for ${left} in this session. Future hosted reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve.`;
+  return `Quiet on for ${left} in this session. Future reviews skip the card (still scanned). Blocks, scan errors, and unattended runs are not skipped. Already-open cards still need /approve.`;
 }
 
 function handleQuiet(deps: SlashDeps, session: SlashSession, rest: string): string {
@@ -1139,12 +1167,12 @@ function handleSensitivity(deps: SlashDeps, rest: string): string {
   }
   if (value === "critical" && !confirm) {
     return scope === "unattended"
-      ? "critical auto-approves every hosted review on cron/subagent runs. Re-run: /sentrook sensitivity unattended critical confirm"
-      : "critical auto-approves every hosted review while you are present. Re-run: /sentrook sensitivity critical confirm";
+      ? "critical auto-approves every review on cron/subagent runs. Re-run: /sentrook sensitivity unattended critical confirm"
+      : "critical auto-approves every review while you are present. Re-run: /sentrook sensitivity critical confirm";
   }
   const result =
     scope === "unattended" ? deps.setUnattendedSensitivity(value) : deps.setSensitivity(value);
-  return `${scope === "unattended" ? "Unattended" : "Attended"} sensitivity ${value}. ${savedLine(result)} Hosted L2/L3 is unchanged.`;
+  return `${scope === "unattended" ? "Unattended" : "Attended"} sensitivity ${value}. ${savedLine(result)} Blocks and scan errors still stop.`;
 }
 
 function handleFeedback(deps: SlashDeps, rest: string): string {

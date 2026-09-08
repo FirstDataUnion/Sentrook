@@ -1,10 +1,13 @@
 /**
  * Operator-facing exec review copy for OpenClaw requireApproval.
  *
- * OpenClaw maps ``title`` → Command (80 chars) and ``description`` → Shell
- * Preview (host cap 512). Cards are rebuilt from local pending args so hosted
+ * OpenClaw maps ``title`` (80) and ``description`` (512) onto every approval
+ * surface. Chat channels (Discord/Telegram) typically show both; the Control UI
+ * overlay reuses the exec-approval chrome and may show the tool invocation
+ * instead of description. Cards are rebuilt from local pending args so hosted
  * PlanIR truncation cannot hide the action. Secrets are still scrubbed because
- * Discord/Telegram forward the same strings.
+ * Discord/Telegram forward the same strings. Every description ends with a
+ * pointer to the Sentrook tab and ``/sentrook pending <id>``.
  *
  * Title ladder (structural, not product-specific): destination, sensitive
  * operand, packed argv, then an honest miss. Never a rule id.
@@ -15,6 +18,21 @@ import { packSignalExcerpt, scrubSecrets } from "./sanitize.ts";
 
 export const REVIEW_TITLE_MAX = 80;
 export const REVIEW_DESCRIPTION_MAX = 512;
+
+/** Last line on every chat/Control UI card. Prefer passing the operator-log id. */
+export function dashboardReviewHint(eventId?: string): string {
+  const id = eventId?.trim();
+  const cmd = id ? `/sentrook pending ${id}` : "/sentrook pending";
+  return `To see the full command and scan results, check the Sentrook tab on the OpenClaw page, or type ${cmd}.`;
+}
+
+export function withDashboardHint(body: string, eventId?: string): string {
+  const tail = dashboardReviewHint(eventId);
+  const budget = REVIEW_DESCRIPTION_MAX - tail.length - 1;
+  const rest = budget > 0 ? clip(body, budget) : "";
+  const out = rest ? `${rest}\n${tail}` : tail;
+  return out.length <= REVIEW_DESCRIPTION_MAX ? out : clip(out, REVIEW_DESCRIPTION_MAX);
+}
 
 const TRUNCATED_TOKEN = "[TRUNCATED]";
 const MIN_COMMAND_CHARS = 16;
@@ -612,6 +630,7 @@ export function overlayApprovalCopy(input: {
   fallbackDescription: string;
   pendingTool: string;
   pendingArgs?: Record<string, unknown>;
+  eventId?: string;
 }): ApprovalCopy {
   const localCommand = pendingDisplayCommand(input.pendingArgs);
   const localArgs = hasStructuredPreview(input.pendingArgs);
@@ -623,7 +642,7 @@ export function overlayApprovalCopy(input: {
     });
     return {
       title: card.title,
-      description: card.description,
+      description: withDashboardHint(card.description, input.eventId),
       source: "local_argv",
       commandFound: card.commandFound,
     };
@@ -634,14 +653,14 @@ export function overlayApprovalCopy(input: {
   if (isPolicyHeadline(titleIn)) {
     return {
       title: honestMissTitle(input.pendingTool),
-      description: clip(descriptionIn, REVIEW_DESCRIPTION_MAX),
+      description: withDashboardHint(descriptionIn, input.eventId),
       source: "honest_miss",
       commandFound: false,
     };
   }
   return {
     title: clip(titleIn, REVIEW_TITLE_MAX),
-    description: clip(descriptionIn, REVIEW_DESCRIPTION_MAX),
+    description: withDashboardHint(descriptionIn, input.eventId),
     source: "sidecar",
     commandFound: false,
   };

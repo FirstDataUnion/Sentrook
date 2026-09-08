@@ -83,11 +83,13 @@ describe("scanErrorToHookResult", () => {
     const result = scanErrorToHookResult(timeoutFailure, {
       onScanError: "review",
       ...interactive,
+      eventId: "sr_aabbccddeeff",
     });
     const approval = result?.requireApproval;
     assert.ok(approval);
     assert.equal(approval.title, "Sentrook unreachable");
     assert.match(approval.description, /continue anyway without scanning/);
+    assert.match(approval.description, /\/sentrook pending sr_aabbccddeeff/);
     assert.deepEqual(approval.allowedDecisions, ["allow-once", "deny"]);
     assert.equal(approval.timeoutBehavior, "deny");
     assert.equal(approval.pluginId, "sentrook-openclaw");

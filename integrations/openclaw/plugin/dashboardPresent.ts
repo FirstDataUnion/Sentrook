@@ -327,6 +327,7 @@ export function dashboardFingerprint(state: {
     resultOk?: boolean;
     decision?: string;
   }>;
+  setupNeeded?: boolean;
 }): string {
   const pending = pendingFingerprint(state.pending);
   const hist = (state.history ?? [])
@@ -335,5 +336,5 @@ export function dashboardFingerprint(state: {
       return `${row.id ?? ""}:${row.resolution ?? ""}:${ok}:${row.decision ?? ""}`;
     })
     .join("|");
-  return `${pending}#${hist}`;
+  return `${pending}#${hist}#${state.setupNeeded ? "1" : "0"}`;
 }

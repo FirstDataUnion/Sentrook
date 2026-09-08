@@ -16,6 +16,7 @@ import plugin from "./index.ts";
 import { loadAllowlist } from "./localAllowlist.ts";
 import { hashSessionId } from "./sanitize.ts";
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
+import { ACCESS_HEADER, tabAccessFromPathname } from "./dashboardAuth.ts";
 
 const realFetch = globalThis.fetch;
 
@@ -88,6 +89,7 @@ function createMockApi(
   }> = [];
   const controlUi: Array<Record<string, unknown>> = [];
   const gatewayCalls: Array<{ method: string; params?: unknown }> = [];
+  const sessionActions: Array<{ id: string; requiredScopes?: string[] }> = [];
   const api = {
     pluginConfig,
     registrationMode: "full" as const,
@@ -120,21 +122,34 @@ function createMockApi(
           return { ok: true };
         },
       },
+      agent: {
+        session: {
+          listSessionEntries: () => [
+            { sessionKey: "main", entry: { sessionId: "host-main", updatedAt: 2 } },
+            { sessionKey: "discord:ops", entry: { sessionId: "host-discord", updatedAt: 1 } },
+          ],
+        },
+      },
     },
     session: {
       controls: {
         registerControlUiDescriptor(descriptor: Record<string, unknown>) {
           controlUi.push(descriptor);
         },
+        registerSessionAction(action: { id: string; requiredScopes?: string[] }) {
+          sessionActions.push(action);
+        },
       },
     },
+    registerService() {},
   };
-  return { api, handlers, hookOpts, warns, infos, commands, httpRoutes, controlUi, gatewayCalls };
+  return { api, handlers, hookOpts, warns, infos, commands, httpRoutes, controlUi, gatewayCalls, sessionActions };
 }
 
 async function withHttpHandler(
   handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => unknown,
   fn: (base: string) => Promise<void>,
+  opts?: { access?: string },
 ): Promise<void> {
   const server = createServer((req, res) => {
     void Promise.resolve(handler(req, res)).catch((err) => {
@@ -146,10 +161,32 @@ async function withHttpHandler(
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+  const origFetch = globalThis.fetch;
+  const access = opts?.access ?? "";
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    if (access) {
+      const headers = new Headers(init?.headers);
+      if (!headers.has(ACCESS_HEADER)) headers.set(ACCESS_HEADER, access);
+      return origFetch(input, { ...init, headers });
+    }
+    return origFetch(input, init);
+  }) as typeof fetch;
   try {
-    await fn(`http://127.0.0.1:${port}`);
+    await fn(base);
   } finally {
+    globalThis.fetch = origFetch;
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+function accessFromTab(controlUi: Array<Record<string, unknown>>): string {
+  const path = String(controlUi[0]?.path ?? "");
+  try {
+    const url = new URL(path, "http://127.0.0.1");
+    return url.searchParams.get("access") ?? tabAccessFromPathname(url.pathname) ?? "";
+  } catch {
+    return "";
   }
 }
 
@@ -1972,7 +2009,7 @@ describe("plugin.register — /sentrook session policy", () => {
         }
         return realFetch(input, init);
       }) as typeof fetch;
-      const { api, handlers, commands, httpRoutes } = createMockApi(
+      const { api, handlers, commands, httpRoutes, controlUi } = createMockApi(
         { timeoutMs: 1500 },
         {
           gatewayRequest: async (method) => {
@@ -2016,7 +2053,7 @@ describe("plugin.register — /sentrook session policy", () => {
         };
         assert.equal(state.pending.some((c) => c.toolCallId === "t1"), true);
         assert.equal(state.pending.some((c) => c.toolCallId === "t2"), false);
-      });
+      }, { access: accessFromTab(controlUi) });
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
@@ -2158,17 +2195,38 @@ describe("plugin.register — /sentrook session policy", () => {
 });
 
 describe("plugin.register — /sentrook dashboard", () => {
-  it("registers a gateway-auth prefix route and Control UI tab", () => {
-    const { api, httpRoutes, controlUi, infos } = createMockApi({ timeoutMs: 1500 });
+  it("registers a plugin-auth dashboard prefix and Control UI tab with an access token", () => {
+    const { api, httpRoutes, controlUi, infos, sessionActions } = createMockApi({ timeoutMs: 1500 });
     plugin.register(api as never);
     assert.equal(httpRoutes.length, 1);
     assert.equal(httpRoutes[0]?.path, "/sentrook");
-    assert.equal(httpRoutes[0]?.auth, "gateway");
+    assert.equal(httpRoutes[0]?.auth, "plugin");
     assert.equal(httpRoutes[0]?.match, "prefix");
     assert.equal(controlUi[0]?.id, "sentrook");
-    assert.equal(controlUi[0]?.path, "/sentrook");
+    assert.match(String(controlUi[0]?.path), /^\/sentrook\/tab\//);
+    assert.equal(controlUi[0]?.auth, undefined);
     assert.deepEqual(controlUi[0]?.requiredScopes, ["operator.admin"]);
     assert.ok(infos.some((m) => /dashboard \/sentrook/.test(m)));
+    assert.deepEqual(
+      sessionActions.map((action) => action.id).sort(),
+      ["allowlist.rm", "log", "policy", "resolve", "setup", "state", "verify"],
+    );
+    assert.deepEqual(sessionActions.find((action) => action.id === "state")?.requiredScopes, ["operator.read"]);
+    assert.deepEqual(sessionActions.find((action) => action.id === "policy")?.requiredScopes, ["operator.write"]);
+  });
+
+  it("Per session table lists host store rows before any scan", async () => {
+    const { api, httpRoutes, controlUi } = createMockApi({ timeoutMs: 1500 });
+    plugin.register(api as never);
+    const handler = httpRoutes[0]?.handler;
+    assert.ok(handler);
+    await withHttpHandler(handler, async (base) => {
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        sessions: Array<{ sessionKey?: string; sessionId?: string }>;
+      };
+      assert.ok(state.sessions.some((s) => s.sessionKey === "discord:ops"));
+      assert.ok(state.sessions.some((s) => s.sessionId === "host-main"));
+    }, { access: accessFromTab(controlUi) });
   });
 
   it("stashes a review card and resolve calls plugin.approval.resolve", async () => {
@@ -2195,7 +2253,7 @@ describe("plugin.register — /sentrook dashboard", () => {
         return realFetch(input, init);
       }) as typeof fetch;
 
-      const { api, handlers, httpRoutes, gatewayCalls } = createMockApi(
+      const { api, handlers, httpRoutes, gatewayCalls, controlUi } = createMockApi(
         { timeoutMs: 1500 },
         {
           gatewayRequest: async (method) => {
@@ -2240,7 +2298,7 @@ describe("plugin.register — /sentrook dashboard", () => {
           body: JSON.stringify({ toolCallId: "t1", decision: "allow-once" }),
         });
         assert.equal(res.status, 200);
-      });
+      }, { access: accessFromTab(controlUi) });
       assert.ok(
         gatewayCalls.some(
           (c) =>
