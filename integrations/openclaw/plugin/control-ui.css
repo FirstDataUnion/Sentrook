@@ -632,6 +632,20 @@
   .srk .btn-deny { margin-left: 0; }
   .srk .allow-kinds { grid-template-columns: 1fr; }
 }
+.srk .slash-cmds {
+  list-style: none; margin: 0.55rem 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 0.35rem;
+}
+.srk .slash-cmds li {
+  display: flex; flex-wrap: wrap; gap: 0.35rem 0.7rem; align-items: baseline;
+  color: var(--muted); font-size: 0.86rem;
+}
+.srk .slash-cmd, .srk .slash-cmds code {
+  display: inline-block; background: var(--inset); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.18rem 0.45rem; color: var(--fg); font-size: 0.82rem;
+  user-select: all;
+}
+.srk .current { margin: 0 0 0.45rem; color: var(--fg); font-size: 0.9rem; }
 .srk .beta-note {
   margin: 0; padding: 0.55rem 1.1rem; font-size: 0.82rem; color: var(--muted);
   border-bottom: 1px solid var(--line); background: var(--elev);

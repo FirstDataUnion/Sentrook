@@ -1372,7 +1372,7 @@ const plugin = {
       api.session?.controls?.registerControlUiDescriptor?.({
         surface: "tab",
         id: "sentrook",
-        label: uiSupport === "native" ? "Sentrook (read-only)" : "Sentrook",
+        label: "Sentrook (read-only)",
         description: readOnlyTabMessage(uiSupport, hostVersion),
         path: dashboardTabPath(accessToken),
         group: "control",

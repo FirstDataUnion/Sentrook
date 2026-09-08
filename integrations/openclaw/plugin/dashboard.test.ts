@@ -209,9 +209,13 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /data-tab="settings"/);
       assert.doesNotMatch(html, /data-tab="sessions"/);
       assert.doesNotMatch(html, /data-tab="log"/);
-      assert.match(html, /data-allow-mode="on"/);
-      assert.match(html, /data-feedback="submit"/);
-      assert.match(html, /data-log="wipe"/);
+      assert.doesNotMatch(html, /data-act=/);
+      assert.doesNotMatch(html, /data-allow-mode=/);
+      assert.doesNotMatch(html, /data-feedback=/);
+      assert.doesNotMatch(html, /data-log=/);
+      assert.match(html, /\/sentrook allow-all all on/);
+      assert.match(html, /\/sentrook feedback submit/);
+      assert.match(html, /\/sentrook log purge all confirm/);
       assert.match(html, /<details class="help-fold" id="allow-help">/);
       assert.match(html, /How skeleton and script-bind matchers work/);
       assert.match(html, /Script bind/);
@@ -229,20 +233,20 @@ describe("handleSentrookHttp", () => {
         /Unattended runs use the unattended sensitivity above\. No gateway-wide quiet window/,
       );
       assert.doesNotMatch(html, /Review asks \(interactive\); deny blocks/);
-      const allowButtons = html.indexOf('data-allow-mode="on"');
+      const allowCmdAt = html.indexOf("/sentrook allow-all all on");
       const allowHintAt = html.indexOf("No gateway-wide allow-all.");
-      assert.ok(allowButtons >= 0 && allowHintAt > allowButtons);
+      assert.ok(allowCmdAt >= 0 && allowHintAt > 0);
       assert.match(html, /<p class="floor-hint">No gateway-wide allow-all\./);
-      const quietButtons = html.indexOf('data-quiet-global="off"');
+      const quietCmdAt = html.indexOf("/sentrook quiet all off");
       const quietHintAt = html.indexOf("No gateway-wide quiet window.");
-      assert.ok(quietButtons >= 0 && quietHintAt > quietButtons);
+      assert.ok(quietCmdAt >= 0 && quietHintAt > 0);
       assert.match(html, /<p class="floor-hint">No gateway-wide quiet window\.<\/p>/);
-      const feedbackButtons = html.indexOf('data-feedback="off"');
+      const feedbackCmdAt = html.indexOf("/sentrook feedback off");
       const feedbackHintAt = html.indexOf("Posts sanitized allow-once and deny reviews");
-      assert.ok(feedbackButtons >= 0 && feedbackHintAt > feedbackButtons);
-      const scanButtons = html.indexOf('data-scan-error="allow"');
+      assert.ok(feedbackCmdAt >= 0 && feedbackHintAt > 0);
+      const scanCmdAt = html.indexOf("/sentrook scan-error allow confirm");
       const scanHintAt = html.indexOf("Ask on interactive runs when /scan fails");
-      assert.ok(scanButtons >= 0 && scanHintAt > scanButtons);
+      assert.ok(scanCmdAt >= 0 && scanHintAt > 0);
       const sensAt = html.indexOf("<h3>Attended tool review sensitivity</h3>");
       const unattAt = html.indexOf("<h3>Unattended tool review sensitivity</h3>");
       const allowAt = html.indexOf("<h3>Allow-all</h3>");
@@ -255,15 +259,16 @@ describe("handleSentrookHttp", () => {
           allowAt < quietAt &&
           quietAt < sessAt,
       );
-      assert.match(html, /data-sens="info"/);
-      assert.match(html, /data-sens="warning"/);
-      assert.match(html, /data-sens="critical"/);
-      assert.match(html, /data-sens-scope="unattended"/);
-      assert.match(html, /data-verify="1"/);
+      assert.match(html, /\/sentrook sensitivity attended info/);
+      assert.match(html, /\/sentrook sensitivity attended warning/);
+      assert.match(html, /\/sentrook sensitivity attended critical confirm/);
+      assert.match(html, /\/sentrook sensitivity unattended/);
+      assert.match(html, /openclaw sentrook verify/);
+      assert.doesNotMatch(html, /data-verify=/);
       assert.doesNotMatch(html, /First-run setup/);
       assert.doesNotMatch(html, /data-setup-save/);
       assert.doesNotMatch(html, /reloadKeepingScroll/);
-      assert.match(html, /reloadAfter/);
+      assert.doesNotMatch(html, /reloadAfter/);
       assert.doesNotMatch(html, /copyDashboardBody/);
       assert.doesNotMatch(html, /DOMParser/);
       assert.doesNotMatch(html, /location\.reload\(/);
@@ -272,37 +277,40 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /e\.metaKey \|\| e\.ctrlKey/);
       assert.match(html, /sentrook-flash/);
       assert.match(html, /flash-error/);
-      assert.match(html, /function apiUrl/);
-      assert.match(html, /TAB_PREFIX/);
-      assert.match(html, /_srk/);
+      assert.doesNotMatch(html, /function apiUrl/);
+      assert.doesNotMatch(html, /TAB_PREFIX/);
+      assert.doesNotMatch(html, /_srk/);
       assert.match(html, /class="ver"/);
       assert.match(html, new RegExp(pluginPackageVersion().replace(/\./g, "\\.")));
-      assert.match(html, /credentials: "omit"/);
+      assert.doesNotMatch(html, /credentials: "omit"/);
       assert.doesNotMatch(html, /credentials: "include"/);
       assert.match(html, /iframe-note/);
-      assert.match(html, /data-panel-url/);
+      assert.match(html, /This panel is read-only/);
+      assert.match(html, /This \/sentrook page cannot save/);
+      assert.match(html, /Custom plugin UI/);
+      assert.doesNotMatch(html, /data-panel-url/);
       assert.match(html, /in-frame/);
       assert.doesNotMatch(html, /pollOk/);
       assert.doesNotMatch(html, /pollState/);
       assert.doesNotMatch(html, /data-copy-url/);
-      assert.match(html, /askConfirm/);
-      assert.match(html, /data-confirm-ok/);
+      assert.doesNotMatch(html, /askConfirm/);
+      assert.doesNotMatch(html, /data-confirm-ok/);
       assert.doesNotMatch(html, /!confirm\(/);
-      assert.match(html, /content-type": "text\/plain"/);
-      assert.match(html, /_tok: ACCESS/);
-      assert.match(html, /errorFromResponse/);
+      assert.doesNotMatch(html, /content-type": "text\/plain"/);
+      assert.doesNotMatch(html, /_tok: ACCESS/);
+      assert.doesNotMatch(html, /errorFromResponse/);
       assert.match(html, /translate\(-50%, 0\)/);
       assert.match(html, /data-access="/);
       assert.doesNotMatch(html, /x-sentrook-access/);
-      assert.ok(html.includes(GATEWAY_TAB_WRITE_HINT));
       assert.doesNotMatch(html, /throw new Error\(data\.error/);
       assert.doesNotMatch(html, /Control UI iframe cookies are GET-only/);
+      assert.doesNotMatch(html, /sandboxed\. Switching away can freeze/);
       assert.match(html, /sentrook-page-scroll/);
-      assert.doesNotMatch(html, /data-sens="lenient"/);
+      assert.doesNotMatch(html, /data-sens=/);
       assert.match(html, /Auto-accept reviews at or below the selected severity/);
       assert.match(html, /Prompt every review while you are present/);
       assert.match(html, /Cron and subagent reviews are never auto-accepted/);
-      assert.match(html, /Auto-approve every review, including critical ones/);
+      assert.match(html, /critical confirm/);
       assert.match(html, /data-severity="warning"/);
       assert.match(html, /<span class="risk-num">80<\/span>/);
       assert.match(html, /curl /);
@@ -324,8 +332,10 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /data-tl-open-session="main"/);
       assert.match(html, /<dt>Session id<\/dt><dd><code>uuid-1<\/code><\/dd>/);
       assert.match(html, /Allow once/);
-      assert.match(html, /\/approve plugin:abc/);
-      assert.match(html, /If allow\/deny fails/);
+      assert.match(html, /\/approve plugin:abc allow-once/);
+      assert.match(html, /\/approve plugin:abc allow-always/);
+      assert.match(html, /\/approve plugin:abc deny/);
+      assert.doesNotMatch(html, /If allow\/deny fails/);
       const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
         pending: Array<{ command: string; approvalId?: string; eventId?: string; toolCallId?: string }>;
         history: Array<{ id?: string; decision?: string }>;
@@ -597,8 +607,8 @@ describe("handleSentrookHttp", () => {
       };
       assert.equal(state.sensitivity, "warning");
       const html = await (await fetch(`${base}/sentrook`)).text();
-      assert.match(html, /class="floor-info floor-covered"/);
-      assert.match(html, /class="floor-warning floor-on"/);
+      assert.match(html, /Now: <strong>Warning<\/strong>/);
+      assert.match(html, /\/sentrook sensitivity attended warning/);
       assert.match(html, /Auto-accept info and warning reviews\. Critical still waits for you/);
       assert.equal(state.allowAll, false);
       assert.equal(state.sessions.some((s) => s.sessionId === "uuid-1" && s.allowAll), true);
@@ -638,7 +648,8 @@ describe("handleSentrookHttp", () => {
       const html = await (await fetch(`${base}/sentrook`)).text();
       assert.match(html, /class="sess-list"/);
       assert.match(html, /class="sess-key"/);
-      assert.match(html, /class="sess-actions seg"/);
+      assert.match(html, /class="sess-actions"/);
+      assert.match(html, /\/sentrook allow-all session /);
       assert.match(html, /overflow-wrap: anywhere/);
       assert.match(html, /id="sess-more"/);
       assert.match(html, /Show 2 more sessions/);
@@ -774,22 +785,22 @@ describe("handleSentrookHttp", () => {
       assert.equal(state.feedbackMode, "off");
       assert.equal(state.onScanError, "deny");
       const quietHtml = await (await fetch(`${base}/sentrook`)).text();
-      const allowBtnAt = quietHtml.indexOf('data-allow-mode="on"');
+      const allowCmdAt = quietHtml.indexOf("/sentrook allow-all all on");
       const allowOnHintAt = quietHtml.indexOf("Skipping reviews for every attended session");
-      assert.ok(allowBtnAt >= 0 && allowOnHintAt > allowBtnAt);
-      const quietBtnAt = quietHtml.indexOf('data-quiet-global="8h"');
+      assert.ok(allowCmdAt >= 0 && allowOnHintAt >= 0);
+      const quietCmdAt = quietHtml.indexOf("/sentrook quiet all 8h");
       const quietOnHintAt = quietHtml.indexOf("Quiet for every session");
-      assert.ok(quietBtnAt >= 0 && quietOnHintAt > quietBtnAt);
+      assert.ok(quietCmdAt >= 0 && quietOnHintAt >= 0);
       assert.match(quietHtml, /<p class="floor-hint">Quiet for every session \([^<]+\)\.<\/p>/);
       const sessionTableAt = quietHtml.indexOf('id="set-sessions"');
       const sessionHintAt = quietHtml.indexOf("Global allow-all is on — session allow-all flags are ignored");
       assert.ok(sessionTableAt >= 0 && sessionHintAt > sessionTableAt);
-      const feedbackOffAt = quietHtml.indexOf('data-feedback="off"');
+      const feedbackOffAt = quietHtml.indexOf("/sentrook feedback off");
       const feedbackOffHintAt = quietHtml.indexOf("No review feedback is sent.");
-      assert.ok(feedbackOffAt >= 0 && feedbackOffHintAt > feedbackOffAt);
-      const scanDenyAt = quietHtml.indexOf('data-scan-error="deny"');
+      assert.ok(feedbackOffAt >= 0 && feedbackOffHintAt >= 0);
+      const scanDenyAt = quietHtml.indexOf("/sentrook scan-error deny");
       const scanDenyHintAt = quietHtml.indexOf("Block the tool call when /scan fails");
-      assert.ok(scanDenyAt >= 0 && scanDenyHintAt > scanDenyAt);
+      assert.ok(scanDenyAt >= 0 && scanDenyHintAt >= 0);
       const off = await fetch(`${base}/sentrook/api/policy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1212,12 +1223,13 @@ describe("handleSentrookHttp", () => {
     await withServer(deps, async (base) => {
       const html = await (await fetch(`${base}/sentrook`)).text();
       assert.match(html, /First-run setup/);
-      assert.match(html, /data-setup-save/);
-      assert.match(html, /data-setup-client-secret/);
-      assert.match(html, /type="password"/);
+      assert.match(html, /openclaw sentrook configure/);
+      assert.doesNotMatch(html, /data-setup-save/);
+      assert.doesNotMatch(html, /data-setup-client-secret/);
+      assert.doesNotMatch(html, /type="password"/);
       assert.match(html, /identity\.firstdataunion\.org/);
-      assert.match(html, /data-setup-feedback="submit"/);
-      assert.doesNotMatch(html, /data-verify="/);
+      assert.doesNotMatch(html, /data-setup-feedback=/);
+      assert.doesNotMatch(html, /data-verify=/);
       assert.doesNotMatch(html, /All clear/);
       const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
         setupNeeded: boolean;
@@ -1303,7 +1315,8 @@ describe("handleSentrookHttp", () => {
     });
     await withServer(deps, async (base) => {
       const html = await (await fetch(`${base}/sentrook`)).text();
-      assert.match(html, /Test connection/);
+      assert.match(html, /openclaw sentrook verify/);
+      assert.doesNotMatch(html, /data-verify=/);
       const res = await fetch(`${base}/sentrook/api/verify`, {
         method: "POST",
         headers: { "content-type": "application/json" },

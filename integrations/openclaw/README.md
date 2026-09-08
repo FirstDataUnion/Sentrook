@@ -324,17 +324,20 @@ confirm the card or `/approve` prompt appears where you expect.
 
 ## Operator dashboard
 
-The **editable** dashboard is a native Control UI page. It is **beta**, and
-needs **OpenClaw 2026.9.2 or later** with **Settings → Labs → Custom plugin UI**
+Two Control UI entries can appear. Use **Sentrook** (native). Treat
+**Sentrook (read-only)** as status plus command copy.
+
+The **writable** dashboard is the native Control UI page. It needs
+**OpenClaw 2026.9.2 or later** with **Settings → Labs → Custom plugin UI**
 enabled (`gateway.controlUi.experimental.customPlugins: true`), then a gateway
 restart and a browser reload.
 
 That page runs in the Control UI origin, so allow / deny / settings save
-through the signed-in operator session (`operator.write`). It does not use the
-sandboxed iframe cookie. Pending reviews refresh when the plugin emits a
-change (a new review, a resolve, a policy save) — it does not poll.
+through the signed-in operator session (`operator.write`). Pending reviews
+refresh when the plugin emits a change (a new review, a resolve, a policy
+save) — it does not poll.
 
-### Where you can open it
+### Where you can open the native page
 
 Native plugin UI needs HTTPS or a browser-trusted loopback origin
 (`http://127.0.0.1:18789/`). Plain HTTP on a LAN or public hostname can pair
@@ -347,40 +350,48 @@ and use the rest of Control UI, but cannot load native plugin pages.
 | Reverse proxy with a real TLS cert | Works |
 | `http://<lan-or-vps-ip>:18789` | Will not load native assets |
 
-### Older hosts and the iframe tab
+### Read-only iframe tab
 
 The plugin still registers a **Sentrook (read-only)** Control UI tab that
-loads `/sentrook` in a sandbox. That tab can show status. It cannot save:
-OpenClaw's iframe grant is GET/HEAD with `operator.read` only. On OpenClaw
-older than 2026.9.2, or when Custom plugin UI is off, change settings with
-`/sentrook` in chat or `openclaw sentrook …` on the CLI.
+loads `/sentrook` in a sandbox. It can show pending reviews, timeline,
+allowlist, and current policy. It does not save: OpenClaw's iframe grant is
+GET/HEAD with `operator.read` only. Each former button is replaced by the
+`/sentrook` or `/approve` command that does the same job.
+
+On OpenClaw older than 2026.9.2, or when Custom plugin UI is off, that tab
+is the only dashboard. Change settings with those commands or
+`openclaw sentrook …` on the CLI.
 
 The HTTP panel at **`/sentrook`** (same port as Control UI, default **18789**)
-remains for that fallback tab and for opening the URL in a normal browser
-with gateway auth.
+is the same read-only view, including when you open the URL in a normal
+browser.
 
 The page is tabbed:
 
-- **Reviews** (home) — when scan credentials are missing, a first-run form
-  (Identity link, client id/secret, feedback, `onScanError`) instead of the
-  empty queue. After setup: every waiting Sentrook approval OpenClaw still has
-  open (`plugin.approval.list`), joined with the local pending stash and
+- **Reviews** (home) — native: when scan credentials are missing, a first-run
+  form (Identity link, client id/secret, feedback, `onScanError`) instead of
+  the empty queue. Iframe: point at `openclaw sentrook configure` instead of
+  writing secrets. After setup: every waiting Sentrook approval OpenClaw still
+  has open (`plugin.approval.list`), joined with the local pending stash and
   operator log. Cards show severity, command (dangerous spans highlighted),
-  human-readable policy labels (not AIRA ids), and allow / deny.
-- **Timeline** — newest scans from the [operator log](#operator-log).
-- **Allowlist** — local allow-always entries. Remove one to start reviewing
-  that shape again.
+  and human-readable policy labels (not AIRA ids). Native allow / deny calls
+  `plugin.approval.resolve` so the waiting tool continues; iframe shows
+  `/approve …`.
+- **Timeline** — newest scans from the [operator log](#operator-log). Search
+  and filters are local (they do not write).
+- **Allowlist** — local allow-always entries. Native can remove one; iframe
+  shows `/sentrook allowlist rm <n>`.
 - **Settings** — allow-all and quiet; attended and unattended sensitivity;
-  `feedback.mode` and `onScanError`; operator-log retention / purge; **Test
-  connection** (`openclaw sentrook verify`).
+  `feedback.mode` and `onScanError`; operator-log retention / purge; connection
+  test. Native writes through session actions. Iframe shows the matching
+  `/sentrook` / CLI lines.
 
 To iterate on the fallback HTML without a running gateway, from `plugin/`:
 `npm run preview:dashboard` (fixture data at http://127.0.0.1:3456;
-`/unconfigured` is the first-run form).
+`/unconfigured` is the first-run / configure hint).
 
-Approve / deny calls OpenClaw `plugin.approval.resolve` so the waiting tool
-actually continues. If the host has not minted a `plugin:` id yet, the panel
-returns an error and tells you to use `/approve plugin:…` in chat.
+If the host has not minted a `plugin:` id yet, native resolve returns an
+error and tells you to use `/approve plugin:…` in chat.
 
 ## `/sentrook` chat commands
 
@@ -413,6 +424,123 @@ Lists stay short: no AIRA ids, no matched-rule dumps, no full tool results.
 
 Allow-all and quiet do **not** resolve cards already waiting on `/approve`.
 Turn them on, then still approve or deny the open ones.
+
+## Manual operator checks
+
+Run these after installing a plugin build (`npm run build` in `plugin/`,
+`openclaw plugins install . --force`, gateway restart, browser reload). Prefer
+a DM for `/sentrook`. Use loopback or HTTPS for the native page.
+
+### Native Sentrook (writable)
+
+Prerequisites: OpenClaw ≥ 2026.9.2, Labs → Custom plugin UI on, Control UI at
+`http://127.0.0.1:18789/` (or HTTPS). Sidebar **Sentrook**, not
+**Sentrook (read-only)**.
+
+- [ ] Page loads with no "JSON-compatible" (or other) warning. Reviews /
+      Timeline / Allowlist / Settings tabs match the original operator layout
+      (severity hero + risk, episode spine, stream timeline, floor buttons,
+      per-session allow-all/quiet).
+- [ ] Empty reviews: "All clear". Missing credentials: first-run form writes
+      `~/.openclaw/.env` via **Save and test**; Settings **Test connection**
+      matches `openclaw sentrook verify`.
+- [ ] Trigger a `review` tool call. Card shows command with dangerous-span
+      highlighting (not AIRA ids), waiting age ticks, session link opens
+      Timeline filtered to that session.
+- [ ] **Allow once** continues the tool. Card leaves the queue. Timeline
+      records the resolution.
+- [ ] **Allow always** on a non-critical card adds an Allowlist row. A matching
+      later `review` skips the prompt. **Remove** that row (confirm) and the
+      next match prompts again.
+- [ ] **Allow always** on a **critical** card asks for confirm first.
+- [ ] **Deny** vetoes; the claw moves on; card leaves the queue.
+- [ ] Two+ pending cards: jump list, critical first, all shown in full.
+- [ ] Timeline: search, All/Allow/Review/Block/Error, Stream vs By session,
+      per-session chips. Expanding a row shows command/output/resolution.
+- [ ] Settings: attended and unattended floors (strict/info/warning/critical),
+      including the covered-level styling. Hint text updates. Value survives
+      reload (persisted in plugin config). `critical` confirm if the UI asks.
+- [ ] Allow-all Off / On for all. Quiet Off / 30m / 2h / 8h (max 8h). These
+      are in-memory: a gateway restart clears them. They do **not** close
+      cards already waiting.
+- [ ] Per session allow-all and quiet 30m on a named session; `/sentrook
+      sessions` agrees. Global allow-all on makes session allow-all inert.
+- [ ] Feedback submit/off and scan-error review/deny/allow (allow is
+      dangerous). Operator log: change retention days + rotate MiB, **Save**,
+      **Drop lines older than retention** (confirm), do **not** wipe unless
+      you mean to.
+- [ ] Click a setting twice more after it has saved: no error flash, no
+      bricked page.
+- [ ] Leave Sentrook, open another Control UI page, come back: state still
+      loads.
+
+### Sentrook (read-only) iframe / `/sentrook`
+
+Open the sidebar **Sentrook (read-only)** tab, and once as
+`http://127.0.0.1:18789/sentrook` in a normal browser window.
+
+- [ ] Banner says the panel is read-only and how to get the native page
+      (upgrade to 2026.9.2+ and Labs → Custom plugin UI, then sidebar
+      **Sentrook**). Mentions `/sentrook` / CLI as the write path otherwise.
+- [ ] Same four tabs and the same review/timeline visual language. **No**
+      Allow once / Allow always / Deny / Save / Remove / floor clicks that
+      mutate. Each former control shows the command to paste.
+- [ ] Reviews show `/approve <id> allow-once|allow-always|deny`. Settings
+      show `/sentrook allow-all`, `quiet`, `sensitivity`, `feedback`,
+      `scan-error`, `allowlist rm`, `log retention|purge`. Connection test
+      shows `openclaw sentrook verify`. Missing credentials show
+      `openclaw sentrook configure`, not a secret form.
+- [ ] Timeline search and filters still work (local only).
+- [ ] Clicking the command copy does **not** change policy. Confirm by
+      `/sentrook policy` before and after a click.
+- [ ] On a host already on 9.2+ with Labs on, the banner still points at the
+      native sidebar item (this tab stays a preview).
+
+### `/sentrook` chat and `/approve`
+
+Owner-only. Prefer a DM. After each mutation, `/sentrook policy` or the native
+Settings tab should agree.
+
+- [ ] `/sentrook help` lists the catalog and no longer tells you to paste the
+      iframe URL to change settings. Each verb's `help` (`/sentrook status
+      help`, …) shows usage and the value in effect.
+- [ ] Bare `/sentrook`: snapshot (policy + pending leads) ending
+      `More commands: /sentrook help`. `/sentrook status`: knobs only.
+- [ ] `/sentrook pending` this session; `all` every card; `<id>` full scrubbed
+      command. `/approve <plugin:id> allow-once` (and always/deny) actually
+      continues or vetoes the tool.
+- [ ] `/sentrook history` newest 8 review/block/scan-error; `all` includes
+      allows; `gateway` every session; `before <id>` older page; `<id>`
+      investigation. No AIRA ids in the list.
+- [ ] `/sentrook sessions` matches Control UI session keys plus allow-all /
+      quiet flags.
+- [ ] `/sentrook allow-all` (this session on), `allow-all all on`,
+      `allow-all all off` (clears session flags too),
+      `allow-all session <key> off`. `/sentrook quiet all 30m` then `quiet
+      all off`; `quiet session <key> 2h` (cap 8h). Open cards still need
+      `/approve`.
+- [ ] `/sentrook sensitivity attended warning` persists. `sensitivity
+      unattended critical` refuses without `confirm`; with `confirm` it
+      persists. `lenient` maps to `info`.
+- [ ] `/sentrook feedback off` then `submit`. `/sentrook scan-error deny`;
+      `scan-error allow` refuses without `confirm`.
+- [ ] `/sentrook allowlist` lists 1-based rows; `allowlist rm n` removes.
+- [ ] `/sentrook log`; `log retention 7d`; `log retention 32MiB`;
+      `log purge confirm`; skip `log purge all confirm` unless you intend to
+      delete the files.
+- [ ] Non-owner sender is rejected. Public-channel replies include the
+      disclosure that the room can read them.
+
+### Cross-surface consistency
+
+- [ ] Change attended sensitivity on native Settings. `/sentrook policy` and
+      the iframe Settings display show the new floor.
+- [ ] Change it back with `/sentrook sensitivity attended strict`. Native
+      updates without a full Control UI reload (event refresh).
+- [ ] Allow-always from native → iframe Allowlist shows the row and the
+      `rm` command. Remove via chat → both dashboards drop it.
+- [ ] A `block` (not review) never offers allow-all skip; unattended cron
+      ignores allow-all/quiet and follows unattended sensitivity.
 
 ## Session policy
 

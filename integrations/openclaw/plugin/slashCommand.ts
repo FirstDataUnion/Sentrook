@@ -144,7 +144,7 @@ const HELP_TEXT = [
   "still need /approve. Unattended uses /sentrook sensitivity unattended.",
   "Block and scan errors are never skipped.",
   "",
-  "Dashboard: Control UI Sentrook tab is a sandboxed preview (leaving it can freeze the iframe). Prefer these verbs for settings, or copy the panel URL into a normal browser tab. Same gateway port as Control UI (usually 18789).",
+  "Dashboard: the Control UI iframe tab (Sentrook (read-only)) cannot save. Writable UI is the native Sentrook sidebar page on OpenClaw 2026.9.2+ with Settings → Labs → Custom plugin UI. Otherwise use these verbs, /approve, or the sentrook CLI. Same gateway port as Control UI (usually 18789).",
   CHANNEL_DISCLOSURE,
 ].join("\n");
 
@@ -571,13 +571,13 @@ function formatSnapshot(deps: SlashDeps, ids: SessionIds, session: SlashSession)
     "Sentrook",
     ...formatPolicyBlock(deps, ids, session),
     ...pendingBlock,
-    `dashboard: Control UI Sentrook tab (preview) or /sentrook verbs`,
+    `dashboard: iframe tab is read-only; native Sentrook (9.2+ Labs) or /sentrook verbs`,
     MORE_COMMANDS,
   ].join("\n");
 }
 
 function formatStatus(deps: SlashDeps, ids: SessionIds, session: SlashSession): string {
-  return ["Sentrook status", ...formatPolicyBlock(deps, ids, session), `dashboard: Control UI Sentrook tab (preview) or /sentrook verbs`].join(
+  return ["Sentrook status", ...formatPolicyBlock(deps, ids, session), `dashboard: iframe tab is read-only; native Sentrook (9.2+ Labs) or /sentrook verbs`].join(
     "\n",
   );
 }

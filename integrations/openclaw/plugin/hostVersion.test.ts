@@ -120,7 +120,18 @@ describe("readOnlyTabMessage", () => {
 
   it("always points at the surfaces that can still write", () => {
     for (const support of ["native", "legacy", "unknown"] as const) {
-      assert.match(readOnlyTabMessage(support, "2026.9.2"), /\/sentrook in chat or the sentrook CLI/);
+      const msg = readOnlyTabMessage(support, "2026.9.2");
+      assert.match(msg, /This \/sentrook page cannot save/);
+      assert.match(msg, /\/sentrook in chat or the sentrook CLI/);
     }
+  });
+
+  it("names the native origin constraint and the writable sidebar label", () => {
+    const native = readOnlyTabMessage("native", "2026.9.2");
+    assert.match(native, /not this \/sentrook page/);
+    assert.match(native, /not Sentrook \(read-only\)/);
+    assert.match(native, /HTTPS or loopback \(http:\/\/127\.0\.0\.1\)/);
+    assert.match(readOnlyTabMessage("legacy", "2026.8.1"), /HTTPS or loopback/);
+    assert.match(readOnlyTabMessage("unknown"), /HTTPS or loopback/);
   });
 });

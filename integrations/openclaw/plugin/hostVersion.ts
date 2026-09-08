@@ -87,27 +87,35 @@ export function hostUiSupport(version: string | undefined): HostUiSupport {
 
 export const READ_ONLY_TAB_TITLE = "This panel is read-only";
 
+/** Native plugin pages are blocked on plain LAN HTTP. */
+export const NATIVE_PAGE_ORIGIN_HINT =
+  "The native page needs HTTPS or loopback (http://127.0.0.1), not plain LAN HTTP.";
+
 /**
- * Copy for the legacy iframe tab, which can never save: the host's frame grant
- * is GET/HEAD and carries only ``operator.read``.
+ * Copy for the iframe tab and the standalone ``/sentrook`` page. Neither can
+ * save: the host's frame grant is GET/HEAD with ``operator.read``, and this
+ * HTML is the same read-only view in a normal browser tab.
  */
 export function readOnlyTabMessage(support: HostUiSupport, version?: string): string {
   const chat = "You can still change everything with /sentrook in chat or the sentrook CLI.";
+  const thisPage = "This /sentrook page cannot save.";
+  const openNative =
+    "then open Control UI and choose Sentrook in the sidebar — not this /sentrook page, and not Sentrook (read-only).";
   if (support === "native") {
     return (
-      `OpenClaw ${version ?? NATIVE_UI_MIN_VERSION} can run the full Sentrook dashboard. ` +
-      "Enable Settings \u2192 Labs \u2192 Custom plugin UI, restart the gateway, then reload this " +
-      `browser tab and open Sentrook from the sidebar. ${chat}`
+      `${thisPage} OpenClaw ${version ?? NATIVE_UI_MIN_VERSION} can run the full Sentrook dashboard. ` +
+      `Enable Settings \u2192 Labs \u2192 Custom plugin UI, restart the gateway, ${openNative} ` +
+      `${NATIVE_PAGE_ORIGIN_HINT} ${chat}`
     );
   }
   if (support === "legacy") {
     return (
-      `This gateway runs OpenClaw ${version}. The editable dashboard needs ${NATIVE_UI_MIN_VERSION} ` +
-      `or later, then Settings \u2192 Labs \u2192 Custom plugin UI. ${chat}`
+      `${thisPage} This gateway runs OpenClaw ${version}. The editable dashboard needs ${NATIVE_UI_MIN_VERSION} ` +
+      `or later, then Settings \u2192 Labs \u2192 Custom plugin UI. ${NATIVE_PAGE_ORIGIN_HINT} ${chat}`
     );
   }
   return (
-    `The editable dashboard needs OpenClaw ${NATIVE_UI_MIN_VERSION} or later with ` +
-    `Settings \u2192 Labs \u2192 Custom plugin UI enabled. ${chat}`
+    `${thisPage} The editable dashboard needs OpenClaw ${NATIVE_UI_MIN_VERSION} or later with ` +
+    `Settings \u2192 Labs \u2192 Custom plugin UI enabled. ${NATIVE_PAGE_ORIGIN_HINT} ${chat}`
   );
 }

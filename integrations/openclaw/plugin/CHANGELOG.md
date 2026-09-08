@@ -4,10 +4,11 @@
 
 ### Minor Changes
 
-- Native Control UI dashboard (beta, OpenClaw ≥ 2026.9.2 with Settings → Labs → Custom plugin UI). Writes go through plugin session actions on the signed-in operator session. The iframe Sentrook tab stays read-only; `/sentrook` chat and the CLI remain the write path on older hosts.
+- Native Control UI dashboard (OpenClaw ≥ 2026.9.2 with Settings → Labs → Custom plugin UI) uses the same operator layout as the original panel. Writes go through plugin session actions on the signed-in operator session. The iframe Sentrook tab is read-only; `/sentrook` chat and the CLI remain the write path on older hosts.
 
 ### Patch Changes
 
+- HTTP `/sentrook` and the Control UI iframe tab are a read-only operator view: mutation buttons are replaced with `/sentrook` and `/approve` commands. Writes belong on the native Sentrook page (OpenClaw ≥ 2026.9.2 with Settings → Labs → Custom plugin UI).
 - Session-action replies are JSON-cloned (and dashboard state compacted) so the host's `isPluginJsonValue` check accepts them. Optional `undefined` fields in timeline/session rows were failing every native load and refetch with "plugin session action result must be JSON-compatible".
 
 ## 1.1.0-rc.1
