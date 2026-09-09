@@ -94,7 +94,7 @@
   cursor: pointer;
 }
 .srk #flash.flash-error { border-color: var(--critical); background: #4a1822; color: #ffc1c5; }
-.srk #flash.flash-ok { border-color: var(--accent); background: #0d3a4d; color: var(--fg); }
+.srk #flash.flash-ok { border-color: var(--ok); background: rgba(125, 186, 125, 0.18); color: #d4f0d4; }
 .srk #confirm[hidden] { display: none !important; }
 .srk #confirm {
   position: fixed; inset: 0; z-index: 90; display: flex; align-items: flex-start;
@@ -221,7 +221,7 @@
   font-size: 0.68rem; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase;
   background: var(--accent-dim); color: var(--accent); vertical-align: middle;
 }
-.srk .kind-cron { background: var(--warning-bg); color: var(--warning); }
+.srk .kind-cron, .srk .kind-heartbeat { background: var(--warning-bg); color: var(--warning); }
 .srk .kind-subagent { background: var(--info-bg); color: var(--info); }
 .srk .kind-system { background: rgba(148, 163, 184, 0.16); color: var(--muted); }
 .srk .facts {
@@ -320,9 +320,8 @@
   background: var(--inset); padding: 0.35rem 0.45rem; border-radius: 6px; font-size: 0.75rem;
 }
 .srk .decide {
-  position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center;
-  margin-top: 1.2rem; padding: 1rem 1.5rem 1.15rem; background: #0b1e33f5; border-top: 1px solid var(--line);
-  backdrop-filter: blur(12px);
+  display: flex; flex-wrap: wrap; gap: 0.55rem; align-items: center;
+  margin: 0.9rem 0 0; padding: 1rem 1.5rem 0.35rem; background: transparent; border-top: 0;
 }
 .srk .btn-once {
   background: var(--accent); border-color: var(--accent); color: #081627; font-weight: 700;
@@ -489,9 +488,23 @@
   word-break: break-all;
   font-size: 0.82rem;
 }
+.srk .sess-name {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
 .srk .sess-meta { display: block; margin-top: 0.22rem; color: var(--faint); font-size: 0.78rem; }
 .srk .sess-meta code { font-size: inherit; overflow-wrap: anywhere; word-break: break-all; }
-.srk .sess-actions { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.srk .sess-actions { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: flex-end; }
+.srk .sess-sens {
+  display: flex; flex-direction: column; gap: 0.12rem; min-width: 8.2rem;
+}
+.srk .sess-sens span { font-size: 0.72rem; color: var(--faint); font-weight: 650; }
+.srk .sess-sens select {
+  font: inherit; font-size: 0.82rem; color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.28rem 0.4rem;
+}
 .srk .sess-more { margin: 0.45rem 0 0; }
 .srk .sess-more > summary {
   cursor: pointer; list-style: none; color: var(--accent);
@@ -624,6 +637,19 @@
 }
 .srk .set-warn { color: var(--warning); }
 .srk .set-danger { color: var(--critical); }
+.srk .set-card-quiet { border-color: rgba(230, 184, 77, 0.55); }
+.srk .quiet-status {
+  margin: 0 0 0.85rem; padding: 0.75rem 0.95rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--warning);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 1.05rem; font-weight: 650; line-height: 1.35;
+}
+.srk .quiet-status [data-quiet-until] { font-variant-numeric: tabular-nums; }
+.srk .sess-actions button.quiet-on[aria-pressed="true"] {
+  border-color: var(--warning); background: var(--warning-bg); color: var(--warning);
+}
 .srk #set-sessions { scroll-margin-top: 0.75rem; }
 @media (max-width: 720px) {
   .srk .hero { grid-template-columns: 1fr; }
@@ -641,9 +667,9 @@
   color: var(--muted); font-size: 0.86rem;
 }
 .srk .slash-cmd, .srk .slash-cmds code {
-  display: inline-block; background: var(--inset); border: 1px solid var(--line);
+  display: inline-block; max-width: 100%; background: var(--inset); border: 1px solid var(--line);
   border-radius: 6px; padding: 0.18rem 0.45rem; color: var(--fg); font-size: 0.82rem;
-  user-select: all;
+  user-select: all; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all;
 }
 .srk .current { margin: 0 0 0.45rem; color: var(--fg); font-size: 0.9rem; }
 .srk .beta-note {

@@ -19,7 +19,7 @@ import {
 import { loadAllowlist, saveAllowlist } from "./localAllowlist.ts";
 import { purgeOperatorLog, wipeOperatorLog } from "./operatorLog.ts";
 import { parseOnScanError } from "./scanErrorPolicy.ts";
-import { parseQuietDuration, parseSensitivityToken } from "./sessionPolicy.ts";
+import { parseQuietDuration, parseSessionSensitivityToken, parseSensitivityToken, type Sensitivity } from "./sessionPolicy.ts";
 import { sessionIdsOf } from "./sessionStore.ts";
 import { FeatureOperationError } from "./featureOperations.ts";
 import type {
@@ -61,6 +61,18 @@ function parseFeedbackMode(raw: unknown): DashboardFeedbackMode | undefined {
   if (raw == null) return undefined;
   if (raw === "off" || raw === "submit") return raw;
   return invalid("feedbackMode must be submit or off");
+}
+
+function parseSessionFloorField(raw: unknown, name: string): Sensitivity | null | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== "string") {
+    return invalid(`${name} must be default, strict, info, warning, or critical`);
+  }
+  const parsed = parseSessionSensitivityToken(raw);
+  if (parsed === undefined) {
+    return invalid(`${name} must be default, strict, info, warning, or critical`);
+  }
+  return parsed;
 }
 
 function parseRetentionDays(raw: unknown): number | undefined {
@@ -116,13 +128,15 @@ export async function opResolve(
   if (!card) throw new FeatureOperationError("No pending review for that id", "NOT_FOUND");
 
   const listed = await listPluginApprovals(deps.gateway);
-  const approvalId = input.approvalId || matchApprovalId(listed, card.toolCallId);
+  const approvalId =
+    input.approvalId || matchApprovalId(listed, [card.toolCallId, card.eventId, card.approvalId]);
   if (!approvalId) {
     throw new FeatureOperationError(
-      "OpenClaw has not exposed a plugin: approval id yet. Use /approve in chat.",
+      `OpenClaw has not published a /approve id yet. Use Allow/Deny on the native page, the approval card in chat, or /sentrook pending ${card.eventId}.`,
       "CONFLICT",
     );
   }
+  deps.cards.attachApprovalId(card.toolCallId, approvalId);
   await resolvePluginApproval({
     gateway: deps.gateway,
     config: deps.config,
@@ -162,7 +176,10 @@ export function opPolicy(deps: DashboardDeps, input: SentrookInputs["policy"]): 
     deps.setAllowAll(true);
   } else if (mode === "off") {
     deps.setAllowAll(false);
-    for (const st of deps.sessions.uniqueValues()) st.allowAll = false;
+    for (const st of deps.sessions.uniqueValues()) {
+      st.allowAll = false;
+      deps.syncSessionFlags?.(st);
+    }
   } else if (mode === "session") {
     deps.setAllowAll(false);
   }
@@ -175,7 +192,16 @@ export function opPolicy(deps: DashboardDeps, input: SentrookInputs["policy"]): 
   }
 
   const ids = sessionIdsOf({ sessionId: input.sessionId, sessionKey: input.sessionKey });
-  if (typeof input.allowAll === "boolean" || typeof input.quiet === "string") {
+  const attendedFloor = parseSessionFloorField(input.sessionAttendedSensitivity, "sessionAttendedSensitivity");
+  const unattendedFloor = parseSessionFloorField(
+    input.sessionUnattendedSensitivity,
+    "sessionUnattendedSensitivity",
+  );
+  const sessionFloorPatch = attendedFloor !== undefined || unattendedFloor !== undefined;
+  if (typeof input.allowAll === "boolean" || typeof input.quiet === "string" || sessionFloorPatch) {
+    if (!ids.sessionId && !ids.sessionKey) {
+      invalid("sessionId or sessionKey is required for per-session policy");
+    }
     const st = deps.sessions.getOrCreate(ids, deps.sessionFactory);
     if (ids.sessionId) st.sessionId = ids.sessionId;
     if (ids.sessionKey) st.sessionKey = ids.sessionKey;
@@ -188,6 +214,9 @@ export function opPolicy(deps: DashboardDeps, input: SentrookInputs["policy"]): 
       if ("error" in parsed) invalid(parsed.error);
       st.quietUntilMs = parsed.untilMs;
     }
+    if (attendedFloor !== undefined) st.attendedSensitivity = attendedFloor;
+    if (unattendedFloor !== undefined) st.unattendedSensitivity = unattendedFloor;
+    deps.syncSessionFlags?.(st);
   }
   return persistPayload(persist);
 }

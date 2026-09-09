@@ -3,12 +3,19 @@
  *
  * OpenClaw 2.0 caps plugin-approval waits at 10 minutes and always denies
  * unresolved reviews (`timeoutBehavior` is ignored by the host). Interactive
- * and unattended (cron/subagent) reviews share that 10-minute default and cap.
- * `scheduledTimeoutBehavior: "allow"` is still accepted so older configs load,
- * but it has no effect.
+ * and unattended (cron / heartbeat, plus subagents of those) reviews share
+ * that 10-minute default and cap. `scheduledTimeoutBehavior: "allow"` is still
+ * accepted so older configs load, but it has no effect.
  */
 
-export type IntentKind = "user" | "cron" | "subagent" | "system";
+import {
+  classifyAttendance,
+  DEFAULT_UNATTENDED_ROOT_KINDS,
+  type AttendanceSignals,
+  type IntentKind,
+} from "./attendance.ts";
+
+export type { IntentKind };
 export type TimeoutBehavior = "allow" | "deny";
 
 export interface ApprovalPolicyConfig {
@@ -21,7 +28,11 @@ export interface ApprovalPolicyConfig {
    * Unresolved reviews always deny (OpenClaw 2.0).
    */
   scheduledTimeoutBehavior: TimeoutBehavior;
-  /** Apply scheduled policy to these intent kinds. Default cron + subagent. */
+  /**
+   * Root intent kinds that use the scheduled (unattended) policy.
+   * Default cron + heartbeat. Subagents inherit the parent unless
+   * ``subagent`` is listed here.
+   */
   scheduledIntentKinds: IntentKind[];
 }
 
@@ -37,7 +48,13 @@ export const MAX_APPROVAL_TIMEOUT_MS = 600_000;
 export const DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS = MAX_APPROVAL_TIMEOUT_MS;
 export const DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS = MAX_APPROVAL_TIMEOUT_MS;
 
-const DEFAULT_SCHEDULED_INTENT_KINDS: IntentKind[] = ["cron", "subagent"];
+const ALL_INTENT_KINDS: IntentKind[] = [
+  "user",
+  "cron",
+  "heartbeat",
+  "subagent",
+  "system",
+];
 
 function parsePositiveInt(raw: unknown, fallback: number): number {
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
@@ -67,13 +84,13 @@ function parseTimeoutBehavior(raw: unknown, fallback: TimeoutBehavior): TimeoutB
 
 function parseIntentKinds(raw: unknown): IntentKind[] {
   if (!Array.isArray(raw) || raw.length === 0) {
-    return [...DEFAULT_SCHEDULED_INTENT_KINDS];
+    return [...DEFAULT_UNATTENDED_ROOT_KINDS];
   }
-  const allowed = new Set<IntentKind>(["user", "cron", "subagent", "system"]);
+  const allowed = new Set<IntentKind>(ALL_INTENT_KINDS);
   const kinds = raw
     .map((item) => (typeof item === "string" ? item.trim() : ""))
     .filter((item): item is IntentKind => allowed.has(item as IntentKind));
-  return kinds.length ? kinds : [...DEFAULT_SCHEDULED_INTENT_KINDS];
+  return kinds.length ? kinds : [...DEFAULT_UNATTENDED_ROOT_KINDS];
 }
 
 export function resolveIntentKind(
@@ -82,11 +99,7 @@ export function resolveIntentKind(
 ): IntentKind | undefined {
   if (intentKind) return intentKind;
   if (!intent?.trim()) return undefined;
-  const normalized = intent.trim();
-  if (/^\s*\[cron:/i.test(normalized)) return "cron";
-  if (/\[Subagent Context\]|\[Subagent Task\]/i.test(normalized)) return "subagent";
-  if (/^\s*\[system[:\]]/i.test(normalized)) return "system";
-  return "user";
+  return classifyAttendance({ intentText: intent }).kind;
 }
 
 export function resolveApprovalPolicyConfig(sources: {
@@ -115,12 +128,12 @@ export function resolveApprovalPolicyConfig(sources: {
 
 export function resolveApprovalTiming(
   policy: ApprovalPolicyConfig,
-  intentKind: IntentKind | undefined,
-  intent: string | undefined,
+  unattendedOrSignals: boolean | AttendanceSignals,
 ): ApprovalTiming {
-  const kind = resolveIntentKind(intentKind, intent);
   const unattended =
-    kind != null && policy.scheduledIntentKinds.includes(kind);
+    typeof unattendedOrSignals === "boolean"
+      ? unattendedOrSignals
+      : classifyAttendance(unattendedOrSignals, policy.scheduledIntentKinds).unattended;
 
   if (unattended) {
     return {

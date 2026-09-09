@@ -22,6 +22,13 @@ import {
   resolveApprovalTiming,
 } from "./approvalPolicy.ts";
 import {
+  classifyAttendance,
+  extractIntentText,
+  firstNonemptyIntent,
+  type Attendance,
+  type IntentKind,
+} from "./attendance.ts";
+import {
   type OnScanError,
   type ScanFailure,
   isScanFailure,
@@ -41,12 +48,12 @@ import {
 import {
   buildPlanirSnapshot,
   lastPendingStep,
-  type IntentKind,
   type PlanIR,
   type SnapshotCall,
 } from "./planir.ts";
 import { SCAN_BASE_URL } from "./scanEndpoint.ts";
 import { DualIndexMap, runIdPrefix, sessionIdsOf } from "./sessionStore.ts";
+import { LivePolicyStore, LIVE_POLICY_FILE } from "./livePolicy.ts";
 import { agentIdsFromConfig, listHostSessions } from "./hostSessions.ts";
 import { ReviewCardStore, snapshotReviewPrior, PENDING_CARDS_FILE } from "./reviewCards.ts";
 import { DASHBOARD_PATH, createSentrookFeatureHandlers, handleSentrookHttp } from "./dashboard.ts";
@@ -56,9 +63,9 @@ import {
   registerFeatureOperations,
   type SessionActionRegistration,
 } from "./featureOperations.ts";
-import { hostUiSupport, readOnlyTabMessage, resolveHostVersion } from "./hostVersion.ts";
+import { hostUiSupport, customPluginUiEnabled, readOnlyTabMessage, resolveHostVersion } from "./hostVersion.ts";
 import {
-  createDashboardAccessToken,
+  resolveDashboardAccessToken,
   dashboardTabPath,
 } from "./dashboardAuth.ts";
 import {
@@ -79,7 +86,7 @@ import {
   resolveOperatorLogConfig,
   scrubOperatorArgs,
 } from "./operatorLog.ts";
-import { patchSentrookPluginConfig } from "./pluginConfigPatch.ts";
+import { ensureConversationAccess, patchSentrookPluginConfig } from "./pluginConfigPatch.ts";
 import {
   resolveReviewSkip,
   resolveSensitivity,
@@ -125,7 +132,15 @@ type ApprovalResolution =
 type ReviewSeverity = "info" | "warning" | "critical";
 
 interface BeforePromptBuildEvent {
-  prompt: string;
+  prompt?: string;
+  messages?: unknown[];
+  runId?: string;
+}
+interface MessageReceivedEvent {
+  content?: unknown;
+  prompt?: string;
+  text?: string;
+  body?: string;
   runId?: string;
 }
 interface BeforeToolCallEvent {
@@ -152,6 +167,17 @@ interface AgentContext {
   sessionKey?: string;
   runId?: string;
   abortSignal?: AbortSignal;
+  /** Host trigger on agent-turn hooks: user / cron / heartbeat. Absent on before_tool_call. */
+  trigger?: string;
+  /** Originating cron job id on agent-turn hooks. Absent on before_tool_call. */
+  jobId?: string;
+  childSessionKey?: string;
+  requesterSessionKey?: string;
+}
+
+interface SubagentSpawnEvent {
+  childSessionKey?: string;
+  runId?: string;
 }
 interface SessionContext {
   sessionId?: string;
@@ -276,6 +302,9 @@ interface OpenClawPluginApi {
 interface RunIntent {
   intent: string;
   kind: IntentKind;
+  trigger?: string;
+  jobId?: string;
+  unattended: boolean;
 }
 
 export interface ScanResponse {
@@ -402,6 +431,7 @@ interface PluginConfig {
 interface SessionState {
   sessionId?: string;
   sessionKey?: string;
+  lastIntent?: string;
   runIntents: Map<string, RunIntent>;
   executed: SnapshotCall[];
   pending: Map<
@@ -418,6 +448,8 @@ interface SessionState {
   stepSeq: number;
   allowAll: boolean;
   quietUntilMs: number | null;
+  attendedSensitivity?: Sensitivity | null;
+  unattendedSensitivity?: Sensitivity | null;
 }
 
 const MAX_TRAJECTORY = 200;
@@ -454,16 +486,30 @@ export function resolveBeforeToolCallTimeoutMs(scanTimeoutMs: number): number {
   return clampPositiveMs(scanTimeoutMs + BEFORE_TOOL_CALL_SLACK_MS, OPENCLAW_HOOK_TIMEOUT_CAP_MS);
 }
 
-function classifyIntent(text: string): IntentKind {
-  const normalized = text.trim();
-  if (/^\s*\[cron:/i.test(normalized)) return "cron";
-  if (/\[Subagent Context\]|\[Subagent Task\]/i.test(normalized)) return "subagent";
-  if (/^\s*\[system[:\]]/i.test(normalized)) return "system";
-  return "user";
-}
-
 function resolveRunId(eventRunId?: string, ctxRunId?: string): string {
   return String(eventRunId ?? ctxRunId ?? "run_1");
+}
+
+function attendanceFromPlan(
+  plan: PlanIR,
+  scheduledKinds: ApprovalPolicyConfig["scheduledIntentKinds"],
+  unattendedOverride?: boolean,
+): Attendance {
+  const kind = plan.intent_kind ?? undefined;
+  const trigger =
+    kind === "cron" || kind === "heartbeat" || kind === "user" ? kind : undefined;
+  const classified = classifyAttendance(
+    {
+      trigger,
+      sessionKey: plan.metadata.session_key,
+      intentText: plan.intent,
+    },
+    scheduledKinds,
+  );
+  if (typeof unattendedOverride === "boolean") {
+    return { kind: classified.kind, unattended: unattendedOverride };
+  }
+  return classified;
 }
 
 function resolveConfig(api: OpenClawPluginApi): PluginConfig {
@@ -892,6 +938,8 @@ export function translateScanResponse(
     allowlistHitLabel?: string;
     /** Operator-log / ``/sentrook pending`` id for the review-card footer. */
     eventId?: string;
+    /** When set, wins over re-classifying the plan (subagent inheritance). */
+    unattended?: boolean;
   },
 ): BeforeToolCallResult | undefined {
   if (scan.block || scan.decision === "block") {
@@ -932,8 +980,7 @@ export function translateScanResponse(
 
     const timing = resolveApprovalTiming(
       ctx.approval,
-      plan.intent_kind ?? undefined,
-      plan.intent ?? undefined,
+      attendanceFromPlan(plan, ctx.approval.scheduledIntentKinds, ctx.unattended).unattended,
     );
     if (timing.unattended) {
       ctx.logger.info(
@@ -1148,6 +1195,7 @@ const plugin = {
 
     const config = resolveConfig(api);
     const sessions = new DualIndexMap<SessionState>();
+    const livePolicy = new LivePolicyStore(join(resolveStateDir(), LIVE_POLICY_FILE));
 
     if (urlRequiresScanAuth(config.url) && !hasScanCredentials(config.auth)) {
       api.logger.warn(
@@ -1157,6 +1205,16 @@ const plugin = {
       );
     }
 
+    if (mode === "full") {
+      const access = ensureConversationAccess();
+      if (access.ok && access.wrote) {
+        api.logger.info(
+          "[sentrook-openclaw] wrote hooks.allowConversationAccess=true in openclaw.json — " +
+            "restart the gateway if operator-log intent stays empty",
+        );
+      }
+    }
+
     const emptySession = (): SessionState => ({
       runIntents: new Map(),
       executed: [],
@@ -1164,13 +1222,89 @@ const plugin = {
       stepSeq: 0,
       allowAll: false,
       quietUntilMs: null,
+      attendedSensitivity: null,
+      unattendedSensitivity: null,
     });
 
+    const MAX_LINEAGE = 512;
+    const sessionUnattended = new Map<string, boolean>();
+    const subagentParents = new Map<string, string>();
+
+    const rememberBounded = <V>(map: Map<string, V>, key: string, value: V): void => {
+      if (map.has(key)) map.delete(key);
+      map.set(key, value);
+      while (map.size > MAX_LINEAGE) {
+        const oldest = map.keys().next().value;
+        if (oldest === undefined) break;
+        map.delete(oldest);
+      }
+    };
+
+    const rememberParent = (child?: string, parent?: string): void => {
+      const childKey = child?.trim();
+      const parentKey = parent?.trim();
+      if (!childKey || !parentKey || childKey === parentKey) return;
+      rememberBounded(subagentParents, childKey, parentKey);
+    };
+
+    const classifyCall = (ctx: AgentContext, runIntent?: RunIntent): Attendance => {
+      const sessionKey = ctx.sessionKey?.trim() || undefined;
+      const parentSessionKey = sessionKey ? subagentParents.get(sessionKey) : undefined;
+      const parentUnattended = parentSessionKey
+        ? sessionUnattended.get(parentSessionKey)
+        : undefined;
+      const attendance = classifyAttendance(
+        {
+          trigger: ctx.trigger ?? runIntent?.trigger,
+          jobId: ctx.jobId ?? runIntent?.jobId,
+          sessionKey,
+          parentSessionKey,
+          parentUnattended,
+          intentText: runIntent?.intent,
+        },
+        config.approval.scheduledIntentKinds,
+      );
+      if (sessionKey) rememberBounded(sessionUnattended, sessionKey, attendance.unattended);
+      return attendance;
+    };
+
+    const stashRunAttendance = (
+      st: SessionState,
+      runId: string,
+      ctx: AgentContext,
+      intent: string,
+    ): Attendance => {
+      const attendance = classifyCall(ctx, {
+        intent,
+        kind: "user",
+        unattended: false,
+        trigger: ctx.trigger,
+        jobId: ctx.jobId,
+      });
+      st.runIntents.set(runId, {
+        intent,
+        kind: attendance.kind,
+        trigger: ctx.trigger,
+        jobId: ctx.jobId,
+        unattended: attendance.unattended,
+      });
+      return attendance;
+    };
+
     const getSession = (ctx: AgentContext | SessionContext): SessionState => {
+      livePolicy.hydrateInto(sessions, emptySession);
       const ids = sessionIdsOf(ctx);
       const st = sessions.getOrCreate(ids, emptySession);
       if (ids.sessionId) st.sessionId = ids.sessionId;
       if (ids.sessionKey) st.sessionKey = ids.sessionKey;
+      const flags = livePolicy.sessionFlags(ids);
+      st.allowAll = flags.allowAll;
+      st.quietUntilMs = flags.quietUntilMs;
+      st.attendedSensitivity = flags.attendedSensitivity;
+      st.unattendedSensitivity = flags.unattendedSensitivity;
+      const snap = livePolicy.read();
+      live.allowAll = snap.allowAll;
+      live.quietUntilMs = snap.quietUntilMs;
       return st;
     };
 
@@ -1188,8 +1322,40 @@ const plugin = {
       unattendedSensitivity: config.unattendedSensitivity,
       feedbackMode: config.feedbackMode,
       onScanError: config.onScanError,
-      allowAll: false,
-      quietUntilMs: null as number | null,
+      allowAll: livePolicy.read().allowAll,
+      quietUntilMs: livePolicy.read().quietUntilMs as number | null,
+    };
+
+    const syncSessionFlags = (st: {
+      sessionId?: string;
+      sessionKey?: string;
+      allowAll: boolean;
+      quietUntilMs: number | null;
+      attendedSensitivity?: Sensitivity | null;
+      unattendedSensitivity?: Sensitivity | null;
+    }) => {
+      livePolicy.writeSession(
+        { sessionId: st.sessionId, sessionKey: st.sessionKey },
+        {
+          allowAll: st.allowAll,
+          quietUntilMs: st.quietUntilMs,
+          attendedSensitivity: st.attendedSensitivity ?? null,
+          unattendedSensitivity: st.unattendedSensitivity ?? null,
+        },
+      );
+    };
+
+    const setAllowAll = (value: boolean) => {
+      live.allowAll = value;
+      livePolicy.writeGlobal({ allowAll: value, clearSessionAllowAll: !value });
+      if (!value) {
+        for (const st of sessions.uniqueValues()) st.allowAll = false;
+      }
+    };
+
+    const setQuietUntilMs = (value: number | null) => {
+      live.quietUntilMs = value;
+      livePolicy.writeGlobal({ quietUntilMs: value });
     };
 
     const pluginCfgNow = (): Record<string, unknown> =>
@@ -1261,7 +1427,10 @@ const plugin = {
         handler: (ctx) =>
           handleSentrookCommand(ctx, {
             sessionOf: slashSessionOf,
-            listSessions: () => sessions.uniqueValues() as SlashSession[],
+            listSessions: () => {
+              livePolicy.hydrateInto(sessions, emptySession);
+              return sessions.uniqueValues() as SlashSession[];
+            },
             listHostSessions: listHost,
             listCards: () =>
               reviewCards.list().map((card) => ({
@@ -1271,19 +1440,20 @@ const plugin = {
                 args: card.args,
                 sessionId: card.sessionId,
                 sessionKey: card.sessionKey,
+                approvalId: card.approvalId,
+                intent: card.intent,
+                intentKind: card.intentKind,
+                scan: card.scan,
               })),
             sensitivity: () => live.sensitivity,
             setSensitivity,
             unattendedSensitivity: () => live.unattendedSensitivity,
             setUnattendedSensitivity,
-            allowAll: () => live.allowAll,
-            setAllowAll: (value) => {
-              live.allowAll = value;
-            },
-            quietUntilMs: () => live.quietUntilMs,
-            setQuietUntilMs: (value) => {
-              live.quietUntilMs = value;
-            },
+            allowAll: () => livePolicy.read().allowAll,
+            setAllowAll,
+            quietUntilMs: () => livePolicy.read().quietUntilMs,
+            setQuietUntilMs,
+            syncSessionFlags,
             feedbackMode: () => live.feedbackMode,
             setFeedbackMode,
             onScanError: () => live.onScanError,
@@ -1307,21 +1477,27 @@ const plugin = {
 
     const dashboardDeps = {
       cards: reviewCards,
-      sessions,
+      sessions: {
+        uniqueValues: () => {
+          livePolicy.hydrateInto(sessions, emptySession);
+          return sessions.uniqueValues();
+        },
+        getOrCreate: (ids: ReturnType<typeof sessionIdsOf>, factory: () => SessionState) => {
+          livePolicy.hydrateInto(sessions, emptySession);
+          return sessions.getOrCreate(ids, factory);
+        },
+      },
       sessionFactory: emptySession,
       listHostSessions: listHost,
       sensitivity: () => live.sensitivity,
       setSensitivity,
       unattendedSensitivity: () => live.unattendedSensitivity,
       setUnattendedSensitivity,
-      allowAll: () => live.allowAll,
-      setAllowAll: (value: boolean) => {
-        live.allowAll = value;
-      },
-      quietUntilMs: () => live.quietUntilMs,
-      setQuietUntilMs: (value: number | null) => {
-        live.quietUntilMs = value;
-      },
+      allowAll: () => livePolicy.read().allowAll,
+      setAllowAll,
+      quietUntilMs: () => livePolicy.read().quietUntilMs,
+      setQuietUntilMs,
+      syncSessionFlags,
       feedbackMode: () => live.feedbackMode,
       setFeedbackMode,
       onScanError: () => live.onScanError,
@@ -1356,7 +1532,7 @@ const plugin = {
     }
 
     if (api.registerHttpRoute) {
-      const accessToken = createDashboardAccessToken();
+      const accessToken = resolveDashboardAccessToken(resolveStateDir());
       const httpDeps = { ...dashboardDeps, accessToken };
       const dashboardHttp = (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) =>
         handleSentrookHttp(req, res, httpDeps);
@@ -1367,17 +1543,24 @@ const plugin = {
         handler: dashboardHttp,
       });
 
-      // Iframe tab stays as a GET-only fallback. The native page (control-ui.ts)
-      // is what can save; this tab is labelled so operators do not expect writes.
-      api.session?.controls?.registerControlUiDescriptor?.({
-        surface: "tab",
-        id: "sentrook",
-        label: "Sentrook (read-only)",
-        description: readOnlyTabMessage(uiSupport, hostVersion),
-        path: dashboardTabPath(accessToken),
-        group: "control",
-        requiredScopes: ["operator.admin"],
-      });
+      // Iframe tab is the GET-only fallback when Labs native UI is off.
+      // Native Settings writes patch openclaw.json and can remount this tab;
+      // skip it when Custom plugin UI is on so operators only have Sentrook.
+      if (!customPluginUiEnabled(api.config)) {
+        api.session?.controls?.registerControlUiDescriptor?.({
+          surface: "tab",
+          id: "sentrook",
+          label: "Sentrook (read-only)",
+          description: readOnlyTabMessage(uiSupport, hostVersion),
+          path: dashboardTabPath(accessToken),
+          group: "control",
+          requiredScopes: ["operator.admin"],
+        });
+      } else {
+        api.logger.info(
+          "[sentrook-openclaw] native Control UI is on; Sentrook (read-only) iframe tab is not registered",
+        );
+      }
       api.logger.info(`[sentrook-openclaw] dashboard ${DASHBOARD_PATH} on this gateway`);
     }
 
@@ -1407,10 +1590,43 @@ const plugin = {
     api.on("before_prompt_build", (event: BeforePromptBuildEvent, ctx: AgentContext) => {
       const st = getSession(ctx);
       const runId = resolveRunId(event.runId, ctx.runId);
-      if (typeof event?.prompt === "string" && event.prompt.trim()) {
-        const intent = event.prompt.trim();
-        st.runIntents.set(runId, { intent, kind: classifyIntent(intent) });
-      }
+      const extracted = extractIntentText(event);
+      const existing = st.runIntents.get(runId);
+      const intent = firstNonemptyIntent(extracted, existing?.intent, st.lastIntent);
+      if (extracted) st.lastIntent = extracted;
+      stashRunAttendance(st, runId, ctx, intent);
+    });
+
+    api.on("message_received", (event: MessageReceivedEvent, ctx: AgentContext) => {
+      const extracted = extractIntentText(event);
+      if (!extracted) return;
+      const st = getSession(ctx);
+      st.lastIntent = extracted;
+      const runId = event.runId ?? ctx.runId;
+      if (runId) stashRunAttendance(st, String(runId), ctx, extracted);
+    });
+
+    api.on("heartbeat_prompt_contribution", (_event: unknown, ctx: AgentContext) => {
+      const st = getSession(ctx);
+      const runId = resolveRunId(undefined, ctx.runId);
+      const existing = st.runIntents.get(runId);
+      stashRunAttendance(
+        st,
+        runId,
+        { ...ctx, trigger: ctx.trigger || "heartbeat" },
+        firstNonemptyIntent(existing?.intent, st.lastIntent),
+      );
+    });
+
+    api.on("subagent_spawned", (event: SubagentSpawnEvent, ctx: AgentContext) => {
+      rememberParent(event.childSessionKey ?? ctx.childSessionKey, ctx.requesterSessionKey);
+    });
+
+    api.on("subagent_delivery_target", (event: SubagentSpawnEvent & { requesterSessionKey?: string }, ctx: AgentContext) => {
+      rememberParent(
+        event.childSessionKey ?? ctx.childSessionKey,
+        event.requesterSessionKey ?? ctx.requesterSessionKey,
+      );
     });
 
     api.on(
@@ -1438,13 +1654,28 @@ const plugin = {
           const callId = callIdHint ?? eventId;
           const pendingMeta = { stepSeq: st.stepSeq, runId, eventId };
           const runIntent = st.runIntents.get(runId);
+          const intentText = firstNonemptyIntent(runIntent?.intent, st.lastIntent);
+          const attendance = classifyCall(ctx, {
+            intent: intentText,
+            kind: runIntent?.kind ?? "user",
+            unattended: runIntent?.unattended ?? false,
+            trigger: ctx.trigger ?? runIntent?.trigger,
+            jobId: ctx.jobId ?? runIntent?.jobId,
+          });
+          st.runIntents.set(runId, {
+            intent: intentText,
+            kind: attendance.kind,
+            unattended: attendance.unattended,
+            trigger: ctx.trigger ?? runIntent?.trigger,
+            jobId: ctx.jobId ?? runIntent?.jobId,
+          });
           const plan = buildPlanirSnapshot({
             executed: st.executed.slice(-MAX_TRAJECTORY),
             pending: pendingCall,
             coPending: coPending.length ? coPending : undefined,
             runId: `${runIdPrefix(ids)}:${runId}`,
-            intent: runIntent?.intent,
-            intentKind: runIntent?.kind,
+            intent: intentText || null,
+            intentKind: attendance.kind,
             sessionId: ids.sessionId,
             sessionKey: ids.sessionKey,
             agentId: ctx.agentId,
@@ -1465,11 +1696,7 @@ const plugin = {
             ctx.abortSignal,
           );
           if (isScanFailure(scanResult)) {
-            const timing = resolveApprovalTiming(
-              config.approval,
-              plan.intent_kind ?? undefined,
-              plan.intent ?? undefined,
-            );
+            const timing = resolveApprovalTiming(config.approval, attendance.unattended);
             const mapped = scanErrorToHookResult(scanResult, {
               onScanError: live.onScanError,
               unattended: timing.unattended,
@@ -1565,21 +1792,21 @@ const plugin = {
             pendingArgs: pendingCall.args,
             allowlistHitLabel: undefined as string | undefined,
             eventId,
+            unattended: attendance.unattended,
           };
           const translated = translateScanResponse(scan, scanCtx);
-          const unattended = resolveApprovalTiming(
-            config.approval,
-            plan.intent_kind ?? undefined,
-            plan.intent ?? undefined,
-          ).unattended;
+          const unattended = attendance.unattended;
           const allowlistHit = scan.decision === "review" && translated == null;
+          const flags = livePolicy.sessionFlags(ids);
           const skipReason = resolveReviewSkip({
             hostedDecision: scan.decision,
             unattended,
-            allowAll: combinedAllowAll(live.allowAll, st.allowAll),
-            quietUntilMs: laterQuietUntil(live.quietUntilMs, st.quietUntilMs),
+            allowAll: combinedAllowAll(livePolicy.read().allowAll, flags.allowAll),
+            quietUntilMs: laterQuietUntil(livePolicy.read().quietUntilMs, flags.quietUntilMs),
             sensitivity: live.sensitivity,
             unattendedSensitivity: live.unattendedSensitivity,
+            sessionAttended: flags.attendedSensitivity,
+            sessionUnattended: flags.unattendedSensitivity,
             reviewSeverity: scan.review_severity,
             allowlistHit,
           });
@@ -1799,7 +2026,18 @@ const plugin = {
     });
 
     api.on("session_end", (_event: unknown, ctx: SessionContext) => {
-      sessions.delete(sessionIdsOf(ctx));
+      const ids = sessionIdsOf(ctx);
+      livePolicy.clearSession(ids);
+      sessions.delete(ids);
+      const key = ids.sessionKey?.trim();
+      if (key) {
+        sessionUnattended.delete(key);
+        subagentParents.delete(key);
+        const orphaned = [...subagentParents]
+          .filter(([, parent]) => parent === key)
+          .map(([child]) => child);
+        for (const child of orphaned) subagentParents.delete(child);
+      }
     });
 
     const approvalSummary =

@@ -62,6 +62,8 @@ export type DashboardSession = {
   sessionKey?: string;
   allowAll: boolean;
   quietUntilMs: number | null;
+  attendedSensitivity?: Sensitivity | null;
+  unattendedSensitivity?: Sensitivity | null;
   pending: Map<string, { awaitingApproval?: boolean }>;
 };
 
@@ -82,6 +84,7 @@ export type DashboardDeps = {
   setUnattendedSensitivity: (value: Sensitivity) => DashboardPersistResult;
   allowAll: () => boolean;
   setAllowAll: (value: boolean) => void;
+  syncSessionFlags?: (session: DashboardSession) => void;
   quietUntilMs: () => number | null;
   setQuietUntilMs: (value: number | null) => void;
   feedbackMode: () => DashboardFeedbackMode;
@@ -465,19 +468,24 @@ function cardFromWaitingApproval(
     createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : now,
     intent: nonemptyStr(logEvent?.intent) ?? null,
     intentKind: nonemptyStr(logEvent?.intent_kind) ?? null,
+    approvalId: item.id,
   };
 }
 
 function presentPendingCard(
   card: ReviewCard,
   listed: ApprovalListItem[],
-  approvalId?: string,
+  approvalIdHint?: string,
 ): DashboardViewPending {
   const args = card.args ?? {};
+  const approvalId =
+    nonemptyStr(approvalIdHint) ||
+    nonemptyStr(card.approvalId) ||
+    matchApprovalId(listed, [card.toolCallId, card.eventId, card.approvalId]);
   return {
     eventId: card.eventId,
     toolCallId: card.toolCallId,
-    approvalId: approvalId || matchApprovalId(listed, card.toolCallId),
+    approvalId,
     tool: card.tool,
     command: commandFromArgs(args),
     args,
@@ -535,10 +543,14 @@ function collectPending(
   for (const row of extras) {
     deps.cards.put(row.card);
   }
-  return [
+  const pending = [
     ...fromStore.map((card) => presentPendingCard(card, listed)),
     ...extras.map((row) => presentPendingCard(row.card, listed, row.approvalId)),
   ].sort((a, b) => b.createdAtMs - a.createdAtMs);
+  for (const row of pending) {
+    if (row.approvalId) deps.cards.attachApprovalId(row.toolCallId, row.approvalId);
+  }
+  return pending;
 }
 
 export async function buildState(deps: DashboardDeps) {
@@ -555,6 +567,8 @@ export async function buildState(deps: DashboardDeps) {
       sessionKey: st.sessionKey,
       allowAll: st.allowAll,
       quietUntilMs: st.quietUntilMs,
+      attendedSensitivity: st.attendedSensitivity ?? null,
+      unattendedSensitivity: st.unattendedSensitivity ?? null,
       pending: [...st.pending.values()].filter((call) => call.awaitingApproval).length,
     })),
   );
@@ -757,7 +771,7 @@ export function createSentrookFeatureHandlers(
     },
     setup: async (input) => {
       const result = await opSetup(deps, input);
-      changed("policy_changed");
+      if (result.ok) changed("policy_changed");
       return result;
     },
     verify: () => opVerify(deps),

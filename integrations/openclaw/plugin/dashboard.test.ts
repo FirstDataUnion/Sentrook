@@ -223,7 +223,7 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /id="set-sessions"/);
       assert.doesNotMatch(html, /showTab\("set-sessions"\)/);
       assert.doesNotMatch(html, /data-allow-mode="session"/);
-      assert.match(html, /Per session Allow-all\/Quiet controls can be set in the Per session section below/);
+      assert.match(html, /Sessions with their own attended floor ignore this/);
       assert.doesNotMatch(
         html,
         /not this switch\. Off clears every session flag/,
@@ -245,7 +245,7 @@ describe("handleSentrookHttp", () => {
       const feedbackHintAt = html.indexOf("Posts sanitized allow-once and deny reviews");
       assert.ok(feedbackCmdAt >= 0 && feedbackHintAt > 0);
       const scanCmdAt = html.indexOf("/sentrook scan-error allow confirm");
-      const scanHintAt = html.indexOf("Ask on interactive runs when /scan fails");
+      const scanHintAt = html.indexOf("Ask on interactive runs when Sentrook cannot scan");
       assert.ok(scanCmdAt >= 0 && scanHintAt > 0);
       const sensAt = html.indexOf("<h3>Attended tool review sensitivity</h3>");
       const unattAt = html.indexOf("<h3>Unattended tool review sensitivity</h3>");
@@ -309,7 +309,7 @@ describe("handleSentrookHttp", () => {
       assert.doesNotMatch(html, /data-sens=/);
       assert.match(html, /Auto-accept reviews at or below the selected severity/);
       assert.match(html, /Prompt every review while you are present/);
-      assert.match(html, /Cron and subagent reviews are never auto-accepted/);
+      assert.match(html, /Cron, heartbeat, and jobs they spawn are never auto-accepted/);
       assert.match(html, /critical confirm/);
       assert.match(html, /data-severity="warning"/);
       assert.match(html, /<span class="risk-num">80<\/span>/);
@@ -579,7 +579,8 @@ describe("handleSentrookHttp", () => {
       });
       assert.equal(res.status, 409);
       const body = (await res.json()) as { error?: string };
-      assert.match(body.error ?? "", /\/approve/);
+      assert.match(body.error ?? "", /\/sentrook pending evt-1/);
+      assert.doesNotMatch(body.error ?? "", /plugin:…/);
     });
   });
 
@@ -636,6 +637,28 @@ describe("handleSentrookHttp", () => {
     });
   });
 
+  it("Per session table shows OpenClaw labels from the host store", async () => {
+    const { deps } = makeDeps({
+      hostSessions: [
+        {
+          sessionKey: "agent:main:dashboard:cebf-1",
+          sessionId: "cebf-1",
+          label: "Control UI",
+          updatedAtMs: 1,
+        },
+      ],
+    });
+    await withServer(deps, async (base) => {
+      const html = await (await fetch(`${base}/sentrook`)).text();
+      assert.match(html, /class="sess-name">Control UI</);
+      assert.match(html, /agent:main:dashboard:cebf-1/);
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        sessions: Array<{ sessionKey?: string; label?: string }>;
+      };
+      assert.equal(state.sessions[0]?.label, "Control UI");
+    });
+  });
+
   it("Per session list shows five rows and folds the rest", async () => {
     const { deps } = makeDeps({
       hostSessions: Array.from({ length: 7 }, (_, i) => ({
@@ -649,7 +672,7 @@ describe("handleSentrookHttp", () => {
       assert.match(html, /class="sess-list"/);
       assert.match(html, /class="sess-key"/);
       assert.match(html, /class="sess-actions"/);
-      assert.match(html, /\/sentrook allow-all session /);
+      assert.match(html, /\/sentrook sensitivity session /);
       assert.match(html, /overflow-wrap: anywhere/);
       assert.match(html, /id="sess-more"/);
       assert.match(html, /Show 2 more sessions/);
@@ -715,7 +738,30 @@ describe("handleSentrookHttp", () => {
       assert.equal(state.unattendedSensitivity, "warning");
       assert.equal(state.sensitivity, "strict");
       const html = await (await fetch(`${base}/sentrook`)).text();
-      assert.match(html, /Auto-accept info and warning reviews on cron and subagent runs/);
+      assert.match(html, /Auto-accept info and warning reviews on cron, heartbeat, and jobs they spawn/);
+    });
+  });
+
+  it("POST /api/policy sets a per-session attended floor", async () => {
+    const { deps } = makeDeps({
+      hostSessions: [{ sessionKey: "cron:nightly", sessionId: "uuid-9", updatedAtMs: 1 }],
+    });
+    await withServer(deps, async (base) => {
+      const res = await fetch(`${base}/sentrook/api/policy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionKey: "cron:nightly",
+          sessionId: "uuid-9",
+          sessionAttendedSensitivity: "warning",
+        }),
+      });
+      assert.equal(res.status, 200);
+      const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+        sessions: Array<{ sessionKey?: string; attendedSensitivity?: string | null }>;
+      };
+      const row = state.sessions.find((s) => s.sessionKey === "cron:nightly");
+      assert.equal(row?.attendedSensitivity, "warning");
     });
   });
 
@@ -745,7 +791,7 @@ describe("handleSentrookHttp", () => {
     });
   });
 
-  it("POST /api/policy does not claim persist for in-memory allow-all", async () => {
+  it("POST /api/policy does not claim openclaw.json persist for allow-all", async () => {
     const { deps } = makeDeps();
     await withServer(deps, async (base) => {
       const res = await fetch(`${base}/sentrook/api/policy`, {
@@ -786,20 +832,21 @@ describe("handleSentrookHttp", () => {
       assert.equal(state.onScanError, "deny");
       const quietHtml = await (await fetch(`${base}/sentrook`)).text();
       const allowCmdAt = quietHtml.indexOf("/sentrook allow-all all on");
-      const allowOnHintAt = quietHtml.indexOf("Skipping reviews for every attended session");
+      const allowOnHintAt = quietHtml.indexOf("Auto-accepting every attended review");
       assert.ok(allowCmdAt >= 0 && allowOnHintAt >= 0);
       const quietCmdAt = quietHtml.indexOf("/sentrook quiet all 8h");
       const quietOnHintAt = quietHtml.indexOf("Quiet for every session");
       assert.ok(quietCmdAt >= 0 && quietOnHintAt >= 0);
-      assert.match(quietHtml, /<p class="floor-hint">Quiet for every session \([^<]+\)\.<\/p>/);
+      assert.match(quietHtml, /<p class="floor-hint floor-warning">Quiet for every session \([^<]+\)\.<\/p>/);
+      assert.match(quietHtml, /Quiet mode active, time remaining:/);
       const sessionTableAt = quietHtml.indexOf('id="set-sessions"');
-      const sessionHintAt = quietHtml.indexOf("Global allow-all is on — session allow-all flags are ignored");
+      const sessionHintAt = quietHtml.indexOf("Global allow-all is on. Sessions with their own attended floor ignore it");
       assert.ok(sessionTableAt >= 0 && sessionHintAt > sessionTableAt);
       const feedbackOffAt = quietHtml.indexOf("/sentrook feedback off");
       const feedbackOffHintAt = quietHtml.indexOf("No review feedback is sent.");
       assert.ok(feedbackOffAt >= 0 && feedbackOffHintAt >= 0);
       const scanDenyAt = quietHtml.indexOf("/sentrook scan-error deny");
-      const scanDenyHintAt = quietHtml.indexOf("Block the tool call when /scan fails");
+      const scanDenyHintAt = quietHtml.indexOf("Block the tool call when Sentrook cannot scan");
       assert.ok(scanDenyAt >= 0 && scanDenyHintAt >= 0);
       const off = await fetch(`${base}/sentrook/api/policy`, {
         method: "POST",

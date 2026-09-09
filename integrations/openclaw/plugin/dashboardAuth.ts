@@ -29,6 +29,8 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export const ACCESS_HEADER = "x-sentrook-access";
@@ -38,6 +40,7 @@ export const DASHBOARD_PATH = "/sentrook";
 export const DASHBOARD_TAB_PREFIX = `${DASHBOARD_PATH}/tab/`;
 export const DASHBOARD_API_PATH = "/sentrook/api";
 export const ACCESS_MISSING = "Open this panel from the Control UI Sentrook tab.";
+export const DASHBOARD_ACCESS_FILE = "sentrook-dashboard-access";
 
 const TOKEN_BYTES = 24;
 const TAB_PATH_PREFIXES = [DASHBOARD_TAB_PREFIX, "/tab/"] as const;
@@ -45,6 +48,53 @@ const TAB_TOKEN_RESERVED = new Set(["api", "state", "policy", "log", "setup", "v
 
 export function createDashboardAccessToken(): string {
   return randomBytes(TOKEN_BYTES).toString("base64url");
+}
+
+function isDashboardAccessToken(value: string): boolean {
+  return /^[A-Za-z0-9_-]{32,64}$/.test(value);
+}
+
+/**
+ * Same process token across plugin reloads so an already-open iframe tab
+ * (``/sentrook/tab/<token>``) keeps working after a native Settings write
+ * patches openclaw.json.
+ */
+export function resolveDashboardAccessToken(stateDir: string): string {
+  const persistPath = join(stateDir, DASHBOARD_ACCESS_FILE);
+  try {
+    const existing = readFileSync(persistPath, "utf8").trim();
+    if (isDashboardAccessToken(existing)) return existing;
+  } catch {
+    /* missing or unreadable */
+  }
+  const token = createDashboardAccessToken();
+  if (!existsSync(stateDir)) return token;
+  try {
+    const tmp = join(stateDir, `${DASHBOARD_ACCESS_FILE}.${process.pid}.tmp`);
+    try {
+      writeFileSync(tmp, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+      try {
+        chmodSync(tmp, 0o600);
+      } catch {
+        /* best-effort */
+      }
+      renameSync(tmp, persistPath);
+      try {
+        chmodSync(persistPath, 0o600);
+      } catch {
+        /* best-effort */
+      }
+    } catch {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* in-memory only this process */
+  }
+  return token;
 }
 
 export function dashboardTabPath(accessToken: string): string {

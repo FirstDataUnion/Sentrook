@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { readFileSync } from "node:fs";
+
 import { renderNativePage } from "./controlUiView.ts";
 import type { SentrookState } from "./featureContract.ts";
 
 const now = Date.parse("2026-09-08T12:00:00.000Z");
+const PLUGIN_VERSION = (
+  JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string }
+).version;
 
 const state: SentrookState = {
   pending: [
@@ -77,7 +82,7 @@ const state: SentrookState = {
 };
 
 function page(tab: "reviews" | "timeline" | "allowlist" | "settings", canWrite: boolean, view: SentrookState = state) {
-  return renderNativePage(view, { tab, canWrite, connected: true, now });
+  return renderNativePage(view, { tab, canWrite, connected: true, now, version: PLUGIN_VERSION });
 }
 
 describe("renderNativePage", () => {
@@ -95,21 +100,34 @@ describe("renderNativePage", () => {
     assert.match(html, /hl-destroy|hl-url/);
     assert.match(html, /Waiting on this call/);
     assert.doesNotMatch(html, /beta-note/);
-    assert.match(html, />connected</);
+    assert.match(html, new RegExp(`class="ver"[^>]*>${PLUGIN_VERSION.replace(/\./g, "\\.")}<`));
+    assert.match(html, /title="Plugin version · connected"/);
+    assert.doesNotMatch(html, />connected</);
     assert.doesNotMatch(html, /data-act="deny"[^>]*disabled/);
+    const onceAt = html.indexOf('data-act="allow-once"');
+    const spineAt = html.indexOf("spine-now");
+    assert.ok(onceAt >= 0 && spineAt > onceAt);
+    assert.match(html, /\/approve plugin:1 allow-once/);
+    assert.match(html, /\/approve plugin:1 allow-always/);
+    assert.match(html, /\/approve plugin:1 deny/);
+    assert.doesNotMatch(html, /plugin:…/);
   });
 
   it("omits mutation controls when the connection cannot write", () => {
     const html = page("reviews", false);
-    assert.match(html, /read-only/);
+    assert.match(html, /title="Plugin version · read-only"/);
+    assert.match(html, new RegExp(`class="ver"[^>]*>${PLUGIN_VERSION.replace(/\./g, "\\.")}<`));
     assert.match(html, /class="hero"/);
     assert.match(html, /spine-now/);
     assert.doesNotMatch(html, /data-act=/);
     assert.match(html, /slash-cmd/);
-    assert.match(html, /\/approve /);
+    assert.match(html, /\/approve plugin:1 allow-once/);
+    assert.match(html, /\/approve plugin:1 deny/);
+    assert.doesNotMatch(html, /plugin:…/);
     const settings = page("settings", false);
     assert.doesNotMatch(settings, /data-allow-mode=/);
     assert.doesNotMatch(settings, /data-sens=/);
+    assert.doesNotMatch(settings, /data-session-sens=/);
     assert.match(settings, /set-card/);
     assert.match(settings, /Now:/);
     const allow = page("allowlist", false);
@@ -128,7 +146,7 @@ describe("renderNativePage", () => {
     assert.match(settings, /sess-row/);
     assert.match(settings, /set-card/);
     assert.match(settings, /seg-floor/);
-    assert.match(settings, /data-policy="allow-all"/);
+    assert.match(settings, /data-session-sens="attended"/);
     assert.match(settings, /data-skey="main"/);
   });
 
@@ -151,5 +169,13 @@ describe("renderNativePage", () => {
     assert.match(readonly, /Connect hosted Sentrook/);
     assert.doesNotMatch(readonly, /data-setup-save/);
     assert.match(readonly, /slash-cmd/);
+  });
+
+  it("empty connected queue is All clear and native chrome keeps a confirm dialog", () => {
+    const html = page("reviews", true, { ...state, pending: [] });
+    assert.match(html, /All clear/);
+    assert.match(html, /id="confirm"/);
+    assert.match(html, /data-confirm-ok/);
+    assert.match(html, /data-confirm-cancel/);
   });
 });

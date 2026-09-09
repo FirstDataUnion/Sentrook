@@ -2,10 +2,13 @@
 
 Fingerprint shape::
 
-    {rule_id}:{label}:{base_token}:{path_class}
+    {rule_id}:{label}:{argv_prefix}:{path_class}
 
-``path_class`` buckets keep routine ``ls`` of workspace from collapsing into
-``ls`` of auth-profiles / ``.ssh``. Sensitive classes never auto-dedup.
+``argv_prefix`` is up to three non-flag argv tokens (binary + subcommand),
+with URLs/paths/ints skeletonized so ``openclaw config get`` does not
+collapse into ``openclaw plugins update``. ``path_class`` still buckets
+routine ``ls`` of workspace away from ``ls`` of auth-profiles / ``.ssh``.
+Sensitive classes never auto-dedup.
 """
 
 from __future__ import annotations
@@ -35,6 +38,21 @@ INGEST_TOOLS = frozenset({"web_fetch", "web_search", "read"})
 
 # Soft session cap: non-sensitive allow-once mints per (session, rule).
 DEFAULT_MAX_COMMUNITY_PER_SESSION_RULE = 2
+# Binary + two subcommand slots. Package names / config keys sit after this.
+ARGV_PREFIX_LIMIT = 3
+
+_FLAG_RE = re.compile(r"^-")
+_REDIRECT_RE = re.compile(r"^(?:\d*)(?:>>|&>|&<|<&|>&|>|<)\S*$")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_STOP = frozenset({"|", "||", "&&", ";", "&"})
+_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_INT_RE = re.compile(r"^-?\d+$")
+# npm/OpenClaw scoped packages — not filesystem paths.
+_SCOPED_PKG_RE = re.compile(r"^@[^/]+/[^/]+$")
 
 
 def pending_step(
@@ -111,7 +129,65 @@ def base_token(command: str | None) -> str:
     if not command or not str(command).strip():
         return "unknown"
     first = str(command).strip().split()[0]
-    return first.split("/")[-1].lower() or "unknown"
+    return _bin_name(first)
+
+
+def _bin_name(token: str) -> str:
+    return token.split("/")[-1].lower() or "unknown"
+
+
+def _is_path_like(token: str) -> bool:
+    if _SCOPED_PKG_RE.match(token):
+        return False
+    if token.startswith(("/", "./", "../", "~")):
+        return True
+    if token.startswith("\\\\") or (len(token) >= 3 and token[1] == ":" and "\\" in token):
+        return True
+    if "/" in token and not token.startswith("@"):
+        return True
+    return False
+
+
+def _skeletonize_prefix_token(token: str, *, index: int) -> str:
+    if _URL_RE.match(token):
+        return "<url>"
+    if _UUID_RE.match(token):
+        return "<uuid>"
+    if _INT_RE.match(token):
+        return "<int>"
+    if _is_path_like(token):
+        return "<path>"
+    if index == 0:
+        return _bin_name(token)
+    return token.lower()
+
+
+def _keep_prefix_token(token: str) -> bool:
+    if token in _SHELL_STOP:
+        return False
+    if _FLAG_RE.match(token):
+        return False
+    if _REDIRECT_RE.match(token):
+        return False
+    if _ENV_ASSIGN_RE.match(token):
+        return False
+    return True
+
+
+def argv_prefix(command: str | None, *, limit: int = ARGV_PREFIX_LIMIT) -> str:
+    """Stable CLI-family identity: binary + subcommand slots, volatiles stripped."""
+    if not command or not str(command).strip():
+        return "unknown"
+    kept: list[str] = []
+    for raw in str(command).strip().split():
+        if raw in _SHELL_STOP:
+            break
+        if not _keep_prefix_token(raw):
+            continue
+        kept.append(_skeletonize_prefix_token(raw, index=len(kept)))
+        if len(kept) >= limit:
+            break
+    return "+".join(kept) if kept else "unknown"
 
 
 def path_class(command: str | None) -> str:
@@ -157,7 +233,7 @@ def command_fingerprint(
             command = str(args[key])
             break
     tool = _step_tool(pending) if pending is not None else "unknown"
-    token = base_token(command) if command else tool
+    token = argv_prefix(command) if command else tool
     pclass = path_class(command) if command else path_class(None)
     return f"{rule_id}:{label}:{token}:{pclass}"
 

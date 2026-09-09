@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, it } from "node:test";
+import { after, afterEach, beforeEach, describe, it } from "node:test";
 
 import plugin from "./index.ts";
 import { loadAllowlist } from "./localAllowlist.ts";
@@ -67,6 +67,7 @@ function createMockApi(
   pluginConfig: Record<string, unknown>,
   opts?: {
     gatewayRequest?: (method: string, params?: unknown) => Promise<unknown>;
+    config?: unknown;
   },
 ) {
   const handlers = new Map<string, ToolHandler>();
@@ -92,6 +93,7 @@ function createMockApi(
   const sessionActions: Array<{ id: string; requiredScopes?: string[] }> = [];
   const api = {
     pluginConfig,
+    config: opts?.config,
     registrationMode: "full" as const,
     logger: {
       info: (m: string) => infos.push(m),
@@ -196,8 +198,26 @@ function writeApiKeyDotenv(stateDir: string, apiKey: string): void {
   });
 }
 
+const isolatedStateDirs: string[] = [];
+let prevStateDir: string | undefined;
+
+beforeEach(() => {
+  prevStateDir = process.env.OPENCLAW_STATE_DIR;
+  if (!process.env.OPENCLAW_STATE_DIR) {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-reg-iso-"));
+    isolatedStateDirs.push(dir);
+    process.env.OPENCLAW_STATE_DIR = dir;
+  }
+});
+
 afterEach(() => {
   globalThis.fetch = realFetch;
+  if (prevStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR;
+  else process.env.OPENCLAW_STATE_DIR = prevStateDir;
+});
+
+after(() => {
+  for (const dir of isolatedStateDirs) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("plugin.register — OpenClaw 2.0 hook budget", () => {
@@ -1554,6 +1574,137 @@ describe("plugin.register — operator log", () => {
     }
   });
 
+  it("records prompt-as-intent from before_prompt_build", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-intent-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const prompt = handlers.get("before_prompt_build") as
+        | ((event: { prompt?: string; runId?: string }, ctx: Record<string, unknown>) => void)
+        | undefined;
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(prompt);
+      assert.ok(beforeTool);
+      prompt(
+        { prompt: "update the discord plugin", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:discord:channel:1", runId: "r1" },
+      );
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:discord:channel:1", runId: "r1" },
+      );
+      const events = readEvents(stateDir);
+      assert.equal(events[0]?.intent, "update the discord plugin");
+      assert.equal(events[0]?.intent_kind, "user");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records intent from message_received when prompt_build is empty", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-msg-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const inbound = handlers.get("message_received") as
+        | ((event: { content?: string }, ctx: Record<string, unknown>) => void)
+        | undefined;
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(inbound);
+      assert.ok(beforeTool);
+      inbound(
+        { content: "list sgt johnson memory" },
+        { sessionId: "uuid-d", sessionKey: "agent:sgt_johnson:discord:channel:1" },
+      );
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-d", sessionKey: "agent:sgt_johnson:discord:channel:1", runId: "r9" },
+      );
+      const events = readEvents(stateDir);
+      assert.equal(events[0]?.intent, "list sgt johnson memory");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses last user message when before_prompt_build prompt is empty", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-msgs-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(JSON.stringify({ decision: "allow", block: false }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const prompt = handlers.get("before_prompt_build") as
+        | ((
+            event: { prompt?: string; messages?: unknown[]; runId?: string },
+            ctx: Record<string, unknown>,
+          ) => void)
+        | undefined;
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(prompt);
+      assert.ok(beforeTool);
+      prompt(
+        {
+          prompt: "  ",
+          runId: "r1",
+          messages: [
+            { role: "system", content: "you are a bot" },
+            { role: "user", content: "ship tonight" },
+          ],
+        },
+        { sessionId: "uuid-1", sessionKey: "agent:main:dashboard:abc", runId: "r1" },
+      );
+      await beforeTool(
+        { toolName: "exec", params: { command: "ls" }, toolCallId: "t1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:dashboard:abc", runId: "r1" },
+      );
+      const events = readEvents(stateDir);
+      assert.equal(events[0]?.intent, "ship tonight");
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("records resolution and result as separate append-only lines", async () => {
     const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-register-oplog-"));
     const saved = saveEnv();
@@ -1801,19 +1952,19 @@ describe("plugin.register — /sentrook session policy", () => {
       assert.ok(prompt);
       prompt(
         { prompt: "[cron: nightly] check mail", runId: "r1" },
-        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:cron:nightly:run:r1", runId: "r1", trigger: "cron" },
       );
       await commands[0]!.handler({
         args: "allow-all",
         senderIsOwner: true,
         sessionId: "uuid-1",
-        sessionKey: "main",
+        sessionKey: "agent:main:cron:nightly:run:r1",
       });
       const beforeTool = handlers.get("before_tool_call");
       assert.ok(beforeTool);
       const result = (await beforeTool(
         { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
-        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:cron:nightly:run:r1", runId: "r1" },
       )) as { requireApproval?: unknown; block?: boolean };
       assert.ok(result?.requireApproval);
     } finally {
@@ -1838,7 +1989,7 @@ describe("plugin.register — /sentrook session policy", () => {
       assert.ok(prompt);
       prompt(
         { prompt: "[cron: nightly] check mail", runId: "r1" },
-        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:cron:nightly:run:r1", runId: "r1", trigger: "cron" },
       );
       await commands[0]!.handler({
         args: "sensitivity unattended warning",
@@ -1848,9 +1999,206 @@ describe("plugin.register — /sentrook session policy", () => {
       assert.ok(beforeTool);
       const skipped = await beforeTool(
         { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
-        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+        { sessionId: "uuid-1", sessionKey: "agent:main:cron:nightly:run:r1", runId: "r1" },
       );
       assert.equal(skipped, undefined);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies cron from session key when prompt is empty", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-cron-key-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "agent:main:cron:job:run:r1",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        {
+          sessionId: "uuid-1",
+          sessionKey: "agent:main:cron:job:run:r1",
+          runId: "r1",
+        },
+      )) as { requireApproval?: unknown };
+      assert.ok(result?.requireApproval);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allow-all skips reviews for a subagent of an attended session", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-sub-att-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const spawn = handlers.get("subagent_spawned");
+      assert.ok(spawn);
+      await spawn(
+        { childSessionKey: "agent:main:subagent:search-helper" },
+        { requesterSessionKey: "agent:main:main" },
+      );
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-child",
+        sessionKey: "agent:main:subagent:search-helper",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const skipped = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        {
+          sessionId: "uuid-child",
+          sessionKey: "agent:main:subagent:search-helper",
+          runId: "r1",
+        },
+      );
+      assert.equal(skipped, undefined);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not apply allow-all to a subagent spawned from cron", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-sub-cron-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      reviewFetch();
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      const spawn = handlers.get("subagent_spawned");
+      assert.ok(spawn);
+      await spawn(
+        { childSessionKey: "agent:main:subagent:nightly-mail" },
+        { requesterSessionKey: "agent:main:cron:job:run:r1" },
+      );
+      await commands[0]!.handler({
+        args: "allow-all",
+        senderIsOwner: true,
+        sessionId: "uuid-child",
+        sessionKey: "agent:main:subagent:nightly-mail",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
+        {
+          sessionId: "uuid-child",
+          sessionKey: "agent:main:subagent:nightly-mail",
+          runId: "r1",
+        },
+      )) as { requireApproval?: unknown };
+      assert.ok(result?.requireApproval);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allow-all skips critical (hard) hosted reviews", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-allowall-crit-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "critical",
+              summary: "hard L2",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const { api, handlers, commands } = createMockApi({ timeoutMs: 1500 });
+      plugin.register(api as never);
+      await commands[0]!.handler({
+        args: "allow-all all on",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "main",
+      });
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://evil.example" }, toolCallId: "t-hard" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      assert.equal(result, undefined);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allow-all written in one isolate skips review in another isolate", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-allowall-isolate-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input) => {
+        if (String(input).endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "critical",
+              summary: "hard L2",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch;
+      const dashboard = createMockApi({ timeoutMs: 1500 });
+      plugin.register(dashboard.api as never);
+      await dashboard.commands[0]!.handler({
+        args: "allow-all all on",
+        senderIsOwner: true,
+        sessionId: "uuid-1",
+        sessionKey: "main",
+      });
+      const hook = createMockApi({ timeoutMs: 1500 });
+      plugin.register(hook.api as never);
+      const beforeTool = hook.handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = await beforeTool(
+        { toolName: "exec", params: { command: "curl https://evil.example" }, toolCallId: "t-iso" },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      );
+      assert.equal(result, undefined);
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
@@ -2213,6 +2561,40 @@ describe("plugin.register — /sentrook dashboard", () => {
     );
     assert.deepEqual(sessionActions.find((action) => action.id === "state")?.requiredScopes, ["operator.read"]);
     assert.deepEqual(sessionActions.find((action) => action.id === "policy")?.requiredScopes, ["operator.write"]);
+  });
+
+  it("skips the read-only iframe tab when Labs custom plugin UI is on", () => {
+    const { api, httpRoutes, controlUi, infos } = createMockApi(
+      { timeoutMs: 1500 },
+      {
+        config: {
+          gateway: { controlUi: { experimental: { customPlugins: true } } },
+        },
+      },
+    );
+    plugin.register(api as never);
+    assert.equal(httpRoutes.length, 1);
+    assert.equal(httpRoutes[0]?.path, "/sentrook");
+    assert.equal(controlUi.length, 0);
+    assert.ok(infos.some((m) => /iframe tab is not registered/.test(m)));
+  });
+
+  it("reuses the dashboard access token after a second register in the same state dir", () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-tab-token-"));
+    const saved = saveEnv();
+    try {
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      const first = createMockApi({ timeoutMs: 1500 });
+      plugin.register(first.api as never);
+      const token = accessFromTab(first.controlUi);
+      assert.ok(token);
+      const second = createMockApi({ timeoutMs: 1500 });
+      plugin.register(second.api as never);
+      assert.equal(accessFromTab(second.controlUi), token);
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("Per session table lists host store rows before any scan", async () => {

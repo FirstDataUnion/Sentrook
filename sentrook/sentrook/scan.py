@@ -44,6 +44,9 @@ from sentrook.subgraph import (
 )
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+# Operator-facing ``risk`` is the winning rule's severity, not L2 match
+# confidence (structural hits are almost always 1.0 / 0.0).
+_SEVERITY_RISK = {"low": 0.25, "medium": 0.5, "high": 0.75, "critical": 1.0}
 _PASS_RANK = {
     L2PassKind.SEQUENCE_ARGS: 4,
     L2PassKind.SEQUENCE_WITH_GAP: 3,
@@ -64,6 +67,13 @@ def _match_rank(m: MatchedRule) -> tuple[float, int, int, str]:
         _PASS_RANK.get(m.pass_id, 0),
         m.id,
     )
+
+
+def _risk_for_match(m: MatchedRule) -> float:
+    base = _SEVERITY_RISK.get(m.severity, 0.5)
+    if m.confidence < 1.0:
+        return round(base * max(m.confidence, 0.0), 4)
+    return base
 
 
 def scan_plan(
@@ -403,7 +413,7 @@ def _aggregate(
         )
         return (
             "review",
-            top.confidence,
+            _risk_for_match(top),
             f"Review triggered by {top.id}: {top.reason}",
             top,
         )

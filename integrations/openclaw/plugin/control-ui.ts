@@ -11,6 +11,10 @@ import "./control-ui.css";
 import { SENTROOK_PLUGIN_ID, STATE_EVENTS, type SentrookState } from "./featureContract.ts";
 import { createSentrookClient, type FeatureTransport } from "./featureClient.ts";
 import { renderNativePage, type NativeTab } from "./controlUiView.ts";
+import { SETUP_SUCCESS_RESTART_TOAST, SETUP_SUCCESS_TOAST, quietRemainingPhrase } from "./policyCopy.ts";
+import pluginPackage from "./package.json";
+
+const PLUGIN_VERSION = typeof pluginPackage.version === "string" ? pluginPackage.version : "";
 
 type Host = FeatureTransport & {
   connection: FeatureTransport["connection"] & {
@@ -135,6 +139,11 @@ function tickClocks(root: HTMLElement): void {
     const remain = el.querySelector(".remain");
     if (age) age.textContent = fmtAge(created);
     if (remain && timeout) remain.textContent = fmtRemain(created, timeout);
+  });
+  root.querySelectorAll("[data-quiet-until]").forEach((el) => {
+    const until = Number(el.getAttribute("data-quiet-until"));
+    if (!Number.isFinite(until)) return;
+    el.textContent = quietRemainingPhrase(until, Date.now());
   });
 }
 
@@ -359,6 +368,7 @@ function mountSentrookPage(
       canWrite: canWrite(host),
       connected: host.connection.connected,
       now: Date.now(),
+      version: PLUGIN_VERSION,
       flash,
     });
     restoreOpenDetails(root, openKeys);
@@ -395,15 +405,15 @@ function mountSentrookPage(
   const run = async (work: () => Promise<unknown>, okText = "Saved") => {
     try {
       const result = await work();
+      if (result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false) {
+        showFlash(String((result as { error?: string }).error || "Failed"), "error");
+        return result;
+      }
       if (result && typeof result === "object" && "persisted" in result && (result as { persisted?: boolean }).persisted === false) {
         showFlash(
           String((result as { error?: string }).error || "Applied now, but not saved to openclaw.json."),
           "error",
         );
-        return result;
-      }
-      if (result && typeof result === "object" && "ok" in result && (result as { ok?: boolean }).ok === false) {
-        showFlash(String((result as { error?: string }).error || "Failed"), "error");
         return result;
       }
       showFlash(okText, "ok");
@@ -412,6 +422,37 @@ function mountSentrookPage(
       showFlash(err instanceof Error ? err.message : String(err), "error");
       return undefined;
     }
+  };
+
+  const onSessionSensChange = async (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    const scope = target.getAttribute("data-session-sens");
+    if (scope !== "attended" && scope !== "unattended") return;
+    if (!canWrite(host)) {
+      target.value = target.getAttribute("data-current") || "default";
+      return;
+    }
+    const value = target.value.trim().toLowerCase();
+    const prev = target.getAttribute("data-current") || "default";
+    if (value === "critical") {
+      const msg =
+        scope === "unattended"
+          ? "Auto-approve every unattended review in this session, including critical? This overrides the global unattended floor for this session until you set Default."
+          : "Auto-approve every attended review in this session, including critical? This overrides the global attended floor, allow-all, and quiet for this session until you set Default.";
+      if (!(await confirmDialog(root, msg))) {
+        target.value = prev;
+        return;
+      }
+    }
+    const field = scope === "unattended" ? "sessionUnattendedSensitivity" : "sessionAttendedSensitivity";
+    await run(() =>
+      client.invoke("policy", {
+        sessionId: target.getAttribute("data-sid") || undefined,
+        sessionKey: target.getAttribute("data-skey") || undefined,
+        [field]: value,
+      }),
+    );
   };
 
   const showTab = (rawId: string, keepScroll = false) => {
@@ -549,16 +590,23 @@ function mountSentrookPage(
         onScanErrorRaw === "allow" || onScanErrorRaw === "deny" || onScanErrorRaw === "review"
           ? onScanErrorRaw
           : "review";
-      await run(
-        () =>
-          client.invoke("setup", {
-            clientId: id,
-            clientSecret: secret,
-            feedbackMode,
-            onScanError,
-          }),
-        "Credentials saved",
-      );
+      setupClientId = id;
+      setupClientSecret = secret;
+      try {
+        const result = await client.invoke("setup", {
+          clientId: id,
+          clientSecret: secret,
+          feedbackMode,
+          onScanError,
+        });
+        if (!result.ok) {
+          showFlash(result.error || "Those credentials were not accepted. Try again.", "error");
+          return;
+        }
+        showFlash(result.restartHint ? SETUP_SUCCESS_RESTART_TOAST : SETUP_SUCCESS_TOAST, "ok");
+      } catch (err) {
+        showFlash(err instanceof Error ? err.message : String(err), "error");
+      }
       return;
     }
 
@@ -602,6 +650,13 @@ function mountSentrookPage(
     if (allowMode instanceof HTMLElement) {
       const mode = allowMode.getAttribute("data-allow-mode");
       if (mode === "on" || mode === "off") {
+        if (mode === "on" && !state.allowAll) {
+          const ok = await confirmDialog(
+            root,
+            "Auto-accept every attended review, including critical? Scan still runs. Blocks, scan errors, and unattended runs still stop. Cards already waiting are not resolved.",
+          );
+          if (!ok) return;
+        }
         await run(() => client.invoke("policy", { allowAllMode: mode }));
         setPressed(root, allowMode, "[data-allow-mode]");
       }
@@ -639,8 +694,8 @@ function mountSentrookPage(
       if (value === "critical") {
         const msg =
           scope === "unattended"
-            ? "Auto-approve every review on cron and subagent runs, including critical? Nobody will be asked. Blocks and scan errors still stop. This persists in openclaw.json."
-            : "Auto-approve every review, including critical ones? Blocks, scan errors, and the unattended floor are separate. This persists in openclaw.json (unlike allow-all).";
+            ? "Auto-approve every review on cron, heartbeat, and jobs they spawn, including critical? Nobody will be asked. Blocks and scan errors still stop. This persists in openclaw.json."
+            : "Auto-approve every review, including critical ones? Blocks, scan errors, and the unattended floor are separate. This persists in openclaw.json.";
         if (!(await confirmDialog(root, msg))) return;
       }
       if (value) {
@@ -746,6 +801,10 @@ function mountSentrookPage(
 
   root.addEventListener("click", (event) => {
     void onClick(event);
+  });
+
+  root.addEventListener("change", (event) => {
+    void onSessionSensChange(event);
   });
 
   root.addEventListener("input", (event) => {

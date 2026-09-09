@@ -1,7 +1,8 @@
 /**
  * Local session policy after a hosted ``review``: allow-all, quiet TTL, and
  * persisted attended / unattended severity floors (legacy ``lenient`` = info).
- * Never overrides block or scan-error. Allow-all and quiet stay attended-only.
+ * Never overrides block or scan-error. Allow-all and quiet stay attended-only
+ * and only apply when that session’s attended floor is still Default.
  * Hard L2 reviews are included — the hosted scan already finished; if it still
  * returned review, the matching floor applies.
  */
@@ -12,7 +13,7 @@ export type ReviewSeverity = "info" | "warning" | "critical";
 /** ``strict`` prompts every hosted review. Otherwise auto-approve that severity and below. */
 export type Sensitivity = "strict" | ReviewSeverity;
 export type SensitivityScope = "attended" | "unattended";
-export type ReviewSkipReason = "allowlist" | "quiet" | "lenient" | "allow-all";
+export type ReviewSkipReason = "allowlist" | "quiet" | "lenient" | "allow-all" | "session";
 export type SensitivityHighlight = "on" | "covered" | "off";
 
 export const SENSITIVITY_BUTTONS: Sensitivity[] = ["strict", "info", "warning", "critical"];
@@ -31,6 +32,9 @@ const SENSITIVITY_ALIASES: Record<string, Sensitivity> = {
 export type SessionPolicyFlags = {
   allowAll: boolean;
   quietUntilMs: number | null;
+  /** Null / omit = inherit the matching global floor. */
+  attendedSensitivity?: Sensitivity | null;
+  unattendedSensitivity?: Sensitivity | null;
 };
 
 const DURATION_RE =
@@ -44,6 +48,25 @@ export function parseSensitivityToken(raw: unknown): Sensitivity | undefined {
 
 export function parseSensitivity(raw: unknown, fallback: Sensitivity = "strict"): Sensitivity {
   return parseSensitivityToken(raw) ?? fallback;
+}
+
+const SESSION_DEFAULT_TOKENS = new Set(["default", "off", "inherit", "none"]);
+
+/**
+ * Session floor token. ``null`` inherits the matching global floor.
+ * ``undefined`` when the token is not recognised. ``lenient`` → ``info``.
+ */
+export function parseSessionSensitivityToken(raw: unknown): Sensitivity | null | undefined {
+  if (typeof raw !== "string") return undefined;
+  const n = raw.trim().toLowerCase();
+  if (!n) return undefined;
+  if (SESSION_DEFAULT_TOKENS.has(n)) return null;
+  return parseSensitivityToken(n);
+}
+
+/** Display token for a session floor. ``null`` / omit → ``default``. */
+export function sessionFloorLabel(value: Sensitivity | null | undefined): string {
+  return value ?? "default";
 }
 
 /** Hosted default when ``review_severity`` is missing is warning (see serve/response.py). */
@@ -174,6 +197,10 @@ export function resolveReviewSkip(input: {
   quietUntilMs: number | null;
   sensitivity: Sensitivity;
   unattendedSensitivity?: Sensitivity;
+  /** Set (not Default) session unattended floor. */
+  sessionUnattended?: Sensitivity | null;
+  /** Set (not Default) session attended floor. */
+  sessionAttended?: Sensitivity | null;
   reviewSeverity?: string;
   allowlistHit: boolean;
   nowMs?: number;
@@ -181,10 +208,17 @@ export function resolveReviewSkip(input: {
   if (input.hostedDecision !== "review") return undefined;
   if (input.allowlistHit) return "allowlist";
   if (input.unattended) {
-    if (sensitivityCoversReview(input.unattendedSensitivity ?? "strict", input.reviewSeverity)) {
-      return "lenient";
+    const sessionFloor = input.sessionUnattended ?? null;
+    const floor = sessionFloor ?? input.unattendedSensitivity ?? "strict";
+    if (sensitivityCoversReview(floor, input.reviewSeverity)) {
+      return sessionFloor != null ? "session" : "lenient";
     }
     return undefined;
+  }
+  if (input.sessionAttended != null) {
+    return sensitivityCoversReview(input.sessionAttended, input.reviewSeverity)
+      ? "session"
+      : undefined;
   }
   if (input.allowAll) return "allow-all";
   const now = input.nowMs ?? Date.now();
@@ -195,13 +229,13 @@ export function resolveReviewSkip(input: {
 
 export function skipLabelSource(
   reason: ReviewSkipReason,
-): "allowlist" | "quiet" | "lenient" | "allow-all" {
+): "allowlist" | "quiet" | "lenient" | "allow-all" | "session" {
   return reason;
 }
 
 export function skipResolutionDecision(
   reason: ReviewSkipReason,
-): "allowlist-hit" | "quiet-skip" | "lenient-skip" | "allow-all-skip" {
+): "allowlist-hit" | "quiet-skip" | "lenient-skip" | "allow-all-skip" | "session-skip" {
   switch (reason) {
     case "allowlist":
       return "allowlist-hit";
@@ -211,5 +245,7 @@ export function skipResolutionDecision(
       return "lenient-skip";
     case "allow-all":
       return "allow-all-skip";
+    case "session":
+      return "session-skip";
   }
 }

@@ -168,7 +168,7 @@ describe("handleSentrookCommand", () => {
     const { deps } = makeDeps();
     const reply = handleSentrookCommand({ args: "status", sessionId: "uuid-1" }, deps);
     assert.doesNotMatch(reply.text, /owner-only/);
-    assert.match(reply.text, /sensitivity:/);
+    assert.match(reply.text, /attended/);
   });
 
   it("help warns about public channels", () => {
@@ -176,6 +176,12 @@ describe("handleSentrookCommand", () => {
     const reply = handleSentrookCommand({ args: "help", senderIsOwner: true }, deps);
     assert.match(reply.text, /\/sentrook allow-all/);
     assert.ok(reply.text.includes(CHANNEL_DISCLOSURE));
+    assert.match(reply.text, /Control UI/);
+    assert.match(reply.text, /\/sentrook\n {2}Snapshot/);
+    assert.doesNotMatch(reply.text, /paste/i);
+    assert.doesNotMatch(reply.text, /copy (this |the )?URL/i);
+    assert.doesNotMatch(reply.text, /hard L2/i);
+    assert.doesNotMatch(reply.text, /\bknobs\b/i);
   });
 
   it("turns allow-all on for the session", () => {
@@ -211,16 +217,69 @@ describe("handleSentrookCommand", () => {
       awaitingApproval: true,
       eventId: "sr_aabbcc",
     });
+    session.pending.set("t2", {
+      tool: "exec",
+      args: { command: "ls /tmp" },
+      awaitingApproval: true,
+      eventId: "sr_bbccdd",
+    });
     const { deps } = makeDeps({ session });
     const list = handleSentrookCommand({ args: "pending", senderIsOwner: true }, deps);
     assert.match(list.text, /sr_aabbcc/);
+    assert.match(list.text, /\/sentrook pending sr_aabbcc/);
+    assert.match(list.text, /\/sentrook pending sr_bbccdd/);
     assert.doesNotMatch(list.text, /AIRA-/);
     assert.doesNotMatch(list.text, /ghp_1234567890abcdefghij/);
+    assert.ok(!list.text.includes(CHANNEL_DISCLOSURE));
     const detail = handleSentrookCommand({ args: "pending sr_aabbcc", senderIsOwner: true }, deps);
     assert.match(detail.text, /curl https:\/\/example\/collect/);
     assert.match(detail.text, /\[REDACTED\]/);
+    assert.match(detail.text, /```/);
     assert.match(detail.text, /still need \/approve/);
-    assert.ok(detail.text.includes(CHANNEL_DISCLOSURE));
+    assert.ok(!detail.text.includes(CHANNEL_DISCLOSURE));
+  });
+
+  it("shows the full pending review when only one is waiting", () => {
+    const session = makeSession({ sessionKey: "main" });
+    session.pending.set("t1", {
+      tool: "exec",
+      args: { command: "openclaw plugins update brave" },
+      awaitingApproval: true,
+      eventId: "sr_one01",
+    });
+    const { deps } = makeDeps({
+      session,
+      cards: [
+        {
+          eventId: "sr_one01",
+          toolCallId: "t1",
+          tool: "exec",
+          args: { command: "openclaw plugins update brave" },
+          sessionKey: "main",
+          approvalId: "plugin:abc",
+          intent: "update the plugin",
+          intentKind: "user",
+          scan: {
+            decision: "review",
+            risk: 0.82,
+            summary: "Review triggered by AIRA-010: pending exec looked risky",
+            matched_rules: ["AIRA-010"],
+            review_severity: "warning",
+          },
+        },
+      ],
+    });
+    const reply = handleSentrookCommand({ args: "pending", senderIsOwner: true }, deps);
+    assert.match(reply.text, /Pending review  sr_one01/);
+    assert.match(reply.text, /Severity\s+warning/);
+    assert.match(reply.text, /Risk\s+82 \/ 100/);
+    assert.match(reply.text, /High-risk shell/);
+    assert.match(reply.text, /pending exec looked risky/);
+    assert.match(reply.text, /update the plugin/);
+    assert.match(reply.text, /\/approve plugin:abc allow-once/);
+    assert.match(reply.text, /```[\s\S]*openclaw plugins update brave/);
+    assert.doesNotMatch(reply.text, /AIRA-/);
+    assert.ok(!reply.text.includes(CHANNEL_DISCLOSURE));
   });
 
   it("history lists review/block by default and id returns the command", () => {
@@ -251,8 +310,10 @@ describe("handleSentrookCommand", () => {
     );
     assert.match(list.text, /sr_hist01/);
     assert.match(list.text, /review → waiting/);
+    assert.match(list.text, /id\s+time/);
     assert.doesNotMatch(list.text, /sr_hist02/);
     assert.doesNotMatch(list.text, /AIRA-010/);
+    assert.ok(!list.text.includes(CHANNEL_DISCLOSURE));
     const all = handleSentrookCommand(
       { args: "history all", senderIsOwner: true, sessionId: "uuid-1" },
       deps,
@@ -263,9 +324,9 @@ describe("handleSentrookCommand", () => {
       deps,
     );
     assert.match(detail.text, /curl https:\/\/x/);
-    assert.match(detail.text, /scan: review/);
-    assert.match(detail.text, /then: waiting/);
-    assert.match(detail.text, /ran: waiting/);
+    assert.match(detail.text, /Scan\s+review/);
+    assert.match(detail.text, /Then\s+waiting/);
+    assert.match(detail.text, /Ran\s+waiting/);
     assert.doesNotMatch(detail.text, /AIRA-010/);
   });
 
@@ -276,9 +337,11 @@ describe("handleSentrookCommand", () => {
       { args: "status", senderIsOwner: true, sessionId: "uuid-1", sessionKey: "main" },
       deps,
     );
-    assert.match(reply.text, /attended sensitivity: info/);
-    assert.match(reply.text, /allow-all this session: on/);
-    assert.match(reply.text, /operator log: on/);
+    assert.match(reply.text, /attended\s+default \(info\)/);
+    assert.match(reply.text, /this session on/);
+    assert.match(reply.text, /log\s+on/);
+    assert.match(reply.text, /\/sentrook help/);
+    assert.doesNotMatch(reply.text, /\/sentrook verbs/);
   });
 
   it("sensitivity lenient aliases info and warning sets the floor", () => {
@@ -317,6 +380,9 @@ describe("handleSentrookCommand", () => {
     const { deps } = makeDeps({ allowlistPath: path });
     const listed = handleSentrookCommand({ args: "allowlist", senderIsOwner: true }, deps);
     assert.match(listed.text, /rg -n TODO src\//);
+    assert.match(listed.text, /High-risk shell/);
+    assert.doesNotMatch(listed.text, /AIRA-/);
+    assert.doesNotMatch(listed.text, /rules=/);
     const removed = handleSentrookCommand({ args: "allowlist rm 1", senderIsOwner: true }, deps);
     assert.match(removed.text, /Removed \[1\]/);
     const after = handleSentrookCommand({ args: "allowlist", senderIsOwner: true }, deps);
@@ -363,8 +429,11 @@ describe("handleSentrookCommand", () => {
     const { deps } = makeDeps({ session });
     const reply = handleSentrookCommand({ args: "", senderIsOwner: true }, deps);
     assert.match(reply.text, /sr_snap01/);
+    assert.match(reply.text, /\/sentrook pending sr_snap01/);
     assert.match(reply.text, /More commands: \/sentrook help/);
-    assert.match(reply.text, /attended sensitivity: strict/);
+    assert.match(reply.text, /attended\s+default \(strict\)/);
+    assert.doesNotMatch(reply.text, /\/sentrook verbs/);
+    assert.ok(!reply.text.includes(CHANNEL_DISCLOSURE));
   });
 
   it("allow-all help does not enable allow-all", () => {
@@ -418,7 +487,7 @@ describe("handleSentrookCommand", () => {
     const { deps, live } = makeDeps();
     const fb = handleSentrookCommand({ args: "feedback off", senderIsOwner: true }, deps);
     assert.equal(live.feedbackMode, "off");
-    assert.match(fb.text, /Saved in plugin config/);
+    assert.match(fb.text, /Saved\./);
     const need = handleSentrookCommand({ args: "scan-error allow", senderIsOwner: true }, deps);
     assert.equal(live.onScanError, "review");
     assert.match(need.text, /scan-error allow confirm/);
@@ -437,6 +506,48 @@ describe("handleSentrookCommand", () => {
     assert.match(shown.text, /Attended sensitivity: critical/);
   });
 
+  it("sensitivity session sets per-session floors and default clears them", () => {
+    const named = makeSession({ sessionKey: "cron:nightly", sessionId: "cron-1" });
+    const { deps, session } = makeDeps({ session: makeSession({ sessionKey: "main" }), sessions: undefined });
+    const { deps: d2 } = makeDeps({
+      session,
+      sessions: [session, named],
+    });
+    const need = handleSentrookCommand(
+      { args: "sensitivity session cron:nightly attended critical", senderIsOwner: true },
+      d2,
+    );
+    assert.match(need.text, /critical confirm/);
+    assert.equal(named.attendedSensitivity, undefined);
+    const set = handleSentrookCommand(
+      { args: "sensitivity session cron:nightly unattended warning", senderIsOwner: true },
+      d2,
+    );
+    assert.equal(named.unattendedSensitivity, "warning");
+    assert.match(set.text, /Unattended floor warning/);
+    assert.match(set.text, /overrides the global unattended floor/);
+    const attended = handleSentrookCommand(
+      { args: "sensitivity session cron:nightly attended warning", senderIsOwner: true },
+      d2,
+    );
+    assert.equal(named.attendedSensitivity, "warning");
+    assert.match(attended.text, /Attended floor warning/);
+    const shown = handleSentrookCommand(
+      { args: "sensitivity session cron:nightly", senderIsOwner: true },
+      d2,
+    );
+    assert.match(shown.text, /warning \(overrides global strict\)/);
+    const cleared = handleSentrookCommand(
+      { args: "sensitivity session cron:nightly attended default", senderIsOwner: true },
+      d2,
+    );
+    assert.equal(named.attendedSensitivity, null);
+    assert.match(cleared.text, /Attended floor default/);
+    const listed = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, d2);
+    assert.match(listed.text, /unattended/);
+    assert.match(listed.text, /warning/);
+  });
+
   it("pending all lists cards from other sessions", () => {
     const { deps } = makeDeps({
       cards: [
@@ -447,11 +558,21 @@ describe("handleSentrookCommand", () => {
           args: { command: "curl https://x" },
           sessionKey: "cron:nightly",
         },
+        {
+          eventId: "sr_other2",
+          toolCallId: "t-other2",
+          tool: "exec",
+          args: { command: "ls" },
+          sessionKey: "discord:ops",
+        },
       ],
     });
     const reply = handleSentrookCommand({ args: "pending all", senderIsOwner: true }, deps);
     assert.match(reply.text, /sr_other/);
     assert.match(reply.text, /cron:nightly/);
+    assert.match(reply.text, /\/sentrook pending sr_other/);
+    assert.match(reply.text, /\/sentrook pending sr_other2/);
+    assert.ok(!reply.text.includes(CHANNEL_DISCLOSURE));
   });
 
   it("history gateway lists review events without a session filter", () => {
@@ -509,9 +630,9 @@ describe("handleSentrookCommand", () => {
       { args: "history sr_hist01", senderIsOwner: true, sessionId: "uuid-1" },
       deps,
     );
-    assert.match(detail.text, /scan: review/);
-    assert.match(detail.text, /then: deny \(human\)/);
-    assert.match(detail.text, /ran: no/);
+    assert.match(detail.text, /Scan\s+review/);
+    assert.match(detail.text, /Then\s+deny \(human\)/);
+    assert.match(detail.text, /Ran\s+no/);
     assert.match(detail.text, /curl https:\/\/x/);
   });
 
@@ -548,11 +669,11 @@ describe("handleSentrookCommand", () => {
       { args: "history 100", senderIsOwner: true, sessionId: "uuid-1" },
       deps,
     );
-    const rows = dumped.text.split("\n").filter((line) => /  sr_[0-9a-f]{2}  /.test(line));
+    const rows = dumped.text.split("\n").filter((line) => /^sr_[0-9a-f]{2}\b/.test(line.trim()));
     assert.equal(rows.length, 20);
     assert.match(dumped.text, /max 20/);
     assert.match(dumped.text, /before sr_05/);
-    assert.doesNotMatch(dumped.text, /  sr_04  /);
+    assert.doesNotMatch(dumped.text, /^sr_04\b/m);
   });
 
   it("sessions lists live flags", () => {
@@ -573,6 +694,24 @@ describe("handleSentrookCommand", () => {
     assert.match(reply.text, /OpenClaw sessions/);
   });
 
+  it("sessions prefers the OpenClaw label when the host store has one", () => {
+    const { deps } = makeDeps({
+      session: makeSession({ sessionKey: "other" }),
+      hostSessions: [
+        {
+          sessionKey: "agent:main:dashboard:cebf-1",
+          sessionId: "cebf-1",
+          label: "Control UI",
+        },
+      ],
+    });
+    const reply = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, deps);
+    assert.match(reply.text, /Control UI/);
+    assert.match(reply.text, /agent:main:dashboard:cebf-1/);
+    assert.match(reply.text, /cebf-1/);
+    assert.match(reply.text, /key column/);
+  });
+
   it("allow-all session targets a host session that is not yet in memory", () => {
     const { deps } = makeDeps({
       session: makeSession({ sessionKey: "other" }),
@@ -584,7 +723,9 @@ describe("handleSentrookCommand", () => {
     );
     assert.match(reply.text, /Allow-all on for session main/);
     const listed = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, deps);
-    assert.match(listed.text, /main  uuid-1  0  on/);
+    assert.match(listed.text, /main/);
+    assert.match(listed.text, /uuid-1/);
+    assert.match(listed.text, /\bon\b/);
   });
 
   it("quiet help shows current TTL copy", () => {
@@ -615,5 +756,85 @@ describe("handleSentrookCommand", () => {
       assert.match(reply.text, /Usage:/, `${verb} help`);
       assert.equal(session.allowAll, false, `${verb} help must not enable allow-all`);
     }
+  });
+
+  it("history help explains gateway and omits internal copy", () => {
+    const { deps } = makeDeps();
+    const reply = handleSentrookCommand({ args: "history help", senderIsOwner: true }, deps);
+    assert.match(reply.text, /across every session/);
+    assert.match(reply.text, /before <id>/);
+    assert.doesNotMatch(reply.text, /rule ids/);
+    assert.doesNotMatch(reply.text, /dashboard timeline/);
+    assert.ok(!reply.text.includes(CHANNEL_DISCLOSURE));
+  });
+
+  it("owner-facing copy has no internal jargon", () => {
+    const { deps } = makeDeps();
+    const pages = [
+      "help",
+      "status",
+      "policy",
+      "allow-all help",
+      "quiet help",
+      "sensitivity help",
+      "feedback help",
+      "scan-error help",
+      "allowlist help",
+      "log help",
+      "history help",
+      "pending help",
+      "sessions help",
+    ];
+    for (const args of pages) {
+      const text = handleSentrookCommand({ args, senderIsOwner: true }, deps).text;
+      assert.doesNotMatch(text, /hard L2/i, args);
+      assert.doesNotMatch(text, /\bknobs\b/i, args);
+      assert.doesNotMatch(text, /\bverbs\b/i, args);
+      assert.doesNotMatch(text, /Local JSONL/i, args);
+      assert.doesNotMatch(text, /iframe/i, args);
+      assert.doesNotMatch(text, /session_end/i, args);
+      assert.doesNotMatch(text, /scan hook/i, args);
+      assert.doesNotMatch(text, /Custom plugin UI/i, args);
+      assert.doesNotMatch(text, /plugin config/i, args);
+    }
+  });
+
+  it("policy dumps current-choice lines without mutating", () => {
+    const { deps, live } = makeDeps({ sensitivity: "warning", feedbackMode: "off" });
+    const reply = handleSentrookCommand({ args: "policy", senderIsOwner: true }, deps);
+    assert.match(reply.text, /attended\s+default \(warning\)/);
+    assert.match(reply.text, /feedback\s+off/);
+    assert.equal(live.allowAll, false);
+  });
+
+  it("quiet session targets a named session and rejects over the 8h cap", () => {
+    const { deps, session } = makeDeps({
+      session: makeSession({ sessionKey: "agent:main:main", sessionId: "uuid-1" }),
+    });
+    const on = handleSentrookCommand(
+      { args: "quiet session agent:main:main 30m", senderIsOwner: true },
+      deps,
+    );
+    assert.match(on.text, /Quiet on/);
+    assert.equal(typeof session.quietUntilMs, "number");
+    const over = handleSentrookCommand({ args: "quiet all 9h", senderIsOwner: true }, deps);
+    assert.match(over.text, /8 hours/);
+  });
+
+  it("log purge all confirm wipes; unknown verbs fall through to help", () => {
+    const { deps, log } = makeDeps();
+    appendOperatorLog(log, {
+      id: "sr_wipe",
+      ts: "2026-01-01T00:00:00.000Z",
+      event: "scan",
+      pending: { tool: "exec", args: { command: "echo hi" } },
+      scan: { decision: "allow" },
+    });
+    const asked = handleSentrookCommand({ args: "log purge all", senderIsOwner: true }, deps);
+    assert.match(asked.text, /purge all confirm/);
+    const wiped = handleSentrookCommand({ args: "log purge all confirm", senderIsOwner: true }, deps);
+    assert.match(wiped.text, /Purged the log/);
+    const help = handleSentrookCommand({ args: "nope", senderIsOwner: true }, deps);
+    assert.match(help.text, /\/sentrook help/);
   });
 });

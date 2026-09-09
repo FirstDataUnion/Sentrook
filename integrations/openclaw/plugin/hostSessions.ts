@@ -1,8 +1,10 @@
 /**
  * OpenClaw session-store listing for the dashboard Per session table and
- * ``/sentrook sessions``. Overlay Sentrook's in-memory allow-all / quiet
+ * ``/sentrook sessions``. Overlay Sentrook's allow-all / quiet / sensitivity
  * flags; do not treat DualIndexMap as the host's live session list.
  */
+
+import type { Sensitivity } from "./sessionPolicy.ts";
 
 export const DEFAULT_SESSION_LIST_CAP = 100;
 
@@ -10,6 +12,8 @@ export type HostSession = {
   sessionKey: string;
   sessionId?: string;
   updatedAtMs?: number;
+  /** OpenClaw label / displayName when the store has one. */
+  label?: string;
 };
 
 export type SessionListRow = {
@@ -17,7 +21,10 @@ export type SessionListRow = {
   sessionKey?: string;
   allowAll: boolean;
   quietUntilMs: number | null;
+  attendedSensitivity?: Sensitivity | null;
+  unattendedSensitivity?: Sensitivity | null;
   pending: number;
+  label?: string;
 };
 
 export type SessionStoreLister = {
@@ -40,6 +47,46 @@ function nonempty(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+function originLabel(entry: Record<string, unknown>): string | undefined {
+  const origin = entry.origin;
+  if (!origin || typeof origin !== "object" || Array.isArray(origin)) return undefined;
+  return nonempty((origin as { label?: unknown }).label);
+}
+
+/** Prefer the same names Control UI shows: label, then displayName, then derived title. */
+export function sessionLabelOf(
+  rec: Record<string, unknown>,
+  entry: Record<string, unknown> = {},
+): string | undefined {
+  return (
+    nonempty(entry.label) ??
+    nonempty(rec.label) ??
+    nonempty(entry.displayName) ??
+    nonempty(rec.displayName) ??
+    nonempty(entry.derivedTitle) ??
+    nonempty(rec.derivedTitle) ??
+    nonempty(entry.subject) ??
+    originLabel(entry)
+  );
+}
+
+/** Human name when OpenClaw has one; otherwise the session key. */
+export function sessionDisplayName(row: {
+  sessionKey?: string;
+  sessionId?: string;
+  label?: string;
+}): string {
+  const key = nonempty(row.sessionKey);
+  const named = nonempty(row.label);
+  if (named && named !== key) return named;
+  return key ?? nonempty(row.sessionId) ?? "—";
+}
+
+function withOptionalLabel<T extends { label?: string }>(row: T, label?: string): T {
+  if (!label) return row;
+  return { ...row, label };
 }
 
 function isArchived(entry: { archivedAt?: unknown } | undefined): boolean {
@@ -126,11 +173,17 @@ export function listHostSessions(
       const key = sessionKey ?? sessionId!;
       const prev = byKey.get(key);
       if (!prev || (updatedAtMs ?? 0) >= (prev.updatedAtMs ?? 0)) {
-        byKey.set(key, {
-          sessionKey: sessionKey ?? key,
-          sessionId,
-          updatedAtMs: updatedAtMs || undefined,
-        });
+        byKey.set(
+          key,
+          withOptionalLabel(
+            {
+              sessionKey: sessionKey ?? key,
+              sessionId,
+              updatedAtMs: updatedAtMs || undefined,
+            },
+            sessionLabelOf(rec as Record<string, unknown>, entry),
+          ),
+        );
       }
     }
   }
@@ -148,7 +201,7 @@ function liveMatchKey(sessionKey?: string, sessionId?: string): string[] {
 
 /**
  * Host sessions (newest first, capped) with Sentrook flags overlaid.
- * In-memory rows the host did not return are appended so a just-toggled
+ * Live rows the host did not return are appended so a just-toggled
  * session does not vanish.
  */
 export function mergeSessionRows(
@@ -176,25 +229,39 @@ export function mergeSessionRows(
       (h.sessionId && liveByKey.get(`i:${h.sessionId}`)) ||
       undefined;
     if (st) used.add(st);
-    fromHost.push({
-      sessionKey: nonempty(h.sessionKey) ?? st?.sessionKey,
-      sessionId: nonempty(h.sessionId) ?? st?.sessionId,
-      allowAll: st?.allowAll ?? false,
-      quietUntilMs: st?.quietUntilMs ?? null,
-      pending: st?.pending ?? 0,
-    });
+    fromHost.push(
+      withOptionalLabel(
+        {
+          sessionKey: nonempty(h.sessionKey) ?? st?.sessionKey,
+          sessionId: nonempty(h.sessionId) ?? st?.sessionId,
+          allowAll: st?.allowAll ?? false,
+          quietUntilMs: st?.quietUntilMs ?? null,
+          attendedSensitivity: st?.attendedSensitivity ?? null,
+          unattendedSensitivity: st?.unattendedSensitivity ?? null,
+          pending: st?.pending ?? 0,
+        },
+        nonempty(h.label) ?? nonempty(st?.label),
+      ),
+    );
   }
 
   const extras: SessionListRow[] = [];
   for (const st of live) {
     if (used.has(st)) continue;
-    extras.push({
-      sessionId: st.sessionId,
-      sessionKey: st.sessionKey,
-      allowAll: st.allowAll,
-      quietUntilMs: st.quietUntilMs,
-      pending: st.pending,
-    });
+    extras.push(
+      withOptionalLabel(
+        {
+          sessionId: st.sessionId,
+          sessionKey: st.sessionKey,
+          allowAll: st.allowAll,
+          quietUntilMs: st.quietUntilMs,
+          attendedSensitivity: st.attendedSensitivity ?? null,
+          unattendedSensitivity: st.unattendedSensitivity ?? null,
+          pending: st.pending,
+        },
+        nonempty(st.label),
+      ),
+    );
   }
   return [...extras, ...fromHost];
 }

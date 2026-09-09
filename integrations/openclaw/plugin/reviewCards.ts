@@ -45,6 +45,8 @@ export type ReviewCard = {
   intentKind?: string | null;
   priorSteps?: ReviewPriorStep[];
   priorOmitted?: number;
+  /** OpenClaw ``plugin:`` approval id, once the host has published one. */
+  approvalId?: string;
 };
 
 export const MAX_REVIEW_PRIOR_STEPS = 40;
@@ -111,7 +113,10 @@ function parseStoredCards(raw: string): ReviewCard[] {
       if (!row || typeof row !== "object") return false;
       const rec = row as Partial<ReviewCard>;
       return typeof rec.eventId === "string" && typeof rec.toolCallId === "string" && typeof rec.tool === "string";
-    });
+    }).map((row) => ({
+      ...row,
+      approvalId: typeof row.approvalId === "string" && row.approvalId.trim() ? row.approvalId.trim() : undefined,
+    }));
   } catch {
     return [];
   }
@@ -159,6 +164,17 @@ export class ReviewCardStore {
     const stored = this.byToolCallId.get(toolCallId);
     if (!stored) return undefined;
     return serializableCard(stored);
+  }
+
+  /** Remember a host-minted ``plugin:`` id without resetting the timeout timer. */
+  attachApprovalId(toolCallId: string, approvalId: string): void {
+    const id = approvalId.trim();
+    if (!toolCallId || !id) return;
+    this.reloadFromDisk({ startTimers: false });
+    const stored = this.byToolCallId.get(toolCallId) ?? this.byToolCallId.get(this.byEventId.get(toolCallId) ?? "");
+    if (!stored || stored.approvalId === id) return;
+    stored.approvalId = id;
+    this.persist();
   }
 
   list(): ReviewCard[] {
@@ -217,7 +233,13 @@ export class ReviewCardStore {
       if (!seen.has(id)) this.take(id, { persist: false });
     }
     for (const row of rows) {
-      if (this.byToolCallId.has(row.toolCallId)) continue;
+      const existing = this.byToolCallId.get(row.toolCallId);
+      if (existing) {
+        if (row.approvalId && existing.approvalId !== row.approvalId) {
+          existing.approvalId = row.approvalId;
+        }
+        continue;
+      }
       const stored: Stored = {
         ...row,
         args: row.args && typeof row.args === "object" ? row.args : {},

@@ -3,9 +3,10 @@
  * ``planir.args`` + ``sanitize.core.redact_args`` for golden parity.
  */
 
+import type { IntentKind } from "./attendance.ts";
 import { packSignalExcerpt } from "./sanitize.ts";
 
-export type IntentKind = "user" | "cron" | "subagent" | "system";
+export type { IntentKind };
 export type Json = Record<string, unknown>;
 
 export interface ResultSummaryExtracted {

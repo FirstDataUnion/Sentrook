@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  DASHBOARD_ACCESS_FILE,
   accessCookieFromHeader,
   accessFromRequest,
   accessTokensEqual,
@@ -9,6 +13,7 @@ import {
   dashboardCorsAllowOrigin,
   dashboardRestFromPathname,
   dashboardTabPath,
+  resolveDashboardAccessToken,
   tabAccessFromPathname,
 } from "./dashboardAuth.ts";
 
@@ -77,5 +82,33 @@ describe("dashboard access token", () => {
     assert.equal(dashboardCorsAllowOrigin("https://evil.example", "127.0.0.1:18789"), undefined);
     assert.equal(dashboardCorsAllowOrigin("http://localhost:18789", "127.0.0.1:18789"), undefined);
     assert.equal(dashboardCorsAllowOrigin(undefined, "127.0.0.1:18789"), undefined);
+  });
+});
+
+describe("resolveDashboardAccessToken", () => {
+  it("reuses the token stored in the state dir", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-access-"));
+    try {
+      const first = resolveDashboardAccessToken(dir);
+      const second = resolveDashboardAccessToken(dir);
+      assert.equal(first, second);
+      assert.match(first, /^[A-Za-z0-9_-]{32,64}$/);
+      assert.equal(readFileSync(path.join(dir, DASHBOARD_ACCESS_FILE), "utf8").trim(), first);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("mints a new token when the file is garbage and does not create a missing dir", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-access-"));
+    try {
+      writeFileSync(path.join(dir, DASHBOARD_ACCESS_FILE), "nope\n");
+      const token = resolveDashboardAccessToken(dir);
+      assert.match(token, /^[A-Za-z0-9_-]{32,64}$/);
+      assert.notEqual(token, "nope");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    assert.match(resolveDashboardAccessToken(path.join(tmpdir(), "sentrook-missing-access")), /^[A-Za-z0-9_-]{32,64}$/);
   });
 });

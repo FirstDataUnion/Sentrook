@@ -20,26 +20,30 @@ import {
   SENSITIVITY_BUTTONS,
   parseSensitivity,
   sensitivityFloorHighlight,
+  sessionFloorLabel,
   type Sensitivity,
   type SensitivityScope,
 } from "./sessionPolicy.ts";
 import {
   allowAllHint,
   feedbackHint,
+  quietActiveLine,
   quietHint,
   quietLeftLabel,
+  quietRemainingPhrase,
   scanErrorHint,
   sensitivityHint,
 } from "./policyCopy.ts";
 import { DEFAULT_OIDC_ISSUER } from "./scanEndpoint.ts";
+import { sessionDisplayName } from "./hostSessions.ts";
 import {
   ALLOW_ALL_OFF,
   ALLOW_ALL_ON,
   CONFIGURE_CLI,
+  CONFIGURE_CLI_DOCKER_COMPOSE,
   LOG_PURGE,
   LOG_WIPE,
   VERIFY_CLI,
-  allowAllSession,
   allowlistRm,
   approveAlways,
   approveDeny,
@@ -47,10 +51,13 @@ import {
   feedbackCmd,
   logRetentionDays,
   logRetentionMib,
+  pendingInspect,
   quietAll,
   quietSession,
+  resolveChatCommands,
   scanErrorCmd,
   sensitivityCmd,
+  sensitivitySession,
   sessionToken,
 } from "./dashboardSlashHints.ts";
 
@@ -141,7 +148,10 @@ export type DashboardViewState = {
     sessionKey?: string;
     allowAll: boolean;
     quietUntilMs: number | null;
+    attendedSensitivity?: Sensitivity | null;
+    unattendedSensitivity?: Sensitivity | null;
     pending: number;
+    label?: string;
   }>;
   sensitivity: string;
   unattendedSensitivity?: string;
@@ -303,7 +313,16 @@ function clipText(value: string, max: number): string {
 function intentKindChip(kind: string | null | undefined): string {
   const k = (kind ?? "").trim().toLowerCase();
   if (!k || k === "user") return "";
-  const label = k === "cron" ? "Cron" : k === "subagent" ? "Subagent" : k === "system" ? "System" : k;
+  const label =
+    k === "cron"
+      ? "Cron"
+      : k === "heartbeat"
+        ? "Heartbeat"
+        : k === "subagent"
+          ? "Subagent"
+          : k === "system"
+            ? "System"
+            : k;
   return ` <span class="kind kind-${escapeHtml(k)}">${escapeHtml(label)}</span>`;
 }
 
@@ -340,6 +359,8 @@ function resolutionLabel(raw: string | undefined): string {
       return "Skipped (quiet)";
     case "lenient-skip":
       return "Skipped (lenient)";
+    case "session-skip":
+      return "Skipped (session)";
     case "allowlist-hit":
       return "Allowlisted";
     case "cancelled":
@@ -401,6 +422,8 @@ function sourceLabel(raw: string | undefined): string {
       return "Quiet";
     case "lenient":
       return "Lenient";
+    case "session":
+      return "Session";
     case "allow-all":
       return "Allow-all";
     case "timeout":
@@ -430,6 +453,8 @@ function resolvedBy(row: DashboardViewState["history"][number]): string {
       return "Quiet";
     case "lenient-skip":
       return "Lenient";
+    case "session-skip":
+      return "Session";
     case "allow-all-skip":
       return "Allow-all";
     default:
@@ -831,9 +856,7 @@ function renderReviewCard(
   const argsJson = extraArgsJson(card.args, card.command);
   const meanings = ruleMeanings(card.scan.matched_rules);
   const headline = operatorSummary(card.scan.summary) || meanings[0] || "";
-  const approveCmd = `/approve ${card.approvalId ?? "plugin:…"}`;
   const interactive = interactiveOf(opts);
-  const canResolve = interactive && opts.resolveAvailable && Boolean(card.approvalId);
   const remain =
     card.timeoutMs && card.timeoutMs > 0 ? fmtRemain(card.createdAtMs, card.timeoutMs, opts.now) : null;
   const sessionLabel = card.sessionKey?.trim() || "—";
@@ -849,27 +872,26 @@ function renderReviewCard(
       : "";
   const legend =
     `<p class="legend">Once = this call. Always = local allowlist (skipped for high-risk shapes). Deny = veto; the claw moves on.</p>`;
-  const approveRows = [
-    { label: "Allow once", cmd: approveOnce(card.approvalId) },
-    { label: "Allow always", cmd: approveAlways(card.approvalId) },
-    { label: "Deny", cmd: approveDeny(card.approvalId) },
-  ];
+  const chatCommands = resolveChatCommands(card.approvalId, card.eventId);
+  const missingIdHint =
+    `<p class="hint">No copyable <code>/approve</code> id yet. Use Allow/Deny on the native Sentrook page, or the approval card OpenClaw posted in chat. Inspect: ${slashCode(pendingInspect(card.eventId))}</p>`;
   const actions = !interactive
     ? `<div class="decide">
         ${legend}
-        ${slashList(approveRows)}
+        ${slashList(chatCommands)}
+        ${card.approvalId ? "" : missingIdHint}
       </div>`
-    : canResolve
-      ? `<div class="decide">
+    : `<div class="decide">
         <button type="button" class="btn-once" data-act="allow-once" data-tool="${escapeHtml(card.toolCallId)}">Allow once</button>
         <button type="button" class="btn-always" data-act="allow-always" data-tool="${escapeHtml(card.toolCallId)}">Allow always</button>
         <button type="button" class="btn-deny" data-act="deny" data-tool="${escapeHtml(card.toolCallId)}">Deny</button>
         ${legend}
-        <p class="fallback">If allow/deny fails, use <code>${escapeHtml(approveCmd)}</code> in chat.</p>
-      </div>`
-      : `<div class="decide">
-        ${legend}
-        <p class="fallback">Approve via <code>${escapeHtml(approveCmd)}</code> in chat if these buttons fail.</p>
+        ${
+          card.approvalId
+            ? `<p class="fallback">If allow/deny fails, paste one of these in chat:</p>${slashList(chatCommands)}`
+            : `<p class="fallback">If allow/deny fails, use the approval card OpenClaw posted in chat. There is no copyable <code>/approve</code> id yet.</p>
+               <p class="hint">Inspect: ${slashCode(pendingInspect(card.eventId))}</p>`
+        }
       </div>`;
 
   return `<article class="review sev-${sev}" id="${escapeHtml(card.eventId)}"
@@ -891,6 +913,7 @@ function renderReviewCard(
     </div>
     ${headline ? `<p class="summary">${escapeHtml(headline)}</p>` : ""}
     ${intentBlock}
+    ${actions}
     <dl class="facts">
       <div><dt>Tool</dt><dd>${escapeHtml(card.tool)}</dd></div>
       <div><dt>Waiting</dt><dd class="age">${escapeHtml(fmtAge(card.createdAtMs, opts.now))}</dd></div>
@@ -912,7 +935,6 @@ function renderReviewCard(
         : ""
     }
     ${renderSpine(card, command, cmdId)}
-    ${actions}
     <details class="more">
       <summary>IDs, full arguments, chat fallback</summary>
       <dl>
@@ -927,7 +949,11 @@ function renderReviewCard(
           ? `<h3>Tool arguments</h3><pre>${escapeHtml(argsJson)}</pre>`
           : `<p class="hint">No extra tool arguments beyond the command.</p>`
       }
-      <p class="hint">Chat: ${slashCode(approveOnce(card.approvalId))} · ${slashCode(approveAlways(card.approvalId))} · ${slashCode(approveDeny(card.approvalId))}</p>
+      <p class="hint">Chat: ${
+        card.approvalId
+          ? `${slashCode(approveOnce(card.approvalId))} · ${slashCode(approveAlways(card.approvalId))} · ${slashCode(approveDeny(card.approvalId))}`
+          : slashCode(pendingInspect(card.eventId))
+      }</p>
     </details>
       </article>`;
 }
@@ -942,8 +968,9 @@ function segBtn(pressed: boolean, attrs: string, label: string, interactive = tr
   return `<button type="button" aria-pressed="${pressed ? "true" : "false"}" ${attrs}${disableAttr(interactive)}>${label}</button>`;
 }
 
-function choiceHint(text: string): string {
-  return `<p class="floor-hint">${escapeHtml(text)}</p>`;
+function choiceHint(text: string, extraClass = ""): string {
+  const cls = extraClass ? `floor-hint ${extraClass}` : "floor-hint";
+  return `<p class="${cls}">${escapeHtml(text)}</p>`;
 }
 
 const FLOOR_LABEL: Record<Sensitivity, string> = {
@@ -1039,6 +1066,32 @@ export function renderAllowlist(state: DashboardViewState, opts: DashboardPanelO
 
 const SESSION_PREVIEW_LIMIT = 5;
 
+const SESSION_FLOOR_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "default", label: "Default (global)" },
+  { value: "strict", label: "Strict" },
+  { value: "info", label: "Info" },
+  { value: "warning", label: "Warning" },
+  { value: "critical", label: "Critical" },
+];
+
+function sessionSensSelect(
+  scope: SensitivityScope,
+  current: Sensitivity | null | undefined,
+  sid: string,
+  skey: string,
+): string {
+  const selected = sessionFloorLabel(current);
+  const options = SESSION_FLOOR_OPTIONS.map(
+    (opt) =>
+      `<option value="${opt.value}"${opt.value === selected ? " selected" : ""}>${escapeHtml(opt.label)}</option>`,
+  ).join("");
+  const caption = scope === "attended" ? "Attended" : "Unattended";
+  return `<label class="sess-sens">
+            <span>${caption}</span>
+            <select data-session-sens="${scope}" data-current="${escapeHtml(selected)}" data-sid="${escapeHtml(sid)}" data-skey="${escapeHtml(skey)}">${options}</select>
+          </label>`;
+}
+
 function renderSessionRow(
   s: DashboardViewState["sessions"][number],
   now: number,
@@ -1048,27 +1101,38 @@ function renderSessionRow(
   const sessionQuiet = quietOn ? quietLeftLabel(s.quietUntilMs, now) : "off";
   const key = s.sessionKey?.trim() || "—";
   const id = s.sessionId?.trim() || "";
+  const named = sessionDisplayName(s);
+  const showName = named !== key;
   const showId = Boolean(id && id !== key);
   const pending = s.pending === 1 ? "1 pending" : `${s.pending} pending`;
   const token = sessionToken(s.sessionKey, s.sessionId);
+  const attended = sessionFloorLabel(s.attendedSensitivity);
+  const unattended = sessionFloorLabel(s.unattendedSensitivity);
   const actions = interactive
-    ? `<div class="sess-actions seg">
-          ${segBtn(s.allowAll, `data-policy="allow-all" data-on="${s.allowAll ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"`, s.allowAll ? "Allow-all on" : "Allow-all off")}
-          ${segBtn(quietOn, `data-policy="quiet" data-on="${quietOn ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"`, quietOn ? `Quiet ${sessionQuiet}` : "Quiet 30m")}
+    ? `<div class="sess-actions">
+          ${sessionSensSelect("attended", s.attendedSensitivity, s.sessionId ?? "", s.sessionKey ?? "")}
+          ${sessionSensSelect("unattended", s.unattendedSensitivity, s.sessionId ?? "", s.sessionKey ?? "")}
+          ${segBtn(quietOn, `data-policy="quiet" data-on="${quietOn ? "0" : "1"}" data-sid="${escapeHtml(s.sessionId ?? "")}" data-skey="${escapeHtml(s.sessionKey ?? "")}"${quietOn ? ` class="quiet-on"` : ""}`, quietOn ? `Quiet ${sessionQuiet}` : "Quiet 30m")}
         </div>`
     : `<div class="sess-actions">
-          ${currentValue(`allow-all ${s.allowAll ? "on" : "off"} · quiet ${sessionQuiet}`)}
+          ${currentValue(`attended ${attended} · unattended ${unattended} · quiet ${sessionQuiet}`)}
           ${slashList([
-            { label: "Allow-all on", cmd: allowAllSession(token, true) },
-            { label: "Allow-all off", cmd: allowAllSession(token, false) },
+            { label: "Attended default", cmd: sensitivitySession(token, "attended", "default") },
+            { label: "Attended warning", cmd: sensitivitySession(token, "attended", "warning") },
+            { label: "Unattended warning", cmd: sensitivitySession(token, "unattended", "warning") },
             { label: "Quiet 30m", cmd: quietSession(token, "30m") },
             { label: "Quiet off", cmd: quietSession(token, "off") },
           ])}
         </div>`;
+  const metaBits = [
+    showName ? `<code>${escapeHtml(key)}</code>` : "",
+    showId ? `<code>${escapeHtml(id)}</code>` : "",
+    pending,
+  ].filter(Boolean);
   return `<li class="sess-row">
         <div class="sess-id">
-          <code class="sess-key">${escapeHtml(key)}</code>
-          <span class="sess-meta">${showId ? `<code>${escapeHtml(id)}</code> · ` : ""}${pending}</span>
+          ${showName ? `<span class="sess-name">${escapeHtml(named)}</span>` : `<code class="sess-key">${escapeHtml(key)}</code>`}
+          <span class="sess-meta">${metaBits.join(" · ")}</span>
         </div>
         ${actions}
       </li>`;
@@ -1100,18 +1164,22 @@ export function renderSettings(state: DashboardViewState, opts: DashboardPanelOp
   const mode = allowAllModeOf(state);
   const quietOn = Boolean(state.quietUntilMs && state.quietUntilMs > now);
   const quietChoice = quietHint(state.quietUntilMs, now);
+  const quietLine = quietActiveLine(state.quietUntilMs, now);
+  const quietBanner = quietLine
+    ? `<p class="quiet-status" role="status">Quiet mode active, time remaining: <span data-quiet-until="${state.quietUntilMs ?? ""}">${escapeHtml(quietRemainingPhrase(state.quietUntilMs, now))}</span></p>`
+    : "";
   const feedback = state.feedbackMode === "off" ? "off" : "submit";
   const scanErr = state.onScanError === "allow" || state.onScanError === "deny" ? state.onScanError : "review";
   const mib = Math.max(1, Math.round(state.log.maxBytes / (1024 * 1024)));
   const allowAllNow = mode === "on" ? "On for all" : "Off";
   const intro = interactive
-    ? "Runtime skips live in memory (cleared on gateway restart). Sensitivity, feedback, scan-error policy, and log retention write to <code>openclaw.json</code> when the gateway can save them."
-    : "This panel cannot save. Copy a command into chat, or open the native Sentrook page. Runtime skips live in memory (cleared on gateway restart). Sensitivity, feedback, scan-error, and log retention persist in <code>openclaw.json</code> when those commands run.";
+    ? "Allow-all and quiet are stored on this host so every plugin isolate sees them. Sensitivity, feedback, scan-error policy, and log retention write to <code>openclaw.json</code> when the gateway can save them."
+    : "This panel cannot save changes to state. To change these settings, copy a command into any OpenClaw chat, or open the native Sentrook page. Allow-all and quiet are stored on this host. Sensitivity, feedback, scan-error, and log retention persist in <code>openclaw.json</code> when those commands run.";
 
   const allowAllControls = interactive
     ? `<div class="seg">
           ${segBtn(mode !== "on", `data-allow-mode="off"`, "Off")}
-          ${segBtn(mode === "on", `data-allow-mode="on"`, "On for all")}
+          ${segBtn(mode === "on", `data-allow-mode="on" class="set-warn"`, "On for all")}
         </div>`
     : `${currentValue(allowAllNow)}
         ${slashList([
@@ -1201,33 +1269,34 @@ export function renderSettings(state: DashboardViewState, opts: DashboardPanelOp
     <div class="settings">
       <section class="set-card">
         <h3>Attended tool review sensitivity</h3>
-        <p class="lead">Auto-accept reviews at or below the selected severity while you are present. Each step includes every lower level. Blocks and scan errors still stop. Unlike allow-all, this persists across restarts.</p>
+        <p class="lead">Auto-accept reviews at or below the selected severity while you are present. Each step includes every lower level. Blocks and scan errors still stop. Writes to <code>openclaw.json</code>. A per-session attended floor overrides this, allow-all, and quiet for that session.</p>
         ${renderSensitivityFloor("attended", state.sensitivity, interactive)}
       </section>
       <section class="set-card">
         <h3>Unattended tool review sensitivity</h3>
-        <p class="lead">The same floor for cron and subagent runs, when nobody is watching. Default is strict. Allow-all and quiet do not apply here.</p>
+        <p class="lead">The same floor for cron, heartbeat, and jobs they spawn. Subagents of a chat session stay on the attended floor. Default is strict. Allow-all and quiet do not apply here. A per-session unattended floor overrides this.</p>
         ${renderSensitivityFloor("unattended", state.unattendedSensitivity, interactive)}
       </section>
       <section class="set-card">
         <h3>Allow-all</h3>
-        <p class="lead">Skip future <strong>reviews</strong> without resolving cards already waiting. Never skips block or scan errors. Unattended runs use the unattended sensitivity above, not this switch. Per session Allow-all/Quiet controls can be set in the Per session section below.</p>
+        <p class="lead">Auto-accept every future <strong>attended review</strong> — soft and hard. Scan still runs. Does not override a <strong>block</strong> or a scan error. Unattended runs use the unattended sensitivity above, not this switch. Sessions with their own attended floor ignore this. Per session Quiet can be set in the Per session section below.</p>
         ${allowAllControls}
         ${choiceHint(allowAllHint(mode))}
       </section>
-      <section class="set-card">
+      <section class="set-card${quietOn ? " set-card-quiet" : ""}">
         <h3>Quiet</h3>
-        <p class="lead">Same skip as allow-all, with a TTL (max 8 hours). This row is gateway-wide. Per session Allow-all/Quiet controls can be set in the Per session section below. Unattended runs use the unattended sensitivity above.</p>
+        <p class="lead">Same skip as allow-all, with a TTL (max 8 hours). This row is gateway-wide. Sessions with their own attended floor ignore quiet. Per session Quiet can be set in the Per session section below. Unattended runs use the unattended sensitivity above.</p>
+        ${quietBanner}
         ${quietControls}
-        ${choiceHint(quietChoice)}
+        ${choiceHint(quietChoice, quietOn ? "floor-warning" : "")}
       </section>
       <section class="set-card" id="set-sessions">
         <h3>Per session</h3>
-        <p class="lead">OpenClaw sessions from the same store as Control UI. Allow-all and quiet flags are Sentrook’s and stay in memory (cleared on restart / session end). Extra quiet windows work even if global quiet is off.</p>
+        <p class="lead">OpenClaw sessions from the same store as Control UI. Attended and unattended floors stick by session key across restart and session end; Default inherits the matching global floor. A set attended floor overrides global attended, allow-all, and quiet. Quiet still applies only while attended is Default, and still clears when the session ends.</p>
         ${renderSessionList(state.sessions, now, interactive)}
         ${
           mode === "on"
-            ? choiceHint("Global allow-all is on — session allow-all flags are ignored until you switch off.")
+            ? choiceHint("Global allow-all is on. Sessions with their own attended floor ignore it; leftover session allow-all flags on Default sessions are ignored until you switch off.")
             : ""
         }
       </section>
@@ -1262,16 +1331,17 @@ export function renderSetup(state: DashboardViewState, opts: DashboardPanelOpts 
       <p class="empty-kicker">First-run setup</p>
       <h2>Connect hosted Sentrook</h2>
       <p class="setup-copy">To use hosted Sentrook you need a free FIDU membership with a Sentrook OAuth client.</p>
-      <p class="setup-copy">Visit <a href="${escapeHtml(identity)}" target="_blank" rel="noopener noreferrer">${escapeHtml(identity)}</a> — log in or create an account (free membership is all that's required). Use the Identity environment that matches this Sentrook build (prod Identity for prod Sentrook).</p>
-      <p class="setup-copy">Create credentials on the Sentrook tab of your Identity dashboard, then run the CLI. This panel cannot write scan credentials.</p>
+      <p class="setup-copy">Visit <a href="${escapeHtml(identity)}" target="_blank" rel="noopener noreferrer">${escapeHtml(identity)}</a> — log in or create an account (free membership is all that's required).</p>
+      <p class="setup-copy">Create credentials on the Sentrook tab of your Identity dashboard, then run the command below in a terminal/CLI. This panel cannot write scan credentials.</p>
       ${slashList([{ label: "First-run setup", cmd: CONFIGURE_CLI }])}
+      ${slashList([{ label: "Docker compose users", cmd: CONFIGURE_CLI_DOCKER_COMPOSE }])}
     </div>`;
   }
   return `<div class="setup">
       <p class="empty-kicker">First-run setup</p>
       <h2>Connect hosted Sentrook</h2>
       <p class="setup-copy">To use hosted Sentrook you need a free FIDU membership with a Sentrook OAuth client.</p>
-      <p class="setup-copy">Visit <a href="${escapeHtml(identity)}" target="_blank" rel="noopener noreferrer">${escapeHtml(identity)}</a> — log in or create an account (free membership is all that's required). Use the Identity environment that matches this Sentrook build (prod Identity for prod Sentrook).</p>
+      <p class="setup-copy">Visit <a href="${escapeHtml(identity)}" target="_blank" rel="noopener noreferrer">${escapeHtml(identity)}</a> — log in or create an account (free membership is all that's required).</p>
       <p class="setup-copy">On your dashboard, open the Sentrook tab, click Create Credentials, then paste the client_id and client_secret below.</p>
       <div class="setup-fields">
         <label class="field"><span>OAuth client_id</span>

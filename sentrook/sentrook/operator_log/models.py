@@ -22,9 +22,10 @@ LabelSource = Literal[
     "allow-all",
     "timeout",
     "unattended",
+    "session",
 ]
 HookAction = Literal["requireApproval", "block", "continue"]
-SkipReason = Literal["allowlist", "quiet", "lenient", "allow-all"]
+SkipReason = Literal["allowlist", "quiet", "lenient", "allow-all", "session"]
 ResolutionKind = Literal[
     "allow-once",
     "allow-always",
@@ -35,6 +36,7 @@ ResolutionKind = Literal[
     "lenient-skip",
     "allowlist-hit",
     "allow-all-skip",
+    "session-skip",
 ]
 
 

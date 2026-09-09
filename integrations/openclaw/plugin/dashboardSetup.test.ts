@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -8,6 +8,7 @@ import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, dotenvPath } from "./configure.ts";
 import {
   applyDashboardSetup,
   dashboardSetupNeeded,
+  formatSetupMintError,
   processEnvShadowsDotenvWrite,
 } from "./dashboardSetup.ts";
 import type { ScanAuthConfig } from "./auth.ts";
@@ -140,10 +141,12 @@ describe("applyDashboardSetup", () => {
     const dotenv = readFileSync(dotenvPath(dir), "utf8");
     assert.match(dotenv, new RegExp(`${CLIENT_ID_VAR}=cid`));
     assert.match(dotenv, new RegExp(`${CLIENT_SECRET_VAR}=csec`));
+    assert.doesNotMatch(dotenv, /SENTROOK_OIDC_ISSUER=/);
   });
 
-  it("returns ok false on mint failure after writing dotenv", async () => {
+  it("does not write dotenv when mint fails, and returns operator copy", async () => {
     const dir = tempState();
+    let persisted = false;
     const result = await applyDashboardSetup({
       input: {
         clientId: "cid",
@@ -152,24 +155,30 @@ describe("applyDashboardSetup", () => {
         onScanError: "deny",
       },
       stateDir: dir,
-      setFeedbackMode: () => ({ persisted: true }),
-      setOnScanError: () => ({ persisted: true }),
+      setFeedbackMode: () => {
+        persisted = true;
+        return { persisted: true };
+      },
+      setOnScanError: () => {
+        persisted = true;
+        return { persisted: true };
+      },
       mint: async () => {
         throw new Error("client_credentials token mint failed: HTTP 401: invalid_client");
       },
-      verify: async () => ({
-        ok: false,
-        url: "https://sentrook.example",
-        checks: [{ name: "OIDC token mint", ok: false, detail: "invalid_client" }],
-      }),
+      verify: async () => {
+        throw new Error("should not verify before mint succeeds");
+      },
       env: { OPENCLAW_STATE_DIR: dir },
     });
     assert.equal(result.ok, false);
     assert.equal(result.minted, false);
-    assert.match(result.error ?? "", /invalid_client/);
+    assert.equal(persisted, false);
+    assert.match(result.error ?? "", /not accepted/);
+    assert.doesNotMatch(result.error ?? "", /HTTP 401/);
+    assert.doesNotMatch(result.error ?? "", /invalid_client/);
     assert.doesNotMatch(JSON.stringify(result), /bad-secret/);
-    const dotenv = readFileSync(dotenvPath(dir), "utf8");
-    assert.match(dotenv, /SENTROOK_SCAN_CLIENT_ID=cid/);
+    assert.equal(existsSync(dotenvPath(dir)), false);
   });
 
   it("rejects empty credentials without writing", async () => {
@@ -217,5 +226,23 @@ describe("applyDashboardSetup", () => {
     });
     assert.equal(result.ok, true);
     assert.equal(result.restartHint, true);
+  });
+});
+
+describe("formatSetupMintError", () => {
+  it("maps auth rejections without leaking HTTP or IdP codes", () => {
+    assert.match(
+      formatSetupMintError(new Error('client_credentials token mint failed: HTTP 401: {"error":"invalid_client"}')),
+      /not accepted/,
+    );
+    assert.doesNotMatch(
+      formatSetupMintError(new Error("client_credentials token mint failed: HTTP 401: invalid_client")),
+      /401|invalid_client/,
+    );
+  });
+
+  it("maps timeouts and connection failures to a reachability line", () => {
+    assert.match(formatSetupMintError(new Error("OIDC request timed out after 14000ms")), /reach FIDU Identity/);
+    assert.match(formatSetupMintError(new Error("OIDC discovery failed: HTTP 502")), /reach FIDU Identity/);
   });
 });

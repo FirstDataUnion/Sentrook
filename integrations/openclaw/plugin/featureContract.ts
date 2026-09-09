@@ -57,6 +57,7 @@ export type SentrookEvent = (typeof SENTROOK_EVENTS)[number];
 const EMPTY_INPUT: JsonSchema = { type: "object", additionalProperties: false, properties: {} };
 
 const SENSITIVITY_TOKENS = ["strict", "info", "warning", "critical", "lenient"] as const;
+const SESSION_SENSITIVITY_TOKENS = [...SENSITIVITY_TOKENS, "default"] as const;
 
 export const SENTROOK_OPERATIONS = {
   state: {
@@ -96,6 +97,8 @@ export const SENTROOK_OPERATIONS = {
         quiet: { type: "string", maxLength: 64 },
         sessionId: { type: "string", maxLength: 512 },
         sessionKey: { type: "string", maxLength: 512 },
+        sessionAttendedSensitivity: { type: "string", enum: [...SESSION_SENSITIVITY_TOKENS] },
+        sessionUnattendedSensitivity: { type: "string", enum: [...SESSION_SENSITIVITY_TOKENS] },
       },
     },
   },
@@ -245,6 +248,8 @@ export type SessionRow = {
   sessionKey?: string;
   allowAll: boolean;
   quietUntilMs: number | null;
+  attendedSensitivity?: Sensitivity | null;
+  unattendedSensitivity?: Sensitivity | null;
   pending: number;
   label?: string;
   agentId?: string;
@@ -316,6 +321,8 @@ export type SentrookInputs = {
     quiet?: string;
     sessionId?: string;
     sessionKey?: string;
+    sessionAttendedSensitivity?: Sensitivity | "lenient" | "default";
+    sessionUnattendedSensitivity?: Sensitivity | "lenient" | "default";
   };
   log: {
     maxAgeDays?: number;

@@ -572,6 +572,20 @@ describe("translateScanResponse — review mapping", () => {
     assert.equal(approval.timeoutBehavior, "deny");
     assert.equal(approval.timeoutMs, 600_000);
   });
+
+  it("applies scheduled deny timing for heartbeat intents", () => {
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        plan: plan({ intentKind: "heartbeat" }),
+      }),
+    );
+    const approval = result?.requireApproval;
+    assert.ok(approval);
+    assert.equal(approval.timeoutBehavior, "deny");
+    assert.equal(approval.timeoutMs, 600_000);
+  });
 });
 
 describe("translateScanResponse — allow mapping", () => {

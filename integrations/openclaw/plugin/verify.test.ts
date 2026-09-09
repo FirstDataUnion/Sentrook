@@ -20,6 +20,7 @@ function writePluginConfig(dir: string, url = "https://example.invalid"): void {
         entries: {
           [PLUGIN_ID]: {
             enabled: true,
+            hooks: { allowConversationAccess: true },
             config: { url },
           },
         },
@@ -93,6 +94,28 @@ describe("runVerify", () => {
       assert.equal(result.ok, false);
       assert.ok(result.checks.some((c) => c.name === "plugin config" && !c.ok));
       assert.ok(result.checks.some((c) => c.name === "scan credentials" && !c.ok));
+      assert.ok(result.checks.some((c) => c.name === "conversation access" && !c.ok));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails conversation access when hooks.allowConversationAccess is missing", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sentrook-verify-"));
+    try {
+      writeFileSync(
+        path.join(dir, "openclaw.json"),
+        JSON.stringify({
+          plugins: { entries: { [PLUGIN_ID]: { enabled: true, config: {} } } },
+        }) + "\n",
+      );
+      writeOidcDotenv(dir);
+      mockVerifyNetwork({ health: { body: { status: "ok" }, status: 200 } });
+      const result = await runVerify({ stateDir: dir, timeoutMs: 500 });
+      assert.equal(result.ok, false);
+      const access = result.checks.find((c) => c.name === "conversation access");
+      assert.equal(access?.ok, false);
+      assert.match(access?.detail || "", /allowConversationAccess/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -117,6 +140,7 @@ describe("runVerify", () => {
       });
       const byName = Object.fromEntries(result.checks.map((c) => [c.name, c]));
       assert.equal(byName["plugin config"]?.ok, true);
+      assert.equal(byName["conversation access"]?.ok, true);
       assert.equal(byName["scan credentials"]?.ok, true);
       assert.equal(byName["credentials load path"]?.ok, true);
       assert.match(byName["credentials load path"]?.detail || "", /\.env file/);

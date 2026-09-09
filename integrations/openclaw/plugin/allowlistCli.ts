@@ -15,6 +15,7 @@ import {
   resolveAllowlistConfig,
   saveAllowlist,
 } from "./localAllowlist.ts";
+import { ruleMeanings } from "./dashboardPresent.ts";
 import { readFileSync } from "node:fs";
 
 export interface AllowlistCliOptions {
@@ -57,34 +58,34 @@ export function resolveAllowlistCliPath(opts: AllowlistCliOptions = {}): string 
 }
 
 export function formatAllowlistEntry(entry: AllowlistEntry, index: number): string {
-  const rules = entry.matched_rule_ids.join(", ") || "(none)";
+  const meanings = ruleMeanings(entry.matched_rule_ids);
+  const kind = entry.kind === "skeleton" ? "command" : entry.kind === "script_bind" ? "script" : entry.kind;
+  const why = meanings.length ? `  ${meanings.join("; ")}` : "";
   const lines = [
-    `[${index}] ${entry.kind}  tool=${entry.tool}  rules=${rules}`,
-    `    created: ${entry.created_at}`,
+    `[${index}] ${kind}  tool=${entry.tool}${why}`,
+    `    created   ${entry.created_at}`,
   ];
   if (entry.kind === "skeleton") {
-    lines.push(`    skeleton: ${entry.skeleton}`);
+    lines.push(`    match     ${entry.skeleton}`);
   } else {
-    lines.push(`    interpreter: ${entry.interpreter}`);
-    lines.push(`    script: ${entry.script_path}`);
-    lines.push(`    sha256: ${entry.content_sha256.slice(0, 12)}…`);
-    lines.push(
-      `    args: ${entry.args_skeleton || "(none)"}`,
-    );
+    lines.push(`    interpreter  ${entry.interpreter}`);
+    lines.push(`    file         ${entry.script_path}`);
+    lines.push(`    sha256       ${entry.content_sha256.slice(0, 12)}…`);
+    lines.push(`    args         ${entry.args_skeleton || "(none)"}`);
   }
   return lines.join("\n");
 }
 
 export function formatAllowlistList(path: string): string {
   const file = loadAllowlist(path);
-  const header = `Allowlist: ${path}`;
   if (!existsSync(path) || file.entries.length === 0) {
-    return `${header}\n(empty — no allow-always entries)`;
+    return `Allowlist\n  ${path}\n  empty — no allow-always entries`;
   }
   const body = file.entries
     .map((entry, i) => formatAllowlistEntry(entry, i + 1))
     .join("\n\n");
-  return `${header}\n${file.entries.length} entr${file.entries.length === 1 ? "y" : "ies"}\n\n${body}`;
+  const count = `${file.entries.length} entr${file.entries.length === 1 ? "y" : "ies"}`;
+  return `Allowlist\n  ${path}\n  ${count}\n\n${body}`;
 }
 
 export function clearAllowlistFile(path: string): { cleared: number; path: string } {

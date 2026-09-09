@@ -7,6 +7,8 @@
 import { closeSync, readFileSync } from "node:fs";
 
 import {
+  conversationAccessGranted,
+  mergeConversationAccessHooks,
   openReadWriteSync,
   openclawConfigPath,
   PLUGIN_ID,
@@ -81,5 +83,60 @@ export function patchSentrookPluginConfig(
     };
   } finally {
     closeSync(fd);
+  }
+}
+
+export type ConversationAccessResult =
+  | { ok: true; path: string; wrote: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Best-effort ``hooks.allowConversationAccess`` so ``before_prompt_build`` can
+ * see the turn prompt. No-op when the plugin entry is missing (configure
+ * creates it). Writing the file does not grant the current process; the host
+ * applies the gate on the next load / hybrid reload.
+ */
+export function ensureConversationAccess(
+  env: NodeJS.ProcessEnv = process.env,
+): ConversationAccessResult {
+  const stateDir = resolveStateDir(env);
+  const cfgPath = openclawConfigPath(stateDir);
+  let opened: { fd: number; created: boolean } | null = null;
+  try {
+    opened = openReadWriteSync(cfgPath, { create: false });
+    if (!opened) {
+      return { ok: false, error: `openclaw.json was not found at ${cfgPath}` };
+    }
+    const { fd } = opened;
+    let cfg: Record<string, unknown>;
+    try {
+      cfg = JSON.parse(readFileSync(fd, "utf8")) as Record<string, unknown>;
+    } catch {
+      return { ok: false, error: `${cfgPath} is not strict JSON` };
+    }
+    const plugins = isPlainObject(cfg.plugins) ? cfg.plugins : {};
+    const entries = isPlainObject(plugins.entries) ? plugins.entries : {};
+    const prev = isPlainObject(entries[PLUGIN_ID]) ? entries[PLUGIN_ID] : undefined;
+    if (!prev) {
+      return { ok: false, error: `plugins.entries.${PLUGIN_ID} is missing` };
+    }
+    if (conversationAccessGranted(prev)) {
+      return { ok: true, path: cfgPath, wrote: false };
+    }
+    entries[PLUGIN_ID] = mergeConversationAccessHooks({
+      ...prev,
+      enabled: prev.enabled !== false,
+    });
+    plugins.entries = entries;
+    cfg.plugins = plugins;
+    writeAllFdSync(fd, `${JSON.stringify(cfg, null, 2)}\n`);
+    return { ok: true, path: cfgPath, wrote: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not update ${cfgPath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  } finally {
+    if (opened) closeSync(opened.fd);
   }
 }

@@ -809,6 +809,19 @@ def _build_provenance(
         **request.provenance,
     }
     if request.log:
+        kept = [
+            str(rid)
+            for rid in (request.log.get("l3_kept_review_rules") or [])
+            if rid
+        ]
+        provenance["l3_kept_review_rules"] = kept
+        provenance["l3_kept_review"] = rule_id in kept
+        decision = request.log.get("decision")
+        if isinstance(decision, str):
+            provenance["scan_decision"] = decision
+        winning = request.log.get("winning_rule_id")
+        if isinstance(winning, str) and winning:
+            provenance["winning_rule_id"] = winning
         provenance["scan_log"] = {
             "decision": request.log.get("decision"),
             "summary": request.log.get("summary"),

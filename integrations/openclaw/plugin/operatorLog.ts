@@ -657,7 +657,7 @@ export function buildScanOperatorEvent(input: {
   scan: OperatorScanResponse;
   hookResult?: OperatorHookResult;
   allowlistHit?: boolean;
-  skipReason?: "allowlist" | "quiet" | "lenient" | "allow-all";
+  skipReason?: "allowlist" | "quiet" | "lenient" | "allow-all" | "session";
   allowlistLabel?: string;
   coPendingIds?: string[];
   unattended?: boolean;
@@ -762,7 +762,9 @@ export function buildResolutionOperatorEvent(input: {
         ? "quiet"
         : input.decision === "lenient-skip"
           ? "lenient"
-          : input.decision === "allowlist-hit"
+          : input.decision === "session-skip"
+            ? "session"
+            : input.decision === "allowlist-hit"
             ? "allowlist"
             : input.decision === "allow-all-skip"
               ? "allow-all"

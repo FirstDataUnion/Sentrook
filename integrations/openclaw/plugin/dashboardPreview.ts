@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { DashboardViewState } from "./dashboardPage.ts";
-import { parseSensitivityToken } from "./sessionPolicy.ts";
+import { parseSessionSensitivityToken, parseSensitivityToken } from "./sessionPolicy.ts";
 
 const PORT = Number(process.env.SENTROOK_DASHBOARD_PREVIEW_PORT ?? 3456);
 const HOST = "127.0.0.1";
@@ -298,6 +298,7 @@ function restOfState(now: number): Omit<DashboardViewState, "pending" | "resolve
         allowAll: false,
         quietUntilMs: null,
         pending: 1,
+        label: "Main",
       },
       {
         sessionId: "b91e4c22-7d18-4a01-bb44-9c1f0e2a7d33",
@@ -305,6 +306,7 @@ function restOfState(now: number): Omit<DashboardViewState, "pending" | "resolve
         allowAll: true,
         quietUntilMs: null,
         pending: 0,
+        label: "FIDU Discord",
       },
       {
         sessionId: "cron-nightly",
@@ -583,6 +585,14 @@ const server = createServer((req, res) => {
         }
         if (body.quiet === "30m") session.quietUntilMs = Date.now() + 30 * 60_000;
         if (body.quiet === "off") session.quietUntilMs = null;
+        if (typeof body.sessionAttendedSensitivity === "string") {
+          const value = parseSessionSensitivityToken(body.sessionAttendedSensitivity);
+          if (value !== undefined) session.attendedSensitivity = value;
+        }
+        if (typeof body.sessionUnattendedSensitivity === "string") {
+          const value = parseSessionSensitivityToken(body.sessionUnattendedSensitivity);
+          if (value !== undefined) session.unattendedSensitivity = value;
+        }
       }
       sendJson(res, 200, { ok: true, preview: true });
       return;

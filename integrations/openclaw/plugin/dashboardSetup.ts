@@ -1,6 +1,7 @@
 /**
- * Dashboard first-run setup: write scan credentials to state-dir `.env`
- * (never openclaw.json), persist feedback / onScanError, then mint.
+ * Dashboard first-run setup: mint against Identity with the pasted credentials,
+ * then write them to state-dir `.env` (never openclaw.json) and persist
+ * feedback / onScanError. A failed mint must not write, so the form stays.
  */
 
 import {
@@ -71,6 +72,33 @@ export function processEnvShadowsDotenvWrite(
 export const SETUP_RESTART_HINT =
   "This gateway process already has SENTROOK_SCAN_* in its environment, so the new .env file will not be used for scans until you restart (openclaw gateway restart / docker compose restart openclaw-gateway).";
 
+/** Operator-facing mint failures — no HTTP status or IdP error codes. */
+export function formatSetupMintError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const text = raw.toLowerCase();
+  if (
+    /\b401\b/.test(text) ||
+    /\b403\b/.test(text) ||
+    text.includes("invalid_client") ||
+    text.includes("invalid_grant") ||
+    text.includes("unauthorized")
+  ) {
+    return "Those credentials were not accepted. Check the client_id and client_secret from your FIDU Identity Sentrook tab, then try again.";
+  }
+  if (
+    text.includes("timed out") ||
+    text.includes("econnrefused") ||
+    text.includes("enotfound") ||
+    text.includes("eai_again") ||
+    text.includes("network") ||
+    text.includes("fetch failed") ||
+    text.includes("discovery failed")
+  ) {
+    return "Could not reach FIDU Identity. Check the network and try again.";
+  }
+  return "Could not verify these credentials. Check the client_id and client_secret, then try again.";
+}
+
 function foldPersist(
   acc: DashboardPersistResult | undefined,
   next: DashboardPersistResult,
@@ -108,6 +136,30 @@ export async function applyDashboardSetup(opts: {
 
   const stateDir = opts.stateDir ?? resolveStateDir(opts.env);
   const env = opts.env ?? process.env;
+
+  clearScanTokenCache();
+  const mint =
+    opts.mint ??
+    (async (creds) => {
+      await getScanAccessToken(creds);
+    });
+  try {
+    await mint({
+      clientId,
+      clientSecret,
+      issuer: DEFAULT_SCAN_ISSUER,
+      audience: DEFAULT_SCAN_AUDIENCE,
+      scope: DEFAULT_SCAN_SCOPE,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      minted: false,
+      persisted: false,
+      error: formatSetupMintError(err),
+    };
+  }
+
   let dotenvPath: string;
   try {
     dotenvPath = writeScanCredentials(stateDir, {
@@ -120,7 +172,7 @@ export async function applyDashboardSetup(opts: {
   } catch (err) {
     return {
       ok: false,
-      minted: false,
+      minted: true,
       persisted: false,
       error: err instanceof Error ? err.message : String(err),
     };
@@ -132,28 +184,6 @@ export async function applyDashboardSetup(opts: {
   );
   const persist2 = foldPersist(persist, opts.setOnScanError(opts.input.onScanError));
 
-  clearScanTokenCache();
-  const mint =
-    opts.mint ??
-    (async (creds) => {
-      await getScanAccessToken(creds);
-    });
-
-  let minted = false;
-  let mintError: string | undefined;
-  try {
-    await mint({
-      clientId,
-      clientSecret,
-      issuer: DEFAULT_SCAN_ISSUER,
-      audience: DEFAULT_SCAN_AUDIENCE,
-      scope: DEFAULT_SCAN_SCOPE,
-    });
-    minted = true;
-  } catch (err) {
-    mintError = err instanceof Error ? err.message : String(err);
-  }
-
   const verify = opts.verify ?? ((dir) => runVerify({ stateDir: dir }));
   let checks: VerifyResult["checks"] | undefined;
   try {
@@ -164,14 +194,10 @@ export async function applyDashboardSetup(opts: {
 
   const restartHint = processEnvShadowsDotenvWrite({ clientId, clientSecret }, env);
   return {
-    ok: minted,
-    minted,
+    ok: true,
+    minted: true,
     persisted: persist2.persisted,
-    error: minted
-      ? persist2.persisted
-        ? undefined
-        : persist2.error
-      : mintError || "Identity did not accept this client",
+    error: persist2.persisted ? undefined : persist2.error,
     dotenvPath,
     restartHint,
     checks,

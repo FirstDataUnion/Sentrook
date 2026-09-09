@@ -6,17 +6,40 @@
 
 export function approveOnce(approvalId?: string): string {
   const id = approvalId?.trim();
-  return id ? `/approve ${id} allow-once` : "/approve plugin:…";
+  return id ? `/approve ${id} allow-once` : "";
 }
 
 export function approveAlways(approvalId?: string): string {
-  const id = approvalId?.trim() || "plugin:…";
-  return `/approve ${id} allow-always`;
+  const id = approvalId?.trim();
+  return id ? `/approve ${id} allow-always` : "";
 }
 
 export function approveDeny(approvalId?: string): string {
-  const id = approvalId?.trim() || "plugin:…";
-  return `/approve ${id} deny`;
+  const id = approvalId?.trim();
+  return id ? `/approve ${id} deny` : "";
+}
+
+export function pendingInspect(eventId?: string): string {
+  const id = eventId?.trim();
+  return id ? `/sentrook pending ${id}` : "/sentrook pending";
+}
+
+/** Copy-paste chat lines for a review card. Never emit a truncated ``plugin:…`` id. */
+export function resolveChatCommands(
+  approvalId?: string,
+  eventId?: string,
+): Array<{ label: string; cmd: string }> {
+  const once = approveOnce(approvalId);
+  const always = approveAlways(approvalId);
+  const deny = approveDeny(approvalId);
+  if (once && always && deny) {
+    return [
+      { label: "Allow once", cmd: once },
+      { label: "Allow always", cmd: always },
+      { label: "Deny", cmd: deny },
+    ];
+  }
+  return [{ label: "Inspect in chat", cmd: pendingInspect(eventId) }];
 }
 
 export const ALLOW_ALL_OFF = "/sentrook allow-all all off";
@@ -46,6 +69,15 @@ export function sensitivityCmd(
   return level === "critical" ? `${base} confirm` : base;
 }
 
+export function sensitivitySession(
+  key: string,
+  scope: "attended" | "unattended",
+  level: "strict" | "info" | "warning" | "critical" | "default",
+): string {
+  const base = `/sentrook sensitivity session ${key} ${scope} ${level}`;
+  return level === "critical" ? `${base} confirm` : base;
+}
+
 export function feedbackCmd(mode: "submit" | "off"): string {
   return `/sentrook feedback ${mode}`;
 }
@@ -70,3 +102,4 @@ export const LOG_PURGE = "/sentrook log purge confirm";
 export const LOG_WIPE = "/sentrook log purge all confirm";
 export const VERIFY_CLI = "openclaw sentrook verify";
 export const CONFIGURE_CLI = "openclaw sentrook configure";
+export const CONFIGURE_CLI_DOCKER_COMPOSE = "docker compose exec openclaw openclaw sentrook configure";

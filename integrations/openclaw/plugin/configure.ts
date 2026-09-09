@@ -99,6 +99,24 @@ export function openclawConfigPath(stateDir: string): string {
   return path.join(stateDir, "openclaw.json");
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** OpenClaw host gate for before_prompt_build on non-bundled plugins. */
+export function conversationAccessGranted(entry: unknown): boolean {
+  if (!isPlainObject(entry)) return false;
+  const hooks = entry.hooks;
+  return isPlainObject(hooks) && hooks.allowConversationAccess === true;
+}
+
+export function mergeConversationAccessHooks(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  const hooks = isPlainObject(entry.hooks) ? { ...entry.hooks } : {};
+  return { ...entry, hooks: { ...hooks, allowConversationAccess: true } };
+}
+
 export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string, unknown> {
   // Credentials intentionally omitted from openclaw.json. Unresolved SecretRefs on an
   // enabled plugin fail-close the entire gateway; scan auth is read from
@@ -125,6 +143,9 @@ export function buildConfigPatchDocument(answers: ConfigureAnswers): string {
     entries: {
       "${PLUGIN_ID}": {
         enabled: true,
+        hooks: {
+          allowConversationAccess: true
+        },
         config: ${configJson}
       }
     }
@@ -249,8 +270,8 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
   const dotenv = dotenvPath(stateDir);
   upsertDotenvVar(dotenv, CLIENT_ID_VAR, clientId);
   upsertDotenvVar(dotenv, CLIENT_SECRET_VAR, clientSecret);
-  // Pin issuer to the Identity env that matches this plugin build's SCAN_BASE_URL.
-  upsertDotenvVar(dotenv, OIDC_ISSUER_VAR, DEFAULT_OIDC_ISSUER);
+  // Identity issuer stays the plugin default (DEFAULT_OIDC_ISSUER). Do not write
+  // SENTROOK_OIDC_ISSUER unless an operator set it themselves.
 
   // Extra write target: compose project .env (Docker). Only works if the path is
   // visible inside this process (host-side configure, or a mounted OPENCLAW_DIR).
@@ -258,7 +279,6 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
   if (extra && path.resolve(extra) !== path.resolve(dotenv)) {
     upsertDotenvVar(extra, CLIENT_ID_VAR, clientId);
     upsertDotenvVar(extra, CLIENT_SECRET_VAR, clientSecret);
-    upsertDotenvVar(extra, OIDC_ISSUER_VAR, DEFAULT_OIDC_ISSUER);
   }
 
   return dotenv;
@@ -427,10 +447,11 @@ function mergeOpenclawJsonFallback(stateDir: string, answers: ConfigureAnswers):
     for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization", "url"] as const) {
       delete prevConfig[key];
     }
-    entries[PLUGIN_ID] = {
+    entries[PLUGIN_ID] = mergeConversationAccessHooks({
+      ...(prev ?? {}),
       enabled: true,
       config: { ...prevConfig, ...buildPluginEntryConfig(answers) },
-    };
+    });
     plugins.entries = entries;
     cfg.plugins = plugins;
     writeAllFdSync(fd, `${JSON.stringify(cfg, null, 2)}\n`);

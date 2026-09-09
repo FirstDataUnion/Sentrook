@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   NATIVE_UI_MIN_VERSION,
   compareVersions,
+  customPluginUiEnabled,
   hostUiSupport,
   readOnlyTabMessage,
   resolveHostVersion,
@@ -133,5 +134,20 @@ describe("readOnlyTabMessage", () => {
     assert.match(native, /HTTPS or loopback \(http:\/\/127\.0\.0\.1\)/);
     assert.match(readOnlyTabMessage("legacy", "2026.8.1"), /HTTPS or loopback/);
     assert.match(readOnlyTabMessage("unknown"), /HTTPS or loopback/);
+  });
+});
+
+describe("customPluginUiEnabled", () => {
+  it("is true only for the Labs customPlugins flag", () => {
+    assert.equal(customPluginUiEnabled(undefined), false);
+    assert.equal(customPluginUiEnabled({}), false);
+    assert.equal(
+      customPluginUiEnabled({ gateway: { controlUi: { experimental: { customPlugins: false } } } }),
+      false,
+    );
+    assert.equal(
+      customPluginUiEnabled({ gateway: { controlUi: { experimental: { customPlugins: true } } } }),
+      true,
+    );
   });
 });

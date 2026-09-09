@@ -1,5 +1,3 @@
-# @firstdataunion/sentrook-openclaw
-
 ## Unreleased
 
 ### Minor Changes
@@ -8,6 +6,15 @@
 
 ### Patch Changes
 
+- Per-session attended and unattended sensitivity floors (`Default` inherits the matching global floor). A set attended floor overrides global attended, allow-all, and quiet for that session. Floors persist by session key across restart and `session_end`. Settings uses two compact selects per row; `/sentrook sensitivity session <key> attended|unattended <level|default>` is the chat path. `critical` still needs confirm.
+- Classify unattended from OpenClaw host trigger/jobId and cron/heartbeat session keys. Subagents inherit the parent (a chat subagent stays attended). Empty-prompt cron runs no longer fall through to the attended floor.
+- Capture operator-log `intent` from the turn prompt (`before_prompt_build`, including last user message when `prompt` is empty) and from inbound `message_received` when the prompt hook is gated. Configure and gateway start set `hooks.allowConversationAccess=true`; `openclaw sentrook verify` checks it. Cron/heartbeat with no utterance can still be `null`.
+- When Labs **Custom plugin UI** is on, the plugin does not register the **Sentrook (read-only)** iframe tab. The `/sentrook` HTTP token is reused from the state dir so an already-open read-only view survives a native Settings write.
+- Native **On for all** asks for confirmation before enabling gateway-wide allow-all (same dialog as critical sensitivity). Quiet-on Settings shows a coloured “Quiet mode active, time remaining: …” banner. Per session rows prefer OpenClaw’s `label` / `displayName` when the session store has one.
+- First-run **Save and test** verifies credentials against Identity before writing `~/.openclaw/.env`. Success shows a green “Verify successful, you're ready to go!” toast. A failed check stays on the form with operator-facing copy (no HTTP/IdP codes) and does not write `SENTROOK_OIDC_ISSUER`.
+- Chat `/approve` fallbacks are complete copy-paste commands (`/approve <id> allow-once|allow-always|deny`) on the read-only page and native fallback. The UI no longer shows a truncated `plugin:…` placeholder when the host has not published an id yet.
+- Native review cards always show Allow once / Always / Deny on the writable page (they no longer hide when the host has not joined a `plugin:` id yet). Decide controls sit under the hero so they are visible without scrolling past the command.
+- Allow-all auto-accepts every attended hosted **review**, including hard L2. It still never overrides a **block** or a scan error. Flags are stored on the host so the dashboard toggle and the scan hook share them.
 - HTTP `/sentrook` and the Control UI iframe tab are a read-only operator view: mutation buttons are replaced with `/sentrook` and `/approve` commands. Writes belong on the native Sentrook page (OpenClaw ≥ 2026.9.2 with Settings → Labs → Custom plugin UI).
 - Session-action replies are JSON-cloned (and dashboard state compacted) so the host's `isPluginJsonValue` check accepts them. Optional `undefined` fields in timeline/session rows were failing every native load and refetch with "plugin session action result must be JSON-compatible".
 

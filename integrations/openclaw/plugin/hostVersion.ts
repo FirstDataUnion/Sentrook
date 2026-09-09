@@ -87,6 +87,18 @@ export function hostUiSupport(version: string | undefined): HostUiSupport {
 
 export const READ_ONLY_TAB_TITLE = "This panel is read-only";
 
+/** True when Settings → Labs → Custom plugin UI is on. */
+export function customPluginUiEnabled(config: unknown): boolean {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return false;
+  const gateway = (config as { gateway?: unknown }).gateway;
+  if (!gateway || typeof gateway !== "object" || Array.isArray(gateway)) return false;
+  const controlUi = (gateway as { controlUi?: unknown }).controlUi;
+  if (!controlUi || typeof controlUi !== "object" || Array.isArray(controlUi)) return false;
+  const experimental = (controlUi as { experimental?: unknown }).experimental;
+  if (!experimental || typeof experimental !== "object" || Array.isArray(experimental)) return false;
+  return (experimental as { customPlugins?: unknown }).customPlugins === true;
+}
+
 /** Native plugin pages are blocked on plain LAN HTTP. */
 export const NATIVE_PAGE_ORIGIN_HINT =
   "The native page needs HTTPS or loopback (http://127.0.0.1), not plain LAN HTTP.";

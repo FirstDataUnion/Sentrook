@@ -5,6 +5,7 @@ import {
   agentIdsFromConfig,
   listHostSessions,
   mergeSessionRows,
+  sessionDisplayName,
   type HostSession,
   type SessionListRow,
 } from "./hostSessions.ts";
@@ -57,6 +58,28 @@ describe("listHostSessions", () => {
       ],
     });
     assert.deepEqual(rows, [{ sessionKey: "main", sessionId: "uuid-1", updatedAtMs: 100 }]);
+  });
+
+  it("reads OpenClaw label / displayName from the store entry", () => {
+    const rows = listHostSessions({
+      listSessionEntries: () => [
+        {
+          sessionKey: "agent:main:dashboard:cebf-1",
+          entry: {
+            sessionId: "cebf-1",
+            label: "Control UI",
+            displayName: "dashboard:cebf-1",
+            updatedAt: 1,
+          },
+        },
+        {
+          sessionKey: "agent:main:main",
+          entry: { sessionId: "uuid-2", displayName: "Curious otter", updatedAt: 2 },
+        },
+      ],
+    });
+    assert.equal(rows.find((r) => r.sessionId === "cebf-1")?.label, "Control UI");
+    assert.equal(rows.find((r) => r.sessionId === "uuid-2")?.label, "Curious otter");
   });
 
   it("swallows a throwing helper", () => {
@@ -126,5 +149,31 @@ describe("mergeSessionRows", () => {
     assert.equal(rows.length, 101);
     assert.ok(rows.some((r) => r.sessionKey === "s119"));
     assert.ok(!rows.some((r) => r.sessionKey === "s0"));
+  });
+
+  it("keeps the host label on the merged row", () => {
+    const rows = mergeSessionRows(
+      [{ sessionKey: "agent:main:dashboard:cebf", sessionId: "cebf", label: "Control UI", updatedAtMs: 1 }],
+      [live({ sessionKey: "agent:main:dashboard:cebf", sessionId: "cebf", allowAll: true })],
+    );
+    assert.equal(rows[0]?.label, "Control UI");
+    assert.equal(rows[0]?.allowAll, true);
+  });
+});
+
+describe("sessionDisplayName", () => {
+  it("prefers a distinct OpenClaw label over the raw key", () => {
+    assert.equal(
+      sessionDisplayName({
+        sessionKey: "agent:main:dashboard:cebf",
+        sessionId: "cebf",
+        label: "Control UI",
+      }),
+      "Control UI",
+    );
+  });
+
+  it("falls back to the session key when there is no label", () => {
+    assert.equal(sessionDisplayName({ sessionKey: "main", sessionId: "uuid-1" }), "main");
   });
 });

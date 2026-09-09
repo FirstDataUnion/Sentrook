@@ -89,6 +89,7 @@ describe("buildConfigPatchDocument", () => {
     assert.doesNotMatch(doc, /clientSecret/);
     assert.doesNotMatch(doc, /\$\{SENTROOK_SCAN_/);
     assert.match(doc, new RegExp(`"${PLUGIN_ID}"`));
+    assert.match(doc, /allowConversationAccess:\s*true/);
   });
 });
 
@@ -125,7 +126,7 @@ describe("dotenv helpers", () => {
       assert.match(text, /^OTHER=keep$/m);
       assert.match(text, new RegExp(`^${CLIENT_ID_VAR}=id1$`, "m"));
       assert.match(text, new RegExp(`^${CLIENT_SECRET_VAR}=sec1$`, "m"));
-      assert.match(text, /^SENTROOK_OIDC_ISSUER=https:\/\/identity\.firstdataunion\.org$/m);
+      assert.doesNotMatch(text, /SENTROOK_OIDC_ISSUER=/);
       writeScanCredentials(dir, {
         timeoutMs: 3000,
         contributeCorpus: true,
@@ -291,10 +292,14 @@ describe("applyConfigPatch json fallback", () => {
       assert.equal(result.method, "json-fallback");
       const cfg = JSON.parse(readFileSync(openclawConfigPath(dir), "utf8")) as {
         plugins: {
-          entries: Record<string, { enabled: boolean; config: Record<string, unknown> }>;
+          entries: Record<
+            string,
+            { enabled: boolean; hooks?: { allowConversationAccess?: boolean }; config: Record<string, unknown> }
+          >;
         };
       };
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.enabled, true);
+      assert.equal(cfg.plugins.entries[PLUGIN_ID]?.hooks?.allowConversationAccess, true);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.url, undefined);
       assert.equal(cfg.plugins.entries[PLUGIN_ID]?.config.clientSecret, undefined);
     } finally {

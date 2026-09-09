@@ -77,6 +77,22 @@ describe("ReviewCardStore", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("persists a joined plugin: id so another isolate can copy the full /approve command", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-pending-id-"));
+    const persistPath = join(dir, "sentrook-pending.json");
+    try {
+      const writer = new ReviewCardStore({ persistPath });
+      stores.push(writer);
+      writer.put(sample());
+      writer.attachApprovalId("t1", "plugin:abc");
+      const reader = new ReviewCardStore({ persistPath });
+      stores.push(reader);
+      assert.equal(reader.list()[0]?.approvalId, "plugin:abc");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("snapshotReviewPrior", () => {

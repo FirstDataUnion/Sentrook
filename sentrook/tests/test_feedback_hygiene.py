@@ -11,6 +11,7 @@ from sentrook.serve.feedback import (
     plan_to_corpus_example,
 )
 from sentrook.serve.fingerprint import (
+    argv_prefix,
     command_fingerprint,
     derive_community_intent,
     is_sensitive_fingerprint,
@@ -103,6 +104,74 @@ def test_plan_to_corpus_example_pending_only_intent() -> None:
     assert "workout" not in (example.intent or "")
 
 
+def test_argv_prefix_matrix() -> None:
+    cases = [
+        (
+            "openclaw config get agents.defaults.memorySearch 2>/dev/null || echo x",
+            "openclaw+config+get",
+        ),
+        ("openclaw plugins update discord", "openclaw+plugins+update"),
+        (
+            "openclaw plugins update @firstdataunion/sentrook-openclaw 2>&1",
+            "openclaw+plugins+update",
+        ),
+        ("openclaw plugins list 2>&1", "openclaw+plugins+list"),
+        ("ls -la /tmp/a", "ls+<path>"),
+        ("ls /tmp/b", "ls+<path>"),
+        ("git clone https://example.com/repo.git", "git+clone+<url>"),
+        ("python3 -m pip install requests", "python3+pip+install"),
+        ("python3 /tmp/venv/bin/pip", "python3+<path>"),
+        ("FOO=1 openclaw doctor", "openclaw+doctor"),
+        ("", "unknown"),
+    ]
+    for command, expected in cases:
+        assert argv_prefix(command or None) == expected, command
+
+
+def test_fingerprint_incident_pair_not_collapsed() -> None:
+    config_get = [
+        CorpusStep(
+            tool="exec",
+            status="pending",
+            args={
+                "command": (
+                    "openclaw config get agents.defaults.memorySearch "
+                    "2>/dev/null || echo \"Not configured\""
+                )
+            },
+        )
+    ]
+    plugin_update = [
+        CorpusStep(
+            tool="exec",
+            status="pending",
+            args={"command": "openclaw plugins update discord"},
+        )
+    ]
+    sentrook_update = [
+        CorpusStep(
+            tool="exec",
+            status="pending",
+            args={
+                "command": (
+                    "openclaw plugins update @firstdataunion/sentrook-openclaw 2>&1"
+                )
+            },
+        )
+    ]
+    fp_get = command_fingerprint(rule_id="AIRA-010", label="benign", steps=config_get)
+    fp_discord = command_fingerprint(
+        rule_id="AIRA-010", label="benign", steps=plugin_update
+    )
+    fp_sentrook = command_fingerprint(
+        rule_id="AIRA-010", label="benign", steps=sentrook_update
+    )
+    assert fp_get == "AIRA-010:benign:openclaw+config+get:other"
+    assert fp_discord == "AIRA-010:benign:openclaw+plugins+update:other"
+    assert fp_sentrook == fp_discord
+    assert fp_get != fp_discord
+
+
 def test_fingerprint_separates_sensitive_paths() -> None:
     routine = [
         CorpusStep(
@@ -128,7 +197,7 @@ def test_fingerprint_separates_sensitive_paths() -> None:
 
 def test_session_cap_skips_duplicate_fingerprints() -> None:
     tracker = FeedbackSessionCapTracker(max_per_session_rule=2)
-    fp = "AIRA-010:benign:ls:openclaw"
+    fp = "AIRA-010:benign:ls+<path>:openclaw"
     ok, _ = tracker.allow(session_id="s1", rule_id="AIRA-010", fingerprint=fp, sensitive=False)
     assert ok
     ok2, reason = tracker.allow(
@@ -139,14 +208,14 @@ def test_session_cap_skips_duplicate_fingerprints() -> None:
     ok3, _ = tracker.allow(
         session_id="s1",
         rule_id="AIRA-010",
-        fingerprint="AIRA-010:benign:grep:openclaw",
+        fingerprint="AIRA-010:benign:grep+foo:openclaw",
         sensitive=False,
     )
     assert ok3
     ok4, reason4 = tracker.allow(
         session_id="s1",
         rule_id="AIRA-010",
-        fingerprint="AIRA-010:benign:find:openclaw",
+        fingerprint="AIRA-010:benign:find+<path>:openclaw",
         sensitive=False,
     )
     assert not ok4

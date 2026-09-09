@@ -9,11 +9,13 @@ import {
   parseQuietDuration,
   parseSensitivity,
   parseSensitivityToken,
+  parseSessionSensitivityToken,
   QUIET_CAP_MS,
   resolveReviewSkip,
   reviewSeverityOf,
   sensitivityCoversReview,
   sensitivityFloorHighlight,
+  sessionFloorLabel,
   skipResolutionDecision,
 } from "./sessionPolicy.ts";
 
@@ -54,6 +56,17 @@ describe("parseOnOff / sensitivity", () => {
     assert.equal(parseSensitivityToken("critical"), "critical");
     assert.equal(parseSensitivityToken("nope"), undefined);
     assert.equal(parseSensitivity("nope"), "strict");
+  });
+
+  it("parses session floor tokens including default", () => {
+    assert.equal(parseSessionSensitivityToken("default"), null);
+    assert.equal(parseSessionSensitivityToken("off"), null);
+    assert.equal(parseSessionSensitivityToken("inherit"), null);
+    assert.equal(parseSessionSensitivityToken("warning"), "warning");
+    assert.equal(parseSessionSensitivityToken("lenient"), "info");
+    assert.equal(parseSessionSensitivityToken("nope"), undefined);
+    assert.equal(sessionFloorLabel(null), "default");
+    assert.equal(sessionFloorLabel("warning"), "warning");
   });
 
   it("treats missing review_severity as warning", () => {
@@ -150,14 +163,14 @@ describe("resolveReviewSkip", () => {
     );
   });
 
-  it("applies the floor to hard reviews (no authority carve-out)", () => {
+  it("allow-all skips critical reviews (no authority carve-out)", () => {
     assert.equal(
       resolveReviewSkip({
         ...base,
-        sensitivity: "critical",
+        allowAll: true,
         reviewSeverity: "critical",
       }),
-      "lenient",
+      "allow-all",
     );
   });
 
@@ -204,6 +217,97 @@ describe("resolveReviewSkip", () => {
     assert.equal(skipResolutionDecision("quiet"), "quiet-skip");
     assert.equal(skipResolutionDecision("lenient"), "lenient-skip");
     assert.equal(skipResolutionDecision("allowlist"), "allowlist-hit");
+    assert.equal(skipResolutionDecision("session"), "session-skip");
+  });
+
+  it("session unattended floor covers warning and ignores allow-all", () => {
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        unattended: true,
+        allowAll: true,
+        sessionUnattended: "warning",
+        unattendedSensitivity: "strict",
+        reviewSeverity: "warning",
+      }),
+      "session",
+    );
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        unattended: true,
+        sessionUnattended: "info",
+        unattendedSensitivity: "critical",
+        reviewSeverity: "warning",
+      }),
+      undefined,
+    );
+  });
+
+  it("session attended floor ignores allow-all, quiet, and the global attended floor", () => {
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        allowAll: true,
+        quietUntilMs: 9_000,
+        sensitivity: "critical",
+        sessionAttended: "info",
+        reviewSeverity: "warning",
+      }),
+      undefined,
+    );
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        allowAll: true,
+        sensitivity: "strict",
+        sessionAttended: "warning",
+        reviewSeverity: "warning",
+      }),
+      "session",
+    );
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        allowAll: true,
+        sessionAttended: "strict",
+        reviewSeverity: "info",
+      }),
+      undefined,
+    );
+  });
+
+  it("Default session attended still uses allow-all then quiet then global", () => {
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        allowAll: true,
+        sessionAttended: null,
+        reviewSeverity: "critical",
+      }),
+      "allow-all",
+    );
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        quietUntilMs: 2_000,
+        sessionAttended: null,
+      }),
+      "quiet",
+    );
+  });
+
+  it("unattended never uses the session attended floor", () => {
+    assert.equal(
+      resolveReviewSkip({
+        ...base,
+        unattended: true,
+        sessionAttended: "critical",
+        unattendedSensitivity: "strict",
+        reviewSeverity: "info",
+      }),
+      undefined,
+    );
   });
 });
 

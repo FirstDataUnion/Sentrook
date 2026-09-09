@@ -78,7 +78,7 @@
           },
           "scheduledTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for unattended cron/subagent runs (ms). Default 600000 (10 min). Capped at 10 min. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
+            "description": "Review timeout for unattended cron/heartbeat runs (ms). Default 600000 (10 min). Capped at 10 min. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutBehavior": {
             "type": "string",
@@ -95,11 +95,12 @@
               "enum": [
                 "user",
                 "cron",
+                "heartbeat",
                 "subagent",
                 "system"
               ]
             },
-            "description": "Intent kinds that use the scheduled policy. Default [cron, subagent]."
+            "description": "Root intent kinds that use the scheduled (unattended) policy. Default [cron, heartbeat]. Subagents inherit the parent unless subagent is listed here."
           }
         }
       },
