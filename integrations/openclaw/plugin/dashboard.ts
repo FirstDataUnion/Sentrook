@@ -739,7 +739,8 @@ export async function handleSentrookHttp(
     sendJson(res, 404, { error: "unknown /sentrook route" });
     return true;
   } catch (err) {
-    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    console.error("sentrook dashboard request failed", err);
+    sendJson(res, 500, { error: "internal server error" });
     return true;
   }
 }
