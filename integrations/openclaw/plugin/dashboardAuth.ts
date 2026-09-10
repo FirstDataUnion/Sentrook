@@ -186,13 +186,13 @@ function singleHeader(value: string | string[] | undefined): string | undefined 
   return undefined;
 }
 
-/** Echo ``null`` (sandboxed tab) or the same host as this request. Never reflect other sites. */
+/** Echo only the same host as this request. Never reflect ``null`` or other sites. */
 export function dashboardCorsAllowOrigin(
   origin: string | undefined,
   host: string | undefined,
 ): string | undefined {
   if (!origin) return undefined;
-  if (origin === "null") return "null";
+  if (origin === "null") return undefined;
   if (!host) return undefined;
   try {
     const url = new URL(origin);
