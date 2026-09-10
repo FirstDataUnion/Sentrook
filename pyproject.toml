@@ -32,14 +32,14 @@ Issues = "https://github.com/FirstDataUnion/Sentrook/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
-    "ruff==0.16.4",
+    "ruff==0.16.6",
 ]
 # Presidio + spaCy NER for Rookery corpus ingest spike (not on scan hot path).
 # Also: python -m spacy download en_core_web_sm
 ner = [
     "presidio-analyzer==2.2.364",
     "presidio-anonymizer==2.2.364",
-    "spacy==3.8.15",
+    "spacy==3.8.16",
 ]
 
 [project.scripts]
