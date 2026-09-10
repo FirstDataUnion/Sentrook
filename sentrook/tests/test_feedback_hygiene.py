@@ -136,7 +136,7 @@ def test_fingerprint_incident_pair_not_collapsed() -> None:
             args={
                 "command": (
                     "openclaw config get agents.defaults.memorySearch "
-                    "2>/dev/null || echo \"Not configured\""
+                    '2>/dev/null || echo "Not configured"'
                 )
             },
         )
@@ -152,20 +152,12 @@ def test_fingerprint_incident_pair_not_collapsed() -> None:
         CorpusStep(
             tool="exec",
             status="pending",
-            args={
-                "command": (
-                    "openclaw plugins update @firstdataunion/sentrook-openclaw 2>&1"
-                )
-            },
+            args={"command": ("openclaw plugins update @firstdataunion/sentrook-openclaw 2>&1")},
         )
     ]
     fp_get = command_fingerprint(rule_id="AIRA-010", label="benign", steps=config_get)
-    fp_discord = command_fingerprint(
-        rule_id="AIRA-010", label="benign", steps=plugin_update
-    )
-    fp_sentrook = command_fingerprint(
-        rule_id="AIRA-010", label="benign", steps=sentrook_update
-    )
+    fp_discord = command_fingerprint(rule_id="AIRA-010", label="benign", steps=plugin_update)
+    fp_sentrook = command_fingerprint(rule_id="AIRA-010", label="benign", steps=sentrook_update)
     assert fp_get == "AIRA-010:benign:openclaw+config+get:other"
     assert fp_discord == "AIRA-010:benign:openclaw+plugins+update:other"
     assert fp_sentrook == fp_discord

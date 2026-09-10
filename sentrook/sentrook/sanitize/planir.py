@@ -189,7 +189,9 @@ def sanitize_planir_dict(
         metadata = {}
         data["metadata"] = metadata
 
-    has_session_id = isinstance(metadata.get("session_id"), str) and bool(metadata.get("session_id"))
+    has_session_id = isinstance(metadata.get("session_id"), str) and bool(
+        metadata.get("session_id")
+    )
     _hash_metadata_id(data, metadata, "session_id", rules, rewrite_run_id=True)
     # ``run_id`` is ``{episode||key}:{run}``. Hash ``session_key`` always; only
     # rewrite ``run_id`` from it when there is no episode id.
