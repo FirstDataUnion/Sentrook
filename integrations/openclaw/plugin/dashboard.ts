@@ -8,6 +8,7 @@ import {
   listPluginApprovals,
   matchApprovalId,
   isSentrookApproval,
+  type ListPluginApprovalsOptions,
   type PluginRuntimeGateway,
   type ApprovalListItem,
 } from "./approvalGateway.ts";
@@ -37,6 +38,7 @@ import { type SessionIds } from "./sessionStore.ts";
 import {
   FeatureOperationError,
   httpStatusForCode,
+  opAllowlistAdd,
   opAllowlistRemove,
   opLog,
   opPolicy,
@@ -96,6 +98,7 @@ export type DashboardDeps = {
   allowlist: AllowlistConfig;
   gateway?: PluginRuntimeGateway;
   config?: unknown;
+  logger?: { warn: (msg: string) => void; info?: (msg: string) => void };
   listHostSessions?: () => HostSession[];
   now?: () => number;
   /** Process token from the Control UI tab path. When set, every request must present it. */
@@ -143,7 +146,7 @@ function routePath(req: IncomingMessage): { rest: string; handled: boolean } {
   return { rest: pathname, handled: false };
 }
 
-const TAB_RPC = new Set(["state", "policy", "resolve", "log", "setup", "verify", "allowlist/rm"]);
+const TAB_RPC = new Set(["state", "policy", "resolve", "log", "setup", "verify", "allowlist/rm", "allowlist/add"]);
 
 function acceptWantsJson(req: IncomingMessage): boolean {
   const accept = typeof req.headers.accept === "string" ? req.headers.accept : "";
@@ -553,8 +556,12 @@ function collectPending(
   return pending;
 }
 
+function listApprovalOpts(deps: DashboardDeps): ListPluginApprovalsOptions {
+  return { config: deps.config, logger: deps.logger };
+}
+
 export async function buildState(deps: DashboardDeps) {
-  const listed = await listPluginApprovals(deps.gateway);
+  const listed = await listPluginApprovals(deps.gateway, listApprovalOpts(deps));
   const now = deps.now?.() ?? Date.now();
   const pending = collectPending(deps, listed, now);
   const log = deps.operatorLog();
@@ -713,6 +720,10 @@ export async function handleSentrookHttp(
       const body = await bodyOf();
       return runOperation(res, () => opAllowlistRemove(deps, body as never));
     }
+    if (method === "POST" && rest === "/api/allowlist/add") {
+      const body = await bodyOf();
+      return runOperation(res, () => opAllowlistAdd(deps, body as never));
+    }
     if (method === "POST" && rest === "/api/setup") {
       const body = await bodyOf();
       // Setup reports a rejected credential in the body, not by throwing.
@@ -766,6 +777,11 @@ export function createSentrookFeatureHandlers(
     },
     "allowlist.rm": (input) => {
       const result = opAllowlistRemove(deps, input);
+      changed("policy_changed");
+      return result;
+    },
+    "allowlist.add": (input) => {
+      const result = opAllowlistAdd(deps, input);
       changed("policy_changed");
       return result;
     },

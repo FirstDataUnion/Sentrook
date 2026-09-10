@@ -2,8 +2,10 @@
  * Sentrook OpenClaw plugin (the "layer").
  *
  * Awaits hosted /scan and maps allow / review / block to OpenClaw
- * before_tool_call decisions (block veto or requireApproval). PlanIR is
- * always scrubbed before egress.
+ * before_tool_call decisions (block veto or requireApproval). Unattended
+ * hosted reviews are a Sentrook veto until OpenClaw can deliver plugin
+ * cards on cron (https://github.com/openclaw/openclaw/issues/138853).
+ * PlanIR is always scrubbed before egress.
  */
 
 import { join } from "node:path";
@@ -38,7 +40,7 @@ import {
   scanErrorToHookResult,
 } from "./scanErrorPolicy.ts";
 import { maybeSanitizePlanir } from "./sanitize.ts";
-import { honestMissTitle, overlayApprovalCopy } from "./reviewCopy.ts";
+import { honestMissTitle, overlayApprovalCopy, pendingTrustPreview } from "./reviewCopy.ts";
 import {
   type AllowlistConfig,
   matchAllowlist,
@@ -48,6 +50,7 @@ import {
 import {
   buildPlanirSnapshot,
   lastPendingStep,
+  unwrapHostToolResult,
   type PlanIR,
   type SnapshotCall,
 } from "./planir.ts";
@@ -56,6 +59,13 @@ import { DualIndexMap, runIdPrefix, sessionIdsOf } from "./sessionStore.ts";
 import { LivePolicyStore, LIVE_POLICY_FILE } from "./livePolicy.ts";
 import { agentIdsFromConfig, listHostSessions } from "./hostSessions.ts";
 import { ReviewCardStore, snapshotReviewPrior, PENDING_CARDS_FILE } from "./reviewCards.ts";
+import {
+  applyApprovalRequested,
+  joinCardApprovalIds,
+  scheduleApprovalIdJoin,
+  startApprovalIdCapture,
+  stopApprovalIdCapture,
+} from "./approvalGateway.ts";
 import { DASHBOARD_PATH, createSentrookFeatureHandlers, handleSentrookHttp } from "./dashboard.ts";
 import { SENTROOK_PLUGIN_ID } from "./featureContract.ts";
 import {
@@ -82,7 +92,9 @@ import {
   buildScanErrorOperatorEvent,
   buildScanOperatorEvent,
   mintOperatorLogId,
+  operatorPluginVersion,
   purgeOperatorLog,
+  resolutionPostsFeedback,
   resolveOperatorLogConfig,
   scrubOperatorArgs,
 } from "./operatorLog.ts";
@@ -96,6 +108,10 @@ import {
   laterQuietUntil,
   type Sensitivity,
 } from "./sessionPolicy.ts";
+import {
+  UNATTENDED_BLOCK_DECISION,
+  unattendedReviewBlockReason,
+} from "./unattendedReview.ts";
 import {
   handleSentrookCommand,
   SENTROOK_COMMAND_DEF,
@@ -194,6 +210,8 @@ interface RequireApproval {
   allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
   pluginId?: string;
   onResolution?: (decision: ApprovalResolution) => void | Promise<void>;
+  /** Host may call this with the minted ``plugin:`` id after requireApproval returns. */
+  onRegistered?: (handle: { approvalId?: string }) => void;
 }
 
 export interface BeforeToolCallResult {
@@ -572,16 +590,7 @@ function resolveConfig(api: OpenClawPluginApi): PluginConfig {
 }
 
 function resultBody(result: unknown, error?: string): string {
-  if (error) return String(error);
-  if (typeof result === "string") return result;
-  if (result != null) {
-    try {
-      return JSON.stringify(result);
-    } catch {
-      return String(result);
-    }
-  }
-  return "";
+  return unwrapHostToolResult(result, error).text;
 }
 
 function resultToText(result: unknown, error?: string): string {
@@ -985,8 +994,17 @@ export function translateScanResponse(
     if (timing.unattended) {
       ctx.logger.info(
         `[sentrook-openclaw] unattended review (${plan.intent_kind ?? "unknown"}): ` +
-          `timeout=${timing.timeoutMs}ms behavior=${timing.timeoutBehavior}`,
+          `blocking; OpenClaw cannot deliver a plugin approval card on cron/heartbeat ` +
+          `(https://github.com/openclaw/openclaw/issues/138853)`,
       );
+      return {
+        block: true,
+        blockReason: unattendedReviewBlockReason({
+          eventId: ctx.eventId,
+          sessionKey: plan.metadata.session_key,
+          command: pendingTrustPreview(pendingTool, ctx.pendingArgs ?? pending?.args),
+        }),
+      };
     }
     const copy = overlayApprovalCopy({
       scanTitle: scan.review_title,
@@ -1030,7 +1048,7 @@ export function translateScanResponse(
               );
             }
           }
-          if (decision === "allow-always" || ctx.feedbackMode !== "off") {
+          if (resolutionPostsFeedback(decision, ctx.feedbackMode !== "off")) {
             await postFeedback(
               ctx.url,
               ctx.auth,
@@ -1096,6 +1114,12 @@ function applyPendingLifecycle(
   });
   const approval = result?.requireApproval;
   if (!approval || !toolCallId) return result;
+  const innerRegistered = approval.onRegistered;
+  approval.onRegistered = (handle) => {
+    const id = typeof handle?.approvalId === "string" ? handle.approvalId.trim() : "";
+    if (id) cards?.attachApprovalId(toolCallId, id);
+    innerRegistered?.(handle);
+  };
   const inner = approval.onResolution;
   approval.onResolution = async (decision) => {
     const remembered = st.pending.get(toolCallId);
@@ -1140,20 +1164,29 @@ function attachOperatorLogResolution(
   result: BeforeToolCallResult | undefined,
   plan: PlanIR,
   logger?: PluginLogger,
-  contributeEligible?: boolean,
+  opts: {
+    contributeEligible?: boolean;
+    unattended?: boolean;
+    parentSessionId?: string | null;
+  } = {},
 ): BeforeToolCallResult | undefined {
   const approval = result?.requireApproval;
   if (!approval?.onResolution) return result;
   const inner = approval.onResolution;
   approval.onResolution = async (decision) => {
-    const feedbackPosted =
-      decision === "allow-always" || Boolean(contributeEligible);
+    const feedbackPosted = resolutionPostsFeedback(
+      decision,
+      Boolean(opts.contributeEligible),
+    );
     appendOperatorLog(
       resolveOperatorLogConfig(),
       buildResolutionOperatorEvent({
         plan,
         decision,
         feedbackPosted,
+        unattended: opts.unattended,
+        contributeEligible: opts.contributeEligible,
+        parentSessionId: opts.parentSessionId,
       }),
       logger,
     );
@@ -1445,6 +1478,11 @@ const plugin = {
                 intentKind: card.intentKind,
                 scan: card.scan,
               })),
+            joinCards: () =>
+              joinCardApprovalIds(reviewCards, api.runtime?.gateway, {
+                config: api.config,
+                logger: api.logger,
+              }).then(() => undefined),
             sensitivity: () => live.sensitivity,
             setSensitivity,
             unattendedSensitivity: () => live.unattendedSensitivity,
@@ -1474,6 +1512,30 @@ const plugin = {
 
     const featureEvents = registerFeatureEvents(api, SENTROOK_PLUGIN_ID);
     const emitReviewsChanged = () => featureEvents.emit("reviews_changed");
+    const listApprovalOpts = () => ({ config: api.config, logger: api.logger });
+    const rememberApprovalCard = (card: Parameters<ReviewCardStore["put"]>[0]) => {
+      reviewCards.put(card);
+      emitReviewsChanged();
+      scheduleApprovalIdJoin(reviewCards, api.runtime?.gateway, listApprovalOpts());
+    };
+
+    if ((api.registrationMode ?? "full") === "full") {
+      void startApprovalIdCapture({
+        config: api.config,
+        logger: api.logger,
+        onRequested: (item) => {
+          applyApprovalRequested(reviewCards, item);
+          emitReviewsChanged();
+        },
+      });
+      api.registerService?.({
+        id: "sentrook-approval-ids",
+        start: () => {},
+        stop: () => {
+          void stopApprovalIdCapture();
+        },
+      });
+    }
 
     const dashboardDeps = {
       cards: reviewCards,
@@ -1507,6 +1569,7 @@ const plugin = {
       allowlist: config.allowlist,
       gateway: api.runtime?.gateway,
       config: api.config,
+      logger: api.logger,
       setupNeeded: () => dashboardSetupNeeded(resolveLiveAuth()),
       saveSetup: (input: DashboardSetupInput) =>
         applyDashboardSetup({
@@ -1669,6 +1732,9 @@ const plugin = {
             trigger: ctx.trigger ?? runIntent?.trigger,
             jobId: ctx.jobId ?? runIntent?.jobId,
           });
+          const parentSessionId = ids.sessionKey
+            ? (subagentParents.get(ids.sessionKey) ?? null)
+            : null;
           const plan = buildPlanirSnapshot({
             executed: st.executed.slice(-MAX_TRAJECTORY),
             pending: pendingCall,
@@ -1681,7 +1747,7 @@ const plugin = {
             agentId: ctx.agentId,
             toolCallId: callId,
             stepSeq: st.stepSeq,
-            batchSize: batchSize > 1 ? batchSize : undefined,
+            batchSize,
           });
 
           // Re-resolve auth per call so ~/.openclaw/.env updates apply without
@@ -1730,6 +1796,7 @@ const plugin = {
                   coPendingIds,
                   unattended: timing.unattended,
                   contributeEligible: live.feedbackMode === "submit",
+                  parentSessionId,
                 }),
                 id: eventId,
               },
@@ -1737,7 +1804,7 @@ const plugin = {
             );
             if (mapped?.requireApproval) {
               mapped.requireApproval.pluginId ??= "sentrook-openclaw";
-              reviewCards.put({
+              rememberApprovalCard({
                 eventId,
                 toolCallId: callId,
                 tool: event.toolName,
@@ -1755,7 +1822,6 @@ const plugin = {
                 intentKind: plan.intent_kind,
                 ...snapshotReviewPrior(st.executed),
               });
-              emitReviewsChanged();
             }
             return attachOperatorLogResolution(
               attachDevLogResolution(
@@ -1773,7 +1839,11 @@ const plugin = {
               ),
               plan,
               api.logger,
-              live.feedbackMode === "submit",
+              {
+                contributeEligible: live.feedbackMode === "submit",
+                unattended: attendance.unattended,
+                parentSessionId,
+              },
             );
           }
 
@@ -1843,6 +1913,7 @@ const plugin = {
                 coPendingIds,
                 unattended,
                 contributeEligible: live.feedbackMode === "submit",
+                parentSessionId,
               }),
               id: eventId,
             },
@@ -1855,13 +1926,29 @@ const plugin = {
                 plan,
                 decision: skipResolutionDecision(skipReason),
                 feedbackPosted: false,
+                unattended,
+                contributeEligible: live.feedbackMode === "submit",
+                parentSessionId,
+              }),
+              api.logger,
+            );
+          } else if (unattended && hookResult?.block && scan.decision === "review") {
+            appendOperatorLog(
+              operatorLogNow(),
+              buildResolutionOperatorEvent({
+                plan,
+                decision: UNATTENDED_BLOCK_DECISION,
+                feedbackPosted: false,
+                unattended,
+                contributeEligible: live.feedbackMode === "submit",
+                parentSessionId,
               }),
               api.logger,
             );
           }
           if (hookResult?.requireApproval) {
             hookResult.requireApproval.pluginId ??= "sentrook-openclaw";
-            reviewCards.put({
+            rememberApprovalCard({
               eventId,
               toolCallId: callId,
               tool: event.toolName,
@@ -1882,7 +1969,6 @@ const plugin = {
               intentKind: plan.intent_kind,
               ...snapshotReviewPrior(st.executed),
             });
-            emitReviewsChanged();
           }
           return attachOperatorLogResolution(
             attachDevLogResolution(
@@ -1900,7 +1986,11 @@ const plugin = {
             ),
             plan,
             api.logger,
-            live.feedbackMode === "submit",
+            {
+              contributeEligible: live.feedbackMode === "submit",
+              unattended,
+              parentSessionId,
+            },
           );
         } catch (err) {
           api.logger.warn(`[sentrook-openclaw] before_tool_call failed: ${String(err)}`);
@@ -1917,6 +2007,7 @@ const plugin = {
           );
           const ids = sessionIdsOf(ctx);
           const runId = resolveRunId(event.runId, ctx.runId);
+          const parentKey = ids.sessionKey ? subagentParents.get(ids.sessionKey) : undefined;
           appendOperatorLog(
             operatorLogNow(),
             {
@@ -1930,6 +2021,7 @@ const plugin = {
                 session_key: ids.sessionKey ?? null,
                 hook: "before_tool_call",
                 tool_call_id: event.toolCallId ?? null,
+                batch_size: 1,
               },
               pending: {
                 id: "s0",
@@ -1941,6 +2033,8 @@ const plugin = {
               hook: { action: "block" },
               effect: "blocked",
               label_source: "scanner",
+              plugin_version: operatorPluginVersion(),
+              parent_session_id: parentKey ?? null,
             },
             api.logger,
           );
@@ -1975,7 +2069,9 @@ const plugin = {
             ? String((call.args.command ?? call.args.cmd ?? "") as string) || undefined
             : undefined;
 
-        const rawResult = resultBody(event.result, event.error);
+        const unwrapped = unwrapHostToolResult(event.result, event.error);
+        const runIntent = st.runIntents.get(runId);
+        const attendance = classifyCall(ctx, runIntent);
         appendOperatorLog(
           operatorLogNow(),
           buildResultOperatorEvent({
@@ -1986,10 +2082,19 @@ const plugin = {
               agent_id: ctx.agentId ?? null,
               tool_call_id: event.toolCallId ?? null,
               step_seq: remembered?.stepSeq ?? null,
+              batch_size: 1,
             },
-            resultText: rawResult,
+            resultText: unwrapped.text,
+            contentType: unwrapped.contentType,
             ok: !event.error,
             command,
+            intent: runIntent?.intent ?? st.lastIntent ?? null,
+            intentKind: attendance.kind,
+            unattended: attendance.unattended,
+            contributeEligible: live.feedbackMode === "submit",
+            parentSessionId: ids.sessionKey
+              ? (subagentParents.get(ids.sessionKey) ?? null)
+              : null,
           }),
           api.logger,
         );

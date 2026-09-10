@@ -12,7 +12,7 @@
     "event": { "enum": ["scan", "result", "resolution", "scan_error"] },
     "run_id": { "type": "string", "minLength": 1 },
     "intent": { "type": ["string", "null"] },
-    "intent_kind": { "enum": ["user", "cron", "subagent", "system", null] },
+    "intent_kind": { "enum": ["user", "cron", "heartbeat", "subagent", "system", null] },
     "metadata": {
       "type": "object",
       "required": ["adapter", "hook"],
@@ -41,6 +41,8 @@
         "allow-all",
         "timeout",
         "unattended",
+        "session",
+        "host",
         null
       ]
     },
@@ -49,6 +51,7 @@
     "contribute_eligible": { "type": ["boolean", "null"] },
     "host_tool": { "type": ["string", "null"] },
     "host_truncated": { "type": ["boolean", "null"] },
+    "rules_version": { "type": ["integer", "null"] },
     "pending": { "type": ["object", "null"] },
     "co_pending": { "type": "array", "items": { "type": "string" } },
     "scan": { "type": ["object", "null"] },

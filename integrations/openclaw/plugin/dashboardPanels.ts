@@ -45,6 +45,7 @@ import {
   LOG_WIPE,
   VERIFY_CLI,
   allowlistRm,
+  allowlistAdd,
   approveAlways,
   approveDeny,
   approveOnce,
@@ -363,6 +364,8 @@ function resolutionLabel(raw: string | undefined): string {
       return "Skipped (session)";
     case "allowlist-hit":
       return "Allowlisted";
+    case "unattended-block":
+      return "No cron review card";
     case "cancelled":
       return "Cancelled";
     default:
@@ -428,6 +431,10 @@ function sourceLabel(raw: string | undefined): string {
       return "Allow-all";
     case "timeout":
       return "Timeout";
+    case "host":
+      return "Host";
+    case "unattended":
+      return "Unattended";
     case "human":
       return "You";
     case "scanner":
@@ -443,8 +450,9 @@ function resolvedBy(row: DashboardViewState["history"][number]): string {
     case "allow-once":
     case "allow-always":
     case "deny":
-    case "cancelled":
       return "You";
+    case "cancelled":
+      return sourceLabel(row.resolutionSource || row.labelSource || "host");
     case "timeout":
       return "Timeout";
     case "allowlist-hit":
@@ -658,6 +666,7 @@ function renderTimelineItem(
   row: DashboardViewState["history"][number],
   index: number,
   now: number,
+  interactive: boolean,
 ): string {
   const meanings = ruleMeanings(row.matched_rules, row.winningRule);
   const summary = operatorSummary(row.summary ?? undefined);
@@ -705,6 +714,13 @@ function renderTimelineItem(
       <div class="stream-body">
         <div class="stream-toolbar">
           <button type="button" data-copy-target="${cmdId}">Copy command</button>
+          ${
+            row.decision === "review"
+              ? interactive
+                ? `<button type="button" data-allowlist-add="${escapeHtml(row.id)}">Allowlist this command</button>`
+                : slashList([{ label: "Allowlist this command", cmd: allowlistAdd(row.id) }])
+              : ""
+          }
           <a href="#tl-${escapeHtml(row.id)}">Link</a>
         </div>
         ${intent}
@@ -725,7 +741,7 @@ export function renderTimeline(state: DashboardViewState, opts: DashboardPanelOp
   const sessionKeys = [
     ...new Set(state.history.map((row) => row.sessionKey).filter((k): k is string => Boolean(k))),
   ];
-  const items = state.history.map((row, i) => renderTimelineItem(row, i, now)).join("\n");
+  const items = state.history.map((row, i) => renderTimelineItem(row, i, now, interactiveOf(opts))).join("\n");
   const sessionFilters = sessionKeys
     .map(
       (key) =>
@@ -871,7 +887,7 @@ function renderReviewCard(
       ? `<p class="intent"><span class="intent-label">Turn</span>${intentKindChip(card.intentKind).trim()}</p>`
       : "";
   const legend =
-    `<p class="legend">Once = this call. Always = local allowlist (skipped for high-risk shapes). Deny = veto; the claw moves on.</p>`;
+    `<p class="legend">Once = this call. Always = local allowlist (not pipes or curl|bash). Deny = veto; the claw moves on.</p>`;
   const chatCommands = resolveChatCommands(card.approvalId, card.eventId);
   const missingIdHint =
     `<p class="hint">No copyable <code>/approve</code> id yet. Use Allow/Deny on the native Sentrook page, or the approval card OpenClaw posted in chat. Inspect: ${slashCode(pendingInspect(card.eventId))}</p>`;
@@ -1049,7 +1065,7 @@ export function renderAllowlist(state: DashboardViewState, opts: DashboardPanelO
       <div class="allow-kinds">
         <article class="kind-card">
           <h3>Skeleton</h3>
-          <p>Same tool and argument shape. Volatile bits (dates, UUIDs, integers) may change. Typical for <code>git status --short</code> or <code>rg -n TODO src/</code>. A new flag or a different binary is a different skeleton.</p>
+          <p>Same tool and argument shape. Volatile bits (dates, UUIDs, integers) may change. Typical for <code>git status --short</code> or <code>rg -n TODO src/</code>. <code>curl</code>/<code>wget</code> keep the host and path so a trusted fetch is not every URL. A new flag or a different binary is a different skeleton. Pipes and <code>curl | bash</code> are not stored.</p>
         </article>
         <article class="kind-card">
           <h3>Script bind</h3>
@@ -1060,7 +1076,7 @@ export function renderAllowlist(state: DashboardViewState, opts: DashboardPanelO
     ${
       entries
         ? `<ul class="allow-list">${entries}</ul>`
-        : `<div class="empty"><h2>No entries yet</h2><p>Choose Allow every time on a review to store a skeleton or script bind here.</p></div>`
+        : `<div class="empty"><h2>No entries yet</h2><p>Choose Allow always on a review, or <code>/sentrook allowlist add &lt;id&gt;</code> from a history event.</p></div>`
     }`;
 }
 

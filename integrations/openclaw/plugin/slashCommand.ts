@@ -10,6 +10,8 @@ import {
   formatAllowlistList,
   resolveAllowlistCliPath,
 } from "./allowlistCli.ts";
+import { addAllowlistFromHistory } from "./allowlistFromLog.ts";
+import { allowlistAdd } from "./dashboardSlashHints.ts";
 import { loadAllowlist, saveAllowlist, type AllowlistConfig } from "./localAllowlist.ts";
 
 import {
@@ -58,14 +60,15 @@ import {
 
 export const SENTROOK_COMMAND_NAME = "sentrook";
 export const CHANNEL_DISCLOSURE =
-  "These replies are ordinary channel messages. In a public Discord, Telegram, " +
-  "or WhatsApp chat anyone in the room can read them (secrets are scrubbed, not " +
-  "a guarantee). Prefer a DM, a private channel, or the dashboard.";
+  "Public Discord, Telegram, or WhatsApp: anyone in the room can read these " +
+  "replies (secrets are scrubbed, not a guarantee). Prefer a DM, a private " +
+  "channel, or the dashboard.";
 
 const MORE_COMMANDS = "More commands: /sentrook help";
-const DASHBOARD_LINE =
-  "Dashboard: Sentrook in OpenClaw Control UI (2026.9.2+). Otherwise /sentrook help, /approve, or the sentrook CLI.";
+const DASHBOARD_LINE = "Dashboard: Sentrook tab in the OpenClaw Control UI (2026.9.2+).";
 const OPEN_CARDS = "Open cards still need /approve.";
+/** Discord hard-caps slash replies; keep `/sentrook help` under this. */
+export const DISCORD_MESSAGE_MAX = 2000;
 const SKIP_FUTURE =
   "Future attended reviews skip the prompt. Scan still runs. Blocks, scan errors, and unattended runs still stop.";
 const SNAPSHOT_PENDING_CAP = 5;
@@ -124,6 +127,8 @@ export type SlashDeps = {
   listSessions: () => SlashSession[];
   listHostSessions?: () => HostSession[];
   listCards?: () => SlashCard[];
+  /** Join host-minted ``plugin:`` ids onto pending cards before rendering. */
+  joinCards?: () => Promise<void>;
   sensitivity: () => Sensitivity;
   setSensitivity: (value: Sensitivity) => SlashPersistResult;
   unattendedSensitivity: () => Sensitivity;
@@ -153,42 +158,37 @@ const HELP_TEXT = [
   "",
   "Add help after any command for options and the current value.",
   "",
-  "Commands",
-  "",
   "/sentrook",
-  "  Snapshot of this chat session: policy plus pending reviews.",
+  "  Snapshot: policy plus pending. One review is shown in full.",
   "/sentrook help",
   "  This catalog.",
   "/sentrook status",
-  "  Show current config settings and policies chat and the gateway (no pending list).",
+  "  Settings for this chat and the gateway (no pending list).",
   "/sentrook policy",
-  "  Shows all settings in more detailed format, with a short explanation of the current choice.",
+  "  All settings, with a short explanation of the current choice.",
   "/sentrook pending [all | <id>]",
-  "  Shows reviews waiting on you. all = every session. If only one review is waiting, it is shown in full.",
+  "  Waiting reviews. all = every session. One review is shown in full.",
   "/sentrook history [all | gateway | before <id> | n | <id>]",
-  "  Newest 8 events (20 max). Default: reviews, blocks, and scan errors in this chat.",
+  "  Newest 8 (20 max). Reviews/blocks/errors this chat. all = allows here. gateway = every session, never allows. before <id> older; n = page size.",
   "/sentrook sessions",
-  "  Shows OpenClaw sessions plus attended / unattended floors and quiet. Use the key column in follow-up commands.",
+  "  Sessions plus floors, quiet, and allow-all. Use the key column next.",
   "/sentrook allow-all [all | session <key>] [on | off]",
-  "  Skips future attended reviews. passing no arguments = on for this session only. Sessions with their own attended floor ignore this.",
+  "  Skip future attended reviews. Passing no arguments = on for this session. Session floors ignore this.",
   "/sentrook quiet [all | session <key>] <duration | off>",
-  "  Same skip, with a timer (30m, 2h, 8h max). Sessions with their own attended floor ignore this.",
+  "  Same skip, with a timer (30m, 2h, 8h max). Session floors ignore this.",
   "/sentrook sensitivity [attended | unattended | session <key> attended|unattended] [level | default]",
-  "  Gateway or per-session floors. default inherits the matching global floor. critical needs a trailing confirm.",
+  "  Gateway or per-session floors. default inherits global. critical needs confirm.",
   "/sentrook feedback [submit | off]",
   "  Whether sanitized reviews go to the community corpus.",
   "/sentrook scan-error [review | deny | allow]",
-  "  What happens when Sentrook cannot scan due to an error. allow needs a trailing confirm.",
-  "/sentrook allowlist [rm n]",
-  "  Local allow-always entries. rm uses the 1-based index from the list.",
+  "  When Sentrook cannot scan. allow needs confirm.",
+  "/sentrook allowlist [add <id> | rm n]",
+  "  Local allow-always. add uses a history id. rm is 1-based.",
   "/sentrook log [retention | purge]",
-  "  Local history on this host. purge confirm / purge all confirm.",
+  "  Local history. purge confirm / purge all confirm.",
   "",
-  "Notes",
-  "",
-  "  Allow-all and quiet skip future attended reviews. Open cards still",
-  "  need /approve. Unattended uses /sentrook sensitivity unattended.",
-  "  Blocks and scan errors are never skipped.",
+  "Allow-all and quiet skip future reviews; open cards still need /approve.",
+  "Blocks and scan errors always stop. Cron: /sentrook allowlist add <id>, then re-run.",
   "",
   DASHBOARD_LINE,
   "",
@@ -312,6 +312,26 @@ function riskLine(risk: number | undefined): string | undefined {
   if (typeof risk !== "number" || !Number.isFinite(risk)) return undefined;
   const pct = Math.min(100, Math.max(0, risk <= 1 ? Math.round(risk * 100) : Math.round(risk)));
   return `${pct} / 100`;
+}
+
+function scanSeverity(scan: SlashCard["scan"] | undefined): string {
+  const sev = scan?.review_severity?.trim() || scan?.decision?.trim();
+  return sev || "—";
+}
+
+function scanWhy(scan: { matched_rules?: string[]; summary?: string } | undefined): string[] {
+  const meanings = ruleMeanings(scan?.matched_rules);
+  const summary = operatorSummary(scan?.summary);
+  return [summary, ...meanings.filter((m) => m !== summary)].filter(Boolean);
+}
+
+function historyTime(ts: string, now: number): string {
+  const clock = ts.slice(11, 19);
+  if (!clock) return ts;
+  const day = ts.slice(0, 10);
+  const nowDay = new Date(now).toISOString().slice(0, 10);
+  if (day === nowDay) return clock;
+  return `${ts.slice(5, 10)} ${ts.slice(11, 16)}`;
 }
 
 function intentKindLabel(kind: string | null | undefined): string {
@@ -514,6 +534,8 @@ function shortResolution(raw: string | undefined): string | undefined {
     case "timeout":
     case "cancelled":
       return raw;
+    case "unattended-block":
+      return "unattended";
     default:
       return raw.replace(/-skip$/, "").replace(/-hit$/, "");
   }
@@ -542,17 +564,21 @@ function ranLabel(event: OperatorLogEvent, outcome: ScanOutcome | undefined): st
   if (hosted === "allow" || then === "allowlist" || then === "quiet" || then === "allow-all" || then === "floor") {
     return "yes";
   }
-  if (hosted === "block" || hosted.startsWith("error") || then === "deny" || then === "timeout" || then === "cancelled") {
+  if (hosted === "block" || hosted.startsWith("error") || then === "deny" || then === "timeout" || then === "cancelled" || then === "unattended") {
     return "no";
   }
   if (then === "allow-once" || then === "allow-always") return "yes";
   return "waiting";
 }
 
-function historyCells(event: OperatorLogEvent, outcome: ScanOutcome | undefined): string[] {
+function historyCells(
+  event: OperatorLogEvent,
+  outcome: ScanOutcome | undefined,
+  now: number,
+): string[] {
   return [
     event.id,
-    event.ts.slice(11, 19) || event.ts,
+    historyTime(event.ts, now),
     listOutcome(event, outcome),
     eventTool(event),
     leadIn(eventCommand(event) || "(no command)", 48),
@@ -567,11 +593,15 @@ function formatEventDetail(event: OperatorLogEvent, outcome: ScanOutcome | undef
     : hosted === "review"
       ? "waiting"
       : undefined;
-  const severity = (event.scan as { review_severity?: string } | undefined)?.review_severity;
+  const scan = event.scan as
+    | { review_severity?: string; matched_rules?: string[]; summary?: string }
+    | undefined;
+  const severity = scan?.review_severity;
   const scanValue =
     hosted === "review" && typeof severity === "string" && severity.trim()
       ? `review (${severity.trim()})`
       : hosted;
+  const why = scanWhy(scan);
   const command = eventCommand(event) || "(no command)";
   return [
     `History  ${event.id}`,
@@ -581,9 +611,18 @@ function formatEventDetail(event: OperatorLogEvent, outcome: ScanOutcome | undef
     kv("Scan", scanValue),
     thenValue ? kv("Then", thenValue) : undefined,
     kv("Ran", ranLabel(event, outcome)),
+    why.length ? kv("Why", why[0]!) : undefined,
+    ...why.slice(1).map((line) => kv("", line)),
     "",
     "Command",
     fence(command),
+    hosted === "review"
+      ? [
+          "",
+          "If you trust this command:",
+          `  ${allowlistAdd(event.id)}`,
+        ].join("\n")
+      : undefined,
   ]
     .filter((line): line is string => line != null)
     .join("\n");
@@ -716,6 +755,17 @@ function formatSnapshot(deps: SlashDeps, ids: SessionIds, session: SlashSession)
   const shown = rows.slice(0, SNAPSHOT_PENDING_CAP);
   const extra =
     rows.length > SNAPSHOT_PENDING_CAP ? `  … ${rows.length - SNAPSHOT_PENDING_CAP} more` : "";
+  if (rows.length === 1) {
+    return [
+      "Sentrook",
+      "",
+      ...formatPolicyBlock(deps, ids, session),
+      "",
+      pendingDetail(deps, rows[0]!, session),
+      "",
+      MORE_COMMANDS,
+    ].join("\n");
+  }
   const pendingBlock =
     rows.length === 0
       ? ["Pending", kv("waiting", "0")]
@@ -737,7 +787,7 @@ function formatSnapshot(deps: SlashDeps, ids: SessionIds, session: SlashSession)
 }
 
 function formatStatus(deps: SlashDeps, ids: SessionIds, session: SlashSession): string {
-  return ["Sentrook status", "", ...formatPolicyBlock(deps, ids, session), "", DASHBOARD_LINE].join("\n");
+  return ["Sentrook status", "", ...formatPolicyBlock(deps, ids, session), "", DASHBOARD_LINE, MORE_COMMANDS].join("\n");
 }
 
 function formatPolicyShow(deps: SlashDeps, ids: SessionIds, session: SlashSession): string {
@@ -783,7 +833,7 @@ function formatSessions(deps: SlashDeps): string {
     return "No OpenClaw sessions found.";
   }
   const table = formatPlainTable(
-    ["name", "key", "id", "pending", "attended", "unattended", "quiet"],
+    ["name", "key", "id", "pending", "attended", "unattended", "allow-all", "quiet"],
     rows.map((s) => {
       const key = s.sessionKey ?? "—";
       const name = sessionDisplayName(s);
@@ -794,6 +844,7 @@ function formatSessions(deps: SlashDeps): string {
         String(s.pending),
         sessionFloorLabel(s.attendedSensitivity),
         sessionFloorLabel(s.unattendedSensitivity),
+        s.allowAll ? "on" : "off",
         quietLeftLabel(s.quietUntilMs, now),
       ];
     }),
@@ -819,7 +870,6 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
         "Usage: /sentrook status",
         "",
         "Shows current config settings and policies for this chat and the gateway. Does not list pending reviews.",
-        "Passing no arguments = on for this session only.",
         "",
         formatStatus(deps, ids, session),
       ].join("\n");
@@ -849,13 +899,13 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
       return [
         "Usage: /sentrook history [all | gateway | before <id> | n | <id>]",
         "",
-        "Newest first. 8 per reply, 20 max.",
+        "Newest first. 8 per reply, 20 max. Reads the local operator log on this host.",
         "",
         "  (default)     Reviews, blocks, and scan errors in this chat.",
         "  all           Every scan in this chat, including allows.",
-        "  gateway       Reviews, blocks, and scan errors across every session.",
-        "  before <id>  Older than that row, same filters.",
-        "  <id>          Full detail for one event.",
+        "  gateway       Same as default, across every session (cron, other chats, subagents). Never includes allows.",
+        "  before <id>   Older than that row, same filters.",
+        "  <id>          Full detail for one event (any session).",
         "  n             Page size (1–20).",
       ].join("\n");
     case "sessions":
@@ -918,6 +968,7 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
         kv("this session attended", sessionFloorLabel(session.attendedSensitivity)),
         kv("this session unattended", sessionFloorLabel(session.unattendedSensitivity)),
         "",
+        "What this means",
         kv("attended", sensitivityHint("attended", deps.sensitivity())),
         kv("unattended", sensitivityHint("unattended", deps.unattendedSensitivity())),
       ].join("\n");
@@ -950,19 +1001,25 @@ function verbHelp(cmd: string, deps: SlashDeps, ids: SessionIds, session: SlashS
       const n = loadAllowlist(path).entries.length;
       return [
         "Usage:",
-        "  /sentrook allowlist            list",
-        "  /sentrook allowlist rm <n>    remove the 1-based index from the list",
+        "  /sentrook allowlist                 list",
+        "  /sentrook allowlist add <id>       trust the command from a history event",
+        "  /sentrook allowlist rm <n>         remove the 1-based index from the list",
         "",
-        "After you allow-always, matching calls skip the prompt. They are still",
-        "scanned. Blocks always win.",
+        "After you allow-always or allowlist add, matching calls skip the prompt.",
+        "They are still scanned. Blocks always win. Cron reviews cannot wait on a",
+        "card (OpenClaw has no plugin-approval surface for scheduled runs); add the",
+        "history id from the block message, then re-run the job.",
         "",
         "Command match",
         "  Same tool and argument shape. Dates, UUIDs, and numbers may change.",
-        "  A new flag or a different binary is a different match.",
+        "  curl/wget keep the host and path (query string may change). A different",
+        "  host or path is a different match. A new flag or binary is too.",
         "",
         "Script match",
         "  Interpreter, file path, and a content hash. Editing the file breaks the match.",
         "  Does not cover inline -c or curl | bash.",
+        "",
+        "Not stored: pipes, curl|bash, and a bare curl/wget with no URL.",
         "",
         "Now",
         kv("entries", String(n)),
@@ -1001,18 +1058,27 @@ function pendingCallFromCard(card: SlashCard): SlashPendingCall {
 }
 
 function formatPendingShort(
-  items: Array<{ eventId?: string; tool: string; args: Record<string, unknown>; sessionKey?: string }>,
+  items: Array<{
+    eventId?: string;
+    tool: string;
+    args: Record<string, unknown>;
+    sessionKey?: string;
+    severity?: string;
+  }>,
   scope: string,
   sessionColumn: boolean,
 ): string {
-  const headers = sessionColumn ? ["id", "session", "tool", "command"] : ["id", "tool", "command"];
+  const headers = sessionColumn
+    ? ["id", "session", "sev", "tool", "command"]
+    : ["id", "sev", "tool", "command"];
   const table = formatPlainTable(
     headers,
     items.map((c) => {
       const command = leadIn(scrubbedCommand(c.args), 48);
+      const sev = c.severity || "—";
       return sessionColumn
-        ? [c.eventId || "—", c.sessionKey ?? "—", c.tool, command]
-        : [c.eventId || "—", c.tool, command];
+        ? [c.eventId || "—", c.sessionKey ?? "—", sev, c.tool, command]
+        : [c.eventId || "—", sev, c.tool, command];
     }),
   );
   const inspect = items
@@ -1042,6 +1108,7 @@ function formatPendingList(deps: SlashDeps, session: SlashSession): string {
       tool: call.tool,
       args: call.args,
       sessionKey: session.sessionKey,
+      severity: scanSeverity(pendingScanOf(deps, call)),
     })),
     "this session",
     false,
@@ -1057,6 +1124,7 @@ function formatPendingAll(deps: SlashDeps): string {
           tool: c.tool,
           args: c.args,
           sessionKey: c.sessionKey ?? c.sessionId,
+          severity: scanSeverity(c.scan),
         }))
       : deps.listSessions().flatMap((s) =>
           pendingRows(s).map((call) => ({
@@ -1064,6 +1132,7 @@ function formatPendingAll(deps: SlashDeps): string {
             tool: call.tool,
             args: call.args,
             sessionKey: s.sessionKey,
+            severity: scanSeverity(pendingScanOf(deps, call)),
           })),
         );
   if (fromSessions.length === 0) {
@@ -1127,9 +1196,7 @@ function pendingDetail(deps: SlashDeps, call: SlashPendingCall, session?: SlashS
   const id = call.eventId ?? "(no id)";
   const severity = scan?.review_severity?.trim() || scan?.decision?.trim();
   const risk = riskLine(scan?.risk);
-  const meanings = ruleMeanings(scan?.matched_rules);
-  const summary = operatorSummary(scan?.summary);
-  const why = [summary, ...meanings.filter((m) => m !== summary)].filter(Boolean);
+  const why = scanWhy(scan);
   const kind = intentKindLabel(card?.intentKind);
   const intent = card?.intent?.trim();
   const intentLine = intent ? (kind ? `${kind} — ${intent}` : intent) : kind || undefined;
@@ -1259,6 +1326,13 @@ function handleAllowlist(deps: SlashDeps, rest: string): string {
   const { cmd, rest: tail } = firstToken(rest);
   const path = deps.allowlist.path || resolveAllowlistCliPath();
   if (!cmd) return formatAllowlistList(path);
+  if (cmd === "add") {
+    if (!tail || !isHistoryEventId(tail.split(/\s+/)[0] ?? "")) {
+      return "Usage: /sentrook allowlist add <id>   (id from /sentrook history)";
+    }
+    const id = tail.split(/\s+/)[0] ?? "";
+    return addAllowlistFromHistory(deps.operatorLog(), deps.allowlist, id).message;
+  }
   if (cmd === "rm" || cmd === "remove") {
     const n = Number.parseInt(tail, 10);
     if (!Number.isFinite(n) || n < 1) {
@@ -1266,7 +1340,7 @@ function handleAllowlist(deps: SlashDeps, rest: string): string {
     }
     return removeAllowlistEntry(path, n);
   }
-  return "Usage: /sentrook allowlist [rm n]\nTry: /sentrook allowlist help.";
+  return "Usage: /sentrook allowlist [add <id> | rm n]\nTry: /sentrook allowlist help.";
 }
 
 function removeAllowlistEntry(path: string, index1: number): string {
@@ -1347,7 +1421,7 @@ function handleHistory(deps: SlashDeps, ids: SessionIds, rest: string): string {
     "",
     formatPlainTable(
       ["id", "time", "outcome", "tool", "command"],
-      slice.map((event) => historyCells(event, outcomes.get(operatorJoinKey(event)))),
+      slice.map((event) => historyCells(event, outcomes.get(operatorJoinKey(event)), deps.now())),
     ),
     "",
     "Details: /sentrook history <id>",
@@ -1367,7 +1441,9 @@ function handlePending(deps: SlashDeps, session: SlashSession, rest: string): st
   const found = findPendingAnywhere(deps, id);
   if (found) return pendingDetail(deps, found.call, found.session);
   const event = getOperatorLogEvent(deps.operatorLog(), id);
-  if (event) return historyDetail(deps.operatorLog(), id);
+  if (event) {
+    return ["Not waiting any more — from history.", "", historyDetail(deps.operatorLog(), id)].join("\n");
+  }
   return `No pending review matching ${id}.`;
 }
 
@@ -1585,7 +1661,7 @@ function handleScanError(deps: SlashDeps, rest: string): string {
   return `Scan-error ${value}. ${savedLine(result)} ${scanErrorHint(value)}`;
 }
 
-export function handleSentrookCommand(ctx: SlashCommandContext, deps: SlashDeps): SlashReply {
+function handleSentrookCommandSync(ctx: SlashCommandContext, deps: SlashDeps): SlashReply {
   if (ctx.senderIsOwner === false) {
     return { text: "/sentrook is owner-only." };
   }
@@ -1616,6 +1692,17 @@ export function handleSentrookCommand(ctx: SlashCommandContext, deps: SlashDeps)
   if (cmd === "allowlist") return { text: handleAllowlist(deps, rest) };
 
   return { text: `Unknown command: ${cmd}. Try /sentrook help.` };
+}
+
+export function handleSentrookCommand(
+  ctx: SlashCommandContext,
+  deps: SlashDeps,
+): SlashReply | Promise<SlashReply> {
+  const { cmd } = firstToken(ctx.args);
+  if (deps.joinCards && (!cmd || cmd === "pending" || cmd === "status")) {
+    return deps.joinCards().then(() => handleSentrookCommandSync(ctx, deps));
+  }
+  return handleSentrookCommandSync(ctx, deps);
 }
 
 export const SENTROOK_COMMAND_DEF = {

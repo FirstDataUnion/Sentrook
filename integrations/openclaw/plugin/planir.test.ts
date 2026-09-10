@@ -3,7 +3,9 @@ import { describe, it } from "node:test";
 
 import {
   buildPlanirSnapshot,
+  buildResultSummary,
   canonicalPlanirJson,
+  unwrapHostToolResult,
   type PlanIR,
 } from "./planir.ts";
 
@@ -131,5 +133,39 @@ describe("buildPlanirSnapshot", () => {
     });
     assert.equal(plan.metadata.session_id, "uuid-1");
     assert.equal(plan.metadata.session_key, "main");
+  });
+});
+
+describe("unwrapHostToolResult", () => {
+  it("unwraps OpenClaw content text parts", () => {
+    const inner = "Plugins (7/64 enabled)\nstock: /app/dist/extensions";
+    const unwrapped = unwrapHostToolResult({
+      content: [{ type: "text", text: inner }],
+    });
+    assert.equal(unwrapped.text, inner);
+    assert.equal(unwrapped.contentType, "text/plain");
+  });
+
+  it("unwraps a JSON-string envelope without treating API JSON as a wrapper", () => {
+    const payload = JSON.stringify({
+      content: [{ type: "text", text: '{"status":"ok"}\n' }],
+    });
+    const unwrapped = unwrapHostToolResult(payload);
+    assert.equal(unwrapped.text, '{"status":"ok"}\n');
+    assert.equal(unwrapped.contentType, "application/json");
+
+    const api = unwrapHostToolResult('{"status":"ok"}');
+    assert.equal(api.text, '{"status":"ok"}');
+  });
+
+  it("drops IP / table-cell false paths and keeps filesystem paths", () => {
+    const summary = buildResultSummary(
+      "kimi-k2.5 /200k /127.0.0.1 /kimi-k2.5 /tmp/foo.txt /home/node/.openclaw/scripts/run.sh",
+    );
+    assert.deepEqual(summary.extracted.paths, [
+      "/tmp/foo.txt",
+      "/home/node/.openclaw/scripts/run.sh",
+    ]);
+    assert.equal(summary.content_type, "text/plain");
   });
 });

@@ -70,7 +70,7 @@
       "approval": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Human approval timeouts for review decisions. Interactive and unattended reviews both default to 10 minutes and deny on timeout (OpenClaw 2.0 cap). Values above 600000 ms are capped.",
+        "description": "Human approval timeouts for interactive review cards. Unattended hosted reviews are blocked (OpenClaw cannot deliver plugin cards on cron; see github.com/openclaw/openclaw/issues/138853). Values above 600000 ms are capped.",
         "properties": {
           "interactiveTimeoutMs": {
             "type": "integer",
@@ -78,7 +78,7 @@
           },
           "scheduledTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for unattended cron/heartbeat runs (ms). Default 600000 (10 min). Capped at 10 min. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
+            "description": "Kept for compatibility. Unattended hosted reviews block immediately instead of waiting. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutBehavior": {
             "type": "string",

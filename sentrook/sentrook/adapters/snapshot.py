@@ -51,6 +51,38 @@ _EXCERPT_LIMIT = 500
 _EXTRACTED_LIMIT = 20
 
 
+def _is_filesystem_path(value: str) -> bool:
+    if len(value) < 2 or value == "/":
+        return False
+    if re.match(r"^/\d{1,3}(?:\.\d{1,3}){3}\b", value):
+        return False
+    parts = [part for part in value.split("/") if part]
+    if not parts:
+        return False
+    last = parts[-1]
+    if re.match(r"^\d+(?:\.\d+)?[kKmM]?$", last):
+        return False
+    if len(parts) == 1:
+        return bool(re.search(r"\.[A-Za-z][A-Za-z0-9]{0,7}$", last))
+    if re.match(r"^[A-Za-z0-9-]+-\d+\.\d+$", last):
+        return False
+    return True
+
+
+def _extracted_paths(text: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in _PATH_RE.findall(text):
+        path = match.rstrip(".,;:")
+        if not _is_filesystem_path(path) or path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+        if len(out) >= _EXTRACTED_LIMIT:
+            break
+    return out
+
+
 @dataclass
 class SnapshotCall:
     """One tool call in a trajectory, host-normalized but not yet PlanIR.
@@ -100,7 +132,7 @@ def build_result_summary(
     truncated = len(text) > _EXCERPT_LIMIT
 
     urls = list(dict.fromkeys(_URL_RE.findall(text)))[:_EXTRACTED_LIMIT]
-    paths = list(dict.fromkeys(_PATH_RE.findall(text)))[:_EXTRACTED_LIMIT]
+    paths = _extracted_paths(text)
     commands = [str(command)] if command else []
 
     return ResultSummary(

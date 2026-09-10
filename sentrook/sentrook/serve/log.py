@@ -72,7 +72,7 @@ class ScanLogRecord(BaseModel):
     scanner_version: str
     bundle_version: str | None = None
     intent: str | None = None
-    intent_kind: Literal["user", "cron", "subagent", "system"] | None = None
+    intent_kind: Literal["user", "cron", "heartbeat", "subagent", "system"] | None = None
 
     def to_json_line(self) -> str:
         return json.dumps(self.model_dump(mode="json"), ensure_ascii=False)

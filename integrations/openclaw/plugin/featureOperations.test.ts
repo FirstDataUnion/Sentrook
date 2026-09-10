@@ -36,6 +36,7 @@ function stubHandlers(overrides: Partial<FeatureHandlers> = {}): FeatureHandlers
     policy: unused,
     log: unused,
     "allowlist.rm": unused,
+    "allowlist.add": unused,
     setup: unused,
     verify: unused,
     ...overrides,

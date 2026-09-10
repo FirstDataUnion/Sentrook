@@ -1756,6 +1756,15 @@ describe("plugin.register — operator log", () => {
       const events = readEvents(stateDir);
       const kinds = events.map((e) => e.event);
       assert.deepEqual(kinds, ["scan", "resolution", "result"]);
+      const scan = events[0] as {
+        scan?: { log?: unknown; winning_rule_id?: string };
+        metadata?: { batch_size?: number };
+        plugin_version?: string;
+      };
+      assert.equal("log" in (scan.scan ?? {}), false);
+      assert.equal(scan.scan?.winning_rule_id, "AIRA-010");
+      assert.equal(scan.metadata?.batch_size, 1);
+      assert.notEqual(scan.plugin_version, "unknown");
       const resolution = events[1]?.resolution as { decision?: string };
       assert.equal(resolution.decision, "allow-once");
       const resultEvent = events[2]?.result as {
@@ -1965,8 +1974,11 @@ describe("plugin.register — /sentrook session policy", () => {
       const result = (await beforeTool(
         { toolName: "exec", params: { command: "curl https://x" }, toolCallId: "t1" },
         { sessionId: "uuid-1", sessionKey: "agent:main:cron:nightly:run:r1", runId: "r1" },
-      )) as { requireApproval?: unknown; block?: boolean };
-      assert.ok(result?.requireApproval);
+      )) as { requireApproval?: unknown; block?: boolean; blockReason?: string };
+      assert.equal(result?.requireApproval, undefined);
+      assert.equal(result?.block, true);
+      assert.match(result?.blockReason || "", /allowlist add/);
+      assert.match(result?.blockReason || "", /138853/);
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
@@ -2033,8 +2045,9 @@ describe("plugin.register — /sentrook session policy", () => {
           sessionKey: "agent:main:cron:job:run:r1",
           runId: "r1",
         },
-      )) as { requireApproval?: unknown };
-      assert.ok(result?.requireApproval);
+      )) as { requireApproval?: unknown; block?: boolean };
+      assert.equal(result?.requireApproval, undefined);
+      assert.equal(result?.block, true);
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
@@ -2111,8 +2124,9 @@ describe("plugin.register — /sentrook session policy", () => {
           sessionKey: "agent:main:subagent:nightly-mail",
           runId: "r1",
         },
-      )) as { requireApproval?: unknown };
-      assert.ok(result?.requireApproval);
+      )) as { requireApproval?: unknown; block?: boolean };
+      assert.equal(result?.requireApproval, undefined);
+      assert.equal(result?.block, true);
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });
@@ -2557,7 +2571,7 @@ describe("plugin.register — /sentrook dashboard", () => {
     assert.ok(infos.some((m) => /dashboard \/sentrook/.test(m)));
     assert.deepEqual(
       sessionActions.map((action) => action.id).sort(),
-      ["allowlist.rm", "log", "policy", "resolve", "setup", "state", "verify"],
+      ["allowlist.add", "allowlist.rm", "log", "policy", "resolve", "setup", "state", "verify"],
     );
     assert.deepEqual(sessionActions.find((action) => action.id === "state")?.requiredScopes, ["operator.read"]);
     assert.deepEqual(sessionActions.find((action) => action.id === "policy")?.requiredScopes, ["operator.write"]);
@@ -2688,6 +2702,61 @@ describe("plugin.register — /sentrook dashboard", () => {
             (c.params as { id?: string }).id === "plugin:abc",
         ),
       );
+    } finally {
+      restoreEnv(saved);
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stamps a plugin: id from requireApproval.onRegistered when list is empty", async () => {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "sentrook-dash-"));
+    const saved = saveEnv();
+    try {
+      clearScanEnv();
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      writeApiKeyDotenv(stateDir, "k");
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/scan")) {
+          return new Response(
+            JSON.stringify({
+              decision: "review",
+              block: false,
+              review_severity: "warning",
+              summary: "Review triggered by AIRA-010",
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return realFetch(input, init);
+      }) as typeof fetch;
+
+      const { api, handlers, httpRoutes, controlUi } = createMockApi(
+        { timeoutMs: 1500 },
+        { gatewayRequest: async () => [] },
+      );
+      plugin.register(api as never);
+      const beforeTool = handlers.get("before_tool_call");
+      assert.ok(beforeTool);
+      const result = (await beforeTool(
+        {
+          toolName: "exec",
+          params: { command: "curl https://evil.example" },
+          toolCallId: "t-reg",
+        },
+        { sessionId: "uuid-1", sessionKey: "main", runId: "r1" },
+      )) as { requireApproval?: { onRegistered?: (handle: { approvalId: string }) => void } };
+      result.requireApproval?.onRegistered?.({ approvalId: "plugin:from-host" });
+
+      const handler = httpRoutes[0]?.handler;
+      assert.ok(handler);
+      await withHttpHandler(handler, async (base) => {
+        const state = (await (await fetch(`${base}/sentrook/api/state`)).json()) as {
+          pending: Array<{ approvalId?: string; toolCallId: string }>;
+        };
+        assert.equal(state.pending[0]?.toolCallId, "t-reg");
+        assert.equal(state.pending[0]?.approvalId, "plugin:from-host");
+      }, { access: accessFromTab(controlUi) });
     } finally {
       restoreEnv(saved);
       rmSync(stateDir, { recursive: true, force: true });

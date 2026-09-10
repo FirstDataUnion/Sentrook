@@ -14,10 +14,18 @@ import {
   queryOperatorLog,
   resolveOperatorLogConfig,
   scrubOperatorArgs,
+  buildScanOperatorEvent,
+  buildResultOperatorEvent,
+  buildResolutionOperatorEvent,
+  operatorPluginVersion,
+  resolutionLabelSource,
+  resolutionPostsFeedback,
+  resultOperatorEffect,
   tailOperatorLog,
   wipeOperatorLog,
   type OperatorLogConfig,
 } from "./operatorLog.ts";
+import type { PlanIR } from "./planir.ts";
 
 const ENV_KEYS = [
   "SENTROOK_OPERATOR_LOG",
@@ -467,5 +475,118 @@ describe("scrubOperatorArgs", () => {
     assert.equal(typeof cleaned.command, "string");
     assert.ok(!String(cleaned.command).includes(token));
     assert.ok(String(cleaned.command).length > 500);
+  });
+});
+
+function samplePlan(overrides: Partial<PlanIR> = {}): PlanIR {
+  return {
+    version: "1.0",
+    run_id: "uuid-1:r1",
+    intent: "list files",
+    intent_kind: "cron",
+    steps: [{ id: "s1", tool: "exec", status: "pending", args: { command: "ls" } }],
+    metadata: {
+      adapter: "openclaw",
+      agent_id: "main",
+      session_id: "uuid-1",
+      session_key: "agent:main:cron:job:run:1",
+      hook: "before_tool_call",
+      tool_call_id: "t1",
+      step_seq: 1,
+      batch_size: 1,
+    },
+    ...overrides,
+  };
+}
+
+describe("operator event builders", () => {
+  it("resolves plugin_version from the nearby package.json", () => {
+    const pkg = JSON.parse(
+      readFileSync(path.join(import.meta.dirname, "package.json"), "utf8"),
+    ) as { version: string };
+    assert.equal(operatorPluginVersion(), pkg.version);
+    assert.notEqual(operatorPluginVersion(), "unknown");
+  });
+
+  it("omits hosted scan.log, fills envelope fields, and uses batch_size 1", () => {
+    const event = buildScanOperatorEvent({
+      plan: samplePlan(),
+      pendingArgs: { command: "ls" },
+      hostTool: "exec",
+      scan: {
+        decision: "review",
+        log: {
+          winning_rule_id: "AIRA-010",
+          ts: "2026-09-07T15:27:40.196Z",
+          session_id: "sess_abc",
+        },
+      },
+      hookResult: { requireApproval: true },
+      unattended: true,
+      contributeEligible: true,
+      parentSessionId: "agent:main:main",
+    });
+    const scan = event.scan as { winning_rule_id?: string; log?: unknown };
+    assert.equal(scan.winning_rule_id, "AIRA-010");
+    assert.equal("log" in scan, false);
+    assert.equal(event.intent, "list files");
+    assert.equal(event.intent_kind, "cron");
+    assert.equal(event.unattended, true);
+    assert.equal(event.parent_session_id, "agent:main:main");
+    assert.equal((event.metadata as { batch_size?: number }).batch_size, 1);
+    assert.notEqual(event.plugin_version, "unknown");
+    assert.equal(event.rules_version, 1);
+  });
+
+  it("does not treat cancelled as a human contribution", () => {
+    assert.equal(resolutionPostsFeedback("cancelled", true), false);
+    assert.equal(resolutionPostsFeedback("timeout", true), false);
+    assert.equal(resolutionPostsFeedback("deny", true), true);
+    assert.equal(resolutionPostsFeedback("allow-once", true), true);
+    assert.equal(resolutionPostsFeedback("allow-always", false), true);
+    assert.equal(resolutionLabelSource("cancelled"), "host");
+    assert.equal(resolutionLabelSource("unattended-block"), "unattended");
+    assert.equal(resolutionPostsFeedback("unattended-block", true), false);
+    const event = buildResolutionOperatorEvent({
+      plan: samplePlan(),
+      decision: "cancelled",
+      feedbackPosted: false,
+      unattended: true,
+      contributeEligible: true,
+      parentSessionId: "agent:main:main",
+    });
+    assert.equal(event.label_source, "host");
+    assert.equal(event.feedback_posted, false);
+    assert.equal(event.intent, "list files");
+    assert.equal(event.unattended, true);
+    assert.equal(event.effect, "never_ran");
+  });
+
+  it("sets result effect from approval-unavailable / abort, not command failure", () => {
+    assert.equal(
+      resultOperatorEffect(false, "Plugin approval unavailable: cron runs have no approval-capable initiating surface."),
+      "never_ran",
+    );
+    assert.equal(resultOperatorEffect(false, "Aborted"), "never_ran");
+    assert.equal(resultOperatorEffect(false, "exit 1"), "ran");
+    const wrapped = buildResultOperatorEvent({
+      runId: "uuid-1:r1",
+      metadata: { session_id: "uuid-1", tool_call_id: "t1" },
+      resultText: JSON.stringify({
+        content: [{ type: "text", text: "hello from /tmp/out.txt" }],
+      }),
+      ok: true,
+      intent: "list files",
+      intentKind: "user",
+    });
+    const result = wrapped.result as {
+      excerpt?: string;
+      extracted?: { paths?: string[] };
+      content_type?: string | null;
+    };
+    assert.equal(result.excerpt, "hello from /tmp/out.txt");
+    assert.deepEqual(result.extracted?.paths, ["/tmp/out.txt"]);
+    assert.equal(wrapped.effect, "ran");
+    assert.equal(wrapped.intent, "list files");
   });
 });

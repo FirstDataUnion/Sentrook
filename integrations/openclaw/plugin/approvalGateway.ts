@@ -1,8 +1,13 @@
 /**
  * Resolve OpenClaw ``plugin:`` approval ids from the dashboard.
  *
- * Prefer in-process ``api.runtime.gateway.request``. Fall back to the host
- * SDK helper when this is an external plugin and runtime RPC is rejected.
+ * Prefer in-process ``api.runtime.gateway.request``. That client is
+ * ``operator.write`` and is not the tool-approval requester, so
+ * ``plugin.approval.list`` is often empty (visibility is requester-bound).
+ * Fall back to the host's approval-runtime client — the same path
+ * ``resolveApprovalOverGateway`` uses — which can see those records.
+ * Fall back again to the host SDK helper when this is an external plugin
+ * and runtime RPC is rejected.
  */
 
 export type PluginRuntimeGateway = {
@@ -24,10 +29,35 @@ export type ApprovalListItem = {
     description?: string | null;
     severity?: string | null;
     timeoutMs?: number | null;
+    sessionKey?: string | null;
+    agentId?: string | null;
   };
 };
 
 export const SENTROOK_PLUGIN_ID = "sentrook-openclaw";
+
+export type ListPluginApprovalsOptions = {
+  config?: unknown;
+  logger?: { warn: (msg: string) => void; info?: (msg: string) => void };
+  /** Test seam: skip host SDK import and return this list instead. */
+  listOverApprovalRuntime?: (config?: unknown) => Promise<ApprovalListItem[]>;
+};
+
+export type ApprovalIdStore = {
+  list: () => Array<{
+    toolCallId: string;
+    eventId?: string;
+    approvalId?: string;
+    sessionKey?: string;
+    tool?: string;
+  }>;
+  attachApprovalId: (toolCallId: string, approvalId: string) => void;
+};
+
+export type MatchApprovalHints = {
+  sessionKey?: string;
+  toolName?: string;
+};
 
 export function isSentrookApproval(
   item: ApprovalListItem,
@@ -67,6 +97,8 @@ function asItem(raw: unknown): ApprovalListItem | undefined {
       description: nonempty(req.description),
       severity: nonempty(req.severity),
       timeoutMs: typeof req.timeoutMs === "number" ? req.timeoutMs : undefined,
+      sessionKey: nonempty(req.sessionKey) ?? nonempty(rec.sessionKey),
+      agentId: nonempty(req.agentId) ?? nonempty(rec.agentId),
     },
   };
 }
@@ -105,15 +137,192 @@ async function gatewayRequest(
   return gateway.request(method, params ?? {}, { timeoutMs: 15_000 });
 }
 
+async function importDynamic(specifier: string): Promise<Record<string, unknown> | null> {
+  try {
+    const importer = new Function("s", "return import(s)") as (
+      s: string,
+    ) => Promise<Record<string, unknown>>;
+    return await importer(specifier);
+  } catch {
+    return null;
+  }
+}
+
+type ApprovalRuntimeClient = {
+  request: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  stop?: () => Promise<void> | void;
+};
+
+type ChannelRuntimeAdapter = {
+  label: string;
+  clientDisplayName: string;
+  cfg: unknown;
+  eventKinds?: readonly string[];
+  isConfigured: () => boolean;
+  shouldHandle: (request: unknown) => boolean;
+  deliverRequested: (request: unknown) => Promise<unknown[]>;
+  finalizeResolved: (params: unknown) => Promise<void> | void;
+  finalizeExpired?: (params: unknown) => Promise<void> | void;
+};
+
+type CaptureState = {
+  client: ApprovalRuntimeClient | null;
+  start: Promise<ApprovalRuntimeClient | null> | null;
+  onRequested?: (item: ApprovalListItem) => void;
+};
+
+const capture: CaptureState = { client: null, start: null };
+let createRuntime:
+  | ((adapter: ChannelRuntimeAdapter) => ApprovalRuntimeClient & { start: () => Promise<void> })
+  | false
+  | undefined;
+
+async function importCreateRuntime(): Promise<
+  ((adapter: ChannelRuntimeAdapter) => ApprovalRuntimeClient & { start: () => Promise<void> }) | null
+> {
+  if (createRuntime === false) return null;
+  if (createRuntime) return createRuntime;
+  const mod = await importDynamic("openclaw/plugin-sdk/infra-runtime");
+  const create = mod?.createExecApprovalChannelRuntime;
+  if (typeof create !== "function") {
+    createRuntime = false;
+    return null;
+  }
+  createRuntime = create as (adapter: ChannelRuntimeAdapter) => ApprovalRuntimeClient & {
+    start: () => Promise<void>;
+  };
+  return createRuntime;
+}
+
+function pluginIdOfRequest(request: unknown): string | undefined {
+  const item = asItem(request);
+  return item?.request?.pluginId ?? undefined;
+}
+
+async function startApprovalRuntimeClient(opts: {
+  config?: unknown;
+  onRequested?: (item: ApprovalListItem) => void;
+}): Promise<ApprovalRuntimeClient | null> {
+  if (opts.config == null) return null;
+  const create = await importCreateRuntime();
+  if (!create) return null;
+  const runtime = create({
+    label: "sentrook-openclaw-approvals",
+    clientDisplayName: "Sentrook dashboard",
+    cfg: opts.config,
+    eventKinds: ["plugin"],
+    isConfigured: () => true,
+    shouldHandle: (request) => {
+      const pluginId = pluginIdOfRequest(request);
+      return !pluginId || pluginId === SENTROOK_PLUGIN_ID;
+    },
+    deliverRequested: async (request) => {
+      const item = asItem(request);
+      if (item) capture.onRequested?.(item);
+      return item ? [{ id: item.id }] : [];
+    },
+    finalizeResolved: async () => {},
+    finalizeExpired: async () => {},
+  });
+  if (typeof (runtime as { start?: unknown }).start !== "function") return null;
+  await (runtime as { start: () => Promise<void> }).start();
+  return runtime;
+}
+
+/**
+ * Long-lived approval-runtime client: lists requester-bound ``plugin:`` ids
+ * and receives ``plugin.approval.requested`` so the dashboard can join them
+ * without waiting for a click.
+ */
+export async function startApprovalIdCapture(opts: {
+  config?: unknown;
+  onRequested?: (item: ApprovalListItem) => void;
+  logger?: { warn: (msg: string) => void; info?: (msg: string) => void };
+}): Promise<void> {
+  if (opts.onRequested) capture.onRequested = opts.onRequested;
+  if (opts.config == null) return;
+  if (capture.client) return;
+  if (capture.start) {
+    await capture.start;
+    return;
+  }
+  capture.start = startApprovalRuntimeClient(opts)
+    .then((client) => {
+      capture.client = client;
+      if (!client) {
+        opts.logger?.warn?.(
+          "[sentrook-openclaw] approval-runtime client unavailable; /approve ids join on list/resolve only",
+        );
+      } else {
+        opts.logger?.info?.("[sentrook-openclaw] listening for plugin.approval.requested");
+      }
+      return client;
+    })
+    .catch((err) => {
+      capture.client = null;
+      opts.logger?.warn?.(
+        `[sentrook-openclaw] approval-runtime client failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    })
+    .finally(() => {
+      capture.start = null;
+    });
+  await capture.start;
+}
+
+export async function stopApprovalIdCapture(): Promise<void> {
+  const client = capture.client;
+  capture.client = null;
+  capture.start = null;
+  capture.onRequested = undefined;
+  if (client?.stop) await client.stop();
+}
+
+async function listOverApprovalRuntime(config?: unknown): Promise<ApprovalListItem[]> {
+  if (capture.client) {
+    return asList(await capture.client.request("plugin.approval.list", {}));
+  }
+  if (capture.start) {
+    const client = await capture.start;
+    if (client) return asList(await client.request("plugin.approval.list", {}));
+  }
+  const client = await startApprovalRuntimeClient({ config, onRequested: capture.onRequested });
+  if (!client) return [];
+  try {
+    return asList(await client.request("plugin.approval.list", {}));
+  } finally {
+    if (!capture.client) await client.stop?.();
+  }
+}
+
 export async function listPluginApprovals(
   gateway: PluginRuntimeGateway | undefined,
+  opts?: ListPluginApprovalsOptions,
 ): Promise<ApprovalListItem[]> {
-  if (!gateway) return [];
-  try {
-    return asList(await gatewayRequest(gateway, "plugin.approval.list"));
-  } catch {
-    return [];
+  const errors: string[] = [];
+  if (gateway) {
+    try {
+      const listed = asList(await gatewayRequest(gateway, "plugin.approval.list"));
+      if (listed.length) return listed;
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
   }
+  try {
+    const listed = opts?.listOverApprovalRuntime
+      ? await opts.listOverApprovalRuntime(opts.config)
+      : await listOverApprovalRuntime(opts?.config);
+    if (listed.length) return listed;
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err));
+  }
+  if (errors.length) {
+    opts?.logger?.warn?.(
+      `[sentrook-openclaw] plugin.approval.list did not return a /approve id (${errors.join("; ")})`,
+    );
+  }
+  return [];
 }
 
 function wantedIds(toolCallId: string | undefined | Array<string | undefined>): Set<string> {
@@ -132,7 +341,8 @@ function wantedIds(toolCallId: string | undefined | Array<string | undefined>): 
 export function matchApprovalId(
   list: ApprovalListItem[],
   toolCallId: string | undefined | Array<string | undefined>,
-  pluginId = "sentrook-openclaw",
+  pluginId = SENTROOK_PLUGIN_ID,
+  hints?: MatchApprovalHints,
 ): string | undefined {
   const wanted = wantedIds(toolCallId);
   if (wanted.size > 0) {
@@ -145,8 +355,69 @@ export function matchApprovalId(
     if (hit?.id) return hit.id;
   }
   const ours = list.filter((item) => isSentrookApproval(item, pluginId) && item.id);
+  const sessionKey = nonempty(hints?.sessionKey);
+  const toolName = nonempty(hints?.toolName);
+  if (sessionKey) {
+    const sameSession = ours.filter((item) => item.request?.sessionKey === sessionKey);
+    if (toolName) {
+      const sameTool = sameSession.filter((item) => item.request?.toolName === toolName);
+      if (sameTool.length === 1) return sameTool[0]!.id;
+    }
+    if (sameSession.length === 1) return sameSession[0]!.id;
+  }
   if (ours.length === 1) return ours[0]!.id;
   return undefined;
+}
+
+export function attachListedApprovals(cards: ApprovalIdStore, listed: ApprovalListItem[]): void {
+  for (const card of cards.list()) {
+    if (card.approvalId) continue;
+    const id = matchApprovalId(listed, [card.toolCallId, card.eventId], SENTROOK_PLUGIN_ID, {
+      sessionKey: card.sessionKey,
+      toolName: card.tool,
+    });
+    if (id) cards.attachApprovalId(card.toolCallId, id);
+  }
+}
+
+/** Join a ``plugin.approval.requested`` payload onto the matching review card. */
+export function applyApprovalRequested(cards: ApprovalIdStore, payload: unknown): string | undefined {
+  const rec =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : undefined;
+  const item = asItem(payload) ?? (rec ? asItem(rec.payload) : undefined);
+  if (!item || !isSentrookApproval(item)) return undefined;
+  const call = item.request?.toolCallId;
+  if (call) cards.attachApprovalId(call, item.id);
+  attachListedApprovals(cards, [item]);
+  return item.id;
+}
+
+export async function joinCardApprovalIds(
+  cards: ApprovalIdStore,
+  gateway?: PluginRuntimeGateway,
+  opts?: ListPluginApprovalsOptions,
+): Promise<ApprovalListItem[]> {
+  const listed = await listPluginApprovals(gateway, opts);
+  attachListedApprovals(cards, listed);
+  return listed;
+}
+
+const JOIN_RETRY_MS = [120, 600];
+
+/** Host mints ``plugin:`` after ``requireApproval`` returns; retry the join shortly after. */
+export function scheduleApprovalIdJoin(
+  cards: ApprovalIdStore,
+  gateway?: PluginRuntimeGateway,
+  opts?: ListPluginApprovalsOptions,
+): void {
+  for (const ms of JOIN_RETRY_MS) {
+    const timer = setTimeout(() => {
+      void joinCardApprovalIds(cards, gateway, opts);
+    }, ms);
+    timer.unref?.();
+  }
 }
 
 export async function resolvePluginApproval(input: {
@@ -187,14 +458,7 @@ export async function resolvePluginApproval(input: {
 async function importApprovalSdk(): Promise<{
   resolveApprovalOverGateway?: (params: Record<string, unknown>) => Promise<void>;
 } | null> {
-  try {
-    const importer = new Function("s", "return import(s)") as (
-      s: string,
-    ) => Promise<Record<string, unknown>>;
-    return (await importer("openclaw/plugin-sdk/approval-gateway-runtime")) as {
-      resolveApprovalOverGateway?: (params: Record<string, unknown>) => Promise<void>;
-    };
-  } catch {
-    return null;
-  }
+  return (await importDynamic("openclaw/plugin-sdk/approval-gateway-runtime")) as {
+    resolveApprovalOverGateway?: (params: Record<string, unknown>) => Promise<void>;
+  } | null;
 }

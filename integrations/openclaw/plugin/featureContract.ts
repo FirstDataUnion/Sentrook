@@ -126,6 +126,16 @@ export const SENTROOK_OPERATIONS = {
       properties: { index: { type: "integer", minimum: 1 } },
     },
   },
+  "allowlist.add": {
+    kind: "action",
+    description: "Record a local allowlist entry from an operator-log history id.",
+    input: {
+      type: "object",
+      additionalProperties: false,
+      required: ["eventId"],
+      properties: { eventId: { type: "string", maxLength: 512 } },
+    },
+  },
   setup: {
     kind: "action",
     description: "Write Sentrook scan credentials to the state-dir .env and mint a token.",
@@ -331,6 +341,7 @@ export type SentrookInputs = {
     wipe?: "confirm";
   };
   "allowlist.rm": { index: number };
+  "allowlist.add": { eventId: string };
   setup: {
     clientId: string;
     clientSecret: string;
@@ -346,6 +357,7 @@ export type SentrookOutputs = {
   policy: PersistResult;
   log: PersistResult;
   "allowlist.rm": { ok: true };
+  "allowlist.add": { ok: true; status: string; message: string };
   setup: SetupResult;
   verify: { ok: boolean; checks?: unknown };
 };

@@ -1,8 +1,8 @@
 /**
- * CLI helpers for `openclaw sentrook allowlist path|list|clear`.
+ * CLI helpers for `openclaw sentrook allowlist path|list|add|clear`.
  */
 
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 
 import {
   openclawConfigPath,
@@ -15,8 +15,9 @@ import {
   resolveAllowlistConfig,
   saveAllowlist,
 } from "./localAllowlist.ts";
+import { addAllowlistFromHistory } from "./allowlistFromLog.ts";
+import { resolveOperatorLogConfig } from "./operatorLog.ts";
 import { ruleMeanings } from "./dashboardPresent.ts";
-import { readFileSync } from "node:fs";
 
 export interface AllowlistCliOptions {
   path?: string;
@@ -79,7 +80,7 @@ export function formatAllowlistEntry(entry: AllowlistEntry, index: number): stri
 export function formatAllowlistList(path: string): string {
   const file = loadAllowlist(path);
   if (!existsSync(path) || file.entries.length === 0) {
-    return `Allowlist\n  ${path}\n  empty — no allow-always entries`;
+    return `Allowlist\n  ${path}\n  empty — no allow-always entries\n  Add one: /sentrook allowlist add <id>   (id from /sentrook history)`;
   }
   const body = file.entries
     .map((entry, i) => formatAllowlistEntry(entry, i + 1))
@@ -117,6 +118,26 @@ export function runAllowlistClear(opts: AllowlistCliOptions = {}): string {
     return `Allowlist already empty (no file at ${path})`;
   }
   return `Cleared ${cleared} entr${cleared === 1 ? "y" : "ies"} from ${path}`;
+}
+
+export function runAllowlistAdd(id: string, opts: AllowlistCliOptions = {}) {
+  const path = resolveAllowlistCliPath(opts);
+  const stateDir = opts.stateDir?.trim() || resolveStateDir();
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCLAW_STATE_DIR: stateDir,
+  };
+  const pluginCfg = readPluginAllowlistConfig(stateDir);
+  const allowlist = resolveAllowlistConfig(
+    { ...(pluginCfg ?? {}), allowlist: { ...(asAllowlist(pluginCfg?.allowlist)), path } },
+    env,
+  );
+  const log = resolveOperatorLogConfig(env, pluginCfg);
+  return addAllowlistFromHistory(log, allowlist, id);
+}
+
+function asAllowlist(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
 /** Unused helper kept for tests that want hard-delete semantics. */

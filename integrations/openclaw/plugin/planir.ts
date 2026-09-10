@@ -199,6 +199,139 @@ export function redactArgs(args: Json): Json {
   return out;
 }
 
+function guessContentType(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      JSON.parse(trimmed);
+      return "application/json";
+    } catch {
+      return "text/plain";
+    }
+  }
+  return "text/plain";
+}
+
+function contentPartText(part: unknown): string {
+  if (typeof part === "string") return part;
+  if (!part || typeof part !== "object" || Array.isArray(part)) return "";
+  const rec = part as Record<string, unknown>;
+  if (typeof rec.text === "string") return rec.text;
+  if (typeof rec.content === "string") return rec.content;
+  return "";
+}
+
+function isHostToolEnvelope(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rec = value as Record<string, unknown>;
+  if (Array.isArray(rec.content)) {
+    return rec.content.some((part) => contentPartText(part).length > 0);
+  }
+  return typeof rec.content === "string" || typeof rec.text === "string";
+}
+
+function stringifyResult(value: unknown): { text: string; contentType: string | null } {
+  if (typeof value === "string") {
+    return { text: value, contentType: guessContentType(value) };
+  }
+  if (value == null) return { text: "", contentType: null };
+  try {
+    const text = JSON.stringify(value);
+    return { text, contentType: "application/json" };
+  } catch {
+    const text = String(value);
+    return { text, contentType: guessContentType(text) };
+  }
+}
+
+/**
+ * OpenClaw ``after_tool_call`` often wraps stdout as
+ * ``{ content: [{ type: "text", text: "..." }] }``. Unwrap that envelope so
+ * operator-log excerpts and extracted paths are the inner body, not the JSON
+ * wrapper. Plain JSON tool output is left alone.
+ */
+export function unwrapHostToolResult(
+  result: unknown,
+  error?: string,
+  depth = 0,
+): { text: string; contentType: string | null } {
+  if (error) {
+    const text = String(error);
+    return { text, contentType: guessContentType(text) };
+  }
+  if (depth > 4) return stringifyResult(result);
+  if (typeof result === "string") {
+    const trimmed = result.trim();
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (isHostToolEnvelope(parsed) || Array.isArray(parsed)) {
+          return unwrapHostToolResult(parsed, undefined, depth + 1);
+        }
+      } catch {
+        /* keep the original string */
+      }
+    }
+    return { text: result, contentType: guessContentType(result) };
+  }
+  if (Array.isArray(result)) {
+    const parts = result.map(contentPartText).filter((part) => part.length > 0);
+    if (parts.length) {
+      const text = parts.join("\n");
+      return { text, contentType: guessContentType(text) };
+    }
+    return stringifyResult(result);
+  }
+  if (isHostToolEnvelope(result)) {
+    if (Array.isArray(result.content)) {
+      const parts = result.content.map(contentPartText).filter((part) => part.length > 0);
+      if (parts.length) {
+        return unwrapHostToolResult(parts.join(""), undefined, depth + 1);
+      }
+    }
+    if (typeof result.content === "string") {
+      return unwrapHostToolResult(result.content, undefined, depth + 1);
+    }
+    if (typeof result.text === "string") {
+      return unwrapHostToolResult(result.text, undefined, depth + 1);
+    }
+  }
+  return stringifyResult(result);
+}
+
+/** Drop table-cell / IP / version false positives from PATH_RE. */
+export function extractedFilesystemPaths(body: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const match of body.match(PATH_RE) ?? []) {
+    const path = match.replace(/[.,;:]+$/u, "");
+    if (!isFilesystemPath(path) || seen.has(path)) continue;
+    seen.add(path);
+    out.push(path);
+    if (out.length >= EXTRACTED_LIMIT) break;
+  }
+  return out;
+}
+
+function isFilesystemPath(value: string): boolean {
+  if (value.length < 2 || value === "/") return false;
+  if (/^\/\d{1,3}(?:\.\d{1,3}){3}\b/.test(value)) return false;
+  const parts = value.split("/").filter(Boolean);
+  if (parts.length === 0) return false;
+  const last = parts[parts.length - 1] ?? "";
+  if (/^\d+(?:\.\d+)?[kKmM]?$/.test(last)) return false;
+  if (parts.length === 1) return /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(last);
+  if (/^[A-Za-z0-9-]+-\d+\.\d+$/.test(last)) return false;
+  return true;
+}
+
 export function buildResultSummary(
   text: string,
   opts: {
@@ -215,11 +348,11 @@ export function buildResultSummary(
   const excerpt = body.length <= limit ? body : body.slice(0, limit);
   const truncated = opts.hostTruncated ?? body.length > limit;
   const urls = [...new Set(body.match(URL_RE) ?? [])].slice(0, EXTRACTED_LIMIT);
-  const paths = [...new Set(body.match(PATH_RE) ?? [])].slice(0, EXTRACTED_LIMIT);
+  const paths = extractedFilesystemPaths(body);
   const commands = opts.command ? [String(opts.command)] : [];
   return {
     ok: opts.ok ?? true,
-    content_type: opts.contentType ?? null,
+    content_type: opts.contentType !== undefined ? opts.contentType : guessContentType(body),
     byte_size: byteSize,
     excerpt,
     extracted: { urls, paths, commands },

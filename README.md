@@ -110,15 +110,24 @@ The same gateway also serves a panel at `/sentrook` (Control UI port, default
 
 > [!IMPORTANT]
 > If you talk to your agent over a messaging channel (Discord, Slack, Telegram,
-> …), configure OpenClaw so **approval / review prompts are delivered on that
-> channel**. Sentrook `review` decisions become OpenClaw approval requests;
-> without channel delivery, those prompts may never reach you and the agent can
-> sit blocked waiting for a decision you never see.
+> WhatsApp, …), two OpenClaw settings matter as much as the plugin itself:
+>
+> 1. **Review cards** — Sentrook `review` decisions become OpenClaw approval
+>    requests. Those prompts must be delivered on the channel you actually use,
+>    or the agent sits blocked waiting for a decision you never see.
+> 2. **Slash commands** — `/sentrook`, `/approve`, `/status`, and the rest are
+>    OpenClaw commands. Being listed in `commands.ownerAllowFrom` is enough for
+>    a **DM**; a **server / group / channel** also needs that room on the
+>    channel allowlist (and often your user id on the guild/group sender list).
+>    Otherwise native Discord slash replies “not authorized” for *every*
+>    command, not only Sentrook.
 >
 > Official OpenClaw docs:
-> [Approval forwarding to chat channels](https://docs.openclaw.ai/tools/exec-approvals-advanced#approval-forwarding-to-chat-channels).  
-> Worked Discord example:
-> [Chat-channel approvals](integrations/openclaw/README.md#chat-channel-approvals).
+> [Approval forwarding to chat channels](https://docs.openclaw.ai/tools/exec-approvals-advanced#approval-forwarding-to-chat-channels) ·
+> [Slash commands](https://docs.openclaw.ai/tools/slash-commands).  
+> Worked examples:
+> [Chat-channel approvals](integrations/openclaw/README.md#chat-channel-approvals) ·
+> [Chat-channel slash commands](integrations/openclaw/README.md#chat-channel-slash-commands).
 
 Running under Docker Compose? Use the same commands inside the gateway
 container (`docker compose exec openclaw-gateway openclaw...`), then restart as
@@ -152,9 +161,9 @@ That removes the managed plugin install and the
 (`~/.openclaw/sentrook-operator.jsonl`) are left in place — delete those by hand
 if you want a full purge.
 
-Config reference, Docker notes, channel approvals, `/sentrook` commands,
-dashboard, operator log, local allowlist, sanitisation / privacy,
-non-interactive configure, CLI:
+Config reference, Docker notes, channel approvals, slash-command auth,
+`/sentrook` commands, dashboard, operator log, local allowlist, sanitisation /
+privacy, non-interactive configure, CLI:
 [integrations/openclaw/README.md](integrations/openclaw/README.md).
 
 ### Other agents
@@ -295,7 +304,8 @@ steps the rule matched** (the pending action plus any prior steps that fired it)
 humans** before anything is published — nothing goes live automatically. Opt out
 in the wizard or with `feedback.mode: "off"`.
 
-More detail on scrubbing, the local operator log, and channel approvals:
+More detail on scrubbing, the local operator log, channel approvals, and
+slash-command auth:
 [integrations/openclaw/README.md](integrations/openclaw/README.md) ·
 [integrations/hermes/README.md](integrations/hermes/README.md).
 

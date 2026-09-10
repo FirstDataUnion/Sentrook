@@ -579,7 +579,7 @@ describe("handleSentrookHttp", () => {
       });
       assert.equal(res.status, 409);
       const body = (await res.json()) as { error?: string };
-      assert.match(body.error ?? "", /\/sentrook pending evt-1/);
+      assert.match(body.error ?? "", /has not published a \/approve id this plugin can see/);
       assert.doesNotMatch(body.error ?? "", /plugin:…/);
     });
   });

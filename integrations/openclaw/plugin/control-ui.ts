@@ -646,6 +646,18 @@ function mountSentrookPage(
       return;
     }
 
+    const allowAdd = target.closest("[data-allowlist-add]");
+    if (allowAdd instanceof HTMLElement) {
+      const eventId = allowAdd.getAttribute("data-allowlist-add") || "";
+      const ok = await confirmDialog(
+        root,
+        "Add this history command to the local allowlist? Matching later reviews will skip the prompt. Scan still runs. Blocks still win.",
+      );
+      if (!ok) return;
+      await run(() => client.invoke("allowlist.add", { eventId }), "Allowlisted this command");
+      return;
+    }
+
     const allowMode = target.closest("[data-allow-mode]");
     if (allowMode instanceof HTMLElement) {
       const mode = allowMode.getAttribute("data-allow-mode");

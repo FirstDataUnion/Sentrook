@@ -132,6 +132,27 @@ export function pendingDisplayCommand(
   return undefined;
 }
 
+/** One-line scrubbed preview for unattended block copy (not the 512-char card). */
+export const TRUST_PREVIEW_MAX = 280;
+
+export function pendingTrustPreview(
+  tool: string,
+  args?: Record<string, unknown>,
+): string | undefined {
+  const command = pendingDisplayCommand(args);
+  if (command) {
+    const oneLine = displayScrub(command).replace(/\s+/g, " ").trim();
+    return oneLine ? clip(oneLine, TRUST_PREVIEW_MAX) : undefined;
+  }
+  const path = pendingDisplayPath(args);
+  if (path) return clip(`${tool} ${displayScrub(path)}`, TRUST_PREVIEW_MAX);
+  if (args && hasStructuredPreview(args)) {
+    const packed = packStructuredArgs(args, Math.max(48, TRUST_PREVIEW_MAX - tool.length - 1));
+    return packed ? clip(`${tool} ${packed}`, TRUST_PREVIEW_MAX) : undefined;
+  }
+  return undefined;
+}
+
 function argText(args: Record<string, unknown> | undefined, key: string): string | undefined {
   if (!args || !(key in args)) return undefined;
   const text = stringifyArgValue(args[key]).trim();

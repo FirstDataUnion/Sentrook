@@ -24,14 +24,16 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, resolve as pathResolve } from "node:path";
+import { dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 import { envWithOpenclawDotenv } from "./auth.ts";
 import {
   buildResultSummary,
   canonicalToolName,
   lastPendingStep,
+  unwrapHostToolResult,
   type PlanIR,
 } from "./planir.ts";
 import { DEFAULT_RULES, scrubOperatorValue, scrubSecretsAndPii } from "./sanitize.ts";
@@ -571,20 +573,41 @@ export interface OperatorHookResult {
 
 let cachedPluginVersion: string | undefined;
 
+const PLUGIN_PACKAGE_NAME = "@firstdataunion/sentrook-openclaw";
+/** Injected by ``esbuild --define`` when bundling ``dist/index.js``. */
+declare const BAKED_PLUGIN_VERSION: string | undefined;
+
 export function operatorPluginVersion(): string {
   if (cachedPluginVersion) return cachedPluginVersion;
-  const candidates = [new URL("./package.json", import.meta.url), new URL("../package.json", import.meta.url)];
-  for (const url of candidates) {
+  const baked =
+    typeof BAKED_PLUGIN_VERSION === "string" ? BAKED_PLUGIN_VERSION.trim() : "";
+  if (baked) {
+    cachedPluginVersion = baked;
+    return baked;
+  }
+  let dir: string;
+  try {
+    dir = dirname(fileURLToPath(import.meta.url));
+  } catch {
+    cachedPluginVersion = "unknown";
+    return cachedPluginVersion;
+  }
+  for (let i = 0; i < 8; i++) {
     try {
-      const pkg = JSON.parse(readFileSync(url, "utf8")) as { name?: string; version?: string };
-      if (pkg.name !== "@firstdataunion/sentrook-openclaw") continue;
-      if (typeof pkg.version === "string" && pkg.version) {
+      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+        name?: string;
+        version?: string;
+      };
+      if (pkg.name === PLUGIN_PACKAGE_NAME && typeof pkg.version === "string" && pkg.version) {
         cachedPluginVersion = pkg.version;
         return cachedPluginVersion;
       }
     } catch {
-      /* try the next candidate */
+      /* try the parent directory */
     }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
   cachedPluginVersion = "unknown";
   return cachedPluginVersion;
@@ -613,7 +636,7 @@ function operatorMetadata(plan: PlanIR, hook = "before_tool_call"): Record<strin
     hook,
     tool_call_id: plan.metadata.tool_call_id ?? null,
     step_seq: plan.metadata.step_seq ?? null,
-    batch_size: plan.metadata.batch_size ?? null,
+        batch_size: plan.metadata.batch_size ?? 1,
   };
 }
 
@@ -636,6 +659,9 @@ function envelopeExtras(input: {
   contributeEligible?: boolean;
   hostTool?: string;
   planTool?: string;
+  parentSessionId?: string | null;
+  intent?: string | null;
+  intentKind?: string | null;
 }): Record<string, unknown> {
   const hostTool =
     input.hostTool && input.planTool && input.hostTool !== input.planTool
@@ -646,8 +672,63 @@ function envelopeExtras(input: {
     rules_version: DEFAULT_RULES.version,
     unattended: input.unattended ?? false,
     contribute_eligible: input.contributeEligible ?? false,
+    parent_session_id: input.parentSessionId || null,
+    intent: input.intent ? scrubSecretsAndPii(input.intent) : null,
+    intent_kind: input.intentKind ?? null,
     ...(hostTool ? { host_tool: hostTool } : {}),
   };
+}
+
+export function resolutionLabelSource(decision: string): string {
+  switch (decision) {
+    case "timeout":
+      return "timeout";
+    case "quiet-skip":
+      return "quiet";
+    case "lenient-skip":
+      return "lenient";
+    case "session-skip":
+      return "session";
+    case "allowlist-hit":
+      return "allowlist";
+    case "allow-all-skip":
+      return "allow-all";
+    case "cancelled":
+      return "host";
+    case "unattended-block":
+      return "unattended";
+    case "allow-once":
+    case "allow-always":
+    case "deny":
+      return "human";
+    default:
+      return "human";
+  }
+}
+
+/** Human corpus labels only. Host cancel/timeout never count as a contribution. */
+export function resolutionPostsFeedback(
+  decision: string,
+  contributeEligible: boolean,
+): boolean {
+  if (decision === "allow-always") return true;
+  if (!contributeEligible) return false;
+  if (decision === "unattended-block" || decision === "cancelled" || decision === "timeout") {
+    return false;
+  }
+  return decision === "allow-once" || decision === "deny";
+}
+
+export function resultOperatorEffect(
+  _ok: boolean,
+  text: string,
+): "ran" | "blocked" | "never_ran" {
+  const body = text.trim();
+  if (/plugin approval unavailable/i.test(body)) return "never_ran";
+  if (/cannot show a plugin approval card on cron/i.test(body)) return "blocked";
+  if (/^aborted$/i.test(body)) return "never_ran";
+  if (/sentrook plugin error|tool was not scanned or run/i.test(body)) return "blocked";
+  return "ran";
 }
 
 export function buildScanOperatorEvent(input: {
@@ -662,6 +743,7 @@ export function buildScanOperatorEvent(input: {
   coPendingIds?: string[];
   unattended?: boolean;
   contributeEligible?: boolean;
+  parentSessionId?: string | null;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
   const pending = pendingStepForLog(input.plan, input.hostTool, input.pendingArgs);
   const skipReason = input.skipReason ?? (input.allowlistHit ? "allowlist" : undefined);
@@ -669,8 +751,6 @@ export function buildScanOperatorEvent(input: {
   return {
     event: "scan",
     run_id: input.plan.run_id,
-    intent: input.plan.intent ? scrubSecretsAndPii(input.plan.intent) : null,
-    intent_kind: input.plan.intent_kind ?? null,
     metadata: operatorMetadata(input.plan),
     pending,
     co_pending: input.coPendingIds ?? [],
@@ -687,7 +767,6 @@ export function buildScanOperatorEvent(input: {
         typeof input.scan.log?.winning_rule_id === "string"
           ? input.scan.log.winning_rule_id
           : null,
-      log: input.scan.log ? (scrubOperatorValue(input.scan.log) as Json) : null,
     },
     hook: {
       action: hookAction(input.hookResult),
@@ -704,6 +783,9 @@ export function buildScanOperatorEvent(input: {
       contributeEligible: input.contributeEligible,
       hostTool: input.hostTool,
       planTool: String(pending.tool),
+      parentSessionId: input.parentSessionId,
+      intent: input.plan.intent,
+      intentKind: input.plan.intent_kind,
     }),
   };
 }
@@ -717,13 +799,12 @@ export function buildScanErrorOperatorEvent(input: {
   coPendingIds?: string[];
   unattended?: boolean;
   contributeEligible?: boolean;
+  parentSessionId?: string | null;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
   const pending = pendingStepForLog(input.plan, input.hostTool, input.pendingArgs);
   return {
     event: "scan_error",
     run_id: input.plan.run_id,
-    intent: input.plan.intent ? scrubSecretsAndPii(input.plan.intent) : null,
-    intent_kind: input.plan.intent_kind ?? null,
     metadata: operatorMetadata(input.plan),
     pending,
     co_pending: input.coPendingIds ?? [],
@@ -741,6 +822,9 @@ export function buildScanErrorOperatorEvent(input: {
       contributeEligible: input.contributeEligible,
       hostTool: input.hostTool,
       planTool: String(pending.tool),
+      parentSessionId: input.parentSessionId,
+      intent: input.plan.intent,
+      intentKind: input.plan.intent_kind,
     }),
   };
 }
@@ -749,42 +833,34 @@ export function buildResolutionOperatorEvent(input: {
   plan: PlanIR;
   decision: string;
   feedbackPosted?: boolean;
+  unattended?: boolean;
+  contributeEligible?: boolean;
+  parentSessionId?: string | null;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
   const ran =
     input.decision === "allow-once" ||
     input.decision === "allow-always" ||
     input.decision.endsWith("-skip") ||
     input.decision === "allowlist-hit";
-  const labelSource =
-    input.decision === "timeout"
-      ? "timeout"
-      : input.decision === "quiet-skip"
-        ? "quiet"
-        : input.decision === "lenient-skip"
-          ? "lenient"
-          : input.decision === "session-skip"
-            ? "session"
-            : input.decision === "allowlist-hit"
-            ? "allowlist"
-            : input.decision === "allow-all-skip"
-              ? "allow-all"
-              : input.decision === "cancelled"
-                ? "human"
-                : "human";
+  const feedbackPosted = Boolean(input.feedbackPosted);
   return {
     event: "resolution",
     run_id: input.plan.run_id,
-    intent_kind: input.plan.intent_kind ?? null,
     metadata: operatorMetadata(input.plan),
     resolution: {
       decision: input.decision,
-      feedback_posted: Boolean(input.feedbackPosted),
+      feedback_posted: feedbackPosted,
     },
     effect: ran ? "ran" : "never_ran",
-    label_source: labelSource,
-    feedback_posted: Boolean(input.feedbackPosted),
-    plugin_version: operatorPluginVersion(),
-    rules_version: DEFAULT_RULES.version,
+    label_source: resolutionLabelSource(input.decision),
+    feedback_posted: feedbackPosted,
+    ...envelopeExtras({
+      unattended: input.unattended,
+      contributeEligible: input.contributeEligible,
+      parentSessionId: input.parentSessionId,
+      intent: input.plan.intent,
+      intentKind: input.plan.intent_kind,
+    }),
   };
 }
 
@@ -794,9 +870,17 @@ export function buildResultOperatorEvent(input: {
   resultText: string;
   ok: boolean;
   command?: string;
+  contentType?: string | null;
+  intent?: string | null;
+  intentKind?: string | null;
+  unattended?: boolean;
+  contributeEligible?: boolean;
+  parentSessionId?: string | null;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
-  const summary = buildResultSummary(input.resultText, {
+  const unwrapped = unwrapHostToolResult(input.resultText);
+  const summary = buildResultSummary(unwrapped.text, {
     ok: input.ok,
+    contentType: input.contentType !== undefined ? input.contentType : unwrapped.contentType,
     command: input.command,
     excerptLimit: Number.POSITIVE_INFINITY,
     hostTruncated: false,
@@ -807,6 +891,13 @@ export function buildResultOperatorEvent(input: {
       scrubSecretsAndPii(item),
     );
   }
+  const extras = envelopeExtras({
+    unattended: input.unattended,
+    contributeEligible: input.contributeEligible,
+    parentSessionId: input.parentSessionId,
+    intent: input.intent,
+    intentKind: input.intentKind,
+  });
   return {
     event: "result",
     run_id: input.runId,
@@ -814,13 +905,17 @@ export function buildResultOperatorEvent(input: {
       adapter: "openclaw",
       hook: "after_tool_call",
       ...input.metadata,
+      batch_size:
+        typeof input.metadata.batch_size === "number" && Number.isFinite(input.metadata.batch_size)
+          ? input.metadata.batch_size
+          : 1,
     },
     result: summary,
-    effect: "ran",
+    effect: resultOperatorEffect(input.ok, summary.excerpt),
     label_source: "scanner",
     host_truncated: false,
-    plugin_version: operatorPluginVersion(),
-    rules_version: DEFAULT_RULES.version,
+    feedback_posted: false,
+    ...extras,
   };
 }
 

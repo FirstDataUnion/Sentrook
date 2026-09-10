@@ -25,6 +25,8 @@
     "approvalPolicy.ts",
     "scanErrorPolicy.ts",
     "localAllowlist.ts",
+    "allowlistFromLog.ts",
+    "unattendedReview.ts",
     "devLog.ts",
     "reviewCards.ts",
     "approvalGateway.ts",
@@ -66,10 +68,10 @@
   },
   "scripts": {
     "build": "npm run build:gateway && npm run build:ui",
-    "build:gateway": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --legal-comments=none",
+    "build:gateway": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --legal-comments=none --define:BAKED_PLUGIN_VERSION=\\\"$npm_package_version\\\"",
     "build:ui": "esbuild control-ui.ts --bundle --platform=browser --format=esm --outfile=dist/control-ui/index.js --legal-comments=none",
     "prepack": "npm run build",
-    "test": "node --experimental-strip-types --test approvalPolicy.test.ts attendance.test.ts auth.test.ts sanitize.test.ts configure.test.ts verify.test.ts localAllowlist.test.ts allowlistCli.test.ts scanErrorPolicy.test.ts index.test.ts register.test.ts planir.test.ts reviewCopy.test.ts packCheck.test.ts devLog.test.ts sessionStore.test.ts operatorLog.test.ts sessionPolicy.test.ts livePolicy.test.ts slashCommand.test.ts pluginConfigPatch.test.ts reviewCards.test.ts approvalGateway.test.ts dashboard.test.ts dashboardPresent.test.ts dashboardAuth.test.ts hostSessions.test.ts dashboardSetup.test.ts featureOperations.test.ts featureClient.test.ts hostVersion.test.ts controlUiView.test.ts dashboardSlashHints.test.ts dashboardPanels.test.ts",
+    "test": "node --experimental-strip-types --test approvalPolicy.test.ts attendance.test.ts auth.test.ts sanitize.test.ts configure.test.ts verify.test.ts localAllowlist.test.ts allowlistCli.test.ts scanErrorPolicy.test.ts index.test.ts register.test.ts planir.test.ts reviewCopy.test.ts packCheck.test.ts devLog.test.ts sessionStore.test.ts operatorLog.test.ts sessionPolicy.test.ts livePolicy.test.ts slashCommand.test.ts pluginConfigPatch.test.ts reviewCards.test.ts approvalGateway.test.ts dashboard.test.ts dashboardPresent.test.ts dashboardAuth.test.ts hostSessions.test.ts dashboardSetup.test.ts featureOperations.test.ts featureClient.test.ts hostVersion.test.ts controlUiView.test.ts dashboardSlashHints.test.ts dashboardPanels.test.ts unattendedReview.test.ts allowlistFromLog.test.ts",
     "pack:check": "npm run build && node --experimental-strip-types packCheck.ts",
     "preview:dashboard": "node --experimental-strip-types dashboardPreview.ts"
   },

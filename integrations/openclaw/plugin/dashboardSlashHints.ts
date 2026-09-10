@@ -90,6 +90,11 @@ export function allowlistRm(index: number): string {
   return `/sentrook allowlist rm ${index}`;
 }
 
+export function allowlistAdd(eventId?: string): string {
+  const id = eventId?.trim();
+  return id ? `/sentrook allowlist add ${id}` : "/sentrook allowlist add <id>";
+}
+
 export function logRetentionDays(days: number): string {
   return `/sentrook log retention ${days}d`;
 }

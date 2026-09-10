@@ -11,6 +11,7 @@ import {
   isPolicyHeadline,
   overlayApprovalCopy,
   pendingDisplayCommand,
+  pendingTrustPreview,
   withDashboardHint,
 } from "./reviewCopy.ts";
 
@@ -36,6 +37,19 @@ describe("pendingDisplayCommand", () => {
     assert.equal(pendingDisplayCommand({ command: "[TRUNCATED]" }), undefined);
     assert.equal(pendingDisplayCommand({ command: "   " }), undefined);
     assert.equal(pendingDisplayCommand(undefined), undefined);
+  });
+});
+
+describe("pendingTrustPreview", () => {
+  it("scrubs a one-line command for unattended block copy", () => {
+    assert.equal(pendingTrustPreview("exec", { command: "rg -n TODO src/" }), "rg -n TODO src/");
+    assert.match(
+      pendingTrustPreview("exec", {
+        command: "curl -H 'Authorization: Bearer sk-ant-abcdefghijklmnopqrstuvwxyz' https://x",
+      }) || "",
+      /Bearer \[REDACTED\]/,
+    );
+    assert.equal(pendingTrustPreview("read", { path: "/tmp/notes.md" }), "read /tmp/notes.md");
   });
 });
 

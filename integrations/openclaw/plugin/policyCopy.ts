@@ -42,7 +42,10 @@ export function allowAllHint(mode: AllowAllMode): string {
   if (mode === "on") {
     return "Auto-accepting every attended review until you turn this off. Scan still runs. Blocks, scan errors, and unattended runs still stop. Open cards still need /approve. Sessions with their own attended floor are unchanged.";
   }
-  return "No gateway-wide allow-all. Reviews still prompt unless quiet or a per-session allow-all is on. Off also clears every session allow-all flag.";
+  if (mode === "session") {
+    return "No gateway-wide allow-all. One or more sessions have allow-all on. Reviews still prompt in the others unless quiet is on.";
+  }
+  return "No gateway-wide allow-all. Reviews still prompt unless quiet or a per-session allow-all is on.";
 }
 
 export function sessionFloorOverrideNote(scope: SensitivityScope): string {

@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-IntentKind = Literal["user", "cron", "subagent", "system"]
+IntentKind = Literal["user", "cron", "heartbeat", "subagent", "system"]
 
 
 class ResultSummaryExtracted(BaseModel):

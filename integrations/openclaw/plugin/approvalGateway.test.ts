@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  applyApprovalRequested,
+  joinCardApprovalIds,
   listPluginApprovals,
   matchApprovalId,
   resolvePluginApproval,
@@ -55,6 +57,25 @@ describe("matchApprovalId", () => {
       "plugin:joined",
     );
   });
+
+  it("matches the only Sentrook item in the same session when toolCallId is absent", () => {
+    const id = matchApprovalId(
+      [
+        {
+          id: "plugin:other-session",
+          request: { pluginId: "sentrook-openclaw", sessionKey: "other", toolName: "exec" },
+        },
+        {
+          id: "plugin:same-session",
+          request: { pluginId: "sentrook-openclaw", sessionKey: "main", toolName: "exec" },
+        },
+      ],
+      "unknown-call",
+      "sentrook-openclaw",
+      { sessionKey: "main", toolName: "exec" },
+    );
+    assert.equal(id, "plugin:same-session");
+  });
 });
 
 describe("listPluginApprovals", () => {
@@ -65,7 +86,31 @@ describe("listPluginApprovals", () => {
         throw new Error("rejected");
       },
     };
-    assert.deepEqual(await listPluginApprovals(gateway), []);
+    assert.deepEqual(await listPluginApprovals(gateway, { listOverApprovalRuntime: async () => [] }), []);
+  });
+
+  it("falls back to the approval-runtime list when plugin.approval.list is empty", async () => {
+    const gateway: PluginRuntimeGateway = {
+      request: async () => [],
+    };
+    const listed = await listPluginApprovals(gateway, {
+      listOverApprovalRuntime: async () => [
+        { id: "plugin:hidden", request: { pluginId: "sentrook-openclaw", toolCallId: "t1" } },
+      ],
+    });
+    assert.equal(listed[0]?.id, "plugin:hidden");
+  });
+
+  it("falls back to the approval-runtime list when plugin.approval.list is rejected", async () => {
+    const gateway: PluginRuntimeGateway = {
+      request: async () => {
+        throw new Error("method rejected for external plugins");
+      },
+    };
+    const listed = await listPluginApprovals(gateway, {
+      listOverApprovalRuntime: async () => [{ id: "plugin:sdk", request: { toolCallId: "t1" } }],
+    });
+    assert.equal(listed[0]?.id, "plugin:sdk");
   });
 
   it("unwraps { approvals } payloads", async () => {
@@ -142,5 +187,58 @@ describe("resolvePluginApproval", () => {
         }),
       /Cannot resolve from this dashboard.*\/approve/,
     );
+  });
+});
+
+describe("joinCardApprovalIds", () => {
+  it("attaches a listed plugin: id onto the matching review card", async () => {
+    const cards: Array<{
+      toolCallId: string;
+      eventId?: string;
+      approvalId?: string;
+      sessionKey?: string;
+      tool?: string;
+    }> = [{ toolCallId: "t1", eventId: "evt-1", sessionKey: "main", tool: "exec" }];
+    const store = {
+      list: () => cards,
+      attachApprovalId: (toolCallId: string, approvalId: string) => {
+        const card = cards.find((row) => row.toolCallId === toolCallId);
+        if (card) card.approvalId = approvalId;
+      },
+    };
+    await joinCardApprovalIds(store, undefined, {
+      listOverApprovalRuntime: async () => [
+        {
+          id: "plugin:from-runtime",
+          request: { pluginId: "sentrook-openclaw", toolCallId: "t1", sessionKey: "main" },
+        },
+      ],
+    });
+    assert.equal(cards[0]?.approvalId, "plugin:from-runtime");
+  });
+
+  it("joins plugin.approval.requested payloads that wrap the record", () => {
+    const cards: Array<{
+      toolCallId: string;
+      eventId?: string;
+      approvalId?: string;
+      sessionKey?: string;
+      tool?: string;
+    }> = [{ toolCallId: "t1", eventId: "evt-1", sessionKey: "main", tool: "exec" }];
+    const store = {
+      list: () => cards,
+      attachApprovalId: (toolCallId: string, approvalId: string) => {
+        const card = cards.find((row) => row.toolCallId === toolCallId);
+        if (card) card.approvalId = approvalId;
+      },
+    };
+    const id = applyApprovalRequested(store, {
+      payload: {
+        id: "plugin:evt",
+        request: { pluginId: "sentrook-openclaw", toolCallId: "t1", sessionKey: "main" },
+      },
+    });
+    assert.equal(id, "plugin:evt");
+    assert.equal(cards[0]?.approvalId, "plugin:evt");
   });
 });

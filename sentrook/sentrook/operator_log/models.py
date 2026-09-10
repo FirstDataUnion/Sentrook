@@ -23,6 +23,7 @@ LabelSource = Literal[
     "timeout",
     "unattended",
     "session",
+    "host",
 ]
 HookAction = Literal["requireApproval", "block", "continue"]
 SkipReason = Literal["allowlist", "quiet", "lenient", "allow-all", "session"]
@@ -92,6 +93,7 @@ class OperatorLogEvent(BaseModel):
     contribute_eligible: bool | None = None
     host_tool: str | None = None
     host_truncated: bool | None = None
+    rules_version: int | None = None
     pending: PlanStep | None = None
     co_pending: list[str] = Field(default_factory=list)
     scan: ScanBody | None = None

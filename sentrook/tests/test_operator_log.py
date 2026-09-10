@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from sentrook.adapters.intent import classify_intent
+from sentrook.adapters.snapshot import build_result_summary
 from sentrook.operator_log import (
     SCHEMA_VERSION,
     OperatorLogEvent,
@@ -46,6 +48,16 @@ def test_golden_fixture_validates() -> None:
     assert scan.pending is not None
     assert scan.pending.args["command"] == "curl https://example/api"
     assert scan.metadata.session_key == "agent:main:discord:channel:123"
+    assert scan.rules_version == 1
+    assert scan.scan is not None
+    assert scan.scan.log is None
+    resolution = OperatorLogEvent.model_validate_json(GOLDEN.read_text().splitlines()[1])
+    assert resolution.intent == "fetch the public API status"
+    assert resolution.metadata.batch_size == 1
+    result = OperatorLogEvent.model_validate_json(GOLDEN.read_text().splitlines()[2])
+    assert result.effect == "ran"
+    assert result.result is not None
+    assert result.result.content_type == "application/json"
 
 
 def test_schema_json_is_v1_contract() -> None:
@@ -148,3 +160,37 @@ def test_scan_event_requires_pending() -> None:
             metadata=_meta(),
             scan={"decision": "allow"},
         )
+
+
+def test_heartbeat_intent_kind_and_host_label() -> None:
+    event = OperatorLogEvent(
+        id="sr_hb0001",
+        ts="2026-09-02T13:00:00.000Z",
+        event="scan",
+        run_id="uuid-1:r1",
+        intent_kind="heartbeat",
+        metadata=_meta(),
+        pending=PlanStep(id="s1", tool="exec", status="pending", args={"command": "ls"}),
+        scan={"decision": "review"},
+        hook={"action": "requireApproval"},
+        label_source="host",
+        rules_version=1,
+    )
+    assert event.intent_kind == "heartbeat"
+    assert event.label_source == "host"
+    assert event.rules_version == 1
+
+
+def test_classify_heartbeat_marker() -> None:
+    assert classify_intent("[heartbeat: tick] ping") == "heartbeat"
+    assert classify_intent("[cron: nightly] backup") == "cron"
+
+
+def test_extracted_paths_skip_table_cells() -> None:
+    summary = build_result_summary(
+        "kimi-k2.5 /200k /127.0.0.1 /kimi-k2.5 /tmp/foo.txt /home/node/.openclaw/scripts/run.sh"
+    )
+    assert summary.extracted.paths == [
+        "/tmp/foo.txt",
+        "/home/node/.openclaw/scripts/run.sh",
+    ]

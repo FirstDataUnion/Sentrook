@@ -9,6 +9,7 @@ import {
   LOG_WIPE,
   VERIFY_CLI,
   allowAllSession,
+  allowlistAdd,
   allowlistRm,
   approveAlways,
   approveDeny,
@@ -64,6 +65,7 @@ describe("dashboardSlashHints", () => {
     assert.equal(scanErrorCmd("allow"), "/sentrook scan-error allow confirm");
     assert.equal(scanErrorCmd("deny"), "/sentrook scan-error deny");
     assert.equal(allowlistRm(3), "/sentrook allowlist rm 3");
+    assert.equal(allowlistAdd("sr_abc"), "/sentrook allowlist add sr_abc");
     assert.equal(logRetentionDays(7), "/sentrook log retention 7d");
     assert.equal(logRetentionMib(32), "/sentrook log retention 32MiB");
     assert.equal(LOG_PURGE, "/sentrook log purge confirm");

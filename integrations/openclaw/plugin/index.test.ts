@@ -512,6 +512,35 @@ describe("translateScanResponse — review mapping", () => {
     ]);
   });
 
+  it("blocks unattended hosted reviews instead of requireApproval", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "flagged",
+      review_severity: "warning",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "rg -n TODO src/" },
+        unattended: true,
+        eventId: "sr_deadbeef01",
+        plan: plan({
+          pending: { tool: "exec", args: { command: "rg -n TODO src/" } },
+          intentKind: "cron",
+          sessionId: "cron-sess",
+        }),
+      }),
+    );
+    assert.equal(result?.requireApproval, undefined);
+    assert.equal(result?.block, true);
+    assert.match(result?.blockReason || "", /rg -n TODO src\//);
+    assert.match(result?.blockReason || "", /\/sentrook allowlist add sr_deadbeef01/);
+    assert.match(result?.blockReason || "", /138853/);
+    assert.match(result?.blockReason || "", /sensitivity unattended warning/);
+  });
+
   it("overlays local exec command when sidecar copy is [TRUNCATED]", () => {
     const command = `python3 wiki.py get Self:Today ${"padding ".repeat(80)}`;
     const scan: ScanResponse = {
@@ -556,35 +585,35 @@ describe("translateScanResponse — review mapping", () => {
     assert.equal(approval.timeoutMs, 600_000);
   });
 
-  it("applies scheduled deny timing for cron intents", () => {
+  it("blocks cron hosted reviews instead of waiting on a card", () => {
     const scan: ScanResponse = { block: false, decision: "review" };
     const result = translateScanResponse(
       scan,
       ctx({
+        eventId: "sr_cronwait01",
         plan: plan({
           intent: "[cron:abc] Daily Brief",
           intentKind: "cron",
         }),
       }),
     );
-    const approval = result?.requireApproval;
-    assert.ok(approval);
-    assert.equal(approval.timeoutBehavior, "deny");
-    assert.equal(approval.timeoutMs, 600_000);
+    assert.equal(result?.requireApproval, undefined);
+    assert.equal(result?.block, true);
+    assert.match(result?.blockReason || "", /allowlist add sr_cronwait01/);
   });
 
-  it("applies scheduled deny timing for heartbeat intents", () => {
+  it("blocks heartbeat hosted reviews instead of waiting on a card", () => {
     const scan: ScanResponse = { block: false, decision: "review" };
     const result = translateScanResponse(
       scan,
       ctx({
+        eventId: "sr_hbwait01",
         plan: plan({ intentKind: "heartbeat" }),
       }),
     );
-    const approval = result?.requireApproval;
-    assert.ok(approval);
-    assert.equal(approval.timeoutBehavior, "deny");
-    assert.equal(approval.timeoutMs, 600_000);
+    assert.equal(result?.requireApproval, undefined);
+    assert.equal(result?.block, true);
+    assert.match(result?.blockReason || "", /allowlist add sr_hbwait01/);
   });
 });
 
@@ -682,6 +711,22 @@ describe("translateScanResponse — resolution feedback", () => {
     await result!.requireApproval!.onResolution!("deny");
     assert.equal(calls.length, 1);
     assert.equal(calls[0].body.resolution, "deny");
+  });
+
+  it("does not post feedback when the host cancels the card", async () => {
+    const { calls } = captureFeedback();
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(scan, ctx({ feedbackMode: "submit" }));
+    await result!.requireApproval!.onResolution!("cancelled");
+    assert.equal(calls.length, 0);
+  });
+
+  it("does not post feedback on timeout even when feedback mode is submit", async () => {
+    const { calls } = captureFeedback();
+    const scan: ScanResponse = { block: false, decision: "review" };
+    const result = translateScanResponse(scan, ctx({ feedbackMode: "submit" }));
+    await result!.requireApproval!.onResolution!("timeout");
+    assert.equal(calls.length, 0);
   });
 
   it("sanitizes feedback plan when sanitization is enabled", async () => {

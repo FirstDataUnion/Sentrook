@@ -17,6 +17,7 @@ import {
   type ResolveDecision,
 } from "./approvalGateway.ts";
 import { loadAllowlist, saveAllowlist } from "./localAllowlist.ts";
+import { addAllowlistFromHistory } from "./allowlistFromLog.ts";
 import { purgeOperatorLog, wipeOperatorLog } from "./operatorLog.ts";
 import { parseOnScanError } from "./scanErrorPolicy.ts";
 import { parseQuietDuration, parseSessionSensitivityToken, parseSensitivityToken, type Sensitivity } from "./sessionPolicy.ts";
@@ -127,12 +128,21 @@ export async function opResolve(
   const card = deps.cards.get(id);
   if (!card) throw new FeatureOperationError("No pending review for that id", "NOT_FOUND");
 
-  const listed = await listPluginApprovals(deps.gateway);
+  const listed = await listPluginApprovals(deps.gateway, {
+    config: deps.config,
+    logger: deps.logger,
+  });
   const approvalId =
-    input.approvalId || matchApprovalId(listed, [card.toolCallId, card.eventId, card.approvalId]);
+    input.approvalId ||
+    matchApprovalId(listed, [card.toolCallId, card.eventId, card.approvalId], undefined, {
+      sessionKey: card.sessionKey,
+      toolName: card.tool,
+    });
   if (!approvalId) {
     throw new FeatureOperationError(
-      `OpenClaw has not published a /approve id yet. Use Allow/Deny on the native page, the approval card in chat, or /sentrook pending ${card.eventId}.`,
+      listed.length
+        ? `OpenClaw listed pending approvals but none matched this review. Use Allow/Deny on the native approval card in chat, or /approve with the id OpenClaw showed.`
+        : `OpenClaw has not published a /approve id this plugin can see yet. Use Allow/Deny on the native approval card in chat, or /approve if the host showed an id.`,
       "CONFLICT",
     );
   }
@@ -255,6 +265,19 @@ export function opAllowlistRemove(
     );
   }
   return { ok: true };
+}
+
+export function opAllowlistAdd(
+  deps: DashboardDeps,
+  input: SentrookInputs["allowlist.add"],
+): { ok: true; status: string; message: string } {
+  const eventId = typeof input.eventId === "string" ? input.eventId.trim() : "";
+  if (!eventId) invalid("eventId is required");
+  const result = addAllowlistFromHistory(deps.operatorLog(), deps.allowlist, eventId);
+  if (!result.ok) {
+    throw new FeatureOperationError(result.message, "INVALID_INPUT");
+  }
+  return { ok: true, status: result.status, message: result.message };
 }
 
 export async function opSetup(

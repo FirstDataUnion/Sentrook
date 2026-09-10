@@ -13,6 +13,7 @@ import type { OnScanError } from "./scanErrorPolicy.ts";
 import type { Sensitivity } from "./sessionPolicy.ts";
 import {
   CHANNEL_DISCLOSURE,
+  DISCORD_MESSAGE_MAX,
   handleSentrookCommand,
   SENTROOK_COMMAND_DEF,
   type SlashCard,
@@ -54,6 +55,7 @@ function makeDeps(opts: {
   sessions?: SlashSession[];
   hostSessions?: Array<{ sessionKey: string; sessionId?: string }>;
   cards?: SlashCard[];
+  joinCards?: () => Promise<void>;
   log?: OperatorLogConfig;
   sensitivity?: Sensitivity;
   unattendedSensitivity?: Sensitivity;
@@ -101,6 +103,7 @@ function makeDeps(opts: {
     listSessions: () => [...(opts.sessions ?? [session]), ...named.values()],
     listHostSessions: opts.hostSessions ? () => opts.hostSessions ?? [] : undefined,
     listCards: opts.cards ? () => opts.cards ?? [] : undefined,
+    joinCards: opts.joinCards,
     sensitivity: () => sensitivity,
     setSensitivity: (value) => {
       sensitivity = value;
@@ -178,6 +181,10 @@ describe("handleSentrookCommand", () => {
     assert.ok(reply.text.includes(CHANNEL_DISCLOSURE));
     assert.match(reply.text, /Control UI/);
     assert.match(reply.text, /\/sentrook\n {2}Snapshot/);
+    assert.match(reply.text, /Passing no arguments/);
+    assert.match(reply.text, /never allows/);
+    assert.match(reply.text, /\/sentrook allowlist add <id>/);
+    assert.ok(reply.text.length <= DISCORD_MESSAGE_MAX, `help is ${reply.text.length} chars`);
     assert.doesNotMatch(reply.text, /paste/i);
     assert.doesNotMatch(reply.text, /copy (this |the )?URL/i);
     assert.doesNotMatch(reply.text, /hard L2/i);
@@ -226,6 +233,7 @@ describe("handleSentrookCommand", () => {
     const { deps } = makeDeps({ session });
     const list = handleSentrookCommand({ args: "pending", senderIsOwner: true }, deps);
     assert.match(list.text, /sr_aabbcc/);
+    assert.match(list.text, /sev/);
     assert.match(list.text, /\/sentrook pending sr_aabbcc/);
     assert.match(list.text, /\/sentrook pending sr_bbccdd/);
     assert.doesNotMatch(list.text, /AIRA-/);
@@ -282,6 +290,35 @@ describe("handleSentrookCommand", () => {
     assert.ok(!reply.text.includes(CHANNEL_DISCLOSURE));
   });
 
+  it("joins a host /approve id before pending detail", async () => {
+    const session = makeSession({ sessionKey: "main" });
+    session.pending.set("t1", {
+      tool: "exec",
+      args: { command: "curl https://example/collect" },
+      awaitingApproval: true,
+      eventId: "sr_join01",
+    });
+    const cards: SlashCard[] = [
+      {
+        eventId: "sr_join01",
+        toolCallId: "t1",
+        tool: "exec",
+        args: { command: "curl https://example/collect" },
+        sessionKey: "main",
+      },
+    ];
+    const { deps } = makeDeps({
+      session,
+      cards,
+      joinCards: async () => {
+        cards[0]!.approvalId = "plugin:joined";
+      },
+    });
+    const reply = await handleSentrookCommand({ args: "pending sr_join01", senderIsOwner: true }, deps);
+    assert.match(reply.text, /\/approve plugin:joined allow-once/);
+    assert.match(reply.text, /\/approve plugin:joined deny/);
+  });
+
   it("history lists review/block by default and id returns the command", () => {
     const { deps, log } = makeDeps();
     appendOperatorLog(log, {
@@ -327,7 +364,15 @@ describe("handleSentrookCommand", () => {
     assert.match(detail.text, /Scan\s+review/);
     assert.match(detail.text, /Then\s+waiting/);
     assert.match(detail.text, /Ran\s+waiting/);
+    assert.match(detail.text, /Why\s+High-risk shell/);
+    assert.match(detail.text, /\/sentrook allowlist add sr_hist01/);
     assert.doesNotMatch(detail.text, /AIRA-010/);
+    const stale = handleSentrookCommand(
+      { args: "pending sr_hist01", senderIsOwner: true, sessionId: "uuid-1" },
+      deps,
+    );
+    assert.match(stale.text, /Not waiting any more/);
+    assert.match(stale.text, /curl https:\/\/x/);
   });
 
   it("status includes policy knobs", () => {
@@ -389,6 +434,51 @@ describe("handleSentrookCommand", () => {
     assert.match(after.text, /empty/);
   });
 
+  it("allowlist add records from a history review id", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-al-add-"));
+    tempDirs.push(dir);
+    const allowPath = join(dir, "sentrook-allowlist.json");
+    const { deps, log } = makeDeps({ allowlistPath: allowPath });
+    appendOperatorLog(log, {
+      id: "sr_addme01",
+      ts: "2026-09-10T10:00:00.000Z",
+      event: "scan",
+      run_id: "run-add",
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+      pending: {
+        id: "s1",
+        tool: "exec",
+        status: "pending",
+        args: { command: "rg -n TODO src/" },
+      },
+      scan: { decision: "review", matched_rules: ["AIRA-010"] },
+    });
+    const added = handleSentrookCommand(
+      { args: "allowlist add sr_addme01", senderIsOwner: true },
+      deps,
+    );
+    assert.match(added.text, /Allowlisted this command/);
+    const listed = handleSentrookCommand({ args: "allowlist", senderIsOwner: true }, deps);
+    assert.match(listed.text, /rg -n TODO src\//);
+    const again = handleSentrookCommand(
+      { args: "allowlist add sr_addme01", senderIsOwner: true },
+      deps,
+    );
+    assert.match(again.text, /Already on the allowlist/);
+  });
+
+  it("allowlist help documents add from history and curl host+path", () => {
+    const { deps } = makeDeps();
+    const catalog = handleSentrookCommand({ args: "help", senderIsOwner: true }, deps);
+    assert.match(catalog.text, /allowlist \[add <id> \| rm n\]/);
+    assert.match(catalog.text, /add uses a history id/);
+    const help = handleSentrookCommand({ args: "allowlist help", senderIsOwner: true }, deps);
+    assert.match(help.text, /allowlist add <id>/);
+    assert.match(help.text, /history event/);
+    assert.match(help.text, /host and path/);
+    assert.match(help.text, /Not stored: pipes/);
+  });
+
   it("log retention updates live config", () => {
     const { deps, log } = makeDeps();
     const reply = handleSentrookCommand(
@@ -428,8 +518,8 @@ describe("handleSentrookCommand", () => {
     });
     const { deps } = makeDeps({ session });
     const reply = handleSentrookCommand({ args: "", senderIsOwner: true }, deps);
-    assert.match(reply.text, /sr_snap01/);
-    assert.match(reply.text, /\/sentrook pending sr_snap01/);
+    assert.match(reply.text, /Pending review\s+sr_snap01/);
+    assert.match(reply.text, /```[\s\S]*ls/);
     assert.match(reply.text, /More commands: \/sentrook help/);
     assert.match(reply.text, /attended\s+default \(strict\)/);
     assert.doesNotMatch(reply.text, /\/sentrook verbs/);
@@ -676,12 +766,31 @@ describe("handleSentrookCommand", () => {
     assert.doesNotMatch(dumped.text, /^sr_04\b/m);
   });
 
+  it("history list shows the date when the event is not today", () => {
+    const { deps, log } = makeDeps();
+    appendOperatorLog(log, {
+      id: "sr_old01",
+      ts: "2026-08-31T13:04:00.000Z",
+      event: "scan",
+      run_id: "uuid-1:old",
+      metadata: { adapter: "openclaw", hook: "before_tool_call", session_id: "uuid-1" },
+      pending: { tool: "exec", args: { command: "echo old" } },
+      scan: { decision: "review" },
+    });
+    const list = handleSentrookCommand(
+      { args: "history", senderIsOwner: true, sessionId: "uuid-1" },
+      deps,
+    );
+    assert.match(list.text, /08-31 13:04/);
+  });
+
   it("sessions lists live flags", () => {
     const session = makeSession({ sessionKey: "main", sessionId: "uuid-1", allowAll: true });
     const { deps } = makeDeps({ session });
     const reply = handleSentrookCommand({ args: "sessions", senderIsOwner: true }, deps);
     assert.match(reply.text, /main/);
     assert.match(reply.text, /allow-all/);
+    assert.match(reply.text, /unattended {2}allow-all {2}quiet/);
   });
 
   it("sessions lists OpenClaw host keys Sentrook has not scanned", () => {
@@ -756,12 +865,22 @@ describe("handleSentrookCommand", () => {
       assert.match(reply.text, /Usage:/, `${verb} help`);
       assert.equal(session.allowAll, false, `${verb} help must not enable allow-all`);
     }
+    const statusHelp = handleSentrookCommand({ args: "status help", senderIsOwner: true }, deps);
+    assert.doesNotMatch(statusHelp.text, /Passing no arguments/);
+    const sensitivityHelp = handleSentrookCommand(
+      { args: "sensitivity help", senderIsOwner: true },
+      deps,
+    );
+    assert.match(sensitivityHelp.text, /What this means/);
   });
 
   it("history help explains gateway and omits internal copy", () => {
     const { deps } = makeDeps();
+    const catalog = handleSentrookCommand({ args: "help", senderIsOwner: true }, deps);
+    assert.match(catalog.text, /gateway = every session, never allows/);
     const reply = handleSentrookCommand({ args: "history help", senderIsOwner: true }, deps);
-    assert.match(reply.text, /across every session/);
+    assert.match(reply.text, /every session/);
+    assert.match(reply.text, /Never includes allows/);
     assert.match(reply.text, /before <id>/);
     assert.doesNotMatch(reply.text, /rule ids/);
     assert.doesNotMatch(reply.text, /dashboard timeline/);

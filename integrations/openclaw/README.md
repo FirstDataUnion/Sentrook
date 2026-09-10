@@ -28,8 +28,10 @@ corpus (human-gated publish).
 Operators can inspect pending reviews and history with `/sentrook` in chat
 (owner-only; bare command is a snapshot, `/sentrook help` lists verbs) or open
 `/sentrook` on the gateway (same port as Control UI).
-See [Operator dashboard](#operator-dashboard) and
-[`/sentrook` chat commands](#sentrook-chat-commands).
+See [Operator dashboard](#operator-dashboard),
+[`/sentrook` chat commands](#sentrook-chat-commands), and
+[Chat-channel slash commands](#chat-channel-slash-commands) if those
+commands refuse in Discord / Slack / Telegram / WhatsApp.
 
 For the bigger picture (layers, privacy, community contribution) see the root
 [README — How it works](../../README.md#how-it-works).
@@ -156,11 +158,13 @@ Then restart the gateway and run `openclaw sentrook verify`.
 |---------|---------|
 | `openclaw sentrook configure` | Credentials + plugin entry (interactive or `--non-interactive`) |
 | `openclaw sentrook verify` | Confirm plugin config, credentials, and scan connectivity |
-| `openclaw sentrook allowlist list\|path\|clear --yes` | Inspect / wipe local allow-always store |
+| `openclaw sentrook allowlist list\|path\|add <id>\|clear --yes` | Inspect / trust-from-history / wipe local allow-always store |
 
 Chat (owner-only, not the CLI): `/sentrook` — see
-[`/sentrook` chat commands](#sentrook-chat-commands). Gateway panel: `/sentrook`
-on the Control UI port — see [Operator dashboard](#operator-dashboard).
+[`/sentrook` chat commands](#sentrook-chat-commands). From Discord / Slack /
+Telegram / WhatsApp, OpenClaw must admit you on that surface first — see
+[Chat-channel slash commands](#chat-channel-slash-commands). Gateway panel:
+`/sentrook` on the Control UI port — see [Operator dashboard](#operator-dashboard).
 
 ## Configuration
 
@@ -187,7 +191,7 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 |---------|---------|------|
 | `timeoutMs` | `14000` | Wait for `POST /scan` including OIDC mint. Default stays inside OpenClaw 2.0's 15s fail-closed hook. Env: `SENTROOK_SCAN_TIMEOUT_MS`. Raising this also raises the plugin-authored hook budget (host cap 10 min). |
 | `onScanError` | `review` | `allow` (continue without scanning), `deny` (block the tool), or `review` (ask, interactive; unattended blocks). Env: `SENTROOK_ON_SCAN_ERROR`. Set `allow` only if the agent must proceed when Sentrook is unreachable (auth failures still block). |
-| `feedback.mode` | `submit` after configure | `submit` posts sanitized allow-once / deny reviews for the community corpus (human-gated publish). The wizard default is `submit`. If you enable the plugin without configure, feedback stays `off`. Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
+| `feedback.mode` | `submit` after configure | `submit` posts sanitized **allow-once** and **deny** reviews for the community corpus (human-gated publish). **Allow-always** still posts even when mode is `off`. Host **cancelled** / **timeout** never post. The wizard default is `submit`. If you enable the plugin without configure, feedback stays `off`. Opt out: wizard prompt, `--contribute-corpus false`, or `feedback.mode: "off"` |
 | `allowlist.enabled` | `true` | Local short-circuit for “allow every time” — see [Allow every time](#allow-every-time-local-allowlist) |
 | `allowlist.path` | `~/.openclaw/sentrook-allowlist.json` | Override store path |
 | `sensitivity` | `strict` | Attended review floor after a `review`: `strict` always prompts; `info` / `warning` / `critical` auto-approve that severity and below (legacy `lenient` = `info`). Includes hard L2 reviews. Never skips `block` or scan errors. Env: `SENTROOK_SENSITIVITY`. See [Session policy](#session-policy). |
@@ -197,7 +201,7 @@ Useful knobs under `plugins.entries.sentrook-openclaw.config`:
 | `operatorLog.maxAgeDays` | `14` | Drop lines older than this many days (`0` = no age purge). Env: `SENTROOK_OPERATOR_LOG_MAX_DAYS`. |
 | `operatorLog.maxBytes` | `33554432` (32 MiB) | Rotate the live file near this size. Env: `SENTROOK_OPERATOR_LOG_MAX_BYTES`. |
 | `approval.interactiveTimeoutMs` | `600000` (10 min) | Review timeout for interactive sessions. Capped at 10 min (OpenClaw 2.0). Deny on timeout. |
-| `approval.scheduledTimeoutMs` | `600000` (10 min) | Review timeout for unattended cron / heartbeat runs. Same 10 min cap. |
+| `approval.scheduledTimeoutMs` | `600000` (10 min) | Unused for unattended hosted reviews (those block immediately). Kept for scan-error cards if a future host can wait. |
 | `approval.scheduledTimeoutBehavior` | `deny` | **Deprecated.** Unresolved reviews always deny. The key is still accepted so older configs load; `allow` is ignored. |
 
 PlanIR is always scrubbed before egress. Decisions are always enforced (allow /
@@ -268,9 +272,25 @@ stays up.
 
 ## Chat-channel approvals
 
-When Sentrook returns **review**, the plugin asks OpenClaw for a human decision
-(`allow-once` / `allow-always` / `deny`). The card uses the usual command
-summary (title 80 / description 512). Chat channels typically show both.
+OpenClaw cannot deliver **plugin** approval cards for cron or heartbeat
+(`trigger !== "user"`). Until that host gap closes
+([openclaw#138853](https://github.com/openclaw/openclaw/issues/138853)),
+Sentrook **blocks** those hosted reviews instead of waiting on a card that
+cannot be answered. The block copy shows the command and a constructed
+`/sentrook allowlist add <id>` (or `openclaw sentrook allowlist add <id>`).
+If you trust that occurrence, run the command and re-run the job. Matching
+later reviews skip the prompt. Scan still runs; blocks still win. Raise
+`unattendedSensitivity` if the command cannot be allowlisted (pipes,
+`curl | bash`, a bare curl/wget with no URL). A curl/wget to a specific host
+and path can be allowlisted. Native **exec** approvals on Control UI are a separate OpenClaw gate
+and do not satisfy a Sentrook review. We will restore live plugin cards for
+unattended jobs when OpenClaw can deliver them
+([Sentrook#59](https://github.com/FirstDataUnion/Sentrook/issues/59)).
+
+When Sentrook returns **review** on an **interactive** turn, the plugin asks
+OpenClaw for a human decision (`allow-once` / `allow-always` / `deny`). The
+card uses the usual command summary (title 80 / description 512). Chat
+channels typically show both.
 OpenClaw’s in-browser overlay reuses exec-approval chrome and may show the
 tool invocation instead of that description. Every description still ends
 with a pointer to the **Sentrook** tab on the OpenClaw Control UI, or
@@ -332,6 +352,224 @@ OpenClaw docs linked above.
 After changing approvals, trigger a tool call that Sentrook would `review` and
 confirm the card or `/approve` prompt appears where you expect.
 
+`/sentrook` and `/approve` in that same DM or room still need OpenClaw to
+admit you as a command sender — see [Chat-channel slash commands](#chat-channel-slash-commands).
+
+## Chat-channel slash commands
+
+`/sentrook` is an OpenClaw plugin command (`requireAuth` + `operator.admin`).
+Sentrook does not keep its own Discord / Slack / Telegram / WhatsApp owner
+list. If slash commands refuse in a room, that is almost always **OpenClaw
+channel admission**, not the plugin.
+
+This is an **OpenClaw** setting; Sentrook configure does not set it for you.
+Upstream:
+[Slash commands](https://docs.openclaw.ai/tools/slash-commands),
+[Discord access control](https://docs.openclaw.ai/channels/discord/access-control),
+[Telegram access control](https://docs.openclaw.ai/channels/telegram/access-control),
+[Slack access control](https://docs.openclaw.ai/channels/slack/access-control),
+[WhatsApp](https://docs.openclaw.ai/channels/whatsapp).
+
+Two layers, both required:
+
+1. **This sender may run commands here.** Same rules as ordinary messages:
+   pairing and `channels.<name>.allowFrom` for **DMs**; the guild / group /
+   channel allowlist for **rooms**. Native Discord slash can reply **You are
+   not authorized to use this command** for *every* command when this layer
+   fails — `/status` and `/approve` included, not only `/sentrook`.
+2. **This sender is the owner.** `/sentrook` is owner-only. That identity is
+   `commands.ownerAllowFrom` (`discord:…`, `telegram:…`, `slack:U…`,
+   `whatsapp:+…`). Pairing a DM, or listing yourself only under
+   `execApprovals.approvers`, does **not** make you an owner. The first CLI
+   pairing can bootstrap `ownerAllowFrom`; Control UI pairing has a separate
+   owner checkbox.
+
+`/whoami` (alias `/id`) prints the sender id to put in those lists. Prefer a
+**DM** or a private channel: `/sentrook` replies are ordinary messages, readable
+by everyone in a public room.
+
+If `commands.allowFrom` is set, it is the **only** allowlist for commands
+(channel pairing lists are ignored for command auth). Leave it unset unless
+you want that override.
+
+### Discord
+
+**DM:** `channels.discord.dmPolicy` (`pairing` by default) plus
+`channels.discord.allowFrom`. A paired DM is enough to run commands there once
+`commands.ownerAllowFrom` includes `discord:<user-id>`.
+
+**Guild channel:** `ownerAllowFrom` is **not** enough. Native slash uses the
+same guild allowlist as ordinary messages. You need the **server** under
+`channels.discord.guilds` (when `groupPolicy` is `allowlist`, the default once
+Discord is configured), this **channel** listed if that guild has a
+`channels` map, and your **user id** on `channels.discord.allowFrom` and/or
+`channels.discord.guilds.<guildId>.users` (bare numeric ids).
+
+In `~/.openclaw/openclaw.json` (shape illustrative — keep your existing Discord
+token / guild config):
+
+```json5
+{
+  commands: {
+    ownerAllowFrom: ["discord:<your-user-id>"],
+  },
+  channels: {
+    discord: {
+      enabled: true,
+      allowFrom: ["<your-user-id>"],
+      groupPolicy: "allowlist",
+      guilds: {
+        "<your-server-id>": {
+          users: ["<your-user-id>"],
+          channels: {
+            "<this-channel-id>": { enabled: true },
+          },
+        },
+      },
+    },
+  },
+}
+```
+
+Notes:
+
+- The important parts are `commands.ownerAllowFrom`, `allowFrom` (DMs), and
+  the guild `users` / `channels` lists (server rooms).
+- Put **your** Discord user id in those lists — `/whoami` in a DM prints it.
+- Adding even one entry under a guild `channels` map turns the rest of that
+  server into a deny list. Use `"*": { enabled: true }` if you still want the
+  other rooms. Omit the `channels` map entirely to allow every channel in that
+  guild, subject to `users`.
+- Discord may still show slash commands in the picker for people who cannot
+  run them; execution replies **You are not authorized to use this command**.
+- Restart the gateway after changing channel command auth.
+- `openclaw channels status --probe` warns when `groupPolicy` is allowlist
+  with no guilds, or when a `channels` map omits this room.
+
+### Telegram
+
+**DM:** `channels.telegram.dmPolicy` plus `channels.telegram.allowFrom`
+(numeric user id). Pairing grants **DM access only**.
+
+**Group / supergroup:** put the group (negative id, e.g. `-100…`) under
+`channels.telegram.groups`. Group sender auth does **not** inherit the pairing
+store — put your user id in `channels.telegram.allowFrom` (and
+`groupAllowFrom` if you set that). Owner-only: `commands.ownerAllowFrom`
+includes `telegram:<user-id>`.
+
+```json5
+{
+  commands: {
+    ownerAllowFrom: ["telegram:<your-user-id>"],
+  },
+  channels: {
+    telegram: {
+      dmPolicy: "pairing",
+      allowFrom: ["<your-user-id>"],
+      groupPolicy: "allowlist",
+      groups: {
+        "<group-chat-id>": { requireMention: true },
+      },
+    },
+  },
+}
+```
+
+Notes:
+
+- The important parts are `commands.ownerAllowFrom`, `allowFrom`, and the
+  `groups` map for the chat you actually use.
+- Pairing a DM does **not** authorize the same sender in a group.
+- Native Telegram commands are on by default (`commands.native: "auto"`).
+- Restart the gateway after changing channel command auth.
+
+### Slack
+
+**DM:** `channels.slack.dmPolicy` plus `channels.slack.allowFrom` (Slack user
+ids such as `U…`).
+
+**Channel:** `groupPolicy` plus `channels.slack.channels` (stable channel ids
+such as `C…`, not `#name`). If a channel entry sets `users`, you must be on
+that list. Owner-only: `commands.ownerAllowFrom` includes `slack:<user-id>`.
+
+```json5
+{
+  commands: {
+    ownerAllowFrom: ["slack:<your-user-id>"],
+  },
+  channels: {
+    slack: {
+      dmPolicy: "pairing",
+      allowFrom: ["<your-user-id>"],
+      groupPolicy: "allowlist",
+      channels: {
+        "<channel-id>": { enabled: true, requireMention: true },
+      },
+    },
+  },
+}
+```
+
+Notes:
+
+- Text `/sentrook` in a message works on Slack without native slash
+  (`commands.native` defaults to off for Slack).
+- The native Slack picker needs `commands.native: true` **and** one
+  Slack-app slash command per verb — see OpenClaw’s Slack docs. Slack
+  reserves `/status`; native `/agentstatus` is the substitute, while text
+  `/status` still works.
+- Restart the gateway after changing channel command auth.
+
+### WhatsApp
+
+WhatsApp has **text** `/commands` (standalone messages starting with `/`), not
+a Discord-style native picker. `commands.text` can be `false`; text commands
+still parse on WhatsApp.
+
+**DM:** `channels.whatsapp.dmPolicy` plus `channels.whatsapp.allowFrom` (E.164
+numbers such as `+15551234567`).
+
+**Group:** `groupPolicy` plus `channels.whatsapp.groups` (group JIDs). If the
+`groups` map is present, it is an allowlist. `groupAllowFrom` filters who
+inside an allowed group can talk; it does not inherit DM pairing. If
+`groupAllowFrom` is unset, sender checks fall back to `allowFrom`. Owner-only:
+`commands.ownerAllowFrom` includes `whatsapp:+15551234567`.
+
+```json5
+{
+  commands: {
+    ownerAllowFrom: ["whatsapp:+15551234567"],
+  },
+  channels: {
+    whatsapp: {
+      dmPolicy: "pairing",
+      allowFrom: ["+15551234567"],
+      groupPolicy: "allowlist",
+      groupAllowFrom: ["+15551234567"],
+      groups: {
+        "<group-jid>": { requireMention: true },
+      },
+    },
+  },
+}
+```
+
+Notes:
+
+- The important parts are `commands.ownerAllowFrom`, `allowFrom` (DMs), and
+  `groups` / `groupAllowFrom` for rooms.
+- Pairing a DM does **not** authorize the same number in a group.
+- Restart the gateway after changing channel command auth.
+
+### Check it
+
+1. `/whoami` in a **DM** with the bot — should return your sender id.
+2. The same command in the **room** you actually use. If DM works and the room
+   says not authorized, fix that channel’s guild/group allowlist, not
+   Sentrook.
+3. Then `/sentrook status`. If `/whoami` works but `/sentrook` is owner-only,
+   add that sender to `commands.ownerAllowFrom`.
+
 ## Operator dashboard
 
 Two Control UI entries can appear when **Custom plugin UI** is off. Use
@@ -389,11 +627,14 @@ The page is tabbed:
   form (Identity link, client id/secret, feedback, `onScanError`) instead of
   the empty queue. Iframe: point at `openclaw sentrook configure` instead of
   writing secrets. After setup: every waiting Sentrook approval OpenClaw still
-  has open (`plugin.approval.list`), joined with the local pending stash and
-  operator log. Cards show severity, command (dangerous spans highlighted),
-  and human-readable policy labels (not AIRA ids). Native allow / deny calls
-  `plugin.approval.resolve` so the waiting tool continues; iframe shows
-  `/approve …`.
+  has open, joined with the local pending stash and operator log. The plugin
+  runtime's `plugin.approval.list` is often empty (those records are bound to
+  the tool-call requester, not the plugin). Sentrook joins `plugin:` ids through
+  OpenClaw's approval-runtime client — the same client `/approve` uses — and
+  from `plugin.approval.requested` when the host delivers it. Cards show
+  severity, command (dangerous spans highlighted), and human-readable policy
+  labels (not AIRA ids). Native allow / deny calls `plugin.approval.resolve`
+  so the waiting tool continues; iframe shows `/approve …`.
 - **Timeline** — newest scans from the [operator log](#operator-log). Search
   and filters are local (they do not write).
 - **Allowlist** — local allow-always entries. Native can remove one; iframe
@@ -407,38 +648,41 @@ To iterate on the fallback HTML without a running gateway, from `plugin/`:
 `npm run preview:dashboard` (fixture data at http://127.0.0.1:3456;
 `/unconfigured` is the first-run / configure hint).
 
-If the host has not minted a `plugin:` id yet, native Allow/Deny still show.
-Resolve looks the id up on click. Chat copy is the three complete `/approve
-<id> allow-once|allow-always|deny` lines when the id is known; otherwise
-`/sentrook pending <eventId>` plus a note to use the OpenClaw approval card
-in chat. The UI never shows a truncated `/approve plugin:…`.
+If the host has not minted a `plugin:` id this plugin can see yet, native
+Allow/Deny still show. Resolve looks the id up on click (approval-runtime
+list, then `plugin.approval.list`). Chat copy is the three complete `/approve
+<id> allow-once|allow-always|deny` lines when the id is known; `/sentrook
+pending` joins the id before printing those lines. Otherwise the reply tells
+you to use the OpenClaw approval card in chat. The UI never shows a truncated
+`/approve plugin:…`.
 
 Before a release, work through the [Operator test matrix](#operator-test-matrix)
 (`npm test` plus a live pass on native, read-only, and `/sentrook`).
 
 ## `/sentrook` chat commands
 
-Owner-only (`requireAuth` + `operator.admin`). Replies are ordinary channel
-messages (`{ text }`). `/sentrook help` reminds you that in a **public**
-Discord, Telegram, or WhatsApp chat anyone present can read them — secrets
-are scrubbed, that is not a guarantee. Prefer a DM, a private channel, or
-the [dashboard](#operator-dashboard).
+Owner-only (`requireAuth` + `operator.admin`). OpenClaw must already admit
+you on that DM or room — see [Chat-channel slash commands](#chat-channel-slash-commands).
+Replies are ordinary channel messages (`{ text }`). `/sentrook help` reminds
+you that in a **public** Discord, Telegram, or WhatsApp chat anyone present can
+read these replies — secrets are scrubbed, that is not a guarantee. Prefer a DM, a
+private channel, or the [dashboard](#operator-dashboard).
 
 | Command | What it does |
 |---------|----------------|
-| `/sentrook` | Snapshot: policy plus pending, with `/sentrook pending <id>`. Ends with `More commands: /sentrook help` |
+| `/sentrook` | Snapshot: policy plus pending. One waiting review is shown in full (same as `/sentrook pending`). Ends with `More commands: /sentrook help` |
 | `/sentrook help` | Catalog (command on its own line, description indented) plus the public-channel warning |
 | `/sentrook status` | Policy for this chat and the gateway (no pending list) |
 | `/sentrook policy` | All settings, with a short explanation of the current choice |
 | `/sentrook pending [all\|id]` | This chat; `all` = every card on the gateway. One waiting review is shown in full; two or more is a table plus copy-paste `/sentrook pending <id>`. `<id>` is the investigation |
-| `/sentrook history [all\|gateway\|before <id>\|n\|id]` | Newest 8 (max 20) as a table with an `id` column. Default is reviews, blocks, and scan errors in this chat; `all` includes allows; `gateway` is those events across every session; `before <id>` older page; `<id>` is the investigation |
-| `/sentrook sessions` | OpenClaw sessions plus attended / unattended floors and quiet. The `key` column is what you pass to `sensitivity session <key>` / `quiet session <key>` / `allow-all session <key>`. Uses each session’s label or display name when the store has one |
+| `/sentrook history [all\|gateway\|before <id>\|n\|id]` | Newest 8 (max 20) as a table with an `id` column. Default is reviews, blocks, and scan errors in this chat; `all` includes allows; `gateway` is those events across every session and never includes allows; `before <id>` older page; `<id>` is the investigation |
+| `/sentrook sessions` | OpenClaw sessions plus attended / unattended floors, allow-all, and quiet. The `key` column is what you pass to `sensitivity session <key>` / `quiet session <key>` / `allow-all session <key>`. Uses each session’s label or display name when the store has one |
 | `/sentrook allow-all [all\|session <key>] [on\|off]` | Skip future attended reviews. Bare = this session on. `all` = every attended session (`off` also clears every session flag). Sessions with their own attended floor ignore this |
 | `/sentrook quiet [all\|session <key>] <duration\|off>` | Same skip with a timer (`30m`, `2h`, `8h` max). Sessions with their own attended floor ignore this |
 | `/sentrook sensitivity [attended\|unattended\|session <key> attended\|unattended] [strict\|info\|warning\|critical\|default]` | Gateway or per-session floor (`lenient` = `info`). `default` on a session inherits the matching global floor. `critical` needs a trailing `confirm` |
 | `/sentrook feedback [submit\|off]` | Whether sanitized reviews are posted to the community corpus |
 | `/sentrook scan-error [review\|deny\|allow]` | What happens when Sentrook cannot scan. `allow` needs a trailing `confirm` |
-| `/sentrook allowlist [rm n]` | List / remove a 1-based local allowlist entry |
+| `/sentrook allowlist [add <id> \| rm n]` | List; `add` trusts the command from a history id; `rm` removes a 1-based local allowlist entry |
 | `/sentrook log [retention\|purge]` | Stats; `retention 7d` / `32MiB`; `purge confirm` / `purge all confirm` |
 
 Every command accepts `help` (or `?` / `-h`) as its first argument — options, scopes, and the value in effect right now. That in-chat page is the source of truth; this table is only the catalog. `/sentrook help` matches it.
@@ -460,9 +704,10 @@ session-action JSON limits, session-policy skip order, and iframe banner copy.
 
 Live: from `plugin/`, `npm run build`, then `openclaw plugins install . --force`,
 gateway restart, browser reload. Control UI on loopback or HTTPS. Prefer a
-**DM** for chat. Tick **N** native sidebar **Sentrook**, **R** both the iframe
-tab **and** standalone `http://127.0.0.1:18789/sentrook`, **S** `/sentrook` /
-`/approve`.
+**DM** for chat unless that guild/group is on the channel allowlist (see
+[Chat-channel slash commands](#chat-channel-slash-commands)). Tick **N** native
+sidebar **Sentrook**, **R** both the iframe tab **and** standalone
+`http://127.0.0.1:18789/sentrook`, **S** `/sentrook` / `/approve`.
 
 `Auto` means `npm test` already covers the copy or handler. Live is still
 required wherever a real tool call, Labs flag, or host chrome is involved.
@@ -510,19 +755,21 @@ is the **read-only** HTML with fixture data (`/unconfigured` for first-run).
 ### `/sentrook` chat
 
 Owner-only. After each mutation, `/sentrook policy` and native Settings should agree.
+`/whoami` in a DM, then in the room you use — see [Chat-channel slash commands](#chat-channel-slash-commands).
 
 | Command | Auto | Live |
 | --- | --- | --- |
 | `help` catalog; no “paste the iframe URL to save”. Each command help has Usage | slash | [ ] |
-| Bare snapshot + `More commands: /sentrook help`. `status` policy only. `policy` explains the current choice | slash | [ ] |
+| `/whoami` in a DM, then in the Discord/Slack/Telegram/WhatsApp room (room “not authorized” is OpenClaw channel admission) | — | [ ] |
+| Bare snapshot + `More commands: /sentrook help`. One pending = full review. `status` policy only. `policy` explains the current choice | slash | [ ] |
 | `pending` / `pending all` / `pending <id>`. One card = full detail. No AIRA ids | slash | [ ] |
 | `history` 8 (max 20) table with `id`; `all`; `gateway`; `before <id>`; `<id>` investigation | slash | [ ] |
-| `sessions` — `key` column for follow-up commands | slash | [ ] |
+| `sessions` — `key` column for follow-up commands; allow-all column | slash | [ ] |
 | `allow-all` (this session on); `allow-all all on\|off` (`off` clears session flags); `allow-all session <key> off` | slash | [ ] |
 | `quiet all 30m` / `off`; `quiet session <key> 2h`; `quiet all 9h` rejected | slash + cap | [ ] |
 | `sensitivity attended warning`; `unattended critical` needs `confirm`; `lenient` → info | slash | [ ] |
 | `feedback off\|submit`. `scan-error deny`; `allow` needs `confirm` | slash | [ ] |
-| `allowlist`; `allowlist rm n` | slash | [ ] |
+| `allowlist`; `allowlist add <id>`; `allowlist rm n` | slash | [ ] |
 | `log`; `retention 7d` / `32MiB`; `purge confirm`. Avoid `purge all confirm` unless wiping | slash | [ ] |
 | Unknown verb → catalog. Non-owner refused. Public-channel disclosure on `help` only | slash | [ ] |
 
@@ -551,9 +798,13 @@ host, so a remaining `review` is eligible.
 
 Never skipped: **`block`**, **scan errors**. Unattended (cron, heartbeat, and
 jobs they spawn) reviews ignore allow-all and quiet; they follow
-`unattendedSensitivity` instead. A subagent of an interactive session stays
-on the attended floor. A matching local allowlist entry can still skip an
-unattended review.
+`unattendedSensitivity` instead. If the unattended floor does not cover the
+review, Sentrook **blocks** (it does not ask OpenClaw for a plugin card —
+OpenClaw cannot deliver those on scheduled runs; see
+[openclaw#138853](https://github.com/openclaw/openclaw/issues/138853)). The
+block reason shows the command and `/sentrook allowlist add <id>`. A matching local
+allowlist entry can still skip an unattended review. A subagent of an
+interactive session stays on the attended floor.
 
 Unattended is classified from OpenClaw host signals, not from prompt text:
 `ctx.trigger` / `ctx.jobId` on agent-turn hooks, then the session key
@@ -605,16 +856,17 @@ gateway logs as `local allowlist hit`.
 | Kind | When | Match |
 | --- | --- | --- |
 | `script_bind` | Interpreter + a concrete local script file | Same interpreter + path + **content hash**; script rewrite ⇒ re-prompt |
-| `skeleton` | Other safe command shapes | Constrained argv skeleton; never bare `curl` / pipes / inline-eval |
+| `skeleton` | Other command shapes | Constrained argv skeleton. `curl`/`wget` keep scheme+host+path (query may change). Never pipes, `curl \| bash`, or a bare curl/wget with no URL. |
 
 ```bash
 openclaw sentrook allowlist path              # print resolved JSON path
 openclaw sentrook allowlist list              # show entries
+openclaw sentrook allowlist add <id>          # trust the command from a history event
 openclaw sentrook allowlist clear --yes       # wipe all entries
 ```
 
-Chat: `/sentrook allowlist` / `/sentrook allowlist rm n`. Dashboard: remove
-from the Allowlist section.
+Chat: `/sentrook allowlist` / `/sentrook allowlist add <id>` / `/sentrook allowlist rm n`.
+Dashboard: allowlist from a timeline review, or remove from the Allowlist section.
 
 ## Operator log
 
@@ -626,11 +878,11 @@ a product feature, not a maintainer debug dump.
 | Path | `$OPENCLAW_STATE_DIR/sentrook-operator.jsonl` (usually `~/.openclaw/sentrook-operator.jsonl`) |
 | Mode | `0600`, append-only |
 | Retention | 14 days and 32 MiB (whichever bites first). Tune with `operatorLog.*` or `/sentrook log retention` |
-| Payload | Full scrubbed command and result (no 500-char pack). Same secret/PII patterns as scan egress. Scan lines also store the turn prompt as `intent` when the host exposes it |
+| Payload | Full scrubbed command and result (no 500-char pack). Same secret/PII patterns as scan egress. Scan, resolution, and result lines store the turn prompt as `intent` when the host exposes it. Result excerpts are the inner tool output, not OpenClaw's JSON wrapper. Hosted `scan.log` is not duplicated here. |
 | Hook | Log I/O never fail-closes a tool call |
 
 It is **never** uploaded to Sentrook or Rookery. Opt-in `/feedback` is a
-separate, human-gated path. Disable with `SENTROOK_OPERATOR_LOG=0` or
+separate path for allow-once / deny / allow-always only. Disable with `SENTROOK_OPERATOR_LOG=0` or
 `operatorLog.enabled: false` if you want scans without on-disk history
 (history is empty after restart either way).
 
