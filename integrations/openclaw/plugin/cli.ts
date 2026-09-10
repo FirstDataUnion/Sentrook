@@ -12,6 +12,7 @@ import {
 } from "./configure.ts";
 import { formatVerifyReport, runVerify } from "./verify.ts";
 import { parseOnScanError } from "./scanErrorPolicy.ts";
+import { runAllowlistAdd, runAllowlistClear, runAllowlistList, runAllowlistPath } from "./allowlistCli.ts";
 
 /** Minimal commander-like surface OpenClaw passes to registerCli. */
 export interface CliProgram {
@@ -98,12 +99,12 @@ export async function runVerifyCommand(opts: VerifyCliOptions): Promise<void> {
 export function registerSentrookCli(program: CliProgram): void {
   const sentrook = program
     .command("sentrook")
-    .description("Sentrook hosted scan plugin helpers");
+    .description("Sentrook plugin helpers");
 
   sentrook
     .command("configure")
     .description(
-      "Configure Sentrook plugin for hosted scan (OIDC credentials + openclaw.json). Does not restart the gateway.",
+      "Configure Sentrook plugin (OIDC credentials + openclaw.json). Does not restart the gateway.",
     )
     .option("--non-interactive", "Skip prompts; require flags/env for credentials")
     .option("--timeout-ms <ms>", `Scan POST timeout in ms (default ${DEFAULT_TIMEOUT_MS})`)
@@ -130,7 +131,7 @@ export function registerSentrookCli(program: CliProgram): void {
   sentrook
     .command("verify")
     .description(
-      "Check plugin config, scan credentials, and hosted /health (no Python sentrook CLI required).",
+      "Check plugin config, scan credentials, and /health (no Python sentrook CLI required).",
     )
     .option("--state-dir <path>", "OpenClaw state dir (default: OPENCLAW_STATE_DIR / ~/.openclaw)")
     .option("--timeout-ms <ms>", "Health request timeout (default 8000)")
@@ -139,6 +140,59 @@ export function registerSentrookCli(program: CliProgram): void {
         await runVerifyCommand(opts);
       } catch (err) {
         console.error(`sentrook verify failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  const allowlist = sentrook
+    .command("allowlist")
+    .description("Local allow-always store (path, list, add from history, clear)");
+
+  allowlist
+    .command("path")
+    .description("Print the allowlist JSON path")
+    .option("--state-dir <path>", "OpenClaw state dir")
+    .option("--path <path>", "Override allowlist file path")
+    .action((opts: { stateDir?: string; path?: string }) => {
+      console.log(runAllowlistPath(opts));
+    });
+
+  allowlist
+    .command("list")
+    .description("Show local allow-always entries")
+    .option("--state-dir <path>", "OpenClaw state dir")
+    .option("--path <path>", "Override allowlist file path")
+    .action((opts: { stateDir?: string; path?: string }) => {
+      console.log(runAllowlistList(opts));
+    });
+
+  allowlist
+    .command("add <id>")
+    .description("Trust the command from an operator-log history id")
+    .option("--state-dir <path>", "OpenClaw state dir")
+    .option("--path <path>", "Override allowlist file path")
+    .action((id: string, opts: { stateDir?: string; path?: string }) => {
+      try {
+        const result = runAllowlistAdd(id, opts);
+        console.log(result.message);
+        if (!result.ok) process.exitCode = 1;
+      } catch (err) {
+        console.error(`sentrook allowlist add failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    });
+
+  allowlist
+    .command("clear")
+    .description("Wipe all local allow-always entries")
+    .option("--yes", "Required confirmation")
+    .option("--state-dir <path>", "OpenClaw state dir")
+    .option("--path <path>", "Override allowlist file path")
+    .action((opts: { yes?: boolean; stateDir?: string; path?: string }) => {
+      try {
+        console.log(runAllowlistClear(opts));
+      } catch (err) {
+        console.error(`sentrook allowlist clear failed: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
       }
     });

@@ -11,6 +11,7 @@ from typing import Any
 from .planir import IntentKind
 
 CRON_MARKER = re.compile(r"^\s*\[cron:", re.IGNORECASE)
+HEARTBEAT_MARKER = re.compile(r"^\s*\[heartbeat[:\]]", re.IGNORECASE)
 SUBAGENT_MARKER = re.compile(r"\[Subagent Context\]|\[Subagent Task\]", re.IGNORECASE)
 SYSTEM_MARKER = re.compile(r"^\s*\[system[:\]]", re.IGNORECASE)
 
@@ -25,6 +26,8 @@ def classify_intent(text: str) -> IntentKind:
     normalized = text.strip()
     if CRON_MARKER.search(normalized):
         return "cron"
+    if HEARTBEAT_MARKER.search(normalized):
+        return "heartbeat"
     if SUBAGENT_MARKER.search(normalized):
         return "subagent"
     if SYSTEM_MARKER.search(normalized):
@@ -174,6 +177,8 @@ def resolve_intent_kind(
         return "subagent"
     if is_cron_env(env) or plat == "cron":
         return "cron"
+    if plat == "heartbeat":
+        return "heartbeat"
     if intent_kind:
         return intent_kind
     if intent and intent.strip():

@@ -84,6 +84,7 @@ class PlanMetadataEcho(BaseModel):
     adapter: str
     agent_id: str | None = None
     session_id: str | None = None
+    session_key: str | None = None
     hook: str
 
 

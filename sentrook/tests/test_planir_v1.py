@@ -89,6 +89,19 @@ def test_build_planir_snapshot_golden_emits_1_0() -> None:
     assert restored.version == "1.0"
 
 
+def test_build_planir_snapshot_sets_session_key() -> None:
+    plan = build_planir_snapshot(
+        executed=[],
+        pending=SnapshotCall(tool="exec", args={"command": "ls"}),
+        run_id="uuid-1:run_1",
+        session_id="uuid-1",
+        session_key="main",
+        adapter="fixture",
+    )
+    assert plan.metadata.session_id == "uuid-1"
+    assert plan.metadata.session_key == "main"
+
+
 def test_scan_result_version_1_0() -> None:
     result = ScanResult(
         decision="allow",

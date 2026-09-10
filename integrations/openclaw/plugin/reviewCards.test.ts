@@ -1,0 +1,131 @@
+import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
+
+import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+import { ReviewCardStore, snapshotReviewPrior } from "./reviewCards.ts";
+
+const stores: ReviewCardStore[] = [];
+
+function sample(overrides: Partial<Parameters<ReviewCardStore["put"]>[0]> = {}) {
+  return {
+    eventId: "evt-1",
+    toolCallId: "t1",
+    tool: "exec",
+    args: { command: "curl https://x" },
+    scan: { decision: "review" },
+    timeoutMs: 60_000,
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  while (stores.length) stores.pop()?.shutdown();
+});
+
+describe("ReviewCardStore", () => {
+  it("put/get/take by toolCallId and eventId", () => {
+    const store = new ReviewCardStore();
+    stores.push(store);
+    store.put(sample());
+    assert.equal(store.size(), 1);
+    assert.equal(store.get("t1")?.eventId, "evt-1");
+    assert.equal(store.get("evt-1")?.toolCallId, "t1");
+    assert.equal(store.take("t1")?.eventId, "evt-1");
+    assert.equal(store.size(), 0);
+    assert.equal(store.get("t1"), undefined);
+    assert.equal(store.get("evt-1"), undefined);
+  });
+
+  it("replacing the same toolCallId drops the previous card", () => {
+    const store = new ReviewCardStore();
+    stores.push(store);
+    store.put(sample({ eventId: "old" }));
+    store.put(sample({ eventId: "new" }));
+    assert.equal(store.size(), 1);
+    assert.equal(store.get("t1")?.eventId, "new");
+    assert.equal(store.get("old"), undefined);
+  });
+
+  it("evicts after timeoutMs", async () => {
+    const store = new ReviewCardStore();
+    stores.push(store);
+    store.put(sample({ timeoutMs: 20 }));
+    assert.equal(store.size(), 1);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(store.size(), 0);
+  });
+
+  it("persists so another store instance can list the same card", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-pending-"));
+    const persistPath = join(dir, "sentrook-pending.json");
+    try {
+      const writer = new ReviewCardStore({ persistPath });
+      stores.push(writer);
+      writer.put(sample({ args: { command: "openclaw plugins update brave discord" } }));
+      const raw = readFileSync(persistPath, "utf8");
+      assert.match(raw, /openclaw plugins update brave discord/);
+      const reader = new ReviewCardStore({ persistPath });
+      stores.push(reader);
+      assert.equal(reader.list().length, 1);
+      assert.equal(reader.list()[0]?.args.command, "openclaw plugins update brave discord");
+      writer.take("t1");
+      assert.equal(reader.list().length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a joined plugin: id so another isolate can copy the full /approve command", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentrook-pending-id-"));
+    const persistPath = join(dir, "sentrook-pending.json");
+    try {
+      const writer = new ReviewCardStore({ persistPath });
+      stores.push(writer);
+      writer.put(sample());
+      writer.attachApprovalId("t1", "plugin:abc");
+      const reader = new ReviewCardStore({ persistPath });
+      stores.push(reader);
+      assert.equal(reader.list()[0]?.approvalId, "plugin:abc");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("snapshotReviewPrior", () => {
+  it("numbers from 1 and keeps command plus excerpt", () => {
+    const snap = snapshotReviewPrior([
+      { tool: "read", args: { path: "/tmp/a" }, resultText: "hello", resultOk: true },
+      { tool: "exec", args: { command: "ls" }, resultText: "notes.md", resultOk: false },
+    ]);
+    assert.equal(snap.priorOmitted, 0);
+    assert.equal(snap.priorSteps.length, 2);
+    assert.deepEqual(snap.priorSteps[0], {
+      seq: 1,
+      tool: "read",
+      command: '{"path":"/tmp/a"}',
+      ok: true,
+      excerpt: "hello",
+    });
+    assert.equal(snap.priorSteps[1]?.seq, 2);
+    assert.equal(snap.priorSteps[1]?.ok, false);
+    assert.equal(snap.priorSteps[1]?.command, "ls");
+  });
+
+  it("keeps the last 40 and continues seq after omitted", () => {
+    const executed = Array.from({ length: 42 }, (_, i) => ({
+      tool: "exec",
+      args: { command: `step-${i + 1}` },
+    }));
+    const snap = snapshotReviewPrior(executed);
+    assert.equal(snap.priorOmitted, 2);
+    assert.equal(snap.priorSteps.length, 40);
+    assert.equal(snap.priorSteps[0]?.seq, 3);
+    assert.equal(snap.priorSteps[0]?.command, "step-3");
+    assert.equal(snap.priorSteps.at(-1)?.seq, 42);
+    assert.equal(snap.priorSteps.at(-1)?.command, "step-42");
+  });
+});

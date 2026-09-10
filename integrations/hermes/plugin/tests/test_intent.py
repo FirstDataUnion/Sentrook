@@ -8,6 +8,7 @@ from ..intent import classify_intent, is_unattended, resolve_intent_kind
 
 def test_classify_intent_markers() -> None:
     assert classify_intent("[cron: nightly] backup") == "cron"
+    assert classify_intent("[heartbeat: tick] ping") == "heartbeat"
     assert classify_intent("[Subagent Task] do work") == "subagent"
     assert classify_intent("[system: init]") == "system"
     assert classify_intent("hello") == "user"

@@ -8,6 +8,8 @@ intended for open-source AI agents: it catches, reviews, and blocks dangerous ac
 before they happen, backed by an ever-evolving, community-grown library of attack patterns 
 and execution examples. Shared knowledge keeps the flock safe.
 
+Note: Sentrook is in early stages of development, and is currently available as a beta. Expect some rough edges, some friction, and frequent updates and improvements. If you'd like to use it in this time and help us with feedback and suggestions, it would be a massive help to our mission and the security of the open source agentic community as a whole! 
+
 ## What is Sentrook
 
 Sentrook is a trajectory scanner that runs against pending agent actions at
@@ -101,17 +103,31 @@ After this, Sentrook will begin scanning tool calls — allowing them, asking yo
 to review, or blocking where appropriate. A green verify means config + Identity
 token mint look good; a tool call in the logs is the end-to-end check.
 
+Owner-only `/sentrook` in chat lists status, pending reviews, and history.
+The same gateway also serves a panel at `/sentrook` (Control UI port, default
+18789). Details:
+[integrations/openclaw/README.md](integrations/openclaw/README.md#operator-dashboard).
+
 > [!IMPORTANT]
 > If you talk to your agent over a messaging channel (Discord, Slack, Telegram,
-> …), configure OpenClaw so **approval / review prompts are delivered on that
-> channel**. Sentrook `review` decisions become OpenClaw approval requests;
-> without channel delivery, those prompts may never reach you and the agent can
-> sit blocked waiting for a decision you never see.
+> WhatsApp, …), two OpenClaw settings matter as much as the plugin itself:
+>
+> 1. **Review cards** — Sentrook `review` decisions become OpenClaw approval
+>    requests. Those prompts must be delivered on the channel you actually use,
+>    or the agent sits blocked waiting for a decision you never see.
+> 2. **Slash commands** — `/sentrook`, `/approve`, `/status`, and the rest are
+>    OpenClaw commands. Being listed in `commands.ownerAllowFrom` is enough for
+>    a **DM**; a **server / group / channel** also needs that room on the
+>    channel allowlist (and often your user id on the guild/group sender list).
+>    Otherwise native Discord slash replies “not authorized” for *every*
+>    command, not only Sentrook.
 >
 > Official OpenClaw docs:
-> [Approval forwarding to chat channels](https://docs.openclaw.ai/tools/exec-approvals-advanced#approval-forwarding-to-chat-channels).  
-> Worked Discord example:
-> [Chat-channel approvals](integrations/openclaw/README.md#chat-channel-approvals).
+> [Approval forwarding to chat channels](https://docs.openclaw.ai/tools/exec-approvals-advanced#approval-forwarding-to-chat-channels) ·
+> [Slash commands](https://docs.openclaw.ai/tools/slash-commands).  
+> Worked examples:
+> [Chat-channel approvals](integrations/openclaw/README.md#chat-channel-approvals) ·
+> [Chat-channel slash commands](integrations/openclaw/README.md#chat-channel-slash-commands).
 
 Running under Docker Compose? Use the same commands inside the gateway
 container (`docker compose exec openclaw-gateway openclaw...`), then restart as
@@ -140,11 +156,13 @@ openclaw plugins uninstall sentrook-openclaw
 
 That removes the managed plugin install and the
 `plugins.entries.sentrook-openclaw` config entry. Scan credentials in
-`~/.openclaw/.env` (`SENTROOK_SCAN_*`) and the local allowlist
-(`~/.openclaw/sentrook-allowlist.json`) are left in place — delete those by hand
+`~/.openclaw/.env` (`SENTROOK_SCAN_*`), the local allowlist
+(`~/.openclaw/sentrook-allowlist.json`), and the operator log
+(`~/.openclaw/sentrook-operator.jsonl`) are left in place — delete those by hand
 if you want a full purge.
 
-Config reference, Docker notes, channel approvals, local allowlist, sanitisation /
+Config reference, Docker notes, channel approvals, slash-command auth,
+`/sentrook` commands, dashboard, operator log, local allowlist, sanitisation /
 privacy, non-interactive configure, CLI:
 [integrations/openclaw/README.md](integrations/openclaw/README.md).
 
@@ -168,7 +186,8 @@ hello@firstdataunion.org, or open an issue.
 
 ## Configuration
 
-OpenClaw plugin settings (what configure writes, timeouts, feedback, allowlist):
+OpenClaw plugin settings (what configure writes, timeouts, feedback, allowlist,
+sensitivity, operator log):
 [integrations/openclaw/README.md#configuration](integrations/openclaw/README.md#configuration).
 
 ### Self-host / local engine
@@ -268,6 +287,12 @@ evaluates the plan **in memory and does not store or log the execution plan** �
 the PlanIR body is not written to disk. (A separate ops decision log may record
 ids, outcome, and matched rule ids without the plan itself.)
 
+OpenClaw also keeps a **local operator log** on the gateway host (on by default,
+same secret/PII scrub, 14-day / 32 MiB retention). That file is never
+auto-uploaded to hosted Sentrook or Rookery. Chat `/sentrook` replies are
+scrubbed but still ordinary channel messages — prefer a DM or the gateway
+dashboard in a public room.
+
 **Community contribution (on by default, easy to opt out):** when you resolve a
 review (allow-once or deny) and contribution is on (`feedback.mode: "submit"`,
 the configure default), a sanitized copy of that outcome can be sent as a
@@ -279,7 +304,8 @@ steps the rule matched** (the pending action plus any prior steps that fired it)
 humans** before anything is published — nothing goes live automatically. Opt out
 in the wizard or with `feedback.mode: "off"`.
 
-More detail on scrubbing, logs, and channel approvals:
+More detail on scrubbing, the local operator log, channel approvals, and
+slash-command auth:
 [integrations/openclaw/README.md](integrations/openclaw/README.md) ·
 [integrations/hermes/README.md](integrations/hermes/README.md).
 
@@ -300,14 +326,20 @@ plugin, and DEMO format examples are what this repo ships.
 
 ## Roadmap
 
-Sentrook is in early stages of development, and we have big plans. No exact timelines 
-yet, but here is what we are looking at next:
+Sentrook is in early stages of development. We aren't publishing expected dates just yet, but here is what we plan to deliver next:
+
+**Easier to live with day to day**
+
+- Plain-language explanations of what a held tool call is trying to do — not just raw arguments
+- The same operator log, chat commands, and dashboard on Hermes and other adapters (OpenClaw has these today — [OpenClaw README](integrations/openclaw/README.md#operator-dashboard))
+
+**Available in more places**
 
 - More native agent adapters beyond OpenClaw and Hermes (Pi is high on the list)
-- More public documentation of the rule library format, so self-hosted setups get easier
+- Public documentation of the rule library format, to enable self-hosted setups.
 - An offline-only mode for people who want stronger locality and are willing to do a bit more setup
-- Static config checkers / audits built into each agent plugin to further harden the agent environment
-- Better channels for the community to contribute attack rules and related code
+- Static config checkers / audits in each plugin, to further harden the agent environment
+- Better channels for the community to contribute attack patterns and related code
 
 ## Contributing
 

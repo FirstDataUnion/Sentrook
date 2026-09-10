@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
 
-IntentKind = Literal["user", "cron", "subagent", "system"]
+from sentrook.planir.models import IntentKind
+
+__all__ = ["IntentKind", "classify_intent", "run_id_from_idempotency_key"]
 
 _CRON_PREFIX = re.compile(r"^\s*\[cron:", re.IGNORECASE)
+_HEARTBEAT_PREFIX = re.compile(r"^\s*\[heartbeat[:\]]", re.IGNORECASE)
 _SUBAGENT_MARKERS = re.compile(r"\[Subagent Context\]|\[Subagent Task\]", re.IGNORECASE)
 _SYSTEM_PREFIX = re.compile(r"^\s*\[system[:\]]", re.IGNORECASE)
 
@@ -19,6 +21,8 @@ def classify_intent(text: str | None) -> IntentKind | None:
     normalized = text.strip()
     if _CRON_PREFIX.search(normalized):
         return "cron"
+    if _HEARTBEAT_PREFIX.search(normalized):
+        return "heartbeat"
     if _SUBAGENT_MARKERS.search(normalized):
         return "subagent"
     if _SYSTEM_PREFIX.search(normalized):

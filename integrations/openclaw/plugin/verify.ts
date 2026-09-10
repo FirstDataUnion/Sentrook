@@ -9,6 +9,7 @@ import {
   CLIENT_ID_VAR,
   CLIENT_SECRET_VAR,
   PLUGIN_ID,
+  conversationAccessGranted,
   dotenvPath,
   openclawConfigPath,
   resolveStateDir,
@@ -46,18 +47,23 @@ function normalizeIssuer(url: string): string {
   return stripTrailingSlashes(url.trim()).toLowerCase();
 }
 
-function pluginEntryPresent(stateDir: string): boolean {
+function readPluginEntry(stateDir: string): Record<string, unknown> | undefined {
   const cfgPath = openclawConfigPath(stateDir);
-  if (!existsSync(cfgPath)) return false;
+  if (!existsSync(cfgPath)) return undefined;
   try {
     const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as {
-      plugins?: { entries?: Record<string, { enabled?: boolean }> };
+      plugins?: { entries?: Record<string, Record<string, unknown>> };
     };
     const entry = cfg.plugins?.entries?.[PLUGIN_ID];
-    return Boolean(entry && entry.enabled !== false);
+    return entry && typeof entry === "object" ? entry : undefined;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function pluginEntryPresent(stateDir: string): boolean {
+  const entry = readPluginEntry(stateDir);
+  return Boolean(entry && entry.enabled !== false);
 }
 
 export async function runVerify(opts: {
@@ -78,6 +84,15 @@ export async function runVerify(opts: {
     detail: entryOk
       ? `plugins.entries.${PLUGIN_ID} present in ${openclawConfigPath(stateDir)}`
       : `missing plugins.entries.${PLUGIN_ID} — run: openclaw sentrook configure`,
+  });
+
+  const conversationOk = conversationAccessGranted(readPluginEntry(stateDir));
+  checks.push({
+    name: "conversation access",
+    ok: conversationOk,
+    detail: conversationOk
+      ? `plugins.entries.${PLUGIN_ID}.hooks.allowConversationAccess is true`
+      : `missing hooks.allowConversationAccess — operator-log intent stays empty. Run: openclaw sentrook configure, then restart the gateway`,
   });
 
   const dotenv = dotenvPath(stateDir);

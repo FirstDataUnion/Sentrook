@@ -54,6 +54,8 @@ def _format_plan_section(result: ScanResult) -> str:
         parts.append(f"adapter={meta.adapter} hook={meta.hook}")
         if meta.session_id:
             parts.append(f"session={meta.session_id}")
+        if meta.session_key:
+            parts.append(f"session_key={meta.session_key}")
     if result.debug.intent:
         parts.append(f'intent="{result.debug.intent}"')
 

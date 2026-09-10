@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-IntentKind = Literal["user", "cron", "subagent", "system"]
+IntentKind = Literal["user", "cron", "heartbeat", "subagent", "system"]
 
 
 class ResultSummaryExtracted(BaseModel):
@@ -38,7 +38,12 @@ class PlanStep(BaseModel):
 class PlanMetadata(BaseModel):
     adapter: str = "fixture"
     agent_id: str | None = None
+    #: Episode / transcript id (OpenClaw ``sessionId``, Hermes ``session_id``).
     session_id: str | None = None
+    #: Durable host routing key (OpenClaw ``sessionKey``). Distinct from
+    #: ``session_id`` so ``/new`` episodes do not collapse, and so Telegram
+    #: peer ids are not used as harvest session identity. Hashed on hosted egress.
+    session_key: str | None = None
     hook: str = "before_tool_call"
     tool_call_id: str | None = None
     step_seq: int | None = None

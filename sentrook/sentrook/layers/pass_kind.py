@@ -37,7 +37,7 @@ class L2PassKind(str, Enum):
     # Negated child: rule matches only when the inner condition does not.
     NONE = "none"
 
-    # Plan-level intent classification (user, cron, subagent, system).
+    # Plan-level intent classification (user, cron, heartbeat, subagent, system).
     INTENT_KIND = "intent_kind"
 
     # Reserved: pending args reference a prior step's result_summary (not implemented).
