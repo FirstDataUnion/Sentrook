@@ -339,7 +339,7 @@ def _scrub_args(
                 path=child,
                 report=report,
                 pii=use_pii,
-                max_chars=rules.string_leaf_max_chars,
+                max_chars=rules.leaf_max_chars(key),
                 intensify=True,
                 field_key=key,
             )

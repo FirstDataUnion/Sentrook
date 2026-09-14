@@ -75,6 +75,13 @@ sanitize-gate: require-rookery
 		tests/engine/test_sanitize_replay_gate.py -q
 
 # OpenClaw: unit tests, then publish-surface (dist/index.js + openclaw.plugin.json in the tarball).
+# Regenerate the shared skeleton parity fixture from the TS source of truth.
+# Run both suites afterwards: a Python failure means the twin drifted.
+skeleton-golden:
+	node --experimental-strip-types fixtures/generate_skeleton_golden.ts > /tmp/skeleton_golden.jsonl
+	mv /tmp/skeleton_golden.jsonl fixtures/skeleton_golden.jsonl
+	@echo "regenerated fixtures/skeleton_golden.jsonl — now run: make test && make plugin-test"
+
 plugin-test:
 	cd integrations/openclaw/plugin && npm test && npm run pack:check
 

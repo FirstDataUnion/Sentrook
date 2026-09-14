@@ -15,6 +15,12 @@ limits:
   result_text_max_chars: 500
   intent_max_chars: 1000
   string_leaf_max_chars: 500
+  # Argv (command/cmd) budget. Larger than prose because Phase 1 `exec_shape`
+  # must parse it as real shell and a packed excerpt is not valid bash. Measured
+  # on corpus/: p99 of real commands is ~500, so 4000 covers the compound and
+  # heredoc tail. Truncation only — secret/PII scrubbing runs regardless of
+  # length. Mirrored in integrations/openclaw/plugin/sanitize.ts.
+  command_max_chars: 4000
 
 session_id:
   hash_prefix: "sess_"

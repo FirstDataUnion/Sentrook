@@ -23,6 +23,8 @@ export interface SanitizeRules {
   resultTextMaxChars: number;
   intentMaxChars: number;
   stringLeafMaxChars: number;
+  /** Argv budget — larger than prose so exec_shape can parse real shell. */
+  commandMaxChars: number;
   sessionHashPrefix: string;
   sessionHashHexChars: number;
   credentialField: RegExp;
@@ -54,6 +56,7 @@ export const DEFAULT_RULES: SanitizeRules = {
   resultTextMaxChars: 500,
   intentMaxChars: 1000,
   stringLeafMaxChars: 500,
+  commandMaxChars: 4000,
   sessionHashPrefix: "sess_",
   sessionHashHexChars: 12,
   // Bounded ``pass`` — see rules.yaml credential_field_pattern.
@@ -143,6 +146,15 @@ export function hashSessionId(sessionId: string, rules: SanitizeRules = DEFAULT_
 /** Prose arg keys and exec argv where late-payload attacks are common (mirror Python). */
 const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message", "command", "cmd"]);
 
+/**
+ * Argv keys, which get `commandMaxChars` instead of `stringLeafMaxChars`.
+ * Mirrors `COMMAND_LIKE_KEYS` in sentrook/sanitize/signal_excerpt.py. A packed
+ * excerpt is not valid shell, so argv must survive whole for the scanner to
+ * derive exec_shape from it; prose keeps the smaller budget because that is
+ * where secret/PII density is highest and nothing downstream parses it.
+ */
+const COMMAND_LIKE_KEYS = new Set(["command", "cmd"]);
+
 const URL_RE = /https?:\/\/[^\s"'<>]+/gi;
 const SENSITIVE_PATH_RE =
   /auth-profiles(?:\.json)?|openclaw-agent\.sqlite|database\.sqlite|~?\/\.ssh(?:\/[^\s"']*)?|MEMORY\.md|authorized_keys|\/etc\/[^\s"']+/gi;
@@ -156,6 +168,16 @@ const MARKER_PAD = 60;
 function isContentLikeKey(key: string | null | undefined): boolean {
   if (!key) return false;
   return CONTENT_LIKE_KEYS.has(key.toLowerCase());
+}
+
+export function isCommandLikeKey(key: string | null | undefined): boolean {
+  if (!key) return false;
+  return COMMAND_LIKE_KEYS.has(key.toLowerCase());
+}
+
+/** Truncation budget for one leaf, by key class. Mirrors SanitizeRules.leaf_max_chars. */
+export function leafMaxChars(rules: SanitizeRules, key: string | null | undefined): number {
+  return isCommandLikeKey(key) ? rules.commandMaxChars : rules.stringLeafMaxChars;
 }
 
 function signalBudgets(limit: number): { head: number; tail: number } {
@@ -507,10 +529,14 @@ function sanitizeMapping(
   const piiKeys = options.piiKeys ?? new Set<string>();
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(mapping)) {
+    // Argv keys carry the larger command budget; prose keys keep options.maxChars.
+    const keyMax = isCommandLikeKey(key)
+      ? Math.max(options.maxChars, rules.commandMaxChars)
+      : options.maxChars;
     out[key] = sanitizeValue(value, rules, {
       parentKey: key,
       pii: options.pii || piiKeys.has(key),
-      maxChars: options.maxChars,
+      maxChars: keyMax,
       piiKeys,
     });
   }
@@ -540,7 +566,7 @@ function sanitizeResultSummary(
         typeof item === "string"
           ? scrubString(item, rules, {
               pii: true,
-              maxChars: rules.stringLeafMaxChars,
+              maxChars: rules.commandMaxChars,
               key: "command",
             })
           : item,

@@ -25,9 +25,15 @@ from pydantic import BaseModel, Field
 from sentrook.adapters.snapshot import primary_pending_step
 from sentrook.planir import PlanIR
 from sentrook.result import ScanResult
+from sentrook.sanitize.rules import load_rules as _load_sanitize_rules
 from sentrook.sanitize.text import scrub_text
 
-COMMAND_EXCERPT_LIMIT = 120
+#: Bound to the sanitize argv budget rather than hardcoded, so the scan log can
+#: never silently truncate below what actually reaches the scanner. Raising
+#: ``limits.command_max_chars`` in ``sanitize/rules.yaml`` propagates here with
+#: no second edit. Research logs need the full argv to fingerprint and (Phase 1)
+#: to derive ``exec_shape``.
+COMMAND_EXCERPT_LIMIT = _load_sanitize_rules().command_max_chars
 
 
 class ScanMatchedRule(BaseModel):

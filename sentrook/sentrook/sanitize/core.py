@@ -188,9 +188,10 @@ def redact_value(
 ) -> Any:
     rules = rules or load_rules()
     if isinstance(value, str):
-        if len(value) > rules.string_leaf_max_chars:
+        limit = rules.leaf_max_chars(key)
+        if len(value) > limit:
             if is_content_like_key(key):
-                return pack_signal_excerpt(value, rules.string_leaf_max_chars, ellipsis="...")
+                return pack_signal_excerpt(value, limit, ellipsis="...")
             return rules.truncated
         return value
     if isinstance(value, dict):
@@ -207,10 +208,10 @@ def redact_args(args: dict[str, Any], rules: SanitizeRules | None = None) -> dic
     for key, value in args.items():
         if is_credential_field(key, rules):
             redacted[key] = rules.redacted
-        elif isinstance(value, str) and len(value) > rules.string_leaf_max_chars:
+        elif isinstance(value, str) and len(value) > rules.leaf_max_chars(key):
             if is_content_like_key(key):
                 redacted[key] = pack_signal_excerpt(
-                    value, rules.string_leaf_max_chars, ellipsis="..."
+                    value, rules.leaf_max_chars(key), ellipsis="..."
                 )
             else:
                 redacted[key] = rules.truncated
