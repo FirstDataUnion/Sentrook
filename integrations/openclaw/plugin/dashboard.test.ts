@@ -484,7 +484,7 @@ describe("handleSentrookHttp", () => {
         });
         assert.equal(preflight.status, 204);
         assert.equal(preflight.headers.get("access-control-allow-origin"), "null");
-        assert.equal(preflight.headers.get("access-control-allow-credentials"), "true");
+        assert.equal(preflight.headers.get("access-control-allow-credentials"), null);
         assert.match(preflight.headers.get("access-control-allow-headers") || "", /x-sentrook-access/i);
         assert.match(preflight.headers.get("access-control-allow-methods") || "", /POST/);
 
@@ -493,6 +493,14 @@ describe("handleSentrookHttp", () => {
         });
         assert.equal(denied.status, 401);
         assert.equal(denied.headers.get("access-control-allow-origin"), "null");
+        assert.equal(denied.headers.get("access-control-allow-credentials"), null);
+
+        const sameHost = await fetch(`${base}/sentrook/api/state`, {
+          headers: { origin: new URL(base).origin },
+        });
+        assert.equal(sameHost.status, 401);
+        assert.equal(sameHost.headers.get("access-control-allow-origin"), new URL(base).origin);
+        assert.equal(sameHost.headers.get("access-control-allow-credentials"), "true");
       },
       { injectAccess: false },
     );

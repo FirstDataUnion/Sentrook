@@ -186,13 +186,13 @@ function singleHeader(value: string | string[] | undefined): string | undefined 
   return undefined;
 }
 
-/** Echo only the same host as this request. Never reflect ``null`` or other sites. */
+/** Echo ``null`` (sandboxed tab) or the same host as this request. Never reflect other sites. */
 export function dashboardCorsAllowOrigin(
   origin: string | undefined,
   host: string | undefined,
 ): string | undefined {
   if (!origin) return undefined;
-  if (origin === "null") return undefined;
+  if (origin === "null") return "null";
   if (!host) return undefined;
   try {
     const url = new URL(origin);
@@ -211,7 +211,11 @@ export function applyDashboardCors(req: IncomingMessage, res: ServerResponse): v
   );
   if (!allowed) return;
   res.setHeader("access-control-allow-origin", allowed);
-  res.setHeader("access-control-allow-credentials", "true");
+  // ``Origin: null`` plus credentials lets any sandboxed iframe read cookie-backed
+  // responses. The Control UI tab authenticates with the path/query token instead.
+  if (allowed !== "null") {
+    res.setHeader("access-control-allow-credentials", "true");
+  }
   res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
   res.setHeader("access-control-allow-headers", `${ACCESS_HEADER}, content-type, accept`);
   res.setHeader("access-control-max-age", "600");
