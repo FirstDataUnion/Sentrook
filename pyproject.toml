@@ -61,6 +61,8 @@ packages = ["sentrook/sentrook"]
 
 [tool.hatch.build.force-include]
 "sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sentrook/sanitize/rules.yaml"
+"sentrook/sentrook/operator_log/schema.json" = "sentrook/sentrook/operator_log/schema.json"
+"sentrook/sentrook/operator_log/fixtures/golden.jsonl" = "sentrook/sentrook/operator_log/fixtures/golden.jsonl"
 
 [tool.pytest.ini_options]
 testpaths = ["sentrook/tests"]

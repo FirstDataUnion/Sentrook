@@ -66,6 +66,15 @@ def _session_id(**kwargs: Any) -> str:
     )
 
 
+def _planir_session_ids(**kwargs: Any) -> tuple[str | None, str | None]:
+    """Episode vs durable routing key for PlanIR metadata (not the map key)."""
+    episode = kwargs.get("session_id") or kwargs.get("task_id")
+    routing = kwargs.get("session_key")
+    session_id = str(episode).strip() if episode else None
+    session_key = str(routing).strip() if routing else None
+    return (session_id or None, session_key or None)
+
+
 def _resolve_run_id(event_run_id: Any, ctx_run_id: Any) -> str:
     return str(event_run_id or ctx_run_id or "run_1")
 
@@ -293,6 +302,7 @@ def on_pre_tool_call(tool_name: str, args: dict, **kwargs: Any) -> dict | None:
             subagent=st.subagent,
         )
 
+        session_id, session_key = _planir_session_ids(**kwargs)
         plan = build_planir_snapshot(
             executed=st.executed[-MAX_TRAJECTORY:],
             pending=pending_call,
@@ -300,7 +310,8 @@ def on_pre_tool_call(tool_name: str, args: dict, **kwargs: Any) -> dict | None:
             run_id=f"{sid}:{run_id}",
             intent=run_intent.intent if run_intent else None,
             intent_kind=intent_kind,
-            session_id=sid,
+            session_id=session_id,
+            session_key=session_key,
             agent_id=kwargs.get("agent_id"),
             tool_call_id=str(tool_call_id) if tool_call_id else None,
             step_seq=st.step_seq,

@@ -49,6 +49,7 @@ class ScanLogRecord(BaseModel):
     schema_version: str = "sentrook.scan.log/v1"
     adapter: str
     session_id: str | None = None
+    session_key: str | None = None
     run_id: str
     agent_id: str | None = None
     tool_call_id: str | None = None
@@ -71,7 +72,7 @@ class ScanLogRecord(BaseModel):
     scanner_version: str
     bundle_version: str | None = None
     intent: str | None = None
-    intent_kind: Literal["user", "cron", "subagent", "system"] | None = None
+    intent_kind: Literal["user", "cron", "heartbeat", "subagent", "system"] | None = None
 
     def to_json_line(self) -> str:
         return json.dumps(self.model_dump(mode="json"), ensure_ascii=False)
@@ -150,6 +151,7 @@ def build_log_record(
         mode=mode,
         adapter=meta.adapter,
         session_id=meta.session_id,
+        session_key=meta.session_key,
         run_id=result.plan.run_id,
         agent_id=meta.agent_id,
         tool_call_id=meta.tool_call_id,

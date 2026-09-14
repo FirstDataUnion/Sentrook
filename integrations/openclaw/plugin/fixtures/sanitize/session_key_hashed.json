@@ -1,0 +1,42 @@
+{
+  "input": {
+    "version": "1.0",
+    "run_id": "sess-raw-abc:run_9",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ls"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "session_id": "sess-raw-abc",
+      "session_key": "agent:main",
+      "hook": "before_tool_call"
+    }
+  },
+  "expected": {
+    "version": "1.0",
+    "run_id": "sess_6a6cbcb803b1:run_9",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ls"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "session_id": "sess_6a6cbcb803b1",
+      "session_key": "sess_f331f052e4ed",
+      "hook": "before_tool_call"
+    }
+  }
+}

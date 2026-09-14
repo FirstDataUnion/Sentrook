@@ -1,12 +1,16 @@
 {
   "id": "sentrook-openclaw",
   "name": "Sentrook OpenClaw",
-  "description": "Sentrook trajectory scanner (hosted HTTPS). Scans tool calls and can allow, require human approval, or block flagged actions.",
+  "description": "Sentrook trajectory scanner. Scans tool calls and can allow, require human approval, or block flagged actions.",
   "activation": {
     "onStartup": true,
     "onCapabilities": [
       "hook"
     ]
+  },
+  "controlUi": {
+    "entry": "dist/control-ui/index.js",
+    "styles": ["dist/control-ui/index.css"]
   },
   "configSchema": {
     "type": "object",
@@ -14,15 +18,15 @@
     "properties": {
       "apiKey": {
         "type": "string",
-        "description": "Shared scan API key (optional override). Preferred: SENTROOK_SCAN_API_KEY in ~/.openclaw/.env \u2014 do not use SecretRefs here (unresolved refs fail-close the gateway)."
+        "description": "Do not set here. Use the Sentrook tab setup form or SENTROOK_SCAN_API_KEY in ~/.openclaw/.env. SecretRefs in plugin JSON can fail-close the gateway."
       },
       "clientId": {
         "type": "string",
-        "description": "Optional override. Preferred: SENTROOK_SCAN_CLIENT_ID in ~/.openclaw/.env (or compose env_file)."
+        "description": "Do not set here. Use the Sentrook tab setup form or SENTROOK_SCAN_CLIENT_ID in ~/.openclaw/.env (or compose env_file)."
       },
       "clientSecret": {
         "type": "string",
-        "description": "Optional override. Preferred: SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env \u2014 avoid SecretRefs in openclaw.json (unresolved refs fail-close the gateway)."
+        "description": "Do not set here. Use the Sentrook tab setup form or SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env. SecretRefs in plugin JSON can fail-close the gateway."
       },
       "oidcIssuer": {
         "type": "string",
@@ -59,14 +63,14 @@
               "off",
               "submit"
             ],
-            "description": "Feedback for review resolutions (allow-once / deny). off = disabled. submit = POST sanitized candidates to hosted Sentrook /feedback (forwarded to Rookery). Configure wizard defaults to submit (community corpus contribution); opt out with feedback.mode=off or --contribute-corpus false."
+            "description": "Feedback for review resolutions (allow-once / deny). off = disabled. submit = POST sanitized candidates to Sentrook /feedback (forwarded to Rookery). Configure wizard defaults to submit (community corpus contribution); opt out with feedback.mode=off or --contribute-corpus false."
           }
         }
       },
       "approval": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Human approval timeouts for review decisions. Interactive and unattended reviews both default to 10 minutes and deny on timeout (OpenClaw 2.0 cap). Values above 600000 ms are capped.",
+        "description": "Human approval timeouts for interactive review cards. Unattended hosted reviews are blocked (OpenClaw cannot deliver plugin cards on cron; see github.com/openclaw/openclaw/issues/138853). Values above 600000 ms are capped.",
         "properties": {
           "interactiveTimeoutMs": {
             "type": "integer",
@@ -74,7 +78,7 @@
           },
           "scheduledTimeoutMs": {
             "type": "integer",
-            "description": "Review timeout for unattended cron/subagent runs (ms). Default 600000 (10 min). Capped at 10 min. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
+            "description": "Kept for compatibility. Unattended hosted reviews block immediately instead of waiting. Env: SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_MS."
           },
           "scheduledTimeoutBehavior": {
             "type": "string",
@@ -91,11 +95,57 @@
               "enum": [
                 "user",
                 "cron",
+                "heartbeat",
                 "subagent",
                 "system"
               ]
             },
-            "description": "Intent kinds that use the scheduled policy. Default [cron, subagent]."
+            "description": "Root intent kinds that use the scheduled (unattended) policy. Default [cron, heartbeat]. Subagents inherit the parent unless subagent is listed here."
+          }
+        }
+      },
+      "sensitivity": {
+        "type": "string",
+        "enum": [
+          "strict",
+          "info",
+          "warning",
+          "critical",
+          "lenient"
+        ],
+        "description": "Attended review floor after a review. strict always prompts. info / warning / critical auto-approve that severity and below (legacy lenient = info). Includes hard L2 reviews. Never skips block or scan-error. Env: SENTROOK_SENSITIVITY."
+      },
+      "unattendedSensitivity": {
+        "type": "string",
+        "enum": [
+          "strict",
+          "info",
+          "warning",
+          "critical",
+          "lenient"
+        ],
+        "description": "Cron/subagent review floor after a review. Same tokens as sensitivity. Default strict. Allow-all and quiet do not apply. Env: SENTROOK_UNATTENDED_SENSITIVITY."
+      },
+      "operatorLog": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Local operator JSONL (on by default). Path $OPENCLAW_STATE_DIR/sentrook-operator.jsonl. Env: SENTROOK_OPERATOR_LOG, SENTROOK_OPERATOR_LOG_PATH, SENTROOK_OPERATOR_LOG_MAX_DAYS, SENTROOK_OPERATOR_LOG_MAX_BYTES.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "When false, scanning still works but history is empty after restart. Env: SENTROOK_OPERATOR_LOG=0."
+          },
+          "path": {
+            "type": "string",
+            "description": "Override operator log path. Env: SENTROOK_OPERATOR_LOG_PATH."
+          },
+          "maxAgeDays": {
+            "type": "integer",
+            "description": "Drop lines older than this many days (default 14). 0 disables age purge. Env: SENTROOK_OPERATOR_LOG_MAX_DAYS."
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "Rotate the live file near this size (default 33554432). Env: SENTROOK_OPERATOR_LOG_MAX_BYTES."
           }
         }
       },
@@ -122,18 +172,16 @@
   },
   "uiHints": {
     "apiKey": {
-      "label": "Shared scan API key (optional)",
-      "sensitive": true,
-      "placeholder": "Prefer SENTROOK_SCAN_API_KEY in ~/.openclaw/.env"
+      "label": "Do not set — use Sentrook setup / .env",
+      "placeholder": "SENTROOK_SCAN_API_KEY in ~/.openclaw/.env"
     },
     "clientId": {
-      "label": "Scan OAuth client ID",
-      "placeholder": "Prefer SENTROOK_SCAN_CLIENT_ID in ~/.openclaw/.env"
+      "label": "Do not set — use Sentrook setup / .env",
+      "placeholder": "SENTROOK_SCAN_CLIENT_ID in ~/.openclaw/.env"
     },
     "clientSecret": {
-      "label": "Scan OAuth client secret",
-      "sensitive": true,
-      "placeholder": "Prefer SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env"
+      "label": "Do not set — use Sentrook setup / .env",
+      "placeholder": "SENTROOK_SCAN_CLIENT_SECRET in ~/.openclaw/.env"
     }
   }
 }

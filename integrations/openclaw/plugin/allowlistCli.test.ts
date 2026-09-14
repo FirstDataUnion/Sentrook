@@ -67,7 +67,7 @@ describe("allowlist CLI helpers", () => {
     const path = join(dir, "sentrook-allowlist.json");
     const out = formatAllowlistList(path);
     assert.match(out, /empty/);
-    assert.match(out, /Allowlist:/);
+    assert.match(out, /Allowlist/);
   });
 
   it("lists skeleton and script_bind entries", () => {
@@ -99,9 +99,12 @@ describe("allowlist CLI helpers", () => {
     });
     const out = runAllowlistList({ path });
     assert.match(out, /2 entries/);
-    assert.match(out, /skeleton: rg -n TODO src\//);
-    assert.match(out, /script: \/tmp\/helper\.py/);
-    assert.match(out, /sha256: abcdef012345…/);
+    assert.match(out, /match\s+rg -n TODO src\//);
+    assert.match(out, /file\s+\/tmp\/helper\.py/);
+    assert.match(out, /sha256\s+abcdef012345…/);
+    assert.match(out, /High-risk shell/);
+    assert.doesNotMatch(out, /AIRA-/);
+    assert.doesNotMatch(out, /rules=/);
   });
 
   it("clear requires --yes", () => {

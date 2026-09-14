@@ -7,6 +7,8 @@
  * ``scheduledTimeoutBehavior`` knob is ignored. Auth failures never fail-open.
  */
 
+import { withDashboardHint } from "./reviewCopy.ts";
+
 export type OnScanError = "allow" | "deny" | "review";
 export type ScanFailureKind = "rate_limited" | "http" | "timeout" | "network";
 
@@ -30,6 +32,7 @@ export interface ScanErrorHookResult {
     timeoutMs: number;
     timeoutBehavior: "allow" | "deny";
     allowedDecisions: Array<"allow-once" | "deny">;
+    pluginId?: string;
   };
 }
 
@@ -103,27 +106,36 @@ function detailSnippet(failure: ScanFailure, limit = 100): string {
   return `${raw.slice(0, Math.max(0, limit - 3))}...`;
 }
 
-export function scanErrorCopy(failure: ScanFailure): { title: string; description: string } {
+export function scanErrorCopy(
+  failure: ScanFailure,
+  eventId?: string,
+): { title: string; description: string } {
   if (failure.kind === "rate_limited") {
     return {
       title: "Sentrook rate limited",
-      description:
+      description: withDashboardHint(
         "Sentrook rate-limited this scan. Continue this tool without a security scan?",
+        eventId,
+      ),
     };
   }
   if (isAuthFailure(failure)) {
     return {
       title: "Sentrook authentication failed",
-      description:
+      description: withDashboardHint(
         "Sentrook could not authenticate to the scan service " +
-        "(configuration error — not a security policy block). " +
-        "Continue this tool without scanning?",
+          "(configuration error — not a security policy block). " +
+          "Continue this tool without scanning?",
+        eventId,
+      ),
     };
   }
   return {
     title: "Sentrook unreachable",
-    description:
+    description: withDashboardHint(
       "Sentrook is unreachable, would you like your agent to continue anyway without scanning?",
+      eventId,
+    ),
   };
 }
 
@@ -163,12 +175,13 @@ export function scanErrorToHookResult(
     onScanError: OnScanError;
     unattended: boolean;
     interactiveTimeoutMs: number;
+    eventId?: string;
   },
 ): ScanErrorHookResult | undefined {
   if (isAuthFailure(failure)) {
     const policy = opts.onScanError;
     if (policy === "review" && !opts.unattended) {
-      const copy = scanErrorCopy(failure);
+      const copy = scanErrorCopy(failure, opts.eventId);
       return {
         requireApproval: {
           title: copy.title,
@@ -177,6 +190,7 @@ export function scanErrorToHookResult(
           timeoutMs: opts.interactiveTimeoutMs,
           timeoutBehavior: "deny",
           allowedDecisions: ["allow-once", "deny"],
+          pluginId: "sentrook-openclaw",
         },
       };
     }
@@ -203,7 +217,7 @@ export function scanErrorToHookResult(
     };
   }
 
-  const copy = scanErrorCopy(failure);
+  const copy = scanErrorCopy(failure, opts.eventId);
   return {
     requireApproval: {
       title: copy.title,
@@ -212,6 +226,7 @@ export function scanErrorToHookResult(
       timeoutMs: opts.interactiveTimeoutMs,
       timeoutBehavior: "deny",
       allowedDecisions: ["allow-once", "deny"],
+      pluginId: "sentrook-openclaw",
     },
   };
 }

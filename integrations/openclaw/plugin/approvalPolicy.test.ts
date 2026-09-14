@@ -34,29 +34,43 @@ describe("resolveApprovalTiming", () => {
   const policy = resolveApprovalPolicyConfig({});
 
   it("uses interactive deny for user intents", () => {
-    const timing = resolveApprovalTiming(policy, "user", "check my email");
+    const timing = resolveApprovalTiming(policy, { intentText: "check my email" });
     assert.equal(timing.timeoutMs, DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS);
     assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.unattended, false);
   });
 
   it("uses scheduled deny for cron intents", () => {
-    const timing = resolveApprovalTiming(
-      policy,
-      "cron",
-      "[cron:abc] Daily Brief",
-    );
+    const timing = resolveApprovalTiming(policy, {
+      trigger: "cron",
+      intentText: "[cron:abc] Daily Brief",
+    });
     assert.equal(timing.timeoutMs, DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS);
     assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.unattended, true);
   });
 
-  it("uses scheduled deny for subagent intents", () => {
-    const timing = resolveApprovalTiming(
-      policy,
-      "subagent",
-      "[Subagent Task] run calendar sync",
-    );
+  it("uses scheduled deny for heartbeat intents", () => {
+    const timing = resolveApprovalTiming(policy, { trigger: "heartbeat" });
+    assert.equal(timing.unattended, true);
+    assert.equal(timing.timeoutBehavior, "deny");
+  });
+
+  it("uses interactive policy for a subagent of a user session", () => {
+    const timing = resolveApprovalTiming(policy, {
+      sessionKey: "agent:main:subagent:search",
+      parentSessionKey: "agent:main:main",
+      intentText: "[Subagent Task] run calendar sync",
+    });
+    assert.equal(timing.unattended, false);
+    assert.equal(timing.timeoutMs, DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS);
+  });
+
+  it("uses scheduled deny for a subagent of a cron session", () => {
+    const timing = resolveApprovalTiming(policy, {
+      sessionKey: "agent:main:subagent:nightly",
+      parentSessionKey: "agent:main:cron:abc:run:1",
+    });
     assert.equal(timing.unattended, true);
     assert.equal(timing.timeoutBehavior, "deny");
   });
@@ -66,11 +80,10 @@ describe("resolveApprovalTiming", () => {
       pluginApproval: { scheduledTimeoutBehavior: "allow" },
     });
     assert.equal(open.scheduledTimeoutBehavior, "allow");
-    const timing = resolveApprovalTiming(
-      open,
-      "cron",
-      "[cron:abc] Daily Brief",
-    );
+    const timing = resolveApprovalTiming(open, {
+      trigger: "cron",
+      intentText: "[cron:abc] Daily Brief",
+    });
     assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.unattended, true);
   });
@@ -79,14 +92,19 @@ describe("resolveApprovalTiming", () => {
     const narrowed = resolveApprovalPolicyConfig({
       pluginApproval: { scheduledIntentKinds: ["subagent"] },
     });
-    const timing = resolveApprovalTiming(
-      narrowed,
-      "cron",
-      "[cron:abc] Daily Brief",
-    );
+    const timing = resolveApprovalTiming(narrowed, {
+      trigger: "cron",
+      intentText: "[cron:abc] Daily Brief",
+    });
     assert.equal(timing.timeoutBehavior, "deny");
     assert.equal(timing.timeoutMs, DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS);
     assert.equal(timing.unattended, false);
+  });
+
+  it("treats an explicit unattended boolean as authoritative", () => {
+    const timing = resolveApprovalTiming(policy, true);
+    assert.equal(timing.unattended, true);
+    assert.equal(timing.timeoutMs, DEFAULT_SCHEDULED_APPROVAL_TIMEOUT_MS);
   });
 });
 
@@ -96,6 +114,7 @@ describe("resolveApprovalPolicyConfig", () => {
     assert.equal(policy.interactiveTimeoutMs, MAX_APPROVAL_TIMEOUT_MS);
     assert.equal(policy.scheduledTimeoutMs, MAX_APPROVAL_TIMEOUT_MS);
     assert.equal(policy.scheduledTimeoutBehavior, "deny");
+    assert.deepEqual(policy.scheduledIntentKinds, ["cron", "heartbeat"]);
   });
 
   it("reads env overrides and still parses deprecated allow", () => {

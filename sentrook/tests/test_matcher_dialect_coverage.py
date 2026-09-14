@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sentrook.config import MatcherConfig
+from sentrook.config import L3Policy, MatcherConfig, ScannerConfig
 from sentrook.layers.l1_index import build_l1_index, l1_candidates
 from sentrook.layers.l2_match import _args_match, evaluate_rule
 from sentrook.layers.tool_pattern import (
@@ -227,6 +227,7 @@ def test_scan_plan_end_to_end_with_glob_rule():
     result = scan_plan(_plan("mcp__u__write_file"), [rule])
     assert result.decision == "review"
     assert result.matched_rules[0].id == "T-SCAN-MCP"
+    assert result.risk == 0.75
     assert "mcp__u__write_file" in result.debug.plan_tools
     # Glob-only rule: exact L1 keys empty; still a candidate via glob path
     assert "T-SCAN-MCP" in result.debug.l1_candidate_ids
@@ -254,3 +255,30 @@ def test_pending_tool_pipe_or_reason_mentions_actual_tool():
     out = evaluate_rule(rule, _plan("process"), MatcherConfig())
     assert out.matched
     assert "process" in out.reason
+
+
+def test_review_risk_follows_rule_severity_not_match_confidence():
+    off = ScannerConfig(l3_policy=L3Policy.OFF)
+    medium = _rule(
+        {
+            "rule": "T-RISK-MED",
+            "meta": {"name": "m", "action": "review", "severity": "medium"},
+            "condition": {"pending_tool": "exec"},
+        }
+    )
+    critical = _rule(
+        {
+            "rule": "T-RISK-CRIT",
+            "meta": {"name": "c", "action": "review", "severity": "critical"},
+            "condition": {"pending_tool": "exec"},
+        }
+    )
+    med = scan_plan(_plan("exec"), [medium], off)
+    crit = scan_plan(_plan("exec"), [critical], off)
+    assert med.decision == "review"
+    assert med.risk == 0.5
+    assert crit.decision == "review"
+    assert crit.risk == 1.0
+    allow = scan_plan(_plan("read"), [medium], off)
+    assert allow.decision == "allow"
+    assert allow.risk == 0.0

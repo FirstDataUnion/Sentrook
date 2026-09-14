@@ -32,7 +32,7 @@ class PendingToolCondition(BaseModel):
 
 class IntentKindCondition(BaseModel):
     type: Literal["intent_kind"] = "intent_kind"
-    kind: Literal["user", "cron", "subagent", "system"]
+    kind: Literal["user", "cron", "heartbeat", "subagent", "system"]
 
 
 class SequenceSlot(BaseModel):

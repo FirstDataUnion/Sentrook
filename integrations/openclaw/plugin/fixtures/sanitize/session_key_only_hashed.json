@@ -1,0 +1,40 @@
+{
+  "input": {
+    "version": "1.0",
+    "run_id": "main:run_9",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ls"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "session_key": "main",
+      "hook": "before_tool_call"
+    }
+  },
+  "expected": {
+    "version": "1.0",
+    "run_id": "sess_0d6e4079e367:run_9",
+    "steps": [
+      {
+        "id": "s1",
+        "tool": "exec",
+        "status": "pending",
+        "args": {
+          "command": "ls"
+        }
+      }
+    ],
+    "metadata": {
+      "adapter": "openclaw",
+      "session_key": "sess_0d6e4079e367",
+      "hook": "before_tool_call"
+    }
+  }
+}

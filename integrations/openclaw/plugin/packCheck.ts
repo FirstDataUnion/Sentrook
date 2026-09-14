@@ -133,7 +133,7 @@ export function runPackCheck(): void {
     version: string;
     main: string;
     files: string[];
-    openclaw?: { runtimeExtensions?: string[] };
+    openclaw?: { runtimeExtensions?: string[]; controlUi?: string };
   };
 
   assert.equal(pkg.name, "@firstdataunion/sentrook-openclaw");
@@ -153,6 +153,7 @@ export function runPackCheck(): void {
     id?: string;
     name?: string;
     activation?: { onStartup?: boolean; onCapabilities?: string[] };
+    controlUi?: { entry?: string; styles?: string[] };
   };
   assert.equal(manifest.id, "sentrook-openclaw");
   assert.equal(typeof manifest.name, "string");
@@ -164,6 +165,16 @@ export function runPackCheck(): void {
   assert.ok(
     manifest.activation?.onCapabilities?.includes("hook"),
     "openclaw.plugin.json must activate on the hook capability",
+  );
+
+  assert.ok(
+    pkg.openclaw?.controlUi === "./control-ui.ts",
+    "package.json openclaw.controlUi must point at the native page source",
+  );
+  assert.equal(manifest.controlUi?.entry, "dist/control-ui/index.js");
+  assert.ok(
+    manifest.controlUi?.styles?.includes("dist/control-ui/index.css"),
+    "openclaw.plugin.json controlUi.styles must include the native page CSS",
   );
 
   const distJs = join(root, "dist/index.js");
@@ -184,6 +195,24 @@ export function runPackCheck(): void {
     "dist/index.js must register before_tool_call (bundle looks incomplete)",
   );
 
+  const uiJs = join(root, "dist/control-ui/index.js");
+  const uiCss = join(root, "dist/control-ui/index.css");
+  try {
+    const uiBuf = readFileSync(uiJs);
+    assert.ok(uiBuf.length > 512, "dist/control-ui/index.js is empty or implausibly small");
+    assert.ok(
+      uiBuf.toString("utf8").includes("sentrook-openclaw"),
+      "native Control UI bundle must identify the plugin",
+    );
+    assert.ok(readFileSync(uiCss).length > 256, "dist/control-ui/index.css is empty");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error("build did not produce dist/control-ui/index.js and index.css");
+    }
+    throw err;
+  }
+
   const packed = spawnSync("npm", ["pack", "--dry-run", "--json", "--loglevel=error"], {
     cwd: root,
     encoding: "utf8",
@@ -199,6 +228,8 @@ export function runPackCheck(): void {
 
   const required = [
     "dist/index.js",
+    "dist/control-ui/index.js",
+    "dist/control-ui/index.css",
     "openclaw.plugin.json",
     "package.json",
     "index.ts",

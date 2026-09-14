@@ -1,8 +1,8 @@
 /**
- * CLI helpers for `openclaw sentrook allowlist path|list|clear`.
+ * CLI helpers for `openclaw sentrook allowlist path|list|add|clear`.
  */
 
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 
 import {
   openclawConfigPath,
@@ -15,7 +15,9 @@ import {
   resolveAllowlistConfig,
   saveAllowlist,
 } from "./localAllowlist.ts";
-import { readFileSync } from "node:fs";
+import { addAllowlistFromHistory } from "./allowlistFromLog.ts";
+import { resolveOperatorLogConfig } from "./operatorLog.ts";
+import { ruleMeanings } from "./dashboardPresent.ts";
 
 export interface AllowlistCliOptions {
   path?: string;
@@ -57,34 +59,34 @@ export function resolveAllowlistCliPath(opts: AllowlistCliOptions = {}): string 
 }
 
 export function formatAllowlistEntry(entry: AllowlistEntry, index: number): string {
-  const rules = entry.matched_rule_ids.join(", ") || "(none)";
+  const meanings = ruleMeanings(entry.matched_rule_ids);
+  const kind = entry.kind === "skeleton" ? "command" : entry.kind === "script_bind" ? "script" : entry.kind;
+  const why = meanings.length ? `  ${meanings.join("; ")}` : "";
   const lines = [
-    `[${index}] ${entry.kind}  tool=${entry.tool}  rules=${rules}`,
-    `    created: ${entry.created_at}`,
+    `[${index}] ${kind}  tool=${entry.tool}${why}`,
+    `    created   ${entry.created_at}`,
   ];
   if (entry.kind === "skeleton") {
-    lines.push(`    skeleton: ${entry.skeleton}`);
+    lines.push(`    match     ${entry.skeleton}`);
   } else {
-    lines.push(`    interpreter: ${entry.interpreter}`);
-    lines.push(`    script: ${entry.script_path}`);
-    lines.push(`    sha256: ${entry.content_sha256.slice(0, 12)}…`);
-    lines.push(
-      `    args: ${entry.args_skeleton || "(none)"}`,
-    );
+    lines.push(`    interpreter  ${entry.interpreter}`);
+    lines.push(`    file         ${entry.script_path}`);
+    lines.push(`    sha256       ${entry.content_sha256.slice(0, 12)}…`);
+    lines.push(`    args         ${entry.args_skeleton || "(none)"}`);
   }
   return lines.join("\n");
 }
 
 export function formatAllowlistList(path: string): string {
   const file = loadAllowlist(path);
-  const header = `Allowlist: ${path}`;
   if (!existsSync(path) || file.entries.length === 0) {
-    return `${header}\n(empty — no allow-always entries)`;
+    return `Allowlist\n  ${path}\n  empty — no allow-always entries\n  Add one: /sentrook allowlist add <id>   (id from /sentrook history)`;
   }
   const body = file.entries
     .map((entry, i) => formatAllowlistEntry(entry, i + 1))
     .join("\n\n");
-  return `${header}\n${file.entries.length} entr${file.entries.length === 1 ? "y" : "ies"}\n\n${body}`;
+  const count = `${file.entries.length} entr${file.entries.length === 1 ? "y" : "ies"}`;
+  return `Allowlist\n  ${path}\n  ${count}\n\n${body}`;
 }
 
 export function clearAllowlistFile(path: string): { cleared: number; path: string } {
@@ -116,6 +118,26 @@ export function runAllowlistClear(opts: AllowlistCliOptions = {}): string {
     return `Allowlist already empty (no file at ${path})`;
   }
   return `Cleared ${cleared} entr${cleared === 1 ? "y" : "ies"} from ${path}`;
+}
+
+export function runAllowlistAdd(id: string, opts: AllowlistCliOptions = {}) {
+  const path = resolveAllowlistCliPath(opts);
+  const stateDir = opts.stateDir?.trim() || resolveStateDir();
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCLAW_STATE_DIR: stateDir,
+  };
+  const pluginCfg = readPluginAllowlistConfig(stateDir);
+  const allowlist = resolveAllowlistConfig(
+    { ...(pluginCfg ?? {}), allowlist: { ...(asAllowlist(pluginCfg?.allowlist)), path } },
+    env,
+  );
+  const log = resolveOperatorLogConfig(env, pluginCfg);
+  return addAllowlistFromHistory(log, allowlist, id);
+}
+
+function asAllowlist(raw: unknown): Record<string, unknown> {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
 /** Unused helper kept for tests that want hard-delete semantics. */

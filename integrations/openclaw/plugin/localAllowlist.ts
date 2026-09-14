@@ -7,6 +7,8 @@
  *   with narrow-volatile trailing args (dates / UUIDs / ints only)
  *
  * Never overrides Sentrook `block`. Never skips /scan. Never stores bare interpreters.
+ * curl/wget keep scheme+host+path (query/userinfo dropped) so a trusted fetch is
+ * not collapsed to ``curl <url>``. Pipes and curl|bash stay refused.
  */
 
 import { createHash } from "node:crypto";
@@ -15,6 +17,7 @@ import { dirname, isAbsolute, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 
 import { lastPendingStep, type PlanIR } from "./planir.ts";
+import { scrubSecrets } from "./sanitize.ts";
 
 export type AllowlistEntryKind = "skeleton" | "script_bind";
 
@@ -118,6 +121,9 @@ const BARE_DANGEROUS_BINS = new Set([
   "lua",
   "osascript",
 ]);
+
+/** Fetch bins whose URL is the identity of the action, not a volatile. */
+const FETCH_BINS = new Set(["curl", "wget"]);
 
 export function resolveAllowlistConfig(
   pluginCfg: Record<string, unknown> | undefined,
@@ -366,6 +372,29 @@ function skeletonizeScriptArgToken(token: string): string {
   return token;
 }
 
+function pinHttpUrl(token: string): string | undefined {
+  if (!/^https?:\/\//i.test(token)) return undefined;
+  try {
+    const url = new URL(token);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    return `${url.origin}${url.pathname || "/"}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function commandFingerprint(skeleton: string): string {
+  return scrubSecrets(skeleton).replace(/\s+/g, " ").trim();
+}
+
+/** Skeleton used for record + match (fetch URLs pinned, secrets scrubbed). */
+export function allowlistCommandSkeleton(command: string): string | null {
+  const skeleton = skeletonizeCommand(command);
+  if (!skeleton) return null;
+  const fingerprint = commandFingerprint(skeleton);
+  return fingerprint || null;
+}
+
 /** Broader volatiles for general command skeletons. */
 export function skeletonizeCommand(command: string): string | null {
   if (isHighRiskCommand(command)) return null;
@@ -374,10 +403,12 @@ export function skeletonizeCommand(command: string): string | null {
   if (tokens.length === 0) return null;
 
   const bin = basenameOf(tokens[0]).toLowerCase();
+  const pinHttpUrls = FETCH_BINS.has(bin);
+  const mapRest = (token: string) => skeletonizeGeneralToken(token, { pinHttpUrls });
   // Bare dangerous binary with no further literal structure beyond volatiles
   if (BARE_DANGEROUS_BINS.has(bin) || normalizeInterpreter(tokens[0])) {
     // Interpreters / dangerous bins need remaining literal structure after skeletonize
-    const rest = tokens.slice(1).map(skeletonizeGeneralToken);
+    const rest = tokens.slice(1).map(mapRest);
     const literalRest = rest.filter(
       (t) => !t.startsWith("<") && !t.endsWith(">") && t !== "<file>",
     );
@@ -385,10 +416,14 @@ export function skeletonizeCommand(command: string): string | null {
     return [tokens[0], ...rest].join(" ");
   }
 
-  return tokens.map(skeletonizeGeneralToken).join(" ");
+  return tokens.map((token) => skeletonizeGeneralToken(token)).join(" ");
 }
 
-function skeletonizeGeneralToken(token: string): string {
+function skeletonizeGeneralToken(token: string, opts: { pinHttpUrls?: boolean } = {}): string {
+  if (opts.pinHttpUrls) {
+    const pinned = pinHttpUrl(token);
+    if (pinned) return pinned;
+  }
   if (token.startsWith("-") && !ISO_DATE_RE.test(token)) return token;
   if (URL_RE.test(token)) return token.startsWith("http") ? "<url>" : token;
   if (EMAIL_RE.test(token)) return "<email>";
@@ -621,9 +656,9 @@ export function matchAllowlist(
     if (parseBindableScript(command)) {
       return { hit: false, reason: "script form requires script_bind hit" };
     }
-    skeleton = skeletonizeCommand(command);
+    skeleton = allowlistCommandSkeleton(command);
   } else {
-    skeleton = skeletonizeCommand(primary) ?? primary;
+    skeleton = allowlistCommandSkeleton(primary) ?? commandFingerprint(primary);
   }
   if (!skeleton) return { hit: false, reason: "unsafe or empty skeleton" };
 
@@ -698,7 +733,7 @@ export function recordAllowAlways(
       if (parseBindableScript(command)) {
         return { status: "skipped", reason: "script bind preferred but unavailable" };
       }
-      const skeleton = skeletonizeCommand(command);
+      const skeleton = allowlistCommandSkeleton(command);
       if (!skeleton) {
         return { status: "skipped", reason: "refused bare or empty skeleton" };
       }
@@ -713,7 +748,7 @@ export function recordAllowAlways(
     } else {
       const primary = pendingPrimaryText(plan);
       if (!primary) return { status: "skipped", reason: "no pending primary" };
-      const skeleton = skeletonizeCommand(primary) ?? primary;
+      const skeleton = allowlistCommandSkeleton(primary) ?? commandFingerprint(primary);
       entry = {
         kind: "skeleton",
         tool,

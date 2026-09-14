@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from .sanitize import pack_signal_excerpt
 
-IntentKind = Literal["user", "cron", "subagent", "system"]
+IntentKind = Literal["user", "cron", "heartbeat", "subagent", "system"]
 Json = dict[str, Any]
 
 EXEC_COMMAND_ALIASES = ("cmd", "shell", "script", "line", "code", "data")
@@ -64,6 +64,41 @@ INJECTION_MARKERS = __import__("re").compile(
 
 EXCERPT_LIMIT = 500
 EXTRACTED_LIMIT = 20
+
+
+def _is_filesystem_path(value: str) -> bool:
+    if len(value) < 2 or value == "/":
+        return False
+    re = __import__("re")
+    if re.match(r"^/\d{1,3}(?:\.\d{1,3}){3}\b", value):
+        return False
+    parts = [part for part in value.split("/") if part]
+    if not parts:
+        return False
+    last = parts[-1]
+    if re.match(r"^\d+(?:\.\d+)?[kKmM]?$", last):
+        return False
+    if len(parts) == 1:
+        return bool(re.search(r"\.[A-Za-z][A-Za-z0-9]{0,7}$", last))
+    if re.match(r"^[A-Za-z0-9-]+-\d+\.\d+$", last):
+        return False
+    return True
+
+
+def _extracted_paths(body: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in PATH_RE.findall(body):
+        path = match.rstrip(".,;:")
+        if not _is_filesystem_path(path) or path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+        if len(out) >= EXTRACTED_LIMIT:
+            break
+    return out
+
+
 REDACTED = "[REDACTED]"
 TRUNCATED = "[TRUNCATED]"
 STRING_LEAF_MAX = 500
@@ -112,6 +147,7 @@ class PlanMetadata:
     hook: str
     agent_id: str | None = None
     session_id: str | None = None
+    session_key: str | None = None
     tool_call_id: str | None = None
     step_seq: int | None = None
     batch_size: int | None = None
@@ -264,7 +300,7 @@ def build_result_summary(
     excerpt = body[:EXCERPT_LIMIT]
     truncated = len(body) > EXCERPT_LIMIT
     urls = list(dict.fromkeys(URL_RE.findall(body)))[:EXTRACTED_LIMIT]
-    paths = list(dict.fromkeys(PATH_RE.findall(body)))[:EXTRACTED_LIMIT]
+    paths = _extracted_paths(body)
     commands = [str(command)] if command else []
     return ResultSummary(
         ok=ok,
@@ -344,6 +380,7 @@ def build_planir_snapshot(
     intent: str | None = None,
     intent_kind: IntentKind | None = None,
     session_id: str | None = None,
+    session_key: str | None = None,
     agent_id: str | None = None,
     adapter: str = "hermes",
     hook: str = "pre_tool_call",
@@ -382,6 +419,7 @@ def build_planir_snapshot(
             adapter=adapter,
             agent_id=agent_id or "main",
             session_id=session_id,
+            session_key=session_key,
             hook=hook,
             tool_call_id=tool_call_id,
             step_seq=step_seq,
@@ -416,6 +454,7 @@ def planir_to_dict(plan: PlanIR) -> dict[str, Any]:
             "adapter": meta.adapter,
             "agent_id": meta.agent_id,
             "session_id": meta.session_id,
+            "session_key": meta.session_key,
             "hook": meta.hook,
             "tool_call_id": meta.tool_call_id,
             "step_seq": meta.step_seq,

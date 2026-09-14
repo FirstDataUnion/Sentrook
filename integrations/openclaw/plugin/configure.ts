@@ -99,6 +99,24 @@ export function openclawConfigPath(stateDir: string): string {
   return path.join(stateDir, "openclaw.json");
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** OpenClaw host gate for before_prompt_build on non-bundled plugins. */
+export function conversationAccessGranted(entry: unknown): boolean {
+  if (!isPlainObject(entry)) return false;
+  const hooks = entry.hooks;
+  return isPlainObject(hooks) && hooks.allowConversationAccess === true;
+}
+
+export function mergeConversationAccessHooks(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  const hooks = isPlainObject(entry.hooks) ? { ...entry.hooks } : {};
+  return { ...entry, hooks: { ...hooks, allowConversationAccess: true } };
+}
+
 export function buildPluginEntryConfig(answers: ConfigureAnswers): Record<string, unknown> {
   // Credentials intentionally omitted from openclaw.json. Unresolved SecretRefs on an
   // enabled plugin fail-close the entire gateway; scan auth is read from
@@ -125,6 +143,9 @@ export function buildConfigPatchDocument(answers: ConfigureAnswers): string {
     entries: {
       "${PLUGIN_ID}": {
         enabled: true,
+        hooks: {
+          allowConversationAccess: true
+        },
         config: ${configJson}
       }
     }
@@ -141,7 +162,7 @@ function errnoCode(err: unknown): string | undefined {
 }
 
 /** Open path once so a symlink swap cannot retarget the later read/write (TOCTOU). */
-function openReadWriteSync(
+export function openReadWriteSync(
   filePath: string,
   opts: { create: boolean; mode?: number },
 ): { fd: number; created: boolean } | null {
@@ -166,7 +187,7 @@ function openReadWriteSync(
   }
 }
 
-function writeAllFdSync(fd: number, text: string): void {
+export function writeAllFdSync(fd: number, text: string): void {
   const buf = Buffer.from(text, "utf8");
   ftruncateSync(fd, buf.byteLength);
   writeSync(fd, buf, 0, buf.byteLength, 0);
@@ -249,8 +270,8 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
   const dotenv = dotenvPath(stateDir);
   upsertDotenvVar(dotenv, CLIENT_ID_VAR, clientId);
   upsertDotenvVar(dotenv, CLIENT_SECRET_VAR, clientSecret);
-  // Pin issuer to the Identity env that matches this plugin build's SCAN_BASE_URL.
-  upsertDotenvVar(dotenv, OIDC_ISSUER_VAR, DEFAULT_OIDC_ISSUER);
+  // Identity issuer stays the plugin default (DEFAULT_OIDC_ISSUER). Do not write
+  // SENTROOK_OIDC_ISSUER unless an operator set it themselves.
 
   // Extra write target: compose project .env (Docker). Only works if the path is
   // visible inside this process (host-side configure, or a mounted OPENCLAW_DIR).
@@ -258,7 +279,6 @@ export function writeScanCredentials(stateDir: string, answers: ConfigureAnswers
   if (extra && path.resolve(extra) !== path.resolve(dotenv)) {
     upsertDotenvVar(extra, CLIENT_ID_VAR, clientId);
     upsertDotenvVar(extra, CLIENT_SECRET_VAR, clientSecret);
-    upsertDotenvVar(extra, OIDC_ISSUER_VAR, DEFAULT_OIDC_ISSUER);
   }
 
   return dotenv;
@@ -427,10 +447,11 @@ function mergeOpenclawJsonFallback(stateDir: string, answers: ConfigureAnswers):
     for (const key of ["clientId", "clientSecret", "apiKey", "mode", "sanitization", "url"] as const) {
       delete prevConfig[key];
     }
-    entries[PLUGIN_ID] = {
+    entries[PLUGIN_ID] = mergeConversationAccessHooks({
+      ...(prev ?? {}),
       enabled: true,
       config: { ...prevConfig, ...buildPluginEntryConfig(answers) },
-    };
+    });
     plugins.entries = entries;
     cfg.plugins = plugins;
     writeAllFdSync(fd, `${JSON.stringify(cfg, null, 2)}\n`);
@@ -568,7 +589,7 @@ export async function collectAnswersInteractive(
     io.log("");
     io.log("==> Community corpus");
     io.log("    When you allow-once or deny a Sentrook review, a sanitized trajectory");
-    io.log("    example can be submitted to the community corpus (via hosted Sentrook");
+    io.log("    example can be submitted to the community corpus (via Sentrook");
     io.log("    → Rookery). Humans still approve before anything is published.");
     io.log("    Secrets/PII are redacted; you can change this later in openclaw.json.");
     contributeCorpus = await io.confirm(
@@ -583,7 +604,7 @@ export async function collectAnswersInteractive(
   if (!clientId || !clientSecret) {
     io.log("");
     io.log("==> Scan auth (OIDC client credentials)");
-    io.log("    To use the hosted Sentrook instance, you need a free FIDU membership");
+    io.log("    To use Sentrook, you need a free FIDU membership");
     io.log("    with a Sentrook OAuth client.");
     io.log("");
     io.log(`    Visit ${DEFAULT_IDENTITY_URL} , and log in or create an`);
@@ -603,7 +624,7 @@ export async function collectAnswersInteractive(
     io.log("==> When Sentrook cannot scan (unreachable, timeout, rate-limit, auth)");
     io.log("    allow  = continue without scanning (auth failures still block)");
     io.log("    deny   = block the tool");
-    io.log("    review = ask you first (recommended for hosted HTTPS)");
+    io.log("    review = ask you first (recommended)");
     const raw = await io.prompt(`onScanError [${onScanError}]`, onScanError);
     onScanError = parseOnScanError(raw, onScanError);
   }
