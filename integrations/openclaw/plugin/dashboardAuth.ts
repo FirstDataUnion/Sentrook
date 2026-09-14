@@ -8,11 +8,13 @@
  * and a custom header is not sent by cross-site forms, so a separate CSRF
  * session is not used.
  *
- * The Control UI tab is a sandboxed iframe (``Origin: null``). Fetches from
- * that page are cross-origin, so API responses allow that opaque origin (and
- * same-host) and OPTIONS is answered without the token. Arbitrary sites are
- * not reflected. POSTs use ``text/plain`` JSON so a custom-header preflight
- * is not required if the gateway never forwards OPTIONS.
+ * The Control UI tab is a sandboxed iframe (``Origin: null``). ``null`` is
+ * attacker-spoofable (any sandboxed iframe or ``data:`` page), so it is not a
+ * CORS allow-origin. Same-host is allowed; other sites are not reflected.
+ * OPTIONS is answered without the token. The iframe page is read-only and
+ * does not fetch; mutations go through the native Control UI, chat, or CLI.
+ * POSTs use ``text/plain`` JSON so a custom-header preflight is not required
+ * if the gateway never forwards OPTIONS.
  *
  * Control UI remounts plugin tabs by pathname (query is stripped). The tab
  * path is therefore ``/sentrook/tab/<token>``. Mutations POST that exact
@@ -186,13 +188,13 @@ function singleHeader(value: string | string[] | undefined): string | undefined 
   return undefined;
 }
 
-/** Echo ``null`` (sandboxed tab) or the same host as this request. Never reflect other sites. */
+/** Echo only the same host as this request. Never reflect ``null`` or other sites. */
 export function dashboardCorsAllowOrigin(
   origin: string | undefined,
   host: string | undefined,
 ): string | undefined {
   if (!origin) return undefined;
-  if (origin === "null") return "null";
+  if (origin === "null") return undefined;
   if (!host) return undefined;
   try {
     const url = new URL(origin);
@@ -211,11 +213,7 @@ export function applyDashboardCors(req: IncomingMessage, res: ServerResponse): v
   );
   if (!allowed) return;
   res.setHeader("access-control-allow-origin", allowed);
-  // ``Origin: null`` plus credentials lets any sandboxed iframe read cookie-backed
-  // responses. The Control UI tab authenticates with the path/query token instead.
-  if (allowed !== "null") {
-    res.setHeader("access-control-allow-credentials", "true");
-  }
+  res.setHeader("access-control-allow-credentials", "true");
   res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
   res.setHeader("access-control-allow-headers", `${ACCESS_HEADER}, content-type, accept`);
   res.setHeader("access-control-max-age", "600");

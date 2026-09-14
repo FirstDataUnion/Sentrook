@@ -469,7 +469,7 @@ describe("handleSentrookHttp", () => {
     );
   });
 
-  it("answers CORS preflight from a sandboxed Control UI iframe without the token", async () => {
+  it("answers OPTIONS without the token but does not CORS-allow a null origin", async () => {
     const { deps } = makeDeps();
     await withServer(
       deps,
@@ -483,16 +483,14 @@ describe("handleSentrookHttp", () => {
           },
         });
         assert.equal(preflight.status, 204);
-        assert.equal(preflight.headers.get("access-control-allow-origin"), "null");
+        assert.equal(preflight.headers.get("access-control-allow-origin"), null);
         assert.equal(preflight.headers.get("access-control-allow-credentials"), null);
-        assert.match(preflight.headers.get("access-control-allow-headers") || "", /x-sentrook-access/i);
-        assert.match(preflight.headers.get("access-control-allow-methods") || "", /POST/);
 
         const denied = await fetch(`${base}/sentrook/api/state`, {
           headers: { origin: "null" },
         });
         assert.equal(denied.status, 401);
-        assert.equal(denied.headers.get("access-control-allow-origin"), "null");
+        assert.equal(denied.headers.get("access-control-allow-origin"), null);
         assert.equal(denied.headers.get("access-control-allow-credentials"), null);
 
         const sameHost = await fetch(`${base}/sentrook/api/state`, {
@@ -501,12 +499,14 @@ describe("handleSentrookHttp", () => {
         assert.equal(sameHost.status, 401);
         assert.equal(sameHost.headers.get("access-control-allow-origin"), new URL(base).origin);
         assert.equal(sameHost.headers.get("access-control-allow-credentials"), "true");
+        assert.match(sameHost.headers.get("access-control-allow-headers") || "", /x-sentrook-access/i);
+        assert.match(sameHost.headers.get("access-control-allow-methods") || "", /POST/);
       },
       { injectAccess: false },
     );
   });
 
-  it("lets a sandboxed tab POST policy with the access query and no custom header", async () => {
+  it("lets a tab POST policy with the access query and no custom header", async () => {
     const { deps } = makeDeps();
     await withServer(
       deps,
@@ -517,7 +517,7 @@ describe("handleSentrookHttp", () => {
           body: JSON.stringify({ allowAllMode: "on" }),
         });
         assert.equal(res.status, 200);
-        assert.equal(res.headers.get("access-control-allow-origin"), "null");
+        assert.equal(res.headers.get("access-control-allow-origin"), null);
         const state = (await (
           await fetch(`${base}/sentrook/api/state?access=${deps.accessToken}`, {
             headers: { origin: "null" },
