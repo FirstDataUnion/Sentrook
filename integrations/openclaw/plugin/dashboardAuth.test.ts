@@ -10,7 +10,6 @@ import {
   accessFromRequest,
   accessTokensEqual,
   createDashboardAccessToken,
-  dashboardCorsAllowOrigin,
   dashboardRestFromPathname,
   dashboardTabPath,
   resolveDashboardAccessToken,
@@ -71,17 +70,6 @@ describe("dashboard access token", () => {
     assert.equal(accessTokensEqual(token, token), true);
     assert.equal(accessTokensEqual(token, "nope"), false);
     assert.equal(accessTokensEqual(token, undefined), false);
-  });
-
-  it("allows same-host, not a null origin or other sites", () => {
-    assert.equal(dashboardCorsAllowOrigin("null", "127.0.0.1:18789"), undefined);
-    assert.equal(
-      dashboardCorsAllowOrigin("http://127.0.0.1:18789", "127.0.0.1:18789"),
-      "http://127.0.0.1:18789",
-    );
-    assert.equal(dashboardCorsAllowOrigin("https://evil.example", "127.0.0.1:18789"), undefined);
-    assert.equal(dashboardCorsAllowOrigin("http://localhost:18789", "127.0.0.1:18789"), undefined);
-    assert.equal(dashboardCorsAllowOrigin(undefined, "127.0.0.1:18789"), undefined);
   });
 });
 

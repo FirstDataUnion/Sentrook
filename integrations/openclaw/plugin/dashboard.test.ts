@@ -469,7 +469,7 @@ describe("handleSentrookHttp", () => {
     );
   });
 
-  it("answers OPTIONS without the token but does not CORS-allow a null origin", async () => {
+  it("answers OPTIONS without the token and does not emit CORS allow headers", async () => {
     const { deps } = makeDeps();
     await withServer(
       deps,
@@ -491,16 +491,13 @@ describe("handleSentrookHttp", () => {
         });
         assert.equal(denied.status, 401);
         assert.equal(denied.headers.get("access-control-allow-origin"), null);
-        assert.equal(denied.headers.get("access-control-allow-credentials"), null);
 
         const sameHost = await fetch(`${base}/sentrook/api/state`, {
           headers: { origin: new URL(base).origin },
         });
         assert.equal(sameHost.status, 401);
-        assert.equal(sameHost.headers.get("access-control-allow-origin"), new URL(base).origin);
-        assert.equal(sameHost.headers.get("access-control-allow-credentials"), "true");
-        assert.match(sameHost.headers.get("access-control-allow-headers") || "", /x-sentrook-access/i);
-        assert.match(sameHost.headers.get("access-control-allow-methods") || "", /POST/);
+        assert.equal(sameHost.headers.get("access-control-allow-origin"), null);
+        assert.equal(sameHost.headers.get("access-control-allow-credentials"), null);
       },
       { injectAccess: false },
     );

@@ -28,7 +28,6 @@ import {
   DASHBOARD_PATH,
   accessFromRequest,
   accessTokensEqual,
-  applyDashboardCors,
   dashboardRestFromPathname,
 } from "./dashboardAuth.ts";
 import { ReviewCardStore, type ReviewCard } from "./reviewCards.ts";
@@ -655,7 +654,6 @@ export async function handleSentrookHttp(
   }
   let rest = routed.rest;
   const method = (req.method ?? "GET").toUpperCase();
-  applyDashboardCors(req, res);
   if (method === "OPTIONS") {
     res.statusCode = 204;
     res.setHeader("cache-control", "no-store");

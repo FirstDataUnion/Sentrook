@@ -8,13 +8,14 @@
  * and a custom header is not sent by cross-site forms, so a separate CSRF
  * session is not used.
  *
- * The Control UI tab is a sandboxed iframe (``Origin: null``). ``null`` is
- * attacker-spoofable (any sandboxed iframe or ``data:`` page), so it is not a
- * CORS allow-origin. Same-host is allowed; other sites are not reflected.
- * OPTIONS is answered without the token. The iframe page is read-only and
+ * The Control UI tab is a sandboxed iframe (``Origin: null``). This route does
+ * not emit CORS allow-origin or credentials headers: ``null`` is
+ * attacker-spoofable, and echoing the request Origin with credentials lets
+ * that origin read cookie-backed responses. The iframe page is read-only and
  * does not fetch; mutations go through the native Control UI, chat, or CLI.
- * POSTs use ``text/plain`` JSON so a custom-header preflight is not required
- * if the gateway never forwards OPTIONS.
+ * OPTIONS is answered without the token so a gateway that forwards preflight
+ * still 204s. POSTs use ``text/plain`` JSON so a custom-header preflight is
+ * not required if the gateway never forwards OPTIONS.
  *
  * Control UI remounts plugin tabs by pathname (query is stripped). The tab
  * path is therefore ``/sentrook/tab/<token>``. Mutations POST that exact
@@ -33,7 +34,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage } from "node:http";
 
 export const ACCESS_HEADER = "x-sentrook-access";
 export const ACCESS_QUERY = "access";
@@ -186,36 +187,4 @@ function singleHeader(value: string | string[] | undefined): string | undefined 
     return trimmed || undefined;
   }
   return undefined;
-}
-
-/** Echo only the same host as this request. Never reflect ``null`` or other sites. */
-export function dashboardCorsAllowOrigin(
-  origin: string | undefined,
-  host: string | undefined,
-): string | undefined {
-  if (!origin) return undefined;
-  if (origin === "null") return undefined;
-  if (!host) return undefined;
-  try {
-    const url = new URL(origin);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-    if (url.host !== host) return undefined;
-    return origin;
-  } catch {
-    return undefined;
-  }
-}
-
-export function applyDashboardCors(req: IncomingMessage, res: ServerResponse): void {
-  const allowed = dashboardCorsAllowOrigin(
-    singleHeader(req.headers.origin),
-    singleHeader(req.headers.host),
-  );
-  if (!allowed) return;
-  res.setHeader("access-control-allow-origin", allowed);
-  res.setHeader("access-control-allow-credentials", "true");
-  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
-  res.setHeader("access-control-allow-headers", `${ACCESS_HEADER}, content-type, accept`);
-  res.setHeader("access-control-max-age", "600");
-  res.setHeader("vary", "origin");
 }
