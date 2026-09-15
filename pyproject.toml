@@ -61,6 +61,7 @@ packages = ["sentrook/sentrook"]
 
 [tool.hatch.build.force-include]
 "sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sentrook/sanitize/rules.yaml"
+"sentrook/sentrook/sanitize/gitleaks_rules.json" = "sentrook/sentrook/sanitize/gitleaks_rules.json"
 "sentrook/sentrook/operator_log/schema.json" = "sentrook/sentrook/operator_log/schema.json"
 "sentrook/sentrook/operator_log/fixtures/golden.jsonl" = "sentrook/sentrook/operator_log/fixtures/golden.jsonl"
 

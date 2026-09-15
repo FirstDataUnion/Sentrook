@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -362,7 +363,16 @@ describe("resolveSanitizationConfig", () => {
 
 describe("DEFAULT_RULES", () => {
   it("matches rules.yaml version", () => {
-    assert.equal(DEFAULT_RULES.version, 1);
+    // Actually read the YAML rather than hardcoding a number — this is the
+    // guard that the TS mirror and the Python source agree, and `rules_version`
+    // in the operator log identifies which ruleset produced a line.
+    const yaml = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../sentrook/sentrook/sanitize/rules.yaml"),
+      "utf8",
+    );
+    const declared = Number(/^version:\s*(\d+)/m.exec(yaml)?.[1]);
+    assert.ok(Number.isFinite(declared), "rules.yaml has no version");
+    assert.equal(DEFAULT_RULES.version, declared);
     assert.ok(DEFAULT_RULES.credentialField.test("apiKey"));
     assert.ok(DEFAULT_RULES.piiArgKeys.has("command"));
   });

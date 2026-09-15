@@ -28,7 +28,7 @@ class SanitizeRules:
     session_hash_hex_chars: int
     credential_field: re.Pattern[str]
     secret_value_patterns: tuple[tuple[str, re.Pattern[str], bool], ...]
-    pii_patterns: tuple[tuple[str, re.Pattern[str]], ...]
+    pii_patterns: tuple[tuple[str, re.Pattern[str], str | None], ...]
     pii_arg_keys: frozenset[str]
     allowed_result_keys: frozenset[str]
 
@@ -48,12 +48,14 @@ def _compile_patterns(
     items: list[dict[str, Any]],
     *,
     flags: int = 0,
-) -> tuple[tuple[str, re.Pattern[str]], ...]:
-    compiled: list[tuple[str, re.Pattern[str]]] = []
+) -> tuple[tuple[str, re.Pattern[str], str | None], ...]:
+    """Compile PII patterns, carrying an optional checksum ``validator`` name."""
+    compiled: list[tuple[str, re.Pattern[str], str | None]] = []
     for item in items:
         name = str(item["name"])
         pattern = re.compile(str(item["pattern"]), flags)
-        compiled.append((name, pattern))
+        validator = item.get("validator")
+        compiled.append((name, pattern, str(validator) if validator else None))
     return tuple(compiled)
 
 

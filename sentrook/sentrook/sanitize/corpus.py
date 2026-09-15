@@ -237,7 +237,7 @@ def _scrub_field(
     cleaned = _redact_url_query(cleaned, rules, path=path, report=report)
 
     if pii:
-        for name, pattern in rules.pii_patterns:
+        for name, pattern, _validator in rules.pii_patterns:
             if pattern.search(cleaned):
                 report.note_pattern(name, path)
                 cleaned = pattern.sub(rules.redacted, cleaned)
