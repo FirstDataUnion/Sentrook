@@ -370,5 +370,6 @@ open public issues for security reports.
 | `docs/` | Public language/API docs (stub for now) |
 | `examples/rules`, `examples/corpus` | Synthetic DEMO-* format examples |
 | `fixtures/plans` | Minimal PlanIR 1.0 smoke inputs |
+| `fixtures/secret_redaction_golden.jsonl` | Shared Python/TypeScript sanitize parity corpus (inert, vendor-shaped tokens) |
 | `integrations/openclaw/` | OpenClaw plugin — builds PlanIR 1.0 and POSTs `/scan` |
 | `integrations/hermes/` | Hermes Agent plugin (Python) — same hosted `/scan` path |
