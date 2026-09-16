@@ -31,6 +31,18 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from sentrook.layers.exec_shape import (
+    DURATION_RE as _DURATION_RE,
+)
+from sentrook.layers.exec_shape import (
+    ENV_ASSIGN_RE as _ENV_ASSIGN_RE,
+)
+from sentrook.layers.exec_shape import (
+    WRAPPER_VALUE_FLAGS as _WRAPPER_VALUE_FLAGS_SRC,
+)
+from sentrook.layers.exec_shape import (
+    WRAPPERS as _WRAPPERS,
+)
 from sentrook.sanitize.core import apply_secret_patterns
 from sentrook.sanitize.rules import SanitizeRules, load_rules
 
@@ -40,6 +52,139 @@ INTERPRETER_RE = re.compile(
 SCRIPT_EXT_RE = re.compile(r"\.(py|sh|bash|zsh|js|mjs|cjs)$", re.IGNORECASE)
 
 INLINE_EVAL_FLAGS = frozenset({"-c", "-e", "-p", "-r", "-E", "--eval", "--print"})
+
+#: Bare builtins that execute their argument as code with no flag at all.
+INLINE_EVAL_HEADS = frozenset({"eval", "source", "."})
+
+#: Inline-eval flags **bound to the interpreter that gives them meaning**.
+#: Mirrors `INLINE_EVAL_FLAGS_BY_HEAD` in `localAllowlist.ts`. The flat scan this
+#: replaces was wrong in both directions: it refused `ls -r`, `cp -r`, `grep -e`,
+#: `du -c`, `sort -r`, `tar -c`, `uniq -c` as high risk, and passed
+#: `python3 -m <module>`, which executes arbitrary code.
+INLINE_EVAL_FLAGS_BY_HEAD: dict[str, frozenset[str]] = {
+    "python": frozenset({"-c", "-m"}),
+    "python2": frozenset({"-c", "-m"}),
+    "python3": frozenset({"-c", "-m"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
+    "nodejs": frozenset({"-e", "--eval", "-p", "--print"}),
+    "deno": frozenset({"eval"}),
+    "bun": frozenset({"-e", "--eval"}),
+    "perl": frozenset({"-e", "-E"}),
+    "ruby": frozenset({"-e"}),
+    "php": frozenset({"-r"}),
+    "lua": frozenset({"-e"}),
+    "bash": frozenset({"-c"}),
+    "sh": frozenset({"-c"}),
+    "zsh": frozenset({"-c"}),
+    "dash": frozenset({"-c"}),
+    "ksh": frozenset({"-c"}),
+    "fish": frozenset({"-c"}),
+    "osascript": frozenset({"-e"}),
+}
+
+#: Heads whose flags are known *not* to mean "evaluate this as code". The
+#: conservative fallback still applies to anything unrecognised, so an omission
+#: here costs allowlist eligibility, never safety.
+NON_EVAL_FLAG_BINS = frozenset(
+    {
+        "ls",
+        "cp",
+        "mv",
+        "rm",
+        "ln",
+        "mkdir",
+        "rmdir",
+        "touch",
+        "stat",
+        "file",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "tee",
+        "split",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        "ack",
+        "find",
+        "fd",
+        "locate",
+        "du",
+        "df",
+        "ps",
+        "top",
+        "kill",
+        "pgrep",
+        "pkill",
+        "uptime",
+        "free",
+        "tar",
+        "zip",
+        "unzip",
+        "gzip",
+        "gunzip",
+        "bzip2",
+        "xz",
+        "zstd",
+        "diff",
+        "patch",
+        "cmp",
+        "md5sum",
+        "sha256sum",
+        "base64",
+        "date",
+        "whoami",
+        "id",
+        "pwd",
+        "which",
+        "whereis",
+        "echo",
+        "printf",
+        "seq",
+        "chmod",
+        "chown",
+        "readlink",
+        "realpath",
+        "dirname",
+        "basename",
+        "git",
+        "docker",
+        "kubectl",
+        "npm",
+        "pnpm",
+        "yarn",
+        "make",
+        "cargo",
+        "go",
+        "jq",
+        "yq",
+        "xmllint",
+        "column",
+        "less",
+        "more",
+        "man",
+        "openclaw",
+        "gog",
+    }
+)
+
+#: The packer's separator. A packed excerpt is not valid shell (§1.1).
+PACK_SEPARATOR = " \u2026 "
+
+#: Wrapper stripping is defined once, in the engine's `exec_shape`, and reused
+#: here. The twin mirrors the TypeScript plugin, and both mirror `exec_shape` —
+#: importing rather than re-declaring means the three cannot drift on this axis.
+WRAPPER_BINS = _WRAPPERS
+WRAPPER_VALUE_FLAGS = _WRAPPER_VALUE_FLAGS_SRC
+DURATION_RE = _DURATION_RE
+ENV_ASSIGN_RE = _ENV_ASSIGN_RE
 
 HIGH_RISK_SHELL_RE = re.compile(r"(?:\|\||&&|;|`|\$\(|<\(|>\(|\|)")
 
@@ -155,6 +300,85 @@ def looks_like_script_path(token: str) -> bool:
     return bool(SCRIPT_EXT_RE.search(token)) or token.startswith("./") or token.startswith("../")
 
 
+def is_packed_excerpt(command: str) -> bool:
+    """True when the text is a signal-packed excerpt rather than a real command."""
+    return PACK_SEPARATOR in command
+
+
+def split_segments(command: str) -> list[list[str]]:
+    """Split a command into simple commands, mirroring the TS twin."""
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for raw in tokenize_argv(command):
+        token = raw
+        broke = False
+        while token.endswith((";", "|", "&")):
+            token = token[:-1]
+            broke = True
+        if token in ("&&", "||", ";", "|"):
+            if current:
+                segments.append(current)
+            current = []
+            continue
+        if token:
+            current.append(token)
+        if broke:
+            if current:
+                segments.append(current)
+            current = []
+    if current:
+        segments.append(current)
+    return segments
+
+
+def segment_head(tokens: list[str]) -> str:
+    """Peel wrappers and leading env assignments off one segment."""
+    rest = list(tokens)
+    while rest and ENV_ASSIGN_RE.match(rest[0]):
+        rest = rest[1:]
+    if not rest:
+        return ""
+    guard = 0
+    while guard < 8:
+        guard += 1
+        head = basename_of(rest[0]).lower()
+        if head not in WRAPPER_BINS or len(rest) < 2:
+            return head
+        value_flags = WRAPPER_VALUE_FLAGS.get(head, frozenset())
+        i = 1
+        while i < len(rest) and rest[i].startswith("-") and rest[i] != "-":
+            flag = rest[i]
+            i += 1
+            if flag in value_flags and i < len(rest):
+                i += 1
+        if head == "timeout" and i < len(rest) and DURATION_RE.match(rest[i]):
+            i += 1
+        if head == "env":
+            while i < len(rest) and ENV_ASSIGN_RE.match(rest[i]):
+                i += 1
+        if i >= len(rest):
+            return head
+        rest = rest[i:]
+    return basename_of(rest[0]).lower()
+
+
+def segment_is_inline_eval(tokens: list[str]) -> bool:
+    """True when this segment executes its argument as code (§1.1)."""
+    head = segment_head(tokens)
+    if not head:
+        return False
+    if head in INLINE_EVAL_HEADS:
+        return True
+    bound = INLINE_EVAL_FLAGS_BY_HEAD.get(head)
+    if bound is not None:
+        return any(t in bound or t.split("=")[0] in bound for t in tokens)
+    if head in NON_EVAL_FLAG_BINS:
+        return False
+    # Unknown binary: fall back to the blunt check. Cost of being wrong here is
+    # only that the command cannot be added to a host allowlist.
+    return any(t in INLINE_EVAL_FLAGS for t in tokens)
+
+
 def is_high_risk_command(command: str) -> bool:
     """True when a command must never be skeletonised for allowlist matching.
 
@@ -165,6 +389,8 @@ def is_high_risk_command(command: str) -> bool:
     trimmed = command.strip()
     if not trimmed:
         return True
+    if is_packed_excerpt(trimmed):
+        return True
     if HIGH_RISK_SHELL_RE.search(trimmed):
         return True
 
@@ -172,12 +398,8 @@ def is_high_risk_command(command: str) -> bool:
     if not tokens:
         return True
 
-    for i, token in enumerate(tokens):
-        base = basename_of(token).lower()
-        if token in INLINE_EVAL_FLAGS or base in INLINE_EVAL_FLAGS:
-            return True
-        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
-        if normalize_interpreter(token) and nxt and nxt in INLINE_EVAL_FLAGS:
+    for segment in split_segments(trimmed):
+        if segment_is_inline_eval(segment):
             return True
 
     joined = " ".join(tokens).lower()

@@ -40,7 +40,15 @@ class L2PassKind(str, Enum):
     # Plan-level intent classification (user, cron, heartbeat, subagent, system).
     INTENT_KIND = "intent_kind"
 
-    # Reserved: pending args reference a prior step's result_summary (not implemented).
+    # Reserved for Phase 4: **provenance** between steps, in either of two arms.
+    # Referential — a sensitive path or URL from an executed step reappears in
+    # the pending argv (`cat ~/.ssh/id_rsa` then `curl -d @~/.ssh/id_rsa`).
+    # Value-provenance — the same `[REDACTED:<hex>]` marker appears in an
+    # executed step's `result_summary` *and* in a pending outbound argument,
+    # meaning the agent read something and pasted the bytes onward. The second
+    # arm is the shape that dominates real exfiltration and the referential arm
+    # cannot see it: there is no shared reference, only the same value twice.
+    # Not implemented.
     DATAFLOW = "dataflow"
 
     UNKNOWN = "unknown"

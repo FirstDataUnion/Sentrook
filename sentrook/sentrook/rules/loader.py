@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from sentrook.rules.compiler import compile_rule
+from sentrook.rules.compiler import compile_rule, validate_suppression_targets
 from sentrook.rules.models import Rule
 
 DEFAULT_RULES_DIR = Path.home() / ".sentrook" / "rules"
@@ -32,6 +32,9 @@ def load_rules(path: Path) -> list[Rule]:
     rules: list[Rule] = []
     for file in sorted(path.glob("*.yaml")) + sorted(path.glob("*.yml")):
         rules.append(_load_file(file))
+    # Cross-rule check: `suppresses` targets can only be resolved once the whole
+    # set is loaded, so it cannot live in `compile_rule`.
+    validate_suppression_targets(rules)
     return rules
 
 

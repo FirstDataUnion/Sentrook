@@ -34,6 +34,15 @@ class PlanStep(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     result_summary: ResultSummary | None = None
 
+    #: Derived exec structure (§1.1), attached in-process after redaction.
+    #: `exclude=True` keeps it out of every `model_dump()` — it must never reach
+    #: the PlanIR wire, the scan log, or a corpus row. The `ScanResult` echo is
+    #: an explicit copy so that stays a deliberate act rather than a leak.
+    #: Typed `Any` to keep `planir` free of a `layers` import (that direction
+    #: would be a cycle: `layers.exec_shape` imports from `sanitize`, which
+    #: imports `planir`).
+    exec_shape: Any = Field(default=None, exclude=True, repr=False)
+
 
 class PlanMetadata(BaseModel):
     adapter: str = "fixture"

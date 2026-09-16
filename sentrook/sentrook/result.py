@@ -12,7 +12,7 @@ class MatchedRule(BaseModel):
     id: str
     name: str
     severity: Literal["low", "medium", "high", "critical"]
-    action: Literal["block", "review"]
+    action: Literal["block", "review", "allow"]
     reason: str
     confidence: float
     layer: Literal["L1", "L2", "L3"] = "L2"
@@ -99,7 +99,12 @@ class L2RuleTrace(BaseModel):
     confidence: float
     pass_id: L2PassKind | None = Field(default=None, serialization_alias="pass")
     reason: str
-    effective_action: Literal["allow", "review", "block"] | None = None
+    #: `no_match` rather than `allow` for a rule that did not hit. Before the
+    #: `allow` action existed these were the same string, so a trace reading
+    #: `allow` now means "this allow rule fired" and no longer collides with
+    #: "this rule did not match" — two opposite facts that previously required
+    #: joining `hit` to disambiguate.
+    effective_action: Literal["no_match", "allow", "review", "block"] | None = None
 
     model_config = {"populate_by_name": True}
 

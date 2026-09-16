@@ -9,6 +9,7 @@ from sentrook.config import L2Authority, L3Policy, ScannerConfig
 from sentrook.corpus.loader import load_corpus, resolve_corpus_dir
 from sentrook.corpus.models import LoadedRuleCorpus
 from sentrook.corpus.personal import resolve_personal_corpus_dir
+from sentrook.layers.exec_shape import attach_exec_shapes, plan_tool_tokens
 from sentrook.layers.l1_index import build_l1_index, l1_candidates
 from sentrook.layers.l2_match import classify_match, evaluate_rule
 from sentrook.layers.l3_embed import make_scorer
@@ -91,7 +92,14 @@ def scan_plan(
     t0 = time.perf_counter()
 
     redacted_plan = _redact_plan(plan)
-    plan_tools = {step.tool for step in redacted_plan.steps}
+    # Shape is derived from the *redacted* command — what rules actually see —
+    # and must land before `plan_tools` is built, because L1 candidacy for
+    # `exec:<head>` patterns reads the heads out of it (slice 1B-2).
+    attach_exec_shapes(redacted_plan)
+    # Includes synthetic `exec:<head>` tokens, so an `exec:curl` rule is a
+    # candidate at L1. Shares one token function with L2 matching so the two
+    # layers cannot disagree about what a pattern addresses.
+    plan_tools = plan_tool_tokens(redacted_plan)
 
     # Memoisation candidate for later in development, or replace with pre-compiled
     # index file.
@@ -118,7 +126,7 @@ def scan_plan(
                     confidence=outcome.confidence,
                     pass_id=outcome.pass_id,
                     reason=outcome.reason,
-                    effective_action=effective_action if is_hit else "allow",
+                    effective_action=effective_action if is_hit else "no_match",
                 )
             )
             if not is_hit:
@@ -139,6 +147,13 @@ def scan_plan(
                 )
             )
 
+    # Allow-rule suppression runs here — **before** `_apply_l3`. If it ran after,
+    # a suppressed review would still be scored by L3 and would surface in traces
+    # as an L3 decision, so the operator-facing explanation would name the wrong
+    # layer for why a step was not shown.
+    suppressed_rule_ids = _suppressed_rule_ids(matched_rules, {r.id: r for r in candidates})
+    surviving_rules = [m for m in matched_rules if m.id not in suppressed_rule_ids]
+
     if not candidates:
         decision, risk, summary = (
             "allow",
@@ -150,7 +165,7 @@ def scan_plan(
         decision, risk, summary = "allow", 0.0, "No rules matched"
         exits = ["L1", "L2"]
     else:
-        decision, risk, summary, winning_rule = _aggregate(matched_rules)
+        decision, risk, summary, winning_rule = _aggregate(surviving_rules)
         exits = ["L1", "L2"]
 
     t3 = time.perf_counter()
@@ -168,7 +183,7 @@ def scan_plan(
         scorer = l3_scorer if l3_scorer is not None else make_scorer(config)
         decision, risk, summary, winning_rule, l3_traces, l3_ran = _apply_l3(
             plan=redacted_plan,
-            matched_rules=matched_rules,
+            matched_rules=surviving_rules,
             rule_by_id={r.id: r for r in candidates},
             config=config,
             corpus=corpus,
@@ -389,6 +404,31 @@ def _redact_plan(plan: PlanIR) -> PlanIR:
     for step in plan.steps:
         steps.append(step.model_copy(update={"args": redact_args(step.args)}))
     return plan.model_copy(update={"steps": steps})
+
+
+def _suppressed_rule_ids(matched: list[MatchedRule], rule_by_id: dict[str, Rule]) -> set[str]:
+    """Review-rule ids removed by a definitively-matched allow rule.
+
+    An allow rule removes exactly the ids it names in `suppresses` — never
+    anything else, and never a block. `suppresses` is validated at rule-compile
+    time to name only soft-authority review rules, so this function does not
+    re-check authority; it enforces the narrower runtime invariant that a
+    non-review match can never be removed, which holds even if a rule were
+    loaded by a path that bypassed the compiler.
+    """
+    suppressed: set[str] = set()
+    action_by_id = {m.id: m.action for m in matched}
+    for match in matched:
+        if match.action != "allow":
+            continue
+        rule = rule_by_id.get(match.id)
+        if rule is None:
+            continue
+        for target in rule.meta.suppresses:
+            # Belt and braces: an allow rule may only ever remove a review.
+            if action_by_id.get(target) == "review":
+                suppressed.add(target)
+    return suppressed
 
 
 def _aggregate(
