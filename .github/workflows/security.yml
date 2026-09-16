@@ -53,6 +53,11 @@ jobs:
 
       - name: Trivy filesystem (HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # `trivy-secret.yaml` is auto-discovered from the working directory,
+          # but pointing at it explicitly removes the dependency on what that
+          # directory happens to be inside the action.
+          TRIVY_SECRET_CONFIG: trivy-secret.yaml
         with:
           scan-type: fs
           scan-ref: .
@@ -60,11 +65,10 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: table
-          # Suppressions are per-file and per-rule; see the file for why each
-          # exists. Sentrook's own redaction fixtures necessarily contain
-          # secret-shaped strings — a scanner finding them is the fixture
-          # working, not a leak.
-          trivyignores: .trivyignore.yaml
+          # Secret-scan exclusions live in `trivy-secret.yaml`, which trivy
+          # reads from the scan root by default. Path-scoped rather than
+          # rule-id-scoped, so a new provider rule cannot reopen the same
+          # failure — see that file.
 
   semgrep:
     runs-on: ubuntu-latest
