@@ -125,6 +125,214 @@ const BARE_DANGEROUS_BINS = new Set([
 /** Fetch bins whose URL is the identity of the action, not a volatile. */
 const FETCH_BINS = new Set(["curl", "wget"]);
 
+/**
+ * Bare builtins that execute their argument as code with no flag at all.
+ *
+ * `source ~/.bashrc` carries no shell metacharacter and no eval flag, so before
+ * this it was neither high-risk nor refused — it could be skeletonised and
+ * allowlisted, and the file it executes can change afterwards. That is the
+ * AST07 update-drift shape with the approval already granted.
+ */
+const INLINE_EVAL_HEADS = new Set(["eval", "source", "."]);
+
+/**
+ * Inline-eval flags **bound to the interpreter that gives them meaning**,
+ * mirroring `_INLINE_EVAL_FLAGS` in the Python twin.
+ *
+ * The previous check scanned every token against one flat flag set, so it was
+ * wrong in both directions at once. It refused `ls -r`, `cp -r`, `grep -e`,
+ * `du -c`, `sort -r`, `tar -c` and `uniq -c` — ordinary commands whose flags
+ * merely collide with an interpreter's — making them permanently
+ * un-allowlistable and quietly suppressing the host-allowlist lane that D10's
+ * counterfactual measures. And it passed `python3 -m <module>`, which executes
+ * arbitrary code, because `-m` was not in the flat set.
+ */
+const INLINE_EVAL_FLAGS_BY_HEAD: Record<string, Set<string>> = {
+  python: new Set(["-c", "-m"]),
+  python2: new Set(["-c", "-m"]),
+  python3: new Set(["-c", "-m"]),
+  node: new Set(["-e", "--eval", "-p", "--print"]),
+  nodejs: new Set(["-e", "--eval", "-p", "--print"]),
+  deno: new Set(["eval"]),
+  bun: new Set(["-e", "--eval"]),
+  perl: new Set(["-e", "-E"]),
+  ruby: new Set(["-e"]),
+  php: new Set(["-r"]),
+  lua: new Set(["-e"]),
+  bash: new Set(["-c"]),
+  sh: new Set(["-c"]),
+  zsh: new Set(["-c"]),
+  dash: new Set(["-c"]),
+  ksh: new Set(["-c"]),
+  fish: new Set(["-c"]),
+  osascript: new Set(["-e"]),
+};
+
+/**
+ * Heads whose flags are known **not** to mean "evaluate this as code".
+ *
+ * Needed because the conservative fallback below still applies to any head we
+ * do not recognise: for an unknown binary, an eval-looking flag might really be
+ * one, and refusing costs only allowlist eligibility. This set is what stops
+ * that caution from swallowing the common cases — `ls -r`, `cp -r`, `grep -e`,
+ * `du -c`, `sort -r`, `tar -c`, `uniq -c` were all permanently un-allowlistable
+ * before it existed.
+ *
+ * The failure mode of an omission here is over-refusal, never over-approval, so
+ * this list is safe to extend lazily as real traffic turns up more.
+ */
+const NON_EVAL_FLAG_BINS = new Set([
+  "ls", "cp", "mv", "rm", "ln", "mkdir", "rmdir", "touch", "stat", "file",
+  "cat", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "tee", "split",
+  "grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd", "locate",
+  "du", "df", "ps", "top", "kill", "pgrep", "pkill", "uptime", "free",
+  "tar", "zip", "unzip", "gzip", "gunzip", "bzip2", "xz", "zstd",
+  "diff", "patch", "cmp", "md5sum", "sha256sum", "base64",
+  "date", "whoami", "id", "pwd", "which", "whereis", "echo", "printf", "seq",
+  "chmod", "chown", "ln", "readlink", "realpath", "dirname", "basename",
+  "git", "docker", "kubectl", "npm", "pnpm", "yarn", "make", "cargo", "go",
+  "jq", "yq", "xmllint", "column", "less", "more", "man", "openclaw", "gog",
+]);
+
+/**
+ * Mirrors `sentrook/layers/exec_shape.py` WRAPPERS. Kept in sync by
+ * `fixtures/exec_shape_golden.jsonl`, which both suites load — the plugin does
+ * not derive `exec_shape` (zero runtime dependencies, so no parser), it adopts
+ * the semantics only.
+ */
+const WRAPPER_BINS = new Set([
+  "timeout",
+  "time",
+  "nice",
+  "nohup",
+  "stdbuf",
+  "env",
+  "command",
+  "builtin",
+  "noglob",
+  "xargs",
+  "sudo",
+  "doas",
+  "run0",
+  "pkexec",
+]);
+
+/** Wrapper flags that consume the following token (see the Python twin). */
+const WRAPPER_VALUE_FLAGS: Record<string, Set<string>> = {
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  nice: new Set(["-n", "--adjustment"]),
+  stdbuf: new Set(["-i", "-o", "-e"]),
+  xargs: new Set(["-n", "-P", "-I", "-d", "-s", "-a", "-E"]),
+  sudo: new Set(["-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "-h", "--host", "-U", "-r", "--role", "-t", "--type"]),
+  doas: new Set(["-u", "-C", "-a"]),
+  time: new Set(["-o", "--output", "-f", "--format"]),
+};
+
+const DURATION_RE = /^\d+(?:\.\d+)?[smhd]?$/;
+const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** The packer's separator. A packed excerpt is not valid shell (see §1.1). */
+const PACK_SEPARATOR = " \u2026 ";
+
+/** True when the text is a signal-packed excerpt rather than a real command. */
+export function isPackedExcerpt(command: string): boolean {
+  return command.includes(PACK_SEPARATOR);
+}
+
+/**
+ * Command heads, mirroring `exec_shape.heads`: one per simple command, wrappers
+ * stripped, basename, lowercased.
+ *
+ * The plugin keys its local allowlist on a skeleton while Phase 3b's allow rules
+ * key on engine heads. If the two disagreed about which binary a command runs,
+ * the host-allowlist lane and the allow-rule lane would be approving different
+ * things under the same name — and the fatigue report's three-lane counterfactual
+ * (D10) would be comparing lanes that do not mean what it thinks.
+ */
+export function commandHeads(command: string): string[] {
+  if (!command || !command.trim() || isPackedExcerpt(command)) return [];
+  const heads: string[] = [];
+  for (const segment of splitSegments(command.trim())) {
+    const head = segmentHead(segment);
+    if (head) heads.push(head);
+  }
+  return heads;
+}
+
+/** Split on the separators that start a new simple command. */
+function splitSegments(command: string): string[][] {
+  const tokens = tokenizeArgv(command);
+  const segments: string[][] = [];
+  let current: string[] = [];
+  for (const raw of tokens) {
+    // The tokenizer keeps separators attached (`ls;`), so peel them off.
+    let token = raw;
+    let broke = false;
+    while (token.endsWith(";") || token.endsWith("|") || token.endsWith("&")) {
+      token = token.slice(0, -1);
+      broke = true;
+    }
+    if (token === "&&" || token === "||" || token === ";" || token === "|") {
+      if (current.length) segments.push(current);
+      current = [];
+      continue;
+    }
+    if (token) current.push(token);
+    if (broke) {
+      if (current.length) segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length) segments.push(current);
+  return segments;
+}
+
+/** True when this segment executes its argument as code (§1.1 `inline_eval`). */
+function segmentIsInlineEval(tokens: string[]): boolean {
+  const head = segmentHead(tokens);
+  if (!head) return false;
+  if (INLINE_EVAL_HEADS.has(head)) return true;
+
+  const bound = INLINE_EVAL_FLAGS_BY_HEAD[head];
+  if (bound) {
+    return tokens.some((token) => bound.has(token) || bound.has(token.split("=")[0]));
+  }
+  if (NON_EVAL_FLAG_BINS.has(head)) return false;
+
+  // Unknown binary: fall back to the blunt check. We cannot tell whether `-e`
+  // means "eval" here, and the cost of being wrong in this direction is only
+  // that the command cannot be added to a host allowlist.
+  return tokens.some((token) => INLINE_EVAL_FLAGS.has(token));
+}
+
+/** Peel wrappers and leading env assignments off one segment. */
+function segmentHead(tokens: string[]): string {
+  let rest = tokens.slice();
+  // Leading `VAR=value` assignments are not the head.
+  while (rest.length && ENV_ASSIGN_RE.test(rest[0])) rest = rest.slice(1);
+  if (!rest.length) return "";
+
+  let guard = 0;
+  while (guard++ < 8) {
+    const head = basenameOf(rest[0]).toLowerCase();
+    if (!WRAPPER_BINS.has(head) || rest.length < 2) return head;
+    const valueFlags = WRAPPER_VALUE_FLAGS[head] ?? new Set<string>();
+    let i = 1;
+    while (i < rest.length && rest[i].startsWith("-") && rest[i] !== "-") {
+      const flag = rest[i];
+      i += 1;
+      if (valueFlags.has(flag) && i < rest.length) i += 1;
+    }
+    if (head === "timeout" && i < rest.length && DURATION_RE.test(rest[i])) i += 1;
+    if (head === "env") {
+      while (i < rest.length && ENV_ASSIGN_RE.test(rest[i])) i += 1;
+    }
+    if (i >= rest.length) return head; // wrapper with no command after it
+    rest = rest.slice(i);
+  }
+  return basenameOf(rest[0]).toLowerCase();
+}
+
 export function resolveAllowlistConfig(
   pluginCfg: Record<string, unknown> | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -259,21 +467,18 @@ function looksLikeScriptPath(token: string): boolean {
 export function isHighRiskCommand(command: string): boolean {
   const trimmed = command.trim();
   if (!trimmed) return true;
+  // A packed excerpt is not valid shell. It can still *tokenize* into something
+  // plausible, so treating it as a real command would allowlist a skeleton built
+  // from a truncation — matching later commands that merely share a prefix.
+  if (isPackedExcerpt(trimmed)) return true;
   if (HIGH_RISK_SHELL_RE.test(trimmed)) return true;
 
   const tokens = tokenizeArgv(trimmed);
   if (tokens.length === 0) return true;
 
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    const base = basenameOf(t).toLowerCase();
-    if (INLINE_EVAL_FLAGS.has(t) || INLINE_EVAL_FLAGS.has(base)) {
-      return true;
-    }
-    // python -c / bash -c etc.
-    if (normalizeInterpreter(t) && tokens[i + 1] && INLINE_EVAL_FLAGS.has(tokens[i + 1])) {
-      return true;
-    }
+  // Per segment, with each flag bound to the head that gives it meaning.
+  for (const segment of splitSegments(trimmed)) {
+    if (segmentIsInlineEval(segment)) return true;
   }
 
   // curl|wget ... sh patterns without needing the pipe char already caught above;

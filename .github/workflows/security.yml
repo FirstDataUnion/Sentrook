@@ -53,6 +53,11 @@ jobs:
 
       - name: Trivy filesystem (HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # `trivy-secret.yaml` is auto-discovered from the working directory,
+          # but pointing at it explicitly removes the dependency on what that
+          # directory happens to be inside the action.
+          TRIVY_SECRET_CONFIG: trivy-secret.yaml
         with:
           scan-type: fs
           scan-ref: .
@@ -60,6 +65,10 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: table
+          # Secret-scan exclusions live in `trivy-secret.yaml`, which trivy
+          # reads from the scan root by default. Path-scoped rather than
+          # rule-id-scoped, so a new provider rule cannot reopen the same
+          # failure — see that file.
 
   semgrep:
     runs-on: ubuntu-latest
@@ -98,7 +107,7 @@ jobs:
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: javascript-typescript, python
-          queries: security-extended
+          config-file: ./.github/codeql/codeql-config.yml
           build-mode: none
 
       - name: Perform CodeQL analysis
@@ -124,6 +133,13 @@ jobs:
               for run in data.get("runs", []):
                   rules = {r.get("id"): r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
                   for res in run.get("results", []):
+                      # Honour CodeQL's own suppression mechanism. Without this
+                      # an inline `# codeql[rule-id]` comment is recorded in the
+                      # SARIF but still counted here, so suppressions silently
+                      # did nothing and the only way past a false positive was
+                      # to exclude the whole file from analysis.
+                      if res.get("suppressions"):
+                          continue
                       rule = rules.get(res.get("ruleId"), {})
                       props = rule.get("properties", {})
                       sev = (props.get("security-severity") or props.get("problem.severity") or "").strip()

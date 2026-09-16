@@ -9,6 +9,22 @@ from sentrook.result import MatchedSubgraph
 
 CorpusLabel = Literal["attack", "benign"]
 CorpusTrust = Literal["verified", "community", "synthetic"]
+#: How a row's label was established. Distinct from ``trust`` (who supplied the
+#: row); this is what evidence stands behind the label, so gates can report
+#: admissions by basis and synthesis can weight or exclude weak bases.
+#:
+#: - ``authored``           hand-written by a maintainer for this rule
+#: - ``operator_resolution`` an operator allowed it at a review prompt (weak benign)
+#: - ``adjudicated``        model-labelled with reasoning, Phase 7
+#: - ``outcome_verified``   allowed, ran clean, no consequence flags (Phase 6)
+#: - ``imported``           external set (GTFOBins, Atomic Red Team, Sigma)
+LabelBasis = Literal[
+    "authored",
+    "operator_resolution",
+    "adjudicated",
+    "outcome_verified",
+    "imported",
+]
 IndexLabel = Literal["pos", "neg"]
 
 # Human-readable corpus labels map to the pos/neg index names used internally and
@@ -45,6 +61,8 @@ class CorpusExample(BaseModel):
     id: str
     label: CorpusLabel
     trust: CorpusTrust
+    #: Defaulted so every existing corpus row stays valid without a migration.
+    label_basis: LabelBasis = "authored"
     intent: str | None = None
     intent_kind: IntentKind | None = None
     notes: str | None = None

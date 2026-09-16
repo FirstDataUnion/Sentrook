@@ -282,7 +282,12 @@ def test_corpus_basic_auth_header_redacted() -> None:
     result = sanitize_corpus_example(ex)
     cmd = result.example.steps[0].args["command"]
     assert "dXNlcjpwYXNzd29yZA==" not in cmd
-    assert "basic_auth_header" in result.report.pattern_counts
+    # Attribution, not behaviour: the vendored gitleaks catalogue runs inside
+    # apply_secret_patterns and its `curl-auth-header` rule now reaches this
+    # first, so the corpus-specific `basic_auth_header` pattern no longer fires.
+    # Either is a correct redaction; assert one of them caught it.
+    fired = set(result.report.pattern_counts)
+    assert fired & {"basic_auth_header", "gitleaks:curl-auth-header"}, fired
 
 
 def test_street_address_in_excerpt_redacted() -> None:

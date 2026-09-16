@@ -21,6 +21,11 @@ dependencies = [
     # OpenBao / Vault KV client (prod secrets via agent token sink).
     # Latest secure: 2.4.0 (Safety; fixes Authlib/Werkzeug issues in <2.3.0).
     "hvac>=2.4.0",
+    # Phase 1 exec_shape: shell parsing for L1 shape derivation. Prebuilt wheels
+    # on every target; no build step. Pinned minors because a grammar change can
+    # move `has_error` and therefore `parse_ok` on real traffic.
+    "tree-sitter>=0.26.0,<0.27",
+    "tree-sitter-bash>=0.25.1,<0.26",
 ]
 
 [project.urls]
@@ -61,6 +66,7 @@ packages = ["sentrook/sentrook"]
 
 [tool.hatch.build.force-include]
 "sentrook/sentrook/sanitize/rules.yaml" = "sentrook/sentrook/sanitize/rules.yaml"
+"sentrook/sentrook/sanitize/gitleaks_rules.json" = "sentrook/sentrook/sanitize/gitleaks_rules.json"
 "sentrook/sentrook/operator_log/schema.json" = "sentrook/sentrook/operator_log/schema.json"
 "sentrook/sentrook/operator_log/fixtures/golden.jsonl" = "sentrook/sentrook/operator_log/fixtures/golden.jsonl"
 

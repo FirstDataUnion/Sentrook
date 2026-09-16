@@ -75,6 +75,25 @@ sanitize-gate: require-rookery
 		tests/engine/test_sanitize_replay_gate.py -q
 
 # OpenClaw: unit tests, then publish-surface (dist/index.js + openclaw.plugin.json in the tarball).
+# Regenerate the shared skeleton parity fixture from the TS source of truth.
+# Run both suites afterwards: a Python failure means the twin drifted.
+# Regenerate the secret catalogue in both languages from the pinned gitleaks
+# TOML. Sentrook does not maintain its own secret patterns — bump the vendored
+# file, run this, then run both suites.
+gitleaks-rules:
+	$(PYTHON) scripts/generate_gitleaks_rules.py
+	@echo "regenerated — now run: make test && make plugin-test"
+
+# Regenerate the shared secret-redaction parity fixture from the Python side.
+secret-golden:
+	$(PYTHON) scripts/generate_secret_golden.py
+	@echo "regenerated fixtures/secret_redaction_golden.jsonl — run both suites"
+
+skeleton-golden:
+	node --experimental-strip-types fixtures/generate_skeleton_golden.ts > /tmp/skeleton_golden.jsonl
+	mv /tmp/skeleton_golden.jsonl fixtures/skeleton_golden.jsonl
+	@echo "regenerated fixtures/skeleton_golden.jsonl — now run: make test && make plugin-test"
+
 plugin-test:
 	cd integrations/openclaw/plugin && npm test && npm run pack:check
 

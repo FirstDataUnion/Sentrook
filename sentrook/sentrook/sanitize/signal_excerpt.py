@@ -19,6 +19,12 @@ import re
 # pending exec from both L2 and operator review copy.
 CONTENT_LIKE_KEYS = frozenset({"content", "text", "body", "message", "command", "cmd"})
 
+# Argv keys get a much larger budget than prose keys: `exec_shape` (Phase 1) must
+# parse the command as real shell, and a signal-packed excerpt is not valid bash.
+# Prose payloads keep the smaller budget — that is where PII/secret density is
+# highest and where nothing downstream needs to parse the text.
+COMMAND_LIKE_KEYS = frozenset({"command", "cmd"})
+
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _SENSITIVE_PATH_RE = re.compile(
     r"(?i)(?:"
@@ -59,6 +65,13 @@ def is_content_like_key(key: str | None) -> bool:
     if key is None:
         return False
     return key.lower() in CONTENT_LIKE_KEYS
+
+
+def is_command_like_key(key: str | None) -> bool:
+    """True when ``key`` holds argv and gets the larger command budget."""
+    if key is None:
+        return False
+    return key.lower() in COMMAND_LIKE_KEYS
 
 
 def pack_signal_excerpt(text: str, limit: int, *, ellipsis: str = "...") -> str:

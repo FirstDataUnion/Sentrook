@@ -80,10 +80,22 @@ class FeedbackRequest(BaseModel):
 
 
 def resolution_to_label(resolution: FeedbackResolution) -> CorpusLabel | None:
+    """Map an operator resolution to a corpus label, or ``None`` if unlabelable.
+
+    ``deny`` is deliberately **not** an attack label. Measured on the live
+    corpus, deny means "not now", "wrong directory" or "I will do it myself"
+    far more often than "an attacker did this", and promoting that hesitation
+    to ground truth poisoned the safety-critical side of the L3 margin (two of
+    the three attack rows that leaked were operator denies).
+
+    Consequence: no attack label ever originates from a user again. The attack
+    side of the corpus is ``authored`` plus ``imported`` only, which makes the
+    GTFOBins/Atomic Red Team imports load-bearing for recall rather than
+    optional. Deny is still recorded as a review outcome in the operator log and
+    still drives the local allowlist — it just does not mint a corpus row.
+    """
     if resolution in ("allow-once", "allow-always"):
         return "benign"
-    if resolution == "deny":
-        return "attack"
     return None
 
 

@@ -36,7 +36,13 @@ import {
   unwrapHostToolResult,
   type PlanIR,
 } from "./planir.ts";
-import { DEFAULT_RULES, scrubOperatorValue, scrubSecretsAndPii } from "./sanitize.ts";
+import {
+  DEFAULT_RULES,
+  markerForSession,
+  scrubOperatorValue,
+  scrubSecretsAndPii,
+  type SecretMarker,
+} from "./sanitize.ts";
 import type { ScanFailure } from "./scanErrorPolicy.ts";
 
 export const OPERATOR_LOG_SCHEMA = "sentrook.operator.log/v1";
@@ -547,8 +553,11 @@ export function operatorLogStats(config: OperatorLogConfig): OperatorLogStats {
 }
 
 /** Scrub a pending-args object for durable history (no field cap). */
-export function scrubOperatorArgs(args: Record<string, unknown>): Record<string, unknown> {
-  const cleaned = scrubOperatorValue(args);
+export function scrubOperatorArgs(
+  args: Record<string, unknown>,
+  marker?: SecretMarker,
+): Record<string, unknown> {
+  const cleaned = scrubOperatorValue(args, DEFAULT_RULES, { marker });
   return cleaned && typeof cleaned === "object" && !Array.isArray(cleaned)
     ? (cleaned as Record<string, unknown>)
     : {};
@@ -650,7 +659,9 @@ function pendingStepForLog(
     id: pending?.id ?? "s1",
     tool: pending?.tool ?? canonicalToolName(hostTool, rawArgs),
     status: "pending",
-    args: scrubOperatorArgs(rawArgs),
+    // Marked from the RAW session id — the same scope sanitizePlanir uses before
+    // hashing — so a marker in the operator log matches the one on the wire.
+    args: scrubOperatorArgs(rawArgs, markerForSession(plan.metadata.session_id)),
   };
 }
 
@@ -885,10 +896,15 @@ export function buildResultOperatorEvent(input: {
     excerptLimit: Number.POSITIVE_INFINITY,
     hostTruncated: false,
   });
-  summary.excerpt = scrubSecretsAndPii(summary.excerpt);
+  // Phase 4 needs BOTH ends marked: the executed step's result and the pending
+  // step's argv. Marking only one makes the flow invisible.
+  const resultMarker = markerForSession(
+    typeof input.metadata.session_id === "string" ? input.metadata.session_id : null,
+  );
+  summary.excerpt = scrubSecretsAndPii(summary.excerpt, DEFAULT_RULES, resultMarker);
   if (summary.extracted.commands.length) {
     summary.extracted.commands = summary.extracted.commands.map((item) =>
-      scrubSecretsAndPii(item),
+      scrubSecretsAndPii(item, DEFAULT_RULES, resultMarker),
     );
   }
   const extras = envelopeExtras({

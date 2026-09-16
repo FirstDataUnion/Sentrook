@@ -1,0 +1,20 @@
+# CodeQL configuration.
+#
+# `paths-ignore` here covers **generated and vendored** files only. Everything a
+# human writes stays in scope, including the generator itself — the point is that
+# CodeQL should analyse the code that produces these files, not the output.
+name: sentrook
+
+queries:
+  - uses: security-extended
+
+paths-ignore:
+  # The vendored gitleaks catalogue and the two files the generator emits from
+  # it (D16: generated, never hand-edited). CodeQL reads their secret-detection
+  # patterns as application regexes and reports `js/incomplete-hostname-regexp`
+  # on provider hostname matchers — a finding about gitleaks' rules, which we do
+  # not own and must not "fix" locally, since the next `make gitleaks-rules`
+  # would overwrite it.
+  - sentrook/sentrook/sanitize/vendor/gitleaks.toml
+  - sentrook/sentrook/sanitize/gitleaks_rules.json
+  - integrations/openclaw/plugin/gitleaksRules.ts

@@ -7,8 +7,9 @@
  * keyword-only regex replacement leaves values intact.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 
+import { GITLEAKS_RULES, type GitleaksRule } from "./gitleaksRules.ts";
 import type { PlanIR } from "./planir.ts";
 
 export interface SecretValuePattern {
@@ -23,11 +24,13 @@ export interface SanitizeRules {
   resultTextMaxChars: number;
   intentMaxChars: number;
   stringLeafMaxChars: number;
+  /** Argv budget — larger than prose so exec_shape can parse real shell. */
+  commandMaxChars: number;
   sessionHashPrefix: string;
   sessionHashHexChars: number;
   credentialField: RegExp;
   secretValuePatterns: SecretValuePattern[];
-  piiPatterns: RegExp[];
+  piiPatterns: Array<{ pattern: RegExp; validator?: PiiValidator }>;
   piiArgKeys: ReadonlySet<string>;
   allowedResultKeys: ReadonlySet<string>;
 }
@@ -41,69 +44,167 @@ const CREDENTIAL_VAR_SEGMENT =
 // The var-name pattern `(?=[A-Za-z_])[A-Za-z0-9_]+` uses a lookahead to assert the
 // first char without consuming it, so the entire identifier is one `[A-Za-z0-9_]+`
 // atom — no split-point backtracking on long underscore runs.
+// The bare-value branch excludes quote characters on purpose. With `[^\s;|&]+`
+// an assignment *inside* a quoted string swallowed the closing quote:
+//   curl -d "token=ghp_abc"  ->  curl -d "token=[REDACTED]
+// leaving the command unbalanced and therefore unparseable, so it could never
+// match an allow rule. A quote terminates a shell value, so this is also correct.
 const ENV_ASSIGNMENT =
-  /((?:export\s+)?)((?=[A-Za-z_])[A-Za-z0-9_]+)\s*=\s*(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
+  /((?:export\s+)?)((?=[A-Za-z_])[A-Za-z0-9_]+)\s*=\s*(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&"']+)/gi;
 
 const CLI_SECRET_FLAG =
-  /(--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:-\w+)?)(\s*=\s*|\s+)(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&]+)/gi;
+  /(--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:-\w+)?)(\s*=\s*|\s+)(?:"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&"']+)/gi;
+
+/**
+ * Checksum / plausibility validators. Mirror of `_VALIDATORS` in core.py.
+ *
+ * This is the one thing Presidio does that a bare regex cannot: a pattern loose
+ * enough to *find* candidates always over-matches, and only a check can separate
+ * a real card number from an epoch-ms timestamp. We borrow the discipline, not
+ * the dependency — Presidio needs a 382 MB spaCy model and cannot run here at all.
+ */
+export type PiiValidator = "luhn" | "iban_mod97" | "phone_plausible" | "uk_postcode_plausible";
+
+function luhnValid(value: string): boolean {
+  const digits = [...value].filter((c) => c >= "0" && c <= "9").map(Number);
+  if (digits.length < 13 || digits.length > 19) return false;
+  let total = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits[i];
+    if (double) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    total += d;
+    double = !double;
+  }
+  return total % 10 === 0;
+}
+
+function ibanMod97Valid(value: string): boolean {
+  const compact = value.replace(/\s+/g, "").toUpperCase();
+  if (compact.length < 15 || compact.length > 34) return false;
+  if (!/^[A-Z]{2}[0-9]{2}/.test(compact)) return false;
+  const rearranged = compact.slice(4) + compact.slice(0, 4);
+  let remainder = 0;
+  for (const ch of rearranged) {
+    const chunk = /[0-9]/.test(ch)
+      ? ch
+      : /[A-Z]/.test(ch)
+        ? String(ch.charCodeAt(0) - 55)
+        : null;
+    if (chunk === null) return false;
+    for (const d of chunk) remainder = (remainder * 10 + Number(d)) % 97;
+  }
+  return remainder === 1;
+}
+
+/**
+ * E.164 caps a phone at 15 digits, and real phones in prose carry punctuation.
+ * Together these reject epoch-ms timestamps, byte counts and concatenated ids,
+ * which the pattern alone cannot distinguish. Known gap: a bare unpunctuated
+ * `07700900123` is not redacted — the cost of not redacting every timestamp,
+ * which would fabricate cross-step marker linkages Phase 4 reads as dataflow.
+ */
+function phonePlausible(value: string): boolean {
+  const digits = [...value].filter((c) => c >= "0" && c <= "9").length;
+  if (digits < 7 || digits > 15) return false;
+  return value.trimStart().startsWith("+") || /[ .\-()]/.test(value.trim());
+}
+
+/**
+ * Reject hex runs that look like a UK postcode. The bare pattern matches 6-char
+ * hex (`e629fa`, `c6f3ac`), so git short SHAs, docker ids and hex colours were
+ * redacted — both ubiquitous in agent output, and each match mints a marker,
+ * fabricating cross-step linkage. The space is the discriminator: real postcodes
+ * usually carry one, hex ids never do.
+ */
+function ukPostcodePlausible(value: string): boolean {
+  const compact = value.trim();
+  if (/\s/.test(compact)) return true;
+  return !/^[0-9a-f]+$/i.test(compact);
+}
+
+const PII_VALIDATORS: Record<PiiValidator, (value: string) => boolean> = {
+  luhn: luhnValid,
+  iban_mod97: ibanMod97Valid,
+  phone_plausible: phonePlausible,
+  uk_postcode_plausible: ukPostcodePlausible,
+};
 
 export const DEFAULT_RULES: SanitizeRules = {
-  version: 1,
+  // Bump on ANY change; surfaces as `rules_version` in the operator log so a
+  // log line identifies the sanitize ruleset that produced it.
+  version: 4,
   redacted: "[REDACTED]",
   truncated: "[TRUNCATED]",
   resultTextMaxChars: 500,
   intentMaxChars: 1000,
   stringLeafMaxChars: 500,
+  commandMaxChars: 4000,
   sessionHashPrefix: "sess_",
   sessionHashHexChars: 12,
   // Bounded ``pass`` — see rules.yaml credential_field_pattern.
   credentialField: /(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)/i,
   secretValuePatterns: [
-    { pattern: /(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)/gi },
     { pattern: /(bearer\s+)[A-Za-z0-9._=-]+/gi, keepPrefix: true },
     {
       pattern:
-        /(sk-(?:proj|svcacct|admin|live)-)[A-Za-z0-9_-]{8,}|(sk-)[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|(sk-)[a-z0-9]{10,}/g,
+        /(sk-(?:proj|svcacct|admin|live)-)[A-Za-z0-9_-]{8,}|(sk-)[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|(sk-)[a-z0-9]{10,}/gi,
       keepPrefix: true,
     },
-    { pattern: /(sk-ant-)[a-z0-9-]{10,}/g, keepPrefix: true },
-    { pattern: /(gh[pousr]_)[A-Za-z0-9]{20,}|(github_pat_)[A-Za-z0-9_]{20,}/g, keepPrefix: true },
-    { pattern: /(glpat-)[A-Za-z0-9_-]{20,}/g, keepPrefix: true },
+    { pattern: /(sk-ant-)[a-z0-9-]{10,}/gi, keepPrefix: true },
+    { pattern: /(gh[pousr]_)[A-Za-z0-9]{20,}|(github_pat_)[A-Za-z0-9_]{20,}/gi, keepPrefix: true },
+    { pattern: /(glpat-)[A-Za-z0-9_-]{20,}/gi, keepPrefix: true },
     {
       pattern:
         /(xox[baprs]-)[A-Za-z0-9-]{10,}|(xoxe(?:\.xox[bp])?-\d-)[A-Za-z0-9]+|(xapp-\d-)[A-Za-z0-9-]+/gi,
       keepPrefix: true,
     },
     {
-      pattern: /(https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/)[A-Za-z0-9+/_-]+/g,
+      pattern: /(https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/)[A-Za-z0-9+\/_-]+/gi,
       keepPrefix: true,
     },
-    { pattern: /[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}/g },
+    { pattern: /[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,110}/gi },
     {
       pattern:
-        /(https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/)(?:\d+|\[REDACTED\])\/[A-Za-z0-9_-]+/g,
+        /(https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/)(?:\d+|\[REDACTED\])\/[A-Za-z0-9_-]+/gi,
       keepPrefix: true,
     },
-    { pattern: /\b\d{5,16}:A[A-Za-z0-9_-]{34}\b/g },
-    { pattern: /\b(npm_)[A-Za-z0-9]{36}\b/g, keepPrefix: true },
-    { pattern: /\b(SK)[0-9a-fA-F]{32}\b/g, keepPrefix: true },
-    { pattern: /\b(EAA)[A-Za-z0-9]{40,}\b/g, keepPrefix: true },
-    { pattern: /((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA))[A-Z0-9]{16}/g, keepPrefix: true },
-    { pattern: /(AIza)[0-9A-Za-z_-]{35}/g, keepPrefix: true },
-    { pattern: /((?:sk|rk)_(?:live|test)_)[A-Za-z0-9]{20,}/g, keepPrefix: true },
-    { pattern: /(hf_)[A-Za-z0-9]{20,}/g, keepPrefix: true },
-    { pattern: /(gsk_)[A-Za-z0-9]{20,}/g, keepPrefix: true },
-    { pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g },
+    { pattern: /\b\d{5,16}:A[A-Za-z0-9_-]{34}\b/gi },
+    { pattern: /\b(npm_)[A-Za-z0-9]{36}\b/gi, keepPrefix: true },
+    { pattern: /\b(SK)[0-9a-fA-F]{32}\b/gi, keepPrefix: true },
+    { pattern: /\b(EAA)[A-Za-z0-9]{40,}\b/gi, keepPrefix: true },
+    { pattern: /((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA))[A-Z0-9]{16}/gi, keepPrefix: true },
+    { pattern: /(AIza)[0-9A-Za-z_-]{35}/gi, keepPrefix: true },
+    { pattern: /((?:sk|rk)_(?:live|test)_)[A-Za-z0-9]{20,}/gi, keepPrefix: true },
+    { pattern: /(hf_)[A-Za-z0-9]{20,}/gi, keepPrefix: true },
+    { pattern: /(gsk_)[A-Za-z0-9]{20,}/gi, keepPrefix: true },
+    // Three base64url segments; `eyJ` is base64 of `{"` so the prefix is
+    // self-identifying and false positives are negligible. Covers OIDC access
+    // tokens, k8s service-account tokens and session JWTs — none of which a
+    // provider-prefix pattern catches when they appear bare.
+    { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/gi },
+    // Cookie/iSet-Cookie header values and bare session=/sid= assignments, which
+    // the credential var-name segment (underscore-delimited) does not cover.
+    // Terminated on quotes so a header value cannot swallow the closing quote.
+    {
+      pattern:
+        /((?:set-)?cookie\s*:\s*)[^\r\n"']+|((?:session|sessid|sid|auth_?session)\s*=\s*)[^\s;&"']+/gi,
+      keepPrefix: true,
+    },
+    { pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/gi },
   ],
   piiPatterns: [
-    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g },
     // Option C — structured IDs before loose phone/card digit runs
-    /\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][a-z]+|[A-Z]{1,3}\d?[A-Za-z]?)\s+(?:[A-Z][a-z]+\s+){0,3}(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Place|Pl\.?|Terrace|Ter\.?|Close|Crescent|Cres\.?|Grove|Hill|Row)\b/gi,
-    /\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b/gi,
-    /\b(?!BG|GB|NK|KN|TN|NT|ZZ)[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b/gi,
-    /\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b/gi,
-    /\b(?:\d[ -]*?){13,19}\b/g,
-    /\+?[0-9][0-9()\-\s.]{7,}[0-9]/g,
+    { pattern: /\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][a-z]+|[A-Z]{1,3}\d?[A-Za-z]?)\s+(?:[A-Z][a-z]+\s+){0,3}(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Place|Pl\.?|Terrace|Ter\.?|Close|Crescent|Cres\.?|Grove|Hill|Row)\b/gi },
+    { pattern: /\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b/gi, validator: "uk_postcode_plausible" as const },
+    { pattern: /\b(?!BG|GB|NK|KN|TN|NT|ZZ)[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b/gi },
+    { pattern: /\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b/gi, validator: "iban_mod97" as const },
+    { pattern: /\b(?:\d[ -]*?){13,19}\b/g, validator: "luhn" as const },
+    { pattern: /(?:\+\d{1,3}[\s.-]?)?\(\d{2,5}\)[\s.-]?(?:\d[\s.()-]?){5,12}\d|(?:\+\d{1,3}[\s.-]?)?(?:\d[\s.()-]?){8,14}\d/g, validator: "phone_plausible" as const },
   ],
   piiArgKeys: new Set(["command", "cmd", "message", "text", "content", "body"]),
   allowedResultKeys: new Set([
@@ -143,6 +244,15 @@ export function hashSessionId(sessionId: string, rules: SanitizeRules = DEFAULT_
 /** Prose arg keys and exec argv where late-payload attacks are common (mirror Python). */
 const CONTENT_LIKE_KEYS = new Set(["content", "text", "body", "message", "command", "cmd"]);
 
+/**
+ * Argv keys, which get `commandMaxChars` instead of `stringLeafMaxChars`.
+ * Mirrors `COMMAND_LIKE_KEYS` in sentrook/sanitize/signal_excerpt.py. A packed
+ * excerpt is not valid shell, so argv must survive whole for the scanner to
+ * derive exec_shape from it; prose keeps the smaller budget because that is
+ * where secret/PII density is highest and nothing downstream parses it.
+ */
+const COMMAND_LIKE_KEYS = new Set(["command", "cmd"]);
+
 const URL_RE = /https?:\/\/[^\s"'<>]+/gi;
 const SENSITIVE_PATH_RE =
   /auth-profiles(?:\.json)?|openclaw-agent\.sqlite|database\.sqlite|~?\/\.ssh(?:\/[^\s"']*)?|MEMORY\.md|authorized_keys|\/etc\/[^\s"']+/gi;
@@ -156,6 +266,16 @@ const MARKER_PAD = 60;
 function isContentLikeKey(key: string | null | undefined): boolean {
   if (!key) return false;
   return CONTENT_LIKE_KEYS.has(key.toLowerCase());
+}
+
+export function isCommandLikeKey(key: string | null | undefined): boolean {
+  if (!key) return false;
+  return COMMAND_LIKE_KEYS.has(key.toLowerCase());
+}
+
+/** Truncation budget for one leaf, by key class. Mirrors SanitizeRules.leaf_max_chars. */
+export function leafMaxChars(rules: SanitizeRules, key: string | null | undefined): number {
+  return isCommandLikeKey(key) ? rules.commandMaxChars : rules.stringLeafMaxChars;
 }
 
 function signalBudgets(limit: number): { head: number; tail: number } {
@@ -335,70 +455,413 @@ function isShellStyleAssignmentName(name: string): boolean {
   return false;
 }
 
-function redactEnvSecretAssignments(text: string, placeholder: string): string {
+/**
+ * Mints value-stable redaction placeholders for one session (D15).
+ * Mirror of `SecretMarker` in sentrook/sanitize/core.py — keep in lockstep.
+ *
+ * Without a marker every secret collapses to the same `[REDACTED]`, so a value
+ * read in one step is indistinguishable from any other in the next. A marker
+ * makes the *same value* recognisable across steps without disclosing it:
+ * `[REDACTED]` becomes `[REDACTED:a3f19c]`.
+ *
+ * The salt is random per session and never transmitted, so the digest is not
+ * invertible even for a low-entropy secret; a fresh salt per session means no
+ * cross-session correlation; and the plaintext is discarded immediately after
+ * hashing rather than retained in a lookup map. The digest lives inside the
+ * existing brackets so a marked command parses exactly as an unmarked one.
+ */
+export class SecretMarker {
+  // Explicit fields: node --experimental-strip-types rejects parameter properties.
+  readonly #salt: Buffer;
+  readonly #scope: string;
+
+  constructor(salt: Buffer, scope: string = "") {
+    this.#salt = salt;
+    this.#scope = scope;
+  }
+
+  static forSession(sessionId?: string | null, salt?: Buffer): SecretMarker {
+    return new SecretMarker(salt ?? randomBytes(32), sessionId ?? "");
+  }
+
+  digest(value: string): string {
+    return createHmac("sha256", this.#salt)
+      .update(`${this.#scope}\u0000${normalizeSecret(value)}`, "utf8")
+      .digest("hex")
+      .slice(0, MARKER_HEX_CHARS);
+  }
+
+  mint(placeholder: string, value: string): string {
+    const d = this.digest(value);
+    return placeholder.endsWith("]")
+      ? `${placeholder.slice(0, -1)}:${d}]`
+      : `${placeholder}:${d}`;
+  }
+}
+
+export const MARKER_HEX_CHARS = 6;
+
+/**
+ * Process-lifetime salt for session markers. Random at import, never persisted
+ * and never transmitted — so markers are meaningless to anyone but this
+ * gateway, and rotate on restart. Mixing the session id into the HMAC scope
+ * gives per-session semantics without holding any per-session state.
+ */
+const PROCESS_MARKER_SALT = randomBytes(32);
+
+/**
+ * Whether to mint value-stable markers. **Opt-in, default off.**
+ *
+ * A marker publishes one extra bit about the session: that two redacted
+ * positions held the same value. That is strictly more than a bare
+ * `[REDACTED]` discloses, so it is a deliberate choice rather than a default —
+ * and it changes the sanitized wire format, which the shared parity fixtures
+ * correctly refuse to accept silently.
+ *
+ * Set `SENTROOK_SECRET_MARKERS=1` on hosts collecting Phase 4 research traffic.
+ */
+export function secretMarkersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return /^(1|true|yes|on)$/i.test(env.SENTROOK_SECRET_MARKERS ?? "");
+}
+
+/** Marker for one session, or undefined when markers are off. */
+export function markerForSession(
+  sessionId?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): SecretMarker | undefined {
+  if (!secretMarkersEnabled(env)) return undefined;
+  return new SecretMarker(PROCESS_MARKER_SALT, sessionId ?? "");
+}
+
+/** Quoting and trailing punctuation that different patterns capture inconsistently. */
+const SECRET_EDGE_LEADING = new Set([" ", "\t", "\n", "\r", "\f", "\v", '"', "'", "`"]);
+const SECRET_EDGE_TRAILING = new Set([
+  ...SECRET_EDGE_LEADING,
+  ",",
+  ";",
+  ":",
+  ")",
+  "]",
+  "}",
+]);
+
+/** Canonical form of a secret for marker digesting. Mirror of `normalize_secret`.
+ *
+ * Trimmed by index rather than with `/^[…]+|[…]+$/g`. That regex is a
+ * polynomial-ReDoS shape — a long run of edge characters that ultimately fails
+ * the `$` anchor is re-scanned from each start position — and this runs on the
+ * marker path, over values a tool call can influence. The index walk is O(n)
+ * and produces byte-identical output, which the shared parity fixture checks.
+ */
+export function normalizeSecret(value: string): string {
+  const trimmed = value.trim();
+  let start = 0;
+  let end = trimmed.length;
+  while (start < end && SECRET_EDGE_LEADING.has(trimmed[start])) start += 1;
+  while (end > start && SECRET_EDGE_TRAILING.has(trimmed[end - 1])) end -= 1;
+  return trimmed.slice(start, end);
+}
+
+/** True when `value` is already a redaction placeholder, marked or not. */
+export function isPlaceholder(value: string, placeholder: string): boolean {
+  // Trimmed, not normalizeSecret — that strips a trailing `]`, part of the
+  // placeholder itself.
+  const v = value.trim();
+  if (v === placeholder) return true;
+  if (!placeholder.endsWith("]")) return false;
+  const base = `${placeholder.slice(0, -1)}:`;
+  if (!v.startsWith(base) || !v.endsWith("]")) return false;
+  const digest = v.slice(base.length, -1);
+  return digest.length > 0 && /^[A-Za-z0-9]+$/.test(digest);
+}
+
+/**
+ * Placeholder for one redacted value — marked when a marker is supplied.
+ *
+ * **Already-redacted values pass through verbatim.** Only the plugin holds a
+ * session salt, so only the plugin mints markers; the scan server re-sanitizes
+ * on ingress and must not disturb them. Without this guard that re-scrub rewrote
+ * `[REDACTED:48df5d]` back to a bare `[REDACTED]` — markers never reached the
+ * scanner and Phase 4 saw nothing — and a *different* marker would re-mint a
+ * wrong digest and invent false linkages.
+ */
+function mint(placeholder: string, value: string, marker?: SecretMarker): string {
+  if (isPlaceholder(value, placeholder)) return value.trim();
+  return marker ? marker.mint(placeholder, value) : placeholder;
+}
+
+const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** [start, end, token] of the command-name token, skipping env assignments. */
+function headSpan(text: string): [number, number, string] | null {
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (LEADING_ASSIGNMENT.test(m[0])) continue;
+    return [m.index, m.index + m[0].length, m[0]];
+  }
+  return null;
+}
+
+/**
+ * Undo any scrubbing that altered the command name (D14).
+ *
+ * A binary name is not a secret, so a pattern matching there is a false positive
+ * by definition — and it is the one position where the placeholder destroys the
+ * parse, and therefore `exec_shape.heads`, which every rule downstream keys on.
+ * Splices by character span so surrounding whitespace is untouched.
+ */
+export function restoreHeadToken(
+  original: string,
+  scrubbed: string,
+  isSecret?: (token: string) => boolean,
+): string {
+  const src = headSpan(original);
+  const dst = headSpan(scrubbed);
+  if (!src || !dst || src[2] === dst[2]) return scrubbed;
+  // CRITICAL: never restore a head that is itself a secret. Without this the
+  // guard silently undoes a correct redaction — `ghp_AbC…` alone as a command is
+  // redacted to `ghp_[REDACTED]`, the heads differ, and restoring puts the
+  // credential straight back. Safe only when scrubbing the head *on its own*
+  // leaves it unchanged, meaning its redaction was collateral from a longer
+  // match (e.g. gitleaks' `curl-auth-header`, whose span starts at `curl`).
+  if (isSecret && isSecret(src[2])) return scrubbed;
+  return scrubbed.slice(0, dst[0]) + src[2] + scrubbed.slice(dst[1]);
+}
+
+function redactEnvSecretAssignments(
+  text: string,
+  placeholder: string,
+  marker?: SecretMarker,
+): string {
   return text.replace(ENV_ASSIGNMENT, (match, exportPrefix: string, name: string) => {
     if (!isCredentialVarName(name)) return match;
     if (!exportPrefix && !isShellStyleAssignmentName(name)) return match;
-    return `${exportPrefix}${name}=${placeholder}`;
+    const value = match.slice(match.indexOf("=") + 1);
+    return `${exportPrefix}${name}=${mint(placeholder, value, marker)}`;
   });
 }
 
-function redactCliSecretFlags(text: string, placeholder: string): string {
-  return text.replace(CLI_SECRET_FLAG, (_match, flag: string, sep: string) => {
-    return `${flag}${sep}${placeholder}`;
+function redactCliSecretFlags(
+  text: string,
+  placeholder: string,
+  marker?: SecretMarker,
+): string {
+  return text.replace(CLI_SECRET_FLAG, (match, flag: string, sep: string) => {
+    const value = match.slice(flag.length + sep.length);
+    return `${flag}${sep}${mint(placeholder, value, marker)}`;
   });
 }
 
-function applyPatterns(text: string, patterns: RegExp[], replacement: string): string {
-  let out = text;
-  for (const pattern of patterns) {
+/**
+ * Structured tokens that are never PII and must survive scrubbing intact:
+ * ISO-8601 timestamps and UUIDs. Both are digit-and-dash shaped, so loose PII
+ * patterns match them — observed redacting every `date` and `created_at` field
+ * in real result excerpts, which destroys the data for research and makes
+ * markers collide on timestamps. Mirror of `_STRUCTURED_TOKEN` in core.py.
+ */
+const STRUCTURED_TOKEN =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/gi;
+
+/** Private-use sentinel; will not occur in argv or JSON text. */
+const HOLD = "\ue000";
+
+function applyPatterns(
+  text: string,
+  patterns: Array<{ pattern: RegExp; validator?: PiiValidator }>,
+  replacement: string,
+  marker?: SecretMarker,
+): string {
+  const held: string[] = [];
+  const hold = (match: string) => {
+    held.push(match);
+    return `${HOLD}${held.length - 1}${HOLD}`;
+  };
+  // Hold out placeholders we already produced. A marker digest is 6 hex chars
+  // and ~2.7% of them match `uk_postcode` (`[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}`
+  // under IGNORECASE matches strings like `fb89ad`), which re-redacted the
+  // digest *inside* its own placeholder and produced the nested
+  // `[REDACTED:[REDACTED:…]]` seen in live logs — intermittently, because it
+  // depends on the digest.
+  const base = replacement.endsWith("]") ? replacement.slice(0, -1) : replacement;
+  const placeholderRe = new RegExp(
+    `${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?::[0-9a-zA-Z]+)?${replacement.endsWith("]") ? "\\]" : ""}`,
+    "g",
+  );
+  STRUCTURED_TOKEN.lastIndex = 0;
+  // Strip any pre-existing sentinel so the restore cannot be spoofed by input.
+  let out = text.split(HOLD).join("").replace(placeholderRe, hold).replace(STRUCTURED_TOKEN, hold);
+  for (const { pattern, validator } of patterns) {
     pattern.lastIndex = 0;
-    out = out.replace(pattern, replacement);
+    const check = validator ? PII_VALIDATORS[validator] : undefined;
+    out = out.replace(pattern, (match: string) =>
+      // A candidate that fails its checksum is not PII — leave it alone.
+      check && !check(match) ? match : mint(replacement, match, marker),
+    );
   }
-  return out;
+  return out.replace(
+    new RegExp(`${HOLD}(\\d+)${HOLD}`, "g"),
+    (_m, i: string) => held[Number(i)],
+  );
 }
 
 function applySecretValuePatterns(
   text: string,
   patterns: SecretValuePattern[],
   redacted: string,
+  marker?: SecretMarker,
 ): string {
   let out = text;
   for (const { pattern, keepPrefix } of patterns) {
     pattern.lastIndex = 0;
-    out = out.replace(pattern, (match, ...args: unknown[]) => {
+    out = out.replace(pattern, (match: string, ...args: unknown[]) => {
+      // The marker always digests the WHOLE match, never the suffix after the
+      // kept prefix — otherwise `ghp_abc…` caught here (prefix kept) and the
+      // same value caught by `TOKEN=ghp_abc…` (prefix not kept) would mint
+      // different markers and the dataflow link would silently fail.
       if (!keepPrefix) {
-        return redacted;
+        return mint(redacted, match, marker);
       }
       for (const arg of args) {
-        if (typeof arg === "number") {
-          break;
-        }
+        if (typeof arg === "number") break;
         if (typeof arg === "string" && arg.length > 0) {
-          return `${arg}${redacted}`;
+          // Idempotence: if what follows the kept prefix is already a
+          // placeholder, leave the match alone. Digesting the *whole* match
+          // (needed so one secret marks identically however it was captured)
+          // would otherwise re-mint on every pass.
+          if (isPlaceholder(match.slice(arg.length), redacted)) return match;
+          return `${arg}${mint(redacted, match, marker)}`;
         }
       }
-      return redacted;
+      return mint(redacted, match, marker);
     });
   }
   return out;
 }
 
-function applySecretPatterns(text: string, rules: SanitizeRules): string {
-  let cleaned = redactEnvSecretAssignments(text, rules.redacted);
-  cleaned = redactCliSecretFlags(cleaned, rules.redacted);
-  return applySecretValuePatterns(cleaned, rules.secretValuePatterns, rules.redacted);
+/**
+ * Bits per character — gitleaks' own measure of "is this random enough".
+ * A provider prefix makes a pattern specific; entropy is what lets a *generic*
+ * pattern tell an actual credential from an ordinary identifier of the same
+ * shape. Mirror of `shannon_entropy` in sanitize/gitleaks.py.
+ */
+export function shannonEntropy(value: string): number {
+  if (!value) return 0;
+  const counts = new Map<string, number>();
+  for (const ch of value) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+  let total = 0;
+  for (const n of counts.values()) {
+    const p = n / value.length;
+    total -= p * Math.log2(p);
+  }
+  return total;
+}
+
+/**
+ * Never treated as credentials by the catalogue: UUIDs and ISO-8601 timestamps
+ * are identifiers, not secrets. `generic-api-key` matches `auth` as a substring
+ * (so `author_id` fires) and would otherwise redact every UUID in a JSON result
+ * — destroying the document and minting one shared marker across every event
+ * with the same id, the cross-step "same value" signal Phase 4 reads as dataflow.
+ * Mirror of `_NOT_A_SECRET` in sanitize/gitleaks.py.
+ */
+const NOT_A_SECRET =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i;
+
+let compiledGitleaks: Array<{ rule: GitleaksRule; pattern: RegExp }> | null = null;
+
+/** Rules this runtime could not compile. Empty on a supported Node. */
+export const gitleaksUnsupportedRuleIds: string[] = [];
+
+function gitleaksPatterns(): Array<{ rule: GitleaksRule; pattern: RegExp }> {
+  if (compiledGitleaks) return compiledGitleaks;
+  // Compiled defensively, one rule at a time. Previously this was a bare
+  // `.map(new RegExp(...))`, so a single pattern the running engine could not
+  // parse threw out of here and took **all** secret redaction with it — not one
+  // rule, the whole pass. That is exactly what happened when the catalogue
+  // emitted ES2025 inline modifier groups: fine on Node 24, fatal on Node 22.
+  //
+  // The generator now translates those, so this should never fire. It stays
+  // because the failure mode is catastrophic and the trigger is a vendor bump
+  // away: losing one provider's rule is survivable, losing redaction is not.
+  const compiled: Array<{ rule: GitleaksRule; pattern: RegExp }> = [];
+  for (const rule of GITLEAKS_RULES) {
+    try {
+      compiled.push({ rule, pattern: new RegExp(rule.regex, rule.ignorecase ? "gi" : "g") });
+    } catch {
+      gitleaksUnsupportedRuleIds.push(rule.id);
+    }
+  }
+  compiledGitleaks = compiled;
+  return compiledGitleaks;
+}
+
+/**
+ * Vendored gitleaks catalogue. Sentrook does not maintain its own secret-pattern
+ * catalogue — see sanitize/gitleaks.py. Generated from one pinned TOML into both
+ * languages so they cannot drift.
+ */
+function applyGitleaksPatterns(
+  text: string,
+  placeholder: string,
+  marker?: SecretMarker,
+): string {
+  let out = text;
+  for (const { rule, pattern } of gitleaksPatterns()) {
+    pattern.lastIndex = 0;
+    if (!pattern.test(out)) continue;
+    pattern.lastIndex = 0;
+    out = out.replace(pattern, (match: string, ...args: unknown[]) => {
+      // Prefer the rule's capture group. Several catalogue rules deliberately
+      // match surrounding context — `generic-api-key` spans the key name *and*
+      // the closing quote — so replacing the whole match ate JSON structure
+      // (`"author_id": "…"` became `"[REDACTED]`, unbalanced). Redacting only
+      // the captured credential leaves the document intact.
+      const groupIndex = rule.captureGroup ?? 1;
+      const candidate = args[groupIndex - 1];
+      const secret = typeof candidate === "string" && candidate.length > 0 ? candidate : match;
+      // UUIDs and ISO timestamps are identifiers, not credentials.
+      if (NOT_A_SECRET.test(secret.trim().replace(/^["']|["']$/g, ""))) return match;
+      // Below the rule's own entropy floor this is not a credential — leave it.
+      if (rule.entropy !== null && shannonEntropy(secret) < rule.entropy) return match;
+      const minted = mint(placeholder, secret, marker);
+      return secret === match ? minted : match.split(secret).join(minted);
+    });
+  }
+  return out;
+}
+
+function applySecretPatterns(
+  text: string,
+  rules: SanitizeRules,
+  marker?: SecretMarker,
+): string {
+  let cleaned = redactEnvSecretAssignments(text, rules.redacted, marker);
+  cleaned = redactCliSecretFlags(cleaned, rules.redacted, marker);
+  cleaned = applySecretValuePatterns(cleaned, rules.secretValuePatterns, rules.redacted, marker);
+  // Catalogue runs LAST: Sentrook's own patterns keep provider prefixes
+  // (`sk-ant-[REDACTED]`) that L2 rules match on, and gitleaks would replace the
+  // whole match. Placeholders are inert, so it never re-redacts.
+  return applyGitleaksPatterns(cleaned, rules.redacted, marker);
 }
 
 /** Secret-pattern scrub for operator-facing copy (no PII, no length placeholder). */
-export function scrubSecrets(text: string, rules: SanitizeRules = DEFAULT_RULES): string {
-  return applySecretPatterns(text, rules);
+export function scrubSecrets(
+  text: string,
+  rules: SanitizeRules = DEFAULT_RULES,
+  marker?: SecretMarker,
+): string {
+  return applySecretPatterns(text, rules, marker);
 }
 
 /** Secret + PII scrub with no length cap (local operator log). */
-export function scrubSecretsAndPii(text: string, rules: SanitizeRules = DEFAULT_RULES): string {
-  let cleaned = applySecretPatterns(text, rules);
-  cleaned = applyPatterns(cleaned, rules.piiPatterns, rules.redacted);
+export function scrubSecretsAndPii(
+  text: string,
+  rules: SanitizeRules = DEFAULT_RULES,
+  marker?: SecretMarker,
+): string {
+  let cleaned = applySecretPatterns(text, rules, marker);
+  cleaned = applyPatterns(cleaned, rules.piiPatterns, rules.redacted, marker);
   return cleaned;
 }
 
@@ -408,7 +871,12 @@ const OPERATOR_SCRUB_MAX_DEPTH = 16;
 export function scrubOperatorValue(
   value: unknown,
   rules: SanitizeRules = DEFAULT_RULES,
-  options: { parentKey?: string | null; pii?: boolean; depth?: number } = {},
+  options: {
+    parentKey?: string | null;
+    pii?: boolean;
+    depth?: number;
+    marker?: SecretMarker;
+  } = {},
 ): unknown {
   const depth = options.depth ?? 0;
   const parentKey = options.parentKey ?? null;
@@ -416,7 +884,7 @@ export function scrubOperatorValue(
   if (depth > OPERATOR_SCRUB_MAX_DEPTH) return "[…]";
   if (parentKey && isCredentialField(parentKey, rules)) return rules.redacted;
   if (typeof value === "string") {
-    return scrubSecretsAndPii(value, rules);
+    return scrubSecretsAndPii(value, rules, options.marker);
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const nestedPii = pii || (parentKey != null && parentKey.toLowerCase() === "env");
@@ -426,13 +894,14 @@ export function scrubOperatorValue(
         parentKey: key,
         pii: nestedPii,
         depth: depth + 1,
+        marker: options.marker,
       });
     }
     return out;
   }
   if (Array.isArray(value)) {
     return value.map((item) =>
-      scrubOperatorValue(item, rules, { pii, depth: depth + 1 }),
+      scrubOperatorValue(item, rules, { pii, depth: depth + 1, marker: options.marker }),
     );
   }
   return value;
@@ -441,11 +910,20 @@ export function scrubOperatorValue(
 function scrubString(
   text: string,
   rules: SanitizeRules,
-  options: { pii: boolean; maxChars: number; key?: string | null },
+  options: { pii: boolean; maxChars: number; key?: string | null; marker?: SecretMarker },
 ): string {
-  let cleaned = applySecretPatterns(text, rules);
+  let cleaned = applySecretPatterns(text, rules, options.marker);
   if (options.pii) {
-    cleaned = applyPatterns(cleaned, rules.piiPatterns, rules.redacted);
+    cleaned = applyPatterns(cleaned, rules.piiPatterns, rules.redacted, options.marker);
+  }
+  if (isCommandLikeKey(options.key)) {
+    // D14: a binary name is never a secret, and it is the one position where the
+    // placeholder destroys the parse and therefore exec_shape.heads.
+    cleaned = restoreHeadToken(
+      text,
+      cleaned,
+      (token) => applySecretPatterns(token, rules) !== token,
+    );
   }
   return truncate(cleaned, options.maxChars, rules, {
     signalAware: isContentLikeKey(options.key),
@@ -465,6 +943,7 @@ function sanitizeValue(
     pii: boolean;
     maxChars: number;
     piiKeys?: ReadonlySet<string>;
+    marker?: SecretMarker;
   },
 ): unknown {
   if (options.parentKey !== null && isCredentialField(options.parentKey, rules)) {
@@ -475,6 +954,7 @@ function sanitizeValue(
       pii: options.pii,
       maxChars: options.maxChars,
       key: options.parentKey,
+      marker: options.marker,
     });
   }
   if (Array.isArray(value)) {
@@ -484,6 +964,7 @@ function sanitizeValue(
         pii: false,
         maxChars: options.maxChars,
         piiKeys: options.piiKeys,
+        marker: options.marker,
       }),
     );
   }
@@ -494,6 +975,7 @@ function sanitizeValue(
       pii: nestedPii,
       maxChars: options.maxChars,
       piiKeys: options.piiKeys,
+      marker: options.marker,
     });
   }
   return value;
@@ -502,16 +984,26 @@ function sanitizeValue(
 function sanitizeMapping(
   mapping: Record<string, unknown>,
   rules: SanitizeRules,
-  options: { pii: boolean; maxChars: number; piiKeys?: ReadonlySet<string> },
+  options: {
+    pii: boolean;
+    maxChars: number;
+    piiKeys?: ReadonlySet<string>;
+    marker?: SecretMarker;
+  },
 ): Record<string, unknown> {
   const piiKeys = options.piiKeys ?? new Set<string>();
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(mapping)) {
+    // Argv keys carry the larger command budget; prose keys keep options.maxChars.
+    const keyMax = isCommandLikeKey(key)
+      ? Math.max(options.maxChars, rules.commandMaxChars)
+      : options.maxChars;
     out[key] = sanitizeValue(value, rules, {
       parentKey: key,
       pii: options.pii || piiKeys.has(key),
-      maxChars: options.maxChars,
+      maxChars: keyMax,
       piiKeys,
+      marker: options.marker,
     });
   }
   return out;
@@ -520,6 +1012,7 @@ function sanitizeMapping(
 function sanitizeResultSummary(
   summary: Record<string, unknown>,
   rules: SanitizeRules,
+  marker?: SecretMarker,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...summary };
   if (typeof summary.excerpt === "string") {
@@ -527,6 +1020,7 @@ function sanitizeResultSummary(
       pii: false,
       maxChars: rules.resultTextMaxChars,
       key: "excerpt",
+      marker,
     });
     out.excerpt = scrubbed;
     out.byte_size = Buffer.byteLength(scrubbed, "utf8");
@@ -540,8 +1034,9 @@ function sanitizeResultSummary(
         typeof item === "string"
           ? scrubString(item, rules, {
               pii: true,
-              maxChars: rules.stringLeafMaxChars,
+              maxChars: rules.commandMaxChars,
               key: "command",
+              marker,
             })
           : item,
       );
@@ -554,6 +1049,7 @@ function sanitizeResultSummary(
 function sanitizeStep(
   step: Record<string, unknown>,
   rules: SanitizeRules,
+  marker?: SecretMarker,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...step };
   if (step.args && typeof step.args === "object" && !Array.isArray(step.args)) {
@@ -561,6 +1057,7 @@ function sanitizeStep(
       pii: false,
       maxChars: rules.stringLeafMaxChars,
       piiKeys: rules.piiArgKeys,
+      marker,
     });
   }
   if (
@@ -568,9 +1065,12 @@ function sanitizeStep(
     typeof step.result_summary === "object" &&
     !Array.isArray(step.result_summary)
   ) {
+    // Phase 4 needs markers on BOTH ends — the executed step's result and the
+    // pending step's argv — or the flow is invisible.
     out.result_summary = sanitizeResultSummary(
       step.result_summary as Record<string, unknown>,
       rules,
+      marker,
     );
   }
   return out;
@@ -619,17 +1119,23 @@ export function sanitizePlanirDict(
   // rewrite ``run_id`` from it when there is no episode id.
   hashMetadataId(data, metadata, "session_key", rules, !hasSessionId);
 
+  // Minted from the ORIGINAL session id, before it is hashed, so the scope is
+  // stable across every step of one session — which is what makes step-to-step
+  // dataflow linkage work.
+  const marker = markerForSession(hasSessionId ? (originalSessionId as string) : null);
+
   if (typeof data.intent === "string") {
     data.intent = scrubString(data.intent, rules, {
       pii: true,
       maxChars: rules.intentMaxChars,
+      marker,
     });
   }
 
   if (Array.isArray(data.steps)) {
     data.steps = data.steps
       .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
-      .map((item) => sanitizeStep(item, rules));
+      .map((item) => sanitizeStep(item, rules, marker));
   }
 
   return data;

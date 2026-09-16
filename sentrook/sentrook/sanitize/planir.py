@@ -16,6 +16,7 @@ from sentrook.sanitize.core import (
     scrub_string as _scrub_string,
 )
 from sentrook.sanitize.rules import SanitizeRules, load_rules
+from sentrook.sanitize.signal_excerpt import is_command_like_key
 
 
 @dataclass(frozen=True)
@@ -88,12 +89,14 @@ def _sanitize_mapping(
     out: dict[str, Any] = {}
     for key, value in mapping.items():
         key_pii = pii or key in pii_keys
+        # Argv keys carry the larger command budget; prose keys keep ``max_chars``.
+        key_max = max(max_chars, rules.command_max_chars) if is_command_like_key(key) else max_chars
         out[key] = _sanitize_value(
             value,
             rules,
             parent_key=key,
             pii=key_pii,
-            max_chars=max_chars,
+            max_chars=key_max,
             pii_keys=pii_keys,
         )
     return out
@@ -120,7 +123,7 @@ def _sanitize_result_summary(summary: dict[str, Any], rules: SanitizeRules) -> d
                         str(item),
                         rules,
                         pii=True,
-                        max_chars=rules.string_leaf_max_chars,
+                        max_chars=rules.command_max_chars,
                         key="command",
                     )
                     if isinstance(item, str)

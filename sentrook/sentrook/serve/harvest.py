@@ -21,7 +21,14 @@ from sentrook.serve.log import load_scan_log
 
 
 def _resolution_for_harvest_label(label: CorpusLabel | None) -> FeedbackResolution:
-    """Mirror live feedback: benign→fatigue multi-kept; attack→winner only."""
+    """Mirror live feedback: benign→fatigue multi-kept.
+
+    ``deny`` no longer mints a corpus label (see
+    :func:`sentrook.serve.feedback.resolution_to_label`), so harvesting an
+    ``attack`` label would produce a submission the server discards. Callers
+    asking for a non-benign harvest label get ``deny``, which now resolves to
+    "unlabelable" downstream — the row is skipped rather than mislabelled.
+    """
     if label == "benign":
         return "allow-once"
     return "deny"

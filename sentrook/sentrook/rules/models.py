@@ -17,12 +17,17 @@ class OwaspRefs(BaseModel):
 class RuleMeta(BaseModel):
     name: str
     severity: Literal["low", "medium", "high", "critical"] = "medium"
-    action: Literal["block", "review"] = "block"
+    action: Literal["block", "review", "allow"] = "block"
     description: str | None = None
     owasp: OwaspRefs | None = None
     # Whether L3 may override this rule's L2 verdict. When unset, the scanner falls
     # back to ScannerConfig.default_l2_authority.
     authority: L2Authority | None = None
+    #: Review rule ids this allow rule removes from the review set (§1.2).
+    #: Required on `action: allow`, and validated at compile time to name only
+    #: soft-authority review rules — an allow rule may never touch a block or a
+    #: hard review.
+    suppresses: list[str] = Field(default_factory=list)
 
 
 class PendingToolCondition(BaseModel):

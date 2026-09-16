@@ -1,3 +1,4 @@
+import { DEFAULT_RULES } from "./sanitize.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -535,7 +536,7 @@ describe("operator event builders", () => {
     assert.equal(event.parent_session_id, "agent:main:main");
     assert.equal((event.metadata as { batch_size?: number }).batch_size, 1);
     assert.notEqual(event.plugin_version, "unknown");
-    assert.equal(event.rules_version, 1);
+    assert.equal(event.rules_version, DEFAULT_RULES.version);
   });
 
   it("does not treat cancelled as a human contribution", () => {

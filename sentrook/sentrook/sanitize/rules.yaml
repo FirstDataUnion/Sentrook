@@ -2,7 +2,10 @@
 # Consumed by sentrook.sanitize (Python) and mirrored in integrations/openclaw/plugin/sanitize.ts.
 # Option C: curated regex expansions (street_address, uk_postcode, …) live here.
 
-version: 1
+# Bump on ANY change to these rules. Recorded as ``rules_version`` in the
+# operator log, so a log line identifies the sanitize ruleset that produced it —
+# which is how you tell a genuine redaction bug from a stale deployed bundle.
+version: 4
 
 placeholders:
   redacted: "[REDACTED]"
@@ -15,6 +18,12 @@ limits:
   result_text_max_chars: 500
   intent_max_chars: 1000
   string_leaf_max_chars: 500
+  # Argv (command/cmd) budget. Larger than prose because Phase 1 `exec_shape`
+  # must parse it as real shell and a packed excerpt is not valid bash. Measured
+  # on corpus/: p99 of real commands is ~500, so 4000 covers the compound and
+  # heredoc tail. Truncation only — secret/PII scrubbing runs regardless of
+  # length. Mirrored in integrations/openclaw/plugin/sanitize.ts.
+  command_max_chars: 4000
 
 session_id:
   hash_prefix: "sess_"
@@ -37,10 +46,6 @@ credential_field_pattern: "(token|password|passwd|(?<![a-z])pass(?![a-z])|secret
 # so L2 rules can still see sk-ant- / Bearer / webhook path without the secret.
 # Capture the stable prefix; omit keep_prefix to replace the whole match.
 secret_value_patterns:
-  - name: labeled_secret
-    # Avoid eating CLI flags (--password) and assignment LHS already scrubbed
-    # (PASSWORD=[REDACTED]); keyword-only replacement never redacted values.
-    pattern: '(?<![-_])\b(api[_-]?key|password|secret)\b(?!\s*=)'
   - name: bearer_token
     pattern: '(bearer\s+)[A-Za-z0-9._=-]+'
     keep_prefix: true
@@ -101,6 +106,19 @@ secret_value_patterns:
   - name: groq_api_key
     pattern: '(gsk_)[A-Za-z0-9]{20,}'
     keep_prefix: true
+  - name: jwt
+    # Three base64url segments; `eyJ` is base64 of `{"` so the prefix is
+    # self-identifying and false positives are negligible. Covers OIDC access
+    # tokens, Kubernetes service-account tokens and session JWTs — all of which
+    # this stack itself emits, and none of which a provider-prefix pattern
+    # catches when they appear bare (not behind `Bearer ` or an assignment).
+    pattern: '\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}'
+  - name: cookie_value
+    # `Cookie:` / `Set-Cookie:` header values and bare `session=` / `sid=`
+    # assignments — neither is covered by the credential var-name segment,
+    # which requires an underscore-delimited keyword.
+    pattern: '((?i:set-)?(?i:cookie)\s*:\s*)[^\r\n"'']+|((?i:session|sessid|sid|auth_?session)\s*=\s*)[^\s;&"'']+'
+    keep_prefix: true
   - name: pem_private_key
     pattern: '-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----'
 
@@ -112,6 +130,10 @@ pii_patterns:
   - name: street_address
     pattern: '(?i)\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][a-z]+|[A-Z]{1,3}\d?[A-Za-z]?)\s+(?:[A-Z][a-z]+\s+){0,3}(?:Street|St\.?|Road|Rd\.?|Avenue|Ave\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Place|Pl\.?|Terrace|Ter\.?|Close|Crescent|Cres\.?|Grove|Hill|Row)\b'
   - name: uk_postcode
+    # See _uk_postcode_plausible: the bare pattern matches 6-char hex, so git
+    # short SHAs, docker ids and hex colours were redacted. A space distinguishes
+    # a real postcode from a hex id.
+    validator: uk_postcode_plausible
     pattern: '(?i)\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b'
   - name: uk_ni
     # UK National Insurance: 2 letters + 6 digits + A–D (spaces optional).
@@ -119,11 +141,26 @@ pii_patterns:
     pattern: '(?i)\b(?!BG|GB|NK|KN|TN|NT|ZZ)[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b'
   - name: iban
     # ISO 13616 IBAN (country + check digits + BBAN); optional spaces every 4.
+    validator: iban_mod97
     pattern: '(?i)\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b'
   - name: credit_card
+    # ``validator`` borrows Presidio's discipline without its weight: a match is
+    # only redacted if it passes the checksum. Without Luhn this matched any
+    # 13-19 digit run — epoch-ms timestamps, byte counts, port lists.
+    validator: luhn
     pattern: '\b(?:\d[ -]*?){13,19}\b'
   - name: phone
-    pattern: '\+?[0-9][0-9()\-\s.]{7,}[0-9]'
+    # See _phone_plausible: E.164 caps a phone at 15 digits, and real phones in
+    # prose carry punctuation. Together these reject epoch timestamps, port
+    # lists and byte counts, which the pattern alone cannot distinguish.
+    validator: phone_plausible
+    # Requires 9+ actual digits (or a parenthesised area code), not merely 7+
+    # characters drawn from digits-and-separators. The looser form matched every
+    # ISO date: `2026-07-03` is a digit, then 8 chars of digits-and-dashes, then
+    # a digit. Structured tokens (ISO 8601, UUID) are additionally protected in
+    # apply_pii_patterns — belt and braces, since a missed date format would
+    # otherwise silently redact timestamps across every result excerpt.
+    pattern: '(?:\+\d{1,3}[\s.-]?)?\(\d{2,5}\)[\s.-]?(?:\d[\s.()-]?){5,12}\d|(?:\+\d{1,3}[\s.-]?)?(?:\d[\s.()-]?){8,14}\d'
 
 # Arg keys that receive PII scrubbing (in addition to intent and result text/command).
 pii_arg_keys:

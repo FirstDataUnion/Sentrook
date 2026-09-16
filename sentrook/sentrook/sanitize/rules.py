@@ -23,25 +23,39 @@ class SanitizeRules:
     result_text_max_chars: int
     intent_max_chars: int
     string_leaf_max_chars: int
+    command_max_chars: int
     session_hash_prefix: str
     session_hash_hex_chars: int
     credential_field: re.Pattern[str]
     secret_value_patterns: tuple[tuple[str, re.Pattern[str], bool], ...]
-    pii_patterns: tuple[tuple[str, re.Pattern[str]], ...]
+    pii_patterns: tuple[tuple[str, re.Pattern[str], str | None], ...]
     pii_arg_keys: frozenset[str]
     allowed_result_keys: frozenset[str]
+
+    def leaf_max_chars(self, key: str | None) -> int:
+        """Truncation budget for one arg leaf, by key class.
+
+        ``command``/``cmd`` get :attr:`command_max_chars`; everything else gets
+        :attr:`string_leaf_max_chars`. Single source of truth for the split so
+        engine, plugin mirror and scan log cannot drift apart.
+        """
+        from sentrook.sanitize.signal_excerpt import is_command_like_key
+
+        return self.command_max_chars if is_command_like_key(key) else self.string_leaf_max_chars
 
 
 def _compile_patterns(
     items: list[dict[str, Any]],
     *,
     flags: int = 0,
-) -> tuple[tuple[str, re.Pattern[str]], ...]:
-    compiled: list[tuple[str, re.Pattern[str]]] = []
+) -> tuple[tuple[str, re.Pattern[str], str | None], ...]:
+    """Compile PII patterns, carrying an optional checksum ``validator`` name."""
+    compiled: list[tuple[str, re.Pattern[str], str | None]] = []
     for item in items:
         name = str(item["name"])
         pattern = re.compile(str(item["pattern"]), flags)
-        compiled.append((name, pattern))
+        validator = item.get("validator")
+        compiled.append((name, pattern, str(validator) if validator else None))
     return tuple(compiled)
 
 
@@ -83,6 +97,7 @@ def load_rules(path: Path | None = None) -> SanitizeRules:
         result_text_max_chars=int(limits.get("result_text_max_chars", 500)),
         intent_max_chars=int(limits.get("intent_max_chars", 1000)),
         string_leaf_max_chars=int(limits.get("string_leaf_max_chars", 500)),
+        command_max_chars=int(limits.get("command_max_chars", 4000)),
         session_hash_prefix=str(session_id.get("hash_prefix", "sess_")),
         session_hash_hex_chars=int(session_id.get("hash_hex_chars", 12)),
         credential_field=re.compile(
