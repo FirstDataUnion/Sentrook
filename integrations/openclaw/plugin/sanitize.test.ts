@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import type { PlanIR } from "./planir.ts";
+import { GITLEAKS_RULES } from "./gitleaksRules.ts";
 import {
   DEFAULT_RULES,
   hashSessionId,
@@ -420,5 +421,21 @@ describe("gitleaks catalogue portability (F22)", () => {
       const out = scrubSecretsAndPii(text);
       assert.ok(out.includes("[REDACTED"), `${label} no longer redacts: ${out}`);
     }
+  });
+});
+
+describe("captureGroup (gitleaks secretGroup, renamed)", () => {
+  it("redacts only the credential, not the key name", () => {
+    // Exactly one catalogue rule sets it — `sonar-api-token`, group 2 — so the
+    // field can break without any other test noticing: every other rule falls
+    // back to group 1, which gives the same answer. Byte-identical to the
+    // Python twin's assertion.
+    const out = scrubSecretsAndPii("sonar.login=abcdef0123456789abcdef0123456789abcdef01");
+    assert.equal(out, "sonar.login=[REDACTED]");
+  });
+
+  it("carries the field through the generated catalogue", () => {
+    const withGroup = GITLEAKS_RULES.filter((r) => r.captureGroup != null);
+    assert.ok(withGroup.length > 0, "no rule declares captureGroup — generator key changed?");
   });
 });

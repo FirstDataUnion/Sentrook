@@ -817,7 +817,7 @@ function applyGitleaksPatterns(
       // the closing quote — so replacing the whole match ate JSON structure
       // (`"author_id": "…"` became `"[REDACTED]`, unbalanced). Redacting only
       // the captured credential leaves the document intact.
-      const groupIndex = rule.secretGroup ?? 1;
+      const groupIndex = rule.captureGroup ?? 1;
       const candidate = args[groupIndex - 1];
       const secret = typeof candidate === "string" && candidate.length > 0 ? candidate : match;
       // UUIDs and ISO timestamps are identifiers, not credentials.

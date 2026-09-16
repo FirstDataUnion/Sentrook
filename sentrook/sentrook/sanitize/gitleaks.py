@@ -32,7 +32,9 @@ class GitleaksRule:
     id: str
     pattern: re.Pattern[str]
     entropy: float | None
-    secret_group: int | None
+    #: Index of the capture group holding the credential — gitleaks' own
+    #: `secretGroup`, renamed because it is an index, not a secret.
+    capture_group: int | None
 
 
 def shannon_entropy(value: str) -> float:
@@ -75,7 +77,7 @@ def load_gitleaks_rules(path: Path | None = None) -> tuple[GitleaksRule, ...]:
                 id=str(raw["id"]),
                 pattern=pattern,
                 entropy=raw.get("entropy"),
-                secret_group=raw.get("secret_group"),
+                capture_group=raw.get("capture_group"),
             )
         )
     return tuple(out)
@@ -84,14 +86,14 @@ def load_gitleaks_rules(path: Path | None = None) -> tuple[GitleaksRule, ...]:
 def _secret_span(match: re.Match[str], rule: GitleaksRule) -> tuple[str, int, int] | None:
     """The (text, start, end) of the credential itself within ``match``.
 
-    Prefers the rule's ``secretGroup``, then group 1, then the whole match.
+    Prefers the rule's ``capture_group``, then group 1, then the whole match.
     **Replacing only this span matters:** several catalogue rules deliberately
     match surrounding context — ``generic-api-key`` spans the key name *and* the
     closing quote — so replacing ``group(0)`` ate the JSON structure around the
     value (``"author_id": "…"`` became ``"[REDACTED]``, unbalanced). Redacting
     the capture group removes the credential and leaves the document intact.
     """
-    index = rule.secret_group or (1 if match.re.groups else 0)
+    index = rule.capture_group or (1 if match.re.groups else 0)
     try:
         text = match.group(index)
     except (IndexError, re.error):  # pragma: no cover - defensive

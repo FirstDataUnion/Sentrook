@@ -512,3 +512,49 @@ def test_one_bad_rule_does_not_disable_the_whole_pass(tmp_path) -> None:
     finally:
         load_gitleaks_rules.cache_clear()
         unsupported_gitleaks_rule_ids.clear()
+
+
+def test_capture_group_redacts_only_the_credential() -> None:
+    """`capture_group` (gitleaks' `secretGroup`) is honoured end to end.
+
+    Exactly **one** catalogue rule sets it — `sonar-api-token`, group 2 — so the
+    field can be broken without a single other test noticing: every other rule
+    falls back to group 1, which is the same answer. This asserts the one case
+    that distinguishes them.
+
+    Redacting the group rather than the whole match is what keeps the surrounding
+    document intact: several rules deliberately span the key name and the closing
+    quote, and replacing `group(0)` once corrupted the JSON around the value.
+    """
+    from sentrook.sanitize.core import scrub_string
+    from sentrook.sanitize.rules import load_rules
+
+    rules = load_rules()
+    out = scrub_string(
+        "sonar.login=abcdef0123456789abcdef0123456789abcdef01",
+        rules,
+        pii=True,
+        max_chars=4000,
+    )
+    # The key name survives; only the credential goes.
+    assert out == "sonar.login=[REDACTED]", out
+
+
+def test_capture_group_field_is_populated_from_disk() -> None:
+    """Guards the rename: a mismatched key would leave every `capture_group`
+    None and silently fall back to group 1, with no test failing."""
+    import json
+    from pathlib import Path
+
+    from sentrook.sanitize.gitleaks import load_gitleaks_rules
+
+    path = Path(__file__).resolve().parents[2] / "sentrook" / "sanitize" / "gitleaks_rules.json"
+    if not path.exists():  # packaged layout
+        path = Path(__file__).resolve().parents[1] / "sentrook" / "sanitize" / "gitleaks_rules.json"
+    on_disk = [
+        r for r in json.loads(path.read_text())["rules"] if r.get("capture_group") is not None
+    ]
+    loaded = [r for r in load_gitleaks_rules() if r.capture_group is not None]
+
+    assert on_disk, "no rule declares capture_group — did the generator key change?"
+    assert len(loaded) == len(on_disk), "capture_group lost between the JSON and the loader"
