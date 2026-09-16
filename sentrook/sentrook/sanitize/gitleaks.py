@@ -49,6 +49,10 @@ def shannon_entropy(value: str) -> float:
     return -sum((n / length) * math.log2(n / length) for n in counts.values())
 
 
+#: Rules this interpreter could not compile. Empty on a supported Python.
+unsupported_gitleaks_rule_ids: list[str] = []
+
+
 @lru_cache(maxsize=1)
 def load_gitleaks_rules(path: Path | None = None) -> tuple[GitleaksRule, ...]:
     rules_path = path or RULES_PATH
@@ -58,10 +62,18 @@ def load_gitleaks_rules(path: Path | None = None) -> tuple[GitleaksRule, ...]:
     out: list[GitleaksRule] = []
     for raw in doc.get("rules", []):
         flags = re.IGNORECASE if raw.get("ignorecase") else 0
+        try:
+            pattern = re.compile(raw["regex"], flags)
+        except re.error:
+            # Mirrors the plugin's defensive compile. One rule this interpreter
+            # cannot parse must cost that rule, never the whole redaction pass —
+            # the catalogue is vendored and a bump is always one PR away.
+            unsupported_gitleaks_rule_ids.append(str(raw["id"]))
+            continue
         out.append(
             GitleaksRule(
                 id=str(raw["id"]),
-                pattern=re.compile(raw["regex"], flags),
+                pattern=pattern,
                 entropy=raw.get("entropy"),
                 secret_group=raw.get("secret_group"),
             )

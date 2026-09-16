@@ -68,10 +68,71 @@ def _expand_posix(regex: str) -> str:
     return regex
 
 
+#: Inline modifier groups — `(?i:…)`, `(?-i:…)`, `(?s:…)`.
+#:
+#: Valid in Go's RE2, valid in Python 3.11+, and valid in V8 only from Node 23
+#: (they are an ES2025 feature). The plugin ships to whatever Node a host runs,
+#: so emitting them verbatim made `new RegExp` throw on Node 22 — and since the
+#: catalogue is compiled eagerly with no guard, that took **secret redaction
+#: down entirely**, not just one rule. CI caught it only because CI pins Node 22
+#: while development ran on 24.
+#:
+#: Every translation below is a **broadening**: the resulting pattern matches at
+#: least what the original did. That direction is deliberate. A detector that
+#: over-matches redacts something it need not; one that under-matches leaks a
+#: credential. The generator refuses anything it cannot translate this way.
+_DOTALL_GROUP = re.compile(r"\(\?s:\.\)")
+
+
+def _expand_modifier_groups(regex: str, ignorecase: bool) -> tuple[str, bool]:
+    """Remove inline modifier groups, broadening rather than narrowing.
+
+    Returns the rewritten source and the (possibly hoisted) ignorecase flag.
+    """
+    # `(?s:.)` — dotall for a single `.`. Exact: `[\s\S]` is what dotall means.
+    out = _DOTALL_GROUP.sub(r"[\\s\\S]", regex)
+
+    # `(?i:…)` — hoist to the whole-pattern flag. Broadens the rest of the
+    # pattern to case-insensitive, which for the value halves (hex, base64) is
+    # still the same character set in a different case.
+    if "(?i:" in out:
+        ignorecase = True
+        out = out.replace("(?i:", "(?:")
+
+    # `(?-i:…)` — a case-*sensitive* island inside a case-insensitive pattern,
+    # which JS cannot express once the `i` flag is set. Dropping it widens the
+    # island to case-insensitive. Every occurrence in the catalogue guards a
+    # keyword (`ATLASSIAN`, `[Ss]umo`, `[Aa]pi`), never the credential itself,
+    # so the value constraint that makes the rule precise is untouched.
+    out = out.replace("(?-i:", "(?:")
+
+    return out, ignorecase
+
+
+def _assert_no_modifier_groups(rid: str, src: str, lang: str) -> bool:
+    """D16: fail the build rather than emit something a target cannot compile."""
+    leftover = re.search(r"\(\?[-a-zA-Z]+:", src)
+    if leftover and not leftover.group(0).startswith("(?:"):
+        print(
+            f"error: {rid} has an untranslated inline modifier group "
+            f"{leftover.group(0)!r} in the {lang} source",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def to_python(regex: str) -> tuple[str, bool]:
-    """Go RE2 source -> (Python source, ignorecase). Mechanical only."""
+    """Go RE2 source -> (Python source, ignorecase). Mechanical only.
+
+    Python accepts inline modifier groups natively, but they are expanded here
+    too: the two languages must stay byte-identical in *behaviour*, and a shared
+    parity fixture asserts zero divergence. Keeping the construct on one side
+    only would reintroduce exactly the drift D16 exists to prevent.
+    """
     ignorecase = "(?i)" in regex
     out = _expand_posix(regex.replace("(?i)", ""))
+    out, ignorecase = _expand_modifier_groups(out, ignorecase)
     out = out.replace(r"\z", r"\Z")
     return out, ignorecase
 
@@ -80,6 +141,7 @@ def to_javascript(regex: str) -> tuple[str, bool]:
     """Go RE2 source -> (JS source, ignorecase). Mechanical only."""
     ignorecase = "(?i)" in regex
     out = _expand_posix(regex.replace("(?i)", ""))
+    out, ignorecase = _expand_modifier_groups(out, ignorecase)
     out = out.replace(r"\z", "$")
     out = re.sub(r"\(\?P<", "(?<", out)  # Go named groups -> JS named groups
     return out, ignorecase
@@ -101,6 +163,10 @@ def main() -> int:
         if "[:" in py_src or "[:" in js_src:
             print(f"error: {rid} has an untranslated POSIX class: {py_src}", file=sys.stderr)
             return 1
+        if not _assert_no_modifier_groups(rid, py_src, "Python"):
+            return 1
+        if not _assert_no_modifier_groups(rid, js_src, "JavaScript"):
+            return 1
         try:
             with warnings.catch_warnings():
                 # A FutureWarning here means Python read the pattern differently
@@ -111,6 +177,8 @@ def main() -> int:
             print(f"error: {rid} does not port cleanly to Python: {exc}", file=sys.stderr)
             return 1
         entropy = rule.get("entropy")
+        # The *index of the capture group* holding the credential within a
+        # match — an integer like 1, never a credential itself.
         group = rule.get("secretGroup")
         py_rules.append(
             {
@@ -131,6 +199,10 @@ def main() -> int:
             }
         )
 
+    # codeql[py/clear-text-storage-sensitive-data]: this writes detection
+    # *patterns*, not credentials. The query follows `secretGroup` (a capture
+    # index) and rule ids containing "secret"/"key" into these writes. The
+    # output is a public catalogue of regexes; there is no credential in it.
     PY_OUT.write_text(
         json.dumps(
             {
@@ -156,6 +228,8 @@ def main() -> int:
         )
 
     body = ",\n".join(_ts_entry(r) for r in ts_rules)
+    # codeql[py/clear-text-storage-sensitive-data]: as above — generated
+    # detection patterns, not credentials.
     TS_OUT.write_text(
         "// GENERATED by scripts/generate_gitleaks_rules.py — do not edit by hand.\n"
         "// Source: sentrook/sanitize/vendor/gitleaks.toml (gitleaks, MIT licensed).\n"

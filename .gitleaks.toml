@@ -18,6 +18,30 @@ paths = [
 ]
 
 [[allowlists]]
+description = "The vendored gitleaks catalogue and its generated outputs are detection patterns, not credentials"
+# gitleaks flags its own rule catalogue: several provider *patterns* carry enough
+# entropy to match the default ruleset. `aws-amazon-bedrock-api-key-short-lived`
+# is the standing example, matching in both generated files.
+#
+# Narrow on purpose — only the vendored source and the two files the generator
+# writes. These are never hand-edited (D16), so nothing a human could paste a
+# real key into is covered here.
+paths = [
+  '''(^|/)sentrook/sentrook/sanitize/vendor/gitleaks\.toml$''',
+  '''(^|/)sentrook/sentrook/sanitize/gitleaks_rules\.json$''',
+  '''(^|/)integrations/openclaw/plugin/gitleaksRules\.ts$''',
+]
+
+[[allowlists]]
+description = "Parity fixtures that deliberately embed secret-shaped strings"
+paths = [
+  '''(^|/)fixtures/secret_redaction_golden\.jsonl$''',
+  '''(^|/)fixtures/exec_shape_golden\.jsonl$''',
+  '''(^|/)sentrook/tests/test_secret_markers\.py$''',
+  '''(^|/)integrations/openclaw/plugin/secretMarker\.test\.ts$''',
+]
+
+[[allowlists]]
 description = "Known-fake tokens used to exercise sanitize (not real credentials)"
 regexes = [
   '''x9fakebotpassvalue32charsxxxxxx''',

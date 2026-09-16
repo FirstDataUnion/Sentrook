@@ -534,12 +534,32 @@ export function markerForSession(
 }
 
 /** Quoting and trailing punctuation that different patterns capture inconsistently. */
-const SECRET_EDGE = /^[\s"'`]+|[\s"'`,;:)\]}]+$/g;
+const SECRET_EDGE_LEADING = new Set([" ", "\t", "\n", "\r", "\f", "\v", '"', "'", "`"]);
+const SECRET_EDGE_TRAILING = new Set([
+  ...SECRET_EDGE_LEADING,
+  ",",
+  ";",
+  ":",
+  ")",
+  "]",
+  "}",
+]);
 
-/** Canonical form of a secret for marker digesting. Mirror of `normalize_secret`. */
+/** Canonical form of a secret for marker digesting. Mirror of `normalize_secret`.
+ *
+ * Trimmed by index rather than with `/^[…]+|[…]+$/g`. That regex is a
+ * polynomial-ReDoS shape — a long run of edge characters that ultimately fails
+ * the `$` anchor is re-scanned from each start position — and this runs on the
+ * marker path, over values a tool call can influence. The index walk is O(n)
+ * and produces byte-identical output, which the shared parity fixture checks.
+ */
 export function normalizeSecret(value: string): string {
-  SECRET_EDGE.lastIndex = 0;
-  return value.trim().replace(SECRET_EDGE, "");
+  const trimmed = value.trim();
+  let start = 0;
+  let end = trimmed.length;
+  while (start < end && SECRET_EDGE_LEADING.has(trimmed[start])) start += 1;
+  while (end > start && SECRET_EDGE_TRAILING.has(trimmed[end - 1])) end -= 1;
+  return trimmed.slice(start, end);
 }
 
 /** True when `value` is already a redaction placeholder, marked or not. */
@@ -750,12 +770,29 @@ const NOT_A_SECRET =
 
 let compiledGitleaks: Array<{ rule: GitleaksRule; pattern: RegExp }> | null = null;
 
+/** Rules this runtime could not compile. Empty on a supported Node. */
+export const gitleaksUnsupportedRuleIds: string[] = [];
+
 function gitleaksPatterns(): Array<{ rule: GitleaksRule; pattern: RegExp }> {
   if (compiledGitleaks) return compiledGitleaks;
-  compiledGitleaks = GITLEAKS_RULES.map((rule) => ({
-    rule,
-    pattern: new RegExp(rule.regex, rule.ignorecase ? "gi" : "g"),
-  }));
+  // Compiled defensively, one rule at a time. Previously this was a bare
+  // `.map(new RegExp(...))`, so a single pattern the running engine could not
+  // parse threw out of here and took **all** secret redaction with it — not one
+  // rule, the whole pass. That is exactly what happened when the catalogue
+  // emitted ES2025 inline modifier groups: fine on Node 24, fatal on Node 22.
+  //
+  // The generator now translates those, so this should never fire. It stays
+  // because the failure mode is catastrophic and the trigger is a vendor bump
+  // away: losing one provider's rule is survivable, losing redaction is not.
+  const compiled: Array<{ rule: GitleaksRule; pattern: RegExp }> = [];
+  for (const rule of GITLEAKS_RULES) {
+    try {
+      compiled.push({ rule, pattern: new RegExp(rule.regex, rule.ignorecase ? "gi" : "g") });
+    } catch {
+      gitleaksUnsupportedRuleIds.push(rule.id);
+    }
+  }
+  compiledGitleaks = compiled;
   return compiledGitleaks;
 }
 

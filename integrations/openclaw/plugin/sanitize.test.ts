@@ -8,6 +8,7 @@ import type { PlanIR } from "./planir.ts";
 import {
   DEFAULT_RULES,
   hashSessionId,
+  scrubSecretsAndPii,
   maybeSanitizePlanir,
   resolveSanitizationConfig,
   sanitizePlanir,
@@ -375,5 +376,49 @@ describe("DEFAULT_RULES", () => {
     assert.equal(DEFAULT_RULES.version, declared);
     assert.ok(DEFAULT_RULES.credentialField.test("apiKey"));
     assert.ok(DEFAULT_RULES.piiArgKeys.has("command"));
+  });
+});
+
+describe("gitleaks catalogue portability (F22)", () => {
+  it("emits no ES2025 inline modifier groups", () => {
+    // `(?i:…)`, `(?-i:…)`, `(?s:…)` are valid in Go's RE2 and Python 3.11+, and
+    // in V8 only from Node 23. The plugin ships to whatever Node a host runs, so
+    // emitting them made `new RegExp` throw on Node 22 — and because the
+    // catalogue was compiled eagerly with no guard, that took *all* secret
+    // redaction down, not one rule.
+    const source = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "./gitleaksRules.ts"),
+      "utf8",
+    );
+    const leftovers = [...new Set(source.match(/\(\?[-a-zA-Z]+:/g) ?? [])].filter(
+      (m) => m !== "(?:",
+    );
+    assert.deepEqual(leftovers, [], `modifier groups still emitted: ${leftovers}`);
+  });
+
+  it("compiles every rule on this runtime", async () => {
+    const { GITLEAKS_RULES } = await import("./gitleaksRules.ts");
+    const failures: string[] = [];
+    for (const rule of GITLEAKS_RULES) {
+      try {
+        new RegExp(rule.regex, rule.ignorecase ? "gi" : "g");
+      } catch {
+        failures.push(rule.id);
+      }
+    }
+    assert.deepEqual(failures, [], `uncompilable on this Node: ${failures}`);
+    assert.ok(GITLEAKS_RULES.length >= 200, "catalogue lost rules");
+  });
+
+  it("still redacts the providers whose rules were rewritten", () => {
+    // The translation widens keyword matching; it must not lose detection.
+    for (const [label, text] of [
+      ["atlassian", 'ATLASSIAN_API_KEY="' + "a".repeat(20) + "abcd" + '"'],
+      ["sumologic", 'sumo_access_token = "' + "b".repeat(64) + '"'],
+      ["hashicorp", "TF_TOKEN=" + "c".repeat(14) + ".atlasv1." + "d".repeat(60)],
+    ] as const) {
+      const out = scrubSecretsAndPii(text);
+      assert.ok(out.includes("[REDACTED"), `${label} no longer redacts: ${out}`);
+    }
   });
 });

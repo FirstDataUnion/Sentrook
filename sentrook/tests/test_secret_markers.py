@@ -439,3 +439,76 @@ class TestUkPostcodeNotHex:
     )
     def test_real_postcodes_still_redact(self, text):
         assert "[REDACTED" in scrub(text, key="excerpt"), text
+
+
+# --------------------------------------------------------------------------
+# Catalogue portability — the Node 22 outage (F22)
+
+
+def test_no_inline_modifier_groups_survive_generation() -> None:
+    """`(?i:…)`, `(?-i:…)` and `(?s:…)` are ES2025 and fatal on Node 22.
+
+    They are valid in Go's RE2 and in Python 3.11+, so nothing on the Python
+    side objected — and development ran on Node 24, where they are also valid.
+    The plugin ships to whatever Node a host runs, and the catalogue was
+    compiled eagerly with no guard, so on Node 22 the first such rule threw and
+    took **all** secret redaction with it.
+    """
+    import json
+    import re as _re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for path in (
+        root / "sentrook" / "sentrook" / "sanitize" / "gitleaks_rules.json",
+        root / "integrations" / "openclaw" / "plugin" / "gitleaksRules.ts",
+    ):
+        text = path.read_text(encoding="utf-8")
+        leftovers = {m for m in _re.findall(r"\(\?[-a-zA-Z]+:", text) if m != "(?:"}
+        assert not leftovers, f"{path.name} still emits modifier groups: {sorted(leftovers)}"
+
+    rules = json.loads(
+        (root / "sentrook" / "sentrook" / "sanitize" / "gitleaks_rules.json").read_text()
+    )["rules"]
+    assert len(rules) >= 200, "catalogue lost rules"
+
+
+def test_every_catalogue_rule_compiles() -> None:
+    from sentrook.sanitize.gitleaks import load_gitleaks_rules, unsupported_gitleaks_rule_ids
+
+    rules = load_gitleaks_rules()
+    assert len(rules) >= 200
+    assert unsupported_gitleaks_rule_ids == [], (
+        f"rules this interpreter cannot compile: {unsupported_gitleaks_rule_ids}"
+    )
+
+
+def test_one_bad_rule_does_not_disable_the_whole_pass(tmp_path) -> None:
+    """The guard that matters: losing a provider's rule is survivable, losing
+    redaction is not. Before this, a single uncompilable pattern threw out of
+    the loader and every scrub with it."""
+    import json
+
+    from sentrook.sanitize.gitleaks import load_gitleaks_rules, unsupported_gitleaks_rule_ids
+
+    unsupported_gitleaks_rule_ids.clear()
+    broken = tmp_path / "rules.json"
+    broken.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {"id": "good-rule", "regex": r"AKIA[0-9A-Z]{16}", "ignorecase": False},
+                    {"id": "bad-rule", "regex": r"(?<broken", "ignorecase": False},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    load_gitleaks_rules.cache_clear()
+    try:
+        rules = load_gitleaks_rules(broken)
+        assert [r.id for r in rules] == ["good-rule"]
+        assert unsupported_gitleaks_rule_ids == ["bad-rule"]
+    finally:
+        load_gitleaks_rules.cache_clear()
+        unsupported_gitleaks_rule_ids.clear()

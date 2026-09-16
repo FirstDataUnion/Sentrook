@@ -60,6 +60,11 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: table
+          # Suppressions are per-file and per-rule; see the file for why each
+          # exists. Sentrook's own redaction fixtures necessarily contain
+          # secret-shaped strings — a scanner finding them is the fixture
+          # working, not a leak.
+          trivyignores: .trivyignore.yaml
 
   semgrep:
     runs-on: ubuntu-latest
@@ -98,7 +103,7 @@ jobs:
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: javascript-typescript, python
-          queries: security-extended
+          config-file: ./.github/codeql/codeql-config.yml
           build-mode: none
 
       - name: Perform CodeQL analysis
@@ -124,6 +129,13 @@ jobs:
               for run in data.get("runs", []):
                   rules = {r.get("id"): r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
                   for res in run.get("results", []):
+                      # Honour CodeQL's own suppression mechanism. Without this
+                      # an inline `# codeql[rule-id]` comment is recorded in the
+                      # SARIF but still counted here, so suppressions silently
+                      # did nothing and the only way past a false positive was
+                      # to exclude the whole file from analysis.
+                      if res.get("suppressions"):
+                          continue
                       rule = rules.get(res.get("ruleId"), {})
                       props = rule.get("properties", {})
                       sev = (props.get("security-severity") or props.get("problem.severity") or "").strip()
