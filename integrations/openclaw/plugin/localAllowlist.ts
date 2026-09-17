@@ -324,7 +324,12 @@ function segmentHead(tokens: string[]): string {
       if (valueFlags.has(flag) && i < rest.length) i += 1;
     }
     if (head === "timeout" && i < rest.length && DURATION_RE.test(rest[i])) i += 1;
-    if (head === "env") {
+    // `env` and `sudo` both take KEY=VALUE arguments. Without `sudo` here,
+    // `sudo LD_PRELOAD=/tmp/x.so python3 -c '…'` reports a head of `x.so`,
+    // losing the real binary — the engine had the same bug. `timeout` is
+    // deliberately excluded: it would exec a binary named `FOO=1` and fail,
+    // so reporting that head is correct.
+    if (head === "env" || head === "sudo") {
       while (i < rest.length && ENV_ASSIGN_RE.test(rest[i])) i += 1;
     }
     if (i >= rest.length) return head; // wrapper with no command after it

@@ -24,6 +24,13 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+from sentrook.layers.path_classes import (
+    ExecPath,
+    derive_path_roles,
+    derive_paths,
+    derive_url_hosts,
+    roll_up_path_classes,
+)
 from sentrook.sanitize.signal_excerpt import _SEP as _PACK_SEPARATOR
 
 #: Commands longer than this are not parsed at all (``parse_ok=False``). The
@@ -118,10 +125,22 @@ DURATION_RE = re.compile(r"\A\d+(?:\.\d+)?[smhd]?\Z")
 ENV_ASSIGN_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 
 _WRAPPER_POSITIONAL: dict[str, tuple[re.Pattern[str], bool]] = {
-    # (predicate, repeats) — `timeout` takes exactly one duration; `env` takes
-    # any number of KEY=VALUE assignments.
+    # (predicate, repeats) — `timeout` takes exactly one duration; `env` and
+    # `sudo` take any number of KEY=VALUE assignments.
     "timeout": (DURATION_RE, False),
     "env": (ENV_ASSIGN_RE, True),
+    # `sudo` interprets `VAR=value` arguments as environment settings, so
+    # without this the assignment is taken for the binary:
+    #
+    #     sudo LD_PRELOAD=/tmp/x.so python3 -c '…'
+    #       -> heads ['x.so'], inline_eval False, env_assignments []
+    #
+    # which loses the head, the inline-eval flag and the prefix in one go. F18
+    # and F30 a third time: a construct in front of the command hiding what
+    # rules key on. Only `sudo` is listed — `timeout 5 FOO=1 ls` really would
+    # exec a binary named `FOO=1` and fail, so reporting that head is correct,
+    # and `doas`/`pkexec` do not take assignments as arguments at all.
+    "sudo": (ENV_ASSIGN_RE, True),
 }
 
 #: Interpreter flags that mean "the next thing is code, not a path".
@@ -174,7 +193,7 @@ class ExecSegment:
 
 @dataclass(slots=True)
 class ExecShape:
-    """§1.1. ``path_classes`` and ``url_hosts`` land with Phase 2's canonical list."""
+    """§1.1, complete: Phase 2 added ``path_classes`` and ``url_hosts``."""
 
     parse_ok: bool = False
     heads: list[str] = field(default_factory=list)
@@ -187,6 +206,37 @@ class ExecShape:
     #: Separate from `wrappers` so an allow rule can refuse elevation with one
     #: constraint that cannot be forgotten — see PRIVILEGE_WRAPPERS.
     privileged: bool = False
+    #: Every path class the command touches, in `PATH_CLASSES` order (§1.1).
+    #: A *set*, not one winning label: allow eligibility is a property of the
+    #: whole path set, and a single label cannot say "touches nothing
+    #: sensitive". Derived whole-command, so it survives a `cd` rebase and a
+    #: parse failure — unlike `segments`, it is **not** dropped when
+    #: `parse_ok` is false, because a class we can still see is a reason to
+    #: refuse and never a reason to allow.
+    path_classes: list[str] = field(default_factory=list)
+    #: `KEY=VALUE` assignments prefixed to a command, from either form —
+    #: `LD_PRELOAD=x ls` or `env LD_PRELOAD=x ls`.
+    #:
+    #: This is F18 a second time. Wrapper stripping made `sudo` invisible to
+    #: `heads`, so `privileged` was added to let an allow rule refuse it. An
+    #: environment assignment was invisible in the *whole shape*: it is its own
+    #: tree-sitter node that `_collect_commands` discarded, and the `env` form
+    #: was eaten by wrapper stripping. `LD_PRELOAD=/tmp/evil.so ls` therefore
+    #: produced a shape identical to a bare `ls` — and Phase 3b's Listing
+    #: family, written to the plan's stated constraints, allowed it.
+    env_assignments: list[str] = field(default_factory=list)
+    #: Roles referenced anywhere in the command text — the §1.3 whole-command
+    #: defence, which sees bare basenames, redirect targets and quoted
+    #: references that the per-path view structurally cannot. A property of the
+    #: command, so no quantifier is implied and a rule may match it directly.
+    path_roles: list[str] = field(default_factory=list)
+    #: Every path the command references, classified on both axes (§1.1).
+    #: **This is what rules read**, through the `paths:` condition; the flat
+    #: `path_classes` roll-up above is for metrics only and is derived from
+    #: this list, so the two cannot disagree.
+    paths: list[ExecPath] = field(default_factory=list)
+    #: Lowercased hostnames of every http(s) URL in the command.
+    url_hosts: list[str] = field(default_factory=list)
     segments: list[ExecSegment] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -199,6 +249,11 @@ class ExecShape:
             "substitution": self.substitution,
             "packed": self.packed,
             "privileged": self.privileged,
+            "env_assignments": list(self.env_assignments),
+            "path_classes": list(self.path_classes),
+            "path_roles": list(self.path_roles),
+            "paths": [p.to_dict() for p in self.paths],
+            "url_hosts": list(self.url_hosts),
             "segments": [s.to_dict() for s in self.segments],
         }
 
@@ -261,13 +316,16 @@ def derive_exec_shape(command: str | None) -> ExecShape:
     root = tree.root_node
     shape = ExecShape(parse_ok=not root.has_error)
 
-    raw_segments: list[tuple[str, list[str]]] = []
+    raw_segments: list[tuple[str, list[str], list[str]]] = []
     _collect_commands(root, source, raw_segments)
 
     wrappers: list[str] = []
-    for raw_head, raw_argv in raw_segments:
-        head, argv, stripped = _strip_wrappers(raw_head, raw_argv)
+    assignments: list[str] = []
+    for raw_head, raw_argv, raw_assignments in raw_segments:
+        assignments.extend(raw_assignments)
+        head, argv, stripped, wrapped_assignments = _strip_wrappers(raw_head, raw_argv)
         wrappers.extend(stripped)
+        assignments.extend(wrapped_assignments)
         head = _basename(head)
         if not head:
             continue
@@ -281,9 +339,20 @@ def derive_exec_shape(command: str | None) -> ExecShape:
             shape.inline_eval = True
 
     shape.wrappers = _dedupe(wrappers)
+    shape.env_assignments = _dedupe(assignments)
     shape.privileged = any(w in PRIVILEGE_WRAPPERS for w in shape.wrappers)
     shape.substitution = _has_substitution(root)
     shape.sinks = _derive_sinks(root, source, shape)
+    # Derived here, before `segments` is dropped on a parse failure: the
+    # per-path view needs the tokens the parse found, while `path_roles` is
+    # whole-command and survives a failed parse on its own.
+    #
+    # One role scan, shared by all three views. The group regexes dominate the
+    # cost, so computing them per consumer would run four scans.
+    shape.path_roles = derive_path_roles(command)
+    shape.paths = derive_paths(command, [s.argv for s in shape.segments], shape.path_roles)
+    shape.path_classes = roll_up_path_classes(shape.path_roles, shape.paths)
+    shape.url_hosts = derive_url_hosts(command)
     if not shape.parse_ok:
         # Heads stay for diagnostics; segments do not, so no allow rule can build
         # a constraint out of a structure we are not confident in.
@@ -367,26 +436,36 @@ def attach_exec_shapes(plan: Any) -> None:
         step.exec_shape = derive_exec_shape(command)
 
 
-def _collect_commands(node: Any, source: bytes, out: list[tuple[str, list[str]]]) -> None:
-    """Depth-first, source order: one (head, argv) per simple command."""
+def _collect_commands(
+    node: Any, source: bytes, out: list[tuple[str, list[str], list[str]]]
+) -> None:
+    """Depth-first, source order: one (head, argv, assignments) per simple command.
+
+    ``assignments`` is the ``KEY=VALUE`` prefix. tree-sitter gives it its own
+    node type, and dropping it is how ``LD_PRELOAD=/tmp/evil.so ls`` used to
+    produce a shape identical to a bare ``ls`` — see ``env_assignments``.
+    """
     if node.type == "command":
         head = ""
         argv: list[str] = []
+        assignments: list[str] = []
         for child in node.children:
             text = source[child.start_byte : child.end_byte].decode("utf-8", "replace")
             if child.type == "command_name":
                 head = text
+            elif child.type == "variable_assignment":
+                assignments.append(text)
             elif child.type in ("word", "string", "raw_string", "concatenation", "number"):
                 argv.append(_unquote(text))
             elif child.type == "simple_expansion" or child.type == "expansion":
                 argv.append(text)
         if head:
-            out.append((head, argv))
+            out.append((head, argv, assignments))
     for child in node.children:
         _collect_commands(child, source, out)
 
 
-def _strip_wrappers(head: str, argv: list[str]) -> tuple[str, list[str], list[str]]:
+def _strip_wrappers(head: str, argv: list[str]) -> tuple[str, list[str], list[str], list[str]]:
     """Peel ``timeout 30 nice python3 …`` down to ``python3``, recording wrappers.
 
     Recursive by loop, because wrappers stack in real traffic. Stops at the first
@@ -394,6 +473,7 @@ def _strip_wrappers(head: str, argv: list[str]) -> tuple[str, list[str], list[st
     with no command stays ``sudo`` rather than becoming an empty head.
     """
     stripped: list[str] = []
+    assignments: list[str] = []
     guard = 0
     while _basename(head) in WRAPPERS and argv and guard < 8:
         guard += 1
@@ -413,7 +493,12 @@ def _strip_wrappers(head: str, argv: list[str]) -> tuple[str, list[str], list[st
         if positional is not None:
             predicate, repeats = positional
             while rest and predicate.match(rest[0]):
-                rest.pop(0)
+                consumed = rest.pop(0)
+                if predicate is ENV_ASSIGN_RE:
+                    # `env LD_PRELOAD=x ls` hides the assignment in the wrapper's
+                    # own argv; stripping it silently would lose exactly what a
+                    # bare `LD_PRELOAD=x ls` was already losing.
+                    assignments.append(consumed)
                 if not repeats:
                     break
         if not rest:
@@ -422,7 +507,7 @@ def _strip_wrappers(head: str, argv: list[str]) -> tuple[str, list[str], list[st
             stripped.pop()
             break
         head, argv = rest[0], rest[1:]
-    return head, argv, stripped
+    return head, argv, stripped, assignments
 
 
 def _segment_is_inline_eval(head: str, argv: list[str]) -> bool:
@@ -522,7 +607,7 @@ def _pipeline_sinks(node: Any, source: bytes, sinks: list[str]) -> None:
 
 
 def _first_head(node: Any, source: bytes) -> str:
-    found: list[tuple[str, list[str]]] = []
+    found: list[tuple[str, list[str], list[str]]] = []
     _collect_commands(node, source, found)
     return found[0][0] if found else ""
 

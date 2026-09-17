@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import re
 
+from sentrook.sanitize.sensitive_paths import load_sensitive_paths
+
 # Prose arg keys and exec argv where late malice is common. Long ``command``
 # strings used to be replaced with the literal ``[TRUNCATED]``, which hid the
 # pending exec from both L2 and operator review copy.
@@ -26,16 +28,19 @@ CONTENT_LIKE_KEYS = frozenset({"content", "text", "body", "message", "command", 
 COMMAND_LIKE_KEYS = frozenset({"command", "cmd"})
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+#: Bound to the canonical list (§1.3). This module selects *excerpt windows* —
+#: which spans of a long result survive packing — so it wants both credential
+#: material and durable-write targets: AIRA-030's `/etc/hosts` and `/etc/cron.d`
+#: positives are not credentials, but losing them from the excerpt loses the
+#: evidence for the rule that fires on them. The union reproduces the previous
+#: literal with zero losses on the corpus (Phase 2 log).
 _SENSITIVE_PATH_RE = re.compile(
-    r"(?i)(?:"
-    r"auth-profiles(?:\.json)?"
-    r"|openclaw-agent\.sqlite"
-    r"|database\.sqlite"
-    r"|~?/\.ssh(?:/[^\s\"']*)?"
-    r"|MEMORY\.md"
-    r"|authorized_keys"
-    r"|/etc/[^\s\"']+"
-    r")"
+    "(?:"
+    + load_sensitive_paths().sensitive.fragment
+    + "|"
+    + load_sensitive_paths().persistence.fragment
+    + ")",
+    re.IGNORECASE,
 )
 _COMMANDISH_LINE_RE = re.compile(
     r"(?im)^.*(?:\bcurl\b|\bwget\b|\btar\b.+\||\bPOST\b|\bpip\s+install\b).*$"

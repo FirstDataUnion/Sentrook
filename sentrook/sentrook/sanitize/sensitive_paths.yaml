@@ -1,0 +1,186 @@
+# Canonical sensitive-path and named-binary lists — §1.3 of the scanner
+# rearchitecture plan. **One source of truth**, loaded by:
+#
+#   * sentrook.serve.fingerprint       — SENSITIVE_PATH_RE / path_class
+#   * sentrook.sanitize.signal_excerpt — excerpt-window selection
+#   * sentrook.layers.exec_shape       — exec_shape.path_classes
+#   * sentrook.rules.compiler          — the ${sensitive_path} args_match macro
+#
+# Deliberately a *sibling* of rules.yaml rather than a section inside it.
+# rules.yaml is the sanitize ruleset: it carries a `version` recorded in every
+# operator-log line and is mirrored token-for-token in the TypeScript plugin, so
+# every edit there is a redaction-semantics change requiring a version bump and
+# a plugin mirror. This list is neither — it feeds detection and allow-rule
+# eligibility, and the plugin derives no shape at all (§1.1).
+#
+# Adding an entry can only *widen* what counts as sensitive. That direction
+# fails safe: a false `sensitive` costs a review, a missing one costs a
+# detection. Removing an entry is the change that needs justification.
+
+version: 1
+
+# --------------------------------------------------------------------------
+# sensitive — credential, key and auth-store material.
+#
+# `${sensitive_path}` expands to (patterns | basenames) as one non-capturing
+# group, and `exec_shape.path_classes` reports `sensitive` when either hits.
+# --------------------------------------------------------------------------
+sensitive:
+  # Raw regex fragments, matched with re.IGNORECASE anywhere in the subject.
+  # Use these when the *directory* is what makes the path sensitive.
+  patterns:
+    # OpenClaw auth stores. Guardrail *config* is not here — see `agent_config`.
+    - 'auth-profiles(?:\.json)?'
+    - 'openclaw-agent\.sqlite'
+    - 'openclaw-auth-intake'
+    - 'openclaw-sqlite'
+    # Credential-bearing despite the generic name: `cat openclaw.json |
+    # jq .auth.profiles` is an observed live credential hunt (Phase 1 log).
+    - 'openclaw\.json'
+    # Redundant with the `credentials` basename below, kept explicit because
+    # this is the form `fingerprint` matched before §1.3 and the reconciliation
+    # was verified with it present.
+    - 'credentials\.json'
+    # An .ssh directory, absolute, ~-relative or bare — and anything under it.
+    # The trailing path is optional: `tar czf - ~/.ssh | curl -F f=@-` names the
+    # directory and nothing else, and is AIRA-060's canonical positive.
+    - '~?/?\.ssh(?:/[^\s"'']*)?(?![A-Za-z0-9_])'
+    - '\.hermes/'
+    # .env and its per-environment siblings (.env.local, .env.production).
+    - '(?:^|[\s"''`=/])\.env(?:\.[A-Za-z0-9_.-]+)?(?![A-Za-z0-9_-])'
+    # Unix account databases. Narrower than signal_excerpt's historical
+    # `/etc/[^\s"']+`, which classed /etc/hosts and /etc/os-release as
+    # credential material; see the reconciliation diff in the Phase 2 log.
+    - '/etc/(?:shadow|gshadow|sudoers|passwd)\b'
+
+  # Literal basenames, matched **independently of directory** (§1.3).
+  #
+  # This section exists because a relative reference after a `cd` escapes every
+  # path-anchored pattern above: `cd ~/.ssh && cat id_rsa` has no `/.ssh` in the
+  # segment that performs the read. Relative paths are the common shape in real
+  # traffic and cwd is unknowable until Phase 5.
+  #
+  # Entries are regex-escaped by the loader and wrapped in component boundaries,
+  # so `.env` matches `/app/.env` and `.env.local` but not `myapp.env`, and
+  # `shadow` matches `/etc/shadow` but not `shadowsocks`.
+  basenames:
+    - id_rsa
+    - id_ed25519
+    - id_ecdsa
+    - id_dsa
+    - authorized_keys
+    - known_hosts
+    - auth-profiles.json
+    - openclaw-agent.sqlite
+    - database.sqlite
+    - .env
+    - .netrc
+    - credentials
+    - .pgpass
+    - .npmrc
+    - .docker/config.json
+    - shadow
+
+# --------------------------------------------------------------------------
+# agent_config — the agent's own guardrail and identity configuration.
+#
+# Not credentials, so held out of `sensitive`: reading exec-approvals.json is a
+# configuration inspection, while *writing* it disables a guardrail (class 5).
+# Kept here so a class-5 rule has a list to key on without widening class 1.
+# --------------------------------------------------------------------------
+agent_config:
+  patterns:
+    - 'exec-approvals\.json'
+    - 'sentrook-allowlist\.json'
+    - 'agents/[^\s"'']+/agent/config\.json'
+
+# --------------------------------------------------------------------------
+# persistence — where a write survives the session (taxonomy class 4/6).
+# --------------------------------------------------------------------------
+persistence:
+  patterns:
+    # Shell startup files.
+    - '(?:^|[\s"''`=/])\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zshenv|zprofile|zlogin|kshrc|cshrc|login)(?![A-Za-z0-9_-])'
+    # Cron.
+    - '/etc/cron[^\s"'']*'
+    - '/var/spool/cron[^\s"'']*'
+    - '\bcrontab\b'
+    # systemd units and user agents.
+    - '/etc/systemd/system/[^\s"'']*'
+    - '~?/?\.config/systemd/user/[^\s"'']*'
+    - '/Library/LaunchAgents/[^\s"'']*'
+    - '/Library/LaunchDaemons/[^\s"'']*'
+    # Name resolution — a write here redirects every later connection.
+    - '/etc/(?:hosts|resolv\.conf|nsswitch\.conf)\b'
+    # Loader hijack.
+    - '/etc/ld\.so\.(?:conf|preload)'
+    # Agent-durable surfaces: memory and hooks survive every session.
+    - 'MEMORY\.md'
+    - '/memory/'
+    - '(?:^|[\s"''`=/])hooks/'
+    - '\.git/hooks/'
+    # SSH persistence — authorized_keys is also `sensitive`; both are true.
+    - 'authorized_keys'
+
+# --------------------------------------------------------------------------
+# Falco-style named binary lists. Heads are basenamed and lowercased by
+# exec_shape before comparison, so these are bare names.
+# --------------------------------------------------------------------------
+shell_binaries:
+  - sh
+  - bash
+  - zsh
+  - dash
+  - ksh
+  - ash
+  - fish
+  - csh
+  - tcsh
+
+interpreter_binaries:
+  - python
+  - python2
+  - python3
+  - node
+  - deno
+  - bun
+  - perl
+  - ruby
+  - php
+  - lua
+  - osascript
+  - Rscript
+
+fetch_binaries:
+  - curl
+  - wget
+  - nc
+  - ncat
+  - netcat
+  - socat
+  - http
+  - httpie
+  - scp
+  - sftp
+  - rsync
+  - ftp
+  - aria2c
+
+package_mgmt_binaries:
+  - pip
+  - pip3
+  - uv
+  - npm
+  - npx
+  - pnpm
+  - yarn
+  - gem
+  - cargo
+  - go
+  - apt
+  - apt-get
+  - dnf
+  - yum
+  - apk
+  - brew
+  - pacman

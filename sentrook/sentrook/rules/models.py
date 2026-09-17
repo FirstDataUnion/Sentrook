@@ -40,6 +40,30 @@ class IntentKindCondition(BaseModel):
     kind: Literal["user", "cron", "heartbeat", "subagent", "system"]
 
 
+class PathsCondition(BaseModel):
+    """Per-path matching over the pending exec step, with an explicit quantifier.
+
+    Every sub-predicate is optional and they are ANDed *per path*: a path
+    "matches" when all the given ones match it. ``locations`` and ``roles`` are
+    matched as newline-joined strings, the same convention as ``_shape.heads``.
+
+    ``quantifier`` has **no default**. F27 was two bugs, and only one of them was
+    the flat vocabulary — the other was an *implicit quantifier*. "Path class
+    other than tmp/workspace" reads as both "some path" and "every path", and
+    the two give opposite answers on the same command. Requiring the word makes
+    that unrepresentable.
+    """
+
+    type: Literal["paths"] = "paths"
+    #: any  — at least one path matches (**false when there are no paths**)
+    #: every — all paths match, and there is at least one (**never vacuous**)
+    #: none  — no path matches (**true when there are no paths**)
+    quantifier: Literal["any", "every", "none"]
+    location: str | None = None
+    role: str | None = None
+    path: str | None = None
+
+
 class SequenceSlot(BaseModel):
     tool: str
     status: Literal["executed", "pending", "any"] = "any"
@@ -77,6 +101,7 @@ class NoneCondition(BaseModel):
 
 ConditionNode = (
     PendingToolCondition
+    | PathsCondition
     | IntentKindCondition
     | SequenceCondition
     | SequenceWithGapCondition

@@ -40,6 +40,13 @@ class L2PassKind(str, Enum):
     # Plan-level intent classification (user, cron, heartbeat, subagent, system).
     INTENT_KIND = "intent_kind"
 
+    # Per-path classification of the pending exec step, with an **explicit**
+    # quantifier (`any` / `every` / `none`). Separate from SEQUENCE_ARGS because
+    # it reasons over structure rather than matching a regex against a
+    # stringified arg — the matcher drops dicts, so a flat field could not carry
+    # it (F27).
+    PATHS = "paths"
+
     # Reserved for Phase 4: **provenance** between steps, in either of two arms.
     # Referential — a sensitive path or URL from an executed step reappears in
     # the pending argv (`cat ~/.ssh/id_rsa` then `curl -d @~/.ssh/id_rsa`).

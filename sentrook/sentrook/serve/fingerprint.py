@@ -17,20 +17,23 @@ import re
 from typing import Any
 
 from sentrook.corpus.models import CorpusExample, CorpusStep
+from sentrook.sanitize.sensitive_paths import load_sensitive_paths
 
+#: Bound to the canonical list (§1.3) rather than a copy of it. The union of
+#: `sensitive` and `agent_config` reproduces this module's previous literal
+#: exactly on the corpus — verified by the reconciliation in the Phase 2 log —
+#: which matters more here than anywhere else: `path_class` is a *component of
+#: the fingerprint string*, and fingerprints are the identity that corpus
+#: near-dup, session caps, ingest and `loop_sim` history are all keyed on.
+#: Widening this reclassifies historical rows and orphans that history, so the
+#: two groups are joined here deliberately rather than `sensitive` alone.
 SENSITIVE_PATH_RE = re.compile(
-    r"(?i)("
-    r"auth-profiles\.json|"
-    r"openclaw-agent\.sqlite|"
-    r"openclaw\.json|"
-    r"exec-approvals\.json|"
-    r"sentrook-allowlist\.json|"
-    r"(?:^|[\s\"'`=])/?(?:home/[^/\s]+/)?\.ssh/|"
-    r"\bid_ed25519\b|\bid_rsa\b|"
-    r"(?:^|[\s\"'`=])\.env(?:\b|/)|"
-    r"credentials\.json|"
-    r"openclaw-auth-intake"
-    r")"
+    "(?:"
+    + load_sensitive_paths().sensitive.fragment
+    + "|"
+    + load_sensitive_paths().agent_config.fragment
+    + ")",
+    re.IGNORECASE,
 )
 PIPE_SINK_RE = re.compile(r"(?i)\|\s*(?:curl|wget|nc|ncat|bash|sh|zsh|python3?|node)\b")
 ENV_PROBE_RE = re.compile(r"(?i)\benv\s*\|\s*grep\b|\bprintenv\b")

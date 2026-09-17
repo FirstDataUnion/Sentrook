@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from sentrook.layers.exec_shape import EXEC_TOOLS
 from sentrook.layers.tool_pattern import (
     exact_index_keys,
     glob_alternates,
@@ -15,6 +16,7 @@ from sentrook.rules.models import (
     ConditionNode,
     IntentKindCondition,
     NoneCondition,
+    PathsCondition,
     PendingToolCondition,
     Rule,
     SequenceCondition,
@@ -57,8 +59,23 @@ def build_l1_index(rules: list[Rule]) -> L1Index:
     return L1Index(by_tool=dict(index), glob_entries=glob_entries)
 
 
+#: A `paths:` condition can only be satisfied by a step that *has* an
+#: `exec_shape`, which is exactly the exec tools. Bound to `EXEC_TOOLS` rather
+#: than the literal "exec" so the two cannot drift.
+#:
+#: Declaring it here is not cosmetic. L1 decides candidacy and L2 decides
+#: matching, and §1.2's standing warning is that a rule skipped at L1 while
+#: matching at L2 is "a detection silently lost with nothing in the trace".
+#: `_plan_satisfies_rule` ends in `return False`, so a condition kind it does
+#: not recognise makes every rule containing one permanently uncandidatable —
+#: which is what `paths:` did until this existed, while evaluating true at L2.
+_PATHS_TOOL_PATTERNS: frozenset[str] = EXEC_TOOLS
+
+
 def _tool_patterns(node: ConditionNode) -> set[str]:
     """Collect raw tool patterns from a condition tree (for indexing)."""
+    if isinstance(node, PathsCondition):
+        return set(_PATHS_TOOL_PATTERNS)
     if isinstance(node, PendingToolCondition):
         return {node.tool}
     if isinstance(node, (SequenceCondition, SequenceWithGapCondition)):
@@ -98,6 +115,10 @@ def _plan_satisfies_rule(
     """
     if isinstance(node, IntentKindCondition):
         return intent_kind == node.kind
+    if isinstance(node, PathsCondition):
+        # A paths condition requires an exec step to be present, and nothing
+        # more: the tool requirement of its siblings still applies.
+        return any(pattern_matches_any_plan_tool(tool, plan_tools) for tool in _PATHS_TOOL_PATTERNS)
     if isinstance(node, PendingToolCondition):
         return pattern_matches_any_plan_tool(node.tool, plan_tools)
     if isinstance(node, (SequenceCondition, SequenceWithGapCondition)):
