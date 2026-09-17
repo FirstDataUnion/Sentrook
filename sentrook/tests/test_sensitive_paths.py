@@ -584,3 +584,35 @@ def test_every_list_entry_is_reachable() -> None:
             if not re.search(basename_pattern(basename), probe, re.IGNORECASE):
                 unreachable.append(f"{name}:basename {basename}")
     assert not unreachable, unreachable
+
+
+def test_an_unanchored_negative_lookahead_is_a_tautology() -> None:
+    r"""F34 — worse than the positive case, and for a different reason.
+
+    `(?=.*X)` unanchored is *correct but quadratic*. `(?!.*X)` unanchored is
+    **wrong**: `re.search` retries after a failure and the end-of-string
+    position always satisfies a negative lookahead, so it matches every
+    subject. A rule writing `_shape.path_roles: "(?!.*sensitive)"` gets a clause
+    that is always true — on an allow rule, a constraint that silently does not
+    exist.
+
+    This is the idiom Phase 3b's Read family needs ("references no sensitive
+    material"), so it will be written often.
+    """
+    from sentrook.rules.compiler import InvalidArgsMatchError, validate_args_match
+
+    flags = re.IGNORECASE | re.DOTALL
+    # The tautology, demonstrated rather than asserted.
+    for subject in ("sensitive", "sensitive\npersistence", "", "x" * 500):
+        assert re.search(r"(?!.*sensitive)", subject, flags), subject
+    # ...and the anchored form, which actually constrains.
+    assert not re.search(r"\A(?!.*sensitive)", "sensitive", flags)
+    assert re.search(r"\A(?!.*sensitive)", "persistence", flags)
+
+    with pytest.raises(InvalidArgsMatchError, match="unanchored lookahead"):
+        validate_args_match({"_shape.path_roles": r"(?!.*sensitive)"})
+    with pytest.raises(InvalidArgsMatchError, match="unanchored lookahead"):
+        validate_args_match({"command": r"\bpkill\b|(?!.*safe)"})
+    validate_args_match({"_shape.path_roles": r"\A(?!.*sensitive)"})
+    # A negative lookahead that is not the leading construct is ordinary.
+    validate_args_match({"command": r"curl(?!.*--dry-run)"})

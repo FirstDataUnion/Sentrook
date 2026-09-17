@@ -125,6 +125,15 @@ def _has_unanchored_lookahead_chain(pattern: str) -> bool:
     test still green — nothing measures rule match latency. Prefixing ``\A``
     took it to 0.12 ms with identical results on all 541 corpus commands.
 
+    **The negative form is worse, and for a different reason.** An unanchored
+    `(?!.*X)` is a **tautology**: `re.search` retries after a failure, and the
+    end-of-string position always satisfies a negative lookahead, so it matches
+    every subject — verified over 307, False on none. A rule writing
+    `_shape.path_roles: "(?!.*sensitive)"` therefore gets a clause that is
+    *always true*, and on an allow rule that is a constraint which silently does
+    nothing. Anchoring is not an optimisation there; it is the difference
+    between the constraint meaning something and meaning nothing.
+
     An alternation *branch* opening with a lookahead has the same problem and is
     much easier to miss. AIRA-059 carried
     ``env\s*\|\s*grep|(?=.*(?:python3?|sqlite3))(?=.*openclaw-agent\.sqlite)|…``
@@ -138,7 +147,7 @@ def _has_unanchored_lookahead_chain(pattern: str) -> bool:
     argument holds branch by branch inside an alternation.
     """
     body = _INLINE_FLAGS_RE.sub("", pattern)
-    return body.startswith("(?=") or "|(?=" in body
+    return any(body.startswith(opener) or f"|{opener}" in body for opener in ("(?=", "(?!"))
 
 
 #: Shape fields a rule may **not** name, with the reason and the alternative.
@@ -214,13 +223,16 @@ def validate_args_match(patterns: dict[str, str] | None) -> dict[str, str] | Non
         if _has_unanchored_lookahead_chain(pattern):
             raise InvalidArgsMatchError(
                 f"args_match[{key!r}] has an unanchored lookahead chain (at the "
-                "start of the pattern or of an alternation branch). "
-                "Prefix that chain with \\A: `re.search` retries it at every "
-                "offset and each attempt rescans the subject, which is quadratic "
-                "in the command length (measured: 3.96 ms at 500 chars, 259 ms at "
-                "the 4000-char command budget). \\A is equivalent for a boolean "
-                "search — a lookahead at offset k only sees a suffix of what "
-                "offset 0 sees — and around 2000x faster."
+                "start of the pattern or of an alternation branch). Prefix that "
+                "chain with \\A.\n"
+                "  (?=…) unanchored: `re.search` retries it at every offset and "
+                "each attempt rescans the subject — quadratic in command length "
+                "(3.96 ms at 500 chars, 259 ms at the 4000-char budget). \\A is "
+                "equivalent for a boolean search and ~2000x faster.\n"
+                "  (?!…) unanchored: a **tautology**. The end-of-string position "
+                "always satisfies a negative lookahead, so the clause matches "
+                "everything and constrains nothing — on an allow rule, a "
+                "constraint that silently does not exist."
             )
         try:
             re.compile(pattern)
