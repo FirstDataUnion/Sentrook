@@ -6,6 +6,7 @@ from sentrook.config import MatcherConfig
 from sentrook.layers.exec_shape import SHAPE_KEY_PREFIX, step_tool_tokens
 from sentrook.layers.normalize import match_text_with_normalization
 from sentrook.layers.pass_kind import L2PassKind
+from sentrook.layers.path_classes import ExecPath
 from sentrook.layers.tool_pattern import (
     exact_index_keys,
     tool_pattern_matches,
@@ -17,6 +18,7 @@ from sentrook.rules.models import (
     ConditionNode,
     IntentKindCondition,
     NoneCondition,
+    PathsCondition,
     PendingToolCondition,
     Rule,
     SequenceCondition,
@@ -41,6 +43,8 @@ def evaluate_rule(rule: Rule, plan: PlanIR, config: MatcherConfig) -> MatchOutco
 def _eval_node(node: ConditionNode, plan: PlanIR, config: MatcherConfig) -> MatchOutcome:
     if isinstance(node, PendingToolCondition):
         return _match_pending_tool(node, plan)
+    if isinstance(node, PathsCondition):
+        return _match_paths(node, plan)
     if isinstance(node, IntentKindCondition):
         return _match_intent_kind(node, plan)
     if isinstance(node, SequenceCondition):
@@ -87,6 +91,76 @@ def _match_pending_tool(node: PendingToolCondition, plan: PlanIR) -> MatchOutcom
             L2PassKind.PENDING_TOOL,
         )
     return MatchOutcome(False, 0.0, f"no pending {node.tool}", [], L2PassKind.PENDING_TOOL)
+
+
+#: Quantifier semantics, stated as code rather than left to the reader.
+#:
+#: `every` is **non-vacuous on purpose**: standard "for all" over an empty set
+#: is true, and that vacuous truth is exactly how F27's false negative happened
+#: — a command with no recognised paths read as "every path is in scratch
+#: space" and suppressed a destructive-command review. A rule asking `every`
+#: means "there are paths, and they all match".
+_PATHS_QUANTIFIERS = {
+    "any": lambda hits, total: any(hits),
+    "every": lambda hits, total: total > 0 and all(hits),
+    "none": lambda hits, total: not any(hits),
+}
+
+
+def _path_matches(node: PathsCondition, path: ExecPath) -> bool:
+    r"""Whether one `ExecPath` satisfies every sub-predicate the rule gave.
+
+    `locations` and `roles` are matched as newline-joined strings — the same
+    convention as `_shape.heads` — so a rule can say "contains sensitive" with a
+    plain substring, or "contains nothing but scratch" with the joined-list
+    anchoring convention. The quantifier *over paths* is explicit; this inner
+    matching follows the dialect used everywhere else.
+    """
+    if node.location is not None and not match_text_with_normalization(
+        node.location, "\n".join(path.locations)
+    ):
+        return False
+    if node.role is not None and not match_text_with_normalization(
+        node.role, "\n".join(path.roles)
+    ):
+        return False
+    if node.path is not None and not match_text_with_normalization(node.path, path.raw):
+        return False
+    return True
+
+
+def _match_paths(node: PathsCondition, plan: PlanIR) -> MatchOutcome:
+    """Evaluate a `paths:` condition against the pending step's shape.
+
+    Scoped to the pending step, like `pending_tool`. A step with no shape (a
+    non-exec tool) has no paths, so `any`/`every` are false and `none` is true —
+    which is the fail-closed reading for the first two and the honest one for
+    the third.
+    """
+    from sentrook.adapters.snapshot import primary_pending_step
+
+    step = primary_pending_step(plan)
+    shape = getattr(step, "exec_shape", None) if step is not None else None
+    paths = list(getattr(shape, "paths", ()) or ())
+    hits = [_path_matches(node, path) for path in paths]
+    matched = _PATHS_QUANTIFIERS[node.quantifier](hits, len(paths))
+    described = ", ".join(
+        f"{name}={getattr(node, name)!r}"
+        for name in ("location", "role", "path")
+        if getattr(node, name) is not None
+    )
+    reason = (
+        f"{node.quantifier} of {len(paths)} path(s) match {described}"
+        if matched
+        else f"not {node.quantifier} of {len(paths)} path(s) match {described}"
+    )
+    return MatchOutcome(
+        matched,
+        1.0 if matched else 0.0,
+        reason,
+        [step.id] if matched and step is not None else [],
+        L2PassKind.PATHS,
+    )
 
 
 def _sequence_pass_kind(slots: list[SequenceSlot], *, with_gap: bool = False) -> L2PassKind:

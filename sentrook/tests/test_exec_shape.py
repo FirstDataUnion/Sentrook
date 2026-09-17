@@ -228,3 +228,44 @@ def test_derivation_cost_is_within_budget() -> None:
             derive_exec_shape(command)
     per_call_us = (time.perf_counter() - start) / (200 * len(commands)) * 1e6
     assert per_call_us < 2000, f"{per_call_us:.0f} us per derivation"
+
+
+# --------------------------------------------------------------------------
+# Fixture hygiene — it is the contract two languages share
+
+
+def test_fixture_expect_keys_are_all_real() -> None:
+    """A typo'd key is silently ignored by both suites, asserting nothing."""
+    allowed = set(ExecShape().to_dict()) | {"segments_len", "heads_excludes"}
+    for case in _cases():
+        unknown = set(case["expect"]) - allowed
+        assert not unknown, f"{case['name']}: unknown expect key(s) {sorted(unknown)}"
+
+
+def test_every_wrapper_case_pins_heads() -> None:
+    """`heads` is the only field the plugin mirrors, so it is the parity contract.
+
+    The TypeScript suite reads six of the fourteen keys — the plugin derives no
+    shape and adopts the semantics only (§1.1). A wrapper case that does not pin
+    `heads` therefore exercises the engine alone, and the two can drift on
+    exactly the axis they have drifted on twice: F18 (`sudo` hiding the binary)
+    and F33 (`sudo FOO=1 ls` reporting `foo=1` as the binary, in both languages).
+    """
+    for case in _cases():
+        expect = case["expect"]
+        touches_wrappers = (
+            "wrappers" in expect
+            or "privileged" in expect
+            or ("env_assignments" in expect and expect["env_assignments"])
+        )
+        if touches_wrappers:
+            assert "heads" in expect, (
+                f"{case['name']}: exercises wrapper stripping but does not pin "
+                "`heads`, so the plugin mirror is never checked against it"
+            )
+
+
+def test_fixture_case_names_are_unique() -> None:
+    """Duplicated names silently shadow each other in parametrised output."""
+    names = [c["name"] for c in _cases()]
+    assert len(names) == len(set(names))

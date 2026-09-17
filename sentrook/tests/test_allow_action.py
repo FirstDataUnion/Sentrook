@@ -12,6 +12,8 @@ one to the shipped library.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from sentrook.config import L2Authority, L3Policy, MatcherConfig, ScannerConfig
@@ -72,6 +74,9 @@ def _allow_rule(
     constraints = {
         "_shape.parse_ok": "^true$",
         "_shape.privileged": "^false$",
+        # F30: `LD_PRELOAD=/tmp/evil.so ls` has the same heads, sinks,
+        # substitution and privileged as a bare `ls`.
+        "_shape.env_assignments": "^$",
         "_shape.inline_eval": "^false$",
         "_shape.substitution": "^false$",
         "_shape.sinks": "^$",
@@ -288,31 +293,30 @@ def test_review_and_block_rules_are_not_subject_to_allow_validation() -> None:
 
 
 def test_validate_allow_rule_finds_constraints_at_any_depth() -> None:
-    """Rules nest conditions; the check must not only look at the top level."""
+    """Rules nest conditions; the check must not only look at the top level.
+
+    Built from `REQUIRED_ALLOW_CONSTRAINTS` rather than restating it, so adding
+    a required clause — F30 added the third — does not silently turn this into
+    a test of the two that happened to be listed when it was written.
+    """
+    from sentrook.rules.compiler import REQUIRED_ALLOW_CONSTRAINTS
+
     meta = RuleMeta(name="x", action="allow", suppresses=["AIRA-010"])
+    every = {key: "^.*$" for key in REQUIRED_ALLOW_CONSTRAINTS}
     nested = {
         "all": [
             {"pending_tool": "exec"},
-            {
-                "sequence": [
-                    {
-                        "tool": "exec",
-                        "args_match": {
-                            "_shape.parse_ok": "^true$",
-                            "_shape.privileged": "^false$",
-                        },
-                    }
-                ]
-            },
+            {"sequence": [{"tool": "exec", "args_match": every}]},
         ]
     }
     validate_allow_rule(meta, nested)
 
-    missing = {
-        "all": [{"sequence": [{"tool": "exec", "args_match": {"_shape.parse_ok": "^true$"}}]}]
-    }
-    with pytest.raises(InvalidAllowRuleError, match="_shape.privileged"):
-        validate_allow_rule(meta, missing)
+    # Dropping any one of them must be caught, wherever it sits in the tree.
+    for dropped in REQUIRED_ALLOW_CONSTRAINTS:
+        partial = {k: v for k, v in every.items() if k != dropped}
+        missing = {"all": [{"sequence": [{"tool": "exec", "args_match": partial}]}]}
+        with pytest.raises(InvalidAllowRuleError, match=re.escape(dropped)):
+            validate_allow_rule(meta, missing)
 
 
 # --------------------------------------------------------------------------
@@ -426,3 +430,84 @@ def test_end_to_end_allow_from_disk_suppresses_a_review(tmp_path) -> None:
 
     assert scan_plan(_plan("ls -la /tmp"), rules, config=config).decision == "allow"
     assert scan_plan(_plan("sudo ls /root"), rules, config=config).decision == "review"
+
+
+def test_an_allow_rule_must_constrain_the_environment_prefix() -> None:
+    """F30 — F18's failure mode a second time, in a different field.
+
+    Wrapper stripping made `sudo` invisible to `heads`, so F18 added
+    `privileged` and made every allow rule constrain it. An environment
+    assignment was invisible in the **whole shape**: `variable_assignment` is
+    its own tree-sitter node that the collector discarded, and `env LD_PRELOAD=x
+    ls` was eaten by wrapper stripping. So `LD_PRELOAD=/tmp/evil.so ls` produced
+    a shape identical to a bare `ls`, and the Listing family written to the
+    plan's stated constraints allowed it.
+
+    Required rather than advised, because "remember to think about the
+    environment" is exactly what a rule author forgets.
+    """
+    doc = _allow_rule()
+    del doc["condition"]["sequence"][0]["args_match"]["_shape.env_assignments"]
+    with pytest.raises(ValueError, match="_shape.env_assignments"):
+        compile_rule(doc)
+
+
+def test_the_environment_constraint_actually_refuses_a_preload() -> None:
+    """The guard is only worth having if the field it names does the work."""
+    rules = [_review_rule("AIRA-010"), _allow_rule()]
+    assert _scan("ls -la", rules).decision == "allow"
+    for attack in (
+        "LD_PRELOAD=/tmp/evil.so ls -la",
+        "env LD_PRELOAD=/tmp/evil.so ls -la",
+        "LD_LIBRARY_PATH=/tmp/evil ls",
+    ):
+        assert _scan(attack, rules).decision == "review", attack
+
+
+def test_required_constraints_do_not_count_inside_a_negation() -> None:
+    """F31 — the guard could be satisfied by a rule meaning the exact opposite.
+
+    `_collect_args_match_keys` walked the whole condition tree, so an allow rule
+    satisfied every required constraint by putting them under a `none:`:
+
+        none:
+          sequence:
+            - tool: exec
+              args_match: {_shape.privileged: "^false$", …}
+
+    That reads "allow when it is **not** the case that this is unprivileged,
+    parses cleanly and has no environment prefix" — it allows precisely the
+    commands the constraints exist to refuse, and the guard called it satisfied.
+
+    The guard is the only thing between a mistaken allow rule and a fail-open
+    publish, so a shape that satisfies it while meaning the opposite must be
+    unrepresentable.
+    """
+    from sentrook.rules.compiler import REQUIRED_ALLOW_CONSTRAINTS
+
+    every = {key: "^.*$" for key in REQUIRED_ALLOW_CONSTRAINTS}
+    sequence = {"sequence": [{"tool": "exec", "args_match": every}]}
+
+    def _doc(condition: dict) -> dict:
+        return {
+            "rule": "AIRA-902",
+            "meta": {"name": "x", "action": "allow", "suppresses": ["AIRA-010"]},
+            "condition": condition,
+        }
+
+    compile_rule(_doc(sequence))
+    with pytest.raises(ValueError, match="_shape."):
+        compile_rule(_doc({"none": sequence}))
+    # Parity, not a flag: a double negative lands back in positive position.
+    compile_rule(_doc({"none": {"none": sequence}}))
+    # A negation elsewhere in the rule is ordinary and must still be allowed.
+    compile_rule(_doc({"all": [sequence, {"none": {"pending_tool": "read"}}]}))
+
+
+def test_condition_kinds_are_also_positive_only() -> None:
+    """A `paths:` inside a negation must not report itself as present either."""
+    from sentrook.rules.compiler import CONDITION_KEY_PREFIX, _collect_args_match_keys
+
+    inner = {"paths": {"quantifier": "any", "role": "sensitive"}}
+    assert f"{CONDITION_KEY_PREFIX}paths" in _collect_args_match_keys(inner)
+    assert f"{CONDITION_KEY_PREFIX}paths" not in _collect_args_match_keys({"none": inner})

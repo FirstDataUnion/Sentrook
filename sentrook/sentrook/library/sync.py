@@ -12,6 +12,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
+from sentrook import __version__ as SCANNER_VERSION
 from sentrook.library.http_client import urlopen
 from sentrook.library.paths import (
     MANIFEST_FILENAME,
@@ -21,6 +22,30 @@ from sentrook.library.paths import (
 from sentrook.library.rookery_client import rookery_auth_headers
 
 MANIFEST_SCHEMA = "sentrook.library.manifest/v1"
+
+
+class LibraryVersionError(RuntimeError):
+    """The published bundle needs a newer scanner than this one."""
+
+
+def _version_tuple(version: str) -> tuple[int, int, int]:
+    """``"1.10.0rc1"`` -> ``(1, 10, 0)``. Lenient, and never raises.
+
+    Deliberately not a string comparison: ``"1.10.0" < "1.9.0"`` lexically, so a
+    naive check would start silently passing bundles it should refuse at exactly
+    the point the version numbers get interesting.
+    """
+    parts: list[int] = []
+    for chunk in version.split(".")[:3]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
 
 
 @dataclass(frozen=True)
@@ -124,6 +149,24 @@ def sync_library(
     status = library_status(url=url, library_dir=library_dir, api_key=api_key)
     if status.remote_manifest is None:
         raise RuntimeError(f"registry returned no manifest: {url}")
+
+    # Refuse a bundle this engine cannot run, and keep the library we have.
+    #
+    # The manifest has carried `min_scanner_version` since it was defined, and
+    # nothing compared it. That was harmless only while the library used no
+    # vocabulary the engine might lack. It stopped being harmless when rules
+    # gained `${sensitive_path}` macros: an engine without the expander compiles
+    # `${sensitive_path}` **successfully** — `$` is an end anchor and the braces
+    # are literal — and then matches nothing, so five credential rules go quietly
+    # dead at load-time success. That is the F20 failure class across a repo
+    # boundary, and a stale library is much the better failure.
+    required = status.remote_manifest.min_scanner_version
+    if _version_tuple(SCANNER_VERSION) < _version_tuple(required):
+        raise LibraryVersionError(
+            f"bundle {status.remote_manifest.bundle_version} requires scanner "
+            f">= {required}, this is {SCANNER_VERSION}. Keeping the current "
+            "library; upgrade the scanner, then sync."
+        )
 
     if not force and not status.update_available:
         return SyncResult(
