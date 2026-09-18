@@ -113,6 +113,50 @@ def test_agent_config_is_not_sensitive() -> None:
     assert not rules.sensitive.regex.search(subject)
 
 
+def test_auth_store_is_a_strict_subset_of_sensitive() -> None:
+    """D22: two lists that answer overlapping questions must agree by construction.
+
+    `${auth_store_path}` exists so AIRA-059 can say "an interpreter opened the
+    auth store" without pasting three filenames into the rule. Every entry has
+    to be sensitive too, or the narrowed 059 arm could fire on something
+    AIRA-083 does not — one consequence at two authorities, which is the exact
+    defect the narrowing was written to remove.
+
+    Checked over every entry's own literal rather than on a handful of
+    examples: a pattern is the one thing guaranteed to match itself.
+    """
+    rules = load_sensitive_paths()
+    assert rules.auth_store.patterns or rules.auth_store.basenames
+    for basename in rules.auth_store.basenames:
+        assert rules.sensitive.regex.search(f"/home/node/{basename}"), basename
+    for subject in (
+        "/home/node/.openclaw/agents/main/agent/auth-profiles.json",
+        "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite",
+        "/tmp/openclaw-auth-intake/database.sqlite",
+    ):
+        assert rules.auth_store.regex.search(subject), subject
+        assert rules.sensitive.regex.search(subject), subject
+
+
+def test_auth_store_is_narrower_than_sensitive_where_it_must_be() -> None:
+    """The subset check above passes trivially if the two are equal.
+
+    These are credential material (class 1, AIRA-083's) that are *not* an auth
+    store an interpreter copies (AIRA-059's harvested shape). If one of them
+    starts matching, the narrowing has quietly been undone.
+    """
+    rules = load_sensitive_paths()
+    for subject in (
+        "/home/node/.ssh/id_rsa",
+        "/app/.env",
+        "/etc/shadow",
+        "/home/node/.openclaw/openclaw.json",
+        "/home/node/.netrc",
+    ):
+        assert rules.sensitive.regex.search(subject), subject
+        assert not rules.auth_store.regex.search(subject), subject
+
+
 def test_named_binary_lists_are_populated() -> None:
     rules = load_sensitive_paths()
     assert {"bash", "sh", "zsh"} <= rules.shell_binaries

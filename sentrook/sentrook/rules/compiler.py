@@ -70,6 +70,7 @@ class UnknownMacroError(ValueError):
 #: hand-pasted copies of one list under a ``# keep in sync`` comment.
 ARGS_MATCH_MACROS: dict[str, Any] = {
     "sensitive_path": lambda: load_sensitive_paths().sensitive.fragment,
+    "auth_store_path": lambda: load_sensitive_paths().auth_store.fragment,
     "agent_config_path": lambda: load_sensitive_paths().agent_config.fragment,
     "persistence_path": lambda: load_sensitive_paths().persistence.fragment,
 }
@@ -253,11 +254,20 @@ def validate_suppression_targets(rules: list[Rule]) -> None:
     an allow rule could otherwise widen its own blast radius:
 
     * **naming a block** — the entire point of a block is that nothing waives it;
-    * **naming a hard review** — hard authority exists so an operator's lenient
-      floor cannot waive a rule, and an allow rule must not do what the floor
-      may not. This is the chain Phase 3a's class-1 rules are meant to close:
-      AIRA-010 flagged a credential read and `skip_reason: lenient` approved it
-      anyway. An allow rule suppressing a hard review would restore exactly that;
+    * **naming a hard review** — hard authority is what puts a rule out of reach
+      of an operator's blanket session policy, and an allow rule must not do
+      what the floor may not. This is the chain Phase 3a's class-1 rules are
+      meant to close: AIRA-010 flagged a credential read and
+      `skip_reason: lenient` approved it anyway. An allow rule suppressing a
+      hard review would restore exactly that.
+
+      **That floor guarantee is younger than this docstring.** Until
+      `review_authority` was put on the scan response (Phase 3a), `authority`
+      reached no component that could act on it: the plugin's floor is keyed on
+      `review_severity`, derived from `meta.severity` alone, so hard and soft
+      reviews were waived identically. Authority gated L3 downgrade and this
+      suppression check and nothing else. A scan host older than that release
+      still behaves the old way;
     * **naming a rule that does not exist** — silently inert today, and silently
       *active* the day someone mints that id for something else.
 

@@ -82,6 +82,34 @@ sensitive:
     - shadow
 
 # --------------------------------------------------------------------------
+# auth_store — the *stores* inside `sensitive`, not the whole of it.
+#
+# A strict subset: every entry here also matches `${sensitive_path}`. It exists
+# because AIRA-059 needs to say "an interpreter opened the auth store", which is
+# a narrower claim than "an interpreter and a credential path appear in the same
+# command". Phase 2's macro migration widened that branch to the full sensitive
+# list and put one consequence at two authorities — `python3 -c
+# open(<sensitive>)` hard, `cat <sensitive>` soft, decided by which binary read.
+# Phase 3a narrowed it back and gave the general case to AIRA-083; this group is
+# what "narrowed back" binds to, so the auth-store signature is a list rather
+# than three strings pasted into a rule.
+#
+# Keys, tokens and private keys are deliberately NOT here. A private key is
+# credential material (class 1) but it is not a store an interpreter opens and
+# copies, which is the shape AIRA-059 was harvested from.
+# --------------------------------------------------------------------------
+auth_store:
+  patterns:
+    - 'auth-profiles(?:\.json)?'
+    - 'openclaw-agent\.sqlite'
+    - 'openclaw-auth-intake'
+    - 'openclaw-sqlite'
+  basenames:
+    - auth-profiles.json
+    - openclaw-agent.sqlite
+    - database.sqlite
+
+# --------------------------------------------------------------------------
 # agent_config — the agent's own guardrail and identity configuration.
 #
 # Not credentials, so held out of `sensitive`: reading exec-approvals.json is a

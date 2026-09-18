@@ -91,6 +91,7 @@ class SensitivePathRules:
 
     version: int
     sensitive: PathList
+    auth_store: PathList
     agent_config: PathList
     persistence: PathList
     shell_binaries: frozenset[str]
@@ -122,6 +123,7 @@ def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
     rules = SensitivePathRules(
         version=int(raw["version"]),
         sensitive=_path_list("sensitive", raw.get("sensitive")),
+        auth_store=_path_list("auth_store", raw.get("auth_store")),
         agent_config=_path_list("agent_config", raw.get("agent_config")),
         persistence=_path_list("persistence", raw.get("persistence")),
         shell_binaries=frozenset(raw.get("shell_binaries", ())),
@@ -131,7 +133,7 @@ def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
     )
     # Compile every group once here rather than lazily at first match: a bad
     # pattern must fail at load, not on the scan that happens to reach it (F20).
-    for group in (rules.sensitive, rules.agent_config, rules.persistence):
+    for group in (rules.sensitive, rules.auth_store, rules.agent_config, rules.persistence):
         group.regex  # noqa: B018 - compilation is the point
     return rules
 

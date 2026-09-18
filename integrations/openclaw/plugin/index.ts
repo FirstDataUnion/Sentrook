@@ -101,6 +101,7 @@ import {
 import { ensureConversationAccess, patchSentrookPluginConfig } from "./pluginConfigPatch.ts";
 import {
   resolveReviewSkip,
+  scanReviewFacts,
   resolveSensitivity,
   resolveUnattendedSensitivity,
   skipResolutionDecision,
@@ -336,6 +337,8 @@ export interface ScanResponse {
   review_title?: string;
   review_description?: string;
   review_severity?: ReviewSeverity;
+  /** `hard` when any surviving review is hard-authority; absent on older engines. */
+  review_authority?: "soft" | "hard";
   log?: Json;
   timing?: {
     engine_ms?: number;
@@ -419,6 +422,10 @@ export function parseScanResponse(body: unknown): ScanResponse | ScanFailure {
       doc.review_severity === "warning" ||
       doc.review_severity === "critical"
         ? doc.review_severity
+        : undefined,
+    review_authority:
+      doc.review_authority === "soft" || doc.review_authority === "hard"
+        ? doc.review_authority
         : undefined,
     log,
     timing,
@@ -1869,7 +1876,7 @@ const plugin = {
           const allowlistHit = scan.decision === "review" && translated == null;
           const flags = livePolicy.sessionFlags(ids);
           const skipReason = resolveReviewSkip({
-            hostedDecision: scan.decision,
+            ...scanReviewFacts(scan),
             unattended,
             allowAll: combinedAllowAll(livePolicy.read().allowAll, flags.allowAll),
             quietUntilMs: laterQuietUntil(livePolicy.read().quietUntilMs, flags.quietUntilMs),
@@ -1877,7 +1884,6 @@ const plugin = {
             unattendedSensitivity: live.unattendedSensitivity,
             sessionAttended: flags.attendedSensitivity,
             sessionUnattended: flags.unattendedSensitivity,
-            reviewSeverity: scan.review_severity,
             allowlistHit,
           });
           let hookResult = translated;

@@ -38,6 +38,10 @@ class ScanResponse:
     review_title: str | None = None
     review_description: str | None = None
     review_severity: str | None = None
+    #: `hard` when any surviving review is hard-authority; absent on older
+    #: engines. Hermes has no session floor to apply it to, so this is recorded
+    #: for the dev log and wire parity with the OpenClaw plugin, which enforces.
+    review_authority: str | None = None
     log: dict[str, Any] | None = None
     timing: dict[str, Any] | None = None
     error: str | None = None
@@ -170,6 +174,7 @@ def _parse_scan_response(payload: bytes) -> ScanResponse | ScanFailure:
         review_title=doc.get("review_title"),
         review_description=doc.get("review_description"),
         review_severity=doc.get("review_severity"),
+        review_authority=doc.get("review_authority"),
         log=doc.get("log") if isinstance(doc.get("log"), dict) else None,
         timing=doc.get("timing") if isinstance(doc.get("timing"), dict) else None,
         error=doc.get("error"),

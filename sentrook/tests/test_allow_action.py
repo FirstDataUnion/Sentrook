@@ -336,11 +336,15 @@ def test_suppressing_a_block_is_rejected_at_load() -> None:
 
 
 def test_suppressing_a_hard_review_is_rejected_at_load() -> None:
-    """Hard authority exists so an operator's lenient floor cannot waive a rule.
+    """Hard authority puts a rule out of reach of a blanket session policy.
 
     An allow rule must not be able to do what the floor may not — that is exactly
     the chain Phase 3a's class-1 rules close, where AIRA-010 flagged a credential
     read and `skip_reason: lenient` approved it anyway.
+
+    The floor half of that guarantee arrived with `review_authority` on the scan
+    response (`test_serve_review_authority.py`); before it, authority reached
+    only this check and L3 candidacy.
     """
     hard = _review_rule("AIRA-052", authority="hard")
     with pytest.raises(InvalidAllowRuleError, match="only `soft` may be suppressed"):
