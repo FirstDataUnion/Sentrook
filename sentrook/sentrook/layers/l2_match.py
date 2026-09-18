@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from sentrook.config import MatcherConfig
 from sentrook.layers.exec_shape import SHAPE_KEY_PREFIX, step_tool_tokens
@@ -107,7 +108,36 @@ _PATHS_QUANTIFIERS = {
 }
 
 
-def _path_matches(node: PathsCondition, path: ExecPath) -> bool:
+def _segment_heads_for(shape: Any, path: ExecPath) -> list[str]:
+    r"""Every head this path can honestly be said to belong to.
+
+    Its own segment's head, plus — when that segment is a `cd` — the head of
+    every **later** segment, because `cd` rebases what the later ones act on.
+
+    `cd /srv/app && rm -rf logs` puts the only extractable path (`/srv/app`) in
+    segment 0 under `cd`, while the destruction happens in segment 1. A strict
+    per-segment reading would spare it, turning AIRA-084's false positive into
+    the `cd`-rebase false negative §1.1 exists to prevent — and §1.1's whole
+    argument for whole-command classification is that this shape is common.
+
+    Ordering matters and is respected: a `cd` **after** the destructive head
+    does not rebase it, so `rm -rf /tmp/x && cd /srv/app` does not credit
+    `/srv/app` to the `rm`.
+    """
+    segments = list(getattr(shape, "segments", ()) or ())
+    index = path.segment
+    if index is None or index >= len(segments):
+        return []
+    own = getattr(segments[index], "head", None)
+    heads = [own] if own else []
+    if own == "cd":
+        heads.extend(
+            head for later in segments[index + 1 :] if (head := getattr(later, "head", None))
+        )
+    return heads
+
+
+def _path_matches(node: PathsCondition, path: ExecPath, shape: Any = None) -> bool:
     r"""Whether one `ExecPath` satisfies every sub-predicate the rule gave.
 
     `locations` and `roles` are matched as newline-joined strings — the same
@@ -126,6 +156,10 @@ def _path_matches(node: PathsCondition, path: ExecPath) -> bool:
         return False
     if node.path is not None and not match_text_with_normalization(node.path, path.raw):
         return False
+    if node.segment_head is not None:
+        heads = _segment_heads_for(shape, path)
+        if not any(match_text_with_normalization(node.segment_head, head) for head in heads):
+            return False
     return True
 
 
@@ -142,11 +176,11 @@ def _match_paths(node: PathsCondition, plan: PlanIR) -> MatchOutcome:
     step = primary_pending_step(plan)
     shape = getattr(step, "exec_shape", None) if step is not None else None
     paths = list(getattr(shape, "paths", ()) or ())
-    hits = [_path_matches(node, path) for path in paths]
+    hits = [_path_matches(node, path, shape) for path in paths]
     matched = _PATHS_QUANTIFIERS[node.quantifier](hits, len(paths))
     described = ", ".join(
         f"{name}={getattr(node, name)!r}"
-        for name in ("location", "role", "path")
+        for name in ("location", "role", "path", "segment_head")
         if getattr(node, name) is not None
     )
     reason = (

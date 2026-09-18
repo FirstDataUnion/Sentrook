@@ -23,7 +23,7 @@ from sentrook.rules.models import (
     SequenceSlot,
     SequenceWithGapCondition,
 )
-from sentrook.sanitize.sensitive_paths import load_sensitive_paths
+from sentrook.sanitize.sensitive_paths import binary_alternation, load_sensitive_paths
 
 #: Constraints an `action: allow` rule must carry. Each closes a way the rule
 #: could otherwise approve something it did not actually understand.
@@ -72,6 +72,7 @@ ARGS_MATCH_MACROS: dict[str, Any] = {
     "sensitive_path": lambda: load_sensitive_paths().sensitive.fragment,
     "auth_store_path": lambda: load_sensitive_paths().auth_store.fragment,
     "credential_store_path": lambda: load_sensitive_paths().credential_store.fragment,
+    "reading_head": lambda: binary_alternation(load_sensitive_paths().reading_binaries),
     "credential_bearing_config_path": (
         lambda: load_sensitive_paths().credential_bearing_config.fragment
     ),
@@ -395,7 +396,9 @@ def _compile_slot(slot: Any) -> SequenceSlot:
 
 
 #: Sub-predicates of a `paths:` condition, each an optional regex.
-PATHS_PREDICATES: tuple[str, ...] = ("location", "role", "path")
+#: `segment_head` is open text like `path`, not a closed vocabulary: heads come
+#: from real commands, so "can this ever match?" is not decidable for it.
+PATHS_PREDICATES: tuple[str, ...] = ("location", "role", "path", "segment_head")
 PATHS_QUANTIFIERS: tuple[str, ...] = ("any", "every", "none")
 
 #: `location` and `role` are matched against a **closed** vocabulary, which

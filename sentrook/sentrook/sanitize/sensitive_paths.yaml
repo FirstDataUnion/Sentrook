@@ -205,6 +205,74 @@ persistence:
 # Falco-style named binary lists. Heads are basenamed and lowercased by
 # exec_shape before comparison, so these are bare names.
 # --------------------------------------------------------------------------
+# Binaries that make a file's *contents* available — the "reading head" half of
+# consequence class 1. Path signals are path-only and cannot see the verb, so
+# `ls -la ~/.ssh`, `rm -rf ~/.ssh` and `cat ~/.ssh/id_rsa` are identical to
+# them; this list is what separates the third from the first two.
+#
+# Deliberately **not** a catalogue. GTFOBins lists 478 binaries that can be
+# coerced into a file read; this is the verb check for the binaries an agent
+# actually runs. An unrecognised head still reaches AIRA-010's soft review, so
+# what an unusual binary costs is attribution, not detection.
+#
+# Deliberately absent: `ls`, `stat`, `file`, `find`, `which`, `du` (reference
+# without reading) and `curl`/`wget`, whose `-d @file` / `--post-file` forms
+# read *and* egress — those are class 2 and AIRA-067 owns them at hard
+# authority.
+#
+# Lives here because three rules matched on it (AIRA-083 twice, AIRA-086 once)
+# with three byte-identical copies of the same alternation — the `# keep in
+# sync` shape §1.3 exists to delete. Rules reference it as
+# `(?:\A|\n)${reading_head}(?:\n|\Z)`: the list is the data, the anchoring
+# is the idiom (see the dialect reference's "some entry is X" section).
+reading_binaries:
+  - cat
+  - head
+  - tail
+  - tac
+  - rev
+  - nl
+  - od
+  - xxd
+  - strings
+  - less
+  - more
+  - jq
+  - yq
+  - grep
+  - egrep
+  - fgrep
+  - rg
+  - awk
+  - gawk
+  - mawk
+  - sed
+  - cut
+  - sort
+  - uniq
+  - wc
+  - python
+  - python2
+  - python3
+  - node
+  - deno
+  - bun
+  - perl
+  - ruby
+  - php
+  - lua
+  - tar
+  - zip
+  - gzip
+  - gunzip
+  - zcat
+  - base64
+  - openssl
+  - sqlite3
+  - getent
+  - cp
+  - dd
+
 shell_binaries:
   - sh
   - bash

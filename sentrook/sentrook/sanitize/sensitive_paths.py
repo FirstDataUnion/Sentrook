@@ -15,6 +15,7 @@ to the YAML reaches all four without a second edit.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -96,6 +97,7 @@ class SensitivePathRules:
     auth_store: PathList
     agent_config: PathList
     persistence: PathList
+    reading_binaries: frozenset[str]
     shell_binaries: frozenset[str]
     interpreter_binaries: frozenset[str]
     fetch_binaries: frozenset[str]
@@ -169,6 +171,7 @@ def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
         auth_store=leaves["auth_store"],
         agent_config=leaves["agent_config"],
         persistence=leaves["persistence"],
+        reading_binaries=frozenset(raw.get("reading_binaries", ())),
         shell_binaries=frozenset(raw.get("shell_binaries", ())),
         interpreter_binaries=frozenset(raw.get("interpreter_binaries", ())),
         fetch_binaries=frozenset(raw.get("fetch_binaries", ())),
@@ -195,3 +198,13 @@ def sensitive_path_fragment() -> str:
 
 def sensitive_path_regex() -> re.Pattern[str]:
     return load_sensitive_paths().sensitive.regex
+
+
+def binary_alternation(names: Iterable[str]) -> str:
+    """Regex *source* for a set of binary names — embeddable, never anchored.
+
+    Sorted so the fragment is stable across runs (the YAML is a list, the model
+    holds a frozenset), and escaped because a binary name may contain a `.` or
+    a `+`. Non-capturing, so it can sit mid-pattern without renumbering groups.
+    """
+    return "(?:" + "|".join(re.escape(name) for name in sorted(names)) + ")"

@@ -246,9 +246,16 @@ def derive_paths(
     cannot be inferred from a whole-command scan.
 
     ``segments`` is one token list per simple command, so a path knows which
-    half of ``cat a && rm b`` it came from. Deduplication is across the whole
-    command: a path named twice is one path, attributed to where it first
-    appeared.
+    half of ``cat a && rm b`` it came from. Deduplication is **per segment**: a
+    path named twice in one simple command is one path, but the same path named
+    in two segments is two references, because they are two different acts.
+
+    That was once deduplicated across the whole command, attributing a repeated
+    path to where it first appeared. Harmless while nothing asked which head
+    touched a path — and a false negative the moment something did:
+    ``ls -la ~/.ssh && rm -rf ~/.ssh`` kept only the ``ls`` occurrence, so a
+    rule asking for "a path outside scratch belonging to a destructive head"
+    could not see the destruction at all.
 
     ``roles_present`` lets a caller that has already run
     :func:`derive_path_roles` pass the result in. The group regexes are the
@@ -258,7 +265,7 @@ def derive_paths(
     """
     present = derive_path_roles(command) if roles_present is None else list(roles_present)
     out: list[ExecPath] = []
-    seen: set[str] = set()
+    seen: set[tuple[int, str]] = set()
     for index, tokens in enumerate(segments):
         if isinstance(tokens, str):
             # A flat token list would otherwise iterate *characters*, silently
@@ -268,9 +275,9 @@ def derive_paths(
                 "[s.argv for s in shape.segments]; got a bare string"
             )
         for raw in extract_paths(tokens):
-            if raw in seen:
+            if (index, raw) in seen:
                 continue
-            seen.add(raw)
+            seen.add((index, raw))
             locations, roles = classify_path_detail(raw, present)
             out.append(ExecPath(raw=raw, locations=locations, roles=roles, segment=index))
     return out

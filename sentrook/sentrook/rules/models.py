@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from sentrook.config import L2Authority
 
@@ -54,6 +54,13 @@ class PathsCondition(BaseModel):
     that unrepresentable.
     """
 
+    #: Unknown keys are **refused**, not ignored. Pydantic's default is
+    #: `extra="ignore"`, so `segment_heads:` (a plural typo) silently became no
+    #: constraint at all — a rule quietly wider than its author wrote, which is
+    #: F31(b)'s class: where a field draws from a closed set, "can this ever
+    #: mean what it says?" is decidable and belongs at compile.
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["paths"] = "paths"
     #: any  — at least one path matches (**false when there are no paths**)
     #: every — all paths match, and there is at least one (**never vacuous**)
@@ -62,6 +69,31 @@ class PathsCondition(BaseModel):
     location: str | None = None
     role: str | None = None
     path: str | None = None
+    #: Restrict which paths count to those belonging to a segment whose **head**
+    #: matches this pattern — "a path outside scratch, *belonging to the `rm`*".
+    #:
+    #: Without it the two halves of a rule like AIRA-084 are unrelated: "a
+    #: destructive head is somewhere in the command" and "some path somewhere is
+    #: outside scratch", so `cat /etc/hosts && rm -rf /tmp/scratch` satisfies
+    #: both and fires, although the `rm` targets scratch. That is F27's implicit
+    #: quantifier one level up — the quantifier *over paths* was stated, the
+    #: association between head and path was implicit and wrong.
+    #:
+    #: **`cd` rebase is handled by the engine, not by the rule.** `cd /srv/app
+    #: && rm -rf logs` puts the only extractable path in the `cd`'s segment
+    #: while the destruction happens in the next one, so a strictly per-segment
+    #: reading would spare it — turning AIRA-084's false positive into the
+    #: `cd`-rebase false negative §1.1 exists to prevent.
+    #:
+    #: `_segment_heads_for` credits a `cd` segment's path to `cd` **and** to
+    #: every *later* segment's head, so a rule asking `segment_head: "rm"`
+    #: catches `cd /srv/app && rm -rf logs` without mentioning `cd`. Ordering is
+    #: respected: `rm -rf /tmp/x && cd /srv/app` does not credit `/srv/app` to
+    #: the `rm`, because the `cd` comes after it.
+    #:
+    #: A rule that lists `cd` in this pattern gets `cd` on its own as well,
+    #: which is a different question and usually not the one intended.
+    segment_head: str | None = None
 
 
 class SequenceSlot(BaseModel):
