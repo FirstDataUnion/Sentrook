@@ -30,3 +30,37 @@ describe("unattendedReviewBlockReason", () => {
     assert.equal(UNATTENDED_BLOCK_DECISION, "unattended-block");
   });
 });
+
+describe("unattendedReviewBlockReason — hard reviews", () => {
+  const base = { eventId: "sr_deadbeef01", sessionKey: "sess-1", command: "cat ~/.ssh/id_rsa" };
+
+  it("does not offer the sensitivity floor for a hard review", () => {
+    // The bug this exists for: the message offered "raise the unattended floor
+    // so this severity auto-approves" for every block, and that stopped being
+    // true when `review_authority` reached the plugin. An operator following it
+    // changes a global setting, the job blocks again, and the setting stays
+    // changed.
+    const hard = unattendedReviewBlockReason({ ...base, reviewAuthority: "hard" });
+    assert.ok(!hard.includes("sensitivity unattended warning"), hard);
+    assert.match(hard, /hard review/);
+    assert.match(hard, /allowlist above is the only way/);
+    // The allowlist route must still be there — it is now the *only* route.
+    assert.match(hard, /allowlist add sr_deadbeef01/);
+  });
+
+  it("still offers the floor for a soft review", () => {
+    // Without this the test above passes against a message that never mentions
+    // the floor at all, which would be a regression for every other rule.
+    for (const authority of ["soft", undefined]) {
+      const soft = unattendedReviewBlockReason({ ...base, reviewAuthority: authority });
+      assert.match(soft, /sensitivity unattended warning/, String(authority));
+      assert.ok(!soft.includes("hard review"), String(authority));
+    }
+  });
+
+  it("an engine that does not send the field behaves as before", () => {
+    const before = unattendedReviewBlockReason(base);
+    const soft = unattendedReviewBlockReason({ ...base, reviewAuthority: "soft" });
+    assert.equal(before, soft);
+  });
+});

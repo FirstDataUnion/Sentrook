@@ -542,6 +542,68 @@ describe("translateScanResponse — review mapping", () => {
     assert.match(result?.blockReason || "", /sensitivity unattended warning/);
   });
 
+  it("an unattended HARD review does not offer the sensitivity floor", () => {
+    // Covers the wiring, not just the copy. `unattendedReviewBlockReason` is
+    // called from inside `translateScanResponse`, so dropping
+    // `reviewAuthority: scan.review_authority` at that call site is invisible
+    // to every `unattendedReview.test.ts` assertion — F43's shape, second
+    // instance. This test goes through the caller.
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "credential read",
+      review_severity: "warning",
+      review_authority: "hard",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "cat ~/.ssh/id_ed25519" },
+        unattended: true,
+        eventId: "sr_deadbeef01",
+        plan: plan({
+          pending: { tool: "exec", args: { command: "cat ~/.ssh/id_ed25519" } },
+          intentKind: "cron",
+          sessionId: "cron-sess",
+        }),
+      }),
+    );
+    assert.equal(result?.block, true);
+    const reason = result?.blockReason || "";
+    assert.match(reason, /hard review/);
+    assert.ok(
+      !reason.includes("sensitivity unattended warning"),
+      "offered a floor that cannot waive a hard review",
+    );
+    assert.match(reason, /allowlist add sr_deadbeef01/);
+  });
+
+  it("an unattended SOFT review still offers the floor", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "flagged",
+      review_severity: "warning",
+      review_authority: "soft",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "rg -n TODO src/" },
+        unattended: true,
+        eventId: "sr_deadbeef01",
+        plan: plan({
+          pending: { tool: "exec", args: { command: "rg -n TODO src/" } },
+          intentKind: "cron",
+          sessionId: "cron-sess",
+        }),
+      }),
+    );
+    assert.match(result?.blockReason || "", /sensitivity unattended warning/);
+  });
+
   it("overlays local exec command when sidecar copy is [TRUNCATED]", () => {
     const command = `python3 wiki.py get Self:Today ${"padding ".repeat(80)}`;
     const scan: ScanResponse = {

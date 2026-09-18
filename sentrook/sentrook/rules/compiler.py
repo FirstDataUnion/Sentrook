@@ -71,6 +71,10 @@ class UnknownMacroError(ValueError):
 ARGS_MATCH_MACROS: dict[str, Any] = {
     "sensitive_path": lambda: load_sensitive_paths().sensitive.fragment,
     "auth_store_path": lambda: load_sensitive_paths().auth_store.fragment,
+    "credential_store_path": lambda: load_sensitive_paths().credential_store.fragment,
+    "credential_bearing_config_path": (
+        lambda: load_sensitive_paths().credential_bearing_config.fragment
+    ),
     "agent_config_path": lambda: load_sensitive_paths().agent_config.fragment,
     "persistence_path": lambda: load_sensitive_paths().persistence.fragment,
 }

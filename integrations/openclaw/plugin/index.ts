@@ -1010,6 +1010,7 @@ export function translateScanResponse(
           eventId: ctx.eventId,
           sessionKey: plan.metadata.session_key,
           command: pendingTrustPreview(pendingTool, ctx.pendingArgs ?? pending?.args),
+          reviewAuthority: scan.review_authority,
         }),
       };
     }
