@@ -27,6 +27,7 @@ from sentrook.serve.metrics import (
 )
 from sentrook.serve.oidc import normalize_oidc_url
 from sentrook.serve.rate_limit import MemoryTokenBucketLimiter
+from sentrook.serve.response import _review_authority
 from sentrook.serve.service import ScanService
 from sentrook.serve.stats import LatencyTracker
 
@@ -112,6 +113,12 @@ class ServeRuntime:
             sanitize_log_fields=self.config.server_sanitize_planir,
             log_content=self.config.log_content,
         )
+        # Set here rather than inside `build_log_record`, because this is where
+        # the warm rule set lives and adding a parameter to that function would
+        # be one more line a caller can forget — the shape that left the
+        # plugin's hard-review guard dead three times over.
+        if result.decision == "review":
+            record.review_authority = _review_authority(result, self.authority_by_rule_id())
         append_scan_log(
             self.config.log_path,
             record,

@@ -51,6 +51,9 @@ class ScanBody(BaseModel):
     summary: str | None = None
     matched_rules: list[str] = Field(default_factory=list)
     review_severity: str | None = None
+    #: `hard` when no blanket session policy may waive the review — see
+    #: `serve/response.py::_review_authority`. Mirrors the plugin's field.
+    review_authority: str | None = None
     block_reason: str | None = None
     winning_rule_id: str | None = None
     log: dict[str, Any] | None = None

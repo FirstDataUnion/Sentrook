@@ -149,3 +149,45 @@ def test_severity_and_authority_are_independent_on_the_wire() -> None:
     hard_but_warning = _response([_rule("AIRA-083", severity="medium")], {"AIRA-083": "hard"})
     assert hard_but_warning["review_severity"] == "warning"
     assert hard_but_warning["review_authority"] == "hard"
+
+
+def test_the_scan_log_records_the_authority() -> None:
+    """Otherwise nothing downstream can tell a waivable review from an
+    unwaivable one.
+
+    The fatigue report, the review inbox and every post-hoc analysis read the
+    scan log, and `authority` is the property Phase 3a made load-bearing. The
+    field is set in `ServeRuntime.log_scan`, where the warm rule set lives —
+    not by another parameter on `build_log_record`, which is the shape that
+    left the plugin's hard-review guard dead three separate times.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from sentrook.serve.runtime import ServeRuntime
+
+    plan = _plan()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = ServeConfig(log_path=Path(tmp) / "scan.jsonl", rules_path=Path(tmp) / "rules")
+        (Path(tmp) / "rules").mkdir()
+        (Path(tmp) / "rules" / "AIRA-900.yaml").write_text(
+            "rule: AIRA-900\n"
+            "meta: {name: hard one, severity: medium, action: review, authority: hard}\n"
+            "condition: {pending_tool: exec}\n",
+            encoding="utf-8",
+        )
+        runtime = ServeRuntime(config)
+        result = runtime.scanner.scan(plan)
+        _, record = runtime.log_scan(plan, result)
+        assert result.decision == "review"
+        assert record.review_authority == "hard", (
+            "the scan log lost the authority; a reader cannot tell whether this "
+            "review could have been waived"
+        )
+
+
+def test_a_non_review_records_no_authority() -> None:
+    """`None` rather than a default, so the log does not imply a judgement that
+    was never made."""
+    record = _record()
+    assert record.review_authority is None

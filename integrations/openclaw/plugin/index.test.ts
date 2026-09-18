@@ -542,6 +542,91 @@ describe("translateScanResponse — review mapping", () => {
     assert.match(result?.blockReason || "", /sensitivity unattended warning/);
   });
 
+  it("a HARD review is not short-circuited by a stale allowlist entry", () => {
+    // Third instance of the same wiring hole: `matchAllowlist` is called from
+    // inside `translateScanResponse`, so dropping `{ reviewAuthority }` at that
+    // call site leaves the fix dead with every `localAllowlist.test.ts`
+    // assertion green. Covered through the caller, like the unattended one.
+    const dir = mkdtempSync(join(tmpdir(), "al-wire-"));
+    const path = join(dir, "allowlist.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            kind: "skeleton",
+            tool: "exec",
+            skeleton: "cat /home/node/.ssh/id_rsa",
+            // Recorded before the hard rule existed.
+            matched_rule_ids: ["AIRA-010"],
+            created_at: "2026-01-01T00:00:00Z",
+            source: "allow-always",
+          },
+        ],
+      }),
+    );
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "credential read",
+      review_severity: "warning",
+      review_authority: "hard",
+      log: { matched_rules: ["AIRA-010", "AIRA-083"] } as never,
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "cat /home/node/.ssh/id_rsa" },
+        allowlist: { enabled: true, path, scriptBind: false } as never,
+        plan: plan({
+          pending: { tool: "exec", args: { command: "cat /home/node/.ssh/id_rsa" } },
+        }),
+      }),
+    );
+    assert.ok(result?.requireApproval, "the stale entry silently skipped a hard review");
+  });
+
+  it("...and a covering entry still short-circuits it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "al-wire2-"));
+    const path = join(dir, "allowlist.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            kind: "skeleton",
+            tool: "exec",
+            skeleton: "cat /home/node/.ssh/id_rsa",
+            matched_rule_ids: ["AIRA-010", "AIRA-083"],
+            created_at: "2026-01-01T00:00:00Z",
+            source: "allow-always",
+          },
+        ],
+      }),
+    );
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_severity: "warning",
+      review_authority: "hard",
+      log: { matched_rules: ["AIRA-010", "AIRA-083"] } as never,
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "cat /home/node/.ssh/id_rsa" },
+        allowlist: { enabled: true, path, scriptBind: false } as never,
+        plan: plan({
+          pending: { tool: "exec", args: { command: "cat /home/node/.ssh/id_rsa" } },
+        }),
+      }),
+    );
+    assert.equal(result, undefined);
+  });
+
   it("an unattended HARD review does not offer the sensitivity floor", () => {
     // Covers the wiring, not just the copy. `unattendedReviewBlockReason` is
     // called from inside `translateScanResponse`, so dropping

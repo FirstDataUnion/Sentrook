@@ -68,6 +68,12 @@ class ScanLogRecord(BaseModel):
     risk: float
     summary: str
     matched_rules: list[ScanMatchedRule] = Field(default_factory=list)
+    #: `hard` when any surviving review is hard-authority, mirroring the field
+    #: on the scan response. Recorded because otherwise nothing downstream can
+    #: tell a waivable review from an unwaivable one: the fatigue report, the
+    #: review inbox and any post-hoc analysis all read this log, and `authority`
+    #: is the property Phase 3a made load-bearing. `None` on a non-review.
+    review_authority: str | None = None
     #: Rule that actually drove review/block after L3 (causal for feedback).
     winning_rule_id: str | None = None
     layer_exits: list[str] = Field(default_factory=list)

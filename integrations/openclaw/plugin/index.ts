@@ -979,6 +979,7 @@ export function translateScanResponse(
         plan,
         log && typeof log === "object" ? log : undefined,
         ctx.allowlist,
+        { reviewAuthority: scan.review_authority },
       );
       if (match.hit) {
         const rules = (match.matchedRuleIds ?? []).join(",") || "?";
@@ -991,6 +992,13 @@ export function translateScanResponse(
           match.kind ||
           "";
         return undefined;
+      }
+      if (scan.review_authority === "hard" && match.reason?.includes("hard review")) {
+        ctx.logger.warn(
+          "[sentrook-openclaw] local allowlist entry not applied: this is a hard " +
+            "review and the entry was recorded before one of the rules that now " +
+            "matches. Approve once to record an entry that covers it.",
+        );
       }
     }
 
