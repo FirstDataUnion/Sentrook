@@ -25,6 +25,12 @@ from sentrook.rules.models import (
 )
 from sentrook.sanitize.sensitive_paths import binary_alternation, load_sensitive_paths
 
+#: Prefix under which a *condition kind* is reported alongside `args_match`
+#: keys, so `REQUIRED_ALLOW_CONSTRAINTS` can name one. Distinct from a bare
+#: name so it cannot collide with an arg that happens to be called `paths`.
+CONDITION_KEY_PREFIX = "condition:"
+
+
 #: Constraints an `action: allow` rule must carry. Each closes a way the rule
 #: could otherwise approve something it did not actually understand.
 REQUIRED_ALLOW_CONSTRAINTS: dict[str, str] = {
@@ -43,6 +49,31 @@ REQUIRED_ALLOW_CONSTRAINTS: dict[str, str] = {
     # because "remember to think about the environment" is exactly what an
     # author forgets.
     "_shape.env_assignments": "an allow rule must constrain the environment prefix",
+    # D23. AIRA-010 is `soft`, so an allow family may suppress it, and an allow
+    # family that says nothing about path roles suppresses it on `cat
+    # id_ed25519` — a bare basename with **zero** extractable paths, so a
+    # `paths:` condition cannot see it and only the whole-command roll-up can.
+    "_shape.path_roles": "an allow rule must constrain the roles of the paths it touches",
+    # D23's other half, and the reason one constraint is not enough. The two
+    # views fail on opposite inputs and neither substitutes for the other:
+    #
+    #   cat id_ed25519             path_roles=['sensitive']  paths=[]
+    #   ls -la /home/node/.openclaw  path_roles=[]           paths=[(…, ['openclaw'], [])]
+    #
+    # The agent's own config *directory* carries a `location`, not a `role`, so
+    # `_shape.path_roles` is empty for it and the clause above is satisfied
+    # vacuously. Two corpus `attack` rows are exactly that listing
+    # (`pos-inbox-export-obey-ls`, `pos-poisoned-fetch-steer-exec`), and §3b's
+    # seed table asks for the `paths:` guard on the Read family while omitting
+    # it from Listing — a safety property living in prose, which is F30.
+    #
+    # Only the *presence* of the condition is enforced here; which paths a
+    # family refuses is its own business, gated by the `allow_rules` suite and
+    # GTFOBins zero-admission.
+    f"{CONDITION_KEY_PREFIX}paths": (
+        "an allow rule must carry a `paths:` condition — `_shape.path_roles` is "
+        "empty for the agent's own config directory, which has a location and no role"
+    ),
 }
 
 
@@ -302,12 +333,6 @@ def validate_suppression_targets(rules: list[Rule]) -> None:
                 )
 
 
-#: Prefix under which a *condition kind* is reported alongside `args_match`
-#: keys, so `REQUIRED_ALLOW_CONSTRAINTS` can name one. Distinct from a bare
-#: name so it cannot collide with an arg that happens to be called `paths`.
-CONDITION_KEY_PREFIX = "condition:"
-
-
 def _collect_args_match_keys(node: Any, *, negated: bool = False) -> set[str]:
     """Every `args_match` key, and every condition kind, in **positive** position.
 
@@ -342,7 +367,19 @@ def _collect_args_match_keys(node: Any, *, negated: bool = False) -> set[str]:
         for key, value in node.items():
             if key == "args_match" and isinstance(value, dict):
                 if not negated:
-                    keys.update(part.strip() for raw in value for part in str(raw).split("|"))
+                    # An `args_match` key is never a condition kind. Reserving
+                    # the prefix stops a rule satisfying a condition-shaped
+                    # requirement with an arg *named* `condition:paths` — the
+                    # collision the prefix was chosen to prevent, one level up
+                    # from the one its comment anticipated. Harmless while
+                    # every required constraint was a shape boolean; a hole the
+                    # moment D23 made one of them a condition.
+                    keys.update(
+                        part.strip()
+                        for raw in value
+                        for part in str(raw).split("|")
+                        if not part.strip().startswith(CONDITION_KEY_PREFIX)
+                    )
                 continue
             if key in _CONDITION_KINDS and not negated:
                 keys.add(f"{CONDITION_KEY_PREFIX}{key}")

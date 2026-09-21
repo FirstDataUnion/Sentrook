@@ -81,6 +81,9 @@ def _allow_rule(
         "_shape.substitution": "^false$",
         "_shape.sinks": "^$",
         "_shape.heads": heads,
+        # D23. `cat id_ed25519` has no extractable path, so only the
+        # whole-command roll-up can refuse it.
+        "_shape.path_roles": "^$",
     }
     constraints.update(extra_constraints or {})
     return {
@@ -92,9 +95,39 @@ def _allow_rule(
             "suppresses": suppresses if suppresses is not None else ["AIRA-010"],
         },
         "condition": {
-            "sequence": [{"tool": "exec", "status": "pending", "args_match": constraints}]
+            "all": [
+                {"sequence": [{"tool": "exec", "status": "pending", "args_match": constraints}]},
+                # D23's other half. The agent's own config directory carries a
+                # `location` and no `role`, so the clause above is empty for it.
+                {"paths": {"quantifier": "none", "location": "openclaw"}},
+            ]
         },
     }
+
+
+def _satisfying_parts() -> tuple[dict[str, str], list[dict]]:
+    """Every required constraint, split by where it has to live.
+
+    A constraint named with `CONDITION_KEY_PREFIX` is a *condition kind* and
+    cannot be supplied as an `args_match` key — that is the collision the
+    prefix reserves. Built from `REQUIRED_ALLOW_CONSTRAINTS` so a clause added
+    later lands on the correct side of the split by itself.
+    """
+    from sentrook.rules.compiler import CONDITION_KEY_PREFIX, REQUIRED_ALLOW_CONSTRAINTS
+
+    supplied = {
+        "paths": {"quantifier": "none", "location": "openclaw"},
+    }
+    args: dict[str, str] = {}
+    conditions: list[dict] = []
+    for key in REQUIRED_ALLOW_CONSTRAINTS:
+        if key.startswith(CONDITION_KEY_PREFIX):
+            kind = key[len(CONDITION_KEY_PREFIX) :]
+            assert kind in supplied, f"no worked example for required condition {kind!r}"
+            conditions.append({kind: supplied[kind]})
+        else:
+            args[key] = "^.*$"
+    return args, conditions
 
 
 def _scan(command: str, rule_docs: list[dict], **config_kwargs):
@@ -262,14 +295,14 @@ def test_suppressed_review_never_reaches_l3() -> None:
 def test_allow_rule_without_privileged_constraint_is_rejected() -> None:
     """F18 made unrepresentable rather than remembered."""
     doc = _allow_rule()
-    del doc["condition"]["sequence"][0]["args_match"]["_shape.privileged"]
+    del doc["condition"]["all"][0]["sequence"][0]["args_match"]["_shape.privileged"]
     with pytest.raises(ValueError, match="_shape.privileged"):
         compile_rule(doc)
 
 
 def test_allow_rule_without_parse_ok_constraint_is_rejected() -> None:
     doc = _allow_rule()
-    del doc["condition"]["sequence"][0]["args_match"]["_shape.parse_ok"]
+    del doc["condition"]["all"][0]["sequence"][0]["args_match"]["_shape.parse_ok"]
     with pytest.raises(ValueError, match="_shape.parse_ok"):
         compile_rule(doc)
 
@@ -299,14 +332,15 @@ def test_validate_allow_rule_finds_constraints_at_any_depth() -> None:
     a required clause — F30 added the third — does not silently turn this into
     a test of the two that happened to be listed when it was written.
     """
-    from sentrook.rules.compiler import REQUIRED_ALLOW_CONSTRAINTS
+    from sentrook.rules.compiler import CONDITION_KEY_PREFIX, REQUIRED_ALLOW_CONSTRAINTS
 
     meta = RuleMeta(name="x", action="allow", suppresses=["AIRA-010"])
-    every = {key: "^.*$" for key in REQUIRED_ALLOW_CONSTRAINTS}
+    every, conditions = _satisfying_parts()
     nested = {
         "all": [
             {"pending_tool": "exec"},
             {"sequence": [{"tool": "exec", "args_match": every}]},
+            *conditions,
         ]
     }
     validate_allow_rule(meta, nested)
@@ -314,7 +348,8 @@ def test_validate_allow_rule_finds_constraints_at_any_depth() -> None:
     # Dropping any one of them must be caught, wherever it sits in the tree.
     for dropped in REQUIRED_ALLOW_CONSTRAINTS:
         partial = {k: v for k, v in every.items() if k != dropped}
-        missing = {"all": [{"sequence": [{"tool": "exec", "args_match": partial}]}]}
+        kept = [c for c in conditions if f"{CONDITION_KEY_PREFIX}{next(iter(c))}" != dropped]
+        missing = {"all": [{"sequence": [{"tool": "exec", "args_match": partial}]}, *kept]}
         with pytest.raises(InvalidAllowRuleError, match=re.escape(dropped)):
             validate_allow_rule(meta, missing)
 
@@ -418,7 +453,7 @@ def test_load_rules_rejects_an_allow_rule_missing_a_safety_clause(tmp_path) -> N
     from sentrook.rules.loader import load_rules
 
     doc = _allow_rule()
-    del doc["condition"]["sequence"][0]["args_match"]["_shape.privileged"]
+    del doc["condition"]["all"][0]["sequence"][0]["args_match"]["_shape.privileged"]
     _write_rules(tmp_path, [_review_rule(), doc])
     with pytest.raises(ValueError, match="_shape.privileged"):
         load_rules(tmp_path)
@@ -451,7 +486,7 @@ def test_an_allow_rule_must_constrain_the_environment_prefix() -> None:
     environment" is exactly what a rule author forgets.
     """
     doc = _allow_rule()
-    del doc["condition"]["sequence"][0]["args_match"]["_shape.env_assignments"]
+    del doc["condition"]["all"][0]["sequence"][0]["args_match"]["_shape.env_assignments"]
     with pytest.raises(ValueError, match="_shape.env_assignments"):
         compile_rule(doc)
 
@@ -489,8 +524,8 @@ def test_required_constraints_do_not_count_inside_a_negation() -> None:
     """
     from sentrook.rules.compiler import REQUIRED_ALLOW_CONSTRAINTS
 
-    every = {key: "^.*$" for key in REQUIRED_ALLOW_CONSTRAINTS}
-    sequence = {"sequence": [{"tool": "exec", "args_match": every}]}
+    every, conditions = _satisfying_parts()
+    sequence = {"all": [{"sequence": [{"tool": "exec", "args_match": every}]}, *conditions]}
 
     def _doc(condition: dict) -> dict:
         return {
@@ -515,3 +550,113 @@ def test_condition_kinds_are_also_positive_only() -> None:
     inner = {"paths": {"quantifier": "any", "role": "sensitive"}}
     assert f"{CONDITION_KEY_PREFIX}paths" in _collect_args_match_keys(inner)
     assert f"{CONDITION_KEY_PREFIX}paths" not in _collect_args_match_keys({"none": inner})
+
+
+# --------------------------------------------------------------------------
+# D23 — the two path views, and why neither one is enough
+
+
+def test_the_path_roles_clause_refuses_a_bare_credential_basename() -> None:
+    """`cat id_ed25519` is the case a `paths:` condition cannot see.
+
+    The sanitizer classifies it by basename (§1.3), so `_shape.path_roles` is
+    `['sensitive']` — but there is no extractable path token, so the per-path
+    view is **empty** and `paths: {quantifier: none, role: sensitive}` is
+    satisfied vacuously. That is the dialect reference's own warning, asserted
+    here against the real scan rather than left in prose.
+    """
+    docs = [_review_rule(), _allow_rule()]
+    assert _scan("cat README.md", docs).decision == "allow"
+    result = _scan("cat id_ed25519", docs)
+    assert result.decision == "review", "the allow rule approved a credential read"
+    assert {m.id for m in result.matched_rules} == {"AIRA-010"}
+
+
+def test_the_paths_clause_refuses_a_listing_of_the_agents_own_config_dir() -> None:
+    """`ls -la /home/node/.openclaw` is the mirror case, and the corpus has two.
+
+    The directory carries a `location` and **no** `role`, so
+    `_shape.path_roles` is empty and the clause above passes it. Only the
+    per-path view sees the `openclaw` location. `pos-inbox-export-obey-ls` and
+    `pos-poisoned-fetch-steer-exec` are both this command, and §3b's seed table
+    asks for this guard on the Read family while omitting it from Listing.
+    """
+    docs = [_review_rule(), _allow_rule()]
+    result = _scan("ls -la /home/node/.openclaw", docs)
+    assert result.decision == "review", "the allow rule approved a config-dir listing"
+    assert {m.id for m in result.matched_rules} == {"AIRA-010"}
+
+
+def test_neither_path_clause_subsumes_the_other(monkeypatch) -> None:
+    """The point of requiring both: each admits what the other refuses.
+
+    The guard is emptied for the duration, because it is the only reason these
+    two rules cannot be written — which is the claim. Without it each rule
+    compiles happily and returns `allow` on the case its missing clause owns,
+    so this fails the moment either constraint is dropped *or* quietly widened
+    into covering the other's case.
+    """
+    monkeypatch.setattr("sentrook.rules.compiler.REQUIRED_ALLOW_CONSTRAINTS", {})
+
+    shape_only = _allow_rule()
+    shape_only["condition"] = shape_only["condition"]["all"][0]
+    assert _scan("ls -la /home/node/.openclaw", [_review_rule(), shape_only]).decision == "allow"
+
+    paths_only = _allow_rule()
+    del paths_only["condition"]["all"][0]["sequence"][0]["args_match"]["_shape.path_roles"]
+    assert _scan("cat id_ed25519", [_review_rule(), paths_only]).decision == "allow"
+
+
+@pytest.mark.parametrize(
+    "clause",
+    [
+        pytest.param("_shape.path_roles", id="whole-command roll-up"),
+        pytest.param("condition:paths", id="per-path view"),
+    ],
+)
+def test_d23_both_path_clauses_are_required_not_merely_conventional(clause: str) -> None:
+    """D23, recorded as a test rather than as a decision in a document.
+
+    `test_validate_allow_rule_finds_constraints_at_any_depth` is built *from*
+    `REQUIRED_ALLOW_CONSTRAINTS`, so it shrinks silently if an entry is
+    deleted — it would still pass on a build where these two had been demoted
+    back to convention. F30 is what happens to a safety property that lives
+    only in prose, and D23's answer has to be worth more than the prose it
+    replaced. Naming the clauses here is the point: this test fails when the
+    decision is reversed, which is exactly when someone should have to argue
+    for it.
+    """
+    doc = _allow_rule()
+    if clause == "condition:paths":
+        doc["condition"] = doc["condition"]["all"][0]
+    else:
+        del doc["condition"]["all"][0]["sequence"][0]["args_match"][clause]
+    with pytest.raises(ValueError, match=re.escape(clause)):
+        compile_rule(doc)
+
+
+def test_a_condition_shaped_requirement_cannot_be_met_by_an_arg_of_that_name() -> None:
+    """`CONDITION_KEY_PREFIX` exists so a condition kind and an arg cannot be
+    confused, and its comment says it is "distinct from a bare name so it
+    cannot collide with an arg that happens to be called `paths`".
+
+    It does not, on its own, stop an arg called `condition:paths` — and until
+    D23 that cost nothing, because every required constraint was a shape
+    boolean that no `paths:` condition could supply. The moment one of them
+    became condition-shaped, an `args_match` key spelled the same way
+    satisfied it while the rule carried no path condition at all.
+    """
+    from sentrook.rules.compiler import CONDITION_KEY_PREFIX, REQUIRED_ALLOW_CONSTRAINTS
+
+    condition_shaped = [
+        key for key in REQUIRED_ALLOW_CONSTRAINTS if key.startswith(CONDITION_KEY_PREFIX)
+    ]
+    assert condition_shaped, "this test is about condition-shaped requirements; there are none"
+
+    doc = _allow_rule()
+    doc["condition"] = doc["condition"]["all"][0]  # drop the real `paths:` condition
+    args = doc["condition"]["sequence"][0]["args_match"]
+    for key in condition_shaped:
+        args[key] = "^.*$"
+    with pytest.raises(ValueError, match=re.escape(condition_shaped[0])):
+        compile_rule(doc)
