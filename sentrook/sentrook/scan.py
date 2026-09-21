@@ -151,7 +151,7 @@ def scan_plan(
     # a suppressed review would still be scored by L3 and would surface in traces
     # as an L3 decision, so the operator-facing explanation would name the wrong
     # layer for why a step was not shown.
-    suppressed_rule_ids = _suppressed_rule_ids(matched_rules, {r.id: r for r in candidates})
+    suppressed_rule_ids = _suppressed_rule_ids(matched_rules, {r.id: r for r in candidates}, plan)
     surviving_rules = [m for m in matched_rules if m.id not in suppressed_rule_ids]
 
     if not candidates:
@@ -406,7 +406,9 @@ def _redact_plan(plan: PlanIR) -> PlanIR:
     return plan.model_copy(update={"steps": steps})
 
 
-def _suppressed_rule_ids(matched: list[MatchedRule], rule_by_id: dict[str, Rule]) -> set[str]:
+def _suppressed_rule_ids(
+    matched: list[MatchedRule], rule_by_id: dict[str, Rule], plan: PlanIR | None = None
+) -> set[str]:
     """Review-rule ids removed by a definitively-matched allow rule.
 
     An allow rule removes exactly the ids it names in `suppresses` — never
@@ -415,7 +417,35 @@ def _suppressed_rule_ids(matched: list[MatchedRule], rule_by_id: dict[str, Rule]
     re-check authority; it enforces the narrower runtime invariant that a
     non-review match can never be removed, which holds even if a rule were
     loaded by a path that bypassed the compiler.
+
+    **An allow rule does not apply to a plan with more than one pending
+    step**, and that guard lives here rather than in the rules because it is a
+    property of the construct.
+
+    A rule's `sequence:` clause matches when *some* step satisfies it, and an
+    allow rule needs *every* pending step to. With two pending exec steps —
+    a dropper and a benign `ls -la` — the Phase 3b families matched on the
+    `ls`, suppressed AIRA-010, and the plan came back `allow` in either order.
+    AIRA-010 is a plan-level review, so suppressing it on the strength of one
+    step waives it for all of them.
+
+    F27's implicit quantifier a third level up: it was found and named for
+    heads within a shape, then for paths within a command, and it is the same
+    ambiguity again for steps within a plan. Three pending-step corpus rows
+    and two scenario plans have this shape, all from harvested feedback, so
+    it is not hypothetical.
+
+    Expressing "every pending step" in a rule is not available: the `every`
+    form over steps would have to be written as `none:` of a step that fails
+    the constraints, and the allow-rule guard deliberately does not see keys
+    inside a `none:`. So the guard is here, where no family can forget it and
+    the next one inherits it.
     """
+    if plan is not None:
+        pending = [step for step in plan.steps if step.status == "pending"]
+        if len(pending) > 1:
+            return set()
+
     suppressed: set[str] = set()
     action_by_id = {m.id: m.action for m in matched}
     for match in matched:

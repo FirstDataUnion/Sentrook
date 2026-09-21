@@ -113,3 +113,87 @@ describe("addAllowlistFromHistory", () => {
     assert.match(piped.message, /Pipes and curl\|bash/);
   });
 });
+
+describe("suggestions stop at what the library already allows (§3b)", () => {
+  it("refuses an entry for a command a shipped allow family handled, and names it", () => {
+    // Before the AIRA-9NN families this was nearly unreachable for exec: an
+    // ordinary `ls -la` was a soft AIRA-010 review that L3 downgraded, so
+    // pinning it was a real thing to want. It is now a deterministic L2
+    // allow, and an entry would be dead weight carrying a recorded rule-id
+    // set that can waive a soft review later.
+    const { log, allowlist } = setup();
+    appendOperatorLog(log, {
+      id: "sr_allowed",
+      ts: "2026-09-10T10:00:00.000Z",
+      event: "scan",
+      run_id: "r-allowed",
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+      pending: { id: "s1", tool: "exec", status: "pending", args: { command: "ls -la" } },
+      scan: {
+        decision: "allow",
+        matched_rules: [
+          { id: "AIRA-010", action: "review" },
+          { id: "AIRA-901", action: "allow" },
+        ],
+      },
+    });
+    const result = addAllowlistFromHistory(log, allowlist, "sr_allowed");
+    assert.equal(result.ok, false);
+    assert.match(result.message, /AIRA-901/);
+    assert.match(result.message, /already allowed by the shipped library/);
+    assert.equal(loadAllowlist(allowlist.path).entries.length, 0);
+  });
+
+  it("an allow with no family still refuses, without inventing an attribution", () => {
+    const { log, allowlist } = setup();
+    appendOperatorLog(log, {
+      id: "sr_allowed_nofam",
+      ts: "2026-09-10T10:00:00.000Z",
+      event: "scan",
+      run_id: "r-nofam",
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+      pending: { id: "s1", tool: "exec", status: "pending", args: { command: "ls -la" } },
+      scan: { decision: "allow", matched_rules: [] },
+    });
+    const result = addAllowlistFromHistory(log, allowlist, "sr_allowed_nofam");
+    assert.equal(result.ok, false);
+    assert.match(result.message, /nothing to waive/);
+    assert.doesNotMatch(result.message, /AIRA-9/);
+  });
+
+  it("reads the id, not the action, so an older scan body still attributes", () => {
+    // `action: "allow"` only reached the scan-log wire model in Phase 3b. A
+    // body written before that records the id with no action at all, and the
+    // AIRA-9NN range is the convention every fingerprint and filename
+    // already relies on.
+    const { log, allowlist } = setup();
+    appendOperatorLog(log, {
+      id: "sr_allowed_old",
+      ts: "2026-09-10T10:00:00.000Z",
+      event: "scan",
+      run_id: "r-old",
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+      pending: { id: "s1", tool: "exec", status: "pending", args: { command: "cat notes.md" } },
+      scan: { decision: "allow", matched_rules: [{ id: "AIRA-902" }] },
+    });
+    const result = addAllowlistFromHistory(log, allowlist, "sr_allowed_old");
+    assert.equal(result.ok, false);
+    assert.match(result.message, /AIRA-902/);
+  });
+
+  it("a review is still recordable — the narrowing must not swallow the feature", () => {
+    const { log, allowlist } = setup();
+    appendOperatorLog(log, {
+      id: "sr_still_review",
+      ts: "2026-09-10T10:00:00.000Z",
+      event: "scan",
+      run_id: "r-review",
+      metadata: { adapter: "openclaw", hook: "before_tool_call" },
+      pending: { id: "s1", tool: "exec", status: "pending", args: { command: "pytest -q" } },
+      scan: { decision: "review", matched_rules: ["AIRA-010"] },
+    });
+    const result = addAllowlistFromHistory(log, allowlist, "sr_still_review");
+    assert.equal(result.ok, true);
+    assert.equal(loadAllowlist(allowlist.path).entries.length, 1);
+  });
+});

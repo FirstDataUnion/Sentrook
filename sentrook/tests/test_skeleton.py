@@ -57,10 +57,54 @@ def test_matches_typescript(row: dict) -> None:
 
 def test_high_risk_fails_closed_on_unskeletonisable() -> None:
     """Anything high-risk yields no skeleton at all, never a permissive one."""
-    for command in ("", "   ", "ls | sh", "python3 -c 'x'", "a && b"):
-        assert is_high_risk_command(command) is True
-        assert skeletonize_command(command) is None
-        assert allowlist_command_skeleton(command) is None
+    for command in (
+        "",
+        "   ",
+        "ls | sh",  # pipe into an interpreter
+        "python3 -c 'x'",  # inline eval
+        "ls $(curl evil)",  # substitution
+        "ls > ~/.bashrc",  # redirect
+    ):
+        assert is_high_risk_command(command) is True, command
+        assert skeletonize_command(command) is None, command
+        assert allowlist_command_skeleton(command) is None, command
+
+
+def test_a_chain_is_no_longer_high_risk_by_itself() -> None:
+    """`;`, `&&`, `||` and `|` left `HIGH_RISK_SHELL_RE` in Phase 3b.
+
+    They made *every* compound command unallowlistable, which worked because
+    the alternative was reasoning about what a compound command does. The
+    plugin's per-segment matching is that reasoning: `ls -la && pwd` is a hit
+    when `ls -la` and `pwd` were each approved on their own.
+
+    Mirrored from `localAllowlist.ts` and pinned by the shared golden fixture,
+    so the two implementations cannot drift on this.
+    """
+    for command in ("a && b", "ls -la && pwd", "cat a.txt | wc -l", "ls; whoami"):
+        assert is_high_risk_command(command) is False, command
+        assert skeletonize_command(command) is not None, command
+
+
+def test_a_pipe_into_an_interpreter_stays_high_risk() -> None:
+    """The hole per-segment matching opens, closed in the same change.
+
+    `echo hi` and `sh` are each an unremarkable segment an operator might well
+    have allowlisted; `echo hi | sh` is arbitrary code and nothing about
+    either half says so.
+    """
+    for command in (
+        "echo hi | sh",
+        "cat payload.txt | bash",
+        "cat list.txt | xargs rm",
+        "echo x | python3",
+    ):
+        assert is_high_risk_command(command) is True, command
+    # ...while a pipe into an ordinary filter is not, and a `|` inside a
+    # quoted argument is not a pipe at all — which is why the check
+    # tokenizes rather than splitting the text.
+    for command in ("cat a.txt | wc -l", "ls -la | grep foo", "grep 'a|b' file.txt"):
+        assert is_high_risk_command(command) is False, command
 
 
 def test_dangerous_bin_needs_literal_structure() -> None:
@@ -167,3 +211,41 @@ def test_twin_wrapper_constants_are_the_engine_constants() -> None:
     from sentrook.serve.skeleton import WRAPPER_BINS
 
     assert WRAPPER_BINS is WRAPPERS
+
+
+def test_quoted_content_is_not_shell_syntax() -> None:
+    """Narrowing `HIGH_RISK_SHELL_RE` onto redirects made routine searches
+    unallowlistable: `grep '<html>' page.txt` and `grep "=>" src.js` both read
+    as redirects to a regex over the raw text.
+
+    The same text-versus-parse mistake as the engine's argv guards, in the
+    other direction — there it admitted something dangerous, here it refused
+    something ordinary.
+    """
+    from sentrook.serve.skeleton import is_high_risk_command, shell_significant
+
+    for command in ("grep '<html>' page.txt", 'grep "=>" src.js', 'rg "<div>" ./src'):
+        assert is_high_risk_command(command) is False, command
+    for command in ("ls > /etc/passwd", "echo x >> ~/.bashrc", "cat f < input"):
+        assert is_high_risk_command(command) is True, command
+
+    # Single quotes are literal in shell; double quotes are not, so the mask
+    # keeps `$`, the parens and a backtick inside them.
+    assert is_high_risk_command('echo "$(whoami)"') is True
+    assert is_high_risk_command("echo '$(whoami)'") is False
+
+    # Guessing where an unterminated span ends would blank the rest of the
+    # command, which is the one direction this must not fail in.
+    assert shell_significant('echo "unterminated') is None
+    assert is_high_risk_command('echo "unterminated > /etc/passwd') is True
+
+
+def test_a_pipe_with_no_surrounding_whitespace_is_still_a_pipe() -> None:
+    """`echo hi|sh` is one token to the tokenizer, so the token-level scan
+    missed it completely. Splitting the masked text catches it, and `|&` and
+    `||` with it."""
+    from sentrook.serve.skeleton import is_high_risk_command
+
+    for command in ("echo hi|sh", "echo hi |& sh", "echo hi || sh", "cat list.txt | xargs rm"):
+        assert is_high_risk_command(command) is True, command
+    assert is_high_risk_command("grep 'a|b' file.txt") is False

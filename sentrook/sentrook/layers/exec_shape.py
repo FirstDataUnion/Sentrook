@@ -238,6 +238,42 @@ class ExecShape:
     #: Lowercased hostnames of every http(s) URL in the command.
     url_hosts: list[str] = field(default_factory=list)
     segments: list[ExecSegment] = field(default_factory=list)
+    #: Heads written as a **path** rather than a bare name, as written:
+    #: ``./ls``, ``bin/ls``, ``../ls``, ``~/ls``, ``/usr/bin/ls``.
+    #:
+    #: `heads` is the basename, lowercased, which is right for a review rule —
+    #: a rule hunting `exec:curl` should catch `/usr/bin/curl` — and exactly
+    #: backwards for an allow rule. `/usr/bin/ls` is the system `ls`; `./ls`
+    #: is a file in the workspace that the agent may have written a moment
+    #: ago, and both arrive at the matcher as `ls`. Every allow family
+    #: admitted `./ls -la`, `./cat ./notes.md` and `./find . -name x`.
+    #:
+    #: This is the third field to exist for that reason. `privileged` and
+    #: `env_assignments` are both here because stripping that is correct for a
+    #: review rule destroys something only a fail-open rule needs — `sudo cat`
+    #: and `cat` have identical heads, `LD_PRELOAD=x ls` and `ls` have
+    #: identical everything. A path-qualified head is the same shape a third
+    #: time, and like the other two it is enforced by the compiler rather than
+    #: left to an author to remember.
+    head_paths: list[str] = field(default_factory=list)
+    #: Each segment as ``head arg1 arg2 …``, one per line — the **parsed**
+    #: command, matchable from a rule.
+    #:
+    #: `_shape.segments` is refused at compile because it is a list of objects
+    #: that stringifies to ``""``; this is the same information in the one
+    #: form a rule can read. It exists because an argv guard written against
+    #: the raw ``command`` text and a head clause written against the parse
+    #: **disagree about what the command is**, and the gap is a bypass:
+    #:
+    #:     "git" push --force     heads ['git'], text has no `git ` to match
+    #:     find . -name x "-delete"   the `"` sits where a delimiter was expected
+    #:
+    #: Both were admitted by the allow families until the guards moved here.
+    #: The tokenizer resolves quoting, so there is nothing for a regex to be
+    #: tricked by; what it does *not* normalise is a head split across quotes
+    #: (``g'i't``), which keeps that spelling in `heads` and is therefore
+    #: refused by the every-head clause instead.
+    argv: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -255,6 +291,8 @@ class ExecShape:
             "paths": [p.to_dict() for p in self.paths],
             "url_hosts": list(self.url_hosts),
             "segments": [s.to_dict() for s in self.segments],
+            "head_paths": list(self.head_paths),
+            "argv": self.argv,
         }
 
 
@@ -321,11 +359,18 @@ def derive_exec_shape(command: str | None) -> ExecShape:
 
     wrappers: list[str] = []
     assignments: list[str] = []
+    head_paths: list[str] = []
     for raw_head, raw_argv, raw_assignments in raw_segments:
         assignments.extend(raw_assignments)
         head, argv, stripped, wrapped_assignments = _strip_wrappers(raw_head, raw_argv)
         wrappers.extend(stripped)
         assignments.extend(wrapped_assignments)
+        # Record the head *as written* before the basename erases it. See
+        # `head_paths`: `./ls` and `ls` are the same to every review rule and
+        # must not be to an allow rule.
+        written = _unquote(head)
+        if "/" in written:
+            head_paths.append(written)
         head = _basename(head)
         if not head:
             continue
@@ -338,6 +383,7 @@ def derive_exec_shape(command: str | None) -> ExecShape:
         if _segment_is_inline_eval(head, argv):
             shape.inline_eval = True
 
+    shape.head_paths = _dedupe(head_paths)
     shape.wrappers = _dedupe(wrappers)
     shape.env_assignments = _dedupe(assignments)
     shape.privileged = any(w in PRIVILEGE_WRAPPERS for w in shape.wrappers)
@@ -352,6 +398,10 @@ def derive_exec_shape(command: str | None) -> ExecShape:
     shape.path_roles = derive_path_roles(command)
     shape.paths = derive_paths(command, [s.argv for s in shape.segments], shape.path_roles)
     shape.path_classes = roll_up_path_classes(shape.path_roles, shape.paths)
+    # Head first, because a verb gate asks "which git is this" and the head is
+    # not in `ExecSegment.argv`. Newline-joined per segment, the same
+    # convention as every other list-shaped shape field.
+    shape.argv = "\n".join(" ".join([seg.head, *seg.argv]).strip() for seg in shape.segments)
     shape.url_hosts = derive_url_hosts(command)
     if not shape.parse_ok:
         # Heads stay for diagnostics; segments do not, so no allow rule can build

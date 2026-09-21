@@ -551,11 +551,25 @@ def _shape_value_matches(key: str, pattern: str, step: PlanStep | None) -> bool:
     shape = getattr(step, "exec_shape", None) if step is not None else None
     if shape is None:
         return False
+    from sentrook.rules.compiler import MATCHABLE_SHAPE_FIELDS
+
     field = key[len(SHAPE_KEY_PREFIX) :]
-    values = shape.to_dict()
-    if field not in values:
+    # The compiler's set, imported rather than re-derived: it is what
+    # decides which `_shape.<field>` keys compile, and a second copy here
+    # could let a rule compile against a field this cannot resolve.
+    #
+    # **Not `shape.to_dict()`**, which this used to call. Resolving one
+    # field rebuilt the whole dictionary, including every `ExecPath`, and
+    # `_stringify_shape_value` then dropped the object lists on the floor.
+    # At the 4,000-character budget that is ~500 paths serialised and
+    # discarded on each of ~80 lookups; Phase 3b took the library from
+    # about fourteen `_shape.*` clauses to about ninety and turned a quiet
+    # inefficiency into 24ms a scan. The excluded fields are exactly the
+    # object-valued ones, so the two reads agree on everything a rule can
+    # name.
+    if field not in MATCHABLE_SHAPE_FIELDS:
         return False
-    return match_text_with_normalization(pattern, _stringify_shape_value(values[field]))
+    return match_text_with_normalization(pattern, _stringify_shape_value(getattr(shape, field)))
 
 
 def _stringify_shape_value(value: object) -> str:

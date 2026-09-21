@@ -102,6 +102,8 @@ class SensitivePathRules:
     interpreter_binaries: frozenset[str]
     fetch_binaries: frozenset[str]
     package_mgmt_binaries: frozenset[str]
+    safe_exec_binaries: dict[str, tuple[str, ...]]
+    unsafe_argv_flags: dict[str, tuple[str, ...]]
 
     def group(self, name: str) -> PathList:
         group = getattr(self, name, None)
@@ -176,6 +178,12 @@ def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
         interpreter_binaries=frozenset(raw.get("interpreter_binaries", ())),
         fetch_binaries=frozenset(raw.get("fetch_binaries", ())),
         package_mgmt_binaries=frozenset(raw.get("package_mgmt_binaries", ())),
+        safe_exec_binaries={
+            family: tuple(heads) for family, heads in (raw.get("safe_exec_binaries") or {}).items()
+        },
+        unsafe_argv_flags={
+            key: tuple(values) for key, values in (raw.get("unsafe_argv_flags") or {}).items()
+        },
     )
     # Compile every group once here rather than lazily at first match: a bad
     # pattern must fail at load, not on the scan that happens to reach it (F20).
@@ -198,6 +206,62 @@ def sensitive_path_fragment() -> str:
 
 def sensitive_path_regex() -> re.Pattern[str]:
     return load_sensitive_paths().sensitive.regex
+
+
+def unsafe_argv_fragment(flags: dict[str, tuple[str, ...]]) -> str:
+    """Regex *source* matching any flag that redirects what a command acts on.
+
+    Three shapes, because three spellings carry the same capability and a
+    single alternation over the bare names would match the wrong things:
+
+    * ``--files0-from`` — long flags, on a word boundary, so ``--file`` does
+      not match inside ``--files0-from``'s own text but ``--file=x`` does.
+    * ``-f`` — short flags, delimited on both sides, so ``-f`` does not match
+      inside ``-force`` and ``--prefix`` does not match the ``-f`` branch.
+    * ``-delete`` — find's action predicates, which look like long flags with
+      one dash.
+
+    Composed here rather than in each rule: the alternation is the safety
+    property of eight fail-open rules, and §1.3 is the record of what happens
+    when such a list is pasted into each of them.
+    """
+    parts: list[str] = []
+    long_flags = flags.get("long", ())
+    if long_flags:
+        parts.append("--(?:" + "|".join(re.escape(f) for f in sorted(long_flags)) + r")\b")
+    for entry in flags.get("scoped", ()):
+        head = entry["head"] if isinstance(entry, dict) else entry[0]
+        names = entry["flags"] if isinstance(entry, dict) else entry[1]
+        # Head, then flag, with no command separator between them — the
+        # proximity idiom, because distance is not the discriminator and a
+        # separator is. `sed -n p && grep -i x` keeps working; `sed -i` does
+        # not. 80 characters is enough for the flags of one simple command.
+        parts.append(
+            r"\b"
+            + re.escape(head)
+            + r"\b[^;&|\n]{0,80}?[\s]-[a-z]*(?:"
+            + "|".join(re.escape(f) for f in sorted(names))
+            + r")"
+        )
+    for entry in flags.get("verb_gated", ()):
+        head = entry["head"] if isinstance(entry, dict) else entry[0]
+        verbs = entry["verbs"] if isinstance(entry, dict) else entry[1]
+        # "this head, not immediately followed by a read-only verb". A
+        # negative lookahead over the whole command rather than an anchored
+        # positive match at the start, because an anchored match reads only
+        # the first segment and `git status && git push` would pass it.
+        parts.append(
+            r"\b" + re.escape(head) + r"\s+(?!(?:" + "|".join(re.escape(v) for v in verbs) + r")\b)"
+        )
+
+    actions = flags.get("find_actions", ())
+    if actions:
+        parts.append(
+            r"(?:\A|[\s;&|])-(?:"
+            + "|".join(re.escape(f) for f in sorted(actions, reverse=True))
+            + r")\b"
+        )
+    return "(?:" + "|".join(parts) + ")"
 
 
 def binary_alternation(names: Iterable[str]) -> str:

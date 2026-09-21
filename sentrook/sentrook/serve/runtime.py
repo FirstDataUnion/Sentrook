@@ -33,8 +33,6 @@ from sentrook.serve.stats import LatencyTracker
 
 logger = logging.getLogger("sentrook.serve")
 
-DEFAULT_SYNC_INTERVAL_SEC = 86_400  # 24 hours
-
 
 class ServeRuntime:
     """Wraps a warm :class:`ScanService` with ops hooks for long-running serve mode."""

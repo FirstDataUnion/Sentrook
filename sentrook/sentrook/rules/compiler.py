@@ -23,7 +23,17 @@ from sentrook.rules.models import (
     SequenceSlot,
     SequenceWithGapCondition,
 )
-from sentrook.sanitize.sensitive_paths import binary_alternation, load_sensitive_paths
+from sentrook.sanitize.sensitive_paths import (
+    binary_alternation,
+    load_sensitive_paths,
+    unsafe_argv_fragment,
+)
+
+#: Prefix under which a *condition kind* is reported alongside `args_match`
+#: keys, so `REQUIRED_ALLOW_CONSTRAINTS` can name one. Distinct from a bare
+#: name so it cannot collide with an arg that happens to be called `paths`.
+CONDITION_KEY_PREFIX = "condition:"
+
 
 #: Constraints an `action: allow` rule must carry. Each closes a way the rule
 #: could otherwise approve something it did not actually understand.
@@ -43,6 +53,38 @@ REQUIRED_ALLOW_CONSTRAINTS: dict[str, str] = {
     # because "remember to think about the environment" is exactly what an
     # author forgets.
     "_shape.env_assignments": "an allow rule must constrain the environment prefix",
+    # The third field that exists because stripping correct for a review rule
+    # destroys what a fail-open rule needs. `heads` is the basename,
+    # lowercased, so `/usr/bin/ls` and `./ls` both arrive as `ls` — the first
+    # is the system binary and the second is a file in the workspace the
+    # agent may have written a moment ago. Every allow family admitted `./ls
+    # -la` until this was required.
+    "_shape.head_paths": "an allow rule must refuse a path-qualified head",
+    # D23. AIRA-010 is `soft`, so an allow family may suppress it, and an allow
+    # family that says nothing about path roles suppresses it on `cat
+    # id_ed25519` — a bare basename with **zero** extractable paths, so a
+    # `paths:` condition cannot see it and only the whole-command roll-up can.
+    "_shape.path_roles": "an allow rule must constrain the roles of the paths it touches",
+    # D23's other half, and the reason one constraint is not enough. The two
+    # views fail on opposite inputs and neither substitutes for the other:
+    #
+    #   cat id_ed25519             path_roles=['sensitive']  paths=[]
+    #   ls -la /home/node/.openclaw  path_roles=[]           paths=[(…, ['openclaw'], [])]
+    #
+    # The agent's own config *directory* carries a `location`, not a `role`, so
+    # `_shape.path_roles` is empty for it and the clause above is satisfied
+    # vacuously. Two corpus `attack` rows are exactly that listing
+    # (`pos-inbox-export-obey-ls`, `pos-poisoned-fetch-steer-exec`), and §3b's
+    # seed table asks for the `paths:` guard on the Read family while omitting
+    # it from Listing — a safety property living in prose, which is F30.
+    #
+    # Only the *presence* of the condition is enforced here; which paths a
+    # family refuses is its own business, gated by the `allow_rules` suite and
+    # GTFOBins zero-admission.
+    f"{CONDITION_KEY_PREFIX}paths": (
+        "an allow rule must carry a `paths:` condition — `_shape.path_roles` is "
+        "empty for the agent's own config directory, which has a location and no role"
+    ),
 }
 
 
@@ -73,12 +115,40 @@ ARGS_MATCH_MACROS: dict[str, Any] = {
     "auth_store_path": lambda: load_sensitive_paths().auth_store.fragment,
     "credential_store_path": lambda: load_sensitive_paths().credential_store.fragment,
     "reading_head": lambda: binary_alternation(load_sensitive_paths().reading_binaries),
+    # Phase 3b. The allow families' head vocabulary and the flags every
+    # family refuses. Both are the fail-open half of the library, so they
+    # bind to the canonical YAML rather than to eight hand-pasted copies.
+    "safe_exec_head": lambda: binary_alternation(
+        {head for heads in load_sensitive_paths().safe_exec_binaries.values() for head in heads}
+    ),
+    "unsafe_argv_flag": lambda: unsafe_argv_fragment(load_sensitive_paths().unsafe_argv_flags),
     "credential_bearing_config_path": (
         lambda: load_sensitive_paths().credential_bearing_config.fragment
     ),
     "agent_config_path": lambda: load_sensitive_paths().agent_config.fragment,
     "persistence_path": lambda: load_sensitive_paths().persistence.fragment,
 }
+
+
+def _register_family_head_macros() -> None:
+    """One `${safe_exec_head_<family>}` per family in the canonical YAML.
+
+    Registered from the data rather than listed here, so adding a family to
+    `sensitive_paths.yaml` gives it a macro and adding one here without the
+    data raises `UnknownMacroError` at compile — which is the direction the
+    failure should point. An allow family needs to say "every head is safe
+    **and** one is mine", and without this the second half would be an inline
+    head list in each of eight rules: §1.3's shape, in the fail-open half of
+    the library.
+    """
+    for family in load_sensitive_paths().safe_exec_binaries:
+        ARGS_MATCH_MACROS[f"safe_exec_head_{family}"] = lambda family=family: binary_alternation(
+            load_sensitive_paths().safe_exec_binaries[family]
+        )
+
+
+_register_family_head_macros()
+
 
 _MACRO_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -184,8 +254,9 @@ UNMATCHABLE_SHAPE_FIELDS: dict[str, str] = {
 
 #: Field names addressable as `_shape.<field>` — the shape's own wire keys minus
 #: the ones above, so this cannot drift from what `_shape_value_matches`
-#: actually resolves.
-_SHAPE_FIELDS = frozenset(ExecShape().to_dict()) - frozenset(UNMATCHABLE_SHAPE_FIELDS)
+#: actually resolves. `l2_match` imports **this** set rather than deriving its
+#: own, which is what makes that sentence true rather than aspirational.
+MATCHABLE_SHAPE_FIELDS = frozenset(ExecShape().to_dict()) - frozenset(UNMATCHABLE_SHAPE_FIELDS)
 
 
 def validate_args_match(patterns: dict[str, str] | None) -> dict[str, str] | None:
@@ -220,9 +291,9 @@ def validate_args_match(patterns: dict[str, str] | None) -> dict[str, str] | Non
                     raise InvalidArgsMatchError(
                         f"{name} cannot be matched: {UNMATCHABLE_SHAPE_FIELDS[field]}"
                     )
-                if field not in _SHAPE_FIELDS:
+                if field not in MATCHABLE_SHAPE_FIELDS:
                     raise InvalidArgsMatchError(
-                        f"unknown shape field {name!r}; valid: {', '.join(sorted(_SHAPE_FIELDS))}"
+                        f"unknown shape field {name!r}; valid: {', '.join(sorted(MATCHABLE_SHAPE_FIELDS))}"
                     )
         pattern = expand_macros(pattern)
         expanded[key] = pattern
@@ -302,58 +373,85 @@ def validate_suppression_targets(rules: list[Rule]) -> None:
                 )
 
 
-#: Prefix under which a *condition kind* is reported alongside `args_match`
-#: keys, so `REQUIRED_ALLOW_CONSTRAINTS` can name one. Distinct from a bare
-#: name so it cannot collide with an arg that happens to be called `paths`.
-CONDITION_KEY_PREFIX = "condition:"
-
-
 def _collect_args_match_keys(node: Any, *, negated: bool = False) -> set[str]:
-    """Every `args_match` key, and every condition kind, in **positive** position.
+    """Every constraint **guaranteed to bind** on a match of ``node``.
 
-    ``negated`` tracks whether we are inside a `none:`, and keys found there are
-    **not** collected. Without that, an allow rule satisfies the required
-    constraints by *negating* them:
+    Not "every key that appears somewhere in the tree". The difference is the
+    whole value of the guard, and it has now been wrong in two ways:
 
-        action: allow
+    ``negated`` tracks whether we are inside a `none:`, and keys found there
+    are **not** collected. Without it an allow rule satisfies the required
+    constraints by *negating* them::
+
         condition:
           none:
-            sequence:
-              - tool: exec
-                args_match: {_shape.privileged: "^false$", …}
+            sequence: [{tool: exec, args_match: {_shape.privileged: "^false$"}}]
 
-    which reads "allow when it is **not** the case that this is unprivileged" —
-    the exact inverse of the constraint, and the guard counted it as satisfied.
-    The guard is the only thing between a mistaken allow rule and a fail-open
-    publish, so a shape that satisfies it while meaning the opposite has to be
-    unrepresentable.
+    which reads "allow when it is **not** the case that this is unprivileged".
 
-    Condition kinds are included because the allow-rule guard is the only thing
-    standing between a mistaken rule and a fail-open publish, and it worked by
-    walking `args_match` keys alone. A constraint expressed as a *condition*
-    — `paths:` is the first — was therefore invisible to it: not exploitable
-    today, since both required constraints are shape booleans that `paths:`
-    cannot supply, but the guard would have silently stopped covering the
-    moment a required constraint became path-shaped. Reporting the kind keeps
-    the guard's view of a rule complete.
+    ``any:`` **intersects** its branches rather than unioning them, which is
+    the same mistake one level up. A rule like::
+
+        condition:
+          any:
+            - {all: [<every required constraint>, …]}
+            - {pending_tool: exec}
+
+    has all five constraints *somewhere*, and the second branch matches on its
+    own with none of them. Compiled and shipped, it allowed `sudo cat
+    /etc/shadow`. A constraint only binds if **every** branch carries it, so
+    `any` takes the intersection; `all:` and a `sequence:`'s slot list both
+    require everything to hold, so they union.
+
+    Condition kinds are reported alongside `args_match` keys under
+    `CONDITION_KEY_PREFIX`, so `REQUIRED_ALLOW_CONSTRAINTS` can name one —
+    D23's `paths:` is the first. An `args_match` key spelled the same way is
+    ignored, because that is the collision the prefix reserves.
     """
-    keys: set[str] = set()
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "args_match" and isinstance(value, dict):
-                if not negated:
-                    keys.update(part.strip() for raw in value for part in str(raw).split("|"))
-                continue
-            if key in _CONDITION_KINDS and not negated:
-                keys.add(f"{CONDITION_KEY_PREFIX}{key}")
-            # Parity, not a flag: `none: {none: …}` is a double negative and
-            # lands back in positive position.
-            keys |= _collect_args_match_keys(
-                value, negated=(not negated) if key == "none" else negated
-            )
-    elif isinstance(node, list):
+    if isinstance(node, list):
+        # A list is a set of things that must *all* hold — `all:`'s children,
+        # a `sequence:`'s slots — so every one of them contributes.
+        keys: set[str] = set()
         for item in node:
             keys |= _collect_args_match_keys(item, negated=negated)
+        return keys
+    if not isinstance(node, dict):
+        return set()
+
+    keys = set()
+    for key, value in node.items():
+        if key == "args_match" and isinstance(value, dict):
+            if not negated:
+                # An `args_match` key is never a condition kind. Reserving the
+                # prefix stops a rule satisfying a condition-shaped
+                # requirement with an arg *named* `condition:paths` — the
+                # collision the prefix was chosen to prevent, one level up
+                # from the one its comment anticipated. Harmless while every
+                # required constraint was a shape boolean; a hole the moment
+                # D23 made one of them a condition.
+                keys.update(
+                    part.strip()
+                    for raw in value
+                    for part in str(raw).split("|")
+                    if not part.strip().startswith(CONDITION_KEY_PREFIX)
+                )
+            continue
+
+        if key in _CONDITION_KINDS and not negated:
+            keys.add(f"{CONDITION_KEY_PREFIX}{key}")
+
+        if key == "any" and isinstance(value, list) and not negated:
+            # Only what *every* branch guarantees. An empty `any:` matches
+            # nothing, but guaranteeing everything on it would be a
+            # vacuous-truth hole of exactly F27's shape, so it guarantees
+            # nothing.
+            branches = [_collect_args_match_keys(item) for item in value]
+            keys |= set.intersection(*branches) if branches else set()
+            continue
+
+        # Parity, not a flag: `none: {none: …}` is a double negative and lands
+        # back in positive position.
+        keys |= _collect_args_match_keys(value, negated=(not negated) if key == "none" else negated)
     return keys
 
 
