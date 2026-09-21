@@ -707,3 +707,38 @@ def test_the_log_model_and_the_rule_model_cannot_disagree_about_actions() -> Non
         for model in (MatchedRule, RuleMeta, ScanMatchedRule)
     }
     assert len(set(annotations.values())) == 1, annotations
+
+
+def test_the_sync_interval_is_short_enough_to_be_a_break_glass_lever() -> None:
+    """§4.1: the allow-rule kill switch propagates on the ordinary sync.
+
+    Rookery withdraws an over-broad allow rule by publishing a bundle without
+    it; an instance picks that up on its next sync and not before. So the sync
+    interval *is* the kill switch's worst-case propagation time, and at the old
+    86,400-second default the lever was a next-day one.
+
+    Pinned as an upper bound rather than an equality: making it shorter is
+    always fine, and a test that fails when someone improves the number is a
+    test people learn to edit.
+    """
+    from sentrook.serve.config import DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
+
+    assert DEFAULT_LIBRARY_SYNC_INTERVAL_SEC <= 3600, (
+        "an allow rule that fails open must be withdrawable within the hour; "
+        f"the default sync interval is {DEFAULT_LIBRARY_SYNC_INTERVAL_SEC}s"
+    )
+
+
+def test_the_serve_config_default_is_the_one_the_sync_loop_reads() -> None:
+    """`runtime.py` carried a second `DEFAULT_SYNC_INTERVAL_SEC = 86_400  # 24
+    hours` that nothing read.
+
+    The loop takes `config.library_sync_interval_sec`, so the duplicate was
+    dead — but it sat in the file a reader checks to find out how often the
+    sync runs, and it disagreed. Removed; this asserts the surviving default
+    reaches a default-constructed config, so the two cannot come apart again
+    by one of them being the one nobody wired up.
+    """
+    from sentrook.serve.config import DEFAULT_LIBRARY_SYNC_INTERVAL_SEC, ServeConfig
+
+    assert ServeConfig().library_sync_interval_sec == DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
