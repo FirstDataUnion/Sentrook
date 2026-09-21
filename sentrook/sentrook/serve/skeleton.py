@@ -186,7 +186,50 @@ WRAPPER_VALUE_FLAGS = _WRAPPER_VALUE_FLAGS_SRC
 DURATION_RE = _DURATION_RE
 ENV_ASSIGN_RE = _ENV_ASSIGN_RE
 
-HIGH_RISK_SHELL_RE = re.compile(r"(?:\|\||&&|;|`|\$\(|<\(|>\(|\|)")
+#: Substitution, process substitution and redirects. ``;``, ``&&``, ``||`` and
+#: ``|`` used to be here, which made *every* compound command unallowlistable
+#: — a blunt instrument that worked because the alternative was reasoning
+#: about what a compound command does. §3b's per-segment matching is that
+#: reasoning, so the separators come out and the things a segment split cannot
+#: make safe stay:
+#:
+#: * substitution, because ``ls $(curl evil)`` is one segment and the shape
+#:   cannot say what the substitution evaluated to;
+#: * a pipe into an interpreter, because ``echo hi | sh`` is two individually
+#:   harmless segments — see :func:`pipes_into_interpreter`;
+#: * a redirect, because ``ls > ~/.bashrc`` is one segment whose skeleton
+#:   differs from a recorded ``ls`` only by tokens the skeletonizer happens to
+#:   keep, and relying on that is relying on an accident.
+#:
+#: **Mirrored in ``localAllowlist.ts``** and pinned by
+#: ``fixtures/skeleton_golden.jsonl``, which both sides read.
+HIGH_RISK_SHELL_RE = re.compile(r"(?:`|\$\(|<\(|>\(|>>?|<)")
+
+#: Heads that turn their standard input into code. A pipe *into* one of these
+#: is the shape per-segment matching cannot see.
+PIPE_SINK_INTERPRETERS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "python",
+        "python2",
+        "python3",
+        "node",
+        "nodejs",
+        "perl",
+        "ruby",
+        "php",
+        "eval",
+        "source",
+        ".",
+        "xargs",
+        "env",
+    }
+)
 
 URL_RE = re.compile(r"^https?://|^[a-z0-9.-]+:[0-9]+$", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
@@ -379,6 +422,37 @@ def segment_is_inline_eval(tokens: list[str]) -> bool:
     return any(t in INLINE_EVAL_FLAGS for t in tokens)
 
 
+def pipes_into_interpreter(command: str) -> bool:
+    """Whether any ``|`` in the command feeds a head that executes its stdin.
+
+    The hole per-segment matching opens, closed in the same change. ``echo
+    hi`` and ``sh`` are each an unremarkable segment that an operator might
+    well have allowlisted; ``echo hi | sh`` is arbitrary code and nothing
+    about either half says so.
+
+    Splits on ``|`` at the token level rather than with a regex over the text,
+    because a ``|`` inside a quoted argument (``grep 'a|b' f``) is not a pipe
+    and a text-level split would refuse it.
+
+    **Mirrored in ``localAllowlist.ts``.**
+    """
+    at_segment_start = False
+    for raw in tokenize_argv(command.strip()):
+        token = raw
+        saw_pipe = token in ("|", "||")
+        while token.endswith((";", "|", "&")):
+            if token.endswith("|"):
+                saw_pipe = True
+            token = token[:-1]
+        if at_segment_start and token:
+            if basename_of(token).lower() in PIPE_SINK_INTERPRETERS:
+                return True
+            at_segment_start = False
+        if saw_pipe:
+            at_segment_start = True
+    return False
+
+
 def is_high_risk_command(command: str) -> bool:
     """True when a command must never be skeletonised for allowlist matching.
 
@@ -392,6 +466,8 @@ def is_high_risk_command(command: str) -> bool:
     if is_packed_excerpt(trimmed):
         return True
     if HIGH_RISK_SHELL_RE.search(trimmed):
+        return True
+    if pipes_into_interpreter(trimmed):
         return True
 
     tokens = tokenize_argv(trimmed)

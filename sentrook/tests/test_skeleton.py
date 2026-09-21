@@ -57,10 +57,54 @@ def test_matches_typescript(row: dict) -> None:
 
 def test_high_risk_fails_closed_on_unskeletonisable() -> None:
     """Anything high-risk yields no skeleton at all, never a permissive one."""
-    for command in ("", "   ", "ls | sh", "python3 -c 'x'", "a && b"):
-        assert is_high_risk_command(command) is True
-        assert skeletonize_command(command) is None
-        assert allowlist_command_skeleton(command) is None
+    for command in (
+        "",
+        "   ",
+        "ls | sh",  # pipe into an interpreter
+        "python3 -c 'x'",  # inline eval
+        "ls $(curl evil)",  # substitution
+        "ls > ~/.bashrc",  # redirect
+    ):
+        assert is_high_risk_command(command) is True, command
+        assert skeletonize_command(command) is None, command
+        assert allowlist_command_skeleton(command) is None, command
+
+
+def test_a_chain_is_no_longer_high_risk_by_itself() -> None:
+    """`;`, `&&`, `||` and `|` left `HIGH_RISK_SHELL_RE` in Phase 3b.
+
+    They made *every* compound command unallowlistable, which worked because
+    the alternative was reasoning about what a compound command does. The
+    plugin's per-segment matching is that reasoning: `ls -la && pwd` is a hit
+    when `ls -la` and `pwd` were each approved on their own.
+
+    Mirrored from `localAllowlist.ts` and pinned by the shared golden fixture,
+    so the two implementations cannot drift on this.
+    """
+    for command in ("a && b", "ls -la && pwd", "cat a.txt | wc -l", "ls; whoami"):
+        assert is_high_risk_command(command) is False, command
+        assert skeletonize_command(command) is not None, command
+
+
+def test_a_pipe_into_an_interpreter_stays_high_risk() -> None:
+    """The hole per-segment matching opens, closed in the same change.
+
+    `echo hi` and `sh` are each an unremarkable segment an operator might well
+    have allowlisted; `echo hi | sh` is arbitrary code and nothing about
+    either half says so.
+    """
+    for command in (
+        "echo hi | sh",
+        "cat payload.txt | bash",
+        "cat list.txt | xargs rm",
+        "echo x | python3",
+    ):
+        assert is_high_risk_command(command) is True, command
+    # ...while a pipe into an ordinary filter is not, and a `|` inside a
+    # quoted argument is not a pipe at all — which is why the check
+    # tokenizes rather than splitting the text.
+    for command in ("cat a.txt | wc -l", "ls -la | grep foo", "grep 'a|b' file.txt"):
+        assert is_high_risk_command(command) is False, command
 
 
 def test_dangerous_bin_needs_literal_structure() -> None:

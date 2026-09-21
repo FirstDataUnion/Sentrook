@@ -522,7 +522,6 @@ def test_required_constraints_do_not_count_inside_a_negation() -> None:
     publish, so a shape that satisfies it while meaning the opposite must be
     unrepresentable.
     """
-    from sentrook.rules.compiler import REQUIRED_ALLOW_CONSTRAINTS
 
     every, conditions = _satisfying_parts()
     sequence = {"all": [{"sequence": [{"tool": "exec", "args_match": every}]}, *conditions]}
@@ -813,10 +812,22 @@ def test_the_safe_exec_head_macro_is_the_union_of_the_families() -> None:
     from sentrook.rules.compiler import ARGS_MATCH_MACROS
     from sentrook.sanitize.sensitive_paths import load_sensitive_paths
 
-    heads = load_sensitive_paths().safe_exec_binaries
-    for expected in ("ls", "cat", "grep", "find", "sed", "whoami", "git", "npm"):
+    by_family = load_sensitive_paths().safe_exec_binaries
+    heads = {head for family_heads in by_family.values() for head in family_heads}
+    for expected in ("ls", "cat", "grep", "find", "awk", "whoami", "git", "npm"):
         assert expected in heads, f"{expected} missing from the allow families' vocabulary"
+
     # `cd` rebases path context, so per-segment reasoning about what a later
     # head touches is unsound. §3b drops it from every family.
     assert "cd" not in heads
+    # `sed` was dropped after GTFOBins' two-character shell entry `sed e` was
+    # admitted: the bare `e` command reads commands from stdin and runs them,
+    # and it cannot be separated from `sed 's/foo/bar/'` by a regex.
+    assert "sed" not in heads
+
+    # Every family has a macro of its own, so no rule carries an inline head
+    # list — which is what `test_the_reading_head_list_has_exactly_one_definition`
+    # already refuses for AIRA-083's list, for the same reason.
+    for family in by_family:
+        assert f"safe_exec_head_{family}" in ARGS_MATCH_MACROS
     assert ARGS_MATCH_MACROS["safe_exec_head"]().startswith("(?:")

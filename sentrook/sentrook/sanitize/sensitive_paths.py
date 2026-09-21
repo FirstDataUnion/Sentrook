@@ -102,7 +102,7 @@ class SensitivePathRules:
     interpreter_binaries: frozenset[str]
     fetch_binaries: frozenset[str]
     package_mgmt_binaries: frozenset[str]
-    safe_exec_binaries: frozenset[str]
+    safe_exec_binaries: dict[str, tuple[str, ...]]
     unsafe_argv_flags: dict[str, tuple[str, ...]]
 
     def group(self, name: str) -> PathList:
@@ -178,10 +178,11 @@ def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
         interpreter_binaries=frozenset(raw.get("interpreter_binaries", ())),
         fetch_binaries=frozenset(raw.get("fetch_binaries", ())),
         package_mgmt_binaries=frozenset(raw.get("package_mgmt_binaries", ())),
-        safe_exec_binaries=frozenset(raw.get("safe_exec_binaries", ())),
+        safe_exec_binaries={
+            family: tuple(heads) for family, heads in (raw.get("safe_exec_binaries") or {}).items()
+        },
         unsafe_argv_flags={
-            key: tuple(values)
-            for key, values in (raw.get("unsafe_argv_flags") or {}).items()
+            key: tuple(values) for key, values in (raw.get("unsafe_argv_flags") or {}).items()
         },
     )
     # Compile every group once here rather than lazily at first match: a bad

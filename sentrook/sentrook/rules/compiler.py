@@ -111,7 +111,9 @@ ARGS_MATCH_MACROS: dict[str, Any] = {
     # Phase 3b. The allow families' head vocabulary and the flags every
     # family refuses. Both are the fail-open half of the library, so they
     # bind to the canonical YAML rather than to eight hand-pasted copies.
-    "safe_exec_head": lambda: binary_alternation(load_sensitive_paths().safe_exec_binaries),
+    "safe_exec_head": lambda: binary_alternation(
+        {head for heads in load_sensitive_paths().safe_exec_binaries.values() for head in heads}
+    ),
     "unsafe_argv_flag": lambda: unsafe_argv_fragment(load_sensitive_paths().unsafe_argv_flags),
     "credential_bearing_config_path": (
         lambda: load_sensitive_paths().credential_bearing_config.fragment
@@ -119,6 +121,27 @@ ARGS_MATCH_MACROS: dict[str, Any] = {
     "agent_config_path": lambda: load_sensitive_paths().agent_config.fragment,
     "persistence_path": lambda: load_sensitive_paths().persistence.fragment,
 }
+
+
+def _register_family_head_macros() -> None:
+    """One `${safe_exec_head_<family>}` per family in the canonical YAML.
+
+    Registered from the data rather than listed here, so adding a family to
+    `sensitive_paths.yaml` gives it a macro and adding one here without the
+    data raises `UnknownMacroError` at compile — which is the direction the
+    failure should point. An allow family needs to say "every head is safe
+    **and** one is mine", and without this the second half would be an inline
+    head list in each of eight rules: §1.3's shape, in the fail-open half of
+    the library.
+    """
+    for family in load_sensitive_paths().safe_exec_binaries:
+        ARGS_MATCH_MACROS[f"safe_exec_head_{family}"] = lambda family=family: binary_alternation(
+            load_sensitive_paths().safe_exec_binaries[family]
+        )
+
+
+_register_family_head_macros()
+
 
 _MACRO_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 

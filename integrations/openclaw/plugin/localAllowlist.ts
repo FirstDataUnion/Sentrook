@@ -94,7 +94,33 @@ const INLINE_EVAL_FLAGS = new Set([
   "--print",
 ]);
 
-const HIGH_RISK_SHELL_RE = /(?:\|\||&&|;|`|\$\(|<\(|>\(|\|)/;
+// Substitution and process substitution only. `;`, `&&`, `||` and `|` used to
+// be here, which made *every* compound command unallowlistable — a blunt
+// instrument that worked because the alternative was reasoning about what a
+// compound command does. §3b's per-segment matching is that reasoning, so the
+// separators come out and the things a segment split cannot make safe stay.
+//
+// What a segment split cannot make safe:
+//   - substitution, because `ls $(curl evil)` has one segment and the shape
+//     cannot say what the substitution evaluated to;
+//   - a pipe into an interpreter, because `echo hi | sh` is two segments that
+//     are individually harmless and jointly arbitrary code — see
+//     `pipesIntoInterpreter`;
+//   - a redirect, because `ls > ~/.bashrc` is one segment whose skeleton
+//     differs from a recorded `ls` only by tokens the skeletonizer keeps, and
+//     relying on that is relying on an accident.
+const HIGH_RISK_SHELL_RE = /(?:`|\$\(|<\(|>\(|>>?|<)/;
+
+//: Heads that turn their standard input into code. A pipe *into* one of these
+//: is the shape per-segment matching cannot see: `echo hi` and `sh` are each
+//: unremarkable, and `echo hi | sh` is arbitrary execution. Kept separate from
+//: `INTERPRETER_RE` because that one also drives script binding, where a
+//: broader list is correct.
+const PIPE_SINK_INTERPRETERS = new Set([
+  "sh", "bash", "zsh", "dash", "ksh", "fish",
+  "python", "python2", "python3", "node", "nodejs", "perl", "ruby", "php",
+  "eval", "source", ".", "xargs", "env",
+]);
 
 const URL_RE = /^https?:\/\/|^[a-z0-9.-]+:\d+$/i;
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -491,6 +517,37 @@ function looksLikeScriptPath(token: string): boolean {
   return SCRIPT_EXT_RE.test(token) || token.startsWith("./") || token.startsWith("../");
 }
 
+/**
+ * Whether any `|` in the command feeds a head that executes its stdin.
+ *
+ * This is the hole per-segment matching opens and must therefore close in the
+ * same change. `echo hi` and `sh` are each an unremarkable segment; `echo hi
+ * | sh` is arbitrary code, and nothing about either half says so. The old
+ * `HIGH_RISK_SHELL_RE` caught it by refusing every pipe.
+ *
+ * Splits on `|` at the token level rather than with a regex over the text,
+ * because a `|` inside a quoted argument (`grep 'a|b' f`) is not a pipe and a
+ * text-level split would refuse it.
+ */
+export function pipesIntoInterpreter(command: string): boolean {
+  const tokens = tokenizeArgv(command.trim());
+  let atSegmentStart = false;
+  for (const raw of tokens) {
+    let token = raw;
+    let sawPipe = token === "|" || token === "||";
+    while (token.endsWith(";") || token.endsWith("|") || token.endsWith("&")) {
+      if (token.endsWith("|")) sawPipe = true;
+      token = token.slice(0, -1);
+    }
+    if (atSegmentStart && token) {
+      if (PIPE_SINK_INTERPRETERS.has(basenameOf(token).toLowerCase())) return true;
+      atSegmentStart = false;
+    }
+    if (sawPipe) atSegmentStart = true;
+  }
+  return false;
+}
+
 export function isHighRiskCommand(command: string): boolean {
   const trimmed = command.trim();
   if (!trimmed) return true;
@@ -499,6 +556,7 @@ export function isHighRiskCommand(command: string): boolean {
   // from a truncation — matching later commands that merely share a prefix.
   if (isPackedExcerpt(trimmed)) return true;
   if (HIGH_RISK_SHELL_RE.test(trimmed)) return true;
+  if (pipesIntoInterpreter(trimmed)) return true;
 
   const tokens = tokenizeArgv(trimmed);
   if (tokens.length === 0) return true;
@@ -919,12 +977,95 @@ export function matchAllowlist(
     };
   }
 
+  // --- per-segment match, §3b -------------------------------------------
+  //
+  // A compound command matches when **every** top-level segment matches an
+  // entry of its own. `ls -la && pwd` is a hit when `ls -la` and `pwd` were
+  // each approved, which is most of what the blanket refusal of `&&` cost.
+  //
+  // Three things make this safe, and each is load-bearing:
+  //
+  //   1. `isHighRiskCommand` still refuses substitution, redirects and a pipe
+  //      into an interpreter, so the segments cannot mean something the
+  //      segment split cannot see.
+  //   2. Rule ids are checked **strictly**, whatever the authority. Combining
+  //      two approved segments is exactly the case where a rule fires that
+  //      neither segment produced on its own — a sequence rule, or a
+  //      whole-command path signal — and `ruleOverlap` would waive it on the
+  //      strength of one id they happen to share. F50 tightened this for hard
+  //      reviews; recombination needs it for soft ones too.
+  //   3. Only `exec` reaches here at all.
+  //
+  // This is deliberately **not** "or a shipped safe family". §3b warns that a
+  // safe-family match keyed on heads reintroduces F30's fail-open in the lane
+  // that short-circuits the review, because `commandHeads("LD_PRELOAD=… ls")`
+  // is `["ls"]`. A second implementation of the AIRA-9NN families in
+  // TypeScript would be a second decision surface with no gate over it; the
+  // engine already answers that question, deterministically, and its answer
+  // arrives as a scan decision rather than as an allowlist waiver.
+  if (tool === "exec" && command) {
+    const segmentHit = matchEverySegment(command, file.entries, tool);
+    if (segmentHit) {
+      if (!rulesWereAllKnown(segmentHit.recordedRuleIds, ruleIds)) {
+        return {
+          hit: false,
+          reason:
+            "every segment is allowlisted, but a rule matches now that no " +
+            "segment's entry recorded — the combination is not the parts",
+        };
+      }
+      return {
+        hit: true,
+        kind: "skeleton",
+        matchedRuleIds: ruleIds.filter((id) => segmentHit.recordedRuleIds.includes(id)),
+        entryDetail: `segments=${segmentHit.skeletons.join(" ⋅ ")}`,
+      };
+    }
+  }
+
   return {
     hit: false,
     reason: hard
       ? "no entry recorded with every rule that matches now (hard review)"
       : "no matching entry",
   };
+}
+
+/**
+ * Every top-level segment of `command`, each matched to a skeleton entry.
+ *
+ * Returns null unless there are at least two segments and every one of them
+ * matches. One segment is the ordinary path above and must not come through
+ * here, or a single-segment miss would be retried with different rule-id
+ * semantics than it was refused under.
+ */
+function matchEverySegment(
+  command: string,
+  entries: AllowlistEntry[],
+  tool: string,
+): { skeletons: string[]; recordedRuleIds: string[] } | null {
+  if (isHighRiskCommand(command)) return null;
+  const segments = splitSegments(command.trim());
+  if (segments.length < 2) return null;
+
+  const skeletons: string[] = [];
+  const recorded = new Set<string>();
+  for (const segment of segments) {
+    const text = segment.join(" ");
+    // A segment is skeletonized on its own, so an entry recorded for the
+    // bare command matches it. `skeletonizeCommand` re-runs the high-risk
+    // check per segment, which is why `cd` and a bare interpreter still
+    // refuse here.
+    const skeleton = allowlistCommandSkeleton(text);
+    if (!skeleton) return null;
+    const entry = entries.find(
+      (e) => e.kind === "skeleton" && e.tool === tool && e.skeleton === skeleton,
+    );
+    if (!entry || entry.kind !== "skeleton") return null;
+    skeletons.push(skeleton);
+    for (const id of entry.matched_rule_ids) recorded.add(id);
+  }
+  return { skeletons, recordedRuleIds: [...recorded] };
 }
 
 export function recordAllowAlways(

@@ -111,6 +111,26 @@ function formatRecorded(result: RecordResult, eventId: string): AllowlistAddResu
   return { ok: false, message: hint };
 }
 
+function scanBodyOf(event: OperatorLogEvent): Record<string, unknown> {
+  return asRecord(event.scan) ?? {};
+}
+
+/** Which `AIRA-9NN` allow families matched, by id, from a recorded scan body. */
+export function matchedAllowFamilies(scanBody: Record<string, unknown>): string[] {
+  const matched = scanBody.matched_rules;
+  if (!Array.isArray(matched)) return [];
+  const ids: string[] = [];
+  for (const row of matched) {
+    const record = asRecord(row);
+    const id = record?.id;
+    // Read the id, not the action: an older scan body may predate `allow`
+    // reaching the wire model, and the `AIRA-9NN` range is the convention
+    // every fingerprint and filename already relies on.
+    if (typeof id === "string" && /^AIRA-9\d\d$/.test(id)) ids.push(id);
+  }
+  return ids;
+}
+
 export function addAllowlistFromHistory(
   log: OperatorLogConfig,
   allowlist: AllowlistConfig,
@@ -138,6 +158,22 @@ export function addAllowlistFromHistory(
     return {
       ok: false,
       message: "That was a hard block, not a review. The allowlist never overrides block.",
+    };
+  }
+  if (decision === "allow") {
+    // §3b: stop proposing entries the library now allows. Before the
+    // AIRA-9NN families this branch was nearly unreachable for exec — an
+    // ordinary `ls -la` was a soft AIRA-010 review that L3 downgraded, so the
+    // *recorded* decision was `allow` only sometimes and the operator had a
+    // real reason to pin it. Now the read-only lane is a deterministic L2
+    // allow, and an entry for it is dead weight that also carries a recorded
+    // rule-id set which can waive a soft review later.
+    const via = matchedAllowFamilies(scanBodyOf(scan));
+    return {
+      ok: false,
+      message: via.length
+        ? `Event ${scan.id} was already allowed by the shipped library (${via.join(", ")}). No entry needed — and an entry would keep waiving after the rule changed.`
+        : `Event ${scan.id} was allowed, so there is nothing to waive.`,
     };
   }
   if (decision !== "review") {
