@@ -660,3 +660,50 @@ def test_a_condition_shaped_requirement_cannot_be_met_by_an_arg_of_that_name() -
         args[key] = "^.*$"
     with pytest.raises(ValueError, match=re.escape(condition_shaped[0])):
         compile_rule(doc)
+
+
+def test_a_matched_allow_rule_can_be_written_to_the_scan_log() -> None:
+    """The scan-log wire model never learned about `action: allow`.
+
+    Phase 1 added the action to `MatchedRule` and to `RuleMeta`;
+    `ScanMatchedRule` — the model `build_log_record` builds for every served
+    scan — kept `Literal["block", "review"]`. So the first allow rule to match
+    in production would have raised a `ValidationError` inside
+    `ServeRuntime.log_scan`, on the request path, for every scan it fired on.
+
+    Nothing caught it because no *shipped* rule used the action, and the
+    tripwire asserting that (`test_no_shipped_rule_uses_the_allow_action_yet`)
+    is precisely why the gap could sit there unexercised: the guard that kept
+    the feature unused also kept it untested. F43's shape — a new consumer of
+    a wire field joined by a line nothing exercises — with the consumer and
+    the producer two phases apart.
+
+    Asserted through `build_log_record` rather than by reading the annotation,
+    because the annotation is not what broke.
+    """
+    from sentrook.serve.log import build_log_record
+
+    result = _scan("ls -la", [_review_rule(), _allow_rule()])
+    assert result.decision == "allow"
+    assert "AIRA-901" in {m.id for m in result.matched_rules}
+
+    record = build_log_record(result, _plan("ls -la"), mode="observe")
+    assert {m.id: m.action for m in record.matched_rules}["AIRA-901"] == "allow"
+
+
+def test_the_log_model_and_the_rule_model_cannot_disagree_about_actions() -> None:
+    """One definition, imported twice — not two spellings kept in step by hand.
+
+    The drift above lasted two phases and had no symptom until a rule used the
+    action. Deriving both from `RuleAction` makes the next widening reach the
+    wire by construction.
+    """
+    from sentrook.result import MatchedRule
+    from sentrook.rules.models import RuleMeta
+    from sentrook.serve.log import ScanMatchedRule
+
+    annotations = {
+        model.__name__: model.model_fields["action"].annotation
+        for model in (MatchedRule, RuleMeta, ScanMatchedRule)
+    }
+    assert len(set(annotations.values())) == 1, annotations
