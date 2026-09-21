@@ -860,3 +860,65 @@ def test_an_allow_family_hit_is_observable_on_the_metrics_endpoint() -> None:
     exported = generate_latest(REGISTRY).decode("utf-8")
     assert 'rule_id="AIRA-901"' in exported
     assert 'action="allow"' in exported
+
+
+def test_an_any_branch_without_the_constraints_does_not_count_as_having_them() -> None:
+    """The guard collects what is **guaranteed to bind**, not what appears.
+
+    `any:` unioned its branches, so a rule whose constraints all sat in one
+    branch compiled with a second branch that carried none of them — and that
+    branch matches on its own. The rule below allowed `sudo cat /etc/shadow`.
+
+    Same class as the `none:` hole one level up: a key counted from a position
+    where it does not bind. `all:` and a `sequence:`'s slot list require
+    everything to hold, so they still union; only `any:` intersects.
+    """
+    constrained = {
+        "sequence": [
+            {
+                "tool": "exec",
+                "status": "pending",
+                "args_match": {
+                    "_shape.parse_ok": "^true$",
+                    "_shape.privileged": "^false$",
+                    "_shape.env_assignments": "^$",
+                    "_shape.path_roles": "^$",
+                    "_shape.heads": r"(?s)\A(?:(?:ls)\n?)+\Z",
+                },
+            }
+        ]
+    }
+    full = {"all": [constrained, {"paths": {"quantifier": "none", "location": "openclaw"}}]}
+
+    def _doc(condition: dict) -> dict:
+        return {
+            "rule": "AIRA-997",
+            "meta": {"name": "x", "action": "allow", "suppresses": ["AIRA-010"]},
+            "condition": condition,
+        }
+
+    # Every branch carries them: fine.
+    compile_rule(_doc({"any": [full, full]}))
+    # One branch does not: refused, wherever the `any` sits in the tree.
+    with pytest.raises(ValueError, match="_shape"):
+        compile_rule(_doc({"any": [full, {"pending_tool": "exec"}]}))
+    with pytest.raises(ValueError, match="_shape"):
+        compile_rule(
+            _doc({"all": [{"any": [full, {"pending_tool": "exec"}]}, {"pending_tool": "exec"}]})
+        )
+    # An empty `any:` matches nothing, but guaranteeing everything on it would
+    # be a vacuous-truth hole of F27's shape, so it guarantees nothing.
+    with pytest.raises(ValueError, match="_shape"):
+        compile_rule(_doc({"any": []}))
+
+
+def test_the_any_branch_rule_really_would_have_allowed_a_privileged_read(monkeypatch) -> None:
+    """What the hole cost, asserted rather than described.
+
+    The guard is emptied for the duration, because it is now the only reason
+    this rule cannot be written — which is the claim.
+    """
+    monkeypatch.setattr("sentrook.rules.compiler.REQUIRED_ALLOW_CONSTRAINTS", {})
+    rogue = _allow_rule()
+    rogue["condition"] = {"any": [rogue["condition"], {"pending_tool": "exec"}]}
+    assert _scan("sudo cat /etc/shadow", [_review_rule(), rogue]).decision == "allow"

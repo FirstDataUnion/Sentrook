@@ -366,63 +366,84 @@ def validate_suppression_targets(rules: list[Rule]) -> None:
 
 
 def _collect_args_match_keys(node: Any, *, negated: bool = False) -> set[str]:
-    """Every `args_match` key, and every condition kind, in **positive** position.
+    """Every constraint **guaranteed to bind** on a match of ``node``.
 
-    ``negated`` tracks whether we are inside a `none:`, and keys found there are
-    **not** collected. Without that, an allow rule satisfies the required
-    constraints by *negating* them:
+    Not "every key that appears somewhere in the tree". The difference is the
+    whole value of the guard, and it has now been wrong in two ways:
 
-        action: allow
+    ``negated`` tracks whether we are inside a `none:`, and keys found there
+    are **not** collected. Without it an allow rule satisfies the required
+    constraints by *negating* them::
+
         condition:
           none:
-            sequence:
-              - tool: exec
-                args_match: {_shape.privileged: "^false$", …}
+            sequence: [{tool: exec, args_match: {_shape.privileged: "^false$"}}]
 
-    which reads "allow when it is **not** the case that this is unprivileged" —
-    the exact inverse of the constraint, and the guard counted it as satisfied.
-    The guard is the only thing between a mistaken allow rule and a fail-open
-    publish, so a shape that satisfies it while meaning the opposite has to be
-    unrepresentable.
+    which reads "allow when it is **not** the case that this is unprivileged".
 
-    Condition kinds are included because the allow-rule guard is the only thing
-    standing between a mistaken rule and a fail-open publish, and it worked by
-    walking `args_match` keys alone. A constraint expressed as a *condition*
-    — `paths:` is the first — was therefore invisible to it: not exploitable
-    today, since both required constraints are shape booleans that `paths:`
-    cannot supply, but the guard would have silently stopped covering the
-    moment a required constraint became path-shaped. Reporting the kind keeps
-    the guard's view of a rule complete.
+    ``any:`` **intersects** its branches rather than unioning them, which is
+    the same mistake one level up. A rule like::
+
+        condition:
+          any:
+            - {all: [<every required constraint>, …]}
+            - {pending_tool: exec}
+
+    has all five constraints *somewhere*, and the second branch matches on its
+    own with none of them. Compiled and shipped, it allowed `sudo cat
+    /etc/shadow`. A constraint only binds if **every** branch carries it, so
+    `any` takes the intersection; `all:` and a `sequence:`'s slot list both
+    require everything to hold, so they union.
+
+    Condition kinds are reported alongside `args_match` keys under
+    `CONDITION_KEY_PREFIX`, so `REQUIRED_ALLOW_CONSTRAINTS` can name one —
+    D23's `paths:` is the first. An `args_match` key spelled the same way is
+    ignored, because that is the collision the prefix reserves.
     """
-    keys: set[str] = set()
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "args_match" and isinstance(value, dict):
-                if not negated:
-                    # An `args_match` key is never a condition kind. Reserving
-                    # the prefix stops a rule satisfying a condition-shaped
-                    # requirement with an arg *named* `condition:paths` — the
-                    # collision the prefix was chosen to prevent, one level up
-                    # from the one its comment anticipated. Harmless while
-                    # every required constraint was a shape boolean; a hole the
-                    # moment D23 made one of them a condition.
-                    keys.update(
-                        part.strip()
-                        for raw in value
-                        for part in str(raw).split("|")
-                        if not part.strip().startswith(CONDITION_KEY_PREFIX)
-                    )
-                continue
-            if key in _CONDITION_KINDS and not negated:
-                keys.add(f"{CONDITION_KEY_PREFIX}{key}")
-            # Parity, not a flag: `none: {none: …}` is a double negative and
-            # lands back in positive position.
-            keys |= _collect_args_match_keys(
-                value, negated=(not negated) if key == "none" else negated
-            )
-    elif isinstance(node, list):
+    if isinstance(node, list):
+        # A list is a set of things that must *all* hold — `all:`'s children,
+        # a `sequence:`'s slots — so every one of them contributes.
+        keys: set[str] = set()
         for item in node:
             keys |= _collect_args_match_keys(item, negated=negated)
+        return keys
+    if not isinstance(node, dict):
+        return set()
+
+    keys = set()
+    for key, value in node.items():
+        if key == "args_match" and isinstance(value, dict):
+            if not negated:
+                # An `args_match` key is never a condition kind. Reserving the
+                # prefix stops a rule satisfying a condition-shaped
+                # requirement with an arg *named* `condition:paths` — the
+                # collision the prefix was chosen to prevent, one level up
+                # from the one its comment anticipated. Harmless while every
+                # required constraint was a shape boolean; a hole the moment
+                # D23 made one of them a condition.
+                keys.update(
+                    part.strip()
+                    for raw in value
+                    for part in str(raw).split("|")
+                    if not part.strip().startswith(CONDITION_KEY_PREFIX)
+                )
+            continue
+
+        if key in _CONDITION_KINDS and not negated:
+            keys.add(f"{CONDITION_KEY_PREFIX}{key}")
+
+        if key == "any" and isinstance(value, list) and not negated:
+            # Only what *every* branch guarantees. An empty `any:` matches
+            # nothing, but guaranteeing everything on it would be a
+            # vacuous-truth hole of exactly F27's shape, so it guarantees
+            # nothing.
+            branches = [_collect_args_match_keys(item) for item in value]
+            keys |= set.intersection(*branches) if branches else set()
+            continue
+
+        # Parity, not a flag: `none: {none: …}` is a double negative and lands
+        # back in positive position.
+        keys |= _collect_args_match_keys(value, negated=(not negated) if key == "none" else negated)
     return keys
 
 

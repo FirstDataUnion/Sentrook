@@ -251,11 +251,7 @@ def unsafe_argv_fragment(flags: dict[str, tuple[str, ...]]) -> str:
         # positive match at the start, because an anchored match reads only
         # the first segment and `git status && git push` would pass it.
         parts.append(
-            r"\b"
-            + re.escape(head)
-            + r"\s+(?!(?:"
-            + "|".join(re.escape(v) for v in verbs)
-            + r")\b)"
+            r"\b" + re.escape(head) + r"\s+(?!(?:" + "|".join(re.escape(v) for v in verbs) + r")\b)"
         )
 
     actions = flags.get("find_actions", ())
