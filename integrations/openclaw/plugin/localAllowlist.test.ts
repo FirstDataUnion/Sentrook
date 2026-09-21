@@ -887,3 +887,65 @@ describe("quoted content is not shell syntax (§3b)", () => {
     assert.equal(isHighRiskCommand("grep 'a|b' file.txt"), false);
   });
 });
+
+describe("an allow family is not a review (§3b)", () => {
+  const hardLog = (...ids: string[]) => ({
+    matched_rules: ids.map((id) => ({
+      id,
+      action: id.startsWith("AIRA-9") ? "allow" : "review",
+    })),
+  });
+
+  it("shipping an allow family does not invalidate existing entries", () => {
+    // `rulesWereAllKnown` requires every currently-matching id to have been
+    // recorded. With allow families in that set, the day AIRA-902 started
+    // matching a command with a HARD review, every entry for it stopped
+    // applying and the operator was asked again — although the family had
+    // changed nothing and could not have waived that review. Shipping a
+    // fatigue reduction would have produced a burst of fatigue.
+    const { config } = tempAllowlist();
+    recordAllowAlways(planForCommand("cat ./notes.md"), hardLog("AIRA-083"), config);
+
+    const before = matchAllowlist(
+      planForCommand("cat ./notes.md"), hardLog("AIRA-083"), config,
+      { reviewAuthority: "hard" },
+    );
+    assert.equal(before.hit, true);
+
+    const after = matchAllowlist(
+      planForCommand("cat ./notes.md"), hardLog("AIRA-083", "AIRA-902"), config,
+      { reviewAuthority: "hard" },
+    );
+    assert.equal(after.hit, true);
+  });
+
+  it("a genuinely new hard rule still invalidates them", () => {
+    // The narrowing must not blunt F50: an entry recorded before a rule
+    // existed may not waive that rule's hard review.
+    const { config } = tempAllowlist();
+    recordAllowAlways(planForCommand("cat ./notes.md"), hardLog("AIRA-083"), config);
+    const after = matchAllowlist(
+      planForCommand("cat ./notes.md"), hardLog("AIRA-083", "AIRA-084"), config,
+      { reviewAuthority: "hard" },
+    );
+    assert.equal(after.hit, false);
+  });
+
+  it("an allow family is not recorded as a rule the entry covers", () => {
+    const { config } = tempAllowlist();
+    recordAllowAlways(
+      planForCommand("cat ./notes.md"), hardLog("AIRA-083", "AIRA-902"), config,
+    );
+    const entry = loadAllowlist(config.path).entries[0];
+    assert.deepEqual(entry.matched_rule_ids, ["AIRA-083"]);
+  });
+
+  it("an older log body without `action` is read by the id range", () => {
+    // `action` only reached this wire model in Phase 3b, so a body written
+    // earlier records ids as bare strings.
+    assert.deepEqual(
+      extractMatchedRuleIds({ matched_rules: ["AIRA-083", "AIRA-902"] }),
+      ["AIRA-083"],
+    );
+  });
+});

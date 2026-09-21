@@ -419,6 +419,25 @@ export function resolveScriptPath(scriptPath: string, cwd: string = process.cwd(
   return isAbsolute(expanded) ? pathResolve(expanded) : pathResolve(cwd, expanded);
 }
 
+/**
+ * The **review** rule ids from a scan log — never the allow families.
+ *
+ * An allowlist entry records "the reviews I was approved against", and an
+ * allow rule is not a review: it can never be the reason a review is shown,
+ * and it cannot suppress a hard one at all.
+ *
+ * Including them was an ordinary-looking bug with an unpleasant consequence.
+ * `rulesWereAllKnown` requires every currently-matching id to have been
+ * recorded, so the day an `AIRA-9NN` family started matching a command that
+ * had a **hard** review, every existing entry for it stopped applying and
+ * the operator was asked to approve again — although the family had changed
+ * nothing about the danger and could not have waived that review. Shipping a
+ * fatigue reduction would have produced a burst of fatigue.
+ *
+ * Detected by `action` where the log carries it, and by the `AIRA-9NN` range
+ * otherwise: `action` only reached this wire model in Phase 3b, so a body
+ * written earlier records ids as bare strings or without it.
+ */
 export function extractMatchedRuleIds(log: Record<string, unknown> | undefined): string[] {
   if (!log) return [];
   const matched = log.matched_rules;
@@ -426,14 +445,21 @@ export function extractMatchedRuleIds(log: Record<string, unknown> | undefined):
   const ids: string[] = [];
   for (const item of matched) {
     if (typeof item === "string" && item.trim()) {
-      ids.push(item.trim());
+      if (!ALLOW_FAMILY_ID_RE.test(item.trim())) ids.push(item.trim());
     } else if (item && typeof item === "object") {
-      const id = (item as Record<string, unknown>).id;
-      if (typeof id === "string" && id.trim()) ids.push(id.trim());
+      const record = item as Record<string, unknown>;
+      const id = record.id;
+      if (typeof id !== "string" || !id.trim()) continue;
+      if (record.action === "allow") continue;
+      if (record.action === undefined && ALLOW_FAMILY_ID_RE.test(id.trim())) continue;
+      ids.push(id.trim());
     }
   }
   return [...new Set(ids)].sort();
 }
+
+/** The `AIRA-9NN` range the allow families occupy. */
+const ALLOW_FAMILY_ID_RE = /^AIRA-9\d\d$/;
 
 function ruleOverlap(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0) return false;

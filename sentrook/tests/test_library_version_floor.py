@@ -150,6 +150,15 @@ def test_the_phase_3b_macros_are_why_this_release_moved_the_floor() -> None:
     Asserted as "the macros exist and the version is past 1.2.0" rather than
     as an equality, so the next release does not have to edit this test to
     keep the reasoning recorded.
+
+    **This test is necessary and was not sufficient.** It checks that the
+    constant moved. It cannot check that the constant *reaches* an instance,
+    and for a while it did not: Rookery overwrote the served manifest with
+    `ROOKERY_MIN_SCANNER_VERSION`, which defaults to `0.1.1`, so the bundle
+    advertised a floor old enough to mean "anything" while carrying rules a
+    1.2.0 engine cannot load. The end of that chain is asserted where it can
+    be — against Rookery's manifest endpoint, in
+    `tests/test_kill_switch.py::test_the_served_floor_is_at_least_the_engine_the_library_was_built_with`.
     """
     from sentrook.rules.compiler import ARGS_MATCH_MACROS
 
