@@ -529,21 +529,65 @@ function looksLikeScriptPath(token: string): boolean {
  * because a `|` inside a quoted argument (`grep 'a|b' f`) is not a pipe and a
  * text-level split would refuse it.
  */
+/**
+ * The command with quoted content blanked out, so an argument character
+ * cannot be read as shell syntax.
+ *
+ * `grep '<html>' page.txt` and `grep "=>" src.js` are routine, and a raw
+ * regex looking for `<` or `>` calls both of them redirects — the same
+ * text-versus-parse mistake that let `"git" push` past the engine's argv
+ * guards, in the other direction: there it admitted something dangerous,
+ * here it refuses something ordinary.
+ *
+ * Single-quoted spans are fully literal in shell and are blanked entirely.
+ * Double-quoted spans keep `$`, `(`, `)` and a backtick, because
+ * substitution still happens inside them — `echo "$(whoami)"` is a
+ * substitution and must stay one.
+ *
+ * **An unbalanced quote returns null**, and every caller treats that as high
+ * risk. Guessing at where the span ends would blank the rest of the command,
+ * which is the one direction this must not fail in.
+ */
+export function shellSignificant(command: string): string | null {
+  let out = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === null) {
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        out += " ";
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === quote) {
+      quote = null;
+      out += " ";
+      continue;
+    }
+    out += quote === '"' && (ch === "$" || ch === "(" || ch === ")" || ch === "`") ? ch : " ";
+  }
+  return quote === null ? out : null;
+}
+
 export function pipesIntoInterpreter(command: string): boolean {
-  const tokens = tokenizeArgv(command.trim());
-  let atSegmentStart = false;
-  for (const raw of tokens) {
-    let token = raw;
-    let sawPipe = token === "|" || token === "||";
-    while (token.endsWith(";") || token.endsWith("|") || token.endsWith("&")) {
-      if (token.endsWith("|")) sawPipe = true;
-      token = token.slice(0, -1);
-    }
-    if (atSegmentStart && token) {
-      if (PIPE_SINK_INTERPRETERS.has(basenameOf(token).toLowerCase())) return true;
-      atSegmentStart = false;
-    }
-    if (sawPipe) atSegmentStart = true;
+  const masked = shellSignificant(command);
+  if (masked === null) return true;
+  // Split on the masked text rather than on tokens: `echo hi|sh` has no
+  // whitespace around the pipe, so the tokenizer yields one token `hi|sh`
+  // and a token-level scan missed it entirely. A `|` inside quotes is
+  // already blanked, so `grep 'a|b' f` is not a pipe here.
+  const parts = masked.split("|");
+  for (const part of parts.slice(1)) {
+    // `|&` pipes stderr too and leaves a leading `&`; `||` leaves an empty
+    // part and then the next command, which is not a pipe but does still run
+    // the interpreter, so treating it the same way is the conservative
+    // reading rather than a mistake.
+    const first = part.replace(/^[&|]+/, "").trim().split(/\s+/)[0];
+    if (!first) continue;
+    if (PIPE_SINK_INTERPRETERS.has(basenameOf(first).toLowerCase())) return true;
   }
   return false;
 }
@@ -555,7 +599,9 @@ export function isHighRiskCommand(command: string): boolean {
   // plausible, so treating it as a real command would allowlist a skeleton built
   // from a truncation — matching later commands that merely share a prefix.
   if (isPackedExcerpt(trimmed)) return true;
-  if (HIGH_RISK_SHELL_RE.test(trimmed)) return true;
+  const masked = shellSignificant(trimmed);
+  if (masked === null) return true; // unbalanced quote: we cannot say what this is
+  if (HIGH_RISK_SHELL_RE.test(masked)) return true;
   if (pipesIntoInterpreter(trimmed)) return true;
 
   const tokens = tokenizeArgv(trimmed);

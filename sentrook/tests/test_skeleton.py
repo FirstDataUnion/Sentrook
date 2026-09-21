@@ -211,3 +211,41 @@ def test_twin_wrapper_constants_are_the_engine_constants() -> None:
     from sentrook.serve.skeleton import WRAPPER_BINS
 
     assert WRAPPER_BINS is WRAPPERS
+
+
+def test_quoted_content_is_not_shell_syntax() -> None:
+    """Narrowing `HIGH_RISK_SHELL_RE` onto redirects made routine searches
+    unallowlistable: `grep '<html>' page.txt` and `grep "=>" src.js` both read
+    as redirects to a regex over the raw text.
+
+    The same text-versus-parse mistake as the engine's argv guards, in the
+    other direction — there it admitted something dangerous, here it refused
+    something ordinary.
+    """
+    from sentrook.serve.skeleton import is_high_risk_command, shell_significant
+
+    for command in ("grep '<html>' page.txt", 'grep "=>" src.js', 'rg "<div>" ./src'):
+        assert is_high_risk_command(command) is False, command
+    for command in ("ls > /etc/passwd", "echo x >> ~/.bashrc", "cat f < input"):
+        assert is_high_risk_command(command) is True, command
+
+    # Single quotes are literal in shell; double quotes are not, so the mask
+    # keeps `$`, the parens and a backtick inside them.
+    assert is_high_risk_command('echo "$(whoami)"') is True
+    assert is_high_risk_command("echo '$(whoami)'") is False
+
+    # Guessing where an unterminated span ends would blank the rest of the
+    # command, which is the one direction this must not fail in.
+    assert shell_significant('echo "unterminated') is None
+    assert is_high_risk_command('echo "unterminated > /etc/passwd') is True
+
+
+def test_a_pipe_with_no_surrounding_whitespace_is_still_a_pipe() -> None:
+    """`echo hi|sh` is one token to the tokenizer, so the token-level scan
+    missed it completely. Splitting the masked text catches it, and `|&` and
+    `||` with it."""
+    from sentrook.serve.skeleton import is_high_risk_command
+
+    for command in ("echo hi|sh", "echo hi |& sh", "echo hi || sh", "cat list.txt | xargs rm"):
+        assert is_high_risk_command(command) is True, command
+    assert is_high_risk_command("grep 'a|b' file.txt") is False

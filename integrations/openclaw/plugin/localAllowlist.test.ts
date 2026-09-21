@@ -11,6 +11,7 @@ import {
   isValidEntry,
   loadAllowlist,
   matchAllowlist,
+  shellSignificant,
   parseBindableScript,
   recordAllowAlways,
   resolveAllowlistConfig,
@@ -843,5 +844,46 @@ describe("per-segment matching (§3b)", () => {
     const miss = matchAllowlist(planForCommand("ls -la"), logWithRules("AIRA-020"), config);
     assert.equal(miss.hit, false);
     assert.doesNotMatch(miss.reason ?? "", /the combination is not the parts/);
+  });
+});
+
+describe("quoted content is not shell syntax (§3b)", () => {
+  it("a redirect character inside quotes is an argument, not a redirect", () => {
+    // Narrowing HIGH_RISK_SHELL_RE onto redirects made these unallowlistable:
+    // searching for an HTML tag or an arrow function is entirely routine.
+    // The same text-versus-parse mistake as the engine's argv guards, in the
+    // other direction — there it admitted something dangerous, here it
+    // refused something ordinary.
+    assert.equal(isHighRiskCommand("grep '<html>' page.txt"), false);
+    assert.equal(isHighRiskCommand('grep "=>" src.js'), false);
+    assert.equal(isHighRiskCommand('rg "<div>" ./src'), false);
+    // ...while a real redirect still is one.
+    assert.equal(isHighRiskCommand("ls > /etc/passwd"), true);
+    assert.equal(isHighRiskCommand("echo x >> ~/.bashrc"), true);
+  });
+
+  it("substitution inside double quotes is still substitution", () => {
+    // Single quotes are literal in shell; double quotes are not, so the mask
+    // keeps `$`, the parens and a backtick inside them.
+    assert.equal(isHighRiskCommand('echo "$(whoami)"'), true);
+    assert.equal(isHighRiskCommand('echo "`whoami`"'), true);
+    assert.equal(isHighRiskCommand("echo '$(whoami)'"), false);
+  });
+
+  it("an unbalanced quote is high risk, not silently masked to the end", () => {
+    // Guessing where the span ends would blank the rest of the command,
+    // which is the one direction this must not fail in.
+    assert.equal(shellSignificant('echo "unterminated'), null);
+    assert.equal(isHighRiskCommand('echo "unterminated > /etc/passwd'), true);
+  });
+
+  it("a pipe with no surrounding whitespace is still a pipe", () => {
+    // `echo hi|sh` is one token to the tokenizer, so the token-level scan
+    // missed it completely. Splitting the masked text catches it, and `|&`
+    // and `||` with it.
+    assert.equal(isHighRiskCommand("echo hi|sh"), true);
+    assert.equal(isHighRiskCommand("echo hi |& sh"), true);
+    assert.equal(isHighRiskCommand("echo hi || sh"), true);
+    assert.equal(isHighRiskCommand("grep 'a|b' file.txt"), false);
   });
 });
