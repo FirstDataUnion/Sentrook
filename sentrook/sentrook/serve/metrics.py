@@ -73,6 +73,26 @@ SCAN_L3_OUTCOMES = PromCounter(
     ["rule_id", "outcome"],
     registry=REGISTRY,
 )
+#: §5.2. Where decisions land, by the lane that could have skipped the review.
+#: Bounded: four values, and `sentrook.serve.lanes` is the only thing that
+#: produces them — the same function the fatigue report calls over a log, so
+#: the live number and the replayed one cannot disagree the way they did.
+SCAN_LANES = PromCounter(
+    "sentrook_scan_lane_total",
+    "Reviews by lane (generic_safe / consequence / unknown / no_argv)",
+    ["lane"],
+    registry=REGISTRY,
+)
+#: §5.2. Parser coverage. `parse_ok=false` means every shape field is empty
+#: and no allow family can fire, so a rise here is a silent loss of the
+#: fatigue improvement rather than a loss of detection — worth a series of
+#: its own for exactly that reason.
+SCAN_EXEC_SHAPE = PromCounter(
+    "sentrook_scan_exec_shape_total",
+    "Pending exec steps by parser outcome",
+    ["parse_ok", "packed"],
+    registry=REGISTRY,
+)
 SCAN_FAIL_OPEN = PromCounter(
     "sentrook_scan_fail_open_total",
     "Scan responses that failed open (HTTP 200 with error, decision forced allow)",
@@ -228,6 +248,58 @@ def record_scan_rule_breakdown(
         else:
             outcome = getattr(trace, "decision", None) or "no_change"
         SCAN_L3_OUTCOMES.labels(rule_id=rule_id, outcome=outcome).inc()
+
+
+def record_scan_lane(result: Any, plan: Any = None) -> None:
+    """§5.2's lane series, from what actually matched.
+
+    Only for decisions that produced a review — an `allow` with nothing
+    matched is not a review that some lane could have skipped, and counting
+    it would make the denominator the traffic rather than the fatigue.
+    """
+    from sentrook.serve.lanes import classify_lane
+
+    if getattr(result, "decision", None) != "review":
+        return
+    step = _pending_exec_step(plan)
+    command = (step.args or {}).get("command") if step is not None else None
+    SCAN_LANES.labels(
+        lane=classify_lane(
+            (getattr(m, "id", "") for m in getattr(result, "matched_rules", None) or []),
+            has_argv=bool(isinstance(command, str) and command.strip()),
+        )
+    ).inc()
+
+
+def record_exec_shape(result: Any) -> None:
+    """§5.2's parser-coverage series, off the scan result.
+
+    Not off the request plan: `scan_plan` attaches the shape to a *redacted*
+    copy, so the caller's plan never carries one and this series silently
+    read zero. `PendingStepDebug` now echoes the two booleans, which is the
+    shape the rules actually saw.
+    """
+    pending = getattr(getattr(result, "debug", None), "pending_step", None)
+    if pending is None or pending.parse_ok is None:
+        return
+    SCAN_EXEC_SHAPE.labels(
+        parse_ok=str(bool(pending.parse_ok)).lower(),
+        packed=str(bool(pending.packed)).lower(),
+    ).inc()
+
+
+def _pending_exec_step(plan: Any) -> Any:
+    """The **request** plan, not `result.plan`.
+
+    `result.plan` is a `PlanEcho` — an echo for the response, with no steps
+    and therefore no `exec_shape`. Reading it produced two series that
+    silently never incremented, which is the failure this pair of metrics was
+    added to stop being possible elsewhere.
+    """
+    for step in reversed(getattr(plan, "steps", None) or []):
+        if getattr(step, "status", None) == "pending" and getattr(step, "tool", None) == "exec":
+            return step
+    return None
 
 
 def record_fail_open() -> None:

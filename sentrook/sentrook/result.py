@@ -87,6 +87,17 @@ class PendingStepDebug(BaseModel):
     id: str
     tool: str
     args: dict[str, Any] = Field(default_factory=dict)
+    #: §5.2's parser-coverage series. Two booleans off the derived shape,
+    #: exposed because the shape itself does not leave `scan_plan` — it is
+    #: attached to the *redacted* copy, and `result.plan` is an echo with no
+    #: steps. Re-deriving them at the metric would be a second implementation
+    #: of the parse, and one that could disagree about redaction.
+    #:
+    #: `parse_ok=false` means every shape field is empty and no allow family
+    #: can fire, so a rise is a silent loss of the fatigue improvement rather
+    #: than of detection — which is exactly why it is worth a series.
+    parse_ok: bool | None = None
+    packed: bool | None = None
 
 
 class PlanMetadataEcho(BaseModel):

@@ -21,8 +21,10 @@ from sentrook.serve.feedback import FeedbackSessionCapTracker
 from sentrook.serve.log import ScanLogRecord, append_scan_log, build_log_record
 from sentrook.serve.metrics import (
     CallerMixTracker,
+    record_exec_shape,
     record_feedback,
     record_scan_decision,
+    record_scan_lane,
     record_scan_rule_breakdown,
 )
 from sentrook.serve.oidc import normalize_oidc_url
@@ -128,6 +130,8 @@ class ServeRuntime:
             authority_by_rule_id=self.authority_by_rule_id(),
             default_authority=self.default_authority(),
         )
+        record_scan_lane(result, plan)
+        record_exec_shape(result)
         return result, record
 
     def default_authority(self) -> str:
