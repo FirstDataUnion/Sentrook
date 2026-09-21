@@ -129,3 +129,34 @@ def test_an_engine_without_the_expander_fails_silently_not_loudly() -> None:
     naive = re.compile("${sensitive_path}")  # what a 1.0.x engine compiles
     for path in ("~/.ssh/id_rsa", "/app/.env", "/x/auth-profiles.json"):
         assert naive.search(path) is None, path
+
+
+def test_the_phase_3b_macros_are_why_this_release_moved_the_floor() -> None:
+    """D20: bump `__version__` when the engine gains rule vocabulary an older
+    engine cannot read.
+
+    Phase 3b's allow families use `${safe_exec_head}`,
+    `${safe_exec_head_<family>}` and `${unsafe_argv_flag}`. An engine without
+    those macros raises `UnknownMacroError` at compile, and `load_rules`
+    propagates it — so **one** such rule fails the whole ruleset. A 1.2.0
+    instance receiving this bundle would not come up.
+
+    That is louder than the failure this module was written for
+    (`${sensitive_path}` compiling successfully and matching nothing), but the
+    guard is the same one and the floor is what makes it a refused sync rather
+    than an outage. `build_bundle_bytes` stamps the manifest with the Sentrook
+    version Rookery is built against, so the floor moves by this constant.
+
+    Asserted as "the macros exist and the version is past 1.2.0" rather than
+    as an equality, so the next release does not have to edit this test to
+    keep the reasoning recorded.
+    """
+    from sentrook.rules.compiler import ARGS_MATCH_MACROS
+
+    introduced_in_3b = {"safe_exec_head", "unsafe_argv_flag"}
+    assert introduced_in_3b <= set(ARGS_MATCH_MACROS)
+    assert _version_tuple(SCANNER_VERSION) > _version_tuple("1.2.0"), (
+        "the allow families use macros a 1.2.0 engine cannot expand; the "
+        "floor has to move with them or the bundle reaches instances that "
+        "cannot load it"
+    )
