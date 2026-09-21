@@ -831,3 +831,32 @@ def test_the_safe_exec_head_macro_is_the_union_of_the_families() -> None:
     for family in by_family:
         assert f"safe_exec_head_{family}" in ARGS_MATCH_MACROS
     assert ARGS_MATCH_MACROS["safe_exec_head"]().startswith("(?:")
+
+
+def test_an_allow_family_hit_is_observable_on_the_metrics_endpoint() -> None:
+    """§5.2's first series — "which allow families carry traffic".
+
+    `SCAN_MATCHED_RULES` already carries `rule_id` and `action`, so this
+    needed no new counter. It needed the scan log to stop raising: both live
+    in `ServeRuntime.log_scan`, `build_log_record` runs first, and it rejected
+    `action: "allow"` — so the counter that was supposedly already there could
+    never have been incremented for an allow family. A series nothing can
+    emit is indistinguishable from a series that does not exist.
+
+    Asserted through `record_scan_rule_breakdown` against the real registry,
+    because reading the label names off the declaration is what "already
+    carries `rule_id` and `action`" would have told you before the fix.
+    """
+    from prometheus_client import generate_latest
+
+    from sentrook.serve.metrics import REGISTRY, record_scan_rule_breakdown
+
+    result = _scan("ls -la", [_review_rule(), _allow_rule()])
+    assert result.decision == "allow"
+    record_scan_rule_breakdown(result, authority_by_rule_id={"AIRA-010": "soft"})
+
+    # The scanner's own registry, not the process-global default — reading the
+    # wrong one exports nothing and the assertion below would be vacuous.
+    exported = generate_latest(REGISTRY).decode("utf-8")
+    assert 'rule_id="AIRA-901"' in exported
+    assert 'action="allow"' in exported
