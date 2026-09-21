@@ -1003,8 +1003,12 @@ def _multi_plan(*commands: str) -> PlanIR:
             "intent": "set up the helper",
             "intent_kind": "user",
             "steps": [
-                {"id": f"s{i + 1}", "tool": "exec", "status": "pending",
-                 "args": {"command": command}}
+                {
+                    "id": f"s{i + 1}",
+                    "tool": "exec",
+                    "status": "pending",
+                    "args": {"command": command},
+                }
                 for i, command in enumerate(commands)
             ],
             "metadata": {"adapter": "fixture", "hook": "before_tool_call"},
@@ -1068,10 +1072,13 @@ def test_a_non_pending_step_does_not_count_toward_the_limit() -> None:
             "intent": "check something",
             "intent_kind": "user",
             "steps": [
-                {"id": "s1", "tool": "exec", "status": "executed",
-                 "args": {"command": "npm install"}},
-                {"id": "s2", "tool": "exec", "status": "pending",
-                 "args": {"command": "ls -la"}},
+                {
+                    "id": "s1",
+                    "tool": "exec",
+                    "status": "executed",
+                    "args": {"command": "npm install"},
+                },
+                {"id": "s2", "tool": "exec", "status": "pending", "args": {"command": "ls -la"}},
             ],
             "metadata": {"adapter": "fixture", "hook": "before_tool_call"},
         }
@@ -1099,9 +1106,7 @@ def test_no_inline_eval_head_is_in_the_allow_vocabulary() -> None:
     from sentrook.sanitize.sensitive_paths import load_sensitive_paths
 
     vocabulary = {
-        head
-        for family in load_sensitive_paths().safe_exec_binaries.values()
-        for head in family
+        head for family in load_sensitive_paths().safe_exec_binaries.values() for head in family
     }
     reachable = (_INLINE_EVAL_HEADS | set(_INLINE_EVAL_FLAGS)) & vocabulary
     assert not reachable, (

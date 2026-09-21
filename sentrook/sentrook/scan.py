@@ -151,9 +151,7 @@ def scan_plan(
     # a suppressed review would still be scored by L3 and would surface in traces
     # as an L3 decision, so the operator-facing explanation would name the wrong
     # layer for why a step was not shown.
-    suppressed_rule_ids = _suppressed_rule_ids(
-        matched_rules, {r.id: r for r in candidates}, plan
-    )
+    suppressed_rule_ids = _suppressed_rule_ids(matched_rules, {r.id: r for r in candidates}, plan)
     surviving_rules = [m for m in matched_rules if m.id not in suppressed_rule_ids]
 
     if not candidates:
