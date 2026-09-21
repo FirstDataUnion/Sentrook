@@ -33,7 +33,20 @@ DEFAULT_LOG_PATH = Path.home() / ".sentrook" / "scan.log.jsonl"
 DEFAULT_LATENCY_LOG_PATH = Path.home() / ".sentrook" / "latency.log.jsonl"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9099
-DEFAULT_LIBRARY_SYNC_INTERVAL_SEC = 86_400
+#: How often an instance re-checks the library manifest. 15 minutes, not a day.
+#:
+#: This is the propagation time of the **allow-rule kill switch** (§4.1), and
+#: that is the whole reason it is not 86,400 any more. Allow rules fail *open*:
+#: withdrawing an over-broad one is an emergency, and Rookery's suppression
+#: list reaches an instance only on its next sync. At a day, the lever is a
+#: next-day lever and the operator reaches for the unguarded one instead —
+#: F59's shape, where the guard on the safe path pushes you to the unsafe one.
+#:
+#: The cost is a conditional GET of a manifest per instance per interval, on a
+#: deployment with a handful of instances. `update_available` is
+#: `local.bundle_version != remote.bundle_version` and nothing else, so a sync
+#: that finds no new bundle does no work.
+DEFAULT_LIBRARY_SYNC_INTERVAL_SEC = 900
 DEFAULT_PERSONAL_CORPUS_DIR = Path.home() / ".sentrook" / "personal-corpus"
 DEFAULT_OIDC_JWKS_CACHE_SECONDS = 300
 DEFAULT_RATE_LIMIT_SCAN_RATE = 5.0

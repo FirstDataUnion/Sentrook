@@ -186,7 +186,50 @@ WRAPPER_VALUE_FLAGS = _WRAPPER_VALUE_FLAGS_SRC
 DURATION_RE = _DURATION_RE
 ENV_ASSIGN_RE = _ENV_ASSIGN_RE
 
-HIGH_RISK_SHELL_RE = re.compile(r"(?:\|\||&&|;|`|\$\(|<\(|>\(|\|)")
+#: Substitution, process substitution and redirects. ``;``, ``&&``, ``||`` and
+#: ``|`` used to be here, which made *every* compound command unallowlistable
+#: — a blunt instrument that worked because the alternative was reasoning
+#: about what a compound command does. §3b's per-segment matching is that
+#: reasoning, so the separators come out and the things a segment split cannot
+#: make safe stay:
+#:
+#: * substitution, because ``ls $(curl evil)`` is one segment and the shape
+#:   cannot say what the substitution evaluated to;
+#: * a pipe into an interpreter, because ``echo hi | sh`` is two individually
+#:   harmless segments — see :func:`pipes_into_interpreter`;
+#: * a redirect, because ``ls > ~/.bashrc`` is one segment whose skeleton
+#:   differs from a recorded ``ls`` only by tokens the skeletonizer happens to
+#:   keep, and relying on that is relying on an accident.
+#:
+#: **Mirrored in ``localAllowlist.ts``** and pinned by
+#: ``fixtures/skeleton_golden.jsonl``, which both sides read.
+HIGH_RISK_SHELL_RE = re.compile(r"(?:`|\$\(|<\(|>\(|>>?|<)")
+
+#: Heads that turn their standard input into code. A pipe *into* one of these
+#: is the shape per-segment matching cannot see.
+PIPE_SINK_INTERPRETERS = frozenset(
+    {
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "python",
+        "python2",
+        "python3",
+        "node",
+        "nodejs",
+        "perl",
+        "ruby",
+        "php",
+        "eval",
+        "source",
+        ".",
+        "xargs",
+        "env",
+    }
+)
 
 URL_RE = re.compile(r"^https?://|^[a-z0-9.-]+:[0-9]+$", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
@@ -379,6 +422,74 @@ def segment_is_inline_eval(tokens: list[str]) -> bool:
     return any(t in INLINE_EVAL_FLAGS for t in tokens)
 
 
+def shell_significant(command: str) -> str | None:
+    """The command with quoted content blanked out.
+
+    An argument character must not be readable as shell syntax. ``grep
+    '<html>' page.txt`` and ``grep "=>" src.js`` are routine, and a raw regex
+    looking for ``<`` or ``>`` calls both of them redirects — the same
+    text-versus-parse mistake that let ``"git" push`` past the engine's argv
+    guards, in the other direction.
+
+    Single-quoted spans are fully literal in shell and are blanked entirely.
+    Double-quoted spans keep ``$``, ``(``, ``)`` and a backtick, because
+    substitution still happens inside them.
+
+    **An unbalanced quote returns ``None``**, and every caller treats that as
+    high risk. Guessing where the span ends would blank the rest of the
+    command, which is the one direction this must not fail in.
+
+    **Mirrored in ``localAllowlist.ts``.**
+    """
+    out: list[str] = []
+    quote: str | None = None
+    for ch in command:
+        if quote is None:
+            if ch in ("'", '"'):
+                quote = ch
+                out.append(" ")
+                continue
+            out.append(ch)
+            continue
+        if ch == quote:
+            quote = None
+            out.append(" ")
+            continue
+        out.append(ch if quote == '"' and ch in "$()`" else " ")
+    return "".join(out) if quote is None else None
+
+
+def pipes_into_interpreter(command: str) -> bool:
+    """Whether any ``|`` in the command feeds a head that executes its stdin.
+
+    The hole per-segment matching opens, closed in the same change. ``echo
+    hi`` and ``sh`` are each an unremarkable segment that an operator might
+    well have allowlisted; ``echo hi | sh`` is arbitrary code and nothing
+    about either half says so.
+
+    Split on the **masked** text rather than on tokens: ``echo hi|sh`` has no
+    whitespace around the pipe, so the tokenizer yields one token ``hi|sh``
+    and a token-level scan missed it entirely. A ``|`` inside quotes is
+    already blanked, so ``grep 'a|b' f`` is not a pipe here.
+
+    **Mirrored in ``localAllowlist.ts``.**
+    """
+    masked = shell_significant(command.strip())
+    if masked is None:
+        return True
+    for part in masked.split("|")[1:]:
+        # `|&` pipes stderr too and leaves a leading `&`; `||` leaves an empty
+        # part and then the next command, which is not a pipe but does still
+        # run the interpreter, so treating it the same way is the
+        # conservative reading rather than a mistake.
+        first = part.lstrip("&|").strip().split()
+        if not first:
+            continue
+        if basename_of(first[0]).lower() in PIPE_SINK_INTERPRETERS:
+            return True
+    return False
+
+
 def is_high_risk_command(command: str) -> bool:
     """True when a command must never be skeletonised for allowlist matching.
 
@@ -391,7 +502,12 @@ def is_high_risk_command(command: str) -> bool:
         return True
     if is_packed_excerpt(trimmed):
         return True
-    if HIGH_RISK_SHELL_RE.search(trimmed):
+    masked = shell_significant(trimmed)
+    if masked is None:  # unbalanced quote: we cannot say what this is
+        return True
+    if HIGH_RISK_SHELL_RE.search(masked):
+        return True
+    if pipes_into_interpreter(trimmed):
         return True
 
     tokens = tokenize_argv(trimmed)

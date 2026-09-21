@@ -331,3 +331,171 @@ package_mgmt_binaries:
   - apk
   - brew
   - pacman
+
+# ---------------------------------------------------------------------------
+# Phase 3b — the allow families (AIRA-9NN)
+#
+# These two lists are the fail-**open** half of the library, so they live here
+# rather than in the rules for the reason §1.3 exists: eight allow rules each
+# carrying its own copy of a safety list, kept in step by a comment, is the
+# shape that produced five divergent copies of the sensitive-path list.
+# Adding a flag here reaches every family with no rule edit.
+
+# Every head an allow family may admit. The union, deliberately: real commands
+# compose heads across families — `find . -name '*.md' | head -20`, `ls -la |
+# grep foo`, `cat x | wc -l` — and a rule that requires every head to be in
+# *its own* family can never admit them. Each family additionally requires one
+# head of its own (the `some` form), which is what keeps attribution and makes
+# withdrawing a single family meaningful.
+# Keyed by family, so a rule never carries an inline head list. `${safe_exec_head}`
+# is the union of every value here and `${safe_exec_head_<family>}` is one of
+# them, which is what lets a family say "every head is safe **and** one is
+# mine" without restating either set.
+safe_exec_binaries:
+  # AIRA-901 listing / navigation — `cd` is deliberately absent: it rebases
+  # path context, so per-segment reasoning about a later head is unsound.
+  listing: [ls, pwd, tree, du, df]
+  # AIRA-902 reading file contents. Not `${reading_head}`: that list is
+  # AIRA-083's, curated for "what makes contents available", and it
+  # deliberately excludes `stat` and `file` while including `jq`, `tar` and
+  # `python3`, none of which belong in an allow family.
+  read: [cat, head, tail, less, more, wc, nl, stat, file]
+  # AIRA-903 searching. A search is a read: `grep '' file` is `cat`.
+  search: [grep, egrep, fgrep, rg]
+  # AIRA-904 locating. The head tells you nothing here — `find … -exec rm`
+  # has heads `['find']` — so `unsafe_argv_flags.find_actions` is the rule.
+  find: [find, fd]
+  # AIRA-905 text shaping. `sed` is **deliberately absent**, against §3b's
+  # seed table. The table asks for "`sed -n Np` only", a positive grammar over
+  # the script, which one regex cannot express across compound commands —
+  # while a negative list over sed's command letters is not closable.
+  # GTFOBins' shell entry for sed is two characters, `sed e`: the bare `e`
+  # command reads commands from stdin and runs them. It has nine siblings
+  # (`1e`, `w`, `W`, `r`, `R`, `s///w`, `s///e`, `1{e …}`, `1,$w`) that cannot
+  # be separated from `sed 's/foo/bar/'` without argv structure the shape does
+  # not carry. `awk` stays: its dangerous constructs are words, not letters.
+  text: [awk, sort, uniq, cut, tr]
+  # AIRA-906 identity / environment. `env` and `printenv` are absent: `env` is
+  # a wrapper head, stripped before a rule sees it, and a bare `env` dumps the
+  # environment, which is AIRA-088's.
+  env: [which, whoami, id, date, uname, hostname, echo, printf, "true", "false"]
+  # AIRA-907 version control, read-only. The subcommand is the whole question
+  # and it lives in argv, not in the head.
+  git: [git]
+  # AIRA-908 package managers, read-only. Every one is a GTFOBins shell entry.
+  package: [pip, pip3, npm, uv]
+
+# Flags that make a command read filenames, patterns or a program from a
+# *file*, or run a binary, rather than doing what its head says. Every path
+# defence in the design reads argv — `_shape.path_roles`, the `paths:`
+# condition, the plugin's skeleton matching — so `wc --files0-from ./list.txt`
+# looks like a bounded read of one workspace file while it reports the
+# contents of every path that file names.
+#
+# Global rather than per-family, because heads compose: any rule that can
+# admit a command containing `find` has to refuse `-delete`, whether or not
+# `find` is the family it is named for.
+unsafe_argv_flags:
+  # matched as `--name`, on a word boundary
+  long:
+    - files0-from      # wc, sort, find — a NUL-separated list of paths
+    - files-from       # file
+    - magic-file       # file — loads a magic database as a program
+    - file             # grep/sed/awk patterns-or-program from a file
+    - pre              # rg — runs a preprocessor binary per file
+    - pre-glob         # rg — scopes --pre, meaningless without it, refused with it
+    - hostname-bin     # rg — runs a binary to resolve the hostname
+    - search-zip       # rg — decompresses through external tools
+    - exec             # fd
+    - exec-batch       # fd
+    - ext-diff         # git — runs the configured external diff driver
+    - exec-path        # git — relocates the helper directory (GTFOBins shell)
+    - upload-pack      # git — names a binary to run on the far side
+    - receive-pack     # git
+    - editor           # pip config --editor '/bin/sh -s' edit (GTFOBins shell)
+    - unsafe-paths     # git apply
+  # Short flags, scoped to the head that gives them meaning, and kept to the
+  # ones that grant a capability the family does not already have.
+  #
+  # The test is **not** "GTFOBins lists this binary under file-read" — for a
+  # family whose premise is reading workspace files, that is the premise
+  # restated (D17, F64). The test is: *does this flag reach a path the path
+  # predicate cannot see?* Flags whose targets are named in argv are subject
+  # to the location and role clauses like any other operand, so they add
+  # nothing:
+  #
+  #   sort -m a b     operands named in argv; `sort a b` already reads them
+  #   grep -f pats f  patterns come from a file, matches still come from argv
+  #   rg -f pats .    the same
+  #   date -f dates   reads that file's lines; opens nothing further
+  #   tail -f log     argv-named, merely unbounded — an availability
+  #                   annoyance, not a capability
+  #
+  # Each of those was in this list and each cost something real, because the
+  # matcher is case-insensitive and cannot express a case-sensitive
+  # constraint: scoping `f` to grep refused `grep -F` (fixed strings) and
+  # scoping `m` to sort refused `sort -M` (month sort). Paying that for a
+  # flag that grants nothing is the worst of both directions.
+  #
+  # Matched as `-[letters]*x` rather than `-x`, because short flags bundle:
+  # `fd -xX rm` and `file -fm ./names` both bypassed the delimited form.
+  scoped:
+    - head: file
+      flags: [f, m]   # --files-from: a file of filenames; --magic-file: a program
+    - head: rg
+      flags: [z]      # --search-zip: decompresses through external tools
+    - head: fd
+      flags: [x, X]   # --exec, --exec-batch
+    - head: awk
+      flags: [f, e]   # -f: the program comes from a file, so the inline-program
+                      # guard (`system(`, `getline`, `print >`) cannot see it —
+                      # the same reason `file -m` is here. Matching is
+                      # case-insensitive, so this also catches gawk's `-E`
+                      # (--exec, a program file in privileged mode) at the cost
+                      # of `-e` (an inline program, which the positional form
+                      # expresses anyway and the text guard then inspects).
+
+  # Heads whose *verb* decides everything, matched as "this head is not
+  # followed by one of these". Global, and that is the whole point: the
+  # subcommand clauses for `git` and the package managers started out inside
+  # AIRA-907 and AIRA-908, and AIRA-901 then admitted `git push --force &&
+  # ls` on the strength of the `ls` — every head was in the shared
+  # vocabulary, and the guard that would have refused the verb was not.
+  # Heads compose, so a guard that is not global is a hole in every family
+  # that does not carry it.
+  #
+  # The verbs are the **dull** side, so a subcommand added by a future
+  # release is refused rather than admitted. `git branch|tag|remote` are
+  # absent although they read by default: `branch -D`, `tag -d` and `remote
+  # add` are write sub-verbs on read-looking subcommands.
+  #
+  # "Not followed by" is immediate, which also refuses `git -c
+  # core.pager='sh -c …' log` and `git --exec-path=. x` — both GTFOBins shell
+  # entries — without enumerating options, at the accepted cost of `git
+  # --no-pager log`.
+  verb_gated:
+    - head: git
+      verbs: [status, log, show, diff, rev-parse, ls-files, blame, shortlog,
+              describe, cat-file, ls-tree]
+    - head: pip
+      verbs: [list, show, freeze, "--version", "-V"]
+    - head: pip3
+      verbs: [list, show, freeze, "--version", "-V"]
+    - head: npm
+      verbs: [ls, list, view, outdated, "--version", "-v"]
+    - head: uv
+      verbs: [pip, "--version", "-V"]
+
+  # find's action predicates, matched as `-name` on a word boundary. Not
+  # visible in `_shape.heads`, `_shape.sinks` or `paths:`, because all three
+  # read the parse and these live inside one simple command's argv.
+  find_actions:
+    - exec
+    - execdir
+    - ok
+    - okdir
+    - delete
+    - fls
+    - fprint
+    - fprint0
+    - fprintf

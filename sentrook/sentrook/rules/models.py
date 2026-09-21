@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from sentrook.config import L2Authority
+from sentrook.result import RuleAction
 
 
 class OwaspRefs(BaseModel):
@@ -17,7 +18,7 @@ class OwaspRefs(BaseModel):
 class RuleMeta(BaseModel):
     name: str
     severity: Literal["low", "medium", "high", "critical"] = "medium"
-    action: Literal["block", "review", "allow"] = "block"
+    action: RuleAction = "block"
     description: str | None = None
     owasp: OwaspRefs | None = None
     # Whether L3 may override this rule's L2 verdict. When unset, the scanner falls

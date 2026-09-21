@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from sentrook.adapters.snapshot import primary_pending_step
 from sentrook.planir import PlanIR
-from sentrook.result import ScanResult
+from sentrook.result import RuleAction, ScanResult
 from sentrook.sanitize.rules import load_rules as _load_sanitize_rules
 from sentrook.sanitize.text import scrub_text
 
@@ -38,7 +38,7 @@ COMMAND_EXCERPT_LIMIT = _load_sanitize_rules().command_max_chars
 
 class ScanMatchedRule(BaseModel):
     id: str
-    action: Literal["block", "review"]
+    action: RuleAction
     severity: Literal["low", "medium", "high", "critical"]
     confidence: float
     layer: Literal["L1", "L2", "L3"]

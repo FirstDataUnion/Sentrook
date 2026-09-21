@@ -7,12 +7,21 @@ from pydantic import BaseModel, Field
 from sentrook.layers.pass_kind import L2PassKind
 from sentrook.planir import PlanStep
 
+#: What a rule does when it matches. Defined once and imported, because the
+#: scan-log wire model spelled it out again and was never widened when Phase 1
+#: added `allow` — so the first allow rule to match in production would have
+#: raised a `ValidationError` inside `build_log_record`, on the serve request
+#: path, for every scan it fired on. Nothing caught it because no *shipped*
+#: rule used the action until Phase 3b, and the tripwire asserting that was
+#: itself the reason the gap could sit there.
+RuleAction = Literal["block", "review", "allow"]
+
 
 class MatchedRule(BaseModel):
     id: str
     name: str
     severity: Literal["low", "medium", "high", "critical"]
-    action: Literal["block", "review", "allow"]
+    action: RuleAction
     reason: str
     confidence: float
     layer: Literal["L1", "L2", "L3"] = "L2"
