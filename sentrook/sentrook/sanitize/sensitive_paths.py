@@ -243,6 +243,21 @@ def unsafe_argv_fragment(flags: dict[str, tuple[str, ...]]) -> str:
             + "|".join(re.escape(f) for f in sorted(names))
             + r")(?:[\s=]|\Z)"
         )
+    for entry in flags.get("verb_gated", ()):
+        head = entry["head"] if isinstance(entry, dict) else entry[0]
+        verbs = entry["verbs"] if isinstance(entry, dict) else entry[1]
+        # "this head, not immediately followed by a read-only verb". A
+        # negative lookahead over the whole command rather than an anchored
+        # positive match at the start, because an anchored match reads only
+        # the first segment and `git status && git push` would pass it.
+        parts.append(
+            r"\b"
+            + re.escape(head)
+            + r"\s+(?!(?:"
+            + "|".join(re.escape(v) for v in verbs)
+            + r")\b)"
+        )
+
     actions = flags.get("find_actions", ())
     if actions:
         parts.append(

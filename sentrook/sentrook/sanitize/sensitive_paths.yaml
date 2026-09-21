@@ -446,6 +446,37 @@ unsafe_argv_flags:
       flags: [x, X]          # --exec, --exec-batch
     - head: wc
       flags: [f]             # guards --files0-from's short spelling if one appears
+  # Heads whose *verb* decides everything, matched as "this head is not
+  # followed by one of these". Global, and that is the whole point: the
+  # subcommand clauses for `git` and the package managers started out inside
+  # AIRA-907 and AIRA-908, and AIRA-901 then admitted `git push --force &&
+  # ls` on the strength of the `ls` — every head was in the shared
+  # vocabulary, and the guard that would have refused the verb was not.
+  # Heads compose, so a guard that is not global is a hole in every family
+  # that does not carry it.
+  #
+  # The verbs are the **dull** side, so a subcommand added by a future
+  # release is refused rather than admitted. `git branch|tag|remote` are
+  # absent although they read by default: `branch -D`, `tag -d` and `remote
+  # add` are write sub-verbs on read-looking subcommands.
+  #
+  # "Not followed by" is immediate, which also refuses `git -c
+  # core.pager='sh -c …' log` and `git --exec-path=. x` — both GTFOBins shell
+  # entries — without enumerating options, at the accepted cost of `git
+  # --no-pager log`.
+  verb_gated:
+    - head: git
+      verbs: [status, log, show, diff, rev-parse, ls-files, blame, shortlog,
+              describe, cat-file, ls-tree]
+    - head: pip
+      verbs: [list, show, freeze, "--version", "-V"]
+    - head: pip3
+      verbs: [list, show, freeze, "--version", "-V"]
+    - head: npm
+      verbs: [ls, list, view, outdated, "--version", "-v"]
+    - head: uv
+      verbs: [pip, "--version", "-V"]
+
   # find's action predicates, matched as `-name` on a word boundary. Not
   # visible in `_shape.heads`, `_shape.sinks` or `paths:`, because all three
   # read the parse and these live inside one simple command's argv.
