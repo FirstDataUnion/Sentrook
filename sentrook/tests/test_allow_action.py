@@ -74,6 +74,9 @@ def _allow_rule(
     constraints = {
         "_shape.parse_ok": "^true$",
         "_shape.privileged": "^false$",
+        # `heads` is the basename, so `./ls` and `ls` are indistinguishable
+        # without this.
+        "_shape.head_paths": "^$",
         # F30: `LD_PRELOAD=/tmp/evil.so ls` has the same heads, sinks,
         # substitution and privileged as a bare `ls`.
         "_shape.env_assignments": "^$",
@@ -103,6 +106,15 @@ def _allow_rule(
             ]
         },
     }
+
+
+def _required_shape_keys() -> list[str]:
+    from sentrook.rules.compiler import CONDITION_KEY_PREFIX, REQUIRED_ALLOW_CONSTRAINTS
+
+    return [k for k in REQUIRED_ALLOW_CONSTRAINTS if not k.startswith(CONDITION_KEY_PREFIX)]
+
+
+_REQUIRED_SHAPE_KEYS = _required_shape_keys()
 
 
 def _satisfying_parts() -> tuple[dict[str, str], list[dict]]:
@@ -892,11 +904,11 @@ def test_an_any_branch_without_the_constraints_does_not_count_as_having_them() -
             {
                 "tool": "exec",
                 "status": "pending",
+                # Built from the required set, so a clause added later lands
+                # here without an edit — which is the difference between this
+                # test failing for its own reason and failing for a new one.
                 "args_match": {
-                    "_shape.parse_ok": "^true$",
-                    "_shape.privileged": "^false$",
-                    "_shape.env_assignments": "^$",
-                    "_shape.path_roles": "^$",
+                    **{key: "^.*$" for key in _REQUIRED_SHAPE_KEYS},
                     "_shape.heads": r"(?s)\A(?:(?:ls)\n?)+\Z",
                 },
             }
@@ -1114,3 +1126,109 @@ def test_no_inline_eval_head_is_in_the_allow_vocabulary() -> None:
         f"vocabulary — the families' `inline_eval` clause is now load-bearing "
         f"and needs a row in eval/attacks/siblings/ that exercises it"
     )
+
+
+def test_resolving_one_shape_field_does_not_serialise_the_whole_shape() -> None:
+    """`_shape_value_matches` called `shape.to_dict()` per lookup.
+
+    That rebuilt the entire dictionary — including every `ExecPath` — to read
+    one field, and `_stringify_shape_value` then dropped the object lists on
+    the floor. At the 4,000-character budget it is ~500 paths serialised and
+    discarded on each of ~80 lookups. Phase 3b took the library from about
+    fourteen `_shape.*` clauses to about ninety, which turned a quiet
+    inefficiency into 24ms a scan: the eight families doubled scan time at
+    the budget, and almost none of it was their regexes.
+
+    Asserted by counting the calls rather than by timing, because a timing
+    assertion is the kind that gets marked flaky and deleted.
+    """
+    from sentrook.layers.exec_shape import ExecShape, derive_exec_shape
+    from sentrook.layers.l2_match import _shape_value_matches
+    from sentrook.planir import PlanStep
+
+    calls = 0
+    original = ExecShape.to_dict
+
+    def counting(self):  # noqa: ANN001, ANN202
+        nonlocal calls
+        calls += 1
+        return original(self)
+
+    step = PlanStep(id="s1", tool="exec", status="pending", args={"command": "ls -la ./a ./b"})
+    step.exec_shape = derive_exec_shape("ls -la ./a ./b")
+
+    ExecShape.to_dict = counting
+    try:
+        for _ in range(10):
+            _shape_value_matches("_shape.heads", r"(?s)\A(?:(?:ls)\n?)+\Z", step)
+    finally:
+        ExecShape.to_dict = original
+
+    assert calls == 0, f"{calls} full-shape serialisations to read one field ten times"
+
+
+def test_the_matchable_field_set_has_one_definition() -> None:
+    """The compiler decides which `_shape.<field>` keys compile; the matcher
+    decides which it can resolve. A second copy in the matcher could let a
+    rule compile against a field that silently never matches, which is F20's
+    class.
+
+    The comment on `MATCHABLE_SHAPE_FIELDS` claims the two cannot drift. This
+    is what makes that true.
+    """
+    from sentrook.layers import l2_match
+    from sentrook.rules.compiler import MATCHABLE_SHAPE_FIELDS, UNMATCHABLE_SHAPE_FIELDS
+
+    assert "MATCHABLE_SHAPE_FIELDS" not in vars(l2_match), (
+        "the matcher has its own copy of the field set"
+    )
+    assert not (MATCHABLE_SHAPE_FIELDS & set(UNMATCHABLE_SHAPE_FIELDS))
+    for field in ("heads", "parse_ok", "path_roles", "argv"):
+        assert field in MATCHABLE_SHAPE_FIELDS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("./ls -la", id="dot-slash"),
+        pytest.param("bin/ls -la", id="relative-no-dot"),
+        pytest.param("../ls -la", id="parent-relative"),
+        pytest.param("~/ls -la", id="home-relative"),
+        pytest.param("/usr/bin/ls -la", id="absolute"),
+        pytest.param("ls -la && ./pwd", id="one-of-each"),
+    ],
+)
+def test_an_allow_rule_refuses_a_path_qualified_head(command: str) -> None:
+    """`heads` is the basename, lowercased, so `./ls` and `ls` are identical
+    to every rule — which is right for a review rule (one hunting `exec:curl`
+    should catch `/usr/bin/curl`) and exactly backwards for an allow rule.
+
+    `/usr/bin/ls` is the system binary. `./ls` is a file in the workspace the
+    agent may have written a moment ago, and it was **allowed**: so were
+    `./cat ./notes.md` and `./find . -name x`. An injected instruction to
+    write a script called `ls` and run `./ls` was arbitrary execution with no
+    prompt.
+
+    `/usr/bin/ls` is refused too. It is very probably the system binary, but
+    `/tmp/ls` is not, and distinguishing them means trusting a path prefix on
+    a fail-open rule for a small gain.
+    """
+    assert _scan(command, [_review_rule(), _allow_rule()]).decision == "review"
+    assert _scan("ls -la", [_review_rule(), _allow_rule()]).decision == "allow"
+
+
+def test_head_paths_is_the_third_field_that_exists_for_this_reason() -> None:
+    """`privileged`, `env_assignments` and `head_paths` are all here because
+    a simplification that is correct for a review rule destroys something
+    only a fail-open rule needs: `sudo cat` and `cat` have identical heads,
+    `LD_PRELOAD=x ls` and `ls` have identical everything, and `./ls` and `ls`
+    are the same after a basename.
+
+    All three are compiler-required rather than left to an author, and this
+    asserts they stay together — the next simplification of this shape should
+    join them rather than be documented.
+    """
+    from sentrook.rules.compiler import REQUIRED_ALLOW_CONSTRAINTS
+
+    for field in ("_shape.privileged", "_shape.env_assignments", "_shape.head_paths"):
+        assert field in REQUIRED_ALLOW_CONSTRAINTS

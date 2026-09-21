@@ -53,6 +53,13 @@ REQUIRED_ALLOW_CONSTRAINTS: dict[str, str] = {
     # because "remember to think about the environment" is exactly what an
     # author forgets.
     "_shape.env_assignments": "an allow rule must constrain the environment prefix",
+    # The third field that exists because stripping correct for a review rule
+    # destroys what a fail-open rule needs. `heads` is the basename,
+    # lowercased, so `/usr/bin/ls` and `./ls` both arrive as `ls` — the first
+    # is the system binary and the second is a file in the workspace the
+    # agent may have written a moment ago. Every allow family admitted `./ls
+    # -la` until this was required.
+    "_shape.head_paths": "an allow rule must refuse a path-qualified head",
     # D23. AIRA-010 is `soft`, so an allow family may suppress it, and an allow
     # family that says nothing about path roles suppresses it on `cat
     # id_ed25519` — a bare basename with **zero** extractable paths, so a
@@ -247,8 +254,9 @@ UNMATCHABLE_SHAPE_FIELDS: dict[str, str] = {
 
 #: Field names addressable as `_shape.<field>` — the shape's own wire keys minus
 #: the ones above, so this cannot drift from what `_shape_value_matches`
-#: actually resolves.
-_SHAPE_FIELDS = frozenset(ExecShape().to_dict()) - frozenset(UNMATCHABLE_SHAPE_FIELDS)
+#: actually resolves. `l2_match` imports **this** set rather than deriving its
+#: own, which is what makes that sentence true rather than aspirational.
+MATCHABLE_SHAPE_FIELDS = frozenset(ExecShape().to_dict()) - frozenset(UNMATCHABLE_SHAPE_FIELDS)
 
 
 def validate_args_match(patterns: dict[str, str] | None) -> dict[str, str] | None:
@@ -283,9 +291,9 @@ def validate_args_match(patterns: dict[str, str] | None) -> dict[str, str] | Non
                     raise InvalidArgsMatchError(
                         f"{name} cannot be matched: {UNMATCHABLE_SHAPE_FIELDS[field]}"
                     )
-                if field not in _SHAPE_FIELDS:
+                if field not in MATCHABLE_SHAPE_FIELDS:
                     raise InvalidArgsMatchError(
-                        f"unknown shape field {name!r}; valid: {', '.join(sorted(_SHAPE_FIELDS))}"
+                        f"unknown shape field {name!r}; valid: {', '.join(sorted(MATCHABLE_SHAPE_FIELDS))}"
                     )
         pattern = expand_macros(pattern)
         expanded[key] = pattern

@@ -238,6 +238,24 @@ class ExecShape:
     #: Lowercased hostnames of every http(s) URL in the command.
     url_hosts: list[str] = field(default_factory=list)
     segments: list[ExecSegment] = field(default_factory=list)
+    #: Heads written as a **path** rather than a bare name, as written:
+    #: ``./ls``, ``bin/ls``, ``../ls``, ``~/ls``, ``/usr/bin/ls``.
+    #:
+    #: `heads` is the basename, lowercased, which is right for a review rule —
+    #: a rule hunting `exec:curl` should catch `/usr/bin/curl` — and exactly
+    #: backwards for an allow rule. `/usr/bin/ls` is the system `ls`; `./ls`
+    #: is a file in the workspace that the agent may have written a moment
+    #: ago, and both arrive at the matcher as `ls`. Every allow family
+    #: admitted `./ls -la`, `./cat ./notes.md` and `./find . -name x`.
+    #:
+    #: This is the third field to exist for that reason. `privileged` and
+    #: `env_assignments` are both here because stripping that is correct for a
+    #: review rule destroys something only a fail-open rule needs — `sudo cat`
+    #: and `cat` have identical heads, `LD_PRELOAD=x ls` and `ls` have
+    #: identical everything. A path-qualified head is the same shape a third
+    #: time, and like the other two it is enforced by the compiler rather than
+    #: left to an author to remember.
+    head_paths: list[str] = field(default_factory=list)
     #: Each segment as ``head arg1 arg2 …``, one per line — the **parsed**
     #: command, matchable from a rule.
     #:
@@ -273,6 +291,7 @@ class ExecShape:
             "paths": [p.to_dict() for p in self.paths],
             "url_hosts": list(self.url_hosts),
             "segments": [s.to_dict() for s in self.segments],
+            "head_paths": list(self.head_paths),
             "argv": self.argv,
         }
 
@@ -340,11 +359,18 @@ def derive_exec_shape(command: str | None) -> ExecShape:
 
     wrappers: list[str] = []
     assignments: list[str] = []
+    head_paths: list[str] = []
     for raw_head, raw_argv, raw_assignments in raw_segments:
         assignments.extend(raw_assignments)
         head, argv, stripped, wrapped_assignments = _strip_wrappers(raw_head, raw_argv)
         wrappers.extend(stripped)
         assignments.extend(wrapped_assignments)
+        # Record the head *as written* before the basename erases it. See
+        # `head_paths`: `./ls` and `ls` are the same to every review rule and
+        # must not be to an allow rule.
+        written = _unquote(head)
+        if "/" in written:
+            head_paths.append(written)
         head = _basename(head)
         if not head:
             continue
@@ -357,6 +383,7 @@ def derive_exec_shape(command: str | None) -> ExecShape:
         if _segment_is_inline_eval(head, argv):
             shape.inline_eval = True
 
+    shape.head_paths = _dedupe(head_paths)
     shape.wrappers = _dedupe(wrappers)
     shape.env_assignments = _dedupe(assignments)
     shape.privileged = any(w in PRIVILEGE_WRAPPERS for w in shape.wrappers)
