@@ -23,7 +23,11 @@ from sentrook.rules.models import (
     SequenceSlot,
     SequenceWithGapCondition,
 )
-from sentrook.sanitize.sensitive_paths import binary_alternation, load_sensitive_paths
+from sentrook.sanitize.sensitive_paths import (
+    binary_alternation,
+    load_sensitive_paths,
+    unsafe_argv_fragment,
+)
 
 #: Prefix under which a *condition kind* is reported alongside `args_match`
 #: keys, so `REQUIRED_ALLOW_CONSTRAINTS` can name one. Distinct from a bare
@@ -104,6 +108,11 @@ ARGS_MATCH_MACROS: dict[str, Any] = {
     "auth_store_path": lambda: load_sensitive_paths().auth_store.fragment,
     "credential_store_path": lambda: load_sensitive_paths().credential_store.fragment,
     "reading_head": lambda: binary_alternation(load_sensitive_paths().reading_binaries),
+    # Phase 3b. The allow families' head vocabulary and the flags every
+    # family refuses. Both are the fail-open half of the library, so they
+    # bind to the canonical YAML rather than to eight hand-pasted copies.
+    "safe_exec_head": lambda: binary_alternation(load_sensitive_paths().safe_exec_binaries),
+    "unsafe_argv_flag": lambda: unsafe_argv_fragment(load_sensitive_paths().unsafe_argv_flags),
     "credential_bearing_config_path": (
         lambda: load_sensitive_paths().credential_bearing_config.fragment
     ),

@@ -742,3 +742,81 @@ def test_the_serve_config_default_is_the_one_the_sync_loop_reads() -> None:
     from sentrook.serve.config import DEFAULT_LIBRARY_SYNC_INTERVAL_SEC, ServeConfig
 
     assert ServeConfig().library_sync_interval_sec == DEFAULT_LIBRARY_SYNC_INTERVAL_SEC
+
+
+# --------------------------------------------------------------------------
+# Phase 3b — the allow families' shared vocabulary
+
+
+@pytest.mark.parametrize(
+    ("command", "allowed"),
+    [
+        # Short flags mean different things to different heads. A global
+        # alternation over `-i`, `-e` and `-m` would refuse most of the search
+        # family in order to catch three indirection flags, so they are scoped
+        # to the head with the proximity idiom.
+        pytest.param("grep -i pattern .", True, id="grep -i is case-insensitive"),
+        pytest.param("grep -e foo -e bar .", True, id="grep -e is a pattern"),
+        pytest.param("grep -m 5 x .", True, id="grep -m is a max count"),
+        pytest.param("sort -u a", True, id="sort -u is unique"),
+        pytest.param("tail -n 5 log", True, id="tail -n is a line count"),
+        pytest.param("find . -name x", True, id="find -name is not an action"),
+        pytest.param("ls -la | grep -i foo", True, id="composition across families"),
+        # ...and the same letters after the head that makes them indirection.
+        pytest.param("grep -f ./pat.txt .", False, id="grep -f reads patterns"),
+        pytest.param("sed -i s/a/b/ f", False, id="sed -i edits in place"),
+        pytest.param("sed -e 1e/bin/sh f", False, id="sed -e can carry `e`"),
+        pytest.param("file -f ./names", False, id="file -f is --files-from"),
+        pytest.param("sort -m a b", False, id="sort -m is GTFOBins file-read"),
+        pytest.param("tail -f log", False, id="tail -f is not bounded"),
+        pytest.param("fd -x rm", False, id="fd -x is --exec"),
+        # Long flags and find's actions are unambiguous and matched globally.
+        pytest.param("wc --files0-from f", False, id="a file of filenames"),
+        pytest.param("find . -delete", False, id="find -delete"),
+        pytest.param("find . -exec rm {} ;", False, id="find -exec"),
+        pytest.param("rg --pre /tmp/x pat .", False, id="rg --pre runs a binary"),
+        pytest.param("git --exec-path=. x", False, id="git --exec-path"),
+    ],
+)
+def test_the_unsafe_argv_flag_macro_scopes_short_flags_to_their_head(
+    command: str, allowed: bool
+) -> None:
+    """`${unsafe_argv_flag}` is the safety property of eight fail-open rules.
+
+    It lives in `sensitive_paths.yaml` rather than in the rules for the reason
+    §1.3 exists: eight allow rules each carrying a copy of this list, kept in
+    step by a comment, is the shape that produced five divergent copies of the
+    sensitive-path list.
+
+    It is global rather than per-family because heads compose. `find . -name
+    '*.md' | head -20` is one command with two families' heads, so any rule
+    that can admit a command containing `find` has to refuse `-delete`,
+    whether or not `find` is the family it is named for.
+    """
+    import re as _re
+
+    from sentrook.rules.compiler import ARGS_MATCH_MACROS
+
+    pattern = _re.compile(r"\A(?!.*" + ARGS_MATCH_MACROS["unsafe_argv_flag"]() + ")", _re.I | _re.S)
+    assert bool(pattern.search(command)) is allowed
+
+
+def test_the_safe_exec_head_macro_is_the_union_of_the_families() -> None:
+    """One vocabulary, not eight.
+
+    A rule requiring every head to be in *its own* family can never admit
+    `find . -name '*.md' | head -20`, and that pipeline shape is most of what
+    the corpus's benign `find` rows actually are. Each family still requires
+    one head of its own, which is what keeps attribution and makes withdrawing
+    a single family through the kill switch mean something.
+    """
+    from sentrook.rules.compiler import ARGS_MATCH_MACROS
+    from sentrook.sanitize.sensitive_paths import load_sensitive_paths
+
+    heads = load_sensitive_paths().safe_exec_binaries
+    for expected in ("ls", "cat", "grep", "find", "sed", "whoami", "git", "npm"):
+        assert expected in heads, f"{expected} missing from the allow families' vocabulary"
+    # `cd` rebases path context, so per-segment reasoning about what a later
+    # head touches is unsound. §3b drops it from every family.
+    assert "cd" not in heads
+    assert ARGS_MATCH_MACROS["safe_exec_head"]().startswith("(?:")

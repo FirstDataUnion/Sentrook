@@ -331,3 +331,144 @@ package_mgmt_binaries:
   - apk
   - brew
   - pacman
+
+# ---------------------------------------------------------------------------
+# Phase 3b — the allow families (AIRA-9NN)
+#
+# These two lists are the fail-**open** half of the library, so they live here
+# rather than in the rules for the reason §1.3 exists: eight allow rules each
+# carrying its own copy of a safety list, kept in step by a comment, is the
+# shape that produced five divergent copies of the sensitive-path list.
+# Adding a flag here reaches every family with no rule edit.
+
+# Every head an allow family may admit. The union, deliberately: real commands
+# compose heads across families — `find . -name '*.md' | head -20`, `ls -la |
+# grep foo`, `cat x | wc -l` — and a rule that requires every head to be in
+# *its own* family can never admit them. Each family additionally requires one
+# head of its own (the `some` form), which is what keeps attribution and makes
+# withdrawing a single family meaningful.
+safe_exec_binaries:
+  # listing / navigation (AIRA-901) — `cd` is deliberately absent
+  - ls
+  - pwd
+  - tree
+  - du
+  - df
+  # reading (AIRA-902)
+  - cat
+  - head
+  - tail
+  - less
+  - more
+  - wc
+  - nl
+  - stat
+  - file
+  # searching (AIRA-903)
+  - grep
+  - egrep
+  - fgrep
+  - rg
+  # locating (AIRA-904)
+  - find
+  - fd
+  # text shaping (AIRA-905)
+  - sed
+  - awk
+  - sort
+  - uniq
+  - cut
+  - tr
+  # identity / environment (AIRA-906)
+  - which
+  - whoami
+  - id
+  - date
+  - uname
+  - hostname
+  - echo
+  - printf
+  - "true"
+  - "false"
+  # version control, read-only (AIRA-907)
+  - git
+  # package managers, read-only (AIRA-908)
+  - pip
+  - pip3
+  - npm
+  - uv
+
+# Flags that make a command read filenames, patterns or a program from a
+# *file*, or run a binary, rather than doing what its head says. Every path
+# defence in the design reads argv — `_shape.path_roles`, the `paths:`
+# condition, the plugin's skeleton matching — so `wc --files0-from ./list.txt`
+# looks like a bounded read of one workspace file while it reports the
+# contents of every path that file names.
+#
+# Global rather than per-family, because heads compose: any rule that can
+# admit a command containing `find` has to refuse `-delete`, whether or not
+# `find` is the family it is named for.
+unsafe_argv_flags:
+  # matched as `--name`, on a word boundary
+  long:
+    - files0-from      # wc, sort, find — a NUL-separated list of paths
+    - files-from       # file
+    - magic-file       # file — loads a magic database as a program
+    - file             # grep/sed/awk patterns-or-program from a file
+    - pre              # rg — runs a preprocessor binary per file
+    - pre-glob         # rg — scopes --pre, meaningless without it, refused with it
+    - hostname-bin     # rg — runs a binary to resolve the hostname
+    - search-zip       # rg — decompresses through external tools
+    - exec             # fd
+    - exec-batch       # fd
+    - ext-diff         # git — runs the configured external diff driver
+    - exec-path        # git — relocates the helper directory (GTFOBins shell)
+    - upload-pack      # git — names a binary to run on the far side
+    - receive-pack     # git
+    - editor           # pip config --editor '/bin/sh -s' edit (GTFOBins shell)
+    - unsafe-paths     # git apply
+  # Short flags mean different things to different heads, so they are scoped
+  # to the head rather than matched globally: `grep -i` (case-insensitive),
+  # `grep -e` (pattern) and `grep -m 5` (max count) are among the commonest
+  # things anyone types, while `file -m`, `sed -e` and `sort -m` are the
+  # indirection this list exists to refuse. A global short-flag alternation
+  # would have refused most of the search family to catch three of them.
+  #
+  # Matched with the proximity idiom AIRA-083 uses: the head, then the flag,
+  # with no command separator between them. Distance is not the
+  # discriminator — a separator is — so `sed -n p && grep -i x` keeps working
+  # while `sed -i s/a/b/` does not.
+  scoped:
+    - head: file
+      flags: [f, m]          # --files-from, --magic-file by their short names
+    - head: sort
+      flags: [m]             # merge: GTFOBins' file-read entry for sort
+    - head: date
+      flags: [f]             # reads each line of an arbitrary file
+    - head: tail
+      flags: [f]             # follow is not a bounded read
+    - head: sed
+      flags: [i, e, f]       # in-place; -e/-f can carry the `e` and `w` commands
+    - head: awk
+      flags: [f]             # program from a file, including system()
+    - head: grep
+      flags: [f]             # patterns from a file
+    - head: rg
+      flags: [z, f]          # --search-zip, patterns from a file
+    - head: fd
+      flags: [x, X]          # --exec, --exec-batch
+    - head: wc
+      flags: [f]             # guards --files0-from's short spelling if one appears
+  # find's action predicates, matched as `-name` on a word boundary. Not
+  # visible in `_shape.heads`, `_shape.sinks` or `paths:`, because all three
+  # read the parse and these live inside one simple command's argv.
+  find_actions:
+    - exec
+    - execdir
+    - ok
+    - okdir
+    - delete
+    - fls
+    - fprint
+    - fprint0
+    - fprintf
