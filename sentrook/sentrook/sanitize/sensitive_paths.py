@@ -239,9 +239,9 @@ def unsafe_argv_fragment(flags: dict[str, tuple[str, ...]]) -> str:
         parts.append(
             r"\b"
             + re.escape(head)
-            + r"\b[^;&|\n]{0,80}?[\s]-(?:"
+            + r"\b[^;&|\n]{0,80}?[\s]-[a-z]*(?:"
             + "|".join(re.escape(f) for f in sorted(names))
-            + r")(?:[\s=]|\Z)"
+            + r")"
         )
     for entry in flags.get("verb_gated", ()):
         head = entry["head"] if isinstance(entry, dict) else entry[0]

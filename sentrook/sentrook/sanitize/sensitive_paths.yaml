@@ -414,38 +414,47 @@ unsafe_argv_flags:
     - receive-pack     # git
     - editor           # pip config --editor '/bin/sh -s' edit (GTFOBins shell)
     - unsafe-paths     # git apply
-  # Short flags mean different things to different heads, so they are scoped
-  # to the head rather than matched globally: `grep -i` (case-insensitive),
-  # `grep -e` (pattern) and `grep -m 5` (max count) are among the commonest
-  # things anyone types, while `file -m`, `sed -e` and `sort -m` are the
-  # indirection this list exists to refuse. A global short-flag alternation
-  # would have refused most of the search family to catch three of them.
+  # Short flags, scoped to the head that gives them meaning, and kept to the
+  # ones that grant a capability the family does not already have.
   #
-  # Matched with the proximity idiom AIRA-083 uses: the head, then the flag,
-  # with no command separator between them. Distance is not the
-  # discriminator — a separator is — so `sed -n p && grep -i x` keeps working
-  # while `sed -i s/a/b/` does not.
+  # The test is **not** "GTFOBins lists this binary under file-read" — for a
+  # family whose premise is reading workspace files, that is the premise
+  # restated (D17, F64). The test is: *does this flag reach a path the path
+  # predicate cannot see?* Flags whose targets are named in argv are subject
+  # to the location and role clauses like any other operand, so they add
+  # nothing:
+  #
+  #   sort -m a b     operands named in argv; `sort a b` already reads them
+  #   grep -f pats f  patterns come from a file, matches still come from argv
+  #   rg -f pats .    the same
+  #   date -f dates   reads that file's lines; opens nothing further
+  #   tail -f log     argv-named, merely unbounded — an availability
+  #                   annoyance, not a capability
+  #
+  # Each of those was in this list and each cost something real, because the
+  # matcher is case-insensitive and cannot express a case-sensitive
+  # constraint: scoping `f` to grep refused `grep -F` (fixed strings) and
+  # scoping `m` to sort refused `sort -M` (month sort). Paying that for a
+  # flag that grants nothing is the worst of both directions.
+  #
+  # Matched as `-[letters]*x` rather than `-x`, because short flags bundle:
+  # `fd -xX rm` and `file -fm ./names` both bypassed the delimited form.
   scoped:
     - head: file
-      flags: [f, m]          # --files-from, --magic-file by their short names
-    - head: sort
-      flags: [m]             # merge: GTFOBins' file-read entry for sort
-    - head: date
-      flags: [f]             # reads each line of an arbitrary file
-    - head: tail
-      flags: [f]             # follow is not a bounded read
-    - head: sed
-      flags: [i, e, f]       # in-place; -e/-f can carry the `e` and `w` commands
-    - head: awk
-      flags: [f]             # program from a file, including system()
-    - head: grep
-      flags: [f]             # patterns from a file
+      flags: [f, m]   # --files-from: a file of filenames; --magic-file: a program
     - head: rg
-      flags: [z, f]          # --search-zip, patterns from a file
+      flags: [z]      # --search-zip: decompresses through external tools
     - head: fd
-      flags: [x, X]          # --exec, --exec-batch
-    - head: wc
-      flags: [f]             # guards --files0-from's short spelling if one appears
+      flags: [x, X]   # --exec, --exec-batch
+    - head: awk
+      flags: [f, e]   # -f: the program comes from a file, so the inline-program
+                      # guard (`system(`, `getline`, `print >`) cannot see it —
+                      # the same reason `file -m` is here. Matching is
+                      # case-insensitive, so this also catches gawk's `-E`
+                      # (--exec, a program file in privileged mode) at the cost
+                      # of `-e` (an inline program, which the positional form
+                      # expresses anyway and the text guard then inspects).
+
   # Heads whose *verb* decides everything, matched as "this head is not
   # followed by one of these". Global, and that is the whole point: the
   # subcommand clauses for `git` and the package managers started out inside

@@ -238,6 +238,24 @@ class ExecShape:
     #: Lowercased hostnames of every http(s) URL in the command.
     url_hosts: list[str] = field(default_factory=list)
     segments: list[ExecSegment] = field(default_factory=list)
+    #: Each segment as ``head arg1 arg2 …``, one per line — the **parsed**
+    #: command, matchable from a rule.
+    #:
+    #: `_shape.segments` is refused at compile because it is a list of objects
+    #: that stringifies to ``""``; this is the same information in the one
+    #: form a rule can read. It exists because an argv guard written against
+    #: the raw ``command`` text and a head clause written against the parse
+    #: **disagree about what the command is**, and the gap is a bypass:
+    #:
+    #:     "git" push --force     heads ['git'], text has no `git ` to match
+    #:     find . -name x "-delete"   the `"` sits where a delimiter was expected
+    #:
+    #: Both were admitted by the allow families until the guards moved here.
+    #: The tokenizer resolves quoting, so there is nothing for a regex to be
+    #: tricked by; what it does *not* normalise is a head split across quotes
+    #: (``g'i't``), which keeps that spelling in `heads` and is therefore
+    #: refused by the every-head clause instead.
+    argv: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -255,6 +273,7 @@ class ExecShape:
             "paths": [p.to_dict() for p in self.paths],
             "url_hosts": list(self.url_hosts),
             "segments": [s.to_dict() for s in self.segments],
+            "argv": self.argv,
         }
 
 
@@ -352,6 +371,10 @@ def derive_exec_shape(command: str | None) -> ExecShape:
     shape.path_roles = derive_path_roles(command)
     shape.paths = derive_paths(command, [s.argv for s in shape.segments], shape.path_roles)
     shape.path_classes = roll_up_path_classes(shape.path_roles, shape.paths)
+    # Head first, because a verb gate asks "which git is this" and the head is
+    # not in `ExecSegment.argv`. Newline-joined per segment, the same
+    # convention as every other list-shaped shape field.
+    shape.argv = "\n".join(" ".join([seg.head, *seg.argv]).strip() for seg in shape.segments)
     shape.url_hosts = derive_url_hosts(command)
     if not shape.parse_ok:
         # Heads stay for diagnostics; segments do not, so no allow rule can build

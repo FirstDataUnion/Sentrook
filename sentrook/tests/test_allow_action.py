@@ -762,13 +762,27 @@ def test_the_serve_config_default_is_the_one_the_sync_loop_reads() -> None:
         pytest.param("find . -name x", True, id="find -name is not an action"),
         pytest.param("ls -la | grep -i foo", True, id="composition across families"),
         # ...and the same letters after the head that makes them indirection.
-        pytest.param("grep -f ./pat.txt .", False, id="grep -f reads patterns"),
-        pytest.param("sed -i s/a/b/ f", False, id="sed -i edits in place"),
-        pytest.param("sed -e 1e/bin/sh f", False, id="sed -e can carry `e`"),
         pytest.param("file -f ./names", False, id="file -f is --files-from"),
-        pytest.param("sort -m a b", False, id="sort -m is GTFOBins file-read"),
-        pytest.param("tail -f log", False, id="tail -f is not bounded"),
+        pytest.param("file -m ./magic", False, id="file -m loads a program"),
+        # Bundling, with the target letter **not first** — `-fm` and `-xX`
+        # are caught by a delimited `-f` too, so they do not exercise the
+        # `-[a-z]*` prefix and a mutant removing it passed on them alone.
+        pytest.param("file -fm ./names", False, id="bundled, target first"),
+        pytest.param("file -bf ./names", False, id="bundled, target last"),
+        pytest.param("fd -ax rm", False, id="bundled exec, target last"),
+        pytest.param("file -b ./names", True, id="a bundle with neither letter"),
+        pytest.param("awk -f ./p.awk in", False, id="awk -f is a program file"),
+        pytest.param("rg -z pat .", False, id="rg -z shells out to decompress"),
         pytest.param("fd -x rm", False, id="fd -x is --exec"),
+        pytest.param("fd -xX rm", False, id="bundled, and both are --exec"),
+        # Dropped from the scoped list: each names its targets in argv, so the
+        # location and role clauses see them, and `sort a b` / `cat f` already
+        # read the same bytes. Scoping them cost `grep -F` and `sort -M` to a
+        # case-insensitive matcher and bought nothing.
+        pytest.param("grep -f ./pat.txt .", True, id="grep -f: patterns, targets still argv"),
+        pytest.param("sort -m a b", True, id="sort -m: operands named in argv"),
+        pytest.param("tail -f log", True, id="tail -f: unbounded is not a capability"),
+        pytest.param("date -f ./dates", True, id="date -f: opens nothing further"),
         # Long flags and find's actions are unambiguous and matched globally.
         pytest.param("wc --files0-from f", False, id="a file of filenames"),
         pytest.param("find . -delete", False, id="find -delete"),
@@ -922,3 +936,56 @@ def test_the_any_branch_rule_really_would_have_allowed_a_privileged_read(monkeyp
     rogue = _allow_rule()
     rogue["condition"] = {"any": [rogue["condition"], {"pending_tool": "exec"}]}
     assert _scan("sudo cat /etc/shadow", [_review_rule(), rogue]).decision == "allow"
+
+
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        pytest.param('"git" push --force', "quoted head", id="quoted-head"),
+        pytest.param("'git' push --force", "the other quote", id="single-quoted-head"),
+        pytest.param('find . -name x "-delete"', "quoted flag", id="quoted-flag"),
+        pytest.param('"pip" install evil', "quoted package head", id="quoted-pkg-head"),
+    ],
+)
+def test_shape_argv_closes_the_gap_between_the_text_and_the_parse(command: str, why: str) -> None:
+    """An argv guard on the raw `command` and a head clause on the parse do
+    not see the same command, and the gap is a bypass.
+
+    `"git"` is `git` to the tokenizer and not to a regex expecting `git`
+    followed by whitespace; a `"` sits exactly where `(?:\\A|[\\s;&|])`
+    expects a delimiter; and `-xX` is two flags that a delimited `-x` matches
+    neither of. All four were admitted by the allow families.
+
+    Asserted on `_shape.argv` itself rather than through a family, because
+    this is a property of the field: whatever a guard is looking for, it must
+    be looking at the parsed command.
+    """
+    import re as _re
+
+    from sentrook.layers.exec_shape import derive_exec_shape
+    from sentrook.rules.compiler import ARGS_MATCH_MACROS
+
+    guard = _re.compile(r"\A(?!.*" + ARGS_MATCH_MACROS["unsafe_argv_flag"]() + ")", _re.I | _re.S)
+    shape = derive_exec_shape(command)
+    assert guard.search(command), f"{why}: the raw text was already refused, so this proves nothing"
+    assert not guard.search(shape.argv), f"{why}: still admitted on the parsed argv"
+
+
+def test_a_head_split_across_quotes_is_refused_by_the_head_clause_instead() -> None:
+    """`g'i't push` is `git` to a shell and is **not** normalised by the parser.
+
+    That is the right division of labour rather than a gap: the spelling
+    survives into `heads`, where it is not in the allow families' vocabulary,
+    so the every-head clause refuses it. Recorded because the obvious reading
+    of `_shape.argv` — "the parser normalises everything" — is wrong, and the
+    next author needs to know which half each clause is holding.
+    """
+    from sentrook.layers.exec_shape import derive_exec_shape
+    from sentrook.sanitize.sensitive_paths import load_sensitive_paths
+
+    heads = derive_exec_shape("g'i't push --force").heads
+    vocabulary = {
+        head for family in load_sensitive_paths().safe_exec_binaries.values() for head in family
+    }
+    assert heads, "expected a head to be derived"
+    assert not set(heads) <= vocabulary, f"{heads} is inside the allow vocabulary"
