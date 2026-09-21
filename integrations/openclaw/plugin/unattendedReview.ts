@@ -16,6 +16,7 @@ import {
   sensitivityCmd,
   sensitivitySession,
 } from "./dashboardSlashHints.ts";
+import { isHardReview } from "./sessionPolicy.ts";
 
 /** OpenClaw native-tool / plugin-approval surface gap for scheduled runs. */
 export const OPENCLAW_UNATTENDED_PLUGIN_APPROVAL_ISSUE =
@@ -32,6 +33,18 @@ export function unattendedReviewBlockReason(opts: {
   eventId?: string;
   sessionKey?: string | null;
   command?: string;
+  /**
+   * `hard` when the review cannot be waived by any blanket session policy.
+   *
+   * Without this the message offered "raise the unattended floor so this
+   * severity auto-approves" for **every** block, and that stopped being true
+   * the moment `review_authority` reached the plugin: a hard review declines
+   * the floor, the session floor, allow-all and quiet alike. Telling an
+   * operator to raise a floor that cannot help is worse than saying nothing —
+   * they change a global setting, the job blocks again, and the setting stays
+   * changed.
+   */
+  reviewAuthority?: string;
 }): string {
   const id = opts.eventId?.trim();
   const sessionKey = opts.sessionKey?.trim();
@@ -41,6 +54,7 @@ export function unattendedReviewBlockReason(opts: {
     ? `openclaw sentrook allowlist add ${id}`
     : "openclaw sentrook allowlist add <id>";
   const inspect = id ? `/sentrook history ${id}` : "/sentrook history";
+  const hard = isHardReview(opts.reviewAuthority);
   const sessionFloor = sessionKey
     ? `\n       ${sensitivitySession(sessionKey, "unattended", "warning")}`
     : "";
@@ -61,9 +75,13 @@ export function unattendedReviewBlockReason(opts: {
     "Pipes and curl|bash cannot be allowlisted. A curl/wget to a specific host and path can — a different URL will not match.",
     "",
     "Other options:",
-    `  2. Raise the unattended floor so this severity auto-approves:`,
-    `       ${sensitivityCmd("unattended", "warning")}${sessionFloor}`,
-    "  3. Replay the same command in an interactive chat and choose Allow always (same allowlist as 1).",
+    hard
+      ? "  2. Not available for this rule. It is a hard review: no sensitivity floor, session floor, allow-all or quiet setting will approve it. The allowlist above is the only way to let this exact command run unattended, and that is deliberate — it is a decision about one command rather than a blanket posture."
+      : `  2. Raise the unattended floor so this severity auto-approves:`,
+    hard ? undefined : `       ${sensitivityCmd("unattended", "warning")}${sessionFloor}`,
+    hard
+      ? "  3. Replay the same command in an interactive chat and choose Allow always (same allowlist as 1)."
+      : "  3. Replay the same command in an interactive chat and choose Allow always (same allowlist as 1).",
     "",
     "Allow-all and quiet do not apply to cron or heartbeat.",
     `Inspect: ${inspect}`,

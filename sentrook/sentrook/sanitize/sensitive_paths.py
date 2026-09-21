@@ -15,6 +15,7 @@ to the YAML reaches all four without a second edit.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
@@ -91,8 +92,12 @@ class SensitivePathRules:
 
     version: int
     sensitive: PathList
+    credential_store: PathList
+    credential_bearing_config: PathList
+    auth_store: PathList
     agent_config: PathList
     persistence: PathList
+    reading_binaries: frozenset[str]
     shell_binaries: frozenset[str]
     interpreter_binaries: frozenset[str]
     fetch_binaries: frozenset[str]
@@ -114,16 +119,59 @@ def _path_list(name: str, raw: dict[str, Any] | None) -> PathList:
     )
 
 
+def _composed(name: str, raw: dict[str, Any] | None, groups: dict[str, PathList]) -> PathList:
+    """A group defined as the union of others, so no entry is written twice.
+
+    `sensitive` is `credential_store | credential_bearing_config`. The two
+    halves exist because they want different rule *authority* — a per-rule
+    property, so they have to be separately nameable — while every consumer of
+    `sensitive` (`fingerprint.path_class`, `signal_excerpt`,
+    `exec_shape.path_roles`, `${sensitive_path}`) must go on seeing one list.
+
+    Listing the union by hand instead would be the `# keep in sync` comment
+    §1.3 was written to delete, one level up.
+    """
+    members = (raw or {}).get("includes")
+    if not members:
+        # Written flat, which stays valid: composition is an option, not a
+        # requirement. `test_a_bad_pattern_fails_at_load_not_at_match` writes a
+        # minimal flat file and must still fail on the *pattern*, not on a
+        # missing key — a loader that raises `KeyError: 'includes'` there is
+        # failing at load for the wrong reason, which is how a real bad pattern
+        # would get misdiagnosed.
+        return _path_list(name, raw)
+    included = [groups[member] for member in members]
+    return PathList(
+        name=name,
+        patterns=tuple(p for group in included for p in group.patterns),
+        basenames=tuple(b for group in included for b in group.basenames),
+    )
+
+
 @lru_cache(maxsize=1)
 def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
     """Load and compile the canonical lists (cached)."""
     source = path or SENSITIVE_PATHS_PATH
     raw = yaml.safe_load(source.read_text(encoding="utf-8"))
+    leaves = {
+        name: _path_list(name, raw.get(name))
+        for name in (
+            "credential_store",
+            "credential_bearing_config",
+            "auth_store",
+            "agent_config",
+            "persistence",
+        )
+    }
     rules = SensitivePathRules(
         version=int(raw["version"]),
-        sensitive=_path_list("sensitive", raw.get("sensitive")),
-        agent_config=_path_list("agent_config", raw.get("agent_config")),
-        persistence=_path_list("persistence", raw.get("persistence")),
+        sensitive=_composed("sensitive", raw.get("sensitive"), leaves),
+        credential_store=leaves["credential_store"],
+        credential_bearing_config=leaves["credential_bearing_config"],
+        auth_store=leaves["auth_store"],
+        agent_config=leaves["agent_config"],
+        persistence=leaves["persistence"],
+        reading_binaries=frozenset(raw.get("reading_binaries", ())),
         shell_binaries=frozenset(raw.get("shell_binaries", ())),
         interpreter_binaries=frozenset(raw.get("interpreter_binaries", ())),
         fetch_binaries=frozenset(raw.get("fetch_binaries", ())),
@@ -131,7 +179,14 @@ def load_sensitive_paths(path: Path | None = None) -> SensitivePathRules:
     )
     # Compile every group once here rather than lazily at first match: a bad
     # pattern must fail at load, not on the scan that happens to reach it (F20).
-    for group in (rules.sensitive, rules.agent_config, rules.persistence):
+    for group in (
+        rules.sensitive,
+        rules.credential_store,
+        rules.credential_bearing_config,
+        rules.auth_store,
+        rules.agent_config,
+        rules.persistence,
+    ):
         group.regex  # noqa: B018 - compilation is the point
     return rules
 
@@ -143,3 +198,13 @@ def sensitive_path_fragment() -> str:
 
 def sensitive_path_regex() -> re.Pattern[str]:
     return load_sensitive_paths().sensitive.regex
+
+
+def binary_alternation(names: Iterable[str]) -> str:
+    """Regex *source* for a set of binary names — embeddable, never anchored.
+
+    Sorted so the fragment is stable across runs (the YAML is a list, the model
+    holds a frozenset), and escaped because a binary name may contain a `.` or
+    a `+`. Non-capturing, so it can sit mid-pattern without renumbering groups.
+    """
+    return "(?:" + "|".join(re.escape(name) for name in sorted(names)) + ")"

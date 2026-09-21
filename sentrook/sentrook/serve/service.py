@@ -81,23 +81,40 @@ class ScanService:
         return result, record
 
     def reload(self) -> None:
-        """Reload rules, corpus, and the L3 scorer from configured paths."""
+        """Reload rules, corpus, and the L3 scorer from configured paths.
+
+        **All or nothing.** Everything is built into locals first and published
+        under the lock only once every step has succeeded. It used to assign
+        `self.rules` before the corpus load that can raise, so a bundle whose
+        rules parsed and whose corpus did not left the service running the new
+        rules with the old corpus — while the caller saw an exception and the
+        log said the reload failed. A rollback bundle removing a hard rule
+        applied its removal that way, which is the fail-open the operator was
+        being told had not happened.
+        """
         from sentrook.serve.bundle import resolve_bundle_version
 
-        with self._lock:
-            self.rules = load_rules(self.config.rules_path)
-            corpus_dir = self.config.resolved_corpus_dir()
-            self.corpus = (
-                load_corpus(
-                    corpus_dir,
-                    personal_corpus_dir=self.config.resolved_personal_corpus_dir(),
-                )
-                if self.scanner_config.l3_policy != L3Policy.OFF
-                else {}
+        rules = load_rules(self.config.rules_path)
+        corpus_dir = self.config.resolved_corpus_dir()
+        corpus = (
+            load_corpus(
+                corpus_dir,
+                personal_corpus_dir=self.config.resolved_personal_corpus_dir(),
             )
-            self.scorer = make_scorer(self.scanner_config)
-            self.config.bundle_version = resolve_bundle_version(self.config.rules_path)
-            if self.scorer is not None:
-                for rule_corpus in self.corpus.values():
-                    self.scorer.warm_corpus(rule_corpus.pos)
-                    self.scorer.warm_corpus(rule_corpus.neg)
+            if self.scanner_config.l3_policy != L3Policy.OFF
+            else {}
+        )
+        scorer = make_scorer(self.scanner_config)
+        bundle_version = resolve_bundle_version(self.config.rules_path)
+        if scorer is not None:
+            # Warm before publishing: `warm_corpus` loads the encoder, so it is
+            # the step most likely to fail, and it must not fail half-applied.
+            for rule_corpus in corpus.values():
+                scorer.warm_corpus(rule_corpus.pos)
+                scorer.warm_corpus(rule_corpus.neg)
+
+        with self._lock:
+            self.rules = rules
+            self.corpus = corpus
+            self.scorer = scorer
+            self.config.bundle_version = bundle_version

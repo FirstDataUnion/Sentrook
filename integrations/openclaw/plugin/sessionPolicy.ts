@@ -3,8 +3,19 @@
  * persisted attended / unattended severity floors (legacy ``lenient`` = info).
  * Never overrides block or scan-error. Allow-all and quiet stay attended-only
  * and only apply when that session’s attended floor is still Default.
- * Hard L2 reviews are included — the hosted scan already finished; if it still
- * returned review, the matching floor applies.
+ *
+ * **A hard-authority review is never waived by a blanket policy.** The engine
+ * now reports ``review_authority`` alongside ``review_severity``; when it is
+ * ``hard``, the floor, the session floor, allow-all and quiet all decline to
+ * skip. This is the property the library has documented for three phases
+ * ("hard authority exists so an operator's lenient floor cannot waive a rule")
+ * and did not have: authority was never on the wire, so the floor — keyed on
+ * severity alone — waived hard and soft reviews alike.
+ *
+ * An explicit **allowlist** entry still applies. It is a per-skeleton decision
+ * an operator made about one command, not a blanket posture, and it is checked
+ * before any of this; a hard rule that keeps firing on a skeleton the operator
+ * has allowlisted is an argument about the rule, not about the floor.
  */
 
 export const QUIET_CAP_MS = 8 * 60 * 60 * 1000;
@@ -190,6 +201,38 @@ export function formatDuration(ms: number): string {
   return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
 }
 
+/** ``hard`` exactly; anything else (including an absent field) is soft. */
+export function isHardReview(reviewAuthority: string | undefined): boolean {
+  return reviewAuthority === "hard";
+}
+
+/**
+ * The three scan-response facts ``resolveReviewSkip`` needs, taken together.
+ *
+ * They arrive as one object because they left as one. Passing them as three
+ * loose arguments, which is how this started, made ``reviewAuthority`` a line
+ * a caller could simply not write — and a caller who did not write it disabled
+ * the hard-review guard entirely while every test in this file stayed green.
+ * That is the same failure as F30 on the engine side: a safety property that
+ * exists in one module and is quietly not wired in the other. Here it is not
+ * expressible.
+ */
+export function scanReviewFacts(scan: {
+  decision: "allow" | "review" | "block";
+  review_severity?: string;
+  review_authority?: string;
+}): {
+  hostedDecision: "allow" | "review" | "block";
+  reviewSeverity: string | undefined;
+  reviewAuthority: string | undefined;
+} {
+  return {
+    hostedDecision: scan.decision,
+    reviewSeverity: scan.review_severity,
+    reviewAuthority: scan.review_authority,
+  };
+}
+
 export function resolveReviewSkip(input: {
   hostedDecision: "allow" | "review" | "block";
   unattended: boolean;
@@ -202,11 +245,19 @@ export function resolveReviewSkip(input: {
   /** Set (not Default) session attended floor. */
   sessionAttended?: Sensitivity | null;
   reviewSeverity?: string;
+  /**
+   * ``hard`` when any surviving review is hard-authority. Absent from an
+   * engine that predates the field, which reads as ``soft`` — the behaviour
+   * this had before, so an old server degrades to the old semantics rather
+   * than to a prompt on every review.
+   */
+  reviewAuthority?: string;
   allowlistHit: boolean;
   nowMs?: number;
 }): ReviewSkipReason | undefined {
   if (input.hostedDecision !== "review") return undefined;
   if (input.allowlistHit) return "allowlist";
+  if (isHardReview(input.reviewAuthority)) return undefined;
   if (input.unattended) {
     const sessionFloor = input.sessionUnattended ?? null;
     const floor = sessionFloor ?? input.unattendedSensitivity ?? "strict";

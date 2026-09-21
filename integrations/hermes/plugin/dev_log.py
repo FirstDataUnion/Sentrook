@@ -251,6 +251,7 @@ def build_scan_dev_event(
             "review_title": scan.review_title,
             "review_description": scan.review_description,
             "review_severity": scan.review_severity,
+            "review_authority": scan.review_authority,
             "log": scrub_dev_value(scan.log),
             "error": scan.error,
             "timing": {

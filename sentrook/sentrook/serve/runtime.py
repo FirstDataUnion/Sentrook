@@ -27,6 +27,7 @@ from sentrook.serve.metrics import (
 )
 from sentrook.serve.oidc import normalize_oidc_url
 from sentrook.serve.rate_limit import MemoryTokenBucketLimiter
+from sentrook.serve.response import _review_authority
 from sentrook.serve.service import ScanService
 from sentrook.serve.stats import LatencyTracker
 
@@ -112,25 +113,42 @@ class ServeRuntime:
             sanitize_log_fields=self.config.server_sanitize_planir,
             log_content=self.config.log_content,
         )
+        # Set here rather than inside `build_log_record`, because this is where
+        # the warm rule set lives and adding a parameter to that function would
+        # be one more line a caller can forget — the shape that left the
+        # plugin's hard-review guard dead three times over.
+        if result.decision == "review":
+            record.review_authority = _review_authority(result, self.authority_by_rule_id())
         append_scan_log(
             self.config.log_path,
             record,
             log_content=self.config.log_content,
         )
         record_scan_decision(result.decision, request_ms=request_ms)
-        default_authority = self.scanner.scanner_config.default_l2_authority.value
-        authority_by_rule_id = {
-            rule.id: (
-                rule.meta.authority.value if rule.meta.authority is not None else default_authority
-            )
-            for rule in self.scanner.rules
-        }
         record_scan_rule_breakdown(
             result,
-            authority_by_rule_id=authority_by_rule_id,
-            default_authority=default_authority,
+            authority_by_rule_id=self.authority_by_rule_id(),
+            default_authority=self.default_authority(),
         )
         return result, record
+
+    def default_authority(self) -> str:
+        return self.scanner.scanner_config.default_l2_authority.value
+
+    def authority_by_rule_id(self) -> dict[str, str]:
+        """Rule id -> `soft` / `hard`, from the warm rule set.
+
+        Two consumers now: the Prometheus labels, and the scan response's
+        `review_authority` (which decides whether a plugin's session floor may
+        waive the review at all). Built from `self.scanner.rules` on each call
+        rather than cached, because `reload_from_disk` swaps the rule set under
+        a live process and a cached map would answer for the previous library.
+        """
+        default = self.default_authority()
+        return {
+            rule.id: (rule.meta.authority.value if rule.meta.authority is not None else default)
+            for rule in self.scanner.rules
+        }
 
     def reload_from_disk(self) -> None:
         """Reload rules, corpus, and the L3 scorer from configured paths."""

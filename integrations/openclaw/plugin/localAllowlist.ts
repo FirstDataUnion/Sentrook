@@ -415,6 +415,28 @@ function ruleOverlap(a: string[], b: string[]): boolean {
   return b.some((id) => set.has(id));
 }
 
+/**
+ * Every rule matching now was one the operator saw when they allowlisted this.
+ *
+ * `ruleOverlap` asks whether *any* recorded rule still matches, which is the
+ * right question while the rule set is static and the wrong one the moment a
+ * rule is added. An entry recorded when `cat ~/.ssh/id_rsa` matched only
+ * AIRA-010 kept hitting after AIRA-083 shipped — so Phase 3a's hard credential
+ * rule was silently waived on every skeleton an operator had already
+ * allowlisted, by an approval given before that rule existed.
+ *
+ * Applied to **hard** reviews only. A hard review is one no blanket policy may
+ * skip; an allowlist entry is exempt because it is a decision about one command
+ * — but only about the command *as the operator saw it*. For a soft review the
+ * looser overlap stays, because re-prompting on every new soft rule is noise
+ * for no safety gain.
+ */
+function rulesWereAllKnown(recorded: string[], matchedNow: string[]): boolean {
+  if (matchedNow.length === 0) return false;
+  const known = new Set(recorded);
+  return matchedNow.every((id) => known.has(id));
+}
+
 /** Simple argv tokenizer: whitespace split with "..." and '...' support. */
 export function tokenizeArgv(command: string): string[] {
   const tokens: string[] = [];
@@ -812,7 +834,16 @@ export function matchAllowlist(
   plan: PlanIR,
   log: Record<string, unknown> | undefined,
   config: AllowlistConfig,
-  opts: { readFile?: FileReader; cwd?: string } = {},
+  opts: {
+    readFile?: FileReader;
+    cwd?: string;
+    /**
+     * `review_authority` from the scan response. `hard` tightens the rule-id
+     * check from "any recorded rule still matches" to "every rule matching now
+     * was recorded" — see {@link rulesWereAllKnown}.
+     */
+    reviewAuthority?: string;
+  } = {},
 ): MatchResult {
   if (!config.enabled) return { hit: false, reason: "allowlist disabled" };
 
@@ -827,6 +858,9 @@ export function matchAllowlist(
   const command = pendingCommand(plan);
   const readFile = opts.readFile ?? defaultFileReader;
   const cwd = opts.cwd ?? process.cwd();
+  const hard = opts.reviewAuthority === "hard";
+  const rulesOk = (recorded: string[]): boolean =>
+    hard ? rulesWereAllKnown(recorded, ruleIds) : ruleOverlap(recorded, ruleIds);
 
   // Prefer script_bind when applicable
   if (config.scriptBind && tool === "exec" && command) {
@@ -844,7 +878,7 @@ export function matchAllowlist(
           if (entry.script_path !== abs) continue;
           if (entry.content_sha256 !== hash) continue;
           if (entry.args_skeleton !== argsSkel) continue;
-          if (!ruleOverlap(entry.matched_rule_ids, ruleIds)) continue;
+          if (!rulesOk(entry.matched_rule_ids)) continue;
           return {
             hit: true,
             kind: "script_bind",
@@ -876,7 +910,7 @@ export function matchAllowlist(
     if (entry.kind !== "skeleton") continue;
     if (entry.tool !== tool) continue;
     if (entry.skeleton !== skeleton) continue;
-    if (!ruleOverlap(entry.matched_rule_ids, ruleIds)) continue;
+    if (!rulesOk(entry.matched_rule_ids)) continue;
     return {
       hit: true,
       kind: "skeleton",
@@ -885,7 +919,12 @@ export function matchAllowlist(
     };
   }
 
-  return { hit: false, reason: "no matching entry" };
+  return {
+    hit: false,
+    reason: hard
+      ? "no entry recorded with every rule that matches now (hard review)"
+      : "no matching entry",
+  };
 }
 
 export function recordAllowAlways(

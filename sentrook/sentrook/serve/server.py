@@ -202,7 +202,13 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 result = runtime.scanner.scan(plan)
                 request_ms = int((time.perf_counter() - started) * 1000)
                 result, record = runtime.log_scan(plan, result, request_ms=request_ms)
-                payload = build_scan_response(runtime.config, result, record, request_ms=request_ms)
+                payload = build_scan_response(
+                    runtime.config,
+                    result,
+                    record,
+                    request_ms=request_ms,
+                    authority_by_rule_id=runtime.authority_by_rule_id(),
+                )
             except Exception as exc:
                 logger.exception("scan request failed")
                 from sentrook.serve.log import build_log_record
@@ -224,6 +230,7 @@ def _make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                         record,
                         error=f"scan failed: {exc}",
                         request_ms=request_ms,
+                        authority_by_rule_id=runtime.authority_by_rule_id(),
                     )
                 except Exception:
                     self._write_json(

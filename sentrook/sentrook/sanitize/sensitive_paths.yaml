@@ -22,10 +22,45 @@ version: 1
 # --------------------------------------------------------------------------
 # sensitive — credential, key and auth-store material.
 #
-# `${sensitive_path}` expands to (patterns | basenames) as one non-capturing
-# group, and `exec_shape.path_classes` reports `sensitive` when either hits.
+# **Composed, not listed.** `sensitive` is the union of the two groups below,
+# so every entry lives in exactly one place. `${sensitive_path}`,
+# `exec_shape.path_roles` and `fingerprint.path_class` are unchanged by the
+# split: a test asserts the composed group matches exactly the same subjects as
+# the flat one did, over every command and path in the corpus, and the
+# fingerprint baseline does not move.
+#
+# The split exists because the two halves deserve different **authority**,
+# which is a per-rule property, so they have to be separately nameable.
+#
+#   * `credential_store` — the file's purpose is to hold credentials. Reading
+#     one is a credential read whatever else the command is doing. AIRA-083
+#     reviews these at `authority: hard`.
+#   * `credential_bearing_config` — the file's purpose is configuration and it
+#     carries credentials too. Reading `openclaw.json` for `.gateway.port` or
+#     `"memorySearch"` is not a credential read in substance, and it is a
+#     routine thing for a scheduled agent to do. AIRA-086 reviews these at
+#     `authority: soft`, so L3 and an operator's floor can both relieve them.
+#
+# Measured before the split: **8 of AIRA-083's 26 corpus hits** were
+# `openclaw.json` alone, and every one read a non-credential field. An
+# unwaivable review on those blocks cron jobs for no consequence.
+#
+# Narrowing the *detection* instead was rejected, and the reason generalises:
+# `cat openclaw.json` with no selector is the dangerous form while `jq
+# '.gateway.port' openclaw.json` is the benign one, so any "does it name a
+# field" heuristic runs backwards and its failure direction is a missed
+# credential hunt. Both halves still fire a review; what differs is whether an
+# operator may waive it.
 # --------------------------------------------------------------------------
 sensitive:
+  includes:
+    - credential_store
+    - credential_bearing_config
+
+# --------------------------------------------------------------------------
+# credential_store — the file exists to hold credentials.
+# --------------------------------------------------------------------------
+credential_store:
   # Raw regex fragments, matched with re.IGNORECASE anywhere in the subject.
   # Use these when the *directory* is what makes the path sensitive.
   patterns:
@@ -34,9 +69,6 @@ sensitive:
     - 'openclaw-agent\.sqlite'
     - 'openclaw-auth-intake'
     - 'openclaw-sqlite'
-    # Credential-bearing despite the generic name: `cat openclaw.json |
-    # jq .auth.profiles` is an observed live credential hunt (Phase 1 log).
-    - 'openclaw\.json'
     # Redundant with the `credentials` basename below, kept explicit because
     # this is the form `fingerprint` matched before §1.3 and the reconciliation
     # was verified with it present.
@@ -80,6 +112,53 @@ sensitive:
     - .npmrc
     - .docker/config.json
     - shadow
+
+
+# --------------------------------------------------------------------------
+# credential_bearing_config — configuration that also carries credentials.
+#
+# Still `sensitive`: `cat openclaw.json` really does expose every secret in it.
+# What it is not is *unambiguous* — the same file holds the gateway port, the
+# agent list and the channel config, and an agent reads it constantly for those.
+#
+# `.npmrc` is the obvious candidate to join this group — it is npm's config file
+# and carries `_authToken` — but there is no corpus evidence either way, and
+# moving it would weaken detection on nothing but symmetry. It stays in
+# `credential_store` until traffic says otherwise.
+# --------------------------------------------------------------------------
+credential_bearing_config:
+  patterns:
+    # Credential-bearing despite the generic name: `cat openclaw.json |
+    # jq .auth.profiles` is an observed live credential hunt (Phase 1 log).
+    - 'openclaw\.json'
+
+# --------------------------------------------------------------------------
+# auth_store — the *stores* inside `sensitive`, not the whole of it.
+#
+# A strict subset: every entry here also matches `${sensitive_path}`. It exists
+# because AIRA-059 needs to say "an interpreter opened the auth store", which is
+# a narrower claim than "an interpreter and a credential path appear in the same
+# command". Phase 2's macro migration widened that branch to the full sensitive
+# list and put one consequence at two authorities — `python3 -c
+# open(<sensitive>)` hard, `cat <sensitive>` soft, decided by which binary read.
+# Phase 3a narrowed it back and gave the general case to AIRA-083; this group is
+# what "narrowed back" binds to, so the auth-store signature is a list rather
+# than three strings pasted into a rule.
+#
+# Keys, tokens and private keys are deliberately NOT here. A private key is
+# credential material (class 1) but it is not a store an interpreter opens and
+# copies, which is the shape AIRA-059 was harvested from.
+# --------------------------------------------------------------------------
+auth_store:
+  patterns:
+    - 'auth-profiles(?:\.json)?'
+    - 'openclaw-agent\.sqlite'
+    - 'openclaw-auth-intake'
+    - 'openclaw-sqlite'
+  basenames:
+    - auth-profiles.json
+    - openclaw-agent.sqlite
+    - database.sqlite
 
 # --------------------------------------------------------------------------
 # agent_config — the agent's own guardrail and identity configuration.
@@ -126,6 +205,74 @@ persistence:
 # Falco-style named binary lists. Heads are basenamed and lowercased by
 # exec_shape before comparison, so these are bare names.
 # --------------------------------------------------------------------------
+# Binaries that make a file's *contents* available — the "reading head" half of
+# consequence class 1. Path signals are path-only and cannot see the verb, so
+# `ls -la ~/.ssh`, `rm -rf ~/.ssh` and `cat ~/.ssh/id_rsa` are identical to
+# them; this list is what separates the third from the first two.
+#
+# Deliberately **not** a catalogue. GTFOBins lists 478 binaries that can be
+# coerced into a file read; this is the verb check for the binaries an agent
+# actually runs. An unrecognised head still reaches AIRA-010's soft review, so
+# what an unusual binary costs is attribution, not detection.
+#
+# Deliberately absent: `ls`, `stat`, `file`, `find`, `which`, `du` (reference
+# without reading) and `curl`/`wget`, whose `-d @file` / `--post-file` forms
+# read *and* egress — those are class 2 and AIRA-067 owns them at hard
+# authority.
+#
+# Lives here because three rules matched on it (AIRA-083 twice, AIRA-086 once)
+# with three byte-identical copies of the same alternation — the `# keep in
+# sync` shape §1.3 exists to delete. Rules reference it as
+# `(?:\A|\n)${reading_head}(?:\n|\Z)`: the list is the data, the anchoring
+# is the idiom (see the dialect reference's "some entry is X" section).
+reading_binaries:
+  - cat
+  - head
+  - tail
+  - tac
+  - rev
+  - nl
+  - od
+  - xxd
+  - strings
+  - less
+  - more
+  - jq
+  - yq
+  - grep
+  - egrep
+  - fgrep
+  - rg
+  - awk
+  - gawk
+  - mawk
+  - sed
+  - cut
+  - sort
+  - uniq
+  - wc
+  - python
+  - python2
+  - python3
+  - node
+  - deno
+  - bun
+  - perl
+  - ruby
+  - php
+  - lua
+  - tar
+  - zip
+  - gzip
+  - gunzip
+  - zcat
+  - base64
+  - openssl
+  - sqlite3
+  - getent
+  - cp
+  - dd
+
 shell_binaries:
   - sh
   - bash

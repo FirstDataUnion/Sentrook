@@ -26,6 +26,31 @@ def _review_severity(result: ScanResult) -> str:
     return "info"
 
 
+def _review_authority(result: ScanResult, authority_by_rule_id: dict[str, str] | None) -> str:
+    """`hard` when any surviving review is hard-authority, else `soft`.
+
+    This exists because `authority` was, until now, invisible to the only
+    component that can act on it. Three places in the codebase stated that
+    "hard authority exists so an operator's lenient floor cannot waive a rule"
+    and none of them was true: the floor is applied in the plugin, keyed on
+    `review_severity`, which is derived from `meta.severity` alone. Authority
+    governed L3 downgrade and allow-rule suppression and nothing else, so a
+    hard review was waived by a lenient floor exactly like a soft one.
+
+    Aggregated with `any`, not `worst`, and defaulting to `hard` for a rule the
+    server cannot resolve: an unwaivable review costs a prompt, a wrongly
+    waivable one costs the detection. `block` rules are excluded because a
+    block is not waivable by this path at all.
+    """
+    mapping = authority_by_rule_id or {}
+    for matched in result.matched_rules:
+        if matched.action != "review":
+            continue
+        if mapping.get(matched.id, "hard") == "hard":
+            return "hard"
+    return "soft"
+
+
 def build_scan_response(
     config: ServeConfig,
     result: ScanResult,
@@ -33,6 +58,7 @@ def build_scan_response(
     *,
     error: str | None = None,
     request_ms: int | None = None,
+    authority_by_rule_id: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Shape the ``POST /scan`` JSON body for the OpenClaw plugin."""
     decision = result.decision
@@ -64,4 +90,5 @@ def build_scan_response(
         payload["review_title"] = build_review_title(record, result)
         payload["review_description"] = build_review_description(record, result)
         payload["review_severity"] = _review_severity(result)
+        payload["review_authority"] = _review_authority(result, authority_by_rule_id)
     return payload

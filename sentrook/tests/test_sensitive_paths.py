@@ -113,6 +113,118 @@ def test_agent_config_is_not_sensitive() -> None:
     assert not rules.sensitive.regex.search(subject)
 
 
+def test_sensitive_is_exactly_its_two_halves() -> None:
+    """The composed group must be the flat one it replaced, not merely similar.
+
+    `sensitive` is now `credential_store | credential_bearing_config`, split so
+    the two halves can carry different rule authority. Four consumers read
+    `sensitive` — `fingerprint.path_class`, `signal_excerpt`,
+    `exec_shape.path_roles` and `${sensitive_path}` — and none of them should be
+    able to tell the split happened.
+
+    Checked as set equality on the entries **and** as matching equality on every
+    entry's own literal plus a near-miss for each. The composition reorders the
+    alternation, so the fragment *string* legitimately differs; what must not
+    differ is which subjects match. (Run once against the pre-split fragment
+    over every command and path in the corpus: 1,554 subjects, zero
+    divergences.)
+    """
+    rules = load_sensitive_paths()
+    halves = (rules.credential_store, rules.credential_bearing_config)
+    assert set(rules.sensitive.patterns) == {p for h in halves for p in h.patterns}
+    assert set(rules.sensitive.basenames) == {b for h in halves for b in h.basenames}
+    # No entry in both halves: the split is a partition, not an overlap.
+    assert not (
+        set(rules.credential_store.patterns) & set(rules.credential_bearing_config.patterns)
+    )
+
+    for half in halves:
+        for basename in half.basenames:
+            assert rules.sensitive.regex.search(f"/home/node/{basename}"), basename
+        for pattern in half.patterns:
+            assert re.compile(pattern, re.IGNORECASE).groups == 0, pattern
+
+    # Every half is sensitive; nothing outside them is.
+    for subject in (
+        "/home/node/.openclaw/openclaw.json",
+        "/home/node/.ssh/id_rsa",
+        "/app/.env",
+        "/etc/shadow",
+    ):
+        assert rules.sensitive.regex.search(subject), subject
+    for subject in ("/etc/hosts", "/app/myapp.env", "/opt/shadowsocks/config"):
+        assert not rules.sensitive.regex.search(subject), subject
+
+
+def test_the_two_halves_carry_the_entries_the_split_was_made_for() -> None:
+    """Guard against the split collapsing back to one populated group.
+
+    If `credential_bearing_config` were emptied, `sensitive` would still be
+    correct and AIRA-086 would silently match nothing — a rule reduced to a
+    no-op by a YAML edit, which is F26's shape in a different file.
+    """
+    rules = load_sensitive_paths()
+    assert rules.credential_bearing_config.patterns or rules.credential_bearing_config.basenames
+    assert rules.credential_store.patterns and rules.credential_store.basenames
+
+    # The distinction that motivated the split, in both directions.
+    config = rules.credential_bearing_config.regex
+    store = rules.credential_store.regex
+    assert config.search("/home/node/.openclaw/openclaw.json")
+    assert not store.search("/home/node/.openclaw/openclaw.json")
+    for subject in (
+        "/home/node/.ssh/id_rsa",
+        "/app/.env",
+        "/home/node/.openclaw/agents/main/agent/auth-profiles.json",
+    ):
+        assert store.search(subject), subject
+        assert not config.search(subject), subject
+
+
+def test_auth_store_is_a_strict_subset_of_sensitive() -> None:
+    """D22: two lists that answer overlapping questions must agree by construction.
+
+    `${auth_store_path}` exists so AIRA-059 can say "an interpreter opened the
+    auth store" without pasting three filenames into the rule. Every entry has
+    to be sensitive too, or the narrowed 059 arm could fire on something
+    AIRA-083 does not — one consequence at two authorities, which is the exact
+    defect the narrowing was written to remove.
+
+    Checked over every entry's own literal rather than on a handful of
+    examples: a pattern is the one thing guaranteed to match itself.
+    """
+    rules = load_sensitive_paths()
+    assert rules.auth_store.patterns or rules.auth_store.basenames
+    for basename in rules.auth_store.basenames:
+        assert rules.sensitive.regex.search(f"/home/node/{basename}"), basename
+    for subject in (
+        "/home/node/.openclaw/agents/main/agent/auth-profiles.json",
+        "/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite",
+        "/tmp/openclaw-auth-intake/database.sqlite",
+    ):
+        assert rules.auth_store.regex.search(subject), subject
+        assert rules.sensitive.regex.search(subject), subject
+
+
+def test_auth_store_is_narrower_than_sensitive_where_it_must_be() -> None:
+    """The subset check above passes trivially if the two are equal.
+
+    These are credential material (class 1, AIRA-083's) that are *not* an auth
+    store an interpreter copies (AIRA-059's harvested shape). If one of them
+    starts matching, the narrowing has quietly been undone.
+    """
+    rules = load_sensitive_paths()
+    for subject in (
+        "/home/node/.ssh/id_rsa",
+        "/app/.env",
+        "/etc/shadow",
+        "/home/node/.openclaw/openclaw.json",
+        "/home/node/.netrc",
+    ):
+        assert rules.sensitive.regex.search(subject), subject
+        assert not rules.auth_store.regex.search(subject), subject
+
+
 def test_named_binary_lists_are_populated() -> None:
     rules = load_sensitive_paths()
     assert {"bash", "sh", "zsh"} <= rules.shell_binaries

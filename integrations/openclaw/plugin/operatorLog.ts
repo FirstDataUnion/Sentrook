@@ -572,6 +572,8 @@ export interface OperatorScanResponse {
   matched_rules?: string[];
   block_reason?: string;
   review_severity?: string;
+  /** `hard` when no blanket session policy may waive the review. */
+  review_authority?: string;
   log?: Json;
 }
 
@@ -771,6 +773,7 @@ export function buildScanOperatorEvent(input: {
       summary: input.scan.summary ? scrubSecretsAndPii(input.scan.summary) : null,
       matched_rules: input.scan.matched_rules ?? [],
       review_severity: input.scan.review_severity ?? null,
+      review_authority: input.scan.review_authority ?? null,
       block_reason: input.scan.block_reason
         ? scrubSecretsAndPii(input.scan.block_reason)
         : null,

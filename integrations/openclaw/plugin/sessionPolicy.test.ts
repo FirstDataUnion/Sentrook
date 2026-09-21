@@ -11,7 +11,9 @@ import {
   parseSensitivityToken,
   parseSessionSensitivityToken,
   QUIET_CAP_MS,
+  isHardReview,
   resolveReviewSkip,
+  scanReviewFacts,
   reviewSeverityOf,
   sensitivityCoversReview,
   sensitivityFloorHighlight,
@@ -320,5 +322,138 @@ describe("combinedAllowAll / laterQuietUntil", () => {
     assert.equal(laterQuietUntil(20, null), 20);
     assert.equal(laterQuietUntil(20, 40), 40);
     assert.equal(laterQuietUntil(null, null), null);
+  });
+});
+
+describe("resolveReviewSkip — hard authority", () => {
+  const base = {
+    hostedDecision: "review" as const,
+    unattended: false,
+    allowAll: false,
+    quietUntilMs: null as number | null,
+    sensitivity: "strict" as const,
+    unattendedSensitivity: "strict" as const,
+    reviewSeverity: "warning",
+    allowlistHit: false,
+    nowMs: 1_000,
+  };
+
+  it("no blanket policy waives a hard review", () => {
+    // Each of these skips a soft review of the same severity — asserted in the
+    // block above — and must decline once the engine says the review is hard.
+    const hard = { ...base, reviewAuthority: "hard" };
+    assert.equal(resolveReviewSkip({ ...hard, allowAll: true }), undefined);
+    assert.equal(resolveReviewSkip({ ...hard, quietUntilMs: 2_000 }), undefined);
+    assert.equal(
+      resolveReviewSkip({ ...hard, sensitivity: "warning" }),
+      undefined,
+      "the lenient floor — the exact path that auto-approved a live credential hunt",
+    );
+    assert.equal(
+      resolveReviewSkip({ ...hard, sensitivity: "critical", reviewSeverity: "critical" }),
+      undefined,
+      "even the most permissive floor there is",
+    );
+    assert.equal(
+      resolveReviewSkip({ ...hard, sessionAttended: "critical", reviewSeverity: "critical" }),
+      undefined,
+      "a session floor is a blanket policy too",
+    );
+    assert.equal(
+      resolveReviewSkip({
+        ...hard,
+        unattended: true,
+        unattendedSensitivity: "critical",
+        reviewSeverity: "critical",
+      }),
+      undefined,
+      "unattended is the branch that matters most: nobody is watching",
+    );
+  });
+
+  it("the same inputs DO skip when the review is soft", () => {
+    // Without this the test above would pass against a function that skipped
+    // nothing at all.
+    const soft = { ...base, reviewAuthority: "soft" };
+    assert.equal(resolveReviewSkip({ ...soft, allowAll: true }), "allow-all");
+    assert.equal(resolveReviewSkip({ ...soft, quietUntilMs: 2_000 }), "quiet");
+    assert.equal(resolveReviewSkip({ ...soft, sensitivity: "warning" }), "lenient");
+    assert.equal(
+      resolveReviewSkip({ ...soft, sessionAttended: "critical", reviewSeverity: "critical" }),
+      "session",
+    );
+    assert.equal(
+      resolveReviewSkip({
+        ...soft,
+        unattended: true,
+        unattendedSensitivity: "critical",
+        reviewSeverity: "critical",
+      }),
+      "lenient",
+    );
+  });
+
+  it("an allowlist hit still applies, and that is deliberate", () => {
+    // An allowlist entry is a per-skeleton decision an operator made about one
+    // command, not a posture. Recorded as a test so the exception is a choice
+    // rather than an oversight in the ordering.
+    assert.equal(
+      resolveReviewSkip({ ...base, reviewAuthority: "hard", allowlistHit: true }),
+      "allowlist",
+    );
+  });
+
+  it("an engine that does not send the field behaves exactly as before", () => {
+    // Old server, new plugin. `undefined` must read as soft, or every review
+    // from an unupgraded scan host becomes an unwaivable prompt.
+    assert.equal(resolveReviewSkip({ ...base, allowAll: true }), "allow-all");
+    assert.equal(resolveReviewSkip({ ...base, sensitivity: "warning" }), "lenient");
+    assert.equal(isHardReview(undefined), false);
+    assert.equal(isHardReview("soft"), false);
+    assert.equal(isHardReview("hard"), true);
+    assert.equal(isHardReview("HARD"), false, "the wire value is lowercase; do not guess");
+  });
+});
+
+describe("scanReviewFacts", () => {
+  it("carries all three facts, so a call site cannot drop the authority", () => {
+    assert.deepEqual(
+      scanReviewFacts({ decision: "review", review_severity: "warning", review_authority: "hard" }),
+      { hostedDecision: "review", reviewSeverity: "warning", reviewAuthority: "hard" },
+    );
+  });
+
+  it("spreading it into resolveReviewSkip is enough to arm the guard", () => {
+    // The end-to-end shape of the index.ts call site, asserted here because
+    // the hook body itself is not reachable from a unit test.
+    const scan = { decision: "review" as const, review_severity: "warning", review_authority: "hard" };
+    assert.equal(
+      resolveReviewSkip({
+        ...scanReviewFacts(scan),
+        unattended: false,
+        allowAll: true,
+        quietUntilMs: null,
+        sensitivity: "warning",
+        allowlistHit: false,
+        nowMs: 1_000,
+      }),
+      undefined,
+    );
+  });
+
+  it("an engine sending neither field degrades to today's behaviour", () => {
+    const scan = { decision: "review" as const };
+    assert.equal(
+      resolveReviewSkip({
+        ...scanReviewFacts(scan),
+        unattended: false,
+        allowAll: true,
+        quietUntilMs: null,
+        sensitivity: "strict",
+        allowlistHit: false,
+        nowMs: 1_000,
+      }),
+      "allow-all",
+    );
   });
 });

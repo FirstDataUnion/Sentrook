@@ -603,10 +603,55 @@ def test_segment_is_the_segment_not_the_path_ordinal() -> None:
     assert [p.segment for p in split] == [0, 1]
 
 
-def test_a_path_named_twice_is_one_path() -> None:
-    """Deduplicated across the whole command, attributed where it first appeared."""
-    paths = derive_exec_shape("cat /a && rm /a").paths
-    assert [(p.raw, p.segment) for p in paths] == [("/a", 0)]
+def test_a_path_named_twice_in_one_segment_is_one_path() -> None:
+    """Deduplication is **per segment**, not per command.
+
+    This asserted the opposite — one path for the whole command, attributed
+    where it first appeared — and that was a reasonable choice while nothing
+    could ask *which head* touched a path. `segment_head` made it a false
+    negative: `ls -la ~/.ssh && rm -rf ~/.ssh` kept only the `ls` occurrence,
+    so a rule asking for "a path outside scratch belonging to a destructive
+    head" could not see the destruction at all.
+
+    The same path in two segments is two references because they are two
+    different acts. Within one segment it is still one path.
+    """
+    across = derive_exec_shape("cat /a && rm /a").paths
+    assert [(p.raw, p.segment) for p in across] == [("/a", 0), ("/a", 1)]
+
+    within = derive_exec_shape("cp /a /b /a").paths
+    assert [(p.raw, p.segment) for p in within] == [("/a", 0), ("/b", 0)]
+
+
+def test_the_duplicate_does_not_change_a_quantifier_answer() -> None:
+    """Per-segment dedup grows the path list, so check it moves no quantifier.
+
+    `any` and `none` are insensitive to a repeated identical entry, and `every`
+    is too — but `every` is the one with a non-vacuous empty case, so assert it
+    rather than reason about it.
+    """
+    from sentrook.layers.l2_match import _match_paths
+    from sentrook.planir import PlanIR, PlanStep
+    from sentrook.rules.models import PathsCondition
+
+    plan = PlanIR(
+        version="1.0",
+        run_id="fixture:dup",
+        steps=[
+            PlanStep(
+                id="s1",
+                tool="exec",
+                status="pending",
+                args={"command": "ls -la /tmp/x && rm -rf /tmp/x"},
+            )
+        ],
+    )
+    from sentrook.layers.exec_shape import attach_exec_shapes
+
+    attach_exec_shapes(plan)
+    for quantifier, expected in (("any", True), ("every", True), ("none", False)):
+        node = PathsCondition(quantifier=quantifier, location="tmp")
+        assert _match_paths(node, plan).matched is expected, quantifier
 
 
 def test_a_predicate_that_can_never_match_is_refused() -> None:
@@ -649,3 +694,126 @@ def test_the_vocabulary_check_enumerates_combinations_not_single_values() -> Non
     # Matches only when *both* are present — legal, and single-value testing
     # would have called it unmatchable.
     _compile_paths({"quantifier": "any", "location": r"openclaw\nworkspace"})
+
+
+# --------------------------------------------------------------------------
+# `segment_head` — relating a path to the head that acts on it
+
+
+def _shaped(command: str):
+    from sentrook.layers.exec_shape import attach_exec_shapes
+    from sentrook.planir import PlanIR, PlanStep
+
+    plan = PlanIR(
+        version="1.0",
+        run_id="fixture:segment-head",
+        steps=[PlanStep(id="s1", tool="exec", status="pending", args={"command": command})],
+    )
+    attach_exec_shapes(plan)
+    return plan
+
+
+def _destructive_rule(segment_head: str | None = None):
+    from sentrook.rules.compiler import compile_rule
+
+    paths: dict = {"quantifier": "any", "location": r"\A(?!.*(?:tmp|workspace))"}
+    if segment_head is not None:
+        paths["segment_head"] = segment_head
+    return compile_rule(
+        {
+            "rule": "T-DESTROY",
+            "meta": {"action": "review"},
+            "condition": {
+                "all": [
+                    {
+                        "sequence": [
+                            {
+                                "tool": "exec",
+                                "status": "pending",
+                                "args_match": {
+                                    "_shape.heads": r"(?:\A|\n)(?:rm|shred|truncate)(?:\n|\Z)"
+                                },
+                            }
+                        ]
+                    },
+                    {"paths": paths},
+                ]
+            },
+        }
+    )
+
+
+DESTRUCTIVE = r"(?:\A|\n)?(?:rm|shred|truncate)\Z"
+
+SEGMENT_CASES = [
+    ("rm -rf /home/node/.openclaw /var/lib/docker", True, "destroys an agent home"),
+    ("rm -rf /tmp/scratch", False, "confined to scratch"),
+    # The false positive `segment_head` exists for: the destructive head targets
+    # scratch, and an unrelated path in another segment satisfied the location.
+    ("cat /etc/hosts && rm -rf /tmp/scratch", False, "unrelated path, rm in scratch"),
+    ("ls /var/log && rm -rf /tmp/x", False, "unrelated path, rm in scratch"),
+    # `cd` rebase — the false *negative* a strictly per-segment reading creates.
+    ("cd /srv/app && rm -rf logs", True, "cd rebase: destroys /srv/app/logs"),
+    ("cd /home/node/.ssh && rm -rf id_rsa", True, "cd rebase into a key directory"),
+    ("cd /tmp/x && rm -rf y", False, "cd rebase into scratch"),
+    # Ordering: a `cd` after the destructive head does not rebase it.
+    ("rm -rf /tmp/x && cd /srv/app", False, "cd after the rm must not rebase it"),
+    ("rm -rf /tmp/build /home/node/.openclaw/agents", True, "one path outside scratch"),
+]
+
+
+@pytest.mark.parametrize("command,expected,why", SEGMENT_CASES)
+def test_segment_head_relates_a_path_to_the_head_that_acts_on_it(
+    command: str, expected: bool, why: str
+) -> None:
+    from sentrook.layers.l2_match import MatcherConfig, evaluate_rule
+
+    rule = _destructive_rule(DESTRUCTIVE)
+    assert evaluate_rule(rule, _shaped(command), MatcherConfig()).matched is expected, why
+
+
+def test_without_segment_head_the_two_halves_are_unrelated() -> None:
+    """The defect, kept as a test so the fix cannot be quietly undone.
+
+    Without the predicate the rule reads "a destructive head is somewhere in the
+    command" AND "some path somewhere is outside scratch", with nothing relating
+    them — F27's implicit quantifier one level up.
+    """
+    from sentrook.layers.l2_match import MatcherConfig, evaluate_rule
+
+    loose = _destructive_rule(None)
+    tight = _destructive_rule(DESTRUCTIVE)
+    command = "cat /etc/hosts && rm -rf /tmp/scratch"
+    assert evaluate_rule(loose, _shaped(command), MatcherConfig()).matched is True
+    assert evaluate_rule(tight, _shaped(command), MatcherConfig()).matched is False
+
+
+def test_a_rule_that_names_cd_gets_cd_on_its_own() -> None:
+    """`cd` stays addressable, and asking for it means asking for it.
+
+    The rebase is the engine's job, so a destructive-head rule must *not* list
+    `cd` — doing so also matches a bare `cd` into a non-scratch directory with
+    no destruction after it at all.
+    """
+    from sentrook.layers.l2_match import MatcherConfig, evaluate_rule
+
+    with_cd = _destructive_rule(r"(?:\A|\n)?(?:rm|shred|truncate|cd)\Z")
+    assert evaluate_rule(with_cd, _shaped("rm -rf /tmp/x && cd /srv/app"), MatcherConfig()).matched
+    without = _destructive_rule(DESTRUCTIVE)
+    assert not evaluate_rule(
+        without, _shaped("rm -rf /tmp/x && cd /srv/app"), MatcherConfig()
+    ).matched
+
+
+def test_segment_head_is_refused_when_misspelled() -> None:
+    """Pydantic ignores unknown keys by default, so the compiler must not."""
+    from sentrook.rules.compiler import InvalidArgsMatchError, compile_rule
+
+    with pytest.raises((InvalidArgsMatchError, ValueError), match="segment_heads"):
+        compile_rule(
+            {
+                "rule": "T-TYPO",
+                "meta": {"action": "review"},
+                "condition": {"paths": {"quantifier": "any", "segment_heads": "rm"}},
+            }
+        )

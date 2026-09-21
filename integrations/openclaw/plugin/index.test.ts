@@ -7,6 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import { dashboardReviewHint } from "./reviewCopy.ts";
 import { resolveApprovalPolicyConfig } from "./approvalPolicy.ts";
 import { clearScanTokenCache } from "./auth.ts";
+import { isHardReview } from "./sessionPolicy.ts";
 import {
   buildScanTiming,
   computeTransportMs,
@@ -541,6 +542,153 @@ describe("translateScanResponse — review mapping", () => {
     assert.match(result?.blockReason || "", /sensitivity unattended warning/);
   });
 
+  it("a HARD review is not short-circuited by a stale allowlist entry", () => {
+    // Third instance of the same wiring hole: `matchAllowlist` is called from
+    // inside `translateScanResponse`, so dropping `{ reviewAuthority }` at that
+    // call site leaves the fix dead with every `localAllowlist.test.ts`
+    // assertion green. Covered through the caller, like the unattended one.
+    const dir = mkdtempSync(join(tmpdir(), "al-wire-"));
+    const path = join(dir, "allowlist.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            kind: "skeleton",
+            tool: "exec",
+            skeleton: "cat /home/node/.ssh/id_rsa",
+            // Recorded before the hard rule existed.
+            matched_rule_ids: ["AIRA-010"],
+            created_at: "2026-01-01T00:00:00Z",
+            source: "allow-always",
+          },
+        ],
+      }),
+    );
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "credential read",
+      review_severity: "warning",
+      review_authority: "hard",
+      log: { matched_rules: ["AIRA-010", "AIRA-083"] } as never,
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "cat /home/node/.ssh/id_rsa" },
+        allowlist: { enabled: true, path, scriptBind: false } as never,
+        plan: plan({
+          pending: { tool: "exec", args: { command: "cat /home/node/.ssh/id_rsa" } },
+        }),
+      }),
+    );
+    assert.ok(result?.requireApproval, "the stale entry silently skipped a hard review");
+  });
+
+  it("...and a covering entry still short-circuits it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "al-wire2-"));
+    const path = join(dir, "allowlist.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            kind: "skeleton",
+            tool: "exec",
+            skeleton: "cat /home/node/.ssh/id_rsa",
+            matched_rule_ids: ["AIRA-010", "AIRA-083"],
+            created_at: "2026-01-01T00:00:00Z",
+            source: "allow-always",
+          },
+        ],
+      }),
+    );
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_severity: "warning",
+      review_authority: "hard",
+      log: { matched_rules: ["AIRA-010", "AIRA-083"] } as never,
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "cat /home/node/.ssh/id_rsa" },
+        allowlist: { enabled: true, path, scriptBind: false } as never,
+        plan: plan({
+          pending: { tool: "exec", args: { command: "cat /home/node/.ssh/id_rsa" } },
+        }),
+      }),
+    );
+    assert.equal(result, undefined);
+  });
+
+  it("an unattended HARD review does not offer the sensitivity floor", () => {
+    // Covers the wiring, not just the copy. `unattendedReviewBlockReason` is
+    // called from inside `translateScanResponse`, so dropping
+    // `reviewAuthority: scan.review_authority` at that call site is invisible
+    // to every `unattendedReview.test.ts` assertion — F43's shape, second
+    // instance. This test goes through the caller.
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "credential read",
+      review_severity: "warning",
+      review_authority: "hard",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "cat ~/.ssh/id_ed25519" },
+        unattended: true,
+        eventId: "sr_deadbeef01",
+        plan: plan({
+          pending: { tool: "exec", args: { command: "cat ~/.ssh/id_ed25519" } },
+          intentKind: "cron",
+          sessionId: "cron-sess",
+        }),
+      }),
+    );
+    assert.equal(result?.block, true);
+    const reason = result?.blockReason || "";
+    assert.match(reason, /hard review/);
+    assert.ok(
+      !reason.includes("sensitivity unattended warning"),
+      "offered a floor that cannot waive a hard review",
+    );
+    assert.match(reason, /allowlist add sr_deadbeef01/);
+  });
+
+  it("an unattended SOFT review still offers the floor", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      review_title: "Sentrook review: exec",
+      review_description: "flagged",
+      review_severity: "warning",
+      review_authority: "soft",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({
+        pendingArgs: { command: "rg -n TODO src/" },
+        unattended: true,
+        eventId: "sr_deadbeef01",
+        plan: plan({
+          pending: { tool: "exec", args: { command: "rg -n TODO src/" } },
+          intentKind: "cron",
+          sessionId: "cron-sess",
+        }),
+      }),
+    );
+    assert.match(result?.blockReason || "", /sensitivity unattended warning/);
+  });
+
   it("overlays local exec command when sidecar copy is [TRUNCATED]", () => {
     const command = `python3 wiki.py get Self:Today ${"padding ".repeat(80)}`;
     const scan: ScanResponse = {
@@ -654,6 +802,30 @@ describe("parseScanResponse", () => {
   it("fails closed on a non-object body", () => {
     const parsed = parseScanResponse(["allow"]);
     assert.equal("ok" in parsed && parsed.ok === false, true);
+  });
+
+  it("carries review_authority through, and rejects anything but the two words", () => {
+    // The field decides whether a session floor may waive the review at all
+    // (sessionPolicy.ts). A parser that dropped it would leave the guard
+    // permanently off, with every sessionPolicy test still green — so the
+    // round-trip is asserted here rather than assumed.
+    for (const value of ["soft", "hard"] as const) {
+      const parsed = parseScanResponse({ decision: "review", block: false, review_authority: value });
+      if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
+      assert.equal(parsed.review_authority, value);
+    }
+    for (const junk of ["HARD", "Hard", "", 1, null, undefined]) {
+      const parsed = parseScanResponse({ decision: "review", block: false, review_authority: junk });
+      if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
+      assert.equal(parsed.review_authority, undefined, String(junk));
+    }
+  });
+
+  it("an older engine omitting the field parses as soft, not as a failure", () => {
+    const parsed = parseScanResponse({ decision: "review", block: false, review_severity: "warning" });
+    if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
+    assert.equal(parsed.review_authority, undefined);
+    assert.equal(isHardReview(parsed.review_authority), false);
   });
 });
 

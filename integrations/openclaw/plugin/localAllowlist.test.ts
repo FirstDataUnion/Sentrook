@@ -628,3 +628,98 @@ describe("record + match script_bind", () => {
     assert.equal(match.hit, false);
   });
 });
+
+describe("allowlist entries and rules that shipped after them", () => {
+  function entryFile(matchedRuleIds: string[]): AllowlistConfig {
+    const dir = mkdtempSync(join(tmpdir(), "al-rules-"));
+    const path = join(dir, "allowlist.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            kind: "skeleton",
+            tool: "exec",
+            skeleton: "cat /home/node/.ssh/id_rsa",
+            matched_rule_ids: matchedRuleIds,
+            created_at: "2026-01-01T00:00:00Z",
+            source: "allow-always",
+          },
+        ],
+      }),
+    );
+    return { enabled: true, path, scriptBind: false } as never;
+  }
+
+  function credentialRead() {
+    return {
+      version: "1.0",
+      run_id: "r",
+      steps: [
+        {
+          id: "s1",
+          tool: "exec",
+          status: "pending",
+          args: { command: "cat /home/node/.ssh/id_rsa" },
+        },
+      ],
+      metadata: { adapter: "fixture", hook: "before_tool_call" },
+    } as never;
+  }
+
+  it("a HARD review is not waived by an entry recorded before the rule existed", () => {
+    // The live hazard Phase 3a created. Operators allowlisted exec skeletons
+    // when the only thing matching was the soft catch-all; AIRA-083 then
+    // shipped and matched the same skeletons. Under plain rule *overlap* the
+    // stale entry kept hitting, so a hard credential-read review was skipped by
+    // an approval given before that rule existed — silently, and permanently,
+    // because the entry persists.
+    const config = entryFile(["AIRA-010"]);
+    const stale = matchAllowlist(credentialRead(), { matched_rules: ["AIRA-010", "AIRA-083"] },
+      config, { reviewAuthority: "hard" });
+    assert.equal(stale.hit, false);
+    assert.match(stale.reason ?? "", /hard review/);
+  });
+
+  it("...and is waived once the operator has seen every rule", () => {
+    // Without this the test above passes against an allowlist that never hits.
+    const config = entryFile(["AIRA-010", "AIRA-083"]);
+    const covered = matchAllowlist(credentialRead(), { matched_rules: ["AIRA-010", "AIRA-083"] },
+      config, { reviewAuthority: "hard" });
+    assert.equal(covered.hit, true);
+    assert.equal(covered.kind, "skeleton");
+  });
+
+  it("a SOFT review keeps the looser overlap", () => {
+    // Re-prompting on every newly added soft rule is noise for no safety gain,
+    // and the floor can waive a soft review anyway.
+    const config = entryFile(["AIRA-010"]);
+    const soft = matchAllowlist(credentialRead(), { matched_rules: ["AIRA-010", "AIRA-086"] },
+      config, { reviewAuthority: "soft" });
+    assert.equal(soft.hit, true);
+    const absent = matchAllowlist(credentialRead(), { matched_rules: ["AIRA-010", "AIRA-086"] },
+      config, {});
+    assert.equal(absent.hit, true, "an engine without the field behaves as before");
+  });
+
+  it("an entry for a different skeleton never hits, hard or soft", () => {
+    const config = entryFile(["AIRA-010", "AIRA-083"]);
+    const other = {
+      version: "1.0",
+      run_id: "r",
+      steps: [
+        { id: "s1", tool: "exec", status: "pending", args: { command: "cat /app/.env" } },
+      ],
+      metadata: { adapter: "fixture", hook: "before_tool_call" },
+    } as never;
+    for (const authority of ["hard", "soft", undefined]) {
+      assert.equal(
+        matchAllowlist(other, { matched_rules: ["AIRA-010", "AIRA-083"] }, config,
+          { reviewAuthority: authority }).hit,
+        false,
+        String(authority),
+      );
+    }
+  });
+});
