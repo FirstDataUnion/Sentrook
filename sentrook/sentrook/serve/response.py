@@ -15,10 +15,11 @@ from sentrook.serve.review_copy import (
 
 
 def _review_severity(result: ScanResult) -> str:
-    if not result.matched_rules:
+    deciding = [m for m in result.matched_rules if m.action in ("review", "block")]
+    if not deciding:
         return "warning"
     order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-    worst = max(result.matched_rules, key=lambda m: order.get(m.severity, 1))
+    worst = max(deciding, key=lambda m: order.get(m.severity, 1))
     if worst.severity in ("high", "critical"):
         return "critical"
     if worst.severity == "medium":
@@ -86,6 +87,10 @@ def build_scan_response(
 
     if block:
         payload["block_reason"] = build_block_reason(record, result)
+    if result.consequence:
+        payload["consequence"] = result.consequence
+    if result.entity:
+        payload["entity"] = result.entity
     if decision == "review":
         payload["review_title"] = build_review_title(record, result)
         payload["review_description"] = build_review_description(record, result)

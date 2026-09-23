@@ -131,6 +131,22 @@ describe("tokenizeArgv + extractMatchedRuleIds", () => {
     assert.deepEqual(extractMatchedRuleIds({}), []);
     assert.deepEqual(extractMatchedRuleIds(undefined), []);
   });
+
+  it("drops observe matches the way it drops allow matches", () => {
+    assert.deepEqual(
+      extractMatchedRuleIds({
+        matched_rules: [
+          { id: "OBS-001", action: "observe" },
+          { id: "REV-001", action: "review" },
+        ],
+      }),
+      ["REV-001"],
+    );
+    assert.deepEqual(
+      extractMatchedRuleIds({ matched_rules: [{ id: "OBS-001", action: "observe" }] }),
+      [],
+    );
+  });
 });
 
 describe("high-risk and skeletonize", () => {
@@ -318,6 +334,18 @@ describe("record + match skeleton", () => {
     assert.equal(recordAllowAlways(planForCommand("rg -n TODO src/"), log, config).status, "recorded");
     assert.equal(recordAllowAlways(planForCommand("rg -n TODO src/"), log, config).status, "duplicate");
     assert.equal(loadAllowlist(config.path).entries.length, 1);
+  });
+
+  it("does not write observe matches to the local allowlist", () => {
+    const { config } = tempAllowlist();
+    const result = recordAllowAlways(
+      planForCommand("rg -n TODO src/"),
+      { matched_rules: [{ id: "OBS-001", action: "observe" }] },
+      config,
+    );
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "no matched rules");
+    assert.equal(loadAllowlist(config.path).entries.length, 0);
   });
 
   it("skips recording high-risk shapes", () => {

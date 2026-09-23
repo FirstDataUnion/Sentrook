@@ -169,3 +169,21 @@ def test_the_phase_3b_macros_are_why_this_release_moved_the_floor() -> None:
         "floor has to move with them or the bundle reaches instances that "
         "cannot load it"
     )
+
+
+def test_observe_is_why_this_release_moved_the_floor_to_2() -> None:
+    """D20: `action: observe` is vocabulary a 1.3.0 engine refuses.
+
+    `RuleAction` is a closed literal. An older engine compiling an observe
+    rule raises at load, so the floor has to move with the action or the
+    library that demotes AIRA-010/064 never reaches an instance that can
+    read it.
+    """
+    from typing import get_args
+
+    from sentrook.result import RuleAction
+
+    assert "observe" in get_args(RuleAction)
+    assert _version_tuple(SCANNER_VERSION) >= (2, 0, 0), (
+        "action: observe is unreadable on 1.x; bump __version__ with it"
+    )

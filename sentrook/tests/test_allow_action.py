@@ -145,7 +145,7 @@ def _satisfying_parts() -> tuple[dict[str, str], list[dict]]:
 def _scan(command: str, rule_docs: list[dict], **config_kwargs):
     """Scan with L3 **off** unless a test asks otherwise.
 
-    `ScannerConfig()` defaults to `TIE_BREAKER`, so leaving it alone runs the
+    `ScannerConfig()` defaults to `SHADOW`, so leaving it alone still runs the
     real bi-encoder against the shipped corpus and can downgrade a review to
     allow for reasons that have nothing to do with the rule under test. These
     tests are about L2 aggregation and suppression; L3 gets its own test below.
@@ -378,7 +378,7 @@ def _load(rule_docs: list[dict]):
 
 
 def test_suppressing_a_block_is_rejected_at_load() -> None:
-    with pytest.raises(InvalidAllowRuleError, match="only `review` may be suppressed"):
+    with pytest.raises(InvalidAllowRuleError, match="only `review` or `observe` may be suppressed"):
         _load([_block_rule("AIRA-020"), _allow_rule(suppresses=["AIRA-020"])])
 
 
@@ -421,6 +421,35 @@ def test_valid_suppression_target_loads() -> None:
     assert len(rules) == 2
 
 
+def test_suppressing_an_observe_rule_loads_and_leaves_it_in_matched_rules() -> None:
+    """2.0: AIRA-010/064 become observe; families still name them in suppresses.
+
+    Load must accept that. Runtime must not strip the observe match — it is
+    the log line, not a decision.
+    """
+    from sentrook.config import L3Policy, ScannerConfig
+    from sentrook.scan import scan_plan
+
+    observe = {
+        "rule": "AIRA-010",
+        "meta": {"name": "observe exec", "action": "observe", "authority": "soft"},
+        "condition": {"pending_tool": "exec"},
+    }
+    rules = _load([observe, _allow_rule(suppresses=["AIRA-010"])])
+    plan = PlanIR.model_validate(
+        {
+            "version": "1.0",
+            "run_id": "r-obs-suppress",
+            "steps": [
+                {"id": "s1", "tool": "exec", "status": "pending", "args": {"command": "ls -la"}}
+            ],
+        }
+    )
+    result = scan_plan(plan, rules, ScannerConfig(l3_policy=L3Policy.OFF))
+    assert result.decision == "allow"
+    assert {m.id: m.action for m in result.matched_rules}["AIRA-010"] == "observe"
+
+
 def test_shipped_ruleset_still_loads() -> None:
     """The new cross-rule pass must not reject the library as it stands."""
     from pathlib import Path
@@ -457,7 +486,7 @@ def test_load_rules_rejects_an_allow_rule_naming_a_block(tmp_path) -> None:
     from sentrook.rules.loader import load_rules
 
     _write_rules(tmp_path, [_block_rule("AIRA-020"), _allow_rule(suppresses=["AIRA-020"])])
-    with pytest.raises(InvalidAllowRuleError, match="only `review` may be suppressed"):
+    with pytest.raises(InvalidAllowRuleError, match="only `review` or `observe` may be suppressed"):
         load_rules(tmp_path)
 
 

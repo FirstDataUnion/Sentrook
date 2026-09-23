@@ -324,7 +324,12 @@ def validate_args_match(patterns: dict[str, str] | None) -> dict[str, str] | Non
 
 
 def validate_suppression_targets(rules: list[Rule]) -> None:
-    """Every `suppresses` target must be a soft-authority review rule.
+    """Every `suppresses` target must be a soft-authority review or observe rule.
+
+    Observe holds no decision, so naming it is a no-op at scan time; it is
+    allowed so a family written to suppress AIRA-010/064 still loads after
+    those rules are demoted. Runtime `_suppressed_rule_ids` still only
+    removes `review` matches.
 
     Cross-rule, so it runs at ruleset load rather than per-document. Three ways
     an allow rule could otherwise widen its own blast radius:
@@ -361,10 +366,11 @@ def validate_suppression_targets(rules: list[Rule]) -> None:
                 raise InvalidAllowRuleError(
                     f"Rule {rule.id}: suppresses unknown rule {target_id!r}"
                 )
-            if target.meta.action != "review":
+            if target.meta.action not in ("review", "observe"):
                 raise InvalidAllowRuleError(
                     f"Rule {rule.id}: may not suppress {target_id!r} "
-                    f"(action is {target.meta.action!r}, only `review` may be suppressed)"
+                    f"(action is {target.meta.action!r}, only `review` or "
+                    f"`observe` may be suppressed)"
                 )
             if target.meta.authority != L2Authority.SOFT:
                 raise InvalidAllowRuleError(

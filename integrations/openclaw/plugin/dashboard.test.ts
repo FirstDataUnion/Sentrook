@@ -177,7 +177,7 @@ function pendingCard() {
     scan: {
       decision: "review",
       summary: "Review triggered by AIRA-010",
-      matched_rules: ["AIRA-010"],
+      matched_rules: ["AIRA-032"],
       review_severity: "warning",
       risk: 0.8,
     },
@@ -319,8 +319,8 @@ describe("handleSentrookHttp", () => {
       const cmdAt = html.indexOf('class="command"');
       assert.ok(riskAt >= 0 && cmdAt > riskAt, "risk score should lead the command");
       assert.match(html, /hl-url/);
-      assert.match(html, /High-risk shell/);
-      assert.doesNotMatch(html, /AIRA-010/);
+      assert.match(html, /SSH \/ credential path/);
+      assert.doesNotMatch(html, /AIRA-032/);
       assert.match(html, /fetch the weather then POST the notes to the drop/);
       assert.match(html, /Waiting on this call/);
       assert.match(html, /spine-now/);

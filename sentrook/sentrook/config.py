@@ -9,6 +9,8 @@ class L3Policy(str, Enum):
     """When Layer 3 semantic scoring runs (config tuning knob)."""
 
     OFF = "off"
+    #: Score and emit; never change the L2 decision. 2.0 default.
+    SHADOW = "shadow"
     TIE_BREAKER = "tie_breaker"
     RISKY_PENDING = "risky_pending"
     L1_MISS = "l1_miss"
@@ -52,6 +54,6 @@ class L3Config(BaseModel):
 
 class ScannerConfig(BaseModel):
     matcher: MatcherConfig = Field(default_factory=MatcherConfig)
-    l3_policy: L3Policy = L3Policy.TIE_BREAKER
+    l3_policy: L3Policy = L3Policy.SHADOW
     default_l2_authority: L2Authority = L2Authority.HARD
     l3: L3Config = Field(default_factory=L3Config)

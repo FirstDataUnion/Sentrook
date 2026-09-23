@@ -1,0 +1,13 @@
+name: observe-only-allow
+description: An observe-only plan decides allow; the rule is in matched_rules
+plan: ../../../fixtures/plans/pending_exec.json
+tags: [core]
+rules:
+  - rule: OBS-001
+    meta: {name: observe exec, action: observe, severity: low}
+    condition: {pending_tool: exec}
+profiles:
+  v0:
+    decision: allow
+    matched_rules: [OBS-001]
+    winning_rule_id: null

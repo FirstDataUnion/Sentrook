@@ -619,6 +619,11 @@ def classify_match(
         return True, rule_action
     if rule_action == "allow":
         return False, "no_match"
+    # Observe must never degrade to review — that would hold the decision.
+    if rule_action == "observe":
+        if outcome.confidence >= config.review_threshold:
+            return True, "observe"
+        return False, "no_match"
     if outcome.confidence >= config.review_threshold:
         return True, "review"
     return False, "no_match"

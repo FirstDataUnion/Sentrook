@@ -72,7 +72,6 @@ const SECRET_PATH_MARKERS: ReadonlyArray<{
 export const RULE_MEANING: Record<string, string> = {
   "AIRA-001": "Fetch then risky exec",
   "AIRA-002": "Fetch then write",
-  "AIRA-010": "High-risk shell",
   "AIRA-020": "Pipe to shell",
   "AIRA-030": "Write to /etc",
   "AIRA-031": "Fetch then sensitive write",

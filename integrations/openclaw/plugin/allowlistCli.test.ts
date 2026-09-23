@@ -79,7 +79,7 @@ describe("allowlist CLI helpers", () => {
         {
           kind: "skeleton",
           tool: "exec",
-          matched_rule_ids: ["AIRA-010"],
+          matched_rule_ids: ["AIRA-032"],
           skeleton: "rg -n TODO src/",
           created_at: "2026-07-20T00:00:00.000Z",
           source: "allow-always",
@@ -91,7 +91,7 @@ describe("allowlist CLI helpers", () => {
           script_path: "/tmp/helper.py",
           content_sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
           args_skeleton: "--date <date>",
-          matched_rule_ids: ["AIRA-010"],
+          matched_rule_ids: ["AIRA-032"],
           created_at: "2026-07-20T00:00:00.000Z",
           source: "allow-always",
         },
@@ -102,7 +102,7 @@ describe("allowlist CLI helpers", () => {
     assert.match(out, /match\s+rg -n TODO src\//);
     assert.match(out, /file\s+\/tmp\/helper\.py/);
     assert.match(out, /sha256\s+abcdef012345…/);
-    assert.match(out, /High-risk shell/);
+    assert.match(out, /SSH \/ credential path/);
     assert.doesNotMatch(out, /AIRA-/);
     assert.doesNotMatch(out, /rules=/);
   });

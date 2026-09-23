@@ -339,6 +339,10 @@ export interface ScanResponse {
   review_severity?: ReviewSeverity;
   /** `hard` when any surviving review is hard-authority; absent on older engines. */
   review_authority?: "soft" | "hard";
+  /** Named consequence class on the card (C1…C6), when a review/block holds. */
+  consequence?: string;
+  /** Entity the card is about, when the scan named one. */
+  entity?: string;
   log?: Json;
   timing?: {
     engine_ms?: number;
@@ -427,6 +431,10 @@ export function parseScanResponse(body: unknown): ScanResponse | ScanFailure {
       doc.review_authority === "soft" || doc.review_authority === "hard"
         ? doc.review_authority
         : undefined,
+    consequence: typeof doc.consequence === "string" && doc.consequence.trim()
+      ? doc.consequence.trim()
+      : undefined,
+    entity: typeof doc.entity === "string" && doc.entity.trim() ? doc.entity.trim() : undefined,
     log,
     timing,
     error: typeof doc.error === "string" ? doc.error : undefined,
@@ -1031,6 +1039,8 @@ export function translateScanResponse(
       pendingTool,
       pendingArgs: ctx.pendingArgs,
       eventId: ctx.eventId,
+      consequence: scan.consequence,
+      entity: scan.entity,
     });
     return {
       requireApproval: {

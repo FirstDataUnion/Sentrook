@@ -513,6 +513,38 @@ describe("translateScanResponse — review mapping", () => {
     ]);
   });
 
+  it("does not render a review when the only matches are observe", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "allow",
+      matched_rules: ["OBS-001"],
+      summary: "No actionable matches",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({ pendingArgs: { command: "ls -la" } }),
+    );
+    assert.equal(result, undefined);
+  });
+
+  it("names the consequence class on a review card", () => {
+    const scan: ScanResponse = {
+      block: false,
+      decision: "review",
+      consequence: "C1 credential",
+      entity: "~/.ssh/id_rsa",
+      review_severity: "warning",
+    };
+    const result = translateScanResponse(
+      scan,
+      ctx({ pendingArgs: { command: "cat ~/.ssh/id_rsa" } }),
+    );
+    assert.ok(result?.requireApproval);
+    assert.match(result.requireApproval!.title, /C1 credential/);
+    assert.match(result.requireApproval!.description, /C1 credential: ~\/\.ssh\/id_rsa/);
+    assert.ok(!result.requireApproval!.title.includes("pending shell exec"));
+  });
+
   it("blocks unattended hosted reviews instead of requireApproval", () => {
     const scan: ScanResponse = {
       block: false,
@@ -826,6 +858,18 @@ describe("parseScanResponse", () => {
     if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
     assert.equal(parsed.review_authority, undefined);
     assert.equal(isHardReview(parsed.review_authority), false);
+  });
+
+  it("carries consequence and entity when the response names them", () => {
+    const parsed = parseScanResponse({
+      decision: "review",
+      block: false,
+      consequence: "C1 credential",
+      entity: "~/.ssh/id_rsa",
+    });
+    if ("ok" in parsed && parsed.ok === false) throw new Error("expected scan");
+    assert.equal(parsed.consequence, "C1 credential");
+    assert.equal(parsed.entity, "~/.ssh/id_rsa");
   });
 });
 

@@ -163,7 +163,7 @@ class ServeConfig:
     corpus_dir: Path | None = None
     log_path: Path = DEFAULT_LOG_PATH
     latency_log_path: Path = DEFAULT_LATENCY_LOG_PATH
-    l3_policy: L3Policy = L3Policy.TIE_BREAKER
+    l3_policy: L3Policy = L3Policy.SHADOW
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     bundle_version: str | None = None
@@ -266,7 +266,7 @@ class ServeConfig:
                     else DEFAULT_LATENCY_LOG_PATH
                 )
             ),
-            l3_policy=L3Policy(policy_raw) if policy_raw else L3Policy.TIE_BREAKER,
+            l3_policy=L3Policy(policy_raw) if policy_raw else L3Policy.SHADOW,
             host=env.get("SENTROOK_SCAN_HOST", DEFAULT_HOST),
             port=int(env.get("SENTROOK_SCAN_PORT", str(DEFAULT_PORT))),
             bundle_version=bundle_version,

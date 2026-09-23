@@ -56,6 +56,8 @@ export interface DevLogScanResponse {
   review_title?: string;
   review_description?: string;
   review_severity?: string;
+  consequence?: string;
+  entity?: string;
   log?: Json;
   error?: string;
 }
@@ -272,6 +274,8 @@ export function buildScanDevEvent(input: {
         input.scan.summary || "Sentrook flagged this tool call for human review",
       pendingTool,
       pendingArgs: input.pendingArgs,
+      consequence: input.scan.consequence,
+      entity: input.scan.entity,
     });
   }
 

@@ -117,4 +117,10 @@ class ScanService:
             self.rules = rules
             self.corpus = corpus
             self.scorer = scorer
-            self.config.bundle_version = bundle_version
+            # Name the bundle actually being served, and never blank a known
+            # value: a rules dir with no manifest (image-baked fallback, or a
+            # half-promoted sync) must not turn every later scan line into
+            # `bundle_version: null` — that is how a two-phase-stale bundle
+            # ran unnoticed for a fortnight (F60, checkpoint §8a).
+            if bundle_version is not None:
+                self.config.bundle_version = bundle_version
