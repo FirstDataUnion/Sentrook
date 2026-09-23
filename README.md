@@ -3,6 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@firstdataunion/sentrook-openclaw.svg)](https://www.npmjs.com/package/@firstdataunion/sentrook-openclaw)
 
+NOTICE: Sentrook is undergoing some large changes, and currently in a maintenance mode. The existing offering is still available, but expect some big changes coming soon. 
+
 Sentrook is a runtime security scanner developed by [FIDU](https://firstdataunion.org), 
 intended for open-source AI agents: it catches, reviews, and blocks dangerous actions 
 before they happen, backed by an ever-evolving, community-grown library of attack patterns 
