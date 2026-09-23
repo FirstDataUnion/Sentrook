@@ -145,7 +145,7 @@ def _satisfying_parts() -> tuple[dict[str, str], list[dict]]:
 def _scan(command: str, rule_docs: list[dict], **config_kwargs):
     """Scan with L3 **off** unless a test asks otherwise.
 
-    `ScannerConfig()` defaults to `TIE_BREAKER`, so leaving it alone runs the
+    `ScannerConfig()` defaults to `SHADOW`, so leaving it alone still runs the
     real bi-encoder against the shipped corpus and can downgrade a review to
     allow for reasons that have nothing to do with the rule under test. These
     tests are about L2 aggregation and suppression; L3 gets its own test below.

@@ -1,0 +1,21 @@
+name: shadow-does-not-move
+description: SHADOW never moves a decision TIE_BREAKER would have moved
+plan: ../../../fixtures/plans/pending_exec.json
+tags: [core]
+rules:
+  - rule: REV-001
+    meta: {name: soft review, action: review, authority: soft, severity: medium}
+    condition: {pending_tool: exec}
+profiles:
+  v0:
+    decision: review
+    matched_rules: [REV-001]
+    winning_rule_id: REV-001
+  shadow:
+    decision: review
+    matched_rules: [REV-001]
+    winning_rule_id: REV-001
+    l3_required: true
+  tie_breaker:
+    decision: allow
+    l3_required: true

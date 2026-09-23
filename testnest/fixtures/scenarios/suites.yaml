@@ -2,5 +2,8 @@ suites:
   smoke:
     description: Engine wiring only — not policy regression
     tags: [smoke]
+  core:
+    description: Observe action and L3 SHADOW — engine behaviour, synthetic rules
+    tags: [core]
   all:
     description: Every public scenario

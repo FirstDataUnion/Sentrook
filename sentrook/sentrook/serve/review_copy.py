@@ -1366,8 +1366,6 @@ def describe_pending_action(record: ScanLogRecord, result: ScanResult) -> str:
 def _rule_consequence(rule: MatchedRule) -> str:
     """Short plain-language consequence for a matched rule (no rule id)."""
     name = rule.name.lower()
-    if rule.id == "AIRA-010" or "shell exec" in name:
-        return "could run arbitrary commands on your machine"
     if rule.id == "AIRA-064" or "read then exec" in name:
         return "may be running instructions from a file it just read"
     if "fetch" in name and "exec" in name:

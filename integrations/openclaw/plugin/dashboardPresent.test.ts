@@ -56,13 +56,11 @@ describe("highlightCommandHtml", () => {
 describe("ruleMeanings", () => {
   it("maps known ids and drops unknown AIRA ids", () => {
     assert.deepEqual(ruleMeanings(["AIRA-010", "AIRA-032"]), [
-      "High-risk shell",
       "SSH / credential path",
     ]);
-    assert.deepEqual(ruleMeanings(["AIRA-999", "AIRA-010"]), ["High-risk shell"]);
+    assert.deepEqual(ruleMeanings(["AIRA-999", "AIRA-010"]), []);
     assert.deepEqual(ruleMeanings(["AIRA-010", "AIRA-032"], "AIRA-032"), [
       "SSH / credential path",
-      "High-risk shell",
     ]);
   });
 });

@@ -644,6 +644,25 @@ export interface ApprovalCopy {
   commandFound: boolean;
 }
 
+function namedConsequence(consequence?: string, entity?: string): string | undefined {
+  const klass = consequence?.trim();
+  if (!klass) return undefined;
+  const ent = entity?.trim();
+  return ent ? `${klass}: ${ent}` : klass;
+}
+
+function withNamedTitle(named: string | undefined, title: string): string {
+  if (!named) return title;
+  if (title.toLowerCase().startsWith(named.toLowerCase())) return clip(title, REVIEW_TITLE_MAX);
+  return clip(`${named}: ${title}`, REVIEW_TITLE_MAX);
+}
+
+function withNamedBody(named: string | undefined, body: string): string {
+  if (!named) return body;
+  if (body.toLowerCase().startsWith(named.toLowerCase())) return body;
+  return `${named}\n${body}`;
+}
+
 export function overlayApprovalCopy(input: {
   scanTitle?: string;
   scanDescription?: string;
@@ -652,7 +671,10 @@ export function overlayApprovalCopy(input: {
   pendingTool: string;
   pendingArgs?: Record<string, unknown>;
   eventId?: string;
+  consequence?: string;
+  entity?: string;
 }): ApprovalCopy {
+  const named = namedConsequence(input.consequence, input.entity);
   const localCommand = pendingDisplayCommand(input.pendingArgs);
   const localArgs = hasStructuredPreview(input.pendingArgs);
   if (localCommand || localArgs) {
@@ -662,8 +684,8 @@ export function overlayApprovalCopy(input: {
       args: input.pendingArgs,
     });
     return {
-      title: card.title,
-      description: withDashboardHint(card.description, input.eventId),
+      title: withNamedTitle(named, card.title),
+      description: withDashboardHint(withNamedBody(named, card.description), input.eventId),
       source: "local_argv",
       commandFound: card.commandFound,
     };
@@ -673,15 +695,15 @@ export function overlayApprovalCopy(input: {
   const descriptionIn = input.scanDescription?.trim() || input.fallbackDescription;
   if (isPolicyHeadline(titleIn)) {
     return {
-      title: honestMissTitle(input.pendingTool),
-      description: withDashboardHint(descriptionIn, input.eventId),
+      title: withNamedTitle(named, honestMissTitle(input.pendingTool)),
+      description: withDashboardHint(withNamedBody(named, descriptionIn), input.eventId),
       source: "honest_miss",
       commandFound: false,
     };
   }
   return {
-    title: clip(titleIn, REVIEW_TITLE_MAX),
-    description: withDashboardHint(descriptionIn, input.eventId),
+    title: withNamedTitle(named, clip(titleIn, REVIEW_TITLE_MAX)),
+    description: withDashboardHint(withNamedBody(named, descriptionIn), input.eventId),
     source: "sidecar",
     commandFound: false,
   };

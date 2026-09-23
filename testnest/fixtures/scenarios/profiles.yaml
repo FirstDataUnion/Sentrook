@@ -3,3 +3,13 @@ profiles:
     description: Smoke profile — L3 off
     scanner:
       l3_policy: "off"
+  shadow:
+    description: L3 scores and emits; never changes the decision
+    scanner:
+      l3_policy: shadow
+      default_l2_authority: soft
+  tie_breaker:
+    description: L3 may downgrade a soft review
+    scanner:
+      l3_policy: tie_breaker
+      default_l2_authority: soft

@@ -1,0 +1,16 @@
+name: observe-plus-soft-review
+description: Observe plus a soft review decides review held by the soft rule
+plan: ../../../fixtures/plans/pending_exec.json
+tags: [core]
+rules:
+  - rule: OBS-001
+    meta: {name: observe exec, action: observe, severity: low}
+    condition: {pending_tool: exec}
+  - rule: REV-001
+    meta: {name: soft review, action: review, authority: soft, severity: medium}
+    condition: {pending_tool: exec}
+profiles:
+  v0:
+    decision: review
+    matched_rules: [OBS-001, REV-001]
+    winning_rule_id: REV-001

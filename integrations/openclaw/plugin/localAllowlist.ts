@@ -450,7 +450,7 @@ export function extractMatchedRuleIds(log: Record<string, unknown> | undefined):
       const record = item as Record<string, unknown>;
       const id = record.id;
       if (typeof id !== "string" || !id.trim()) continue;
-      if (record.action === "allow") continue;
+      if (record.action === "allow" || record.action === "observe") continue;
       if (record.action === undefined && ALLOW_FAMILY_ID_RE.test(id.trim())) continue;
       ids.push(id.trim());
     }

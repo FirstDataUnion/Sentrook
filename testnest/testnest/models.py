@@ -31,6 +31,8 @@ class ProfileExpectation(BaseModel):
     xfail: bool = False
     xfail_reason: str | None = None
     l3_required: bool | None = None
+    #: Set in YAML to assert the winner (including ``null`` for observe-only).
+    winning_rule_id: str | None = None
 
     @model_validator(mode="after")
     def _actionable_or_skipped(self) -> ProfileExpectation:
@@ -46,6 +48,9 @@ class Scenario(BaseModel):
     description: str = ""
     plan: str
     tags: list[str] = Field(default_factory=list)
+    #: Inline YAIRA docs. When set, the runner compiles these instead of
+    #: ``rules_dir`` so engine-behaviour scenarios do not need a library pin.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
     profiles: dict[str, ProfileExpectation] = Field(default_factory=dict)
 
     def plan_path(self, scenarios_dir: Any) -> Any:

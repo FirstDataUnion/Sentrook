@@ -332,6 +332,22 @@ describe("overlayApprovalCopy", () => {
     assert.equal(copy.commandFound, false);
   });
 
+  it("names the consequence class and entity on the card", () => {
+    const copy = overlayApprovalCopy({
+      fallbackTitle: "exec: no command preview",
+      fallbackDescription: "flagged",
+      pendingTool: "exec",
+      pendingArgs: { command: "cat ~/.ssh/id_rsa" },
+      consequence: "C1 credential",
+      entity: "~/.ssh/id_rsa",
+    });
+    assert.match(copy.title, /C1 credential/);
+    assert.match(copy.title, /id_rsa/);
+    assert.match(copy.description, /C1 credential: ~\/\.ssh\/id_rsa/);
+    assert.ok(!copy.title.includes("pending shell exec"));
+    assert.ok(!copy.description.includes("pending shell exec"));
+  });
+
   it("rebuilds process log from local args when sidecar honest-missed", () => {
     const copy = overlayApprovalCopy({
       scanTitle: "process: no preview",

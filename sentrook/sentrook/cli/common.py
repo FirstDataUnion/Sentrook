@@ -59,7 +59,7 @@ def build_scanner_config(
     if top_k is not None:
         l3_kwargs["top_k"] = top_k
 
-    policy = L3Policy(l3_policy) if l3_policy is not None else L3Policy.TIE_BREAKER
+    policy = L3Policy(l3_policy) if l3_policy is not None else L3Policy.SHADOW
 
     return ScannerConfig(l3_policy=policy, l3=L3Config(**l3_kwargs))
 

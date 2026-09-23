@@ -6,6 +6,7 @@ from pathlib import Path
 from sentrook import __version__
 from sentrook.adapters.snapshot import primary_pending_step
 from sentrook.config import L2Authority, L3Policy, ScannerConfig
+from sentrook.consequence import consequence_class_for
 from sentrook.corpus.loader import load_corpus, resolve_corpus_dir
 from sentrook.corpus.models import LoadedRuleCorpus
 from sentrook.corpus.personal import resolve_personal_corpus_dir
@@ -200,6 +201,7 @@ def scan_plan(
 
     pending = primary_pending_step(redacted_plan)
     subgraph = subgraph_from_matched_rule(redacted_plan, winning_rule)
+    rule_by_id = {r.id: r for r in (candidates or [])}
 
     steps_summary = [
         StepSummary(id=step.id, tool=step.tool, status=step.status) for step in redacted_plan.steps
@@ -211,6 +213,7 @@ def scan_plan(
         summary=summary,
         matched_rules=matched_rules,
         winning_rule_id=winning_rule.id if winning_rule is not None else None,
+        consequence=consequence_class_for(winning_rule, rule_by_id),
         matched_subgraph=subgraph,
         layers=LayerInfo(
             exits=exits,
@@ -384,7 +387,8 @@ def _apply_l3(
             ran_any = True
 
     downgraded = {t.rule_id for t in traces if t.ran and t.decision == "allow"}
-    if downgraded:
+    # SHADOW scores and traces like TIE_BREAKER, then throws the fuse away.
+    if downgraded and config.l3_policy != L3Policy.SHADOW:
         for matched in matched_rules:
             if matched.id in downgraded:
                 matched.layer = "L3"

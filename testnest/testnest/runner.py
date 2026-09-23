@@ -10,7 +10,9 @@ from sentrook.corpus.loader import load_corpus, resolve_corpus_dir
 from sentrook.corpus.models import LoadedRuleCorpus
 from sentrook.layers.l3_embed import make_scorer
 from sentrook.layers.l3_score import BiEncoderScorer
-from sentrook.scan import scan_plan_file
+from sentrook.planir import PlanIR
+from sentrook.rules.compiler import compile_rule
+from sentrook.scan import scan_plan, scan_plan_file
 from testnest.assertions import AssertionFailure, check_expectation
 from testnest.loader import filter_scenarios, load_scenarios, load_suites
 from testnest.models import Scenario
@@ -138,7 +140,19 @@ def _run_scenario(
 
     plan_path = scenario.plan_path(scenarios_dir)
     try:
-        scan_result = scan_plan_file(plan_path, rules_dir, config, corpus=corpus, l3_scorer=scorer)
+        if scenario.rules:
+            import json
+
+            with plan_path.open(encoding="utf-8") as handle:
+                plan = PlanIR.model_validate(json.load(handle))
+            rules = [compile_rule(doc) for doc in scenario.rules]
+            scan_result = scan_plan(
+                plan, rules, config, corpus=corpus, l3_scorer=scorer
+            )
+        else:
+            scan_result = scan_plan_file(
+                plan_path, rules_dir, config, corpus=corpus, l3_scorer=scorer
+            )
     except Exception as exc:
         if expectation.xfail:
             return ScenarioResult(

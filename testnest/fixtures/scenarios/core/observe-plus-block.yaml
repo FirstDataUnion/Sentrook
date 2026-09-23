@@ -1,0 +1,16 @@
+name: observe-plus-block
+description: Observe plus a block decides block
+plan: ../../../fixtures/plans/pending_exec.json
+tags: [core]
+rules:
+  - rule: OBS-001
+    meta: {name: observe exec, action: observe, severity: low}
+    condition: {pending_tool: exec}
+  - rule: BLK-001
+    meta: {name: block exec, action: block, severity: critical}
+    condition: {pending_tool: exec}
+profiles:
+  v0:
+    decision: block
+    matched_rules: [OBS-001, BLK-001]
+    winning_rule_id: BLK-001

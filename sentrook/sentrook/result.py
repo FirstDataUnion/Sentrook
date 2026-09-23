@@ -14,7 +14,11 @@ from sentrook.planir import PlanStep
 #: path, for every scan it fired on. Nothing caught it because no *shipped*
 #: rule used the action until Phase 3b, and the tripwire asserting that was
 #: itself the reason the gap could sit there.
-RuleAction = Literal["block", "review", "allow"]
+#:
+#: `observe` is the same gap a second time (F63): it matches, logs and counts,
+#: and must never hold the decision. Widening this alias is what makes the
+#: log and the rule model accept it by construction.
+RuleAction = Literal["block", "review", "allow", "observe"]
 
 
 class MatchedRule(BaseModel):
@@ -124,7 +128,7 @@ class L2RuleTrace(BaseModel):
     #: `allow` now means "this allow rule fired" and no longer collides with
     #: "this rule did not match" — two opposite facts that previously required
     #: joining `hit` to disambiguate.
-    effective_action: Literal["no_match", "allow", "review", "block"] | None = None
+    effective_action: Literal["no_match", "allow", "review", "block", "observe"] | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -155,6 +159,10 @@ class ScanResult(BaseModel):
     matched_rules: list[MatchedRule] = Field(default_factory=list)
     #: Rule that drove the final decision after L2/L3 aggregate (not list order).
     winning_rule_id: str | None = None
+    #: Named consequence class of the winning review/block, or None when none holds.
+    consequence: str | None = None
+    #: Entity the card is about, when the scan named one (S4). Absent otherwise.
+    entity: str | None = None
     matched_subgraph: MatchedSubgraph | None = None
     layers: LayerInfo = Field(default_factory=LayerInfo)
     plan: PlanEcho

@@ -62,6 +62,17 @@ def check_expectation(result: ScanResult, expectation: ProfileExpectation) -> As
             )
         )
 
+    if "winning_rule_id" in expectation.model_fields_set:
+        actual_win = result.winning_rule_id
+        if actual_win != expectation.winning_rule_id:
+            failures.append(
+                AssertionFailure(
+                    "winning_rule_id",
+                    str(expectation.winning_rule_id),
+                    str(actual_win),
+                )
+            )
+
     if expectation.l3_required is True and "L3" not in result.layers.exits:
         failures.append(
             AssertionFailure(

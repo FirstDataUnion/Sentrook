@@ -271,7 +271,7 @@ describe("handleSentrookCommand", () => {
             decision: "review",
             risk: 0.82,
             summary: "Review triggered by AIRA-010: pending exec looked risky",
-            matched_rules: ["AIRA-010"],
+            matched_rules: ["AIRA-032"],
             review_severity: "warning",
           },
         },
@@ -281,7 +281,7 @@ describe("handleSentrookCommand", () => {
     assert.match(reply.text, /Pending review  sr_one01/);
     assert.match(reply.text, /Severity\s+warning/);
     assert.match(reply.text, /Risk\s+82 \/ 100/);
-    assert.match(reply.text, /High-risk shell/);
+    assert.match(reply.text, /SSH \/ credential path/);
     assert.match(reply.text, /pending exec looked risky/);
     assert.match(reply.text, /update the plugin/);
     assert.match(reply.text, /\/approve plugin:abc allow-once/);
@@ -328,7 +328,7 @@ describe("handleSentrookCommand", () => {
       run_id: "uuid-1:r1",
       metadata: { adapter: "openclaw", hook: "before_tool_call", session_id: "uuid-1" },
       pending: { id: "s1", tool: "exec", status: "pending", args: { command: "curl https://x" } },
-      scan: { decision: "review", matched_rules: ["AIRA-010"], summary: "Review triggered by AIRA-010" },
+      scan: { decision: "review", matched_rules: ["AIRA-032"], summary: "Review triggered by AIRA-032" },
       hook: { action: "requireApproval" },
     });
     appendOperatorLog(log, {
@@ -364,9 +364,9 @@ describe("handleSentrookCommand", () => {
     assert.match(detail.text, /Scan\s+review/);
     assert.match(detail.text, /Then\s+waiting/);
     assert.match(detail.text, /Ran\s+waiting/);
-    assert.match(detail.text, /Why\s+High-risk shell/);
+    assert.match(detail.text, /Why\s+SSH \/ credential path/);
     assert.match(detail.text, /\/sentrook allowlist add sr_hist01/);
-    assert.doesNotMatch(detail.text, /AIRA-010/);
+    assert.doesNotMatch(detail.text, /AIRA-032/);
     const stale = handleSentrookCommand(
       { args: "pending sr_hist01", senderIsOwner: true, sessionId: "uuid-1" },
       deps,
@@ -415,7 +415,7 @@ describe("handleSentrookCommand", () => {
         {
           kind: "skeleton",
           tool: "exec",
-          matched_rule_ids: ["AIRA-010"],
+          matched_rule_ids: ["AIRA-032"],
           skeleton: "rg -n TODO src/",
           created_at: "2026-07-20T00:00:00.000Z",
           source: "allow-always",
@@ -425,7 +425,7 @@ describe("handleSentrookCommand", () => {
     const { deps } = makeDeps({ allowlistPath: path });
     const listed = handleSentrookCommand({ args: "allowlist", senderIsOwner: true }, deps);
     assert.match(listed.text, /rg -n TODO src\//);
-    assert.match(listed.text, /High-risk shell/);
+    assert.match(listed.text, /SSH \/ credential path/);
     assert.doesNotMatch(listed.text, /AIRA-/);
     assert.doesNotMatch(listed.text, /rules=/);
     const removed = handleSentrookCommand({ args: "allowlist rm 1", senderIsOwner: true }, deps);
