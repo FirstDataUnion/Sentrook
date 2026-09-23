@@ -306,11 +306,31 @@ export function unwrapHostToolResult(
   return stringifyResult(result);
 }
 
-/** Drop table-cell / IP / version false positives from PATH_RE. */
+/**
+ * Filesystem paths named in tool output. Drops table-cell / IP / version false
+ * positives, and never reads a URL's authority-and-path as a local file.
+ *
+ * `PATH_RE` starts at the *second* slash of `https://docs.example.ai/a/b` and
+ * yields `/docs.example.ai/a/b`, which is not a file anyone read. Measured on
+ * the replayed sessions in Rookery's `eval/plans/replay/`, a naive "a path from
+ * an executed step reappears in the pending argv" predicate fired on 55.9% of
+ * plans and URL path components were the bulk of that noise. Phase 4's
+ * referential arm reads this field as its **source**, so the junk would have
+ * become the signal.
+ *
+ * URLs are masked whole rather than trimmed to their path: a remote URL's path
+ * names a resource on someone else's host, not a local file. Documented
+ * residual — a filesystem path embedded in a URL (`?redirect=/etc/passwd`) is
+ * not extracted here; it stays visible in `extracted.urls` and in the excerpt.
+ * `file://` URLs are unaffected and still yield their path, which is correct.
+ *
+ * Mirrored in `sentrook/adapters/snapshot.py` and `integrations/hermes/plugin/
+ * planir.py`; `fixtures/extracted_paths_golden.jsonl` binds all three (D22).
+ */
 export function extractedFilesystemPaths(body: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const match of body.match(PATH_RE) ?? []) {
+  for (const match of body.replace(URL_RE, " ").match(PATH_RE) ?? []) {
     const path = match.replace(/[.,;:]+$/u, "");
     if (!isFilesystemPath(path) || seen.has(path)) continue;
     seen.add(path);

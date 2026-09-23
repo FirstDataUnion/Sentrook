@@ -27,7 +27,9 @@ class SanitizeRules:
     session_hash_prefix: str
     session_hash_hex_chars: int
     credential_field: re.Pattern[str]
-    secret_value_patterns: tuple[tuple[str, re.Pattern[str], bool], ...]
+    #: ``(name, pattern, keep_prefix, context_prefix)`` — see rules.yaml on the
+    #: difference between a prefix that is context and one that is the value.
+    secret_value_patterns: tuple[tuple[str, re.Pattern[str], bool, bool], ...]
     pii_patterns: tuple[tuple[str, re.Pattern[str], str | None], ...]
     pii_arg_keys: frozenset[str]
     allowed_result_keys: frozenset[str]
@@ -63,13 +65,14 @@ def _compile_secret_patterns(
     items: list[dict[str, Any]],
     *,
     flags: int = 0,
-) -> tuple[tuple[str, re.Pattern[str], bool], ...]:
-    compiled: list[tuple[str, re.Pattern[str], bool]] = []
+) -> tuple[tuple[str, re.Pattern[str], bool, bool], ...]:
+    compiled: list[tuple[str, re.Pattern[str], bool, bool]] = []
     for item in items:
         name = str(item["name"])
         pattern = re.compile(str(item["pattern"]), flags)
         keep_prefix = bool(item.get("keep_prefix", False))
-        compiled.append((name, pattern, keep_prefix))
+        context_prefix = bool(item.get("context_prefix", False))
+        compiled.append((name, pattern, keep_prefix, context_prefix))
     return tuple(compiled)
 
 

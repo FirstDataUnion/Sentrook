@@ -15,6 +15,12 @@ import type { PlanIR } from "./planir.ts";
 export interface SecretValuePattern {
   pattern: RegExp;
   keepPrefix?: boolean;
+  /**
+   * The kept capture is *context around* the secret (`Bearer `, `Cookie: `),
+   * not the first bytes *of* it (`sk-ant-`, `ghp_`). The marker then digests
+   * only what follows. Mirror of `context_prefix` in sanitize/rules.yaml.
+   */
+  contextPrefix?: boolean;
 }
 
 export interface SanitizeRules {
@@ -65,9 +71,22 @@ const CLI_SECRET_FLAG =
  */
 export type PiiValidator = "luhn" | "iban_mod97" | "phone_plausible" | "uk_postcode_plausible";
 
+/**
+ * Major-industry identifiers payment cards actually use: 3 (Amex, Diners, JCB),
+ * 4 (Visa), 5 (Mastercard), 6 (Discover, UnionPay, Maestro), 2 (Mastercard's
+ * 2-series). **No scheme issues a PAN starting 0, 1, 7, 8 or 9.** Mirror of
+ * `_CARD_MII` in core.py.
+ */
+const CARD_MII = new Set([2, 3, 4, 5, 6]);
+
 function luhnValid(value: string): boolean {
   const digits = [...value].filter((c) => c >= "0" && c <= "9").map(Number);
   if (digits.length < 13 || digits.length > 19) return false;
+  // Luhn alone passes about one random digit-run in ten, and an epoch-ms
+  // timestamp is a 13-digit run beginning with `1` until the year 2286 — so
+  // without this gate a tenth of the `createdAtMs` values in a JSON result came
+  // back redacted, intermittently, each minting a marker on a timestamp (F94).
+  if (!CARD_MII.has(digits[0])) return false;
   let total = 0;
   let double = false;
   for (let i = digits.length - 1; i >= 0; i--) {
@@ -136,7 +155,7 @@ const PII_VALIDATORS: Record<PiiValidator, (value: string) => boolean> = {
 export const DEFAULT_RULES: SanitizeRules = {
   // Bump on ANY change; surfaces as `rules_version` in the operator log so a
   // log line identifies the sanitize ruleset that produced it.
-  version: 4,
+  version: 6,
   redacted: "[REDACTED]",
   truncated: "[TRUNCATED]",
   resultTextMaxChars: 500,
@@ -148,7 +167,7 @@ export const DEFAULT_RULES: SanitizeRules = {
   // Bounded ``pass`` — see rules.yaml credential_field_pattern.
   credentialField: /(token|password|passwd|(?<![a-z])pass(?![a-z])|secret|api[_-]?key|auth|credential|bearer)/i,
   secretValuePatterns: [
-    { pattern: /(bearer\s+)[A-Za-z0-9._=-]+/gi, keepPrefix: true },
+    { pattern: /(bearer\s+)[A-Za-z0-9._=-]+/gi, keepPrefix: true, contextPrefix: true },
     {
       pattern:
         /(sk-(?:proj|svcacct|admin|live)-)[A-Za-z0-9_-]{8,}|(sk-)[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}|(sk-)[a-z0-9]{10,}/gi,
@@ -193,6 +212,7 @@ export const DEFAULT_RULES: SanitizeRules = {
       pattern:
         /((?:set-)?cookie\s*:\s*)[^\r\n"']+|((?:session|sessid|sid|auth_?session)\s*=\s*)[^\s;&"']+/gi,
       keepPrefix: true,
+      contextPrefix: true,
     },
     { pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/gi },
   ],
@@ -629,6 +649,26 @@ export function restoreHeadToken(
   return scrubbed.slice(0, dst[0]) + src[2] + scrubbed.slice(dst[1]);
 }
 
+/**
+ * Brackets and parentheses a shell would require to be quoted. An *unquoted*
+ * assignment value containing one is not a literal value at all — `bash` cannot
+ * parse `PASS=p(w)` — so it is a code expression or a command substitution, and
+ * redacting it is wrong twice over: it destroys the command (which `exec_shape`
+ * is derived from) and mints a stable marker on something that is not a secret.
+ * Seen on every Python heredoc a real agent wrote:
+ * `token_data=json.loads(response.read())`, `token=token_data['query']`.
+ * **Quoted values are deliberately not covered** — `bot_password='Mxyz…'` is
+ * indistinguishable from a real assignment and stays redacted (F94).
+ * Mirror of `_is_code_expression` in core.py.
+ */
+const CODE_EXPRESSION_CHARS = /[()[\]{}]/;
+
+export function isCodeExpression(value: string): boolean {
+  const stripped = value.trim();
+  if (stripped.startsWith('"') || stripped.startsWith("'")) return false;
+  return CODE_EXPRESSION_CHARS.test(stripped);
+}
+
 function redactEnvSecretAssignments(
   text: string,
   placeholder: string,
@@ -638,6 +678,7 @@ function redactEnvSecretAssignments(
     if (!isCredentialVarName(name)) return match;
     if (!exportPrefix && !isShellStyleAssignmentName(name)) return match;
     const value = match.slice(match.indexOf("=") + 1);
+    if (isCodeExpression(value)) return match;
     return `${exportPrefix}${name}=${mint(placeholder, value, marker)}`;
   });
 }
@@ -661,7 +702,9 @@ function redactCliSecretFlags(
  * markers collide on timestamps. Mirror of `_STRUCTURED_TOKEN` in core.py.
  */
 const STRUCTURED_TOKEN =
-  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/gi;
+  // `CVE-2025-32072` is `\d{4}-\d{5}`, which `phone_plausible` accepts, so every
+  // advisory quoted in a tool result came back as `CVE-[REDACTED:…]` (F94).
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b|\bCVE-\d{4}-\d{4,7}\b/gi;
 
 /** Private-use sentinel; will not occur in argv or JSON text. */
 const HOLD = "\ue000";
@@ -712,13 +755,20 @@ function applySecretValuePatterns(
   marker?: SecretMarker,
 ): string {
   let out = text;
-  for (const { pattern, keepPrefix } of patterns) {
+  for (const { pattern, keepPrefix, contextPrefix } of patterns) {
     pattern.lastIndex = 0;
     out = out.replace(pattern, (match: string, ...args: unknown[]) => {
-      // The marker always digests the WHOLE match, never the suffix after the
-      // kept prefix — otherwise `ghp_abc…` caught here (prefix kept) and the
-      // same value caught by `TOKEN=ghp_abc…` (prefix not kept) would mint
+      // The marker digests the WHOLE match by default, never the suffix after
+      // the kept prefix — otherwise `ghp_abc…` caught here (prefix kept) and
+      // the same value caught by `TOKEN=ghp_abc…` (prefix not kept) would mint
       // different markers and the dataflow link would silently fail.
+      //
+      // `contextPrefix` inverts that for the two patterns whose kept capture is
+      // context rather than the value's first bytes. There the whole-match
+      // digest is what breaks the link: a token read as `OPENAI_API_KEY=sk-…`
+      // digests the bare value, and the same token sent as `Authorization:
+      // Bearer sk-…` digested `Bearer sk-…`. Read-then-send-in-a-header is the
+      // commonest egress shape there is, so the value arm was blind to it.
       if (!keepPrefix) {
         return mint(redacted, match, marker);
       }
@@ -729,8 +779,9 @@ function applySecretValuePatterns(
           // placeholder, leave the match alone. Digesting the *whole* match
           // (needed so one secret marks identically however it was captured)
           // would otherwise re-mint on every pass.
-          if (isPlaceholder(match.slice(arg.length), redacted)) return match;
-          return `${arg}${mint(redacted, match, marker)}`;
+          const remainder = match.slice(arg.length);
+          if (isPlaceholder(remainder, redacted)) return match;
+          return `${arg}${mint(redacted, contextPrefix ? remainder : match, marker)}`;
         }
       }
       return mint(redacted, match, marker);
