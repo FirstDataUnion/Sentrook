@@ -890,6 +890,9 @@ export function buildResultOperatorEvent(input: {
   unattended?: boolean;
   contributeEligible?: boolean;
   parentSessionId?: string | null;
+  /** Override the session marker. Tests only — production leaves it unset so
+   *  the mint goes through `markerForSession`, exactly as the wire side does. */
+  marker?: SecretMarker;
 }): Omit<OperatorLogEvent, "ts" | "schema_version" | "id"> {
   const unwrapped = unwrapHostToolResult(input.resultText);
   const summary = buildResultSummary(unwrapped.text, {
@@ -901,9 +904,11 @@ export function buildResultOperatorEvent(input: {
   });
   // Phase 4 needs BOTH ends marked: the executed step's result and the pending
   // step's argv. Marking only one makes the flow invisible.
-  const resultMarker = markerForSession(
-    typeof input.metadata.session_id === "string" ? input.metadata.session_id : null,
-  );
+  const resultMarker =
+    input.marker ??
+    markerForSession(
+      typeof input.metadata.session_id === "string" ? input.metadata.session_id : null,
+    );
   summary.excerpt = scrubSecretsAndPii(summary.excerpt, DEFAULT_RULES, resultMarker);
   if (summary.extracted.commands.length) {
     summary.extracted.commands = summary.extracted.commands.map((item) =>

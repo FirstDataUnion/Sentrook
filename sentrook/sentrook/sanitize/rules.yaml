@@ -5,7 +5,7 @@
 # Bump on ANY change to these rules. Recorded as ``rules_version`` in the
 # operator log, so a log line identifies the sanitize ruleset that produced it —
 # which is how you tell a genuine redaction bug from a stale deployed bundle.
-version: 4
+version: 6
 
 placeholders:
   redacted: "[REDACTED]"
@@ -45,10 +45,19 @@ credential_field_pattern: "(token|password|passwd|(?<![a-z])pass(?![a-z])|secret
 # keep_prefix: true — replacement is (first participating capture) + [REDACTED]
 # so L2 rules can still see sk-ant- / Bearer / webhook path without the secret.
 # Capture the stable prefix; omit keep_prefix to replace the whole match.
+#
+# context_prefix: true — the kept capture is *context around* the secret
+# (`Bearer `, `Cookie: `), not the first bytes *of* it (`sk-ant-`, `ghp_`). The
+# marker then digests only what follows. Without it the same token read from a
+# `.env` and sent in an `Authorization: Bearer` header mints two digests and
+# Phase 4's value-provenance link silently fails — in the commonest egress shape
+# there is. Everywhere else the prefix IS the value's first bytes, so the
+# whole-match digest is what agrees with the `TOKEN=<value>` path.
 secret_value_patterns:
   - name: bearer_token
     pattern: '(bearer\s+)[A-Za-z0-9._=-]+'
     keep_prefix: true
+    context_prefix: true
   - name: openai_key
     # Classic user keys (T3BlbkFJ = base64 "OpenAI"), project/svc/admin/live keys,
     # plus a short sk- fallback for fixtures / short keys (no hyphen body).
@@ -119,6 +128,7 @@ secret_value_patterns:
     # which requires an underscore-delimited keyword.
     pattern: '((?i:set-)?(?i:cookie)\s*:\s*)[^\r\n"'']+|((?i:session|sessid|sid|auth_?session)\s*=\s*)[^\s;&"'']+'
     keep_prefix: true
+    context_prefix: true
   - name: pem_private_key
     pattern: '-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----'
 

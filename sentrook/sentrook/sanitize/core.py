@@ -254,6 +254,26 @@ def truncate(
     return text[: limit - 3] + "..."
 
 
+#: Brackets and parentheses a shell would require to be quoted. An *unquoted*
+#: assignment value containing one is not a literal value at all — `bash` cannot
+#: parse `PASS=p(w)` — so it is a code expression or a command substitution, and
+#: redacting it is wrong twice over: it destroys the command (which `exec_shape`
+#: is then derived from) and mints a stable marker on something that is not a
+#: secret. Seen on every Python heredoc a real agent wrote:
+#: `token_data=json.loads(response.read())`, `token=token_data['query']`.
+#: **Quoted values are deliberately not covered** — `bot_password='Mxyz…'` is
+#: indistinguishable from a real assignment and stays redacted (F94).
+_CODE_EXPRESSION_CHARS = frozenset("()[]{}")
+
+
+def _is_code_expression(value: str) -> bool:
+    """True when an unquoted assignment value cannot be a literal shell value."""
+    stripped = value.strip()
+    if stripped[:1] in {'"', "'"}:
+        return False
+    return any(ch in _CODE_EXPRESSION_CHARS for ch in stripped)
+
+
 def redact_env_secret_assignments(
     text: str,
     placeholder: str,
@@ -272,8 +292,10 @@ def redact_env_secret_assignments(
             return match.group(0)
         if not export and not is_shell_style_assignment_name(name):
             return match.group(0)
-        count += 1
         value = match.group(0).split("=", 1)[1]
+        if _is_code_expression(value):
+            return match.group(0)
+        count += 1
         return f"{export}{name}={_mint(placeholder, value, marker)}"
 
     return _ENV_ASSIGNMENT.sub(_repl, text), count
@@ -315,12 +337,12 @@ def apply_secret_patterns_with_hits(
     if cli_hits:
         hits.append("cli_secret_flag")
 
-    for name, pattern, keep_prefix in rules.secret_value_patterns:
+    for name, pattern, keep_prefix, context_prefix in rules.secret_value_patterns:
         if pattern.search(cleaned):
             hits.append(name)
             cleaned = pattern.sub(
-                lambda match, *, keep=keep_prefix: _prefix_preserving_repl(
-                    match, rules.redacted, keep, marker
+                lambda match, *, keep=keep_prefix, ctx=context_prefix: _prefix_preserving_repl(
+                    match, rules.redacted, keep, marker, context_prefix=ctx
                 ),
                 cleaned,
             )
@@ -345,14 +367,24 @@ def _prefix_preserving_repl(
     placeholder: str,
     keep_prefix: bool,
     marker: SecretMarker | None = None,
+    *,
+    context_prefix: bool = False,
 ) -> str:
     """Replace a secret match, optionally keeping the first capturing group.
 
-    The marker always digests the **whole match**, never the suffix after the
-    kept prefix. Otherwise ``ghp_abc…`` caught by the provider pattern (which
-    keeps ``ghp_``) and the same value caught by ``TOKEN=ghp_abc…`` (which does
-    not) would mint different markers, and the dataflow link would silently
-    fail. ``normalize_secret`` handles the quoting differences.
+    The marker digests the **whole match** by default, never the suffix after
+    the kept prefix. Otherwise ``ghp_abc…`` caught by the provider pattern
+    (which keeps ``ghp_``) and the same value caught by ``TOKEN=ghp_abc…``
+    (which does not) would mint different markers, and the dataflow link would
+    silently fail. ``normalize_secret`` handles the quoting differences.
+
+    ``context_prefix`` inverts that for the two patterns whose kept capture is
+    *context around* the secret rather than the first bytes *of* it — ``Bearer``
+    and ``Cookie:``. There the whole-match digest is the one that breaks the
+    link: a token read as ``OPENAI_API_KEY=sk-proj-…`` digests the bare value,
+    and the same token sent as ``Authorization: Bearer sk-proj-…`` digested
+    ``Bearer sk-proj-…``. Read-then-send-in-a-header is the commonest egress
+    shape there is, so the arm was blind to it. See rules.yaml.
     """
     if keep_prefix:
         for index in range(1, (match.lastindex or 0) + 1):
@@ -365,7 +397,8 @@ def _prefix_preserving_repl(
                 remainder = match.group(0)[len(group) :]
                 if is_placeholder(remainder, placeholder):
                     return match.group(0)
-                return f"{group}{_mint(placeholder, match.group(0), marker)}"
+                digested = remainder if context_prefix else match.group(0)
+                return f"{group}{_mint(placeholder, digested, marker)}"
     return _mint(placeholder, match.group(0), marker)
 
 
@@ -378,15 +411,34 @@ def _prefix_preserving_repl(
 _STRUCTURED_TOKEN = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
     r"|\b\d{4}-\d{2}-\d{2}"
-    r"(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b",
+    r"(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"
+    # CVE ids. `CVE-2025-32072` is `\d{4}-\d{5}`, which `phone_plausible`
+    # accepts, so every advisory quoted in a tool result came back as
+    # `CVE-[REDACTED:…]` — unreadable, and a marker minted on a public
+    # identifier (F94).
+    r"|\bCVE-\d{4}-\d{4,7}\b",
     re.IGNORECASE,
 )
 
 
+#: Major-industry identifiers payment cards actually use: 3 (Amex, Diners, JCB),
+#: 4 (Visa), 5 (Mastercard), 6 (Discover, UnionPay, Maestro), 2 (Mastercard's
+#: 2-series). **No scheme issues a PAN starting 0, 1, 7, 8 or 9.**
+#: Luhn alone passes about one random digit-run in ten, and an epoch-millisecond
+#: timestamp is a 13-digit run beginning with ``1`` until the year 2286 — so
+#: without this gate roughly a tenth of the ``createdAtMs`` values in a JSON
+#: result were redacted, intermittently, each minting a marker on a timestamp.
+#: The "identifiers are never secrets" hazard, arriving through a checksum
+#: rather than a pattern (F94).
+_CARD_MII = frozenset("23456")
+
+
 def _luhn_valid(value: str) -> bool:
-    """Luhn (mod-10) check — the standard card-number checksum."""
+    """Luhn (mod-10) check, plus an issuer-identifier gate."""
     digits = [int(c) for c in value if c.isdigit()]
     if not 13 <= len(digits) <= 19:
+        return False
+    if str(digits[0]) not in _CARD_MII:
         return False
     total, double = 0, False
     for digit in reversed(digits):

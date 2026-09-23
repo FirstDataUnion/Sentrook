@@ -69,10 +69,16 @@ test-engine: require-rookery
 # Rookery helpers resolve the plugin from this sibling checkout.
 # Needs Rookery venv + Node. For uncommitted engine/plugin changes, use editable
 # Sentrook pin in Rookery first — see TESTING.md.
+# `test_sanitize_replay_gate.py` was deleted by Rookery's 3b-0b (sanitize-before-
+# scan became the default in `tests/conftest.py`, so every engine test asserts
+# the replay property now). This target kept naming it and has errored out ever
+# since — a §4.1 ladder row that could not run. Keep the list to files that exist.
 sanitize-gate: require-rookery
 	cd "$(ROOKERY_ROOT)" && $(ROOKERY_ROOT)/$(VENV)/bin/python -m pytest \
 		tests/engine/test_scan_sanitize_parity.py \
-		tests/engine/test_sanitize_replay_gate.py -q
+		tests/engine/test_sanitize_planir.py \
+		tests/engine/test_sanitize_env_secrets.py \
+		tests/engine/test_serve_server_sanitize.py -q
 
 # OpenClaw: unit tests, then publish-surface (dist/index.js + openclaw.plugin.json in the tarball).
 # Regenerate the shared skeleton parity fixture from the TS source of truth.
