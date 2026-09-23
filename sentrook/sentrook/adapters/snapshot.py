@@ -70,9 +70,22 @@ def _is_filesystem_path(value: str) -> bool:
 
 
 def _extracted_paths(text: str) -> list[str]:
+    """Filesystem paths named in tool output.
+
+    URLs are masked before matching: ``_PATH_RE`` starts at the *second* slash of
+    ``https://docs.example.ai/a/b`` and yields ``/docs.example.ai/a/b``, which is
+    not a file anyone read. Phase 4's referential arm reads this field as its
+    source, and on replayed sessions that junk was most of the noise. Masked
+    whole rather than trimmed to the path — a remote URL's path names someone
+    else's resource. Residual: a path inside a URL query is not extracted.
+    ``file://`` is not matched by ``_URL_RE``, so it still yields its path.
+
+    Mirrored in the two plugins; ``fixtures/extracted_paths_golden.jsonl`` binds
+    all three (D22).
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for match in _PATH_RE.findall(text):
+    for match in _PATH_RE.findall(_URL_RE.sub(" ", text)):
         path = match.rstrip(".,;:")
         if not _is_filesystem_path(path) or path in seen:
             continue

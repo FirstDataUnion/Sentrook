@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 import {
   buildPlanirSnapshot,
   buildResultSummary,
   canonicalPlanirJson,
+  extractedFilesystemPaths,
   unwrapHostToolResult,
   type PlanIR,
 } from "./planir.ts";
@@ -168,4 +172,32 @@ describe("unwrapHostToolResult", () => {
     ]);
     assert.equal(summary.content_type, "text/plain");
   });
+});
+
+describe("extracted path parity with the engine and the Hermes plugin", () => {
+  // Three implementations answer "which filesystem paths does this output
+  // name": this one, `sentrook/adapters/snapshot.py` and
+  // `integrations/hermes/plugin/planir.py`. D22 wants them bound to one
+  // fixture rather than to three sets of examples, and until now the field had
+  // no cross-language test at all. Phase 4's referential arm reads it as the
+  // source side of a dataflow link, so a divergence here is a divergence in
+  // what the two adapters can detect.
+  const GOLDEN = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../../fixtures/extracted_paths_golden.jsonl",
+  );
+  const rows = readFileSync(GOLDEN, "utf8")
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as { name: string; input: string; paths: string[] });
+
+  it("fixture is populated", () => assert.ok(rows.length >= 12));
+
+  for (const row of rows) {
+    it(`matches the fixture: ${row.name}`, () => {
+      assert.deepEqual(extractedFilesystemPaths(row.input), row.paths);
+      // Through the caller too — the field is only ever read off a summary.
+      assert.deepEqual(buildResultSummary(row.input).extracted.paths, row.paths);
+    });
+  }
 });

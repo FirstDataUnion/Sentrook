@@ -86,9 +86,16 @@ def _is_filesystem_path(value: str) -> bool:
 
 
 def _extracted_paths(body: str) -> list[str]:
+    """Filesystem paths named in tool output.
+
+    URLs are masked first — ``PATH_RE`` reads ``https://docs.example.ai/a/b`` as
+    the path ``/docs.example.ai/a/b``, which is not a local file. Mirror of
+    ``sentrook/adapters/snapshot.py`` and the OpenClaw plugin;
+    ``fixtures/extracted_paths_golden.jsonl`` binds all three (D22).
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for match in PATH_RE.findall(body):
+    for match in PATH_RE.findall(URL_RE.sub(" ", body)):
         path = match.rstrip(".,;:")
         if not _is_filesystem_path(path) or path in seen:
             continue

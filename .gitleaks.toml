@@ -39,6 +39,7 @@ paths = [
 description = "Parity fixtures that deliberately embed secret-shaped strings"
 paths = [
   '''(^|/)fixtures/secret_redaction_golden\.jsonl$''',
+  '''(^|/)fixtures/marker_linkage_golden\.jsonl$''',
   '''(^|/)fixtures/exec_shape_golden\.jsonl$''',
   '''(^|/)sentrook/tests/test_secret_markers\.py$''',
   '''(^|/)integrations/openclaw/plugin/secretMarker\.test\.ts$''',

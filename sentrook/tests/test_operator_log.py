@@ -194,3 +194,27 @@ def test_extracted_paths_skip_table_cells() -> None:
         "/tmp/foo.txt",
         "/home/node/.openclaw/scripts/run.sh",
     ]
+
+
+def _extracted_paths_golden() -> list[dict]:
+    path = Path(__file__).resolve().parents[2] / "fixtures" / "extracted_paths_golden.jsonl"
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+
+def test_extracted_paths_fixture_is_populated() -> None:
+    assert len(_extracted_paths_golden()) >= 12
+
+
+@pytest.mark.parametrize("case", _extracted_paths_golden(), ids=lambda c: c["name"])
+def test_extracted_paths_golden(case: dict) -> None:
+    """Three implementations answer "which filesystem paths does this output name".
+
+    This one, the OpenClaw plugin's ``extractedFilesystemPaths`` and the Hermes
+    plugin's ``_extracted_paths``. D22 wants them bound to one fixture rather
+    than to three sets of examples, and the field had no cross-language test at
+    all. Phase 4's referential arm reads it as the *source* side of a dataflow
+    link, so a divergence here is a divergence in what each adapter can detect.
+    """
+    assert build_result_summary(case["input"]).extracted.paths == case["paths"]

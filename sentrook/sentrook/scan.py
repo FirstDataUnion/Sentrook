@@ -254,6 +254,10 @@ def scan_plan(
                     id=pending.id,
                     tool=pending.tool,
                     args=pending.args,
+                    # From the redacted plan, which is the shape the rules
+                    # actually saw. `pending` is that plan's step.
+                    parse_ok=getattr(getattr(pending, "exec_shape", None), "parse_ok", None),
+                    packed=getattr(getattr(pending, "exec_shape", None), "packed", None),
                 )
                 if pending
                 else None

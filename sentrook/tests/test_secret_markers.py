@@ -558,3 +558,76 @@ def test_capture_group_field_is_populated_from_disk() -> None:
 
     assert on_disk, "no rule declares capture_group — did the generator key change?"
     assert len(loaded) == len(on_disk), "capture_group lost between the JSON and the loader"
+
+
+class TestMarkerLinkageParity:
+    """One value must mint one digest however it was captured.
+
+    That is the entire premise of Phase 4's value-provenance arm: the agent
+    reads a secret and sends it onward, and the two ends are recognised as the
+    same bytes. It held for every capture form but one — ``Authorization:
+    Bearer <token>``, where the kept prefix is *context around* the secret
+    rather than its first bytes, so the whole-match digest covered
+    ``Bearer <token>`` and no link was ever made. Read-then-send-in-a-header is
+    the commonest egress shape there is. Fixed by ``context_prefix`` in
+    ``rules.yaml``; bound here and in ``secretMarker.test.ts`` to one fixture so
+    the two languages cannot drift (D22).
+    """
+
+    @staticmethod
+    def _rows():
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[2] / "fixtures" / "marker_linkage_golden.jsonl"
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    @staticmethod
+    def _digest(text: str) -> str | None:
+        import re
+
+        found = re.search(r"\[REDACTED:([0-9a-f]+)\]", text)
+        return found.group(1) if found else None
+
+    def test_fixture_is_populated(self):
+        assert len(self._rows()) >= 4
+
+    def test_linkage(self):
+        from sentrook.sanitize.core import SecretMarker, apply_secret_patterns
+        from sentrook.sanitize.rules import load_rules
+
+        rules = load_rules()
+        marker = SecretMarker(b"\0" * 32, "sess-1")
+        for row in self._rows():
+            digests = []
+            for form in row["forms"]:
+                scrubbed = apply_secret_patterns(form, rules, marker)
+                digest = self._digest(scrubbed)
+                assert digest is not None, f"{row['name']}: not marked at all: {form!r}"
+                digests.append(digest)
+            if row["links"]:
+                assert len(set(digests)) == 1, f"{row['name']}: forms minted {set(digests)}"
+            else:
+                assert len(set(digests)) == len(digests), f"{row['name']}: digests collided"
+
+    def test_the_kept_prefix_still_reaches_l2(self):
+        """`context_prefix` changes what is digested, never what is printed.
+
+        L2 rules match on `sk-ant-`, `Bearer`, the webhook path. Digesting the
+        remainder must not take the prefix out of the text with it.
+        """
+        from sentrook.sanitize.core import SecretMarker, apply_secret_patterns
+        from sentrook.sanitize.rules import load_rules
+
+        rules = load_rules()
+        marker = SecretMarker(b"\0" * 32, "sess-1")
+        key = "sk-proj-Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3Nn4Oo5Pp6Qq7Rr8Ss9Tt0Uu1Vv2Ww3Xx"
+        once = apply_secret_patterns(f'curl -H "Authorization: Bearer {key}"', rules, marker)
+        assert "Bearer [REDACTED:" in once
+        assert key not in once
+        # And re-scrubbing is a no-op, or every ingress pass would re-mint.
+        assert apply_secret_patterns(once, rules, marker) == once

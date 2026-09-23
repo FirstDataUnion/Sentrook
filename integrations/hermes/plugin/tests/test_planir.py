@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from ..planir import build_planir_snapshot, canonical_planir_json
+import pytest
+
+from ..planir import build_planir_snapshot, build_result_summary, canonical_planir_json
 
 
 def test_sequential_step_ids_and_adapter() -> None:
@@ -241,3 +244,28 @@ def test_session_key_independent_of_session_id() -> None:
     )
     assert plan.metadata.session_id == "uuid-1"
     assert plan.metadata.session_key == "main"
+
+
+def _extracted_paths_golden() -> list[dict]:
+    root = Path(__file__).resolve().parents[4]
+    path = root / "fixtures" / "extracted_paths_golden.jsonl"
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_extracted_paths_fixture_is_populated() -> None:
+    assert len(_extracted_paths_golden()) >= 12
+
+
+@pytest.mark.parametrize("case", _extracted_paths_golden(), ids=lambda c: c["name"])
+def test_extracted_paths_golden(case: dict) -> None:
+    """Bound to the same fixture as the engine and the OpenClaw plugin (D22).
+
+    This mirror had no test over path extraction at all, so the two adapters
+    could disagree about what an executed step referenced — which is the source
+    side of Phase 4's referential dataflow arm.
+    """
+    assert build_result_summary(case["input"]).extracted.paths == case["paths"]
