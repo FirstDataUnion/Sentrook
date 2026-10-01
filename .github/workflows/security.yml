@@ -4,7 +4,7 @@ name: security
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: ["release/1.x"]
   schedule:
     - cron: "17 6 * * 1" # weekly Monday 06:17 UTC
 
