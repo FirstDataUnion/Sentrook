@@ -1,10 +1,8 @@
 {
   "name": "sentrook",
   "private": true,
-  "description": "JS workspace root — OpenClaw plugin only. Python packages are not npm workspaces.",
-  "workspaces": [
-    "integrations/openclaw/plugin"
-  ],
+  "description": "JS workspace root for the 2.0 plugins (none yet).",
+  "workspaces": [],
   "scripts": {
     "changeset": "changeset",
     "version": "changeset version && npm install --package-lock-only"
