@@ -11,7 +11,7 @@ authors = [
 ]
 dependencies = [
     "pydantic>=2.10.0",
-    "pyjwt[crypto]>=2.13.0",
+    "pyjwt[crypto]>=2.14.0",
     # SCA (Trivy) requires cryptography>=50; see [tool.uv] override below.
     "cryptography>=50.0.0",
     "prometheus-client>=0.26.0",
