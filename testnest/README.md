@@ -1,3 +1,7 @@
+> **Reference only (2.0 reset).** This is the 1.x harness. It imports the removed `sentrook` engine
+> (`layers`, `corpus`, `rules`), so it does not run on `main` and is not wired into CI. It is kept as the
+> starting point for TestNest 2.0. Working 1.x copy: branch `release/1.x`.
+
 # TestNest
 
 Scenario test harness for [Sentrook](../README.md). Runs tagged PlanIR scenarios
