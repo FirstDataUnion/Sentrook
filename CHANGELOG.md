@@ -27,3 +27,8 @@ The 1.x engine and plugins keep their own history on `release/1.x`.
 - `oracle.client`: the `OracleClient` contract Rookery will implement (`lookup` with roles → verdicts + library snapshot); `SeedOracle` (test mode), `NullOracle` (live, everything unknown, coverage lowered), `HttpOracle` stub.
 - `probes.oracle`: distrust by verdict and role, `known_bad_entity` floor, coverage for unknown risky entities; loopback hosts and paths are not looked up.
 - `probes.context`: `untrusted_origin` per entity (request/grant 0, visible creation 0.1, agent-generated 0.4, untrusted content 1.0, taint and lineage propagate), `request_origin` from the trigger (OpenClaw and Hermes bases), `retry_after_denial` from fingerprints recomputed over denied history steps, sticky exposure, session sensitivity, escalation flag, coverage from stale requests and fresh sessions.
+
+### WP6: serve and CLI (2026-10-16)
+- `serve`: stdlib threaded HTTP daemon with `GET /healthz`, `GET /metrics`, `POST /scan` (200 for ok and degraded, 422 with the Response error shape for an unscoreable body) and the config-gated `POST /testnest/scan` (`{fixture, state_seed, oracle_seed, options}` → `{response, probes, prepared}`; `options.repeat` forwarded to the runner's proxy; `options.probes` for ablation).
+- Auth (API key and FIDU OIDC), per-caller token-bucket rate limiting and Prometheus metrics carried from 1.x; `ServeConfig.from_env` with production guards (state key required, test mode refused, content logging off).
+- CLI: `sentrook scan FILE [--envelopes] [--probes]` for a PlanIR or a TestNest case file; `sentrook serve`.
