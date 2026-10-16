@@ -2,7 +2,7 @@
 # installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
 # min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
 
-version: 1
+version: 2
 
 fetch_heads:
   - curl
@@ -143,3 +143,51 @@ package_install_verbs:
 fetch_tool_kinds:
   - web_fetch
   - browser
+
+# Command injection through a URL parameter of a local or private service (inspector and preview
+# endpoints that pass a parameter to a shell). Matched over the percent-decoded query string.
+local_host_patterns:
+  - '^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)(?::\d+)?$'
+  - '^[a-z0-9.-]+\.(?:local|internal|localhost|lan|home\.arpa)(?::\d+)?$'
+  - '^host\.docker\.internal(?::\d+)?$'
+param_injection_patterns:
+  - '(?:^|[=&])[^&]*;\s*[a-z_][\w.-]*'
+  - '\|\s*(?:sudo\s+)?(?:ba|z|da|k|a|fi)?sh\b'
+  - '\$\([^)]*\)'
+  - '`[^`]+`'
+  - '\b(?:ba|z|da)?sh\s+-c\b'
+  - '(?:^|[=&])command=[^&]*(?:\b(?:ba|z)?sh\b|\bpython|\bnode\b|\bperl\b)'
+  - '&&\s*[a-z_][\w.-]*'
+  - '\b(?:curl|wget)\b[^&]*\|'
+  - '\brm\s+-rf\b'
+
+# Package-registry redirects: config files, their content, and the CLI forms.
+registry_config_path_patterns:
+  - '(?:^|/)\.npmrc$'
+  - '(?:^|/)\.yarnrc(?:\.yml)?$'
+  - '(?:^|/)pip\.conf$'
+  - '(?:^|/)pip\.ini$'
+  - '(?:^|/)\.pypirc$'
+  - '(?:^|/)\.cargo/config(?:\.toml)?$'
+  - '(?:^|/)\.gemrc$'
+  - '(?:^|/)\.condarc$'
+  - '(?:^|/)\.bunfig\.toml$'
+  - '(?:^|/)pnpm-workspace\.yaml$'
+  - '(?:^|/)\.pnpmfile\.cjs$'
+registry_config_text_patterns:
+  - '(?im)^\s*(?:@[\w-]+:)?registry\s*=\s*https?://'
+  - '(?im)^\s*(?:index-url|extra-index-url|index_url|extra_index_url)\s*=\s*https?://'
+  - '(?im)^\s*repository\s*=\s*https?://'
+  - '(?im)^\s*\[(?:source|registries)\.[^\]]+\]'
+  - '(?im)^\s*replace-with\s*='
+  - '(?im)^\s*(?:npmRegistryServer|registry)\s*:\s*["'']?https?://'
+  - '(?im)^\s*channels?\s*:'
+registry_cli_patterns:
+  - '\bnpm\s+config\s+set\s+(?:@[\w-]+:)?registry\s+'
+  - '\bnpm\s+set\s+(?:@[\w-]+:)?registry\s+'
+  - '\byarn\s+config\s+set\s+(?:npmRegistryServer|registry)\s+'
+  - '\bpnpm\s+config\s+set\s+registry\s+'
+  - '\bpip3?\s+config\s+set\s+(?:global|user|site)\.(?:index-url|extra-index-url)\s+'
+  - '\bconda\s+config\s+--(?:add|prepend|set)\s+channels?\b'
+  - '\bgem\s+sources?\s+(?:--add|-a)\b'
+  - '\b(?:echo|printf)\b[^;&|\n]*(?:registry|index-url)\s*=\s*https?://[^;&|\n]*>>?\s*[^;&|\n]*(?:\.npmrc|pip\.conf|\.pypirc)'

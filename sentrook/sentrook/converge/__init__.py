@@ -10,9 +10,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..enums import Enforce, ProbeStatus, ScanStatus, SessionFlag
+from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..prepare import Prepared
-from ..probes.base import Envelope
+from ..probes.base import Envelope, Floor
 from ..response.models import (
     ConfidenceTier,
     ConsequenceTier,
@@ -83,6 +83,44 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
             model_certainty=tiers.model_certainty,
         ),
     )
+
+
+#: AIRA reasons whose subject is the code source of a fetch-and-run or install.
+_CODE_SOURCE_REASONS = frozenset({"code.fetch_to_shell", "code.install_from_url"})
+
+
+def _derived_floors(merged: Merged, params: ConvergenceParams) -> list[Floor]:
+    """The oracle-dependent arm of `untrusted_code_execution` (skeleton 4.4): running code fetched
+    from a host that appeared only in untrusted content, or from a known-bad source, is strong
+    evidence. AIRA sees the shape, the context probe the provenance, the oracle the verdict; only
+    convergence sees all three, so the floor is raised here. A listed installer from clean
+    provenance gets no floor (scored instead)."""
+    out: list[Floor] = []
+    origin = {
+        c.subject: c.value for c in merged.claims.get("suspicion.untrusted_origin", ()) if c.subject
+    }
+    distrust = {
+        c.subject: c.value for c in merged.claims.get("suspicion.distrust", ()) if c.subject
+    }
+    seen: set[str] = set()
+    for signal in ("consequence.reach", "consequence.irreversibility"):
+        for c in merged.claims.get(signal, ()):
+            if c.reason not in _CODE_SOURCE_REASONS or not c.subject or c.subject in seen:
+                continue
+            only_untrusted = origin.get(c.subject, 0.0) >= 0.99
+            not_vouched = distrust.get(c.subject, 0.5) > 0.0
+            if only_untrusted and not_vouched:
+                seen.add(c.subject)
+                out.append(
+                    Floor(
+                        floor="untrusted_code_execution",
+                        min_risk=0.9,
+                        enforce=Enforce.BLOCK,
+                        subject=c.subject,
+                        reason="code.untrusted_source",
+                    )
+                )
+    return out
 
 
 def _reasons(
@@ -181,7 +219,8 @@ def converge(
     floors: list[FloorApplied] = []
     risk = tiers.risk
     enforced: Enforce | None = None
-    for env in envelopes:
+    derived = [Envelope(step=ProbeStep.CONTEXT, floors=_derived_floors(merged, params))]
+    for env in [*envelopes, *derived]:
         if env.status is not ProbeStatus.OK:
             continue
         for f in env.floors:

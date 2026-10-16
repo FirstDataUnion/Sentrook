@@ -714,6 +714,83 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     return out
 
 
+def detect_param_injection(a: CallAnalysis, ctx: Context) -> list[Finding]:
+    """C3 arm: a shell command smuggled into a URL parameter of a request to a local or private
+    service (RCE through an unauthenticated inspector or preview endpoint). Encoding is
+    canonicalisation: the match runs over the percent-decoded text, and the signal is the shell
+    metacharacter or command reaching a service, not the encoding."""
+    out: list[Finding] = []
+    if a.kind not in (ToolKind.EXEC, ToolKind.WEB_FETCH, ToolKind.BROWSER, ToolKind.MCP):
+        return out
+    lists = ctx.lists
+    local = lists.patterns("installers", "local_host_patterns")
+    inject = lists.patterns("installers", "param_injection_patterns")
+    for m in re.finditer(r"https?://[^\s\"'<>`|]+", a.text):
+        url = m.group(0)
+        host = url.split("://", 1)[1].split("/", 1)[0].split("@")[-1]
+        if not _match_any(local, host):
+            continue
+        _, _, query = url.partition("?")
+        if not query:
+            continue
+        hit = _match_any(inject, query)
+        if hit is None:
+            continue
+        ref = next((h for h in a.hosts if h.value == host.split(":")[0].lower()), None)
+        subject = ref.entity_id if ref else None
+        f = Finding(
+            rule="C3.param_injection",
+            cls="C3",
+            reason="code.param_injection",
+            detail={"host": host, "match": hit.group(0)[:80]},
+        )
+        f.add(REACH, ctx.weight("code", "reach"), subject)
+        f.add(IRREVERSIBILITY, ctx.weight("code", "irreversibility"), subject)
+        f.add(
+            CONCEALMENT,
+            ctx.weight("code", "param_injection_concealment", default=1.0),
+            None,
+            "conceal.command_in_url",
+        )
+        out.append(f)
+        break
+    return out
+
+
+def detect_registry_redirect(a: CallAnalysis, ctx: Context) -> list[Finding]:
+    """C3 arm: pointing a package manager at another registry (an `.npmrc`, `pip.conf`, `.pypirc`
+    or cargo config write naming a URL, or `npm config set registry`). Nothing is installed yet;
+    later installs come from that host, so the host carries the consequence."""
+    out: list[Finding] = []
+    lists = ctx.lists
+    hit = None
+    if a.kind in _WRITE_KINDS or a.kind in (ToolKind.MCP, ToolKind.OTHER):
+        for p in a.paths:
+            if _match_any(lists.patterns("installers", "registry_config_path_patterns"), p.value):
+                hit = _match_any(
+                    lists.patterns("installers", "registry_config_text_patterns"),
+                    a.edit_text or a.content,
+                )
+                if hit is not None:
+                    break
+    if hit is None and a.kind is ToolKind.EXEC:
+        hit = _match_any(lists.patterns("installers", "registry_cli_patterns"), a.scan_text)
+    if hit is None:
+        return out
+    host = next((h for h in a.hosts if h.value not in ("registry.npmjs.org", "pypi.org")), None)
+    subject = host.entity_id if host else None
+    f = Finding(
+        rule="C3.registry_redirect",
+        cls="C3",
+        reason="code.registry_redirect",
+        detail={"match": hit.group(0)[:100], "host": host.value if host else None},
+    )
+    f.add(REACH, ctx.weight("code", "reach"), subject)
+    f.add(IRREVERSIBILITY, ctx.weight("code", "registry_irreversibility", default=0.6), subject)
+    out.append(f)
+    return out
+
+
 # =========================================================================== C4
 
 
@@ -797,6 +874,16 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if key in seen:
             return
         seen.add(key)
+        if reason == "guardrail.host_approvals":
+            # Changing the host's own approval or allowlist settings is scored, not floored: the
+            # floor covers Sentrook's state, its plugin entry and the gateway (RUBRIC decision 14).
+            f = Finding(
+                rule="C4.host_approvals", cls="C4", reason="selfmod.host_approvals", detail=detail
+            )
+            f.add(SELF_MODIFICATION, ctx.weight("selfmod", "host_approvals", default=1.0), subject)
+            f.add(REACH, ctx.weight("selfmod", "reach"), subject)
+            out.append(f)
+            return
         f = Finding(rule=f"C4star.{reason.split('.')[-1]}", cls="C4*", reason=reason, detail=detail)
         f.add(SELF_MODIFICATION, ctx.weight("guardrail", "self_modification"), subject)
         f.floors.append(
@@ -887,6 +974,12 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     emit("guardrail.gateway_stop", None, {"match": line[:120]})
         if _match_any(lists.patterns("guardrail", "process_kill_patterns"), line):
             emit("guardrail.gateway_stop", None, {"match": line[:120], "mechanism": "process_kill"})
+    if _match_any(lists.patterns("guardrail", "process_kill_patterns"), a.scan_text):
+        emit(
+            "guardrail.gateway_stop",
+            None,
+            {"match": (a.command or a.scan_text)[:120], "mechanism": "process_kill"},
+        )
     return out
 
 
@@ -1287,6 +1380,8 @@ DETECTORS: tuple[tuple[Detector, str, str], ...] = (
     (detect_credentials, "C1", PACK_TIER1),
     (detect_exfil, "C2", PACK_TIER1),
     (detect_untrusted_code, "C3", PACK_TIER1),
+    (detect_param_injection, "C3", PACK_TIER1),
+    (detect_registry_redirect, "C3", PACK_TIER1),
     (detect_guardrail, "C4*", PACK_TIER1),
     (detect_selfmod, "C4", PACK_TIER1),
     (detect_destruction, "C7", PACK_HOST_GATED),
