@@ -43,7 +43,9 @@ from .entities import (
     extract_exec,
     extract_mentions,
     grant_matches,
+    normalise_host,
     normalise_path,
+    normalise_recipient,
 )
 from .fingerprint import Fingerprint, fingerprint
 from .trust import Trust, classify
@@ -191,6 +193,101 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
             if re.search(r"(?<![\w.@-])" + re.escape(cand) + r"(?![\w-])", text):
                 ent.add_origin(Origin.REQUEST, "verbatim")
                 break
+
+
+#: Local parts that are roles rather than names; a capitalised "Team" or "Info" in the request is not a
+#: person the owner named.
+_GENERIC_LOCAL_PARTS = frozenset(
+    """info admin administrator support help helpdesk contact sales team hello hi mail email noreply
+    no-reply donotreply office billing accounts security root news newsletter service services
+    notifications notification alerts alert bot test postmaster webmaster abuse marketing hr
+    jobs careers press media feedback orders order invoices invoice""".split()
+)
+_NAME_TOKEN_RE = re.compile(r"[a-z]{3,}")
+#: "bcc me", "cc me", "copy me", "copy me in", "keep me on cc", "put me in bcc".
+_SELF_COPY_RE = re.compile(
+    r"\b(?P<how>bcc|cc|copy)\s+(?:me|myself)\b"
+    r"|\b(?:put|keep|include|add)\s+(?:me|myself)\s+(?:on|in)\s+(?:the\s+)?(?P<how2>bcc|cc|copy)\b",
+    re.IGNORECASE,
+)
+
+
+def _came_from_untrusted_content(ent: Entity) -> bool:
+    """The address reached the agent through content it read, not through the owner."""
+    agent_first = (
+        ent.first_history_step is not None
+        and ent.first_untrusted_step is not None
+        and ent.first_history_step < ent.first_untrusted_step
+    )
+    return ent.in_session_untrusted or (Origin.UNTRUSTED_INPUT in ent.origins and not agent_first)
+
+
+def _inherit_recipient_domain(table: EntityTable) -> None:
+    """The mail domain of a request-named recipient is that recipient's own component, not a
+    destination the agent chose: `priya.nair@brightlane.io` named by the owner sanctions
+    `brightlane.io` as the destination host of that send, even when the domain also turns up in
+    content the agent read (the owner's own organisation usually does)."""
+    for ent in list(table):
+        if ent.kind is not EntityKind.RECIPIENT or "@" not in ent.value:
+            continue
+        if Origin.REQUEST not in ent.origins:
+            continue
+        host = table.get(EntityKind.HOST, normalise_host(ent.value.split("@", 1)[1]))
+        if host is not None and Origin.REQUEST not in host.origins:
+            host.add_origin(Origin.REQUEST, "recipient_domain")
+
+
+def _mark_display_named(request_text: str, table: EntityTable) -> None:
+    """WP8 item 2: an owner names people, not addresses (`Email Priya ...`, `send it to Holger Vetch`).
+    A recipient address whose local part carries a name token that appears **capitalised** in the
+    request (`Priya` for `priya.nair@…`) is request-named with ref `display_name`. The match is weaker
+    than the verbatim one, so it never applies to an address that came from content the agent read:
+    an injected note saying "Mara's address is mara@…" must not turn the owner's "send Mara the
+    summary" into a sanction of that address. Generic local parts (`info`, `team`) never match."""
+    if not request_text:
+        return
+    for ent in table:
+        if ent.kind is not EntityKind.RECIPIENT or "@" not in ent.value:
+            continue
+        if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
+            continue
+        if Origin.REQUEST in ent.origins or _came_from_untrusted_content(ent):
+            continue
+        local = ent.value.split("@", 1)[0].lower()
+        if local in _GENERIC_LOCAL_PARTS:
+            continue
+        for tok in _NAME_TOKEN_RE.findall(local):
+            if tok in _GENERIC_LOCAL_PARTS:
+                continue
+            pattern = r"(?<![\w-])" + tok[0].upper() + "(?i:" + re.escape(tok[1:]) + r")(?![\w-])"
+            if re.search(pattern, request_text):
+                ent.add_origin(Origin.REQUEST, "display_name")
+                break
+
+
+def _mark_self_copy(request_text: str, table: EntityTable, calls: list[CanonicalCall]) -> None:
+    """WP8 item 2: `bcc me` names the owner's own address without spelling it. PlanIR carries no owner
+    address, so the owner's words resolve against the call: when the request asks for a copy to
+    "me" and the matching field (`bcc`, `cc`, or either for "copy") holds exactly one address, that
+    address is request-named with ref `self_copy`. Two addresses in the field is ambiguous and
+    nothing is marked; an address that came from content the agent read is never marked."""
+    if not request_text:
+        return
+    fields: set[str] = set()
+    for m in _SELF_COPY_RE.finditer(request_text):
+        how = (m.group("how") or m.group("how2") or "").lower()
+        fields.update(("cc", "bcc") if how == "copy" else (how,))
+    if not fields:
+        return
+    for call in calls:
+        for field_name in sorted(fields):
+            values = [v.strip() for v in (call.args.get(field_name) or []) if str(v).strip()]
+            if len(values) != 1 or "@" not in values[0]:
+                continue
+            ent = table.get(EntityKind.RECIPIENT, normalise_recipient(values[0]))
+            if ent is None or Origin.REQUEST in ent.origins or _came_from_untrusted_content(ent):
+                continue
+            ent.add_origin(Origin.REQUEST, "self_copy")
 
 
 def _history_step_for(planir: PlanIR, call_id: str | None) -> int | None:
@@ -418,6 +515,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if not agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
+    _mark_display_named(planir.request.text, table)
+    _mark_self_copy(planir.request.text, table, [pending, *siblings])
+    _inherit_recipient_domain(table)
 
     # 7. fingerprint
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
