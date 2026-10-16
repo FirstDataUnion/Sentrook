@@ -31,6 +31,10 @@ Public repo. On 2026-10-01 `main` was reset to a clean slate for the Sentrook 2.
   incidents or unpublished weaknesses stay in Rookery or Notion; `docs/` here describes the mechanism.
 - Models are the source of the wire contracts: change a model, run `make schema`, commit both.
 - Every work package ends with tests green, a `CHANGELOG.md` entry and its row updated on the build plan.
+- Benchmarking runs through the test-mode endpoint: `SENTROOK_TEST_MODE=1 SENTROOK_STATE_KEY=<32+ chars>
+  SENTROOK_JEV_BASE_URL=<the runner's caching proxy> uv run sentrook serve`. The runner, the suite and every
+  result live in Rookery (`testnest/README.md`, "The Sentrook replay loop"). Never enable test mode in production;
+  `ServeConfig.from_env` refuses it.
 - Plugins are being rewritten by hand; old plugin code is a reference that may be copied closely.
 - Fixtures and the private library live in the **Rookery** repo for now (`fixtures/`).
 - Do not trim `.gitleaks.toml` allowlists or `.github/secret_scanning.yml`: gitleaks scans every ref,
