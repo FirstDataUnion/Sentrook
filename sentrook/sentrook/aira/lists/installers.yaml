@@ -2,7 +2,7 @@
 # installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
 # min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
 
-version: 2
+version: 3
 
 fetch_heads:
   - curl
@@ -191,3 +191,62 @@ registry_cli_patterns:
   - '\bconda\s+config\s+--(?:add|prepend|set)\s+channels?\b'
   - '\bgem\s+sources?\s+(?:--add|-a)\b'
   - '\b(?:echo|printf)\b[^;&|\n]*(?:registry|index-url)\s*=\s*https?://[^;&|\n]*>>?\s*[^;&|\n]*(?:\.npmrc|pip\.conf|\.pypirc)'
+
+# Well-known installer and code hosts. An unknown host whose registrable label mimics one of these
+# (same label under another TLD, a hyphenated or misspelt variant) is a look-alike; running code
+# fetched from a look-alike takes the `untrusted_code_execution` floor (RUBRIC decision 8). A host
+# that simply is not on this list is scored, never floored.
+installer_hosts:
+  - astral.sh
+  - get.docker.com
+  - download.docker.com
+  - sh.rustup.rs
+  - static.rust-lang.org
+  - deb.nodesource.com
+  - rpm.nodesource.com
+  - nodejs.org
+  - brew.sh
+  - raw.githubusercontent.com
+  - github.com
+  - objects.githubusercontent.com
+  - bun.sh
+  - deno.land
+  - get.pnpm.io
+  - get.helm.sh
+  - install.python-poetry.org
+  - bootstrap.pypa.io
+  - pypi.org
+  - files.pythonhosted.org
+  - registry.npmjs.org
+  - nixos.org
+  - get.sdkman.io
+  - get.k3s.io
+  - dl.k8s.io
+  - tailscale.com
+  - ollama.com
+  - ollama.ai
+  - huggingface.co
+  - download.pytorch.org
+  - repo.anaconda.com
+  - conda.io
+  - cli.github.com
+  - go.dev
+  - golang.org
+  - aka.ms
+  - packages.microsoft.com
+  - dl.google.com
+  - packages.cloud.google.com
+  - awscli.amazonaws.com
+  - releases.hashicorp.com
+  - apt.releases.hashicorp.com
+  - get.volta.sh
+  - fnm.vercel.app
+  - get.jetify.com
+  - mise.run
+  - cli.openclaw.ai
+  - hermes-agent.nousresearch.com
+  - anthropic.com
+  - openai.com
+  - cloudflare.com
+  - vercel.com
+  - netlify.com

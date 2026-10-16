@@ -232,7 +232,7 @@ REASONS: dict[str, str] = {
     "conceal.command_in_url": "The request hides a shell command inside a URL parameter.",
     "code.param_injection": "The request sends a shell command to a local service through a URL parameter.",
     "code.registry_redirect": "The call points the package manager at {subject}; later installs would come from there.",
-    "code.untrusted_source": "The code being run comes from {subject}, which appeared only in content the agent read.",
+    "code.lookalike_installer": "{subject} mimics a well-known installer host; the code being run comes from a look-alike.",
     "selfmod.host_approvals": "The call changes the host's own approval or allowlist settings.",
     "reputation.unknown_channel_as_recipient": "We have no record of the channel {subject}.",
     # floors

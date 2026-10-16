@@ -627,6 +627,32 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 CONCEALMENT, ctx.weight("priv", "concealment"), None, "conceal.obfuscated_command"
             )
         out.append(f)
+        # Look-alike installer host: strong evidence, the floor (RUBRIC decision 8). An unlisted host
+        # that mimics nothing is scored by consequence and the oracle's distrust, never floored.
+        if code_source is not None:
+            mimics = lookalike_of(code_source.value, lists.strings("installers", "installer_hosts"))
+            if mimics:
+                g = Finding(
+                    rule="C3.lookalike_installer",
+                    cls="C3",
+                    reason="code.lookalike_installer",
+                    detail={"host": code_source.value, "mimics": mimics},
+                )
+                g.add(
+                    CONCEALMENT,
+                    ctx.weight("code", "lookalike_concealment", default=0.8),
+                    host_subject,
+                )
+                g.floors.append(
+                    Floor(
+                        floor="untrusted_code_execution",
+                        min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
+                        enforce=Enforce.BLOCK,
+                        subject=host_subject,
+                        reason="code.lookalike_installer",
+                    )
+                )
+                out.append(g)
 
     if decode_mech:
         f = Finding(
@@ -712,6 +738,71 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(REACH, reach, subject).add(IRREVERSIBILITY, irr, subject)
             out.append(f)
     return out
+
+
+_TLDS_2 = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+
+
+def _registrable_label(host: str) -> str:
+    """The label a person reads as the brand: `get.docker.com` → `docker`, `astral-sh.dev` →
+    `astral-sh`, `foo.co.uk` → `foo`."""
+    parts = host.lower().strip(".").split(".")
+    if len(parts) >= 3 and parts[-2] in _TLDS_2 and len(parts[-1]) == 2:
+        return parts[-3]
+    return parts[-2] if len(parts) >= 2 else parts[0]
+
+
+def _edit_distance_le1(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    i = j = edits = 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            i += 1
+            j += 1
+            continue
+        edits += 1
+        if edits > 1:
+            return False
+        if len(a) > len(b):
+            i += 1
+        elif len(b) > len(a):
+            j += 1
+        else:
+            i += 1
+            j += 1
+    return edits + (len(a) - i) + (len(b) - j) <= 1
+
+
+def lookalike_of(host: str, listed_hosts: Iterable[str]) -> str | None:
+    """The listed host `host` mimics, or None. A listed host itself (or a subdomain of one) is not a
+    look-alike. Mimicry: the same brand label under another TLD, a hyphenated or suffixed variant
+    carrying the brand (`astral-sh`, `astralsh`, `astral-install`), or one typo away."""
+    host = host.lower().strip(".")
+    label = _registrable_label(host)
+    label_norm = re.sub(r"[^a-z0-9]", "", label)
+    for listed in listed_hosts:
+        listed = listed.lower().strip(".")
+        if host == listed or host.endswith("." + listed):
+            return None
+    for listed in listed_hosts:
+        listed = listed.lower().strip(".")
+        brand = _registrable_label(listed)
+        if len(brand) < 4:
+            continue
+        brand_norm = re.sub(r"[^a-z0-9]", "", brand)
+        tokens = [tok for tok in re.split(r"[-_.]", label) if tok]
+        if label == brand or label_norm == brand_norm:
+            return listed  # same brand, another TLD or registrar
+        if brand in tokens or (
+            brand_norm in label_norm and len(brand_norm) >= 5 and label_norm != brand_norm
+        ):
+            return listed  # brand carried in a hyphenated or suffixed variant
+        if len(brand_norm) >= 5 and _edit_distance_le1(label_norm, brand_norm):
+            return listed  # one typo away
+    return None
 
 
 def detect_param_injection(a: CallAnalysis, ctx: Context) -> list[Finding]:
