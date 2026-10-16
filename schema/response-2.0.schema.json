@@ -1,0 +1,756 @@
+{
+  "$defs": {
+    "ConfidenceTier": {
+      "additionalProperties": true,
+      "description": "How much to trust the other two tiers. Higher is better.",
+      "properties": {
+        "agreement": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agreement"
+        },
+        "coverage": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coverage"
+        },
+        "model_certainty": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Certainty"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tier 2 result",
+          "title": "Score"
+        }
+      },
+      "title": "ConfidenceTier",
+      "type": "object"
+    },
+    "ConsequenceTier": {
+      "additionalProperties": true,
+      "description": "The worst harm if the call runs. Higher is worse.",
+      "properties": {
+        "irreversibility": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Irreversibility"
+        },
+        "reach": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reach"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tier 2 result",
+          "title": "Score"
+        },
+        "self_modification": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Self Modification"
+        },
+        "sensitivity": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sensitivity"
+        }
+      },
+      "title": "ConsequenceTier",
+      "type": "object"
+    },
+    "Enforce": {
+      "description": "Minimum outcome a floor guarantees whatever the plugin's thresholds are.",
+      "enum": [
+        "block",
+        "review"
+      ],
+      "title": "Enforce",
+      "type": "string"
+    },
+    "EntityDisplay": {
+      "additionalProperties": true,
+      "properties": {
+        "display": {
+          "description": "Trimmed display string (host only, no query strings)",
+          "title": "Display",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "display"
+      ],
+      "title": "EntityDisplay",
+      "type": "object"
+    },
+    "FloorApplied": {
+      "additionalProperties": true,
+      "properties": {
+        "enforce": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Enforce"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "floor": {
+          "title": "Floor",
+          "type": "string"
+        },
+        "min_risk": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Min Risk",
+          "type": "number"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "floor",
+        "min_risk"
+      ],
+      "title": "FloorApplied",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": true,
+      "properties": {
+        "latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "probes": {
+          "items": {
+            "$ref": "#/$defs/ProbeMeta"
+          },
+          "title": "Probes",
+          "type": "array"
+        },
+        "scanner_version": {
+          "title": "Scanner Version",
+          "type": "string"
+        },
+        "versions": {
+          "additionalProperties": true,
+          "description": "Scan-wide versions: convergence parameter set, probes_enabled, lists",
+          "title": "Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "scanner_version"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "ProbeMeta": {
+      "additionalProperties": true,
+      "description": "The single record of what produced each part of the result.",
+      "properties": {
+        "latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "status": {
+          "$ref": "#/$defs/ProbeStatus"
+        },
+        "step": {
+          "title": "Step",
+          "type": "string"
+        },
+        "versions": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "step",
+        "status"
+      ],
+      "title": "ProbeMeta",
+      "type": "object"
+    },
+    "ProbeStatus": {
+      "enum": [
+        "ok",
+        "timeout",
+        "error",
+        "skipped"
+      ],
+      "title": "ProbeStatus",
+      "type": "string"
+    },
+    "Reason": {
+      "additionalProperties": true,
+      "description": "`code` is a stable `domain.detail` value from the reason registry; deployment-specific\nqualifiers (a tool alias, a step number) go in `detail` so codes stay finite and countable.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "Reason",
+      "type": "object"
+    },
+    "ReliefApplied": {
+      "additionalProperties": true,
+      "description": "A grant (or the request-named destination rule, with `grant_ref` null) that lowered a score.",
+      "properties": {
+        "effect": {
+          "description": "What was removed, e.g. distrust+untrusted_origin, sensitivity:read",
+          "title": "Effect",
+          "type": "string"
+        },
+        "grant_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grant Ref"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "effect"
+      ],
+      "title": "ReliefApplied",
+      "type": "object"
+    },
+    "RiskTree": {
+      "additionalProperties": true,
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/ConfidenceTier"
+        },
+        "consequence": {
+          "$ref": "#/$defs/ConsequenceTier"
+        },
+        "suspicion": {
+          "$ref": "#/$defs/SuspicionTier"
+        }
+      },
+      "title": "RiskTree",
+      "type": "object"
+    },
+    "ScanError": {
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ScanError",
+      "type": "object"
+    },
+    "ScanStatus": {
+      "description": "`ok`: every enabled probe returned. `degraded`: a probe failed or coverage dropped, but a score\nwas computed. `error`: no usable score (preparation failed).",
+      "enum": [
+        "ok",
+        "degraded",
+        "error"
+      ],
+      "title": "ScanStatus",
+      "type": "string"
+    },
+    "SuspicionTier": {
+      "additionalProperties": true,
+      "description": "How much the call looks like it serves a goal the owner did not set. Higher is worse.",
+      "properties": {
+        "concealment": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Concealment"
+        },
+        "distrust": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distrust"
+        },
+        "exposure": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exposure"
+        },
+        "misalignment": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Misalignment"
+        },
+        "request_origin": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Origin"
+        },
+        "retry_after_denial": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry After Denial"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tier 2 result",
+          "title": "Score"
+        },
+        "untrusted_origin": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Untrusted Origin"
+        }
+      },
+      "title": "SuspicionTier",
+      "type": "object"
+    },
+    "ToolDescription": {
+      "additionalProperties": true,
+      "description": "Templated from the Jev action category; the plugin substitutes `{E1}` placeholders.",
+      "properties": {
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        },
+        "template": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template"
+        }
+      },
+      "title": "ToolDescription",
+      "type": "object"
+    }
+  },
+  "$id": "https://sentrook.firstdataunion.org/schema/response-2.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Response 2.0: the risk tree Sentrook returns to the plugin. Generated from sentrook 2.0.0a1 models; do not edit by hand.",
+  "properties": {
+    "action_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Echoed back by the plugin in history; opaque to it",
+      "title": "Action Fingerprint"
+    },
+    "enforced": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Enforce"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Strongest enforcement of any applied floor"
+    },
+    "entities": {
+      "additionalProperties": {
+        "$ref": "#/$defs/EntityDisplay"
+      },
+      "title": "Entities",
+      "type": "object"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScanError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Only when status is error"
+    },
+    "floors_applied": {
+      "items": {
+        "$ref": "#/$defs/FloorApplied"
+      },
+      "title": "Floors Applied",
+      "type": "array"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "reasons": {
+      "description": "Ordered by contribution to the result",
+      "items": {
+        "$ref": "#/$defs/Reason"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "relief_applied": {
+      "items": {
+        "$ref": "#/$defs/ReliefApplied"
+      },
+      "title": "Relief Applied",
+      "type": "array"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "response_version": {
+      "const": "2.0",
+      "default": "2.0",
+      "title": "Response Version",
+      "type": "string"
+    },
+    "risk": {
+      "anyOf": [
+        {
+          "maximum": 100,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "0–100; null only when status is error",
+      "title": "Risk"
+    },
+    "state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "New signed state token",
+      "title": "State"
+    },
+    "status": {
+      "$ref": "#/$defs/ScanStatus",
+      "default": "ok"
+    },
+    "tool_description": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolDescription"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "tree": {
+      "$ref": "#/$defs/RiskTree"
+    }
+  },
+  "required": [
+    "request_id",
+    "metadata"
+  ],
+  "title": "Response",
+  "type": "object"
+}

@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "Contribution": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reason code (domain.detail) for the review card",
+          "title": "Reason"
+        },
+        "signal": {
+          "description": "Registry name, e.g. consequence.reach",
+          "title": "Signal",
+          "type": "string"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opaque entity ID (E1, E2, …) when the claim is about one entity",
+          "title": "Subject"
+        },
+        "value": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "signal",
+        "value"
+      ],
+      "title": "Contribution",
+      "type": "object"
+    },
+    "Enforce": {
+      "description": "Minimum outcome a floor guarantees whatever the plugin's thresholds are.",
+      "enum": [
+        "block",
+        "review"
+      ],
+      "title": "Enforce",
+      "type": "string"
+    },
+    "Floor": {
+      "additionalProperties": false,
+      "properties": {
+        "enforce": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Enforce"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Minimum outcome; null raises the score only"
+        },
+        "floor": {
+          "description": "guardrail_tampering | known_bad_entity | untrusted_code_execution | …",
+          "title": "Floor",
+          "type": "string"
+        },
+        "min_risk": {
+          "description": "Minimum risk, on the same 0–1 scale as risk",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Min Risk",
+          "type": "number"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "floor",
+        "min_risk"
+      ],
+      "title": "Floor",
+      "type": "object"
+    },
+    "ProbeStatus": {
+      "enum": [
+        "ok",
+        "timeout",
+        "error",
+        "skipped"
+      ],
+      "title": "ProbeStatus",
+      "type": "string"
+    },
+    "ProbeStep": {
+      "description": "The five probes. Also the keys of `SENTROOK_PROBES` (the ablation switch).",
+      "enum": [
+        "jev_exposure",
+        "jev_call",
+        "aira",
+        "entity_oracle",
+        "context"
+      ],
+      "title": "ProbeStep",
+      "type": "string"
+    },
+    "SessionFlag": {
+      "description": "Sticky per-session flags, read by the context probe at the start of a step and written only at\nthe end of convergence from probes' `flags_set`.",
+      "enum": [
+        "tainted",
+        "holds_sensitive",
+        "escalating"
+      ],
+      "title": "SessionFlag",
+      "type": "string"
+    }
+  },
+  "$id": "https://sentrook.firstdataunion.org/schema/envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Probe result envelope: what each probe returns to convergence. Generated from sentrook 2.0.0a1 models; do not edit by hand.",
+  "properties": {
+    "contributions": {
+      "items": {
+        "$ref": "#/$defs/Contribution"
+      },
+      "title": "Contributions",
+      "type": "array"
+    },
+    "evidence": {
+      "additionalProperties": true,
+      "title": "Evidence",
+      "type": "object"
+    },
+    "flags_set": {
+      "items": {
+        "$ref": "#/$defs/SessionFlag"
+      },
+      "title": "Flags Set",
+      "type": "array"
+    },
+    "floors": {
+      "items": {
+        "$ref": "#/$defs/Floor"
+      },
+      "title": "Floors",
+      "type": "array"
+    },
+    "latency_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Latency Ms"
+    },
+    "status": {
+      "$ref": "#/$defs/ProbeStatus",
+      "default": "ok"
+    },
+    "step": {
+      "$ref": "#/$defs/ProbeStep"
+    },
+    "versions": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "description": "Everything that determines this probe's output; keys vary by probe (skeleton 3.1)",
+      "title": "Versions",
+      "type": "object"
+    }
+  },
+  "required": [
+    "step"
+  ],
+  "title": "Envelope",
+  "type": "object"
+}

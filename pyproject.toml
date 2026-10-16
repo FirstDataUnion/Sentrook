@@ -1,0 +1,86 @@
+[project]
+name = "sentrook"
+dynamic = ["version"]
+description = "Runtime security scanner for AI agents: scores pending tool calls in the context of the trajectory that led to them (Sentrook 2.0)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.14"
+authors = [
+    { name = "FirstDataUnion" },
+]
+dependencies = [
+    "pydantic>=2.10.0",
+    "httpx>=0.28.0",
+    "pyjwt[crypto]>=2.13.0",
+    "pyyaml>=6.0.2",
+    "prometheus-client>=0.26.0",
+    # Shell-command structure for the AIRA probe (carried from 1.x exec_shape).
+    "tree-sitter>=0.26.0,<0.27",
+    "tree-sitter-bash>=0.25.1,<0.26",
+]
+
+[project.urls]
+Homepage = "https://github.com/FirstDataUnion/Sentrook"
+Repository = "https://github.com/FirstDataUnion/Sentrook"
+Issues = "https://github.com/FirstDataUnion/Sentrook/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "ruff==0.16.4",
+    "jsonschema>=4.23.0",
+]
+
+[project.scripts]
+sentrook = "sentrook.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "sentrook/sentrook/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sentrook/sentrook"]
+
+[tool.hatch.build.targets.sdist]
+packages = ["sentrook/sentrook"]
+
+[tool.pytest.ini_options]
+testpaths = ["sentrook/tests"]
+pythonpath = ["sentrook"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["sentrook"]
+extend-exclude = [
+    ".venv",
+    "node_modules",
+    # 1.x scenario harness kept as reference only (see CLAUDE.md); not part of the 2.0 build.
+    "testnest",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "W",   # pycodestyle warnings
+]
+ignore = [
+    "E501",  # line length: the formatter owns wrapping
+]
+
+[tool.ruff.lint.per-file-ignores]
+"sentrook/tests/**" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

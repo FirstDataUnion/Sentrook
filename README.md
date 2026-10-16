@@ -11,7 +11,16 @@ trajectory that led to them, and flags or blocks the dangerous ones.
 currently published offering (engine 1.x and the `@firstdataunion/sentrook-openclaw` plugin) is in
 maintenance mode and lives on the [`release/1.x`](../../tree/release/1.x) branch.
 
-Nothing here is installable yet. See [CLAUDE.md](CLAUDE.md) for the repo layout and conventions.
+The 2.0 scanner is being built in work packages; see [CHANGELOG.md](CHANGELOG.md) for what has
+landed. The wire contracts (PlanIR 2.0, Response 2.0, the probe envelope) are published as JSON Schema
+under [`schema/`](schema/). Nothing is deployable yet. See [CLAUDE.md](CLAUDE.md) for the repo layout
+and conventions.
+
+```bash
+make install   # uv sync with dev extras
+make test      # unit tests
+make lint      # ruff check + format check
+```
 
 ## License
 
