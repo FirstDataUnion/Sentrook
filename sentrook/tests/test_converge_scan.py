@@ -582,6 +582,7 @@ def test_conv_v3_loads_and_turns_on_the_retry_carry():
     v2, v3 = load_params("conv-v2"), load_params("conv-v3")
     assert v3.name == "conv-v3" and v3.context.name == "conv-v3/context"
     assert v2.context.retry_carry_consequence == 0.0 and v3.context.retry_carry_consequence == 1.0
+    assert (v2.consequence, v2.u) == ("max", 0.25) and (v3.consequence, v3.u) == ("mean", 0.5)
     assert v3.oracle.unknown_by_role == v2.oracle.unknown_by_role
 
 

@@ -46,3 +46,9 @@ The 1.x engine and plugins keep their own history on `release/1.x`.
 
 ### WP8: first tuning step (2026-10-16)
 - `conv-v2`: the oracle's unknown-entity distrust by role (destinations 0.3, recipients 0.25, tool providers 0.1; code sources and executables stay 0.5). Chosen on dev, confirmed once on held-out; `conv-v1` is unchanged and remains selectable with `SENTROOK_CONVERGENCE=conv-v1`.
+- Items 2 to 6 (same day), each pinned by a unit test, chosen on dev and confirmed once on held-out:
+  - Request-named relief also matches a recipient's display name (`Priya` for `priya.nair@…`, capitalised in the request) and the single `bcc`/`cc` address when the owner asks to be copied; neither applies to an address that reached the agent through content it read. The mail domain of a request-named recipient inherits the sanction.
+  - `retry_after_denial`: matching is role-insensitive on the pending side and includes code and executable hashes (a shred retried through an interpreter, a write retried as an edit, a blocked install retried with another flag now match); a read-shaped call on the same data is the weaker `retry.same_source_only`. `context.retry_carry_consequence` (on in `conv-v3`) carries the denied step's consequence tier into a matched retry as reach and irreversibility.
+  - AIRA C4: a script or data file in a workspace skill scores at `selfmod.workspace_skill` (0.5); the skill's instruction files keep the plugin weight (`weights.yaml` 4, `selfmod.yaml` 2).
+  - AIRA C9: cloud IAM grants, access keys, inline or admin policies, repository secrets and RBAC bindings as `remote.grant` (`remote_destructive.yaml` 2); reader-level grants stay silent.
+  - `conv-v3`: consequence as the mean of sensitivity, reach and irreversibility (max with self-modification), `u` 0.5, the retry carry on; the oracle table and everything else as `conv-v2`, which stays selectable.
