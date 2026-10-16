@@ -1,0 +1,145 @@
+# Untrusted code executed (C3): fetch-to-shell, decode-to-shell, install-from-URL and package
+# installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
+# min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
+
+version: 1
+
+fetch_heads:
+  - curl
+  - wget
+  - http
+  - httpie
+  - aria2c
+  - fetch
+shell_heads:
+  - sh
+  - bash
+  - zsh
+  - dash
+  - ksh
+  - ash
+  - fish
+  - csh
+  - tcsh
+interpreter_heads:
+  - python
+  - python2
+  - python3
+  - node
+  - deno
+  - bun
+  - perl
+  - ruby
+  - php
+  - lua
+  - osascript
+# Builtins that evaluate their argument as code.
+eval_heads:
+  - eval
+  - source
+  - "."
+
+# A fetch head that writes to a file (`curl -o x.sh … && bash x.sh`): these flags mark the write.
+fetch_output_flags:
+  - -o
+  - -O
+  - --output
+  - --remote-name
+  - --output-document
+
+# Decoders. A pipeline stage with this head (and one of the flags, when listed) feeding a shell or
+# interpreter stage is decode-to-shell.
+decode_heads:
+  - head: base64
+    flags: [-d, --decode, -D]
+  - head: base32
+    flags: [-d, --decode]
+  - head: xxd
+    flags: [-r, -revert]
+  - head: openssl
+    flags: [-d]
+  - head: zcat
+    flags: []
+  - head: gunzip
+    flags: [-c]
+  - head: bunzip2
+    flags: [-c]
+  - head: unxz
+    flags: [-c]
+  - head: perl
+    flags: [-MMIME::Base64]
+# A decoder that is the whole stage with no head of its own (`printf '\x63...' | sh`): a `printf` or
+# `echo -e` stage whose argument is escape-encoded.
+encoded_literal_patterns:
+  - '(?:\\x[0-9A-Fa-f]{2}){4,}'
+  - '(?:\\[0-7]{3}){4,}'
+  - '(?:%[0-9A-Fa-f]{2}){6,}'
+
+# Encoded payloads reaching an interpreter inside inline code. Regex over the (normalised) text.
+decode_text_patterns:
+  - '\bexec\s*\(\s*(?:base64\.)?b64decode\s*\('
+  - '\beval\s*\(\s*(?:base64\.)?b64decode\s*\('
+  - '\bexec\s*\(\s*(?:bytes\.fromhex|codecs\.decode|zlib\.decompress|marshal\.loads)\s*\('
+  - '\beval\s*\(\s*(?:bytes\.fromhex|codecs\.decode|zlib\.decompress|marshal\.loads)\s*\('
+  - 'Buffer\.from\([^)]*["''](?:base64|hex)["'']\)[\s\S]{0,60}?\b(?:eval|Function|child_process|execSync|spawn)\b'
+  - '\b(?:eval|Function)\s*\(\s*atob\s*\('
+  - 'base64\s+(?:-d|--decode|-D)\b[^;&|\n]*\|\s*(?:sudo\s+)?(?:ba|z|da|k|a|fi)?sh\b'
+  - '\bxxd\s+-r\b[^;&|\n]*\|\s*(?:sudo\s+)?(?:ba|z|da|k|a|fi)?sh\b'
+
+# Text fallbacks for fetch-to-shell shapes the parser may not express as a pipeline.
+fetch_to_shell_patterns:
+  - '\b(?:bash|sh|zsh|dash|ksh)\s+<\(\s*(?:curl|wget|http)\b'
+  - '\b(?:source|\.)\s+<\(\s*(?:curl|wget|http)\b'
+  - '\beval\s+["'']?\$\(\s*(?:curl|wget|http)\b'
+  - '\b(?:bash|sh|zsh)\s+-c\s+["'']\$\(\s*(?:curl|wget|http)\b'
+  - '\b(?:curl|wget)\b[^;&|\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|z|da|k|a|fi)?sh\b'
+  - '\b(?:curl|wget)\b[^;&|\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:python[23]?|node|perl|ruby|deno|bun)\b'
+
+# Install from a URL or a git source rather than a registry.
+install_from_url_patterns:
+  - '\bpip3?\s+install\b[^;&|\n]*\s(?:https?://|git\+)'
+  - '\bnpm\s+(?:install|i|add)\b[^;&|\n]*\s(?:https?://|github:|git\+|git://|bitbucket:|gitlab:)'
+  - '\b(?:pnpm|yarn|bun)\s+(?:add|install)\b[^;&|\n]*\s(?:https?://|github:|git\+|git://)'
+  - '\bpipx\s+(?:run|install)\b[^;&|\n]*\s(?:https?://|git\+)'
+  - '\buv\s+(?:run|tool\s+(?:run|install)|pip\s+install)\b[^;&|\n]*\s(?:https?://|git\+)'
+  - '\buvx\s+[^;&|\n]*\s(?:https?://|git\+)'
+  - '\bnpx\s+[^;&|\n]*\s(?:https?://|github:)'
+  - '\bcargo\s+install\b[^;&|\n]*\s--git\b'
+  - '\bgo\s+(?:install|run)\s+(?:https?://|github\.com/)[^\s@]+@(?:latest|master|main|HEAD)'
+
+# Package installs from a registry. The package entities come from preparation
+# (`prepare.entities`, role `code_source`); this is the verb check.
+package_install_heads:
+  - pip
+  - pip3
+  - pipx
+  - uv
+  - uvx
+  - npm
+  - npx
+  - pnpm
+  - yarn
+  - bun
+  - cargo
+  - gem
+  - go
+  - brew
+  - apt
+  - apt-get
+  - dnf
+  - yum
+  - apk
+  - pacman
+  - conda
+  - poetry
+package_install_verbs:
+  - install
+  - add
+  - i
+  - -S
+
+# A file written since a fetch: the executed file (`prepared.written_file`) was written after a
+# history step with one of these tool kinds, or an exec step with a fetch head.
+fetch_tool_kinds:
+  - web_fetch
+  - browser

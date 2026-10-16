@@ -1,0 +1,73 @@
+# Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
+# overlay may override any scalar here. Values are 0–1 on the signal's own scale.
+
+version: 1
+
+# C1: credential material reached. Keyed by path group.
+sensitivity:
+  credential_store: 1.0
+  credential_bearing_config: 0.8
+  browser_profile: 0.6
+  pii_store: 0.6
+  # Sources without a path group.
+  placeholder: 1.0
+  session_holds_sensitive: 0.8
+  # C10: a secret written into an artefact.
+  artefact: 0.8
+
+# C2: exfiltration (sensitive source × sink) and the plain send.
+exfil:
+  reach: 1.0
+  irreversibility: 1.0
+send:
+  reach: 1.0
+  irreversibility: 0.8
+
+# C3: untrusted code executed.
+code:
+  reach: 0.75
+  irreversibility: 0.7
+  package_irreversibility: 0.6
+  decode_concealment: 1.0
+  decode_floor_min_risk: 0.9
+
+# C4: self-modification and persistence. `self_modification` by path group / mechanism.
+selfmod:
+  config: 1.0
+  scheduler: 1.0
+  plugin: 1.0
+  hooks: 1.0
+  memory: 0.7
+  startup: 0.6
+  host_scheduler: 0.6
+  reach: 0.75
+  irreversibility: 0.6
+
+# C4*: guardrail tampering.
+guardrail:
+  self_modification: 1.0
+  floor_min_risk: 1.0
+
+# C7: destruction outside scratch.
+destroy:
+  irreversibility: 1.0
+  reach_host: 0.75
+  reach_workspace: 0.5
+
+# C8: privilege change.
+priv:
+  reach: 0.75
+  concealment: 0.6
+
+# C9: irreversible remote side effects.
+remote:
+  irreversibility: 1.0
+  reach: 1.0
+
+# Extent modifier added to reach.
+extent:
+  bonus: 0.25
+
+# Concealment outside C3/C8.
+conceal:
+  quiet_network: 0.5

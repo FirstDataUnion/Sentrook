@@ -1,0 +1,66 @@
+# Self-modification and persistence (C4): the CLI verbs and tool names that change what the agent
+# will do next session without naming a path. Path-based C4 hits come from the agent-context groups
+# in `sensitive_paths.yaml` (`agent_config`, `agent_memory`, `agent_plugins`, `agent_scheduler`,
+# `hooks`, `startup`, `host_scheduler`).
+#
+# `weight` names the `weights.yaml: selfmod` key when it differs from the reason's default (host
+# schedulers score at `host_scheduler`, 0.6, because a crontab entry is host persistence rather than
+# the agent's own scheduler).
+
+version: 1
+
+# Regex over one shell segment of the exec text.
+cli:
+  - pattern: '\bopenclaw\s+config\s+(?:set|unset|rm|remove|delete|del|edit|add|append|push|patch|reset)\b'
+    reason: selfmod.config
+  - pattern: '\bhermes\s+config\s+(?:set|unset|rm|remove|delete|del|edit|add|append|reset)\b'
+    reason: selfmod.config
+  - pattern: '\bopenclaw\s+(?:automations?|cron|schedules?|jobs?|heartbeats?)\s+(?:add|create|new|set|enable|update|edit|remove|rm|delete|disable|run|trigger)\b'
+    reason: selfmod.scheduler
+  - pattern: '\bhermes\s+(?:cron|automations?|schedules?|jobs?)\s+(?:add|create|new|set|enable|update|edit|remove|rm|delete|disable|run)\b'
+    reason: selfmod.scheduler
+  - pattern: '\b(?:openclaw|hermes)\s+(?:plugins?|skills?|extensions?)\s+(?:install|add|enable|update|upgrade|remove|rm|uninstall|disable)\b'
+    reason: selfmod.plugin
+  - pattern: '\b(?:openclaw|hermes)\s+hooks?\s+(?:add|install|set|enable|remove|disable)\b'
+    reason: selfmod.hooks
+  # `crontab -e`, `crontab -r`, `crontab <file>`; `crontab -l` is a read.
+  - pattern: '\bcrontab\s+(?:-[A-Za-z]*[er]\b|(?!-)\S+)'
+    reason: selfmod.scheduler
+    weight: host_scheduler
+  - pattern: '\bsystemctl\s+(?:--user\s+)?(?:enable|disable|mask|unmask|link|edit|set-property|daemon-reload)\b'
+    reason: selfmod.scheduler
+    weight: host_scheduler
+  - pattern: '\blaunchctl\s+(?:load|bootstrap|enable|submit|setenv)\b'
+    reason: selfmod.scheduler
+    weight: host_scheduler
+  - pattern: '(?:\A|[\s;&|(])(?:at|batch)\s+(?:now|\d|-f)'
+    reason: selfmod.scheduler
+    weight: host_scheduler
+  - pattern: '\bgit\s+config\s+(?:--global\s+|--system\s+)?core\.hooksPath\b'
+    reason: selfmod.hooks
+  - pattern: '\bgit\s+config\s+(?:--global|--system)\b'
+    reason: selfmod.startup
+  - pattern: '\bdefaults\s+write\b'
+    reason: selfmod.startup
+
+# MCP / host tool names (a namespace prefix is allowed). A read-only `action` argument suppresses
+# the hit.
+tool_name_prefix: '(?:\A|__|[.:/])'
+tool_names:
+  - pattern: '(?:cronjob_manage|automations?|schedule(?:_\w+)?|create_cron|cron_\w+|set_reminder|reminders?|heartbeat_\w+)\Z'
+    reason: selfmod.scheduler
+  - pattern: '(?:memory_(?:write|save|store|add|update|delete|forget)|save_memory|remember|forget|update_memory|memory)\Z'
+    reason: selfmod.memory
+  - pattern: '(?:skill_(?:manage|install|create|edit|update|remove)|install_(?:plugin|skill)|plugin_(?:install|enable|disable|manage|remove)|skills?_\w+)\Z'
+    reason: selfmod.plugin
+  - pattern: '(?:update_config|set_config|config_set|update_settings|agent_config|configure_agent|update_system_prompt|set_persona)\Z'
+    reason: selfmod.config
+read_actions:
+  - list
+  - get
+  - show
+  - read
+  - view
+  - search
+  - status
+  - describe

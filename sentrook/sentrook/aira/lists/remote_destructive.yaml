@@ -1,0 +1,85 @@
+# Irreversible remote side effects (C9): CLI verbs and MCP tool shapes whose effect lands on a
+# remote system and cannot be undone from the host. Each entry carries the reason code the review
+# card sees.
+
+version: 1
+
+# Regex over one shell segment of the exec text.
+cli:
+  - pattern: '\bgh\s+(?:repo|release|gist|secret|variable|run|cache|codespace|ssh-key|gpg-key)\s+delete\b'
+    reason: remote.delete
+  - pattern: '\bgh\s+(?:pr|issue)\s+(?:close|delete)\b'
+    reason: remote.delete
+  - pattern: '\baws\s+s3\s+(?:rb\b|rm\b[^;&|\n]*--recursive)'
+    reason: remote.delete
+  - pattern: '\baws\s+s3api\s+delete-(?:bucket|objects?)\b'
+    reason: remote.delete
+  - pattern: '\baws\s+ec2\s+terminate-instances\b'
+    reason: remote.delete
+  - pattern: '\baws\s+[\w-]+\s+delete-[\w-]+\b'
+    reason: remote.delete
+  - pattern: '\bkubectl\s+delete\b'
+    reason: remote.delete
+  - pattern: '\bhelm\s+(?:uninstall|delete)\b'
+    reason: remote.delete
+  - pattern: '\bgcloud\s+[\w\s.-]*?\bdelete\b'
+    reason: remote.delete
+  - pattern: '\bgsutil\s+(?:rm|rb)\b'
+    reason: remote.delete
+  - pattern: '\baz\s+[\w\s-]*?\bdelete\b'
+    reason: remote.delete
+  - pattern: '\bterraform\s+(?:destroy\b|apply\s+-destroy\b)'
+    reason: remote.delete
+  - pattern: '\bpulumi\s+destroy\b'
+    reason: remote.delete
+  - pattern: '\bgit\s+push\b[^;&|\n]*(?:\s--force\b|\s-f\b|\s--force-with-lease\b|\s--delete\b|\s-d\b|\s:[^\s:]+)'
+    reason: remote.force_push
+  - pattern: '\bgit\s+push\b[^;&|\n]*\s--mirror\b'
+    reason: remote.force_push
+  # docker rm/rmi on a remote daemon only (`-H`/`--host`, or `DOCKER_HOST=` prefixed).
+  - pattern: '\b(?:DOCKER_HOST=\S+\s+)?docker\s+(?:-H|--host)[\s=]\S+[^;&|\n]*\b(?:rm|rmi|system\s+prune|volume\s+rm)\b'
+    reason: remote.delete
+  - pattern: '\bDOCKER_HOST=\S+\s+docker\s+(?:rm|rmi|system\s+prune|volume\s+rm)\b'
+    reason: remote.delete
+  - pattern: '\bheroku\s+apps:destroy\b'
+    reason: remote.delete
+  - pattern: '\bvercel\s+(?:rm|remove)\b'
+    reason: remote.delete
+  - pattern: '\bflyctl?\s+(?:apps\s+destroy|destroy)\b'
+    reason: remote.delete
+  - pattern: '\bnpm\s+(?:unpublish|deprecate)\b'
+    reason: remote.delete
+  - pattern: '\bstripe\s+(?:charges|payment_intents|payouts|transfers|refunds)\s+(?:create|confirm|capture)\b'
+    reason: remote.payment
+  - pattern: '\bgh\s+(?:auth\s+logout|ssh-key\s+add|gpg-key\s+add)\b'
+    reason: remote.account_change
+
+# MCP / other tool names. Regex over the tool name; a namespace prefix (`gmail__`, `server.`) is
+# allowed before the match.
+tool_name_prefix: '(?:\A|__|[.:/])'
+tool_names:
+  - pattern: '(?:delete|remove|destroy|purge|drop|wipe|erase)_\w+'
+    reason: remote.delete
+  - pattern: '\w+_(?:delete|remove|destroy|purge)\Z'
+    reason: remote.delete
+  - pattern: '(?:pay|payment|payout|refund)_\w+|send_money|send_payment|transfer_\w+|\w+_payment\Z|update_scheduled_transaction|create_charge|charge_\w+'
+    reason: remote.payment
+  - pattern: '(?:update|change|reset|set)_password|update_(?:email|phone|mfa|2fa|recovery)\b|(?:add|remove|rotate)_(?:ssh_key|api_key|token)|revoke_\w+'
+    reason: remote.account_change
+
+# Payment-shaped arguments: an `amount` (canonical) together with a recipient is a payment whatever
+# the tool is called.
+payment_args:
+  amount_key: amount
+  require_recipient: true
+
+# Read-only actions on an MCP tool's `action` argument that suppress a tool-name hit.
+read_actions:
+  - list
+  - get
+  - show
+  - read
+  - view
+  - search
+  - describe
+  - status
