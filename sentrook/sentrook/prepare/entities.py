@@ -160,6 +160,11 @@ _FILE_EXTENSIONS = frozenset(
     key pem crt pub ps1 bat exe dll so dylib whl egg jar war txt~ old orig swp pid service timer
     example sample""".split()
 )
+# A dotted name used as code rather than a host: a call (`pathlib.Path(`) or a module in an import
+# statement (`import pathlib, urllib.request`, `from urllib.parse import quote`).
+_IMPORT_LIST_RE = re.compile(r"\bimport\s+(?:[\w.]+(?:\s+as\s+\w+)?\s*,\s*)*$")
+_FROM_IMPORT_RE = re.compile(r"\bfrom\s+$")
+_IMPORT_AFTER_RE = re.compile(r"\s+import\b")
 _IPV4_RE = re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?![\w.])")
 _PATH_RE = re.compile(r"(?<![\w.:-])((?:~|\$HOME|\.{1,2})?/(?:[\w.@%+~-]+/)*[\w.@%+~-]+/?)")
 _SSH_HOST_RE = re.compile(
@@ -336,6 +341,15 @@ class Found:
     role: Role | None = None
 
 
+def _is_code_reference(text: str, start: int, end: int) -> bool:
+    if text[end : end + 1] == "(":
+        return True
+    line = text[text.rfind("\n", 0, start) + 1 : start]
+    if _IMPORT_LIST_RE.search(line):
+        return True
+    return bool(_FROM_IMPORT_RE.search(line) and _IMPORT_AFTER_RE.match(text, end))
+
+
 def _hosts_in(text: str) -> list[str]:
     hosts: list[str] = []
     for m in _URL_RE.finditer(text):
@@ -356,6 +370,8 @@ def _hosts_in(text: str) -> list[str]:
         if tld in _FILE_EXTENSIONS or cand.lower() in ("e.g", "i.e", "etc.etc"):
             continue
         if cand[0].isdigit() and cand.replace(".", "").isdigit():
+            continue
+        if _is_code_reference(stripped, m.start(1), m.end(1)):
             continue
         hosts.append(normalise_host(cand))
     return list(dict.fromkeys(hosts))

