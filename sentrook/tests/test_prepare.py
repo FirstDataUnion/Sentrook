@@ -25,7 +25,7 @@ from sentrook.prepare.trust import Trust
 from sentrook.prepare.views import CALL, EXPOSURE, trim, view
 from sentrook.state.token import TokenStatus, decode_state, encode_state, entity_hash, seed_state
 
-KEY = "unit-test-key-0123456789abcdef0123456789abcdef"
+KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 CLOCK = datetime(2026, 10, 5, 10, 28, tzinfo=UTC)
 
 
@@ -516,7 +516,7 @@ def test_token_round_trip_and_binding(attack_case):
     assert (
         decode_state(
             token,
-            key="other-key-0123456789abcdef0123456789abcdef",
+            key="other-test-state-key-" * 2,
             session_ref="s1",
             expected_step=2,
             deployment=None,
@@ -543,3 +543,12 @@ def test_untrusted_set_is_capped():
     assert len(state.untrusted) == 64
     assert entity_hash("s", "host", "h79.example.net") in state.untrusted
     assert entity_hash("s", "host", "h0.example.net") not in state.untrusted
+
+
+def test_docker_images_are_found_without_backtracking():
+    from sentrook.prepare.entities import _docker_images, _packages_in
+
+    assert _docker_images("docker run -it --rm -v /a:/b --name x -e K=V node:20 sh") == ["node:20"]
+    assert _docker_images("docker pull ghcr.io/org/tool:1.2") == ["ghcr.io/org/tool:1.2"]
+    assert _docker_images("docker run --rm " + "-! -! " * 5000 + "img") == ["img"]  # linear time
+    assert _packages_in("docker run --rm node:20") == ["docker:node:20"]

@@ -208,9 +208,58 @@ _ECOSYSTEM = {
     "yum": "rpm",
     "apk": "apk",
 }
-_DOCKER_RE = re.compile(
-    r"\bdocker\s+(?:run|pull|create)\b(?:\s+-\S+(?:\s+\S+)?)*\s+([a-z0-9][\w./:-]*)", re.IGNORECASE
+_DOCKER_VERB_RE = re.compile(r"\bdocker\s+(?:run|pull|create)\b([^;&|\n]*)", re.IGNORECASE)
+# docker flags that take no value; any other `-x`/`--x` flag without `=` consumes the next token.
+_DOCKER_BARE_FLAGS = frozenset(
+    {
+        "-d",
+        "--detach",
+        "-i",
+        "--interactive",
+        "-t",
+        "--tty",
+        "-it",
+        "-ti",
+        "-dit",
+        "--rm",
+        "-q",
+        "--quiet",
+        "--privileged",
+        "--init",
+        "--no-healthcheck",
+        "--read-only",
+        "--sig-proxy",
+        "-P",
+        "--publish-all",
+        "-a",
+        "--all-tags",
+        "--disable-content-trust",
+        "--help",
+    }
 )
+_DOCKER_IMAGE_RE = re.compile(r"\A[a-z0-9][\w./:-]*\Z", re.IGNORECASE)
+
+
+def _docker_images(text: str) -> list[str]:
+    """Image references of `docker run|pull|create …`, found by walking tokens (a regex with a nested
+    optional group here backtracks exponentially on long flag runs)."""
+    out: list[str] = []
+    for m in _DOCKER_VERB_RE.finditer(text):
+        tokens = m.group(1).split()
+        skip = False
+        for tok in tokens:
+            if skip:
+                skip = False
+                continue
+            if tok.startswith("-"):
+                skip = "=" not in tok and tok not in _DOCKER_BARE_FLAGS
+                continue
+            if _DOCKER_IMAGE_RE.match(tok):
+                out.append(tok)
+            break
+    return out
+
+
 _GIT_RE = re.compile(r"\bgit\s+clone\s+(?:-\S+\s+)*(\S+)|\bgit\+(\S+)", re.IGNORECASE)
 
 _EGRESS_MARKERS = re.compile(
@@ -435,8 +484,8 @@ def _packages_in(text: str) -> list[str]:
             p = normalise_package(eco, tok)
             if p:
                 pkgs.append(p)
-    for m in _DOCKER_RE.finditer(text):
-        pkgs.append("docker:" + m.group(1))
+    for image in _docker_images(text):
+        pkgs.append("docker:" + image)
     for m in _GIT_RE.finditer(text):
         url = m.group(1) or m.group(2)
         if url:

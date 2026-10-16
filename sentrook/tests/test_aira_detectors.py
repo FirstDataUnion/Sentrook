@@ -18,7 +18,7 @@ from sentrook.prepare.entities import EntityKind
 from sentrook.probes.aira import AIRA_VERSION, AiraProbe
 from sentrook.probes.base import Envelope
 
-KEY = "unit-test-key-0123456789abcdef0123456789abcdef"
+KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 CLOCK = datetime(2026, 10, 5, 10, 28, tzinfo=UTC)
 SENS, REACH, IRR = (
     "consequence.sensitivity",

@@ -12,7 +12,7 @@ from sentrook.prepare.entities import EntityKind
 from sentrook.probes.context import ContextProbe
 from sentrook.probes.oracle import EntityOracleProbe
 
-KEY = "unit-test-key-0123456789abcdef0123456789abcdef"
+KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 CLOCK = datetime(2026, 10, 5, 10, 28, tzinfo=UTC)
 
 

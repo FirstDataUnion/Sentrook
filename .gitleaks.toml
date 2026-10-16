@@ -50,4 +50,8 @@ description = "Known-fake tokens used to exercise sanitize (not real credentials
 regexes = [
   '''x9fakebotpassvalue32charsxxxxxx''',
   '''ghp_1234567890abcdefghij''',
+  # 2.0 unit-test state-token keys: hex-suffixed fakes used in early commits on wp0-scanner-skeleton, since
+  # replaced by low-entropy literals; the values remain in history.
+  '''unit-test-key-0123456789abcdef0123456789abcdef''',
+  '''other-key-0123456789abcdef0123456789abcdef''',
 ]

@@ -16,7 +16,7 @@ from sentrook.probes.base import Contribution, Envelope, Floor
 from sentrook.scan import Scanner, ScannerConfig, ScanOptions, steps_from_csv
 from sentrook.state.token import TokenStatus, decode_state
 
-KEY = "unit-test-key-0123456789abcdef0123456789abcdef"
+KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 CLOCK = datetime(2026, 10, 5, 10, 28, tzinfo=UTC)
 
 BENIGN_ANSWERS = {
