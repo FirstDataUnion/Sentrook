@@ -384,8 +384,17 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     # 7. fingerprint
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
 
-    # 8. views
-    jev_views = {views.EXPOSURE: views.exposure_view(raw), views.CALL: views.call_view(raw)}
+    # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
+    # sent in the common case; call: the full trimmed call view)
+    untrusted_seqs = {
+        i.input.input_seq
+        for i in inputs
+        if i.trust is Trust.UNTRUSTED and i.new and i.input.content
+    }
+    jev_views = {
+        views.EXPOSURE: views.exposure_view(raw, only_input_seqs=untrusted_seqs),
+        views.CALL: views.call_view(raw),
+    }
 
     return Prepared(
         planir=planir,

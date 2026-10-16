@@ -16,3 +16,9 @@ The 1.x engine and plugins keep their own history on `release/1.x`.
 - `planir.canonical`: per-platform argument canonicalisation to one vocabulary per `tool_kind`; URL queries percent-decoded for analysis only.
 - `prepare`: trust classification, entity extraction with roles and opaque IDs (pending call, siblings, request, grants, inputs, history, agent-written files), the untrusted-entity set with "echo does not promote", action fingerprint `afp1`, Jev state views byte-identical to the runner's `trim-v1`.
 - `state.token`: HS256 state token bound to `session_ref` and step; test-mode seeding from `state_seed`.
+
+### WP2: Jev probes (2026-10-16)
+- `jev.client`: Decisions API client behind one configurable base URL, `zdr` provider preferences, retry with backoff, context-limit and timeout surfaced as coverage events; `X-TestNest-Repeat` forwarded for the runner's proxy.
+- `jev.questions`: `exposure-v1` and `call-v1`, the two halves of the frozen `designed-v1-split`, word for word. Verified: every request body for all 691 suite cases hashes to the runner's cache key.
+- `jev.chunking`: head-and-tail chunking of oversize exposure inputs, highest chunk score taken.
+- `probes.jev`: exposure probe (sets `tainted`, skipped without new untrusted inputs) and call probe (misalignment, concealment, consequence signals, mean model certainty; `untrusted_origin` and the action category in evidence only).
