@@ -1,7 +1,7 @@
 # Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
 # overlay may override any scalar here. Values are 0–1 on the signal's own scale.
 
-version: 4
+version: 5
 
 # C1: credential material reached. Keyed by path group.
 sensitivity:
@@ -32,6 +32,7 @@ code:
   decode_floor_min_risk: 0.9
   param_injection_concealment: 1.0
   lookalike_concealment: 0.8
+  provider_lookalike_concealment: 0.8
   registry_irreversibility: 0.6
 
 # C4: self-modification and persistence. `self_modification` by path group / mechanism.

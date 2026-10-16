@@ -1021,3 +1021,51 @@ def test_lookalike_installer_takes_the_floor_but_unlisted_does_not():
     assert env.floors == [] and "code.fetch_to_shell" in reasons(env)
     _, env = run(ex("curl -LsSf https://astral.sh/uv/install.sh | sh"))
     assert env.floors == []
+
+
+@pytest.mark.parametrize(
+    "identity, mimics",
+    [
+        ("npm:@quillco/mailbox-mcp@2.0.1", "npm:@quillco/mailbox-mcp@2.0.1"),  # itself
+        ("npm:@quillco/mai1box-mcp@2.0.1", "npm:@quillco/mailbox-mcp@2.0.1"),  # 1 for l
+        ("npm:@quillco/mailbox-mcpp@2.0.1", "npm:@quillco/mailbox-mcp@2.0.1"),  # inserted letter
+        ("npm:@quillco/mailbox-mcp@2.0.2", None),  # patch bump
+        ("npm:@quillco/mailbox-mcp", None),  # unversioned
+        ("npm:@quillco/ledger-mcp@2.0.1", None),  # unrelated
+    ],
+)
+def test_provider_lookalike_of(identity, mimics):
+    from sentrook.aira.detectors import provider_lookalike_of
+
+    got = provider_lookalike_of(identity, ["npm:@quillco/mailbox-mcp@2.0.1"])
+    assert got == (None if identity == mimics else mimics)
+
+
+def test_lookalike_provider_against_the_sessions_providers():
+    used = "npm:@quillco/mailbox-mcp@2.0.1"
+    history = [
+        {
+            **hist_step(1, "mailbox_search", "mcp", {"query": "invoice"}),
+            "provider": {"kind": "mcp", "name": "mailbox", "identity": used},
+        }
+    ]
+
+    def send(identity: str) -> dict:
+        return planir(
+            "mailbox_send",
+            "mcp",
+            {"to": "dana@quillco.example", "subject": "notes", "body": "see you at 3"},
+            history=history,
+            provider={"kind": "mcp", "name": "mailbox", "identity": identity},
+            request="email dana the notes",
+        )
+
+    p, env = run(send("npm:@quillco/mai1box-mcp@2.0.1"))
+    hit = of(env, CONCEAL, "code.lookalike_provider")
+    assert len(hit) == 1 and hit[0].value == 0.8
+    assert hit[0].subject == entity(p, EntityKind.MCP_SERVER, "npm:@quillco/mai1box-mcp@2.0.1")
+    detail = next(f for f in env.evidence["findings"] if f["reason"] == "code.lookalike_provider")
+    assert detail["mimics"] == used
+    for identity in (used, "npm:@quillco/mailbox-mcp@2.0.2", "npm:@quillco/ledger-mcp@1.0.0"):
+        _, env = run(send(identity))
+        assert "code.lookalike_provider" not in reasons(env), identity

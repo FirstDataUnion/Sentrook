@@ -24,7 +24,7 @@ from typing import Any
 
 from ..enums import Enforce, SessionFlag
 from ..planir.canonical import CanonicalCall
-from ..planir.models import HostApproval, ToolKind
+from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role, normalise_path
 from ..probes.base import Contribution, Floor
@@ -805,6 +805,66 @@ def lookalike_of(host: str, listed_hosts: Iterable[str]) -> str | None:
     return None
 
 
+_PROVIDER_VERSION_RE = re.compile(r"@[^@/:\s]+$")
+
+
+def _provider_name(identity: str) -> str:
+    """A provider identity without its version: `npm:@acme/gmail-mcp@1.4.2` → `npm:@acme/gmail-mcp`.
+    The scope's `@` is kept because a version never contains `/`."""
+    identity = identity.strip().lower()
+    name = _PROVIDER_VERSION_RE.sub("", identity)
+    return name if name and not name.endswith(":") else identity
+
+
+def provider_lookalike_of(identity: str, known: Iterable[str]) -> str | None:
+    """The known provider identity `identity` mimics, or None: its package name is one edit from a
+    known one's. The same name under another version (a patch bump) is that provider, not a
+    look-alike, and so is any identity whose name is known."""
+    name = _provider_name(identity)
+    known = [k for k in known if k]
+    if any(_provider_name(k) == name for k in known):
+        return None
+    if len(name.rsplit("/", 1)[-1].split(":")[-1]) < 5:
+        return None
+    for k in known:
+        if _edit_distance_le1(name, _provider_name(k)):
+            return k
+    return None
+
+
+def detect_provider_lookalike(a: CallAnalysis, ctx: Context) -> list[Finding]:
+    """C3 arm: the call goes through an MCP provider whose package name is one typo away from a
+    provider the session already used (`gmai1-mcp` for `gmail-mcp`). The call's own consequence is
+    scored by the other classes; the look-alike is concealment."""
+    out: list[Finding] = []
+    known = [
+        h.provider.identity
+        for h in ctx.prepared.history
+        if h.provider.kind is ProviderKind.MCP and h.provider.identity
+    ]
+    if not known:
+        return out
+    for ref in a.providers:
+        if ref.kind is not EntityKind.MCP_SERVER or Role.TOOL_PROVIDER not in ref.roles:
+            continue
+        mimics = provider_lookalike_of(ref.value, known)
+        if mimics is None:
+            continue
+        f = Finding(
+            rule="C3.lookalike_provider",
+            cls="C3",
+            reason="code.lookalike_provider",
+            detail={"provider": ref.value, "mimics": mimics},
+        )
+        f.add(
+            CONCEALMENT,
+            ctx.weight("code", "provider_lookalike_concealment", default=0.8),
+            ref.entity_id,
+        )
+        out.append(f)
+    return out
+
+
 def detect_param_injection(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C3 arm: a shell command smuggled into a URL parameter of a request to a local or private
     service (RCE through an unauthenticated inspector or preview endpoint). Encoding is
@@ -1486,6 +1546,7 @@ DETECTORS: tuple[tuple[Detector, str, str], ...] = (
     (detect_untrusted_code, "C3", PACK_TIER1),
     (detect_param_injection, "C3", PACK_TIER1),
     (detect_registry_redirect, "C3", PACK_TIER1),
+    (detect_provider_lookalike, "C3", PACK_TIER1),
     (detect_guardrail, "C4*", PACK_TIER1),
     (detect_selfmod, "C4", PACK_TIER1),
     (detect_destruction, "C7", PACK_HOST_GATED),
