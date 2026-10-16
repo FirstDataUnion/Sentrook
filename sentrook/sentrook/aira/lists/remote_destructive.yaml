@@ -2,7 +2,7 @@
 # remote system and cannot be undone from the host. Each entry carries the reason code the review
 # card sees.
 
-version: 1
+version: 2
 
 # Regex over one shell segment of the exec text.
 cli:
@@ -53,6 +53,24 @@ cli:
     reason: remote.payment
   - pattern: '\bgh\s+(?:auth\s+logout|ssh-key\s+add|gpg-key\s+add)\b'
     reason: remote.account_change
+  # Cloud IAM grants (WP8 item 5): a role, policy, key or secret handed to a principal on a remote
+  # system outlives the session and is not undone from the host. Only privileged roles count for
+  # the role-binding verbs (an `owner`, `admin` or `editor` grant; a `reader` grant stays silent);
+  # key creation, inline policies and secret writes count whatever their content.
+  - pattern: '\biam\s+(?:add-roles?|grant(?:-role)?|bind(?:-role)?|set-role)\b[^;&|\n]*--roles?[=\s]+["'']?(?:roles/)?[\w./-]*?(?:owner|admin|administrator|editor|root|superuser)\b'
+    reason: remote.grant
+  - pattern: '\badd-iam-policy-binding\b[^;&|\n]*--role[=\s]+["'']?(?:roles/)?[\w./-]*?(?:owner|editor|admin)\b'
+    reason: remote.grant
+  - pattern: '\bgcloud\s+iam\s+service-accounts\s+keys\s+create\b'
+    reason: remote.grant
+  - pattern: '\baws\s+iam\s+(?:(?:put-(?:user|role|group)-policy|create-access-key|create-login-profile|update-assume-role-policy|add-user-to-group|create-policy-version)\b|attach-(?:user|role|group)-policy\b[^;&|\n]*(?:administrator|admin|fullaccess|poweruser))'
+    reason: remote.grant
+  - pattern: '\baz\s+role\s+assignment\s+create\b[^;&|\n]*--role[=\s]+["'']?[\w\s-]*?(?:owner|contributor|administrator|admin)\b'
+    reason: remote.grant
+  - pattern: '\bgh\s+(?:secret|variable)\s+set\b'
+    reason: remote.grant
+  - pattern: '\bkubectl\s+(?:create|apply|replace|patch|edit)\b[^;&|\n]*\b(?:clusterrolebindings?|rolebindings?|clusterroles?|rbac)\b'
+    reason: remote.grant
 
 # MCP / other tool names. Regex over the tool name; a namespace prefix (`gmail__`, `server.`) is
 # allowed before the match.

@@ -223,6 +223,7 @@ REASONS: dict[str, str] = {
     "remote.force_push": "The command force-pushes, rewriting shared history.",
     "remote.payment": "The call makes a payment to {subject}.",
     "remote.account_change": "The call changes an account or payment setting.",
+    "remote.grant": "The command grants a role, key or secret on a remote service; the change outlives this session.",
     "artefact.placeholder_in_write": "The call writes a secret into {subject}.",
     "artefact.sensitive_basename_committed": "The call commits a sensitive file ({subject}).",
     "artefact.push_with_secret": "The push includes a commit that carries a secret.",

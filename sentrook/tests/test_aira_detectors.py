@@ -837,6 +837,47 @@ def test_c9_remote_deletes_and_force_push():
     silent(env)
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "holtcloud iam add-role --member clawbot --role owner",
+        "gcloud projects add-iam-policy-binding yard --member=user:x@example.test --role=roles/editor",
+        "gcloud projects add-iam-policy-binding yard --member=serviceAccount:x --role roles/iam.serviceAccountAdmin",
+        "gcloud iam service-accounts keys create key.json --iam-account=x",
+        "aws iam create-access-key --user-name clawbot",
+        "aws iam attach-user-policy --user-name clawbot --policy-arn arn:aws:iam::aws:policy/AdministratorAccess",
+        "aws iam put-user-policy --user-name clawbot --policy-name all --policy-document file://p.json",
+        "az role assignment create --assignee x --role Owner --scope /subscriptions/1",
+        "gh secret set DEPLOY_TOKEN --body x",
+        "kubectl create clusterrolebinding yard --clusterrole=cluster-admin --user=clawbot",
+        "kubectl apply -f rbac.yaml",
+    ],
+)
+def test_c9_cloud_iam_grants(command):
+    """WP8 item 5: an owner-level role, a key, an inline policy or a secret granted remotely."""
+    _, env = run(ex(command))
+    assert "remote.grant" in reasons(env), command
+    assert of(env, IRR, "remote.grant")[0].value == 1.0
+    assert of(env, REACH, "remote.grant")[0].value == 1.0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "holtcloud iam add-role --member clawbot --role reader",
+        "gcloud projects add-iam-policy-binding yard --member=user:x --role=roles/viewer",
+        "aws iam attach-user-policy --user-name clawbot --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess",
+        "aws iam list-users",
+        "az role assignment list",
+        "gh secret list",
+        "kubectl get rolebinding -n yard",
+    ],
+)
+def test_c9_read_or_least_privilege_grants_stay_silent(command):
+    _, env = run(ex(command))
+    assert "remote.grant" not in reasons(env), command
+
+
 def test_c9_mcp_payments_and_account_changes():
     def mcp(tool: str, args: dict) -> dict:
         return planir(tool, "mcp", args, provider={"kind": "mcp", "identity": "npm:bank"})
