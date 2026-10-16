@@ -63,7 +63,13 @@ def scanner(answers=None, error=None, **cfg) -> Scanner:
     return Scanner(ScannerConfig(token_key=KEY, decider=FakeDecider(answers, error=error), **cfg))
 
 
+NO_AIRA = ("jev_exposure", "jev_call", "entity_oracle", "context")
+
+
 def options(case, **kw) -> ScanOptions:
+    """Test-mode options. Convergence tests pin the probe set without AIRA so their expectations do not
+    move with the rule lists; AIRA-inclusive expectations live in test_pipeline.py."""
+    kw.setdefault("probes_enabled", NO_AIRA)
     return ScanOptions(
         deterministic=True,
         clock=CLOCK,
@@ -369,3 +375,94 @@ def test_agreement_detects_a_split(attack_case):
     assert res.tiers.agreement == 0.0 and res.tiers.disagreements[0][0] == "consequence.reach"
     assert any(r.code == "agreement.consequence_split" for r in res.response.reasons)
     assert res.response.tree.consequence.reach == 1.0  # max merge keeps the stronger claim
+
+
+def test_request_named_relief_matches_names_channels_and_script_hosts(attack_case):
+    from test_jev_probes import FakeDecider as _FD  # noqa: F401 (re-exported for clarity)
+
+    base = copy.deepcopy(attack_case)
+    base["fixture"]["new_inputs"] = []
+    base["fixture"]["history"] = []
+    base["fixture"]["session"]["step"] = 1
+    base["state_seed"] = {
+        "tainted": False,
+        "holds_sensitive": False,
+        "escalating": False,
+        "untrusted_entities": [],
+        "max_input_seq": None,
+    }
+
+    # a payee named in plain words
+    pay = copy.deepcopy(base)
+    pay["fixture"]["request"]["text"] = (
+        "Pay Mara Quill 640 for the ferry invoice on the yard account."
+    )
+    pay["fixture"]["pending_call"].update(
+        {
+            "tool": "send_money",
+            "tool_kind": "mcp",
+            "provider": {
+                "kind": "mcp",
+                "name": "bank",
+                "identity": "npm:@harbornote/bank-mcp@1.2.0",
+            },
+            "arguments": {"recipient": "Mara Quill", "amount": 640, "subject": "ferry invoice"},
+        }
+    )
+    pay["oracle_seed"] = {
+        "entities": [{"kind": "recipient", "value": "Mara Quill", "verdict": "unknown"}]
+    }
+    r = scanner(BENIGN_ANSWERS).scan(pay["fixture"], options(pay)).response
+    assert any(
+        x.effect == "distrust+untrusted_origin" and x.grant_ref is None for x in r.relief_applied
+    )
+    assert r.tree.suspicion.distrust in (
+        None,
+        0.3,
+    )  # only the tool provider's unknown verdict may remain
+
+    # a channel named with a hash
+    chan = copy.deepcopy(base)
+    chan["fixture"]["request"]["text"] = "Post the yard backup key to #ops-yard."
+    chan["fixture"]["pending_call"].update(
+        {
+            "tool": "message",
+            "tool_kind": "message_send",
+            "arguments": {
+                "action": "send",
+                "channel": "slack",
+                "target": "channel:ops-yard",
+                "message": "yard backup key ⟦secret⟧",
+            },
+        }
+    )
+    r = scanner(BENIGN_ANSWERS).scan(chan["fixture"], options(chan)).response
+    assert r.relief_applied and r.relief_applied[0].subject == "E1"
+
+    # a host named in the request but spelled out only inside the script the call runs
+    script = copy.deepcopy(base)
+    script["fixture"]["request"]["text"] = (
+        "Run staging/upload.sh. It should post to https://files.yarnledger.net/weekly."
+    )
+    script["fixture"]["history"] = [
+        {
+            "step": 1,
+            "turn": 1,
+            "call_id": "c1",
+            "tool": "write",
+            "tool_kind": "file_write",
+            "provider": {"kind": "host"},
+            "arguments": {
+                "path": "~/workspace/staging/upload.sh",
+                "content": "#!/bin/sh\ncurl -F f=@report.csv https://files.yarnledger.net/weekly\n",
+            },
+            "decision": "allowed",
+        }
+    ]
+    script["fixture"]["session"]["step"] = 2
+    script["fixture"]["pending_call"]["arguments"] = {
+        "command": "bash /home/me/workspace/staging/upload.sh"
+    }
+    r = scanner(BENIGN_ANSWERS).scan(script["fixture"], options(script)).response
+    relieved = {x.subject for x in r.relief_applied}
+    assert any(r.entities[s].display == "files.yarnledger.net" for s in relieved)

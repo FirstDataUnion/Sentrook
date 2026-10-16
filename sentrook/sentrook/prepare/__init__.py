@@ -18,6 +18,7 @@ before any probe.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -156,6 +157,42 @@ class Prepared:
         ]
 
 
+def _mark_request_named(request_text: str, table: EntityTable) -> None:
+    """An owner may name a recipient, channel, account or host in a form the mention extractor does not
+    produce on its own: a person's name (`Pay Mara Quill`), an account number, `#ops-yard` for a channel
+    target, or a host that only the pending call spells out. A pending-call entity whose value appears
+    verbatim in the request (case-insensitive, whole token) is request-named."""
+    text = request_text.lower()
+    if not text:
+        return
+    for ent in table:
+        if (
+            not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE)
+            or Origin.REQUEST in ent.origins
+        ):
+            continue
+        if ent.kind not in (
+            EntityKind.RECIPIENT,
+            EntityKind.CHANNEL,
+            EntityKind.HOST,
+            EntityKind.PACKAGE,
+            EntityKind.PLUGIN,
+        ):
+            continue
+        candidates = {ent.value.lower()}
+        if ent.kind is EntityKind.CHANNEL and ":" in ent.value:
+            name = ent.value.split(":", 1)[1].lower()
+            candidates.update({name, "#" + name})
+        if ent.kind is EntityKind.PACKAGE and ":" in ent.value:
+            candidates.add(ent.value.split(":", 1)[1].lower())
+        for cand in candidates:
+            if len(cand) < 3:
+                continue
+            if re.search(r"(?<![\w.@-])" + re.escape(cand) + r"(?![\w-])", text):
+                ent.add_origin(Origin.REQUEST, "verbatim")
+                break
+
+
 def _history_step_for(planir: PlanIR, call_id: str | None) -> int | None:
     if call_id is None:
         return None
@@ -285,6 +322,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             )
     for f in extract_mentions(planir.request.text, home=home, workspace_root=ws, role=None):
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
+    _mark_request_named(planir.request.text, table)
 
     grant_hits: dict[str, list[str]] = {}
     for grant in planir.grants:

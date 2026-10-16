@@ -102,7 +102,9 @@ def compute_relief(prepared: Prepared, params: ConvergenceParams) -> list[Relief
         owner = prepared.planir.trigger.sender.relation is SenderRelation.OWNER
         if owner or not params.request_named_owner_only:
             relieved = {r.subject for r in out}
-            for ent in prepared.entities.pending():
+            for ent in prepared.entities:
+                if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
+                    continue  # the destination may live in the script the call runs
                 if ent.id in relieved or Origin.REQUEST not in ent.origins:
                     continue
                 roles = {r.value for r in ent.roles}
