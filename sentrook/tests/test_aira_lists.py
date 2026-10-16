@@ -77,7 +77,8 @@ def test_overlay_merges_additively(tmp_path: Path):
     (tmp_path / "weights.yaml").write_text("version: 2\ncode:\n  reach: 0.9\n", encoding="utf-8")
     base = load_lists_from(LISTS_DIR, None)
     over = load_lists_from(LISTS_DIR, tmp_path)
-    assert "sensitive_paths=2+9" in over.version and "weights=3+2" in over.version
+    weights_base = base.raw["weights"]["version"]
+    assert "sensitive_paths=2+9" in over.version and f"weights={weights_base}+2" in over.version
     assert "guardrail=1;" in over.version  # untouched lists keep their version
     assert over.path_groups["credential_store"].search("/srv/vault.tok")
     assert over.path_groups["sensitive"].search("/srv/vault.tok")  # composition sees the overlay
@@ -96,7 +97,9 @@ def test_overlay_from_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     clear_cache()
     try:
         lists = load_lists()
-        assert lists.weight("send", "reach") == 0.5 and "weights=3+3" in lists.version
+        weights_base = load_lists_from(LISTS_DIR, None).raw["weights"]["version"]
+        assert lists.weight("send", "reach") == 0.5
+        assert f"weights={weights_base}+3" in lists.version
         assert load_lists(None).weight("send", "reach") == 1.0  # explicit None: base only
     finally:
         clear_cache()

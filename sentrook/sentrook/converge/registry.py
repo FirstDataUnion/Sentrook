@@ -203,6 +203,7 @@ REASONS: dict[str, str] = {
     "selfmod.config": "The call changes the agent's configuration.",
     "selfmod.scheduler": "The call changes scheduled jobs.",
     "selfmod.plugin": "The call installs or changes a plugin or skill.",
+    "selfmod.workspace_skill": "The call changes a skill script in the workspace.",
     "selfmod.startup": "The call changes files that run at startup.",
     "selfmod.hooks": "The call changes hooks.",
     "guardrail.plugin_disable": "The call disables or removes the Sentrook plugin. Make this change yourself through Sentrook's own controls.",

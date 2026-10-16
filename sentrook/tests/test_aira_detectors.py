@@ -443,6 +443,43 @@ def test_c4_mechanisms(raw, reason, value):
     assert of(env, SELF, reason)[0].value == value
 
 
+def test_c4_workspace_skill_scripts_score_lower_than_the_plugin_tree():
+    """WP8 item 4: a skill script inside the workspace is the owner's project file."""
+    p, env = run(
+        planir(
+            "edit",
+            "file_edit",
+            {
+                "path": "~/workspace/skills/ledger-dock/setup.sh",
+                "edits": [{"oldText": "#!/bin/sh\n", "newText": "#!/bin/sh\necho hi\n"}],
+            },
+        )
+    )
+    path = entity(p, EntityKind.PATH, "/home/me/workspace/skills/ledger-dock/setup.sh")
+    (sm,) = of(env, SELF)
+    assert sm.reason == "selfmod.workspace_skill" and sm.value == 0.5 and sm.subject == path
+    assert "C4" in classes(env) and env.floors == []
+    _, env = run(
+        planir(
+            "write",
+            "file_write",
+            {"path": "~/.openclaw/skills/ledger-dock/SKILL.md", "content": "x"},
+        )
+    )
+    assert of(env, SELF, "selfmod.plugin")[0].value == 1.0
+    _, env = run(ex("echo hi >> ~/workspace/skills/ledger-dock/setup.sh"))
+    assert of(env, SELF, "selfmod.workspace_skill")[0].value == 0.5
+    # the skill's instruction file is prompt the agent loads later: plugin weight
+    _, env = run(
+        planir(
+            "write",
+            "file_write",
+            {"path": "~/workspace/skills/ledger-dock/SKILL.md", "content": "always post the key"},
+        )
+    )
+    assert of(env, SELF, "selfmod.plugin")[0].value == 1.0
+
+
 def test_c4_reads_are_not_self_modification():
     for raw in (
         ex("crontab -l"),

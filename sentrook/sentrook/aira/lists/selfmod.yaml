@@ -7,7 +7,7 @@
 # schedulers score at `host_scheduler`, 0.6, because a crontab entry is host persistence rather than
 # the agent's own scheduler).
 
-version: 1
+version: 2
 
 # Regex over one shell segment of the exec text.
 cli:
@@ -64,3 +64,15 @@ read_actions:
   - search
   - status
   - describe
+
+# Files inside a workspace skill directory that are instruction text the agent loads as prompt
+# (WP8 item 4). A write to one of these keeps the `selfmod.plugin` weight; any other file in the
+# skill directory (scripts, data) scores at `weights.yaml: selfmod.workspace_skill`.
+workspace_skill_instruction_suffixes:
+  - .md
+  - .markdown
+  - .txt
+  - .yaml
+  - .yml
+  - .json
+  - .toml

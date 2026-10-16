@@ -1,7 +1,7 @@
 # Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
 # overlay may override any scalar here. Values are 0–1 on the signal's own scale.
 
-version: 3
+version: 4
 
 # C1: credential material reached. Keyed by path group.
 sensitivity:
@@ -39,6 +39,8 @@ selfmod:
   config: 1.0
   scheduler: 1.0
   plugin: 1.0
+  # A skill script under the workspace (`<workspace_root>/skills/`): WP8 item 4.
+  workspace_skill: 0.5
   hooks: 1.0
   memory: 0.7
   startup: 0.6

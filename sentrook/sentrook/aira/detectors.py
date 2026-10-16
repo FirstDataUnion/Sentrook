@@ -907,6 +907,19 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
         for g in p.groups:
             if g in SELFMOD_GROUPS:
                 reason, wkey = SELFMOD_GROUPS[g]
+                if (
+                    g == "agent_plugins"
+                    and "workspace" in p.locations
+                    and not p.value.lower().endswith(
+                        tuple(lists.strings("selfmod", "workspace_skill_instruction_suffixes"))
+                    )
+                ):
+                    # A script or data file inside a workspace skill (WP8 item 4): the owner's own
+                    # project files, edited at the owner's request far more often than the agent's
+                    # installed plugin tree, so it scores at `selfmod.workspace_skill`. The skill's
+                    # instruction files (SKILL.md and the like) are prompt the agent loads later
+                    # and keep the plugin weight.
+                    reason, wkey = "selfmod.workspace_skill", "workspace_skill"
                 emit(reason, wkey, p.entity_id, {"path": p.display, "mechanism": mechanism})
                 break
     if a.kind is ToolKind.MEMORY_WRITE and not out:
