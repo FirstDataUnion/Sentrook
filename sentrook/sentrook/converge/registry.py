@@ -150,6 +150,8 @@ REASONS: dict[str, str] = {
     "retry.same_action": "You denied this same action earlier in this session.",
     "retry.same_source_new_destination": "You denied sending this data earlier; the agent is trying another destination.",
     "retry.same_destination_new_source": "You denied a send to {subject} earlier; the agent is trying other data.",
+    "retry.same_source_only": "You denied an action on this data earlier; the agent is reading it again.",
+    "retry.denied_consequence_carried": "The consequences of the action you denied earlier carry over to this retry.",
     # session
     "sensitivity.session_holds_sensitive": "The agent read sensitive data earlier in this session and this call sends data out.",
     # reputation (oracle)

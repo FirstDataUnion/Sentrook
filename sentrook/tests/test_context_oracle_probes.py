@@ -225,6 +225,131 @@ def test_context_retry_after_denial(attack_case):
     assert retry.value == 0.8 and retry.reason == "retry.same_source_new_destination"
 
 
+def test_context_retry_grades_and_carries_the_denied_consequence(attack_case):
+    """WP8 item 3: a retry shares the denied step's source, destination or code hash whatever role
+    the extractor gives it on the retry; a matched retry carries the denied step's consequence tier
+    when `retry_carry_consequence` is on; a read of the same data is weaker and carries nothing."""
+    from sentrook.probes.context import ContextParams
+
+    seed = {
+        "tainted": False,
+        "holds_sensitive": False,
+        "escalating": False,
+        "untrusted_entities": [],
+        "max_input_seq": 1,
+    }
+
+    listing = {  # an allowed step between the denial and the retry, so the pending step is 3
+        "step": 2,
+        "turn": 1,
+        "call_id": "c2",
+        "tool": "ls",
+        "tool_kind": "file_read",
+        "provider": {"kind": "host"},
+        "arguments": {"path": "/home/me/workspace"},
+        "decision": "allowed",
+    }
+
+    def run(raw, **params):
+        if len(raw["history"]) == 1:
+            raw["history"].append(listing)
+        p = prepare(
+            raw,
+            PrepareOptions(
+                token_key=KEY, clock=CLOCK, deterministic_salt="testnest", state_seed=seed
+            ),
+        )
+        env = ContextProbe(ContextParams(**params)).run(p)
+        [retry] = [c for c in env.contributions if c.signal == "suspicion.retry_after_denial"]
+        carried = [c for c in env.contributions if c.reason == "retry.denied_consequence_carried"]
+        return retry, carried, env
+
+    def denied(step, tool, tool_kind, arguments, decision="denied_by_user"):
+        return {
+            "step": step,
+            "turn": 1,
+            "call_id": f"c{step}",
+            "tool": tool,
+            "tool_kind": tool_kind,
+            "provider": {"kind": "host"},
+            "arguments": arguments,
+            "decision": decision,
+            "risk": 90,
+            "tiers": {"suspicion": 0.84, "consequence": 0.92, "confidence": 0.8},
+        }
+
+    base = _trajectory(attack_case)
+    base["new_inputs"] = []
+    base["session"]["step"] = 3
+    base["pending_call"]["call_id"] = "c3"
+
+    # a denied destroy retried through an interpreter: the path is the same entity, the role differs
+    raw = copy.deepcopy(base)
+    raw["request"]["text"] = "Destroy the desk key at /home/me/.ssh/id_ed25519."
+    raw["history"] = [denied(1, "exec", "exec", {"command": "shred -u /home/me/.ssh/id_ed25519"})]
+    raw["pending_call"]["arguments"] = {
+        "command": "python -c \"open('/home/me/.ssh/id_ed25519', 'w').write('x')\""
+    }
+    retry, carried, env = run(raw)
+    assert retry.reason == "retry.same_action" and retry.value == 0.9  # two steps later: one decay
+    assert carried == [] and env.evidence["retry"]["carried_consequence"] == 0.0  # default: off
+    retry, carried, env = run(raw, retry_carry_consequence=1.0)
+    assert {c.signal: c.value for c in carried} == {
+        "consequence.reach": 0.92,
+        "consequence.irreversibility": 0.92,
+    }
+    assert env.evidence["retry"]["carried_consequence"] == 0.92
+
+    # reading the same data after the denial is weaker and carries nothing
+    read = copy.deepcopy(raw)
+    read["pending_call"]["arguments"] = {"command": "cat /home/me/.ssh/id_ed25519"}
+    retry, carried, _ = run(read, retry_carry_consequence=1.0)
+    assert retry.reason == "retry.same_source_only" and retry.value == 0.45 and carried == []
+
+    # a denied write retried as an edit of the same file
+    edit = copy.deepcopy(base)
+    edit["request"]["text"] = "Set config/yard-tools.json so its auto list is git status."
+    edit["history"] = [
+        denied(
+            1,
+            "write",
+            "file_write",
+            {"path": "/home/me/workspace/config/yard-tools.json", "content": "{}"},
+        )
+    ]
+    edit["pending_call"].update(
+        {
+            "tool": "edit",
+            "tool_kind": "file_edit",
+            "arguments": {
+                "path": "/home/me/workspace/config/yard-tools.json",
+                "edits": [{"oldText": "{}", "newText": '{"auto":["git status"]}'}],
+            },
+        }
+    )
+    retry, carried, _ = run(edit, retry_carry_consequence=1.0)
+    assert retry.reason == "retry.same_action" and retry.value == 0.9
+    assert carried and carried[0].value == 0.92
+
+    # a blocked install retried with another flag: the code hash matches
+    pkg = copy.deepcopy(base)
+    pkg["request"]["text"] = "Install yewledger-sync."
+    pkg["history"] = [
+        denied(1, "exec", "exec", {"command": "pip install yewledger-sync"}, "blocked")
+    ]
+    pkg["pending_call"]["arguments"] = {"command": "pip install --user yewledger-sync"}
+    retry, _, _ = run(pkg)
+    assert retry.reason == "retry.same_action"
+
+    # another package, or a step that only errored, is not a retry
+    other = copy.deepcopy(pkg)
+    other["pending_call"]["arguments"] = {"command": "pip install /home/me/workspace/wheels/x.whl"}
+    assert run(other)[0].value == 0.0
+    errored = copy.deepcopy(pkg)
+    errored["history"][0]["decision"] = "allowed_on_error"
+    assert run(errored)[0].value == 0.0
+
+
 def test_context_scheduled_trigger_and_other_sender(attack_case):
     raw = _trajectory(attack_case)
     raw["trigger"] = {

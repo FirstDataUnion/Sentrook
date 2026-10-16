@@ -578,6 +578,13 @@ def test_request_named_relief_display_names_and_self_copy(attack_case):
     ]
 
 
+def test_conv_v3_loads_and_turns_on_the_retry_carry():
+    v2, v3 = load_params("conv-v2"), load_params("conv-v3")
+    assert v3.name == "conv-v3" and v3.context.name == "conv-v3/context"
+    assert v2.context.retry_carry_consequence == 0.0 and v3.context.retry_carry_consequence == 1.0
+    assert v3.oracle.unknown_by_role == v2.oracle.unknown_by_role
+
+
 def test_conv_v2_loads_and_only_changes_the_oracle_table():
     v1, v2 = load_params("conv-v1"), load_params("conv-v2")
     assert v2.name == "conv-v2"

@@ -18,12 +18,13 @@ the call, with no model and no raw text.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall
-from ..planir.models import SenderBasis, SenderRelation, TriggerKind
+from ..planir.models import SenderBasis, SenderRelation, ToolKind, TriggerKind
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role, extract_call
 from ..prepare.fingerprint import Fingerprint, fingerprint
@@ -32,6 +33,10 @@ from .base import Contribution, Envelope
 PROBE_VERSION = "context/2.0.0a1"
 
 KEY_ROLES = (Role.DATA_DESTINATION, Role.RECIPIENT, Role.CODE_SOURCE, Role.EXECUTABLE)
+#: Heads that only read; an exec made of these alone is "read-shaped" for retry grading.
+_READ_HEADS = frozenset(
+    "cat head tail less more ls stat wc grep rg file md5sum sha1sum sha256sum du find diff".split()
+)
 
 
 @dataclass(frozen=True)
@@ -71,9 +76,15 @@ class ContextParams:
     retry_same_action: float = 1.0
     retry_same_source_new_destination: float = 0.8
     retry_same_destination_new_source: float = 0.5
+    #: A read-shaped call on the data of a denied step (WP8 item 3): suspicious, but it is not the
+    #: denied action retried, so the denied consequence is not carried.
+    retry_same_source_only: float = 0.5
     retry_repeat_bonus: float = 0.1
     retry_decay_per_step: float = 0.1
     retry_floor: float = 0.5
+    #: Scale on the denied step's echoed consequence tier, contributed as `consequence.reach` and
+    #: `consequence.irreversibility` when the pending call retries that step (0 = off; conv-v3 sets 1).
+    retry_carry_consequence: float = 0.0
     sticky_exposure: float = 0.7
     holds_sensitive_sensitivity: float = 0.8
     escalation_rise: float = 0.1
@@ -82,6 +93,17 @@ class ContextParams:
     coverage_fresh_session: float = 0.7
     coverage_truncated: float = 0.7
     coverage_dropped: float = 0.8
+
+
+def _hashes(hist: Fingerprint, echoed: Fingerprint | None, *roles: Role) -> frozenset[str]:
+    """The denied step's hashes for `roles`: recomputed with this session's salt, plus whatever the
+    plugin echoed back (its tagging may differ from ours)."""
+    out: frozenset[str] = frozenset()
+    for role in roles:
+        out |= hist.hashes(role)
+        if echoed is not None:
+            out |= echoed.hashes(role)
+    return out
 
 
 class ContextProbe:
@@ -273,7 +295,28 @@ class ContextProbe:
             table.add(f.kind, f.value, display=f.display, role=f.role, origin=Origin.HISTORY)
         return fingerprint(call.tool_kind, list(table), prepared.state.salt)
 
+    def _read_shaped(self, prepared: Prepared) -> bool:
+        """A file read, or an exec whose every segment starts with a reading head and writes
+        nothing: touching the denied step's data again, not retrying what was denied."""
+        kind = prepared.pending.tool_kind
+        if kind is ToolKind.FILE_READ:
+            return True
+        if kind is not ToolKind.EXEC:
+            return False
+        cmd = prepared.pending.command or ""
+        if ">" in cmd:
+            return False
+        segments = [seg.strip() for seg in re.split(r"[;|&]+|\n", cmd) if seg.strip()]
+        return bool(segments) and all((seg.split() or [""])[0] in _READ_HEADS for seg in segments)
+
     def _retry(self, prepared: Prepared, evidence: dict) -> list[Contribution]:
+        """`retry_after_denial` (RUBRIC decision 25): a retry shares the denied step's source,
+        destination or code hash. Matching is role-insensitive on the pending side (a `shred` target
+        re-touched by an interpreter one-liner is the same entity whatever role the extractor gave
+        it); the grade keeps the role shape of the denied step. WP8 item 3: a matched retry also
+        carries the denied step's echoed consequence tier (`retry_carry_consequence`), except for a
+        read-shaped call on the same data, which is scored at `retry_same_source_only` and carries
+        nothing."""
         p = self.params
         denied = prepared.denied_steps()
         if not denied:
@@ -281,60 +324,86 @@ class ContextProbe:
                 Contribution(signal="suspicion.retry_after_denial", value=0.0, reason="retry.none")
             ]
         pending = prepared.fingerprint
-        src, dst = (
-            pending.hashes(Role.DATA_SOURCE),
-            pending.hashes(Role.DATA_DESTINATION) | pending.hashes(Role.RECIPIENT),
-        )
+        p_src = pending.hashes(Role.DATA_SOURCE)
+        p_dst = pending.hashes(Role.DATA_DESTINATION) | pending.hashes(Role.RECIPIENT)
+        p_code = pending.hashes(Role.CODE_SOURCE) | pending.hashes(Role.EXECUTABLE)
+        p_all = p_src | p_dst | p_code
+        read_shaped = self._read_shaped(prepared)
+        by_step = {h.step: h for h in prepared.planir.history}
         best, best_reason, matches = 0.0, "retry.none", []
+        carried = 0.0
         step_now = prepared.planir.session.step
         for call in denied:
             hist = self._history_fingerprint(call, prepared)
-            echoed = Fingerprint.parse(
-                next(
-                    (h.action_fingerprint for h in prepared.planir.history if h.step == call.step),
-                    None,
-                )
-            )
-            h_src = hist.hashes(Role.DATA_SOURCE) | (
-                echoed.hashes(Role.DATA_SOURCE) if echoed else frozenset()
-            )
-            h_dst = (
-                hist.hashes(Role.DATA_DESTINATION)
-                | hist.hashes(Role.RECIPIENT)
-                | (
-                    (echoed.hashes(Role.DATA_DESTINATION) | echoed.hashes(Role.RECIPIENT))
-                    if echoed
-                    else frozenset()
-                )
-            )
-            same_src, same_dst = bool(src & h_src), bool(dst & h_dst)
-            if same_src and same_dst:
-                value, reason = p.retry_same_action, "retry.same_action"
-            elif same_src and dst:
-                value, reason = (
-                    p.retry_same_source_new_destination,
-                    "retry.same_source_new_destination",
-                )
-            elif same_dst and src:
-                value, reason = (
-                    p.retry_same_destination_new_source,
-                    "retry.same_destination_new_source",
-                )
-            else:
+            echoed_step = by_step.get(call.step) if call.step is not None else None
+            echoed = Fingerprint.parse(echoed_step.action_fingerprint if echoed_step else None)
+
+            h_src = _hashes(hist, echoed, Role.DATA_SOURCE)
+            h_dst = _hashes(hist, echoed, Role.DATA_DESTINATION, Role.RECIPIENT)
+            h_code = _hashes(hist, echoed, Role.CODE_SOURCE, Role.EXECUTABLE)
+            src_shared, dst_shared = bool(h_src & p_all), bool(h_dst & p_all)
+            code_shared = bool(h_code & p_all)
+            if not (src_shared or dst_shared or code_shared):
                 continue
+            carry = True
+            if h_src and h_dst:  # the denied step moved data from a source to a destination
+                if src_shared and dst_shared:
+                    value, reason = p.retry_same_action, "retry.same_action"
+                elif src_shared and p_dst:
+                    value, reason = (
+                        p.retry_same_source_new_destination,
+                        "retry.same_source_new_destination",
+                    )
+                elif dst_shared and p_src:
+                    value, reason = (
+                        p.retry_same_destination_new_source,
+                        "retry.same_destination_new_source",
+                    )
+                elif src_shared:
+                    value, reason, carry = p.retry_same_source_only, "retry.same_source_only", False
+                else:
+                    value, reason = (
+                        p.retry_same_destination_new_source,
+                        "retry.same_destination_new_source",
+                    )
+            elif read_shaped and not code_shared:
+                value, reason, carry = p.retry_same_source_only, "retry.same_source_only", False
+            else:  # a single-entity action (destroy, write, install) retried on the same entity
+                value, reason = p.retry_same_action, "retry.same_action"
             gap = max(1, step_now - (call.step or step_now))
             value = value * max(p.retry_floor, 1.0 - p.retry_decay_per_step * (gap - 1))
-            matches.append({"step": call.step, "reason": reason, "value": round(value, 4)})
+            tiers = echoed_step.tiers if echoed_step is not None else None
+            cons = (
+                tiers.consequence if tiers is not None and tiers.consequence is not None else None
+            )
+            if carry and cons is not None:
+                carried = max(carried, float(cons))
+            matches.append(
+                {"step": call.step, "reason": reason, "value": round(value, 4), "carry": carry}
+            )
             if value > best:
                 best, best_reason = value, reason
         if len(matches) > 1:
             best = min(1.0, best + p.retry_repeat_bonus * (len(matches) - 1))
-        evidence["retry"] = {"denied_steps": [c.step for c in denied], "matches": matches}
-        return [
+        carried = round(min(1.0, carried * p.retry_carry_consequence), 4)
+        evidence["retry"] = {
+            "denied_steps": [c.step for c in denied],
+            "matches": matches,
+            "carried_consequence": carried,
+        }
+        out = [
             Contribution(
                 signal="suspicion.retry_after_denial", value=round(best, 4), reason=best_reason
             )
         ]
+        if carried > 0.0:
+            for signal in ("consequence.reach", "consequence.irreversibility"):
+                out.append(
+                    Contribution(
+                        signal=signal, value=carried, reason="retry.denied_consequence_carried"
+                    )
+                )
+        return out
 
     # ------------------------------------------------------------------ flags and coverage
 
