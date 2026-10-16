@@ -40,3 +40,6 @@ The 1.x engine and plugins keep their own history on `release/1.x`.
 - Auth (API key and FIDU OIDC), per-caller token-bucket rate limiting and Prometheus metrics carried from 1.x; `ServeConfig.from_env` with production guards (state key required, test mode refused, content logging off).
 - CLI: `sentrook scan FILE [--envelopes] [--probes]` for a PlanIR or a TestNest case file; `sentrook serve`.
 - The provenance arm of the floor was over-broad (it blocked installs named in documents the owner pointed at, which the rubric scores high but does not floor); replaced by a look-alike check against a list of well-known installer hosts (`code.lookalike_installer`), per RUBRIC decision 8.
+
+### WP7: first full-suite run (2026-10-16)
+- The scanner ran the full TestNest 2.0 v1 suite (dev and held-out, with per-probe ablations) through the runner's replay proxy with zero live model calls. Results and the tuning list live with the private suite. Ranking improved on both splits over the model-only baseline and every expected floor was applied with no unexpected floors.
