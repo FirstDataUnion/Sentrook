@@ -466,3 +466,19 @@ def test_request_named_relief_matches_names_channels_and_script_hosts(attack_cas
     r = scanner(BENIGN_ANSWERS).scan(script["fixture"], options(script)).response
     relieved = {x.subject for x in r.relief_applied}
     assert any(r.entities[s].display == "files.yarnledger.net" for s in relieved)
+
+
+def test_conv_v2_loads_and_only_changes_the_oracle_table():
+    v1, v2 = load_params("conv-v1"), load_params("conv-v2")
+    assert v2.name == "conv-v2"
+    assert (
+        v2.oracle.unknown_by_role["recipient"] == 0.25
+        and v2.oracle.unknown_by_role["code_source"] == 0.5
+    )
+    assert (v2.u, v2.consequence, v2.taint_floor, v2.request_named_relief) == (
+        v1.u,
+        v1.consequence,
+        v1.taint_floor,
+        v1.request_named_relief,
+    )
+    assert v2.context == v1.context.__class__(name=v2.context.name)

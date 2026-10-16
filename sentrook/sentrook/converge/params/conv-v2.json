@@ -1,0 +1,26 @@
+{
+  "name": "conv-v2",
+  "notes": "WP8 tuning item 1 (2026-10-16): the oracle's unknown-entity distrust by role. conv-v1's 0.5 on destinations and recipients lifted ordinary benign sends to the owner's contacts into review (dev false alarms at p0 41 against 14 without the oracle). Code sources and executables keep 0.5: an unknown host that supplies code to run is the case the oracle exists for. A configured tool provider is owner-installed, so unknown there is weak evidence. Everything else as conv-v1.",
+  "u": 0.25,
+  "certainty": "mean",
+  "consequence": "max",
+  "taint_floor": 0.3,
+  "agreement": { "high": 0.6, "low": 0.3 },
+  "coverage_penalty": { "error": 0.5, "timeout": 0.6, "skipped": 1.0 },
+  "request_named_relief": { "enabled": true, "owner_only": true, "roles": ["data_destination", "recipient"] },
+  "reason_min_value": 0.2,
+  "oracle": {
+    "unknown_by_role": {
+      "data_destination": 0.3,
+      "recipient": 0.25,
+      "code_source": 0.5,
+      "executable": 0.5,
+      "tool_provider": 0.1,
+      "data_source": 0.15,
+      "mentioned": 0.05
+    },
+    "coverage_unknown_risky": 0.85
+  },
+  "context": {},
+  "jev": { "taint_threshold": 0.5 }
+}

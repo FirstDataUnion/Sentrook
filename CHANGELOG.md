@@ -43,3 +43,6 @@ The 1.x engine and plugins keep their own history on `release/1.x`.
 
 ### WP7: first full-suite run (2026-10-16)
 - The scanner ran the full TestNest 2.0 v1 suite (dev and held-out, with per-probe ablations) through the runner's replay proxy with zero live model calls. Results and the tuning list live with the private suite. Ranking improved on both splits over the model-only baseline and every expected floor was applied with no unexpected floors.
+
+### WP8: first tuning step (2026-10-16)
+- `conv-v2`: the oracle's unknown-entity distrust by role (destinations 0.3, recipients 0.25, tool providers 0.1; code sources and executables stay 0.5). Chosen on dev, confirmed once on held-out; `conv-v1` is unchanged and remains selectable with `SENTROOK_CONVERGENCE=conv-v1`.
