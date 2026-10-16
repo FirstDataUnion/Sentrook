@@ -22,3 +22,8 @@ The 1.x engine and plugins keep their own history on `release/1.x`.
 - `jev.questions`: `exposure-v1` and `call-v1`, the two halves of the frozen `designed-v1-split`, word for word. Verified: every request body for all 691 suite cases hashes to the runner's cache key.
 - `jev.chunking`: head-and-tail chunking of oversize exposure inputs, highest chunk score taken.
 - `probes.jev`: exposure probe (sets `tainted`, skipped without new untrusted inputs) and call probe (misalignment, concealment, consequence signals, mean model certainty; `untrusted_origin` and the action category in evidence only).
+
+### WP4: entity oracle and context probes (2026-10-16)
+- `oracle.client`: the `OracleClient` contract Rookery will implement (`lookup` with roles → verdicts + library snapshot); `SeedOracle` (test mode), `NullOracle` (live, everything unknown, coverage lowered), `HttpOracle` stub.
+- `probes.oracle`: distrust by verdict and role, `known_bad_entity` floor, coverage for unknown risky entities; loopback hosts and paths are not looked up.
+- `probes.context`: `untrusted_origin` per entity (request/grant 0, visible creation 0.1, agent-generated 0.4, untrusted content 1.0, taint and lineage propagate), `request_origin` from the trigger (OpenClaw and Hermes bases), `retry_after_denial` from fingerprints recomputed over denied history steps, sticky exposure, session sensitivity, escalation flag, coverage from stale requests and fresh sessions.
