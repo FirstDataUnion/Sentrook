@@ -19,6 +19,7 @@ from sentrook.enums import ProbeStatus, ProbeStep
 from sentrook.jev.client import JevConfig
 from sentrook.jev.questions import build_body, load_question_set
 from sentrook.prepare.redact import PLACEHOLDER
+from sentrook.prepare.redact_shapes import SHAPES_PATH, load_shapes_from
 from sentrook.prepare.views import (
     CALL,
     CALL_INPUT_CAP_CHARS,
@@ -41,6 +42,8 @@ from sentrook.serve.server import ScanServer
 
 KEY = "unit-test-state-key-" * 2  # 40 chars, low entropy on purpose
 FAKE_TOKEN = "ghp_" + "x" * 36
+# Follows the gitleaks tag the packaged shapes were generated from, so a refresh does not break it.
+SHAPES_VERSION = load_shapes_from(SHAPES_PATH).version
 LISTING = (
     "1 [done] renew the clawbot test certificate\n"
     "2 [open] Q4 board deck (shared with the finance team)\n"
@@ -322,7 +325,7 @@ def test_scan_reports_the_views_it_used(harm_case):
     assert pv["views_version"] == {"exposure": "trim-v2", "call": "trim-v2"}
     assert pv["redaction"] == {
         "version": "redact-v2",
-        "shapes": "1;gitleaks=v8.30.1",
+        "shapes": SHAPES_VERSION,
         "count": 2,
     }
     r = res.response
@@ -342,7 +345,7 @@ def test_scan_defaults_stay_on_trim_v1(harm_case):
     assert pv["views_version"] == {"exposure": "trim-v1", "call": "trim-v1"}
     assert pv["redaction"] == {
         "version": "redact-v2",
-        "shapes": "1;gitleaks=v8.30.1",
+        "shapes": SHAPES_VERSION,
         "count": 0,
     }
     assert "new_inputs" not in pv["jev_call_state"]

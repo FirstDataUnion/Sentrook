@@ -296,6 +296,24 @@ def test_cli_import_from_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]
     assert "is current" in capsys.readouterr().out
 
 
+def test_cli_import_summary(tmp_path: Path):
+    rules = tmp_path / "gitleaks.toml"
+    rules.write_text(RULES, encoding="utf-8")
+    out = tmp_path / "redact_shapes.yaml"
+    out.write_text(
+        "version: 1\nshapes:\n  - {name: gone_key, regex: 'gk1_[a-z]{24}', source: gitleaks}\n",
+        encoding="utf-8",
+    )
+    summary = tmp_path / "summary.md"
+    args = ["redact-shapes", "import", "--tag", "v1.2.3", "--from", str(rules), "--out", str(out)]
+    assert cli_main([*args, "--summary", str(summary)]) == 0
+    text = summary.read_text(encoding="utf-8")
+    assert "- Added: `" in text
+    assert "- Removed: `gone_key`" in text
+    assert cli_main([*args, "--check", "--summary", str(summary)]) == 0
+    assert summary.read_text(encoding="utf-8") == "- No shape added, removed or changed.\n"
+
+
 # --------------------------------------------------------------------------- the overlay
 
 

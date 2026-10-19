@@ -63,5 +63,9 @@ jobs:
       - name: Schema files match the models
         run: make schema-check
 
+      # Fails a hand edit of redact_shapes.yaml, or a GITLEAKS_TAG moved without regenerating.
+      - name: Redaction shapes match gitleaks at the pinned tag
+        run: make redact-shapes-check
+
       - name: Unit tests
         run: make test

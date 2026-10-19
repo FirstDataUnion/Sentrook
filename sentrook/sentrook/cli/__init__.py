@@ -88,13 +88,19 @@ def _cmd_redact_shapes(args: argparse.Namespace) -> int:
     else:
         rules = redact_import.fetch(args.tag)
     result = redact_import.refresh(path, rules, args.tag)
-    for label, names in (
-        ("added", result.added),
-        ("removed", result.removed),
-        ("changed", result.modified),
-    ):
+    diffs = (("added", result.added), ("removed", result.removed), ("changed", result.modified))
+    for label, names in diffs:
         if names:
             print(f"{label}: " + ", ".join(names))
+    if args.summary:
+        lines = [
+            f"- {label.capitalize()}: " + ", ".join(f"`{n}`" for n in names)
+            for label, names in diffs
+            if names
+        ]
+        Path(args.summary).write_text(
+            "\n".join(lines or ["- No shape added, removed or changed."]) + "\n", encoding="utf-8"
+        )
     if not result.changed:
         print(f"{path} is current for gitleaks {args.tag}")
         return 0
@@ -156,6 +162,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     imp.add_argument("--out", help="shapes file to rewrite (default: the packaged one)")
     imp.add_argument("--check", action="store_true", help="exit 1 if the file would change")
+    imp.add_argument(
+        "--summary", help="also write the added, removed and changed shape names to this file"
+    )
     imp.set_defaults(func=_cmd_redact_shapes)
     return parser
 

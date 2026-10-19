@@ -1,6 +1,6 @@
 # Sentrook 2.0 scanner. Design and work packages: Notion, "Sentrook 2.0 build plan".
 # Everything runs through uv; `make install` creates .venv with the dev extras.
-.PHONY: help install test lint lint-fix schema schema-check redact-shapes
+.PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check
 
 help:
 	@echo "install       uv sync with dev extras"
@@ -10,8 +10,11 @@ help:
 	@echo "schema        regenerate schema/*.json from the models"
 	@echo "schema-check  fail if schema/*.json differ from the models"
 	@echo "redact-shapes regenerate prepare/redact_shapes.yaml from gitleaks $(GITLEAKS_TAG)"
+	@echo "redact-shapes-check  fail if redact_shapes.yaml differs from gitleaks $(GITLEAKS_TAG) (CI;"
+	@echo "              a weekly workflow opens a PR moving GITLEAKS_TAG to each new release)"
 
 # The gitleaks release the vendor key shapes of the second redaction pass are generated from.
+# CI checks the file against it; .github/workflows/redact-shapes-refresh.yml moves it.
 GITLEAKS_TAG ?= v8.30.1
 
 install:
@@ -36,3 +39,6 @@ schema-check:
 
 redact-shapes:
 	uv run sentrook redact-shapes import --tag $(GITLEAKS_TAG)
+
+redact-shapes-check:
+	uv run sentrook redact-shapes import --tag $(GITLEAKS_TAG) --check
