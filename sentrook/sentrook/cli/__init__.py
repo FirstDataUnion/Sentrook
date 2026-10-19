@@ -1,4 +1,4 @@
-"""`sentrook` command line: `schema export`, `scan FILE`, `serve`."""
+"""`sentrook` command line: `schema export`, `scan FILE`, `serve`, `redact-shapes import`."""
 
 from __future__ import annotations
 
@@ -77,6 +77,39 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_redact_shapes(args: argparse.Namespace) -> int:
+    """Regenerate the gitleaks-derived vendor key shapes of the second redaction pass."""
+    from ..prepare import redact_import
+    from ..prepare.redact_shapes import SHAPES_PATH
+
+    path = Path(args.out) if args.out else SHAPES_PATH
+    if args.source:
+        rules = Path(args.source).read_text(encoding="utf-8")
+    else:
+        rules = redact_import.fetch(args.tag)
+    result = redact_import.refresh(path, rules, args.tag)
+    for label, names in (
+        ("added", result.added),
+        ("removed", result.removed),
+        ("changed", result.modified),
+    ):
+        if names:
+            print(f"{label}: " + ", ".join(names))
+    if not result.changed:
+        print(f"{path} is current for gitleaks {args.tag}")
+        return 0
+    if args.check:
+        print(
+            f"{path} differs from gitleaks {args.tag} (run `make redact-shapes`)", file=sys.stderr
+        )
+        return 1
+    path.write_text(result.text, encoding="utf-8")
+    print(f"wrote {path}")
+    if result.added or result.removed or result.modified:
+        print("the masked set changed: give prepare/redact.py a new REDACTION_VERSION")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sentrook", description="Sentrook 2.0 scanner")
     parser.add_argument("--version", action="version", version=f"sentrook {__version__}")
@@ -107,6 +140,23 @@ def build_parser() -> argparse.ArgumentParser:
     srv.add_argument("--host")
     srv.add_argument("--port", type=int)
     srv.set_defaults(func=_cmd_serve)
+
+    shapes = sub.add_parser(
+        "redact-shapes", help="vendor key shapes of the second redaction pass (redact_shapes.yaml)"
+    )
+    shapes_sub = shapes.add_subparsers(dest="shapes_command", required=True)
+    imp = shapes_sub.add_parser(
+        "import", help="regenerate the gitleaks-derived shapes from the gitleaks rules at a tag"
+    )
+    imp.add_argument("--tag", required=True, help="gitleaks release tag, e.g. v8.30.1")
+    imp.add_argument(
+        "--from",
+        dest="source",
+        help="read config/gitleaks.toml from this file instead of fetching it at --tag",
+    )
+    imp.add_argument("--out", help="shapes file to rewrite (default: the packaged one)")
+    imp.add_argument("--check", action="store_true", help="exit 1 if the file would change")
+    imp.set_defaults(func=_cmd_redact_shapes)
     return parser
 
 

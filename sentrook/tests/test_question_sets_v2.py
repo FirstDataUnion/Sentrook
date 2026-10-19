@@ -320,7 +320,11 @@ def test_scan_reports_the_views_it_used(harm_case):
     assert list(pv["jev_call_state"]) == CALL_V2_KEYS
     assert pv["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
     assert pv["views_version"] == {"exposure": "trim-v2", "call": "trim-v2"}
-    assert pv["redaction"] == {"version": "redact-v1", "count": 2}
+    assert pv["redaction"] == {
+        "version": "redact-v2",
+        "shapes": "1;gitleaks=v8.30.1",
+        "count": 2,
+    }
     r = res.response
     assert r.metadata.versions["views"] == "trim-v2"
     assert r.tree.suspicion.overreach == 0.8
@@ -336,7 +340,11 @@ def test_scan_defaults_stay_on_trim_v1(harm_case):
     pv = res.prepared_views
     assert pv["views"] == {"exposure": EXPOSURE, "call": CALL}
     assert pv["views_version"] == {"exposure": "trim-v1", "call": "trim-v1"}
-    assert pv["redaction"] == {"version": "redact-v1", "count": 0}
+    assert pv["redaction"] == {
+        "version": "redact-v2",
+        "shapes": "1;gitleaks=v8.30.1",
+        "count": 0,
+    }
     assert "new_inputs" not in pv["jev_call_state"]
     assert res.response.metadata.versions["views"] == "trim-v1"
     assert res.response.tree.suspicion.overreach is None
