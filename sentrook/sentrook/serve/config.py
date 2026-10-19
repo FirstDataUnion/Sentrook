@@ -101,13 +101,16 @@ class ServeConfig:
     jev_api_key: str | None = None
     jev_model: str = DEFAULT_MODEL
     jev_timeout_s: float = 20.0
-    jev_exposure_question_set: str = "exposure-v1"
-    jev_call_question_set: str = "call-v1"
+    # Shipped defaults: the call-v2 / exposure-v2 question sets and conv-v3. The frozen v1 sets and
+    # conv-v1 / conv-v2 stay selectable (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the
+    # Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
+    jev_exposure_question_set: str = "exposure-v2"
+    jev_call_question_set: str = "call-v2"
     oracle_url: str | None = None
     oracle_api_key: str | None = None
     probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
     packs_default: tuple[str, ...] = ("tier1",)
-    convergence: str = "conv-v1"
+    convergence: str = "conv-v3"
     lists_dir: str | None = None
 
     # test mode
@@ -178,10 +181,10 @@ class ServeConfig:
             jev_model=(env.get("SENTROOK_JEV_MODEL") or DEFAULT_MODEL).strip(),
             jev_timeout_s=_float(env, "SENTROOK_JEV_TIMEOUT_MS", 20_000.0) / 1000.0,
             jev_exposure_question_set=_question_set(
-                env, "SENTROOK_JEV_EXPOSURE_QUESTIONS", "exposure-v1", "exposure"
+                env, "SENTROOK_JEV_EXPOSURE_QUESTIONS", "exposure-v2", "exposure"
             ),
             jev_call_question_set=_question_set(
-                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v1", "call"
+                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v2", "call"
             ),
             oracle_url=(env.get("SENTROOK_ORACLE_URL") or "").strip() or None,
             oracle_api_key=(env.get("SENTROOK_ORACLE_API_KEY") or "").strip() or None,
@@ -189,7 +192,7 @@ class ServeConfig:
             if probes_raw
             else (),
             packs_default=tuple(p.strip() for p in packs_raw.split(",") if p.strip()) or ("tier1",),
-            convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v1").strip(),
+            convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v3").strip(),
             lists_dir=(env.get("SENTROOK_LISTS_DIR") or "").strip() or None,
             test_mode=test_mode,
         )
