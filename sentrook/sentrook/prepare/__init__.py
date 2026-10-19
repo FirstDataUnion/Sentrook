@@ -10,7 +10,9 @@ before any probe.
 4. Classify each new input as trusted or untrusted from its source facts.
 5. Extract entities with roles from the pending call, siblings, untrusted inputs, the request, grants,
    history and, when the call executes a file the agent wrote earlier, that file's content; assign
-   opaque IDs.
+   opaque IDs. Record the call's lineage in the history: the agent-written file it runs, the
+   agent-written files it reads or sends, items the agent moved or copied into a tree the call
+   destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
    introduced first is not promoted by a later echo).
 7. Compute the pending call's action fingerprint.
@@ -42,18 +44,31 @@ from .entities import (
     EntityTable,
     Origin,
     Role,
+    display_path,
     extract_call,
     extract_exec,
     extract_mentions,
     grant_matches,
+    is_under,
     normalise_host,
     normalise_path,
     normalise_recipient,
+    paths_in,
+    resolve_token,
+    shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
 from .trust import Trust, classify
 
-__all__ = ["Prepared", "PrepareOptions", "prepare", "InvalidPlanIR"]
+__all__ = [
+    "Lineage",
+    "MovedItem",
+    "Prepared",
+    "PrepareOptions",
+    "WrittenFile",
+    "prepare",
+    "InvalidPlanIR",
+]
 
 #: History arguments are capped by the plugin at about 4 KB per step. Content at or
 #: beyond this length is treated as possibly truncated when the agent-written file is re-read.
@@ -97,6 +112,59 @@ class WrittenFile:
     truncated: bool
 
 
+@dataclass
+class MovedItem:
+    """A history `mv`/`cp`/`rsync` that put something into a tree the pending call destroys."""
+
+    source: str  # normalised source path (what was moved or copied in)
+    destination: str  # normalised destination, at or under the target
+    target: str  # the pending call's destructive target it now sits under
+    step: int
+    head: str  # mv | cp | rsync
+
+
+@dataclass
+class Lineage:
+    """What the history says about the pending call's inputs and targets. Built by `prepare`;
+    scored by the context probe and recorded (paths only, never content) in the test-mode
+    `prepared` block."""
+
+    #: The agent-written file the pending call runs (the same object as `Prepared.written_file`).
+    executed: WrittenFile | None = None
+    #: Agent-written files the pending call reads, sends, copies or publishes.
+    sent: list[WrittenFile] = field(default_factory=list)
+    #: History moves and copies into a tree the pending call destroys.
+    moved_in: list[MovedItem] = field(default_factory=list)
+    #: History writes whose content lists a path at or under a destructive target.
+    listings: list[WrittenFile] = field(default_factory=list)
+    #: Normalised paths the pending call destroys (rm, shred, srm, unlink, rmdir, truncate,
+    #: find -delete, find -exec rm).
+    destructive_targets: list[str] = field(default_factory=list)
+
+    def names(self, home: str | None = None) -> dict[str, Any]:
+        """The lineage as display paths and steps, never content."""
+
+        def disp(path: str) -> str:
+            return display_path(path, home)
+
+        return {
+            "executed": disp(self.executed.path) if self.executed else None,
+            "sent": [disp(w.path) for w in self.sent],
+            "moved_in": [
+                {
+                    "source": disp(m.source),
+                    "destination": disp(m.destination),
+                    "target": disp(m.target),
+                    "step": m.step,
+                    "head": m.head,
+                }
+                for m in self.moved_in
+            ],
+            "listings": [disp(w.path) for w in self.listings],
+            "destructive_targets": [disp(t) for t in self.destructive_targets],
+        }
+
+
 @dataclass(frozen=True)
 class CoverageNote:
     code: str
@@ -119,6 +187,7 @@ class Prepared:
     views: dict[str, dict[str, Any]]
     created_paths: dict[str, int] = field(default_factory=dict)
     written_file: WrittenFile | None = None
+    lineage: Lineage = field(default_factory=Lineage)
     coverage: list[CoverageNote] = field(default_factory=list)
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
@@ -359,6 +428,180 @@ def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str
     return created
 
 
+#: Heads whose positional arguments the call destroys, for lineage (a narrower set than AIRA's C7:
+#: the question is which tree goes away, not every destructive shape).
+_LINEAGE_DESTRUCTIVE_HEADS = frozenset({"rm", "shred", "srm", "unlink", "rmdir", "truncate"})
+_TRUNCATE_VALUE_FLAGS = frozenset({"-s", "--size", "-r", "--reference"})
+_MOVE_HEADS = frozenset({"mv", "cp", "rsync"})
+#: Flags of mv/cp/rsync that take a value.
+_MOVE_VALUE_FLAGS = frozenset({"-t", "--target-directory", "-S", "--suffix", "-e", "--rsh"})
+
+
+def _call_cwd(call: CanonicalCall, home: str, ws: str) -> str:
+    cwd = call.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        return normalise_path(cwd, home=home, workspace_root=ws)
+    return ws
+
+
+def _destructive_targets(pending: CanonicalCall, home: str, ws: str) -> list[str]:
+    """Paths the pending exec destroys, resolved against its cwd (and any `cd` before them)."""
+    if pending.tool_kind is not ToolKind.EXEC or not pending.command:
+        return []
+    cwd = _call_cwd(pending, home, ws)
+    out: list[str] = []
+    for tokens in shell_segments(pending.command):
+        head, args = tokens[0], tokens[1:]
+        if head == "cd" and args:
+            cwd, _ = resolve_token(args[0], cwd, home=home, workspace_root=ws)
+            continue
+        positional: list[str] = []
+        if head in _LINEAGE_DESTRUCTIVE_HEADS:
+            skip = False
+            for tok in args:
+                if skip:
+                    skip = False
+                    continue
+                if head == "truncate" and tok in _TRUNCATE_VALUE_FLAGS:
+                    skip = True
+                    continue
+                if tok.startswith("-") or tok == "--":
+                    continue
+                positional.append(tok)
+        elif head == "find" and (
+            "-delete" in args
+            or any(
+                a == "-exec" and i + 1 < len(args) and args[i + 1] in ("rm", "shred", "unlink")
+                for i, a in enumerate(args)
+            )
+        ):
+            for tok in args:
+                if tok.startswith(("-", "(", "!")):
+                    break
+                positional.append(tok)
+        for tok in positional:
+            path, _ = resolve_token(tok, cwd, home=home, workspace_root=ws)
+            if path not in out:
+                out.append(path)
+    return out
+
+
+def _moved_in(
+    history: list[CanonicalCall], targets: list[str], home: str, ws: str
+) -> list[MovedItem]:
+    """History `mv`/`cp`/`rsync` whose destination is at or under a destructive target and whose
+    source is not already inside that target."""
+    if not targets:
+        return []
+    out: list[MovedItem] = []
+    for call in history:
+        if call.tool_kind is not ToolKind.EXEC or not call.command or call.step is None:
+            continue
+        cwd = _call_cwd(call, home, ws)
+        for tokens in shell_segments(call.command):
+            head, args = tokens[0], tokens[1:]
+            if head == "cd" and args:
+                cwd, _ = resolve_token(args[0], cwd, home=home, workspace_root=ws)
+                continue
+            if head not in _MOVE_HEADS:
+                continue
+            positional: list[str] = []
+            target_dir: str | None = None
+            skip_next: str | None = None
+            for tok in args:
+                if skip_next is not None:
+                    if skip_next in ("-t", "--target-directory"):
+                        target_dir = tok
+                    skip_next = None
+                    continue
+                if tok in _MOVE_VALUE_FLAGS:
+                    skip_next = tok
+                    continue
+                if tok.startswith("--target-directory="):
+                    target_dir = tok.split("=", 1)[1]
+                    continue
+                if tok.startswith("-"):
+                    continue
+                positional.append(tok)
+            if target_dir is not None:
+                sources, dest = positional, target_dir
+            elif len(positional) >= 2:
+                sources, dest = positional[:-1], positional[-1]
+            else:
+                continue
+            if ":" in dest.split("/", 1)[0]:
+                continue  # a remote rsync/scp destination
+            dest_path, _ = resolve_token(dest, cwd, home=home, workspace_root=ws)
+            for target in targets:
+                if not is_under(dest_path, target):
+                    continue
+                for src in sources:
+                    if ":" in src.split("/", 1)[0]:
+                        continue
+                    src_path, _ = resolve_token(src, cwd, home=home, workspace_root=ws)
+                    if is_under(src_path, target):
+                        continue
+                    out.append(
+                        MovedItem(
+                            source=src_path,
+                            destination=dest_path,
+                            target=target,
+                            step=call.step,
+                            head=head,
+                        )
+                    )
+    return out
+
+
+def _lineage(
+    planir: PlanIR,
+    pending: CanonicalCall,
+    history: list[CanonicalCall],
+    table: EntityTable,
+    written: WrittenFile | None,
+    home: str,
+    ws: str,
+) -> Lineage:
+    lineage = Lineage(executed=written)
+    lineage.destructive_targets = _destructive_targets(pending, home, ws)
+
+    written_paths = {
+        normalise_path(c.path, home=home, workspace_root=ws)
+        for c in history
+        if c.tool_kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT) and c.path
+    }
+    for ent in table.pending():
+        if ent.kind is not EntityKind.PATH or Role.DATA_SOURCE not in ent.roles:
+            continue
+        if ent.value not in written_paths or (written is not None and ent.value == written.path):
+            continue
+        sent = _find_written(planir, history, ent.value, home, ws)
+        if sent is not None:
+            lineage.sent.append(sent)
+
+    lineage.moved_in = _moved_in(history, lineage.destructive_targets, home, ws)
+    for item in lineage.moved_in:
+        ent = table.add(
+            EntityKind.PATH,
+            item.source,
+            display=display_path(item.source, home),
+            origin=Origin.HISTORY,
+            ref=f"step:{item.step}",
+        )
+        if ent.first_history_step is None or item.step < ent.first_history_step:
+            ent.first_history_step = item.step
+
+    if lineage.destructive_targets:
+        for path in sorted(written_paths):
+            listing = _find_written(planir, history, path, home, ws)
+            if listing is None:
+                continue
+            listed = [p for p, _ in paths_in(listing.content, home, ws, None)]
+            if any(is_under(p, t) for p in listed for t in lineage.destructive_targets):
+                lineage.listings.append(listing)
+    return lineage
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -508,6 +751,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             break
         coverage.append(CoverageNote("written_file_not_visible", exe.display))
 
+    lineage = _lineage(planir, pending, history, table, written, home, ws)
+
     # 6. untrusted set
     for ent in table:
         ent.hash = entity_hash(state.salt, ent.kind.value, ent.value)
@@ -564,6 +809,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         views=jev_views,
         created_paths=created,
         written_file=written,
+        lineage=lineage,
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,
