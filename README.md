@@ -13,6 +13,19 @@ maintenance mode and lives on the [`release/1.x`](../../tree/release/1.x) branch
 
 Nothing here is installable yet. See [CLAUDE.md](CLAUDE.md) for the repo layout and conventions.
 
+## Configuration
+
+The scanner is configured through `SENTROOK_*` environment variables. The Jev probes read:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SENTROOK_JEV_BASE_URL` | `https://openrouter.ai` | Decisions API base URL (a caching proxy can sit here) |
+| `SENTROOK_JEV_API_KEY` | unset | API key for the Decisions API |
+| `SENTROOK_JEV_MODEL` | `typesafe/jev-1.13` | Jev model |
+| `SENTROOK_JEV_TIMEOUT_MS` | `20000` | Per-request timeout |
+| `SENTROOK_JEV_EXPOSURE_QUESTIONS` | `exposure-v1` | Exposure question set (`exposure-v1`, or `exposure-v2` on the redacted view) |
+| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v1` | Call question set (`call-v1`, or `call-v2`, which also sees the turn's inputs) |
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
