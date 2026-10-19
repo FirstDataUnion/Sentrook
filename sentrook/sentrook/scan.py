@@ -64,8 +64,9 @@ class ScanResult:
     @property
     def prepared_views(self) -> dict[str, Any]:
         """What the Jev probes were sent (or, for a probe that did not run, the configured view), the
-        view names and versions, and the second redaction pass, for the test-mode `prepared` block
-        and the runner's parity checks (which apply only to `trim-v1` views)."""
+        view names and versions, the second redaction pass, and the history lineage (paths and
+        steps only, never content), for the test-mode `prepared` block and the runner's parity
+        checks (which apply only to `trim-v1` views)."""
         out: dict[str, Any] = {}
         for env in self.envelopes:
             if env.step in (ProbeStep.JEV_EXPOSURE, ProbeStep.JEV_CALL) and "state" in env.evidence:
@@ -81,6 +82,8 @@ class ScanResult:
         out["views"] = dict(self.jev_views)
         out["views_version"] = {k: VIEW_VERSIONS.get(v) for k, v in self.jev_views.items()}
         out["redaction"] = {"version": REDACTION_VERSION, "count": redactions}
+        if self.prepared is not None:
+            out["lineage"] = self.prepared.lineage.names(self.prepared.home)
         return out
 
 

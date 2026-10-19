@@ -426,7 +426,7 @@ def _hosts_in(text: str) -> list[str]:
     return list(dict.fromkeys(hosts))
 
 
-def _paths_in(
+def paths_in(
     text: str, home: str | None, workspace_root: str | None, cwd: str | None
 ) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
@@ -535,7 +535,7 @@ def extract_mentions(
     for m in _EMAIL_RE.finditer(text):
         norm = normalise_recipient(m.group(1))
         found.append(Found(EntityKind.RECIPIENT, norm, norm, role))
-    for norm, disp in _paths_in(text, home, workspace_root, None):
+    for norm, disp in paths_in(text, home, workspace_root, None):
         found.append(Found(EntityKind.PATH, norm, disp, role))
     for p in _packages_in(text):
         found.append(Found(EntityKind.PACKAGE, p, p, role))
@@ -544,17 +544,174 @@ def extract_mentions(
     return found
 
 
+# --------------------------------------------------------------------------- shell segments
+
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|\n]")
+_ENV_ASSIGN_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
+_WRAPPER_HEADS = frozenset({"sudo", "doas", "nohup", "time", "env", "exec", "command"})
+
+
+def shell_segments(command: str) -> list[list[str]]:
+    """The simple commands of a shell string as token lists, wrappers (`sudo`, `env`, …) and leading
+    variable assignments dropped. Quoting is honoured within a segment where it parses; this is a
+    light split for lineage questions, not the AIRA shell parser."""
+    import shlex
+
+    out: list[list[str]] = []
+    for seg in _SEGMENT_SPLIT_RE.split(command or ""):
+        seg = seg.strip().lstrip("(").rstrip(")").strip()
+        if not seg or seg.startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(seg, comments=True)
+        except ValueError:
+            tokens = seg.split()
+        while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
+            tokens = tokens[1:]
+        if tokens:
+            out.append(tokens)
+    return out
+
+
+def resolve_token(
+    tok: str, cwd: str, *, home: str | None, workspace_root: str | None
+) -> tuple[str, bool]:
+    """Resolve a path argument against the running cwd; returns (normalised path, wildcard). A
+    trailing glob (`dir/*`) or an embedded one resolves to the directory it ranges over."""
+    tok = tok.strip().strip("'\"")
+    wildcard = False
+    if tok.endswith(("/*", "/**")):
+        tok = tok.rsplit("/", 1)[0] or "/"
+        wildcard = True
+    elif "*" in tok or "?" in tok:
+        tok = re.split(r"[*?]", tok, maxsplit=1)[0]
+        tok = tok.rsplit("/", 1)[0] if "/" in tok else tok
+        wildcard = True
+        if not tok:
+            tok = "."
+    if not tok.startswith(("/", "~", "$HOME")):
+        tok = cwd.rstrip("/") + "/" + tok.removeprefix("./") if tok not in (".", "./") else cwd
+    return normalise_path(tok, home=home, workspace_root=workspace_root), wildcard
+
+
+def is_under(path: str, root: str) -> bool:
+    """`path` is `root` or inside it."""
+    root = root.rstrip("/")
+    return not root or path == root or path.startswith(root + "/")
+
+
+_FETCH_HEADS = frozenset({"curl", "wget"})
+_RUN_HEADS = frozenset(
+    "bash sh zsh dash ksh source . python python2 python3 node deno bun perl ruby exec".split()
+)
+_BUILD_RE = re.compile(
+    r"(?:\A|\s)(?:\./configure|\./setup[\w.-]*|\./install[\w.-]*|make|cmake|python[23]?\s+setup\.py)(?:\s|\Z)"
+)
+
+
+def _fetch_outputs(tokens: list[str]) -> list[str]:
+    """The files a `curl`/`wget` segment saves to: `-o FILE`, `--output FILE`, combined short flags
+    ending in `o` (`-fsSLo FILE`), wget's `-O FILE` / `--output-document FILE`, and curl's `-O`
+    (the URL's basename)."""
+    head = tokens[0]
+    out: list[str] = []
+    urls = [t for t in tokens[1:] if _URL_RE.match(t)]
+    i = 1
+    while i < len(tokens):
+        tok = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if tok.startswith(("--output=", "--output-document=")):
+            out.append(tok.split("=", 1)[1])
+        elif tok in ("--output", "--output-document") and nxt:
+            out.append(nxt)
+            i += 1
+        elif head == "wget" and tok == "-O" and nxt:
+            out.append(nxt)
+            i += 1
+        elif head == "curl" and re.fullmatch(r"-[A-Za-z]*o", tok) and nxt:
+            out.append(nxt)
+            i += 1
+        elif head == "curl" and (
+            tok in ("--remote-name", "-O") or re.fullmatch(r"-[A-Za-z]*O", tok)
+        ):
+            for url in urls:
+                base = urlsplit(url).path.rsplit("/", 1)[-1]
+                if base:
+                    out.append(base)
+        i += 1
+    return [o for o in out if o and o != "-"]
+
+
+def fetched_then_run(
+    command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
+) -> tuple[set[str], set[str]]:
+    """Hosts that supply code and the files that are run when a command fetches to a file and later
+    runs it: `curl -o f URL && chmod +x f && ./f`, `wget -O f URL; sh f`, or a `git clone URL`
+    followed by a build or setup step. Returns (hosts, normalised executable paths)."""
+    hosts: set[str] = set()
+    executables: set[str] = set()
+    base = cwd or workspace_root or "/"
+    base = normalise_path(base, home=home, workspace_root=workspace_root)
+    segments = shell_segments(command)
+    fetched: list[tuple[int, str, list[str]]] = []  # (segment index, normalised file, hosts)
+    for idx, tokens in enumerate(segments):
+        if tokens[0] == "cd" and len(tokens) > 1:
+            base, _ = resolve_token(tokens[1], base, home=home, workspace_root=workspace_root)
+            continue
+        if tokens[0] in _FETCH_HEADS:
+            seg_hosts = _hosts_in(" ".join(tokens[1:]))
+            for raw in _fetch_outputs(tokens):
+                path, _ = resolve_token(raw, base, home=home, workspace_root=workspace_root)
+                fetched.append((idx, path, seg_hosts))
+            continue
+        if not fetched:
+            continue
+        candidates: list[str] = []
+        if tokens[0] == "chmod":
+            args = [t for t in tokens[1:] if not re.fullmatch(r"-[A-Za-z]+", t)]
+            if args and ("x" in args[0] or re.fullmatch(r"0?[0-7]*[1357][0-7]*", args[0])):
+                candidates = args[1:]
+        elif tokens[0] in _RUN_HEADS:
+            candidates = [t for t in tokens[1:] if not t.startswith("-")][:1]
+        else:
+            candidates = [tokens[0]]
+        for cand in candidates:
+            if not cand or cand.startswith("-"):
+                continue
+            path, _ = resolve_token(cand, base, home=home, workspace_root=workspace_root)
+            for f_idx, f_path, f_hosts in fetched:
+                if f_idx < idx and f_path == path:
+                    hosts.update(f_hosts)
+                    executables.add(path)
+    clones = [m for m in _GIT_RE.finditer(command) if m.group(1)]
+    if clones and _BUILD_RE.search(command[clones[0].end() :]):
+        for m in clones:
+            h = host_of_url(m.group(1)) if "://" in m.group(1) else None
+            if h is None and "@" in m.group(1) and ":" in m.group(1):
+                h = normalise_host(m.group(1).split("@", 1)[1].split(":", 1)[0])
+            if h:
+                hosts.add(h)
+    return hosts, executables
+
+
 def extract_exec(
     command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
 ) -> list[Found]:
-    """Entities a shell command touches, with roles from the command's shape."""
+    """Entities a shell command touches, with roles from the command's shape. A host the command
+    fetches a file from and then runs that file (or clones and builds) is a code source, whatever
+    else the command does."""
     found: list[Found] = []
     egress = bool(_EGRESS_MARKERS.search(command))
     to_interpreter = bool(_PIPE_TO_INTERPRETER.search(command))
+    code_hosts, run_files = fetched_then_run(
+        command, home=home, workspace_root=workspace_root, cwd=cwd
+    )
 
     for h in _hosts_in(command):
         if h in ("localhost",):
             role = Role.DATA_SOURCE
+        elif h in code_hosts:
+            role = Role.CODE_SOURCE
         elif egress:
             role = Role.DATA_DESTINATION
         elif to_interpreter:
@@ -596,13 +753,13 @@ def extract_exec(
             if tok.startswith(("/", "~", "./", "../", "$HOME")):
                 destinations.add(tok.strip("'\""))
 
-    for norm, disp in _paths_in(command, home, workspace_root, cwd):
+    for norm, disp in paths_in(command, home, workspace_root, cwd):
         raw_matches = [
             r
             for r in sources | destinations | executables
             if normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
         ]
-        if any(
+        if norm in run_files or any(
             normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
             for r in executables
         ):
