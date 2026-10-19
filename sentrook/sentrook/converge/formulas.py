@@ -7,7 +7,7 @@
                 | max(mean(sensitivity, reach, irreversibility), self_modification)           [mean]
     agreement   = 1 − disagreeing / shared, a disagreement being one explicit value above `high` and
                   another below `low` on the same signal from different probes (a signal only one
-                  probe claims is never shared)
+                  probe claims, such as the model-only overreach, is never shared)
     coverage    = min(coverage contributions, probe-status penalty)
     confidence  = min(agreement, coverage, model_certainty)
     risk        = consequence × max(suspicion, u × (1 − confidence))
