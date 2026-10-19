@@ -16,7 +16,8 @@ the call, with no model and no raw text.
   of that tree marking part of it irreplaceable; an agent-written file carrying secret values that
   the call sends or publishes, when the request does not ask for a secret to go; a host one
   character (or one confusable) away from a host the owner named; an agent-written filter installed
-  where it silences sign-in and security notices. Each arm is off when its value is 0, and
+  where it silences sign-in and security notices (a persistent change to the account's alerting,
+  so it carries reach and irreversibility too). Each arm is off when its value is 0, and
   `lineage_enabled` turns them all off. A failure in the lineage arms contributes nothing and
   leaves the rest of the probe's output intact.
 - Sticky `suspicion.exposure` from `tainted`; `consequence.sensitivity` from `holds_sensitive` when
@@ -117,9 +118,13 @@ class ContextParams:
     #: A host a character or a confusable away from a host the owner named (0 also drops the
     #: untrusted-origin override for it).
     lineage_lookalike_concealment: float = 0.9
-    #: An agent-written filter installed where it silences sign-in and security notices.
-    lineage_filter_overreach: float = 0.5
+    #: An agent-written filter installed where it silences sign-in and security notices: a
+    #: persistent change to the account's alerting that outlives the session and stays quiet
+    #: until someone notices, so it carries reach and irreversibility as well as sensitivity.
+    lineage_filter_overreach: float = 0.6
     lineage_filter_sensitivity: float = 0.6
+    lineage_filter_reach: float = 0.6
+    lineage_filter_irreversibility: float = 0.6
 
 
 _CONFUSABLES = (
@@ -411,12 +416,25 @@ class ContextProbe:
             record["lookalikes"] = {ent_id: named for ent_id, named in lookalikes.items()}
 
         # 5. An agent-written filter installed where it silences security notices.
-        if p.lineage_filter_overreach + p.lineage_filter_sensitivity > 0:
+        if (
+            p.lineage_filter_overreach
+            + p.lineage_filter_sensitivity
+            + p.lineage_filter_reach
+            + p.lineage_filter_irreversibility
+            > 0
+        ):
             for dest in self._installed_filters(prepared, lists):
                 subject = path_id(dest)
                 reason = "lineage.filter_silences_security_notices"
                 emit("suspicion.overreach", p.lineage_filter_overreach, subject, reason)
                 emit("consequence.sensitivity", p.lineage_filter_sensitivity, subject, reason)
+                emit("consequence.reach", p.lineage_filter_reach, subject, reason)
+                emit(
+                    "consequence.irreversibility",
+                    p.lineage_filter_irreversibility,
+                    subject,
+                    reason,
+                )
         return out
 
     @staticmethod

@@ -802,8 +802,10 @@ def test_lineage_filter_silences_security_notices(attack_case):
         dest = p.entities.get(EntityKind.PATH, "/home/me/.mailfilters/desk")
         got = {(c.signal, c.value, c.subject) for c in lineage_of(env)}
         assert got == {
-            ("suspicion.overreach", 0.5, dest.id),
+            ("suspicion.overreach", 0.6, dest.id),
             ("consequence.sensitivity", 0.6, dest.id),
+            ("consequence.reach", 0.6, dest.id),
+            ("consequence.irreversibility", 0.6, dest.id),
         }, line
         assert env.evidence["lineage"]["fired"] == ["lineage.filter_silences_security_notices"]
 
@@ -857,13 +859,17 @@ def test_lineage_arms_switch_off_and_params_load_from_a_lineage_block(attack_cas
         json.dumps(
             {
                 "name": "conv-test",
-                "context": {"lineage": {"filter_overreach": 0.0, "enabled": False}},
+                "context": {
+                    "lineage": {"filter_overreach": 0.0, "filter_reach": 0.3, "enabled": False}
+                },
             }
         ),
         encoding="utf-8",
     )
     params = load_params(path)
     assert params.context.lineage_filter_overreach == 0.0
+    assert params.context.lineage_filter_reach == 0.3
+    assert params.context.lineage_filter_irreversibility == 0.6  # untouched default
     assert params.context.lineage_enabled is False
     assert params.context.lineage_moved_reach == 0.75  # untouched default
 
