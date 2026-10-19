@@ -1,0 +1,76 @@
+# Egress sinks (C2) and the secret placeholder. A sink alone is a send (`send.off_host`); a sink
+# with a sensitive source is exfiltration (`exfil.*`). AIRA does not judge intent: a sanctioned
+# backup of credentials to the owner's host carries the same consequence as an attack, and relief
+# comes from grants in convergence.
+
+version: 1
+
+# Exec egress markers. Regex over one shell segment; `reason` is the sink reason code. `head`
+# narrows the marker to segments with that head (a `-d` on `ls` is not egress). `requires_pipe`
+# means the head must be fed by a pipeline stage (`cat x | ssh host 'cat > y'`).
+exec_markers:
+  - pattern: '(?:\s|\A)(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|-F|--form(?:-string)?|-T|--upload-file|--json)(?:\s|=|\Z)'
+    head: curl
+    reason: exfil.exec_egress
+  - pattern: '(?:\s|\A)(?:-X|--request)\s*=?\s*(?:POST|PUT|PATCH)\b'
+    head: curl
+    reason: exfil.exec_egress
+  - pattern: '(?:\s|\A)(?:--post-data|--post-file|--body-data|--body-file)(?:\s|=)|(?:\s|\A)--method\s*=?\s*(?:POST|PUT|PATCH)\b'
+    head: wget
+    reason: exfil.exec_egress
+  - pattern: '(?:\s|\A)(?:POST|PUT|PATCH)\s+\S+'
+    head: http
+    reason: exfil.exec_egress
+  - pattern: '\b(?:scp|rsync|sftp)\b[^;&|\n]*(?:\S+@\S+:|\b[\w.-]+\.[a-z]{2,}:|\brsync://|\bsftp://)'
+    reason: exfil.exec_egress
+  - pattern: '\bssh\b'
+    requires_pipe: true
+    reason: exfil.exec_egress
+  - pattern: '\b(?:nc|ncat|netcat|socat)\b'
+    reason: exfil.raw_socket
+  - pattern: '/dev/(?:tcp|udp)/'
+    reason: exfil.raw_socket
+  - pattern: 'requests\.(?:post|put|patch)\(|urllib\.request\.(?:urlopen|Request)\(|\burlopen\(|http\.client\.HTTPS?Connection\(|\.post\(|fetch\([^)]*method\s*:\s*["''](?:POST|PUT|PATCH)'
+    reason: exfil.web_post
+  - pattern: '\b(?:mail|mailx|sendmail|mutt|msmtp|swaks)\b'
+    reason: exfil.message_send
+  - pattern: '\baws\s+s3\s+(?:cp|sync|mv)\b[^;&|\n]*\ss3://'
+    reason: exfil.exec_egress
+  - pattern: '\bgsutil\s+(?:cp|rsync|mv)\b[^;&|\n]*\sgs://'
+    reason: exfil.exec_egress
+  - pattern: '\baz\s+storage\s+blob\s+upload\b'
+    reason: exfil.exec_egress
+  - pattern: '\bgh\s+gist\s+create\b'
+    reason: exfil.exec_egress
+  - pattern: '\brclone\s+(?:copy|sync|move)\b[^;&|\n]*\s\w+:'
+    reason: exfil.exec_egress
+
+# Where an egress head reads the file it sends. Group 1 is the path.
+file_arg_patterns:
+  - '@((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)'
+  - '(?:-T|--upload-file|--post-file|--body-file|--data-binary|--data)\s+@?((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)'
+  - '<\s*((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)'
+
+# Tool kinds that are sends by definition, and the ones whose body makes them a POST.
+sink_tool_kinds:
+  - message_send
+web_body_kinds:
+  - web_fetch
+  - browser
+web_body_methods:
+  - POST
+  - PUT
+  - PATCH
+
+# MCP / other tool names that send. Regex over the tool name; a namespace prefix or a verb prefix
+# (`drive_upload`, `gmail__send_message`) is allowed before the match.
+tool_name_prefix: '(?:\A|_|[.:/])'
+send_tool_name_patterns:
+  - '(?:send|post|upload|publish|forward|share|submit|tweet|notify|reply|broadcast|dm|email|mail|message|transmit|sync|push)(?:_\w+)?\Z'
+
+# The redaction placeholder for a secret: the plugin replaces each secret value with `⟦secret:…⟧`
+# before the request leaves the host, so a placeholder in argv, body or content means a real secret
+# was there.
+placeholder:
+  open: '⟦secret'
+  close: '⟧'

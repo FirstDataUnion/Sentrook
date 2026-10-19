@@ -1,0 +1,79 @@
+# Destruction (C7): destructive heads and verbs, and what counts as scratch space.
+#
+# C7 fires when a destructive verb has at least one path *outside* scratch. Scratch is read
+# exculpatorily — the one place in the design where matching a class suppresses a contribution — so
+# both scratch definitions are deliberately narrow and neither guesses: `tmp` is absolute only
+# (a relative `tmp/` is a directory inside the workspace, not `/tmp`), and the workspace is the
+# deployment's `host.workspace_root`, not any directory that sounds like one.
+
+version: 1
+
+# Heads whose positional arguments are destroyed.
+heads:
+  - rm
+  - shred
+  - srm
+  - wipefs
+  - mkfs
+  - truncate
+  - unlink
+  - rmdir
+# Heads matched by prefix (`mkfs.ext4`, `mkfs.xfs`).
+head_prefixes:
+  - 'mkfs.'
+
+# Destructive verbs that are not the head. Regex over one shell segment (`[^;&|\n]` keeps the match
+# inside a simple command). `paths` says where the affected paths come from: `argv` reads the
+# segment's positionals, `cwd` means the operation acts on the working directory (git), `none` has
+# no path (reach is host-wide).
+verbs:
+  - pattern: '\bfind\b[^;&|\n]*\s-delete\b'
+    paths: argv
+    note: find -delete
+  - pattern: '\bfind\b[^;&|\n]*\s-exec\s+(?:rm|shred|unlink|truncate)\b'
+    paths: argv
+    note: find -exec rm
+  - pattern: '\bxargs\b[^;&|\n]*\b(?:rm|shred|unlink)\b'
+    paths: argv
+    note: xargs rm
+  - pattern: '\bgit\s+reset\s+--hard\b'
+    paths: cwd
+    note: git reset --hard
+  - pattern: '\bgit\s+clean\b[^;&|\n]*\s-[A-Za-z]*[fdx]'
+    paths: cwd
+    note: git clean -f/-d/-x
+  - pattern: '\bgit\s+checkout\s+--\s+\.'
+    paths: cwd
+    note: git checkout -- . (discards every change)
+  - pattern: '\bdd\b[^;&|\n]*\bof=((?:~|\$HOME|\.{1,2})?/\S+)'
+    paths: argv
+    note: dd of=
+  - pattern: '\bchmod\s+(?:-R\s+)?0{3,4}\b'
+    paths: argv
+    note: chmod 000 (denies the owner access)
+
+# Destructive SQL, in exec text or in an MCP `sql`/`query` argument (canonical `content`). `DELETE
+# FROM` fires only without a WHERE clause.
+sql_patterns:
+  - '\bDROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLLECTION)\b'
+  - '\bTRUNCATE\s+(?:TABLE\s+)?[\w."`]+'
+  - '\bDELETE\s+FROM\s+[\w."`]+(?!\s+WHERE\b)\s*(?:;|\)|\Z)'
+
+# Scratch space. `tmp` is a regex over the normalised path; the workspace is resolved from the
+# request (`host.workspace_root`) plus the generic `workspace(s)` segment carried from 1.x.
+scratch:
+  tmp_patterns:
+    - '\A(?:/private)?(?:/var)?/tmp(?:/|\Z)'
+    - '\A/dev/shm(?:/|\Z)'
+  workspace_segment: '(?:\A|/)workspaces?(?:/|\Z)'
+
+# Paths the agent is expected to clean up: never fire for these even outside scratch.
+ignore_path_patterns:
+  - '\A/dev/null\Z'
+  - '/node_modules(?:/|\Z)'
+  - '/__pycache__(?:/|\Z)'
+  - '/\.pytest_cache(?:/|\Z)'
+  - '/\.venv(?:/|\Z)'
+  - '/dist(?:/|\Z)'
+  - '/build(?:/|\Z)'
+  - '/\.cache(?:/|\Z)'

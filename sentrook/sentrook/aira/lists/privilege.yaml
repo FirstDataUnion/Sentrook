@@ -1,0 +1,86 @@
+# Privilege change (C8). The `sudo` arm belongs to the `host_gated` pack (the host usually gates
+# elevation itself); the preload, setuid and shadowing arms are always on because they hide what the
+# command is from everyone, host included.
+
+version: 1
+
+# Wrappers that elevate (exec_shape strips them and sets `privileged`), and heads that do.
+elevation_wrappers:
+  - sudo
+  - doas
+  - run0
+  - pkexec
+elevation_heads:
+  - su
+
+# setuid / setgid bits and capabilities. Regex over one shell segment.
+setuid_patterns:
+  - '\bchmod\b[^;&|\n]*\s(?:[ugoa]*\+[rwxX]*s[rwxX]*|[2467][0-7]{3})\b'
+  - '\bsetcap\b'
+  - '\bchown\b[^;&|\n]*\broot\b[^;&|\n]*\bchmod\b[^;&|\n]*\+s'
+
+# Loader-injection environment variables, matched against `KEY=` of each env assignment.
+preload_vars:
+  - LD_PRELOAD
+  - LD_LIBRARY_PATH
+  - LD_AUDIT
+  - DYLD_INSERT_LIBRARIES
+  - DYLD_LIBRARY_PATH
+  - DYLD_FRAMEWORK_PATH
+  - PYTHONPATH
+  - NODE_OPTIONS
+  - PERL5OPT
+  - BASH_ENV
+  - ENV
+
+# PATH shadowing: a `PATH=` assignment, or a system utility invoked by an unusual path (`./ls`,
+# `/tmp/bin/sudo`). `system_utilities` are the basenames; `system_dirs` are where they belong.
+shadowing_vars:
+  - PATH
+system_utilities:
+  - ls
+  - cat
+  - sudo
+  - su
+  - ssh
+  - scp
+  - curl
+  - wget
+  - git
+  - python
+  - python3
+  - node
+  - bash
+  - sh
+  - zsh
+  - rm
+  - cp
+  - mv
+  - chmod
+  - chown
+  - find
+  - grep
+  - sed
+  - awk
+  - tar
+  - gpg
+  - openssl
+  - docker
+  - kubectl
+  - aws
+  - gh
+  - npm
+  - pip
+  - pip3
+  - openclaw
+  - hermes
+system_dirs:
+  - /usr/bin
+  - /bin
+  - /usr/sbin
+  - /sbin
+  - /usr/local/bin
+  - /usr/local/sbin
+  - /opt/homebrew/bin
+  - /opt/homebrew/sbin
+  - /snap/bin

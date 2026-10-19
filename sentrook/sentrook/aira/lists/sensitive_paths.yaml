@@ -1,0 +1,410 @@
+# Canonical sensitive-path and named-binary lists for the AIRA probe (ported from the 1.x
+# `sanitize/sensitive_paths.yaml`).
+#
+# One list, every consumer: the path classifier (`aira.path_classes`), the exec shape
+# (`aira.exec_shape.path_roles`) and every detector read these compiled groups. Nothing downstream
+# holds a copy of a pattern string, so adding an entry here reaches all of them without a second edit.
+#
+# Adding an entry can only *widen* what counts as sensitive. That direction fails safe: a false
+# `sensitive` costs a review, a missing one costs a detection. Removing an entry is the change that
+# needs justification.
+#
+# An operator overlay directory (`SENTROOK_LISTS_DIR`) may carry a file of the same name; its
+# entries are merged additively (lists are appended, groups are unioned).
+
+version: 2
+
+# --------------------------------------------------------------------------
+# sensitive — credential, key, auth-store, browser-profile and PII material.
+#
+# **Composed, not listed.** `sensitive` is the union of the groups below, so every entry lives in
+# exactly one place. The groups exist because they deserve different *weights* (see
+# `weights.yaml: sensitivity`), which is a per-group property, so they have to be separately
+# nameable:
+#
+#   * `credential_store` — the file's purpose is to hold credentials. Reading one is a credential
+#     read whatever else the command is doing. Sensitivity 1.0.
+#   * `credential_bearing_config` — the file's purpose is configuration and it carries credentials
+#     too. Reading `openclaw.json` for `.gateway.port` is not a credential read in substance, and it
+#     is a routine thing for a scheduled agent to do. Sensitivity 0.8.
+#   * `browser_profile` — browser cookie, login and key stores. Cheap entries, sensitivity 0.6.
+#   * `pii_store` — mail stores, address books and chat databases. Sensitivity 0.6.
+#
+# Measured in 1.x before the split: 8 of 26 credential-read hits were `openclaw.json` alone, and
+# every one read a non-credential field. Narrowing the *detection* instead was rejected, and the
+# reason generalises: `cat openclaw.json` with no selector is the dangerous form while
+# `jq '.gateway.port' openclaw.json` is the benign one, so any "does it name a field" heuristic runs
+# backwards and its failure direction is a missed credential hunt.
+# --------------------------------------------------------------------------
+sensitive:
+  includes:
+    - credential_store
+    - credential_bearing_config
+    - browser_profile
+    - pii_store
+
+# --------------------------------------------------------------------------
+# credential_store — the file exists to hold credentials.
+# --------------------------------------------------------------------------
+credential_store:
+  # Raw regex fragments, matched with re.IGNORECASE anywhere in the subject.
+  # Use these when the *directory* is what makes the path sensitive.
+  patterns:
+    # OpenClaw auth stores. Guardrail *config* is not here — see `guardrail.yaml`.
+    - 'auth-profiles(?:\.json)?'
+    - 'openclaw-agent\.sqlite'
+    - 'openclaw-auth-intake'
+    - 'openclaw-sqlite'
+    - '\.openclaw/credentials'
+    # Redundant with the `credentials` basename below, kept explicit because this is the form the
+    # 1.x fingerprint matched and the reconciliation was verified with it present.
+    - 'credentials\.json'
+    # An .ssh directory, absolute, ~-relative or bare — and anything under it. The trailing path is
+    # optional: `tar czf - ~/.ssh | curl -F f=@-` names the directory and nothing else.
+    - '~?/?\.ssh(?:/[^\s"'']*)?(?![A-Za-z0-9_])'
+    # Cloud CLI credential directories, same shape.
+    - '~?/?\.aws(?:/[^\s"'']*)?(?![A-Za-z0-9_])'
+    - '\.config/gcloud/(?:credentials|legacy_credentials|application_default_credentials)'
+    - '\.azure/(?:accessTokens|msal_token_cache|service_principal_entries)'
+    - '\.kube/config'
+    - '\.gnupg/'
+    - '\.password-store/'
+    - '\.git-credentials'
+    # .env and its per-environment siblings (.env.local, .env.production).
+    - '(?:^|[\s"''`=/])\.env(?:\.[A-Za-z0-9_.-]+)?(?![A-Za-z0-9_-])'
+    # Unix account databases. Narrower than the historical `/etc/[^\s"']+`, which classed
+    # /etc/hosts and /etc/os-release as credential material.
+    - '/etc/(?:shadow|gshadow|sudoers|passwd)\b'
+    # macOS keychains.
+    - 'Library/Keychains'
+
+  # Literal basenames, matched **independently of directory**.
+  #
+  # This section exists because a relative reference after a `cd` escapes every path-anchored
+  # pattern above: `cd ~/.ssh && cat id_rsa` has no `/.ssh` in the segment that performs the read.
+  # Relative paths are the common shape in real traffic.
+  #
+  # Entries are regex-escaped by the loader and wrapped in component boundaries, so `.env` matches
+  # `/app/.env` and `.env.local` but not `myapp.env`, and `shadow` matches `/etc/shadow` but not
+  # `shadowsocks`.
+  basenames:
+    - id_rsa
+    - id_ed25519
+    - id_ecdsa
+    - id_dsa
+    - authorized_keys
+    - known_hosts
+    - auth-profiles.json
+    - openclaw-agent.sqlite
+    - database.sqlite
+    - .env
+    - .netrc
+    - credentials
+    - .pgpass
+    - .npmrc
+    - .docker/config.json
+    - shadow
+    - secrets.yaml
+    - secrets.yml
+    - secrets.json
+
+# --------------------------------------------------------------------------
+# credential_bearing_config — configuration that also carries credentials.
+#
+# Still `sensitive`: `cat openclaw.json` really does expose every secret in it. What it is not is
+# *unambiguous* — the same file holds the gateway port, the agent list and the channel config, and
+# an agent reads it constantly for those.
+#
+# `.npmrc` is the obvious candidate to join this group — it is npm's config file and carries
+# `_authToken` — but there was no corpus evidence either way, and moving it would weaken detection
+# on nothing but symmetry. It stays in `credential_store` until traffic says otherwise.
+# --------------------------------------------------------------------------
+credential_bearing_config:
+  patterns:
+    # Credential-bearing despite the generic name: `cat openclaw.json | jq .auth.profiles` is an
+    # observed live credential hunt.
+    - 'openclaw\.json'
+    # Hermes keeps API keys in `$HERMES_HOME/.env` (covered by `.env`) and may carry provider
+    # keys in its config.
+    - '\.hermes/(?:profiles/[^/\s"'']+/)?config\.yaml'
+
+# --------------------------------------------------------------------------
+# browser_profile — browser cookie, login and key stores. Patterns require a path context (a
+# preceding `/`) so prose like "clear cookies" is not a hit.
+# --------------------------------------------------------------------------
+browser_profile:
+  patterns:
+    - '/Login Data(?:-journal)?(?![A-Za-z0-9_])'
+    - '/Cookies(?:-journal)?(?![A-Za-z0-9_])'
+    - '/cookies\.sqlite'
+    - '/key4\.db'
+    - '/logins\.json'
+    - '/Web Data(?![A-Za-z0-9_])'
+    - '\.mozilla/firefox'
+    - '\.config/(?:google-chrome|chromium|BraveSoftware|microsoft-edge)'
+    - 'Library/Application Support/(?:Google/Chrome|Firefox|BraveSoftware|Microsoft Edge)'
+
+# --------------------------------------------------------------------------
+# pii_store — mail stores, address books, chat databases.
+# --------------------------------------------------------------------------
+pii_store:
+  patterns:
+    - '\.thunderbird'
+    - '(?:^|[\s"''`=/])Mail/'
+    - 'Library/Mail'
+    - 'Library/Messages'
+    - 'Library/Application Support/AddressBook'
+    - '\.local/share/evolution'
+    - '/var/(?:spool/)?mail/'
+    - '/Maildir(?:/|\Z)'
+    - '/chat\.db(?![A-Za-z0-9_])'
+
+# --------------------------------------------------------------------------
+# auth_store — the *stores* inside `sensitive`, not the whole of it. A strict subset: every entry
+# here also matches `sensitive`. It names "an interpreter opened the auth store", which is a
+# narrower claim than "an interpreter and a credential path appear in the same command".
+# --------------------------------------------------------------------------
+auth_store:
+  patterns:
+    - 'auth-profiles(?:\.json)?'
+    - 'openclaw-agent\.sqlite'
+    - 'openclaw-auth-intake'
+    - 'openclaw-sqlite'
+  basenames:
+    - auth-profiles.json
+    - openclaw-agent.sqlite
+    - database.sqlite
+
+# --------------------------------------------------------------------------
+# Agent context (consequence class C4, self-modification). Where a write changes what the agent
+# will do next session. Split by weight: see `weights.yaml: selfmod`.
+# --------------------------------------------------------------------------
+
+# agent_memory — durable notes the agent reads back. selfmod.memory (0.7).
+agent_memory:
+  patterns:
+    - 'MEMORY\.md'
+    - '(?:^|[\s"''`=/])memory/'
+    - '\.hermes/memories/'
+    - '\.openclaw/(?:workspace/)?memory'
+  basenames:
+    - MEMORY.md
+    - USER.md
+
+# agent_config — the agent's own instructions and host configuration. selfmod.config (1.0).
+agent_config:
+  patterns:
+    - 'openclaw\.json'
+    - '\.openclaw/agents/'
+    - '\.openclaw/(?:config|settings)'
+    - '\.hermes/(?:profiles/[^/\s"'']+/)?config\.yaml'
+    - '\.hermes/(?:profiles/[^/\s"'']+/)?\.env'
+    - '/etc/hermes/'
+  basenames:
+    - AGENTS.md
+    - SOUL.md
+    - IDENTITY.md
+    - TOOLS.md
+    - HEARTBEAT.md
+    - CLAUDE.md
+    - SYSTEM.md
+
+# agent_plugins — plugin, extension and skill directories. selfmod.plugin (1.0).
+agent_plugins:
+  patterns:
+    - '\.openclaw/(?:plugins|extensions|skills)/'
+    - '\.hermes/(?:plugins|skills)/'
+    - '(?:^|[\s"''`=/])skills/'
+
+# agent_scheduler — the agent's own scheduler state. selfmod.scheduler (1.0).
+agent_scheduler:
+  patterns:
+    - '\.openclaw/(?:cron|automations|schedules?)/'
+    - '\.hermes/cron/'
+
+# hooks — hook directories survive every session and run on events. selfmod.hooks (1.0).
+hooks:
+  patterns:
+    - '(?:^|[\s"''`=/])hooks/'
+    - '\.git/hooks/'
+    - '\.openclaw/hooks'
+    - '\.hermes/hooks'
+
+# --------------------------------------------------------------------------
+# Host persistence (C4, host side). A write here survives the session but is not the agent's own
+# context. selfmod.startup (0.6) for startup files and loader hijacks; selfmod.scheduler at the host
+# weight (0.6) for the host schedulers.
+# --------------------------------------------------------------------------
+startup:
+  patterns:
+    # Shell startup files.
+    - '(?:^|[\s"''`=/])\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zshenv|zprofile|zlogin|kshrc|cshrc|login)(?![A-Za-z0-9_-])'
+    - '/etc/profile(?:\.d/|\b)'
+    - '/etc/(?:bash\.bashrc|zsh/|environment\b)'
+    # Name resolution — a write here redirects every later connection.
+    - '/etc/(?:hosts|resolv\.conf|nsswitch\.conf)\b'
+    # Loader hijack.
+    - '/etc/ld\.so\.(?:conf|preload)'
+    # SSH persistence — authorized_keys is also `sensitive`; both are true.
+    - 'authorized_keys'
+    - '\.ssh/(?:config|rc)\b'
+
+host_scheduler:
+  patterns:
+    - '/etc/cron[^\s"'']*'
+    - '/var/spool/cron[^\s"'']*'
+    - '\bcrontab\b'
+    - '/etc/systemd/system/[^\s"'']*'
+    - '~?/?\.config/systemd/user/[^\s"'']*'
+    - '/Library/LaunchAgents/[^\s"'']*'
+    - '/Library/LaunchDaemons/[^\s"'']*'
+    - '/etc/(?:init\.d|rc\.local|rc\d?\.d)'
+    - '\.config/autostart/'
+
+# `persistence` is the 1.x roll-up, kept composed so a consumer that only wants "survives the
+# session" has one name for it.
+persistence:
+  includes:
+    - startup
+    - host_scheduler
+    - agent_memory
+    - hooks
+
+# --------------------------------------------------------------------------
+# Falco-style named binary lists. Heads are basenamed and lowercased by exec_shape before
+# comparison, so these are bare names.
+# --------------------------------------------------------------------------
+# Binaries that make a file's *contents* available — the "reading head" half of consequence class
+# C1. Path signals are path-only and cannot see the verb, so `ls -la ~/.ssh`, `rm -rf ~/.ssh` and
+# `cat ~/.ssh/id_rsa` are identical to them; this list is what separates the third from the other two
+# (`ls` has its own list below, because a listing of a credential *directory* is still a reach).
+#
+# Deliberately **not** a catalogue. GTFOBins lists 478 binaries that can be coerced into a file
+# read; this is the verb check for the binaries an agent actually runs.
+#
+# Deliberately absent: `stat`, `file`, `which`, `du` (reference without reading) and `curl`/`wget`,
+# whose `-d @file` / `--post-file` forms read *and* egress — those are class C2 and the egress
+# detector owns them (it still credits the read to C1 through the `@file` form).
+reading_binaries:
+  - cat
+  - head
+  - tail
+  - tac
+  - rev
+  - nl
+  - od
+  - xxd
+  - strings
+  - less
+  - more
+  - jq
+  - yq
+  - grep
+  - egrep
+  - fgrep
+  - rg
+  - awk
+  - gawk
+  - mawk
+  - sed
+  - cut
+  - sort
+  - uniq
+  - wc
+  - python
+  - python2
+  - python3
+  - node
+  - deno
+  - bun
+  - perl
+  - ruby
+  - php
+  - lua
+  - tar
+  - zip
+  - gzip
+  - gunzip
+  - zcat
+  - base64
+  - openssl
+  - sqlite3
+  - getent
+  - cp
+  - dd
+  - scp
+  - rsync
+  - source
+  - "."
+
+# Listing a credential *directory* is a reach too (what is in `~/.ssh`), at the same weight.
+listing_binaries:
+  - ls
+  - find
+  - tree
+  - dir
+  - fd
+
+shell_binaries:
+  - sh
+  - bash
+  - zsh
+  - dash
+  - ksh
+  - ash
+  - fish
+  - csh
+  - tcsh
+
+interpreter_binaries:
+  - python
+  - python2
+  - python3
+  - node
+  - deno
+  - bun
+  - perl
+  - ruby
+  - php
+  - lua
+  - osascript
+  - Rscript
+
+fetch_binaries:
+  - curl
+  - wget
+  - nc
+  - ncat
+  - netcat
+  - socat
+  - http
+  - httpie
+  - scp
+  - sftp
+  - rsync
+  - ftp
+  - aria2c
+
+package_mgmt_binaries:
+  - pip
+  - pip3
+  - pipx
+  - uv
+  - uvx
+  - npm
+  - npx
+  - pnpm
+  - yarn
+  - bun
+  - gem
+  - cargo
+  - go
+  - apt
+  - apt-get
+  - dnf
+  - yum
+  - apk
+  - brew
+  - pacman
+  - conda
+  - poetry

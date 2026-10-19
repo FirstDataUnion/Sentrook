@@ -1,0 +1,15 @@
+{
+  "name": "conv-v1",
+  "notes": "Starting values from the initial design. Never edit a released parameter set: a change is a new file, so every TestNest run is attributable to exact parameters.",
+  "u": 0.25,
+  "certainty": "mean",
+  "consequence": "max",
+  "taint_floor": 0.3,
+  "agreement": { "high": 0.6, "low": 0.3 },
+  "coverage_penalty": { "error": 0.5, "timeout": 0.6, "skipped": 1.0 },
+  "request_named_relief": { "enabled": true, "owner_only": true, "roles": ["data_destination", "recipient"] },
+  "reason_min_value": 0.2,
+  "oracle": {},
+  "context": {},
+  "jev": { "taint_threshold": 0.5 }
+}

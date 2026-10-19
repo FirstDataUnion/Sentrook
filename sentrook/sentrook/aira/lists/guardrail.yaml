@@ -1,0 +1,161 @@
+# Guardrail tampering (C4*): the canonical list behind the `guardrail_tampering` floor.
+#
+# Covers OpenClaw and Hermes. The floor blocks writes, edits, deletes, truncations, moves and
+# redirects into Sentrook's own state, disabling or removing the Sentrook plugin, config commands
+# that touch the Sentrook entry, agent-led gateway stops, and host-guardrail changes. Reads and
+# lists are always allowed; `restart` and `reload` are allowed.
+#
+# Layout convention: every 2.0 plugin-side file lives under one directory, `<state>/sentrook/`
+# (grants, state cache, placeholder map, operator log, anything added later). The list names the
+# *directory segment*, not files, so adding or renaming a file never needs a rule change. `<state>`
+# is `$OPENCLAW_STATE_DIR`, `$OPENCLAW_HOME/.openclaw` or `~/.openclaw` on OpenClaw and
+# `$HERMES_HOME` (`~/.hermes`, a profile under it, or `/opt/data` in Docker) on Hermes, so the
+# match is on the segment `sentrook/` anywhere in the path. The same rule covers the Hermes plugin
+# code directory `plugins/sentrook/`.
+#
+# Edits to `openclaw.json` or Hermes `config.yaml` are content-aware: the floor fires only when the
+# edit text (canonical `content`/`edits`) names the Sentrook plugin id/key; otherwise the edit is
+# ordinary C4 self-modification. Such hits carry `mechanism: edit_text_match` in evidence.
+#
+# Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
+# user. The floor covers only the calls Sentrook sees.
+
+version: 1
+
+# Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
+# or a trailing `/sentrook`).
+state_dir_segments:
+  - sentrook
+
+# 1.x loose files, kept while plugins migrate. Matched as basenames.
+legacy_basenames:
+  - sentrook-allowlist.json
+  - sentrook-live-policy.json
+  - sentrook-pending.json
+  - sentrook-dashboard-access
+  - sentrook-operator.jsonl
+
+# Under a state-dir hit, a basename matching one of these is a log: the reason becomes
+# `guardrail.log_tamper` rather than `guardrail.state_dir_write`.
+log_basename_patterns:
+  - 'operator[^/]*\.jsonl'
+  - '[^/]*\.log'
+  - 'audit[^/]*'
+
+# The host's own guardrails. Writes take the floor with `guardrail.host_approvals`; reads do not.
+host_guardrail_path_patterns:
+  - 'exec-approvals\.json'
+  - 'agents/[^\s"'']+/agent/config\.json'
+  - 'shell-hooks-allowlist\.json'
+  - 'sentrook-allowlist\.json'
+
+# Files whose direct edits are content-aware (see the header). Regex over the normalised path.
+config_file_patterns:
+  - 'openclaw\.json'
+  - '\.hermes/(?:profiles/[^/\s"'']+/)?config\.yaml'
+  - '/etc/hermes/config\.yaml'
+  - '/opt/data/config\.yaml'
+
+# The plugin ids and config keys that name Sentrook. Substring, case-insensitive.
+plugin_ids:
+  - sentrook
+
+# `openclaw plugins <verb> <id>` / `hermes plugins <verb> <id>`: blocked verbs when `<id>` names a
+# plugin id above. `list`, `enable`, `install` and other plugins are allowed.
+plugin_cli:
+  - head: openclaw
+    subcommand: plugins
+    blocked_verbs: [disable, remove, uninstall, rm, delete]
+  - head: hermes
+    subcommand: plugins
+    blocked_verbs: [disable, remove, uninstall, rm, delete]
+
+# `openclaw config <verb> ...` / `hermes config <verb> ...`: a mutating verb whose arguments name a
+# Sentrook key, or the plugin enable/disable lists. `get`, `show`, `list` are reads.
+config_cli:
+  - head: openclaw
+    subcommand: config
+    mutating_verbs: [set, unset, rm, remove, delete, del, edit, add, append, push, patch, reset]
+  - head: hermes
+    subcommand: config
+    mutating_verbs: [set, unset, rm, remove, delete, del, edit, add, append, push, patch, reset]
+config_key_patterns:
+  - 'plugins\.(?:disabled|enabled|allow|deny|allowlist|denylist|blocklist)'
+  - 'plugins\.(?:entries|config)\.sentrook'
+  - 'sentrook'
+
+# Agent-led gateway stop. `restart`, `reload`, `start`, `status` are allowed.
+gateway_cli:
+  - head: openclaw
+    subcommand: gateway
+    blocked_verbs: [stop, kill, shutdown, down, halt]
+  - head: hermes
+    subcommand: gateway
+    blocked_verbs: [stop, kill, shutdown, down, halt]
+
+# Killing the gateway process by other means. Regex over the command text.
+process_kill_patterns:
+  - '\b(?:pkill|killall)\b[^;&|\n]*\b(?:openclaw|hermes)'
+  - '\bkill\b[^;&|\n]*\$\(\s*pgrep\b[^)]*\b(?:openclaw|hermes)'
+  - '\bsystemctl\b[^;&|\n]*\b(?:stop|disable|mask|kill)\b[^;&|\n]*\b(?:openclaw|hermes)'
+  - '\blaunchctl\b[^;&|\n]*\b(?:unload|bootout|stop|kill|disable)\b[^;&|\n]*\b(?:openclaw|hermes)'
+  - '\bdocker\s+(?:stop|kill|rm)\b[^;&|\n]*\b(?:openclaw|hermes)'
+
+# Host approvals (the Hermes `host_guardrails` analogue). `config_set_patterns` are matched in the
+# arguments of a mutating `hermes config` / `openclaw config` command; `content_patterns` in the edit
+# or write text of a config file.
+host_approvals:
+  config_set_patterns:
+    - 'approvals?\.[A-Za-z0-9_.-]+\s+["'']?(?:auto|always|true|yes|allow|approve|never_ask)'
+    - 'approvals?\.(?:mode|default)\s+["'']?(?:auto|allow|approve)'
+    - 'command_allowlist'
+    - 'hooks_auto_accept\s+["'']?(?:true|1|yes)'
+    - 'exec\.approvals?\s+["'']?(?:off|false|never|auto)'
+  content_patterns:
+    - 'approvals?\s*:\s*[\s\S]{0,200}?(?:auto|always|allow|approve|never_ask)'
+    - 'command_allowlist\s*:'
+    - 'hooks_auto_accept\s*:\s*(?:true|yes|1)'
+    - '"(?:allowAll|autoApprove|auto_approve|skipApproval)"\s*:\s*true'
+
+# Exec heads whose arguments naming a guardrail path count as a write. `sed` only with `-i`.
+writing_heads:
+  - rm
+  - rmdir
+  - unlink
+  - shred
+  - srm
+  - truncate
+  - tee
+  - sed
+  - mv
+  - cp
+  - ln
+  - dd
+  - install
+  - rsync
+  - chmod
+  - chown
+  - chattr
+  - touch
+  - mkdir
+  - echo
+  - printf
+# For these heads only the *last* positional is the destination (`cp <state>/x /tmp` is a read).
+destination_heads:
+  - cp
+  - rsync
+  - install
+  - ln
+# Hermes `execute_code` and inline interpreter code: a guardrail path in the text plus one of these
+# markers is a write. The script reaches no file hook, so its text is checked instead.
+content_write_marker_patterns:
+  - 'open\s*\([^)]*["''][wax]\+?["'']'
+  - '\.write_text\('
+  - '\.write_bytes\('
+  - '\bos\.(?:remove|unlink|rename|replace|truncate|rmdir|chmod)\('
+  - '\bshutil\.(?:rmtree|move|copy\w*)\('
+  - '\.unlink\('
+  - '\.rename\('
+  - '\.rmdir\('
+  - '\bfs\.(?:writeFile|appendFile|unlink|rm|rmdir|rename|truncate|chmod)\w*\('
+  - '\bsubprocess\.\w+\([^)]*\b(?:rm|mv|tee|truncate)\b'

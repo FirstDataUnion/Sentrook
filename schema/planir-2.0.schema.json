@@ -1,0 +1,1097 @@
+{
+  "$defs": {
+    "AgentRole": {
+      "enum": [
+        "main",
+        "subagent",
+        "unknown"
+      ],
+      "title": "AgentRole",
+      "type": "string"
+    },
+    "Batch": {
+      "additionalProperties": true,
+      "properties": {
+        "batch_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Batch Ref"
+        },
+        "siblings": {
+          "items": {
+            "$ref": "#/$defs/Sibling"
+          },
+          "title": "Siblings",
+          "type": "array"
+        }
+      },
+      "title": "Batch",
+      "type": "object"
+    },
+    "Channel": {
+      "enum": [
+        "chat",
+        "discord",
+        "telegram",
+        "slack",
+        "email",
+        "webhook",
+        "other"
+      ],
+      "title": "Channel",
+      "type": "string"
+    },
+    "ContentType": {
+      "enum": [
+        "text",
+        "json",
+        "image",
+        "binary",
+        "other"
+      ],
+      "title": "ContentType",
+      "type": "string"
+    },
+    "Decision": {
+      "description": "What happened to an earlier step. `review_timed_out`, `denied_by_user` and `blocked` feed\n`retry_after_denial`; the `*_on_error` values mark steps with no usable scan.",
+      "enum": [
+        "allowed",
+        "approved_by_user",
+        "denied_by_user",
+        "blocked",
+        "allowed_on_error",
+        "blocked_on_error",
+        "review_timed_out",
+        "unknown"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "ExecMode": {
+      "enum": [
+        "allowlist",
+        "full",
+        "unknown"
+      ],
+      "title": "ExecMode",
+      "type": "string"
+    },
+    "Grant": {
+      "additionalProperties": true,
+      "description": "Something the owner explicitly allowed. `kind` and `allows` are open enums; `pattern` is a glob.\nSentrook refuses over-broad patterns rather than relieve on them.",
+      "properties": {
+        "allows": {
+          "description": "read | write | edit | delete | exec, where relevant",
+          "items": {
+            "type": "string"
+          },
+          "title": "Allows",
+          "type": "array"
+        },
+        "grant_ref": {
+          "title": "Grant Ref",
+          "type": "string"
+        },
+        "granted_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Granted At"
+        },
+        "kind": {
+          "description": "destination | file | provider | automation | tool | … (open)",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pattern": {
+          "title": "Pattern",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/GrantScope",
+          "default": "session"
+        }
+      },
+      "required": [
+        "grant_ref",
+        "kind",
+        "pattern"
+      ],
+      "title": "Grant",
+      "type": "object"
+    },
+    "GrantScope": {
+      "description": "An unknown scope is read as the weaker one (`session`), so relief is never widened by a value\nthe scanner does not understand.",
+      "enum": [
+        "session",
+        "persistent"
+      ],
+      "title": "GrantScope",
+      "type": "string"
+    },
+    "HistoryStep": {
+      "additionalProperties": true,
+      "description": "One earlier step: arguments, not content. `risk`, `tiers` and `action_fingerprint` are null for\nsteps with no usable scan.",
+      "properties": {
+        "action_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action Fingerprint"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/Decision",
+          "default": "unknown"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResultSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "risk": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Risk"
+        },
+        "step": {
+          "minimum": 1,
+          "title": "Step",
+          "type": "integer"
+        },
+        "tiers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Tiers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_kind": {
+          "$ref": "#/$defs/ToolKind",
+          "default": "other"
+        },
+        "turn": {
+          "minimum": 0,
+          "title": "Turn",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "step",
+        "turn",
+        "call_id",
+        "tool"
+      ],
+      "title": "HistoryStep",
+      "type": "object"
+    },
+    "Host": {
+      "additionalProperties": true,
+      "properties": {
+        "home": {
+          "title": "Home",
+          "type": "string"
+        },
+        "os": {
+          "$ref": "#/$defs/OS",
+          "default": "unknown"
+        },
+        "platform": {
+          "description": "openclaw | hermes | …; open string",
+          "title": "Platform",
+          "type": "string"
+        },
+        "platform_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Platform Version"
+        },
+        "plugin_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plugin Version"
+        },
+        "policy": {
+          "$ref": "#/$defs/HostPolicy"
+        },
+        "workspace_root": {
+          "description": "Needed to classify reach: scratch → workspace → host",
+          "title": "Workspace Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "workspace_root",
+        "home"
+      ],
+      "title": "Host",
+      "type": "object"
+    },
+    "HostApproval": {
+      "enum": [
+        "required",
+        "granted",
+        "none",
+        "unknown"
+      ],
+      "title": "HostApproval",
+      "type": "string"
+    },
+    "HostPolicy": {
+      "additionalProperties": true,
+      "description": "The host's own protection model, platform-neutral.",
+      "properties": {
+        "approval_gating": {
+          "default": false,
+          "title": "Approval Gating",
+          "type": "boolean"
+        },
+        "exec_mode": {
+          "$ref": "#/$defs/ExecMode",
+          "default": "unknown"
+        },
+        "result_masking": {
+          "default": false,
+          "title": "Result Masking",
+          "type": "boolean"
+        }
+      },
+      "title": "HostPolicy",
+      "type": "object"
+    },
+    "InputKind": {
+      "description": "An input kind the scanner does not know is content of unknown provenance, so it falls back to\n`other`, which preparation classifies as untrusted.",
+      "enum": [
+        "tool_result",
+        "message",
+        "subagent_reply",
+        "other"
+      ],
+      "title": "InputKind",
+      "type": "string"
+    },
+    "NewInput": {
+      "additionalProperties": true,
+      "description": "Content received since the last successful scan. One model covers the three variants\ndiscriminated on `kind`: `tool_result` (call_id, tool, provider, status), `message` (channel,\nsender) and `subagent_reply` (subagent_session_ref). Fields of the other variants are null.",
+      "properties": {
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Channel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Redacted and capped; null when the host dropped it",
+          "title": "Content"
+        },
+        "content_type": {
+          "$ref": "#/$defs/ContentType",
+          "default": "text"
+        },
+        "input_seq": {
+          "description": "Monotonic per episode; stable across resends",
+          "minimum": 0,
+          "title": "Input Seq",
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/InputKind",
+          "default": "other"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provider"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sender": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Original size",
+          "title": "Size Bytes"
+        },
+        "status": {
+          "$ref": "#/$defs/ResultStatus",
+          "default": "ok"
+        },
+        "subagent_session_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subagent Session Ref"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        },
+        "tool_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input_seq"
+      ],
+      "title": "NewInput",
+      "type": "object"
+    },
+    "OS": {
+      "enum": [
+        "linux",
+        "macos",
+        "windows",
+        "unknown"
+      ],
+      "title": "OS",
+      "type": "string"
+    },
+    "Options": {
+      "additionalProperties": true,
+      "properties": {
+        "packs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Packs",
+          "type": "array"
+        },
+        "redaction": {
+          "$ref": "#/$defs/Redaction",
+          "default": "standard"
+        }
+      },
+      "title": "Options",
+      "type": "object"
+    },
+    "PendingCall": {
+      "additionalProperties": true,
+      "properties": {
+        "agent_narration": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Assistant text accompanying the call; untrusted but informative",
+          "title": "Agent Narration"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "description": "Raw host arguments; canonicalised server-side",
+          "title": "Arguments",
+          "type": "object"
+        },
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Batch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "call_id": {
+          "description": "Unique within the episode (plugin-guaranteed)",
+          "title": "Call Id",
+          "type": "string"
+        },
+        "host_approval": {
+          "$ref": "#/$defs/HostApproval",
+          "default": "unknown"
+        },
+        "host_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The host's original ID, for debugging",
+          "title": "Host Call Id"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_kind": {
+          "$ref": "#/$defs/ToolKind",
+          "default": "other"
+        }
+      },
+      "required": [
+        "call_id",
+        "tool"
+      ],
+      "title": "PendingCall",
+      "type": "object"
+    },
+    "Provider": {
+      "additionalProperties": true,
+      "description": "Alias versus identity: `name` is the alias configured in this deployment, `identity` is stable\nacross deployments and is what reputation keys on. Built-in host tools are `kind: host` with both\nnull and create no entity.",
+      "properties": {
+        "identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderKind",
+          "default": "unknown"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Provider",
+      "type": "object"
+    },
+    "ProviderKind": {
+      "enum": [
+        "host",
+        "mcp",
+        "plugin",
+        "unknown"
+      ],
+      "title": "ProviderKind",
+      "type": "string"
+    },
+    "Redaction": {
+      "enum": [
+        "off",
+        "standard",
+        "strict"
+      ],
+      "title": "Redaction",
+      "type": "string"
+    },
+    "Request": {
+      "additionalProperties": true,
+      "properties": {
+        "carried_from_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Set only when the request text is from an earlier turn (heartbeat, system continuation)",
+          "title": "Carried From Turn"
+        },
+        "text": {
+          "description": "The current turn's request, or the scheduled task's prompt; redacted",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "Request",
+      "type": "object"
+    },
+    "ResultStatus": {
+      "enum": [
+        "ok",
+        "error"
+      ],
+      "title": "ResultStatus",
+      "type": "string"
+    },
+    "ResultSummary": {
+      "additionalProperties": true,
+      "properties": {
+        "size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "status": {
+          "$ref": "#/$defs/ResultStatus",
+          "default": "ok"
+        }
+      },
+      "title": "ResultSummary",
+      "type": "object"
+    },
+    "ScanKind": {
+      "description": "`pending_call` now; `inputs` and `agent_input` are post-v1 scan kinds.\nAn unrecognised kind is treated as `pending_call` because that is the only kind the pipeline\nruns; `planir.validate` reports it.",
+      "enum": [
+        "pending_call",
+        "inputs",
+        "agent_input"
+      ],
+      "title": "ScanKind",
+      "type": "string"
+    },
+    "Sender": {
+      "additionalProperties": true,
+      "properties": {
+        "basis": {
+          "items": {
+            "$ref": "#/$defs/SenderBasis"
+          },
+          "title": "Basis",
+          "type": "array"
+        },
+        "relation": {
+          "$ref": "#/$defs/SenderRelation",
+          "default": "unknown"
+        }
+      },
+      "title": "Sender",
+      "type": "object"
+    },
+    "SenderBasis": {
+      "description": "How the plugin derived `relation` (each host exposes different facts). A basis the\nscanner does not recognise is no evidence, so it resolves to `unknown`.",
+      "enum": [
+        "host_owner_flag",
+        "plugin_allowlist:sender",
+        "plugin_allowlist:role",
+        "host_allowlist_dm",
+        "group_chat",
+        "host_open_access",
+        "none",
+        "unknown"
+      ],
+      "title": "SenderBasis",
+      "type": "string"
+    },
+    "SenderRelation": {
+      "enum": [
+        "owner",
+        "trusted",
+        "other",
+        "unknown"
+      ],
+      "title": "SenderRelation",
+      "type": "string"
+    },
+    "Session": {
+      "additionalProperties": true,
+      "properties": {
+        "agent_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Ref"
+        },
+        "agent_role": {
+          "$ref": "#/$defs/AgentRole",
+          "default": "main"
+        },
+        "parent_session_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reserved for C13 cross-session joins",
+          "title": "Parent Session Ref"
+        },
+        "routing_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hashed durable key linking runs of one automation",
+          "title": "Routing Key"
+        },
+        "session_ref": {
+          "description": "Episode; owns the state token",
+          "title": "Session Ref",
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Signed token from the last response; null on the first step",
+          "title": "State"
+        },
+        "step": {
+          "description": "Episode-wide tool-call counter; never resets per turn",
+          "minimum": 1,
+          "title": "Step",
+          "type": "integer"
+        },
+        "turn": {
+          "minimum": 0,
+          "title": "Turn",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_ref",
+        "turn",
+        "step"
+      ],
+      "title": "Session",
+      "type": "object"
+    },
+    "Sibling": {
+      "additionalProperties": true,
+      "description": "A call issued together with the pending one; each sibling is its own step and its own scan.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_kind": {
+          "$ref": "#/$defs/ToolKind",
+          "default": "other"
+        }
+      },
+      "required": [
+        "call_id",
+        "tool"
+      ],
+      "title": "Sibling",
+      "type": "object"
+    },
+    "Tiers": {
+      "additionalProperties": true,
+      "description": "The plugin's echo of an earlier response's tier scores; coarse values only are relied on.",
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "consequence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consequence"
+        },
+        "suspicion": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suspicion"
+        }
+      },
+      "title": "Tiers",
+      "type": "object"
+    },
+    "ToolKind": {
+      "enum": [
+        "exec",
+        "file_read",
+        "file_write",
+        "file_edit",
+        "web_fetch",
+        "browser",
+        "message_send",
+        "memory_write",
+        "mcp",
+        "subagent_spawn",
+        "other"
+      ],
+      "title": "ToolKind",
+      "type": "string"
+    },
+    "Transport": {
+      "enum": [
+        "stdio",
+        "http",
+        "sse",
+        "other"
+      ],
+      "title": "Transport",
+      "type": "string"
+    },
+    "Trigger": {
+      "additionalProperties": true,
+      "description": "Per turn, best effort; different hosts expose different facts.",
+      "properties": {
+        "channel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Channel"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "$ref": "#/$defs/TriggerKind",
+          "default": "unknown"
+        },
+        "sender": {
+          "$ref": "#/$defs/Sender"
+        }
+      },
+      "title": "Trigger",
+      "type": "object"
+    },
+    "TriggerKind": {
+      "enum": [
+        "message",
+        "scheduled",
+        "heartbeat",
+        "hook",
+        "subagent",
+        "system",
+        "unknown"
+      ],
+      "title": "TriggerKind",
+      "type": "string"
+    }
+  },
+  "$id": "https://sentrook.firstdataunion.org/schema/planir-2.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "The scan request. Auth lives in request headers, never in the body.",
+  "properties": {
+    "grants": {
+      "items": {
+        "$ref": "#/$defs/Grant"
+      },
+      "title": "Grants",
+      "type": "array"
+    },
+    "history": {
+      "items": {
+        "$ref": "#/$defs/HistoryStep"
+      },
+      "title": "History",
+      "type": "array"
+    },
+    "host": {
+      "$ref": "#/$defs/Host"
+    },
+    "new_inputs": {
+      "items": {
+        "$ref": "#/$defs/NewInput"
+      },
+      "title": "New Inputs",
+      "type": "array"
+    },
+    "options": {
+      "$ref": "#/$defs/Options"
+    },
+    "origin": {
+      "default": "live",
+      "description": "live | fixture | replay; metrics only, never affects scoring",
+      "title": "Origin",
+      "type": "string"
+    },
+    "pending_call": {
+      "$ref": "#/$defs/PendingCall"
+    },
+    "planir_version": {
+      "const": "2.0",
+      "title": "Planir Version",
+      "type": "string"
+    },
+    "request": {
+      "$ref": "#/$defs/Request"
+    },
+    "request_id": {
+      "description": "Globally unique (UUID); the only globally unique ID",
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "run_ref": {
+      "description": "The agent run this scan belongs to",
+      "minLength": 1,
+      "title": "Run Ref",
+      "type": "string"
+    },
+    "scan_kind": {
+      "$ref": "#/$defs/ScanKind",
+      "default": "pending_call"
+    },
+    "sent_at": {
+      "format": "date-time",
+      "title": "Sent At",
+      "type": "string"
+    },
+    "session": {
+      "$ref": "#/$defs/Session"
+    },
+    "trigger": {
+      "$ref": "#/$defs/Trigger"
+    }
+  },
+  "required": [
+    "planir_version",
+    "request_id",
+    "run_ref",
+    "sent_at",
+    "host",
+    "session",
+    "request",
+    "pending_call"
+  ],
+  "title": "PlanIR",
+  "type": "object"
+}

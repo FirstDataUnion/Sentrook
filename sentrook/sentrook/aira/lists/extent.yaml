@@ -1,0 +1,46 @@
+# Extent modifiers. A recursive, wildcard or bulk form raises every `consequence.reach` contribution
+# of the call by `weights.yaml: extent.bonus` (capped at 1.0) and adds the extent reason.
+
+version: 1
+
+# Short-flag letters and long flags meaning "recurse".
+recursive_short_letters:
+  - r
+  - R
+recursive_long_flags:
+  - --recursive
+  - --recurse
+# Heads for which a recursive flag means recursion (not, say, `grep -r` which only reads).
+recursive_heads:
+  - rm
+  - cp
+  - scp
+  - rsync
+  - chmod
+  - chown
+  - shred
+  - srm
+  - mv
+  - tar
+  - zip
+  - aws
+  - gsutil
+  - rclone
+  - curl
+  - wget
+
+# Wildcards in a path argument (not inside a URL or a quoted regex).
+wildcard_patterns:
+  - '(?:\A|[\s/])\*\*?(?:\s|/|\Z)'
+  - '/\*\*?(?:\s|\Z|/)'
+  - '[\w~]/\*\.[A-Za-z0-9]+(?:\s|\Z)'
+
+# Bulk verbs.
+bulk_patterns:
+  - '\bfind\b[^;&|\n]*\s-(?:exec|execdir|ok|okdir|delete)\b'
+  - '\bxargs\b'
+  - '\bfor\s+\w+\s+in\b'
+  - '\bparallel\b'
+
+# More recipients than this is a bulk send.
+bulk_recipients: 5

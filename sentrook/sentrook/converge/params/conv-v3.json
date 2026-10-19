@@ -1,0 +1,44 @@
+{
+  "name": "conv-v3",
+  "notes": "Tuning steps 2 to 6 (2026-10-16). Consequence as the mean of sensitivity, reach and irreversibility (max with self_modification), the switch flagged for this pass: on dev it beat max by 0.01 AUROC and 0.12 recall at 2 per 100 with fewer false alarms. u 0.5, the top of the range the design calls indifferent; the sweep rose slowly to there and got noisier beyond. context.retry_carry_consequence 1.0: a matched retry inherits the denied step's consequence tier as reach and irreversibility. Oracle table and everything else as conv-v2.",
+  "u": 0.5,
+  "certainty": "mean",
+  "consequence": "mean",
+  "taint_floor": 0.3,
+  "agreement": {
+    "high": 0.6,
+    "low": 0.3
+  },
+  "coverage_penalty": {
+    "error": 0.5,
+    "timeout": 0.6,
+    "skipped": 1.0
+  },
+  "request_named_relief": {
+    "enabled": true,
+    "owner_only": true,
+    "roles": [
+      "data_destination",
+      "recipient"
+    ]
+  },
+  "reason_min_value": 0.2,
+  "oracle": {
+    "unknown_by_role": {
+      "data_destination": 0.3,
+      "recipient": 0.25,
+      "code_source": 0.5,
+      "executable": 0.5,
+      "tool_provider": 0.1,
+      "data_source": 0.15,
+      "mentioned": 0.05
+    },
+    "coverage_unknown_risky": 0.85
+  },
+  "context": {
+    "retry_carry_consequence": 1.0
+  },
+  "jev": {
+    "taint_threshold": 0.5
+  }
+}
