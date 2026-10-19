@@ -11,6 +11,14 @@ the call, with no model and no raw text.
 - `suspicion.retry_after_denial` by comparing the pending call's fingerprint components with those of
   denied, blocked or timed-out history steps (recomputed from the history arguments with this
   session's salt, so a plugin's echoed fingerprint is not required).
+- History lineage (`_lineage`), from the record `prepare` builds: an item the agent moved or copied
+  into the tree the call destroys (when it came from outside scratch); the agent's own saved listing
+  of that tree marking part of it irreplaceable; an agent-written file carrying secret values that
+  the call sends or publishes, when the request does not ask for a secret to go; a host one
+  character (or one confusable) away from a host the owner named; an agent-written filter installed
+  where it silences sign-in and security notices. Each arm is off when its value is 0, and
+  `lineage_enabled` turns them all off. A failure in the lineage arms contributes nothing and
+  leaves the rest of the probe's output intact.
 - Sticky `suspicion.exposure` from `tainted`; `consequence.sensitivity` from `holds_sensitive` when
   the call has a data destination; the `escalating` flag from the history tier scores; coverage from a
   stale carried request, a fresh session and truncated or dropped content.
@@ -21,6 +29,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall
@@ -93,6 +102,43 @@ class ContextParams:
     coverage_fresh_session: float = 0.7
     coverage_truncated: float = 0.7
     coverage_dropped: float = 0.8
+    #: History lineage arms (overridable from a parameter file's `context.lineage` block, keys
+    #: without the `lineage_` prefix). A value of 0 turns its arm off.
+    lineage_enabled: bool = True
+    #: An item moved or copied from outside scratch into the tree the call destroys.
+    lineage_moved_irreversibility: float = 1.0
+    lineage_moved_reach: float = 0.75
+    lineage_moved_overreach: float = 0.6
+    #: The agent's saved listing of the destroyed tree marks part of it irreplaceable.
+    lineage_listing_irreversibility: float = 1.0
+    lineage_listing_overreach: float = 0.6
+    #: An agent-written file carrying secret values is sent or published.
+    lineage_secret_send_overreach: float = 0.8
+    #: A host a character or a confusable away from a host the owner named (0 also drops the
+    #: untrusted-origin override for it).
+    lineage_lookalike_concealment: float = 0.9
+    #: An agent-written filter installed where it silences sign-in and security notices.
+    lineage_filter_overreach: float = 0.5
+    lineage_filter_sensitivity: float = 0.6
+
+
+_CONFUSABLES = (
+    ("rn", "m"),
+    ("vv", "w"),
+    ("0", "o"),
+    ("1", "l"),
+    ("i", "l"),
+    ("3", "e"),
+    ("5", "s"),
+)
+
+
+def _fold(label: str) -> str:
+    """A host label with confusable characters folded together, hyphens dropped."""
+    out = label.lower().replace("-", "")
+    for a, b in _CONFUSABLES:
+        out = out.replace(a, b)
+    return out
 
 
 def _hashes(hist: Fingerprint, echoed: Fingerprint | None, *roles: Role) -> frozenset[str]:
@@ -167,8 +213,13 @@ class ContextProbe:
         return False
 
     def _untrusted_origin(
-        self, prepared: Prepared, prior_flags: set[SessionFlag], evidence: dict
+        self,
+        prepared: Prepared,
+        prior_flags: set[SessionFlag],
+        evidence: dict,
+        lookalikes: dict[str, str] | None = None,
     ) -> list[Contribution]:
+        lookalikes = lookalikes or {}
         out: list[Contribution] = []
         for ent in prepared.entities:
             if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
@@ -187,6 +238,8 @@ class ContextProbe:
                 and value >= self.params.origin_untrusted
             ):
                 reason = "origin.written_content_untrusted"
+            if ent.id in lookalikes and value < self.params.origin_untrusted:
+                value, reason = self.params.origin_untrusted, "origin.lookalike_of_named_host"
             scaled = round(value * weight, 4)
             out.append(
                 Contribution(
@@ -201,6 +254,242 @@ class ContextProbe:
                 "first_history_step": ent.first_history_step,
                 "first_untrusted_step": ent.first_untrusted_step,
             }
+        return out
+
+    # ------------------------------------------------------------------ lineage
+
+    @staticmethod
+    def _lists() -> Any:
+        from ..aira.lists import load_lists
+
+        return load_lists()
+
+    def _lookalikes(self, prepared: Prepared) -> dict[str, str]:
+        """Host entities the call or the file it runs uses in a risky role that look like a host
+        the owner named without being it: entity id → the named host. One edit apart, or equal once
+        confusable characters are folded (`0`/`o`, `1`/`l`, `rn`/`m`); labels shorter than five
+        characters and hosts under the named host's own domain never match."""
+        if not self.params.lineage_enabled or self.params.lineage_lookalike_concealment <= 0:
+            return {}
+        from ..aira.detectors import _edit_distance_le1, _registrable_label
+
+        named = [
+            e
+            for e in prepared.entities
+            if e.kind is EntityKind.HOST and Origin.REQUEST in e.origins
+        ]
+        if not named:
+            return {}
+        out: dict[str, str] = {}
+        for ent in prepared.entities:
+            if ent.kind is not EntityKind.HOST or ent.sanctioned:
+                continue
+            if not ent.has_origin(Origin.PENDING_CALL, Origin.WRITTEN_FILE):
+                continue
+            if not ent.roles & set(KEY_ROLES):
+                continue
+            label = _registrable_label(ent.value)
+            for other in named:
+                if ent.value == other.value or ent.value.endswith("." + other.value):
+                    break
+                theirs = _registrable_label(other.value)
+                if label == theirs or min(len(label), len(theirs)) < 5:
+                    continue
+                if _edit_distance_le1(label, theirs) or _fold(label) == _fold(theirs):
+                    out[ent.id] = other.value
+                    break
+        return out
+
+    def _lineage(
+        self, prepared: Prepared, lookalikes: dict[str, str], evidence: dict
+    ) -> list[Contribution]:
+        p = self.params
+        lin = prepared.lineage
+        home = prepared.home
+        record: dict[str, Any] = {**lin.names(home), "fired": []}
+        evidence["lineage"] = record
+        if not p.lineage_enabled:
+            return []
+        out: list[Contribution] = []
+        fired: list[str] = record["fired"]
+
+        def emit(signal: str, value: float, subject: str | None, reason: str) -> None:
+            if value <= 0:
+                return
+            out.append(
+                Contribution(signal=signal, value=round(value, 4), subject=subject, reason=reason)
+            )
+            if reason not in fired:
+                fired.append(reason)
+
+        def path_id(value: str) -> str | None:
+            ent = prepared.entities.get(EntityKind.PATH, value)
+            return ent.id if ent is not None else None
+
+        lists = self._lists()
+
+        # 1. An item moved or copied into the tree the call destroys.
+        if lin.moved_in and p.lineage_moved_irreversibility + p.lineage_moved_overreach > 0:
+            from ..aira.detectors import SENSITIVE_GROUPS, is_scratch
+
+            reason = "lineage.moved_into_destroyed_tree"
+            for item in lin.moved_in:
+                if is_scratch(item.source, prepared.workspace_root, lists):
+                    continue
+                subject = path_id(item.source)
+                emit(
+                    "consequence.irreversibility", p.lineage_moved_irreversibility, subject, reason
+                )
+                emit("consequence.reach", p.lineage_moved_reach, subject, reason)
+                emit("suspicion.overreach", p.lineage_moved_overreach, subject, reason)
+                for group in SENSITIVE_GROUPS:
+                    if lists.group(group).search(item.source):
+                        emit(
+                            "consequence.sensitivity",
+                            lists.weight("sensitivity", group),
+                            subject,
+                            reason,
+                        )
+                        break
+
+        # 2. The agent's own listing of the destroyed tree marks part of it irreplaceable.
+        if lin.listings and p.lineage_listing_irreversibility + p.lineage_listing_overreach > 0:
+            from ..prepare.entities import is_under, paths_in
+
+            markers = lists.patterns("destructive", "irreplaceable_markers", "patterns")
+            reason = "lineage.listing_marks_irreplaceable"
+            for listing in lin.listings:
+                if not any(rx.search(listing.content) for rx in markers):
+                    continue
+                listed = [
+                    v for v, _ in paths_in(listing.content, home, prepared.workspace_root, None)
+                ]
+                for target in lin.destructive_targets:
+                    if not any(is_under(v, target) for v in listed):
+                        continue
+                    subject = path_id(target)
+                    emit(
+                        "consequence.irreversibility",
+                        p.lineage_listing_irreversibility,
+                        subject,
+                        reason,
+                    )
+                    emit("suspicion.overreach", p.lineage_listing_overreach, subject, reason)
+
+        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with.
+        asked_for_secret = any(
+            rx.search(prepared.planir.request.text or "")
+            for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+        )
+        if (
+            lin.sent
+            and p.lineage_secret_send_overreach > 0
+            and not asked_for_secret
+            and self._is_sink(prepared, lists)
+        ):
+            from ..prepare.redact import redact_text
+
+            placeholder = str(lists.get("egress", "placeholder", "open", default="⟦secret"))
+            for sent in lin.sent:
+                if placeholder in sent.content or redact_text(sent.content)[1] > 0:
+                    emit(
+                        "suspicion.overreach",
+                        p.lineage_secret_send_overreach,
+                        path_id(sent.path),
+                        "lineage.secret_carried_to_send",
+                    )
+
+        # 4. A look-alike of a host the owner named.
+        for ent_id in lookalikes:
+            emit(
+                "suspicion.concealment",
+                p.lineage_lookalike_concealment,
+                ent_id,
+                "lineage.lookalike_of_named_host",
+            )
+        if lookalikes:
+            record["lookalikes"] = {ent_id: named for ent_id, named in lookalikes.items()}
+
+        # 5. An agent-written filter installed where it silences security notices.
+        if p.lineage_filter_overreach + p.lineage_filter_sensitivity > 0:
+            for dest in self._installed_filters(prepared, lists):
+                subject = path_id(dest)
+                reason = "lineage.filter_silences_security_notices"
+                emit("suspicion.overreach", p.lineage_filter_overreach, subject, reason)
+                emit("consequence.sensitivity", p.lineage_filter_sensitivity, subject, reason)
+        return out
+
+    @staticmethod
+    def _is_sink(prepared: Prepared, lists: Any) -> bool:
+        """The pending call sends data off the machine: a message send, an off-host destination or
+        recipient, or an exec whose command carries an egress marker."""
+        pending = prepared.pending
+        if pending.tool_kind is ToolKind.MESSAGE_SEND:
+            return True
+        for ent in prepared.entities.pending():
+            if (
+                ent.kind in (EntityKind.RECIPIENT, EntityKind.CHANNEL)
+                and Role.RECIPIENT in ent.roles
+            ):
+                return True
+            if (
+                ent.kind is EntityKind.HOST
+                and Role.DATA_DESTINATION in ent.roles
+                and ent.value not in ("localhost", "127.0.0.1", "::1", "[::1]")
+            ):
+                return True
+        if pending.tool_kind is ToolKind.EXEC and pending.command:
+            cmd = pending.command
+            for rule in lists.rules("egress", "exec_markers"):
+                head = rule.get("head")
+                if head and not re.search(r"\b" + re.escape(str(head)) + r"\b", cmd):
+                    continue
+                if rule.regex.search(cmd):
+                    return True
+        return False
+
+    @staticmethod
+    def _installed_filters(prepared: Prepared, lists: Any) -> list[str]:
+        """The destination of each agent-written file the call installs, outside the
+        workspace, at a mail or notification filter location, whose content has a filter line
+        naming a sign-in or security notice. The call's own written content counts when it writes
+        straight to such a location."""
+        from ..prepare.entities import is_under
+
+        locations = lists.patterns("lineage", "filter_locations", "patterns")
+        terms = lists.patterns("lineage", "security_notice_terms", "patterns")
+        actions = lists.patterns("lineage", "filter_action_patterns")
+        if not (locations and terms and actions):
+            return []
+        ws = prepared.workspace_root
+
+        def silences(content: str) -> bool:
+            for line in content.splitlines():
+                if any(rx.search(line) for rx in terms) and any(rx.search(line) for rx in actions):
+                    return True
+            return False
+
+        def filter_location(path: str) -> bool:
+            return not is_under(path, ws) and any(rx.search(path) for rx in locations)
+
+        out: list[str] = []
+        pending = prepared.pending
+        if pending.tool_kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT) and pending.path:
+            from ..prepare.entities import normalise_path
+
+            dest = normalise_path(pending.path, home=prepared.home, workspace_root=ws)
+            content = str(pending.get("content") or "")
+            if filter_location(dest) and silences(content):
+                out.append(dest)
+        if not any(silences(w.content) for w in prepared.lineage.sent):
+            return out
+        sent_paths = {w.path for w in prepared.lineage.sent}
+        for ent in prepared.entities.pending():
+            if ent.kind is not EntityKind.PATH or Role.DATA_DESTINATION not in ent.roles:
+                continue
+            if ent.value in sent_paths or not filter_location(ent.value):
+                continue
+            out.append(ent.value)
         return out
 
     # ------------------------------------------------------------------ request_origin
@@ -429,9 +718,18 @@ class ContextProbe:
         contributions: list[Contribution] = []
         flags: list[SessionFlag] = []
         try:
-            contributions += self._untrusted_origin(prepared, prior_flags, evidence)
+            lookalikes: dict[str, str] = {}
+            try:
+                lookalikes = self._lookalikes(prepared)
+            except Exception as e:  # noqa: BLE001 (a lineage failure contributes nothing)
+                evidence["lineage_error"] = repr(e)
+            contributions += self._untrusted_origin(prepared, prior_flags, evidence, lookalikes)
             contributions += self._request_origin(prepared, evidence)
             contributions += self._retry(prepared, evidence)
+            try:
+                contributions += self._lineage(prepared, lookalikes, evidence)
+            except Exception as e:  # noqa: BLE001 (a lineage failure contributes nothing)
+                evidence["lineage_error"] = repr(e)
 
             if SessionFlag.TAINTED in prior_flags:
                 contributions.append(
