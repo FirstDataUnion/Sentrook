@@ -1,6 +1,6 @@
 {
   "name": "conv-v1",
-  "notes": "Starting values from the Data structure skeleton (section 4) and the build plan (section 3 and 6.7). Never edit a released parameter set: a change is a new file, so every TestNest run is attributable to exact parameters.",
+  "notes": "Starting values from the initial design. Never edit a released parameter set: a change is a new file, so every TestNest run is attributable to exact parameters.",
   "u": 0.25,
   "certainty": "mean",
   "consequence": "max",

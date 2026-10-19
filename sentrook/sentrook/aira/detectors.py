@@ -6,7 +6,7 @@ the review card sees, and the contributions, floors and session flags it asserts
 AIRA does not judge intent: a sanctioned send of credentials carries the same consequence as an
 attack, and relief comes from grants and the oracle in convergence.
 
-Classes (build plan section 6.3):
+Classes:
   C1  credential material reached        C2  exfiltration (source × sink), plain sends
   C3  untrusted code executed            C4  self-modification and persistence
   C4* guardrail tampering (floor)        C7  destruction outside scratch (pack host_gated)
@@ -627,7 +627,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 CONCEALMENT, ctx.weight("priv", "concealment"), None, "conceal.obfuscated_command"
             )
         out.append(f)
-        # Look-alike installer host: strong evidence, the floor (RUBRIC decision 8). An unlisted host
+        # Look-alike installer host: strong evidence, the floor. An unlisted host
         # that mimics nothing is scored by consequence and the oracle's distrust, never floored.
         if code_source is not None:
             mimics = lookalike_of(code_source.value, lists.strings("installers", "installer_hosts"))
@@ -974,7 +974,7 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
                         tuple(lists.strings("selfmod", "workspace_skill_instruction_suffixes"))
                     )
                 ):
-                    # A script or data file inside a workspace skill (WP8 item 4): the owner's own
+                    # A script or data file inside a workspace skill: the owner's own
                     # project files, edited at the owner's request far more often than the agent's
                     # installed plugin tree, so it scores at `selfmod.workspace_skill`. The skill's
                     # instruction files (SKILL.md and the like) are prompt the agent loads later
@@ -1040,7 +1040,7 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         seen.add(key)
         if reason == "guardrail.host_approvals":
             # Changing the host's own approval or allowlist settings is scored, not floored: the
-            # floor covers Sentrook's state, its plugin entry and the gateway (RUBRIC decision 14).
+            # floor covers Sentrook's state, its plugin entry and the gateway.
             f = Finding(
                 rule="C4.host_approvals", cls="C4", reason="selfmod.host_approvals", detail=detail
             )

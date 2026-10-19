@@ -1,4 +1,4 @@
-"""The two Jev probes (skeleton 3.2; build plan 6.3).
+"""The two Jev probes.
 
 - `JevExposureProbe` sends the exposure view (request text plus the new untrusted inputs) with the
   `exposure-v1` questions and contributes `suspicion.exposure`; above the taint threshold it sets the
@@ -6,7 +6,7 @@
 - `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger) with
   the `call-v1` questions and contributes misalignment, concealment, sensitivity, reach,
   irreversibility, self-modification and `confidence.model_certainty` (the mean confidence over Score
-  and Choice answers, build plan section 3). The `untrusted_origin` answer is recorded in evidence only;
+  and Choice answers). The `untrusted_origin` answer is recorded in evidence only;
   the context probe owns that signal. The action category goes in evidence for the tool description.
 
 Both run in parallel under the scan's thread pool and never raise: an API failure is an envelope with

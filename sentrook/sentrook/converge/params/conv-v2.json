@@ -1,6 +1,6 @@
 {
   "name": "conv-v2",
-  "notes": "WP8 tuning item 1 (2026-10-16): the oracle's unknown-entity distrust by role. conv-v1's 0.5 on destinations and recipients lifted ordinary benign sends to the owner's contacts into review (dev false alarms at p0 41 against 14 without the oracle). Code sources and executables keep 0.5: an unknown host that supplies code to run is the case the oracle exists for. A configured tool provider is owner-installed, so unknown there is weak evidence. Everything else as conv-v1.",
+  "notes": "First tuning step (2026-10-16): the oracle's unknown-entity distrust by role. conv-v1's 0.5 on destinations and recipients lifted ordinary benign sends to the owner's contacts into review (dev false alarms at p0 41 against 14 without the oracle). Code sources and executables keep 0.5: an unknown host that supplies code to run is the case the oracle exists for. A configured tool provider is owner-installed, so unknown there is weak evidence. Everything else as conv-v1.",
   "u": 0.25,
   "certainty": "mean",
   "consequence": "max",

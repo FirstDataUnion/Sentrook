@@ -1,4 +1,4 @@
-"""The signed state token (skeleton 1.2, "State token"; build plan 6.8).
+"""The signed state token.
 
 Sentrook stays stateless: it returns a signed token holding the session flags, a bounded set of hashed
 untrusted entities, the hashing salt and the highest `input_seq` scanned so far. The token is an HS256

@@ -721,7 +721,7 @@
       "type": "object"
     },
     "ScanKind": {
-      "description": "`pending_call` now; `inputs` and `agent_input` are post-v1 scan kinds (skeleton section 8).\nAn unrecognised kind is treated as `pending_call` because that is the only kind the pipeline\nruns; `planir.validate` reports it.",
+      "description": "`pending_call` now; `inputs` and `agent_input` are post-v1 scan kinds.\nAn unrecognised kind is treated as `pending_call` because that is the only kind the pipeline\nruns; `planir.validate` reports it.",
       "enum": [
         "pending_call",
         "inputs",
@@ -749,7 +749,7 @@
       "type": "object"
     },
     "SenderBasis": {
-      "description": "How the plugin derived `relation` (skeleton 1.3 for OpenClaw, 1.3b for Hermes). A basis the\nscanner does not recognise is no evidence, so it resolves to `unknown`.",
+      "description": "How the plugin derived `relation` (each host exposes different facts). A basis the\nscanner does not recognise is no evidence, so it resolves to `unknown`.",
       "enum": [
         "host_owner_flag",
         "plugin_allowlist:sender",
@@ -967,7 +967,7 @@
     },
     "Trigger": {
       "additionalProperties": true,
-      "description": "Per turn, best effort; different hosts expose different facts (skeleton 1.3, 1.3b).",
+      "description": "Per turn, best effort; different hosts expose different facts.",
       "properties": {
         "channel": {
           "anyOf": [

@@ -1,6 +1,6 @@
-"""PlanIR 2.0 models, transcribed from the "Data structure skeleton" page, section 1.1.
+"""PlanIR 2.0 models: the request a plugin sends to `/scan`.
 
-Tolerance rules (skeleton, Conventions and 1.2):
+Tolerance rules:
 - Unknown enum values resolve to each enum's fallback (`TolerantStrEnum`), never fail validation.
 - Unknown fields are kept (`extra="allow"`), so an additive plugin change needs no scanner release.
 - The plugin reports facts and Sentrook classifies trust: no field here says whether anything is
@@ -24,7 +24,7 @@ from ..enums import TolerantStrEnum
 
 
 class ScanKind(TolerantStrEnum):
-    """`pending_call` now; `inputs` and `agent_input` are post-v1 scan kinds (skeleton section 8).
+    """`pending_call` now; `inputs` and `agent_input` are post-v1 scan kinds.
     An unrecognised kind is treated as `pending_call` because that is the only kind the pipeline
     runs; `planir.validate` reports it."""
 
@@ -87,7 +87,7 @@ class SenderRelation(TolerantStrEnum):
 
 
 class SenderBasis(TolerantStrEnum):
-    """How the plugin derived `relation` (skeleton 1.3 for OpenClaw, 1.3b for Hermes). A basis the
+    """How the plugin derived `relation` (each host exposes different facts). A basis the
     scanner does not recognise is no evidence, so it resolves to `unknown`."""
 
     __fallback__ = "unknown"
@@ -247,7 +247,7 @@ class Sender(_Model):
 
 
 class Trigger(_Model):
-    """Per turn, best effort; different hosts expose different facts (skeleton 1.3, 1.3b)."""
+    """Per turn, best effort; different hosts expose different facts."""
 
     kind: TriggerKind = TriggerKind.UNKNOWN
     channel: Channel | None = None

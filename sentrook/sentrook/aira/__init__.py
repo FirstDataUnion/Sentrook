@@ -1,7 +1,7 @@
-"""AIRA (WP3): consequence detectors as code over the prepared call, siblings and history, with
+"""AIRA: consequence detectors as code over the prepared call, siblings and history, with
 versioned YAML data lists under `lists/` (sensitive paths, guardrail, destructive and remote verbs,
 privilege, egress, installers, self-modification, extent, weights). Mechanism in code, knowledge in
-data (build plan D1, D2).
+data.
 
 - `exec_shape`: tree-sitter-bash structure of a shell command (ported from 1.x).
 - `path_classes`: path location and group classification, URL hosts (ported from 1.x).

@@ -1,5 +1,5 @@
 # Unit tests and lint for the Sentrook 2.0 scanner. Runs on the public repo without secrets.
-# The TestNest suite gate (private fixtures) is a separate job added in WP7; see the build plan, D6.
+# A gate that runs the full TestNest suite needs private fixtures, so it is not part of this workflow yet.
 name: ci
 
 on:

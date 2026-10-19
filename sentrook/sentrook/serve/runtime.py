@@ -1,6 +1,6 @@
 """Builds the scanner from a `ServeConfig`: the Jev client behind the configured base URL, the oracle
 client (Rookery over HTTP when configured, otherwise the null oracle), the convergence parameter set
-and the ablation list. One runtime per process; every request reuses it."""
+and, in test mode only, the ablation list. One runtime per process; every request reuses it."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from ..converge import load_params
 from ..jev.client import Decider, DecisionsClient, JevConfig
 from ..oracle.client import HttpOracle, NullOracle, OracleClient
 from ..scan import ALL_PROBES, Scanner, ScannerConfig, steps_from_csv
-from .auth import scan_auth_health_label
 from .config import ServeConfig
 from .rate_limit import MemoryTokenBucketLimiter
 
@@ -82,7 +81,6 @@ class ServeRuntime:
             "service": "sentrook-scan",
             "version": __version__,
             "environment": cfg.environment,
-            "auth": scan_auth_health_label(cfg),
             "test_mode": cfg.test_mode,
             "jev": {
                 "base_url": cfg.jev_base_url,

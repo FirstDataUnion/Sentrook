@@ -1,4 +1,4 @@
-"""Tool description templates (skeleton section 5): built from Jev's action category and the pending
+"""Tool description templates: built from Jev's action category and the pending
 call's entities, never from model text. `{E1}`-style placeholders are resolved by the plugin."""
 
 from __future__ import annotations

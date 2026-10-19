@@ -40,7 +40,7 @@ selfmod:
   config: 1.0
   scheduler: 1.0
   plugin: 1.0
-  # A skill script under the workspace (`<workspace_root>/skills/`): WP8 item 4.
+  # A skill script under the workspace (`<workspace_root>/skills/`).
   workspace_skill: 0.5
   hooks: 1.0
   memory: 0.7

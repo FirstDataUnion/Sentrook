@@ -127,7 +127,7 @@
       "type": "string"
     },
     "ProbeStep": {
-      "description": "The five probes. Also the keys of `SENTROOK_PROBES` (the ablation switch).",
+      "description": "The five probes. Also the names accepted by the test-mode ablation list.",
       "enum": [
         "jev_exposure",
         "jev_call",
@@ -211,7 +211,7 @@
           }
         ]
       },
-      "description": "Everything that determines this probe's output; keys vary by probe (skeleton 3.1)",
+      "description": "Everything that determines this probe's output; keys vary by probe",
       "title": "Versions",
       "type": "object"
     }

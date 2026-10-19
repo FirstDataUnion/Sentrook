@@ -1,4 +1,4 @@
-"""Entity oracle probe (skeleton 3.2; build plan 6.5).
+"""Entity oracle probe.
 
 Looks up every off-host or installable entity the pending call (or a sibling, or the agent-written file
 it executes) touches, with its roles, and contributes `suspicion.distrust` per entity by verdict and
@@ -33,7 +33,7 @@ LOOKUP_KINDS = (
 
 @dataclass(frozen=True)
 class OracleParams:
-    """Starting values (build plan 6.5), overridable from the convergence parameter set."""
+    """Starting values, overridable from the convergence parameter set."""
 
     name: str = "oracle-v1"
     unknown_by_role: dict[str, float] = field(

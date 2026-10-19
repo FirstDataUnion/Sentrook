@@ -1,7 +1,17 @@
-"""Serve configuration from `SENTROOK_*` environment variables (build plan 6.9).
+"""Serve configuration from `SENTROOK_*` environment variables.
 
 Operators configure one image through the environment. Secrets (`SENTROOK_JEV_API_KEY`,
-`SENTROOK_STATE_KEY`, `SENTROOK_SCAN_API_KEY`, `SENTROOK_ORACLE_API_KEY`) only ever come from here.
+`SENTROOK_STATE_KEY`, `SENTROOK_ORACLE_API_KEY`) only ever come from here.
+
+Scan auth (`SENTROOK_SCAN_AUTH_MODE`):
+- `oidc`: every scan route needs a FIDU ID bearer token with the `sentrook.scan` scope, verified
+  against `SENTROOK_OIDC_ISSUER` / `SENTROOK_OIDC_AUDIENCE`. The default when an issuer is set, and
+  always the default in production.
+- `open`: no authentication, for a local sidecar or a test-mode server. The default in development
+  when no issuer is set (the server logs a warning at startup); refused in production.
+
+Probe ablation (`SENTROOK_PROBES`) is a test-mode feature and is refused without
+`SENTROOK_TEST_MODE=1`.
 """
 
 from __future__ import annotations
@@ -12,11 +22,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..jev.client import DEFAULT_BASE_URL, DEFAULT_MODEL
+from .oidc import normalize_oidc_url
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_OIDC_ISSUER = "https://identity.firstdataunion.org"
 DEFAULT_OIDC_AUDIENCE = "sentrook"
+AUTH_OIDC = "oidc"
+AUTH_OPEN = "open"
+AUTH_MODES = (AUTH_OIDC, AUTH_OPEN)
+
+
+class ConfigError(RuntimeError):
+    """The serve configuration is invalid or unsafe; raised at construction, before anything runs."""
 
 
 def _bool(env: Mapping[str, str], key: str, default: bool) -> bool:
@@ -48,9 +66,8 @@ class ServeConfig:
     log_content: str = "metadata"  # metadata | content (development only)
     log_level: str = "INFO"
 
-    # scan auth (carried from 1.x)
-    scan_auth_mode: str = "auto"  # auto | apikey | oidc
-    scan_api_key: str | None = None
+    # scan auth
+    scan_auth_mode: str = AUTH_OIDC  # oidc | open
     oidc_issuer: str = DEFAULT_OIDC_ISSUER
     oidc_audience: str = DEFAULT_OIDC_AUDIENCE
     oidc_jwks_url: str = ""
@@ -70,13 +87,31 @@ class ServeConfig:
     jev_timeout_s: float = 20.0
     oracle_url: str | None = None
     oracle_api_key: str | None = None
-    probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all
+    probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
     packs_default: tuple[str, ...] = ("tier1",)
     convergence: str = "conv-v1"
     lists_dir: str | None = None
 
     # test mode
     test_mode: bool = False
+
+    def __post_init__(self) -> None:
+        if self.scan_auth_mode not in AUTH_MODES:
+            raise ConfigError(
+                f"SENTROOK_SCAN_AUTH_MODE must be one of {', '.join(AUTH_MODES)}, "
+                f"got {self.scan_auth_mode!r}"
+            )
+        if self.production and self.scan_auth_mode == AUTH_OPEN:
+            raise ConfigError("SENTROOK_SCAN_AUTH_MODE=open is not allowed in production")
+        if self.scan_auth_mode == AUTH_OIDC and not normalize_oidc_url(self.oidc_issuer):
+            raise ConfigError("SENTROOK_SCAN_AUTH_MODE=oidc needs a valid SENTROOK_OIDC_ISSUER")
+        if self.test_mode and self.production:
+            raise ConfigError("SENTROOK_TEST_MODE cannot be enabled in production")
+        if self.probes and not self.test_mode:
+            raise ConfigError(
+                "SENTROOK_PROBES (probe ablation) is only available in test mode: "
+                "set SENTROOK_TEST_MODE=1 or unset SENTROOK_PROBES"
+            )
 
     @property
     def production(self) -> bool:
@@ -95,22 +130,23 @@ class ServeConfig:
             # A missing key would make every token invalid across restarts; in development mint one so
             # the local loop works, but never in production.
             if environment == "production":
-                raise RuntimeError("SENTROOK_STATE_KEY is required in production")
+                raise ConfigError("SENTROOK_STATE_KEY is required in production")
             state_key = secrets.token_hex(32)
         probes_raw = (env.get("SENTROOK_PROBES") or "").strip()
         packs_raw = (env.get("SENTROOK_PACKS_DEFAULT") or "tier1").strip()
         test_mode = _bool(env, "SENTROOK_TEST_MODE", False)
-        if test_mode and environment == "production":
-            raise RuntimeError("SENTROOK_TEST_MODE cannot be enabled in production")
+        oidc_issuer = (env.get("SENTROOK_OIDC_ISSUER") or "").strip()
+        auth_mode = (env.get("SENTROOK_SCAN_AUTH_MODE") or "").strip().lower()
+        if not auth_mode:
+            auth_mode = AUTH_OIDC if (oidc_issuer or environment == "production") else AUTH_OPEN
         return cls(
             host=env.get("SENTROOK_SCAN_HOST", DEFAULT_HOST),
             port=_int(env, "SENTROOK_SCAN_PORT", DEFAULT_PORT),
             environment=environment,
             log_content=log_content,
             log_level=(env.get("SENTROOK_LOG_LEVEL") or "INFO").upper(),
-            scan_auth_mode=(env.get("SENTROOK_SCAN_AUTH_MODE") or "auto").strip().lower(),
-            scan_api_key=(env.get("SENTROOK_SCAN_API_KEY") or "").strip() or None,
-            oidc_issuer=(env.get("SENTROOK_OIDC_ISSUER") or DEFAULT_OIDC_ISSUER).strip(),
+            scan_auth_mode=auth_mode,
+            oidc_issuer=oidc_issuer or DEFAULT_OIDC_ISSUER,
             oidc_audience=(env.get("SENTROOK_OIDC_AUDIENCE") or DEFAULT_OIDC_AUDIENCE).strip(),
             oidc_jwks_url=(env.get("SENTROOK_OIDC_JWKS_URL") or "").strip(),
             oidc_jwks_cache_seconds=_int(env, "SENTROOK_OIDC_JWKS_CACHE_SECONDS", 600),

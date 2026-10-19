@@ -1,13 +1,14 @@
-"""HTTP daemon (build plan 6.9), stdlib `ThreadingHTTPServer` as in 1.x.
+"""HTTP daemon on the stdlib `ThreadingHTTPServer`, as in 1.x.
 
 Routes:
 - `GET /healthz` (and `/health`), `GET /metrics`.
 - `POST /scan`: a PlanIR 2.0 body → Response 2.0. HTTP 200 for `ok` and `degraded`; HTTP 422 with the
   same Response shape (`status: error`) when the body is not a scoreable PlanIR, so the plugin's
   fail-open or fail-closed policy applies to one shape.
-- `POST /testnest/scan`: registered only when `SENTROOK_TEST_MODE=1` (build plan section 2):
-  `{fixture, state_seed, oracle_seed, options}` → `{response, probes, prepared}`.
-Auth and rate limiting run before any scan route.
+- `POST /testnest/scan`: registered only when `SENTROOK_TEST_MODE=1`:
+  `{fixture, state_seed, oracle_seed, options}` → `{response, probes, prepared}`. This is the only
+  route that takes a probe list (`options.probes`, ablation); `/scan` never does.
+Auth (OIDC, or open for a local sidecar or test server) and rate limiting run before any scan route.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ from typing import Any
 
 from ..enums import ScanStatus
 from ..scan import ScanOptions
-from .auth import verify_scan_auth
-from .config import ServeConfig
+from .auth import verify_scan_auth, www_authenticate
+from .config import AUTH_OPEN, ServeConfig
 from .metrics import CONTENT_TYPE, endpoint_label, exposition, record_http, record_scan
 from .rate_limit import check_request, rate_limit_headers
 from .runtime import ServeRuntime
@@ -138,11 +139,13 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
                 self._write(
                     status,
                     {"error": {"code": result.error, "message": result.error.replace("_", " ")}},
+                    headers={"WWW-Authenticate": www_authenticate(result)},
                 )
                 return False
             decision = check_request(
                 runtime.limiter,
                 result,
+                client=self.client_address[0] if self.client_address else None,
                 enabled=config.rate_limit_enabled,
                 rate=config.rate_limit_scan_rate,
                 burst=config.rate_limit_scan_burst,
@@ -267,13 +270,18 @@ def serve(config: ServeConfig | None = None) -> None:
         level=getattr(logging, config.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    if config.scan_auth_mode == AUTH_OPEN:
+        logger.warning(
+            "scan auth is open (no SENTROOK_OIDC_ISSUER, or SENTROOK_SCAN_AUTH_MODE=open): any "
+            "caller that can reach this port can scan; use only for a local sidecar or test mode"
+        )
     runtime = ServeRuntime.build(config)
     server = ScanServer(runtime)
     logger.info(
         "sentrook-scan listening on %s (test_mode=%s, auth=%s)",
         server.url,
         config.test_mode,
-        runtime.health_payload()["auth"],
+        config.scan_auth_mode,
     )
     try:
         server.serve_forever()

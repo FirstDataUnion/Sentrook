@@ -1,10 +1,10 @@
-"""The probe result envelope (skeleton 3.1) and the `Probe` protocol.
+"""The probe result envelope and the `Probe` protocol.
 
 Every probe returns the same envelope. Its native output stays bespoke in `evidence` (logs, debugging,
 TestNest; never used in maths); its claims about signals go in `contributions`; hard signals that must
 never be lowered go in `floors`; session flags to set at the end of convergence go in `flags_set`.
 
-Explicit versus absent (skeleton, Conventions): a probe emits a contribution only for a signal it
+Explicit versus absent: a probe emits a contribution only for a signal it
 actually evaluated. Absent means no opinion. For suspicion and consequence signals an explicit 0 means
 "evaluated, no evidence found"; for confidence signals the value is the measured confidence.
 """
@@ -51,7 +51,7 @@ class Envelope(BaseModel):
     step: ProbeStep
     versions: dict[str, str | None] = Field(
         default_factory=dict,
-        description="Everything that determines this probe's output; keys vary by probe (skeleton 3.1)",
+        description="Everything that determines this probe's output; keys vary by probe",
     )
     status: ProbeStatus = ProbeStatus.OK
     latency_ms: float | None = Field(default=None, ge=0)
@@ -96,7 +96,7 @@ class Envelope(BaseModel):
 @runtime_checkable
 class Probe(Protocol):
     """A probe runs over the prepared request and returns one envelope. It must not raise: a failure is
-    an envelope with `status` error or timeout. `prepared` is the `Prepared` object from WP1."""
+    an envelope with `status` error or timeout. `prepared` is the `Prepared` object from the preparation stage."""
 
     step: ProbeStep
 

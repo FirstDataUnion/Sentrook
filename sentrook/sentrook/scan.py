@@ -4,9 +4,11 @@ Preparation runs once; the enabled probes run in parallel on a thread pool, each
 envelope (a probe that raises is turned into a failed envelope here as a last resort); convergence
 turns the envelopes into Response 2.0 and the new state token. Every route and the CLI call this.
 
-Ablation (build plan 6.9): `probes_enabled` lists the probes to run; the others are recorded as
-`skipped` so the TestNest run stays attributable. Test mode passes a `state_seed` and an
-`oracle_seed` instead of a token and a live oracle, and `deterministic` fixes the clock and salt.
+Ablation: `probes_enabled` lists the probes to run; the others are recorded as `skipped` so a
+TestNest run stays attributable. Ablation is a test-mode feature: the serve configuration refuses
+`SENTROOK_PROBES` and the CLI refuses `--probes` unless `SENTROOK_TEST_MODE=1`, and production
+`/scan` never passes a probe list. Test mode also passes a `state_seed` and an `oracle_seed` instead
+of a token and a live oracle, and `deterministic` fixes the clock and salt.
 """
 
 from __future__ import annotations

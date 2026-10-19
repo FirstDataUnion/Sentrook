@@ -1,6 +1,6 @@
 {
   "name": "conv-v3",
-  "notes": "WP8 tuning items 2 to 6 (2026-10-16). Consequence as the mean of sensitivity, reach and irreversibility (max with self_modification), the switch section 3 of the build plan flagged for this pass: on dev it beat max by 0.01 AUROC and 0.12 recall at 2 per 100 with fewer false alarms. u 0.5, the top of the range the design calls indifferent; the sweep rose slowly to there and got noisier beyond. context.retry_carry_consequence 1.0: a matched retry inherits the denied step's consequence tier as reach and irreversibility. Oracle table and everything else as conv-v2.",
+  "notes": "Tuning steps 2 to 6 (2026-10-16). Consequence as the mean of sensitivity, reach and irreversibility (max with self_modification), the switch flagged for this pass: on dev it beat max by 0.01 AUROC and 0.12 recall at 2 per 100 with fewer false alarms. u 0.5, the top of the range the design calls indifferent; the sweep rose slowly to there and got noisier beyond. context.retry_carry_consequence 1.0: a matched retry inherits the denied step's consequence tier as reach and irreversibility. Oracle table and everything else as conv-v2.",
   "u": 0.5,
   "certainty": "mean",
   "consequence": "mean",

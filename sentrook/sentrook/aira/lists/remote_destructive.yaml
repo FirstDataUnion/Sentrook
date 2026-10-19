@@ -53,7 +53,7 @@ cli:
     reason: remote.payment
   - pattern: '\bgh\s+(?:auth\s+logout|ssh-key\s+add|gpg-key\s+add)\b'
     reason: remote.account_change
-  # Cloud IAM grants (WP8 item 5): a role, policy, key or secret handed to a principal on a remote
+  # Cloud IAM grants: a role, policy, key or secret handed to a principal on a remote
   # system outlives the session and is not undone from the host. Only privileged roles count for
   # the role-binding verbs (an `owner`, `admin` or `editor` grant; a `reader` grant stays silent);
   # key creation, inline policies and secret writes count whatever their content.

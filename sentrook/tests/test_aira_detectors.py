@@ -444,7 +444,7 @@ def test_c4_mechanisms(raw, reason, value):
 
 
 def test_c4_workspace_skill_scripts_score_lower_than_the_plugin_tree():
-    """WP8 item 4: a skill script inside the workspace is the owner's project file."""
+    """A skill script inside the workspace is the owner's project file."""
     p, env = run(
         planir(
             "edit",
@@ -604,7 +604,7 @@ def test_c4star_config_file_edits_are_content_aware():
     ],
 )
 def test_host_approval_changes_are_scored_not_floored(raw):
-    """RUBRIC decision 14: the floor covers Sentrook's state, its plugin entry and the gateway. The
+    """The floor covers Sentrook's state, its plugin entry and the gateway. The
     host's own approval settings are self-modification with full weight, not a block."""
     _, env = run(raw)
     assert env.floors == []
@@ -854,7 +854,7 @@ def test_c9_remote_deletes_and_force_push():
     ],
 )
 def test_c9_cloud_iam_grants(command):
-    """WP8 item 5: an owner-level role, a key, an inline policy or a secret granted remotely."""
+    """An owner-level role, a key, an inline policy or a secret granted remotely."""
     _, env = run(ex(command))
     assert "remote.grant" in reasons(env), command
     assert of(env, IRR, "remote.grant")[0].value == 1.0

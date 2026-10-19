@@ -1,4 +1,4 @@
-"""Context probe (skeleton 3.3; build plan 6.6): what the trajectory and the session state say about
+"""Context probe: what the trajectory and the session state say about
 the call, with no model and no raw text.
 
 - `suspicion.untrusted_origin` per key entity: 0 when the owner named it (request) or a grant covers it;
@@ -76,7 +76,7 @@ class ContextParams:
     retry_same_action: float = 1.0
     retry_same_source_new_destination: float = 0.8
     retry_same_destination_new_source: float = 0.5
-    #: A read-shaped call on the data of a denied step (WP8 item 3): suspicious, but it is not the
+    #: A read-shaped call on the data of a denied step: suspicious, but it is not the
     #: denied action retried, so the denied consequence is not carried.
     retry_same_source_only: float = 0.5
     retry_repeat_bonus: float = 0.1
@@ -310,10 +310,10 @@ class ContextProbe:
         return bool(segments) and all((seg.split() or [""])[0] in _READ_HEADS for seg in segments)
 
     def _retry(self, prepared: Prepared, evidence: dict) -> list[Contribution]:
-        """`retry_after_denial` (RUBRIC decision 25): a retry shares the denied step's source,
+        """`retry_after_denial`: a retry shares the denied step's source,
         destination or code hash. Matching is role-insensitive on the pending side (a `shred` target
         re-touched by an interpreter one-liner is the same entity whatever role the extractor gave
-        it); the grade keeps the role shape of the denied step. WP8 item 3: a matched retry also
+        it); the grade keeps the role shape of the denied step. A matched retry also
         carries the denied step's echoed consequence tier (`retry_carry_consequence`), except for a
         read-shaped call on the same data, which is scored at `retry_same_source_only` and carries
         nothing."""

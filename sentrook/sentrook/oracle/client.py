@@ -1,4 +1,4 @@
-"""Entity oracle client: the interface Rookery's reputation endpoint will implement (build plan 6.5, D5).
+"""Entity oracle client: the interface Rookery's reputation endpoint will implement.
 
 `lookup` takes the entities a call touches, each with its role, and returns a verdict per entity:
 `known_good`, `known_bad` or `unknown` (unlisted entities are unknown), an optional explicit `distrust`,

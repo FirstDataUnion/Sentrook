@@ -1,6 +1,6 @@
 """Enumerations shared across the pipeline, and the tolerant-enum base every wire enum uses.
 
-Forward compatibility (skeleton, Conventions): unknown enum values are tolerated and treated as the
+Forward compatibility: unknown enum values are tolerated and treated as the
 enum's fallback member (`other` or `unknown`), never rejected. Additive fields never bump the major
 version. `TolerantStrEnum` implements that: a subclass names its fallback in `__fallback__`, and any
 value outside the member set validates to it. The exported JSON Schemas still list the known values,
@@ -64,7 +64,7 @@ class SessionFlag(StrEnum):
 
 
 class ProbeStep(StrEnum):
-    """The five probes. Also the keys of `SENTROOK_PROBES` (the ablation switch)."""
+    """The five probes. Also the names accepted by the test-mode ablation list."""
 
     JEV_EXPOSURE = "jev_exposure"
     JEV_CALL = "jev_call"

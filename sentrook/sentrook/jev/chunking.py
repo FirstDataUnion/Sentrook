@@ -1,4 +1,4 @@
-"""Chunking long exposure inputs under the model's context window (skeleton 1.6; Jev page section 4).
+"""Chunking long exposure inputs under the model's context window.
 
 Jev's window is 32k tokens and the API refuses oversize requests with a hard 400, so a request that
 would not fit is split before sending and the highest chunk score is taken. Truncation without a signal

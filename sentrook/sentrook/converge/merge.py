@@ -1,4 +1,4 @@
-"""Merge probe contributions into leaf signals (skeleton 4.1, "Merge" column).
+"""Merge probe contributions into leaf signals (each signal's merge rule is in the signal registry).
 
 A `Merged` view is computed over all contributions minus an exclusion set (what relief removed), so
 relief can recompute by excluding `(signal, subject)` pairs rather than mutating envelopes.

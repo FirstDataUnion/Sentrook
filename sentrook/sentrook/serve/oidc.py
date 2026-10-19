@@ -1,7 +1,7 @@
-"""FIDU ID OIDC bearer-token verification for `/scan` (carried from 1.x).
+"""FIDU ID OIDC bearer-token verification for the scan routes (carried from 1.x).
 
-Validates RS256 access tokens issued by the FIDU identity service against its published JWKS.
-Additive to the static scan API key; see `serve.auth`. Audience and scope are scan-specific
+Validates RS256 access tokens issued by the FIDU identity service against its published JWKS. This
+is the only authentication the scan API has; see `serve.auth`. Audience and scope are scan-specific
 (`sentrook` / `sentrook.scan`).
 """
 
@@ -49,12 +49,6 @@ def normalize_oidc_url(url: str) -> str:
 
 def looks_like_jwt(token: str) -> bool:
     return token.count(".") == 2
-
-
-def oidc_enabled(config: ServeConfig) -> bool:
-    if config.scan_auth_mode == "apikey":
-        return False
-    return bool(normalize_oidc_url(config.oidc_issuer))
 
 
 def token_scopes(claims: dict[str, Any]) -> set[str]:

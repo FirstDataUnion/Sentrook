@@ -1,4 +1,4 @@
-"""Response 2.0, the risk tree Sentrook returns to the plugin (skeleton section 5)."""
+"""Response 2.0, the risk tree Sentrook returns to the plugin."""
 
 from .models import Response, RiskTree
 

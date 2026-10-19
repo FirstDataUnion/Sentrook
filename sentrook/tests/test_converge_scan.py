@@ -469,7 +469,7 @@ def test_request_named_relief_matches_names_channels_and_script_hosts(attack_cas
 
 
 def test_request_named_relief_display_names_and_self_copy(attack_case):
-    """WP8 item 2: a recipient the owner named by display name, and the owner's own address for
+    """A recipient the owner named by display name, and the owner's own address for
     `bcc me`, are relieved like a verbatim destination; the recipient's mail domain inherits it.
     Neither applies to an address that reached the agent through content it read."""
     from sentrook.prepare import PrepareOptions, prepare

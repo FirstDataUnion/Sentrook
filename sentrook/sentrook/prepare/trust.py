@@ -1,7 +1,7 @@
 """Input trust classification (preparation step 4).
 
-The plugin reports facts; Sentrook classifies trust with one open policy. Starting policy (skeleton
-section 2, to be revised with TestNest): all `tool_result` content is untrusted (even `ls` output can
+The plugin reports facts; Sentrook classifies trust with one open policy. Starting policy (to be revised
+with TestNest): all `tool_result` content is untrusted (even `ls` output can
 carry injected filenames); a `message` is trusted only when its sender is `owner` or `trusted`; a
 `subagent_reply` is untrusted; `request.text` is trusted. An input kind the scanner does not know is
 untrusted.

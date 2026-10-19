@@ -1,5 +1,6 @@
-"""In-process token-bucket rate limiter (carried from 1.x): per caller after auth, one process, one
-table. Anonymous local traffic is not limited."""
+"""In-process token-bucket rate limiter (carried from 1.x): one process, one table. Buckets are keyed
+on the OIDC caller id after auth, else on the client address (open mode, or a token without a
+caller id)."""
 
 from __future__ import annotations
 
@@ -30,13 +31,12 @@ class _Bucket:
     burst: int
 
 
-def rate_limit_key(result: ScanAuthResult) -> str | None:
-    if result.method == "oidc":
-        caller = (result.caller_id or "").strip()
-        return f"oidc:{caller}" if caller else None
-    if result.method == "apikey":
-        return "apikey:shared"
-    return None
+def rate_limit_key(result: ScanAuthResult, client: str | None) -> str | None:
+    caller = (result.caller_id or "").strip() if result.method == "oidc" else ""
+    if caller:
+        return f"oidc:{caller}"
+    client = (client or "").strip()
+    return f"addr:{client}" if client else None
 
 
 class MemoryTokenBucketLimiter:
@@ -73,13 +73,14 @@ def check_request(
     limiter: MemoryTokenBucketLimiter | None,
     result: ScanAuthResult,
     *,
+    client: str | None,
     enabled: bool,
     rate: float,
     burst: int,
 ) -> RateLimitDecision | None:
     if not enabled or limiter is None:
         return None
-    key = rate_limit_key(result)
+    key = rate_limit_key(result, client)
     if key is None:
         return None
     return limiter.allow(f"{key}:scan", rate=rate, burst=burst)

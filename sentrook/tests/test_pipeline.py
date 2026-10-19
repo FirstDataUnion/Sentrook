@@ -136,7 +136,7 @@ def test_destruction_is_host_gated(attack_case):
 
 
 def test_fetch_to_shell_from_untrusted_lookalike_host_is_floored(attack_case):
-    """The look-alike arm of untrusted_code_execution (RUBRIC decision 8): a fetch-and-run from a
+    """The look-alike arm of untrusted_code_execution: a fetch-and-run from a
     host that mimics a well-known installer host. An unlisted host that mimics nothing is scored,
     never floored, even when it appeared only in untrusted content."""
     case = copy.deepcopy(attack_case)

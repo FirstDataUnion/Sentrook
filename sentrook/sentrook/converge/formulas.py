@@ -1,4 +1,4 @@
-"""Tier scores and risk (skeleton 4.2; build plan 6.7). Numeric inputs only.
+"""Tier scores and risk. Numeric inputs only.
 
     taint_link  = untrusted_origin × max(exposure, taint_floor)
     suspicion   = 1 − (1 − misalignment)(1 − concealment)(1 − distrust)(1 − taint_link)

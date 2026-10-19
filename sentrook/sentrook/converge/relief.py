@@ -1,9 +1,9 @@
-"""Relief (skeleton 4.3; build plan 6.7 and D4), applied after the first risk calculation.
+"""Relief, applied after the first risk calculation.
 
 - A matched **destination** grant removes that subject's `distrust` and `untrusted_origin` contributions.
 - A matched **file** grant removes that subject's `sensitivity` contribution for the granted operation,
   on the current call only, and never when the call has an off-host data destination.
-- **Request-named destination relief** (RUBRIC decision 28): on an owner-sender turn, a destination or
+- **Request-named destination relief**: on an owner-sender turn, a destination or
   recipient the owner named verbatim in the request is treated as a matched destination grant, for
   sends only, never for code sources or installs.
 - Grants sanction access, never what happens to the data afterwards: relief never clears session flags

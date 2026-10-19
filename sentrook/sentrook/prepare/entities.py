@@ -7,7 +7,7 @@ call itself, a sibling, an untrusted or trusted input, an earlier history step, 
 earlier, or a provider identity. Convergence and the response only ever see the IDs; probes that need
 the raw value (AIRA, the oracle) read it from the table.
 
-Role assignment is heuristic by design: AIRA (WP3) refines reach and sinks with the shell parser; this
+Role assignment is heuristic by design: AIRA refines reach and sinks with the shell parser; this
 module only has to be right enough for the oracle and the context probe to ask the right questions.
 """
 
@@ -43,7 +43,7 @@ class Role(StrEnum):
     MENTIONED = "mentioned"  # appears in content or a task text without the call acting on it
 
 
-#: Roles the oracle treats as risky for an unknown entity (skeleton 3.2, 4.1).
+#: Roles the oracle treats as risky for an unknown entity.
 RISKY_ROLES: frozenset[Role] = frozenset(
     {Role.DATA_DESTINATION, Role.RECIPIENT, Role.CODE_SOURCE, Role.EXECUTABLE}
 )

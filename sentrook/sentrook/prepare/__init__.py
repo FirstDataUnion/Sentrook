@@ -1,7 +1,9 @@
-"""Preparation stage (skeleton section 2; build plan 6.2). Deterministic, runs once per request,
+"""Preparation stage. Deterministic, runs once per request,
 before any probe.
 
-1. Validate the PlanIR against the 1.7 invariants (a failure is `status: error`).
+1. Validate the PlanIR's structural invariants (unique, increasing history steps and input sequence
+   numbers; `session.step` one past the last history step; unique `call_id`s; tool results that refer
+   to a history step; size caps). A failure is `status: error`.
 2. Decode and verify the state token, or mint one from a test-mode `state_seed`. A bad token starts a
    fresh session with reduced coverage.
 3. Canonicalise tool arguments (pending call, siblings, history).
@@ -52,7 +54,7 @@ from .trust import Trust, classify
 
 __all__ = ["Prepared", "PrepareOptions", "prepare", "InvalidPlanIR"]
 
-#: History arguments are capped by the plugin at about 4 KB per step (skeleton 1.6). Content at or
+#: History arguments are capped by the plugin at about 4 KB per step. Content at or
 #: beyond this length is treated as possibly truncated when the agent-written file is re-read.
 WRITTEN_FILE_CAP_CHARS = 3900
 _CREATING_HEADS = (
@@ -238,7 +240,7 @@ def _inherit_recipient_domain(table: EntityTable) -> None:
 
 
 def _mark_display_named(request_text: str, table: EntityTable) -> None:
-    """WP8 item 2: an owner names people, not addresses (`Email Priya ...`, `send it to Holger Vetch`).
+    """An owner names people, not addresses (`Email Priya ...`, `send it to Holger Vetch`).
     A recipient address whose local part carries a name token that appears **capitalised** in the
     request (`Priya` for `priya.nair@…`) is request-named with ref `display_name`. The match is weaker
     than the verbatim one, so it never applies to an address that came from content the agent read:
@@ -266,7 +268,7 @@ def _mark_display_named(request_text: str, table: EntityTable) -> None:
 
 
 def _mark_self_copy(request_text: str, table: EntityTable, calls: list[CanonicalCall]) -> None:
-    """WP8 item 2: `bcc me` names the owner's own address without spelling it. PlanIR carries no owner
+    """`bcc me` names the owner's own address without spelling it. PlanIR carries no owner
     address, so the owner's words resolve against the call: when the request asks for a copy to
     "me" and the matching field (`bcc`, `cc`, or either for "copy") holds exactly one address, that
     address is request-named with ref `self_copy`. Two addresses in the field is ambiguous and

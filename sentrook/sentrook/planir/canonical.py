@@ -7,7 +7,7 @@ read one vocabulary. Raw arguments are kept beside the canonical ones.
 Two derived texts travel with each call:
 - `text`: every string leaf of the raw arguments, joined, for pattern matching.
 - `analysis_text`: `text` with URL query strings percent-decoded. Decoding is canonicalisation, never
-  suspicion (RUBRIC decision 17): the inspector RCE case hides `sh -c 'curl … | sh'` in an encoded query
+  suspicion: the inspector RCE case hides `sh -c 'curl … | sh'` in an encoded query
   parameter, and detectors must see it without treating encoding itself as evidence.
 """
 

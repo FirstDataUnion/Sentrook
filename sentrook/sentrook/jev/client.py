@@ -2,7 +2,7 @@
 
 One configurable base URL (`SENTROOK_JEV_BASE_URL`): in the TestNest loop the runner's caching proxy sits
 there and replays or records every answer; Sentrook has no other cache awareness. Requests carry
-`provider: {zdr: true, allow_fallbacks: false}` (build plan section 3) and retry with backoff on 429 and
+`provider: {zdr: true, allow_fallbacks: false}` (zero data retention, no provider fallback) and retry with backoff on 429 and
 5xx. Over the 32k context limit the API returns a hard `400 max_tokens_exceeded`, surfaced as
 `ApiError.context_limit` so the probe records a coverage event instead of crashing.
 """

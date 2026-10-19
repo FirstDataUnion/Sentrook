@@ -226,7 +226,7 @@ def test_context_retry_after_denial(attack_case):
 
 
 def test_context_retry_grades_and_carries_the_denied_consequence(attack_case):
-    """WP8 item 3: a retry shares the denied step's source, destination or code hash whatever role
+    """A retry shares the denied step's source, destination or code hash whatever role
     the extractor gives it on the retry; a matched retry carries the denied step's consequence tier
     when `retry_carry_consequence` is on; a read of the same data is weaker and carries nothing."""
     from sentrook.probes.context import ContextParams

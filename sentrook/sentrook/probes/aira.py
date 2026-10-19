@@ -1,4 +1,4 @@
-"""The AIRA probe (WP3): deterministic consequence detectors over the prepared call.
+"""The AIRA probe: deterministic consequence detectors over the prepared call.
 
 `AiraProbe.run(prepared)` analyses the pending call and each sibling with the detectors in
 `aira.detectors`, and returns one envelope: contributions on `consequence.sensitivity`,

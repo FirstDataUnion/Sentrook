@@ -1,9 +1,9 @@
-"""PlanIR 2.0 validation invariants (skeleton 1.7), the checks JSON Schema cannot express.
+"""PlanIR 2.0 validation invariants, the checks JSON Schema cannot express.
 
 `check` raises `InvalidPlanIR` for structural failures that make the request unscoreable (the scan
 returns `status: error`). `warnings` returns the non-fatal findings that lower coverage (truncated
 inputs, dropped content, provider mismatches). Token validity is not checked here: a bad token starts a
-fresh session (skeleton 1.7, last bullet) and lives in `state.token`.
+fresh session and lives in `state.token`.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from .models import ContentType, InputKind, PlanIR, ScanKind
 
-#: Server-side caps. The plugin caps content at about 256 KB by default (skeleton 1.6); these are the
+#: Server-side caps. The plugin caps content at about 256 KB by default; these are the
 #: generous ceilings past which the request is refused rather than scanned.
 MAX_INPUT_CONTENT_CHARS = 1_048_576
 MAX_HISTORY_ARG_CHARS = 65_536

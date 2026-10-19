@@ -65,8 +65,8 @@ read_actions:
   - status
   - describe
 
-# Files inside a workspace skill directory that are instruction text the agent loads as prompt
-# (WP8 item 4). A write to one of these keeps the `selfmod.plugin` weight; any other file in the
+# Files inside a workspace skill directory that are instruction text the agent loads as prompt.
+# A write to one of these keeps the `selfmod.plugin` weight; any other file in the
 # skill directory (scripts, data) scores at `weights.yaml: selfmod.workspace_skill`.
 workspace_skill_instruction_suffixes:
   - .md

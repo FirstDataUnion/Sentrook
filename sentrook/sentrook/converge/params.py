@@ -1,4 +1,4 @@
-"""The convergence parameter set (build plan 6.7): every tunable number in one versioned JSON file
+"""The convergence parameter set: every tunable number in one versioned JSON file
 under `converge/params/`, named in `metadata.versions.convergence`. The oracle and context probe
 tables live here too (`oracle`, `context` sections override the probes' dataclass defaults)."""
 

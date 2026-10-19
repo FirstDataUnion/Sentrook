@@ -1,4 +1,4 @@
-"""Convergence (skeleton section 4; build plan 6.7): probe envelopes → Response 2.0 and a new token.
+"""Convergence: probe envelopes → Response 2.0 and a new token.
 
 Order: merge → tier scores → risk → relief (recompute) → floors → reasons → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.

@@ -1,4 +1,4 @@
-"""Jev state views: what each Jev probe is sent (skeleton 3.2; build plan 6.2 step 8 and D3).
+"""Jev state views: what each Jev probe is sent.
 
 v1 reproduces the TestNest runner's `trim-v1` **byte for byte** (Rookery `testnest/jev/prepare.py`),
 working on the raw request JSON rather than the parsed model, so every Jev call made during the first

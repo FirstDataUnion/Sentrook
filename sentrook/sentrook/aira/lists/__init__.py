@@ -1,6 +1,6 @@
 """The AIRA data lists: versioned YAML under this directory, plus an optional operator overlay.
 
-Rules are code, knowledge is data (build plan D1, D2). Every list-like thing a detector reads lives
+Rules are code, knowledge is data. Every list-like thing a detector reads lives
 here: path groups, binary names, verb maps, egress markers, installer shapes, weights. The loader:
 
 - reads each `<name>.yaml` in `LIST_NAMES`;

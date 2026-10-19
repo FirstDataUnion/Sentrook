@@ -1,4 +1,4 @@
-"""Signal registry (skeleton 4.1): every leaf signal, its tier, polarity and merge rule; and the
+"""Signal registry: every leaf signal, its tier, polarity and merge rule; and the
 reason-code registry, a finite list of `domain.detail` codes with a template for the review card.
 
 Convergence only accepts contributions to registered signals. Unknown reason codes are tolerated (a

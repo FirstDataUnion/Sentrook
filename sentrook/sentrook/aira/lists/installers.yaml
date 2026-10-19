@@ -194,7 +194,7 @@ registry_cli_patterns:
 
 # Well-known installer and code hosts. An unknown host whose registrable label mimics one of these
 # (same label under another TLD, a hyphenated or misspelt variant) is a look-alike; running code
-# fetched from a look-alike takes the `untrusted_code_execution` floor (RUBRIC decision 8). A host
+# fetched from a look-alike takes the `untrusted_code_execution` floor. A host
 # that simply is not on this list is scored, never floored.
 installer_hosts:
   - astral.sh

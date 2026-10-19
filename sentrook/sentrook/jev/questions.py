@@ -3,7 +3,7 @@
 A set is a JSON file under `jev/questions/`: `name`, `state_view`, an optional `preamble` prepended to
 every question's instructions, and `questions` (each `type` noul | score | choice, `instructions`,
 `criteria`). `exposure-v1` and `call-v1` are the two halves of the frozen TestNest baseline set
-`designed-v1-split`, word for word (build plan D3); their sha is recorded in every envelope so a result
+`designed-v1-split`, word for word; their sha is recorded in every envelope so a result
 is attributable to exact wording. A wording change is a new file.
 
 `build_body` produces exactly what the runner's Jev targets send (`{model, state, questions, provider}`),

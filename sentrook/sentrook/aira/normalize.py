@@ -5,7 +5,7 @@ pretending to defeat arbitrary interpreters. Detectors still key off high-signal
 secret paths); this only restores obvious literals into a normalised form that is searched beside
 the original.
 
-Decoding is canonicalisation, never suspicion on its own (RUBRIC decision 17). The *difference*
+Decoding is canonicalisation, never suspicion on its own. The *difference*
 between the raw and the normalised text tells a detector that encoding was present; whether that
 matters depends on what the decoded text reaches (a shell: concealment; a URL query: nothing).
 """

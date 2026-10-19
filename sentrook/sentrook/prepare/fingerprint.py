@@ -1,4 +1,4 @@
-"""Action fingerprint `afp1` (skeleton 1.2, preparation step 7).
+"""Action fingerprint `afp1` (preparation step 7).
 
 Captures what a call does, not how it is written: the tool kind plus one session-salted hash per
 role-tagged key entity. Components are hashed separately so retry detection can match partially (same

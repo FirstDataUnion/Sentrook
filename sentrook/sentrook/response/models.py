@@ -1,4 +1,4 @@
-"""Response 2.0 models, transcribed from the "Data structure skeleton" page, section 5.
+"""Response 2.0 models: the risk tree Sentrook returns to the plugin.
 
 - Scores inside the tree are 0–1; only `risk` is 0–100. In suspicion and consequence higher is worse;
   in confidence higher is better.

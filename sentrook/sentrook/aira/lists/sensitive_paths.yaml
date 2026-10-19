@@ -1,5 +1,5 @@
 # Canonical sensitive-path and named-binary lists for the AIRA probe (ported from the 1.x
-# `sanitize/sensitive_paths.yaml`, build plan D1: mechanism in code, knowledge in data).
+# `sanitize/sensitive_paths.yaml`).
 #
 # One list, every consumer: the path classifier (`aira.path_classes`), the exec shape
 # (`aira.exec_shape.path_roles`) and every detector read these compiled groups. Nothing downstream

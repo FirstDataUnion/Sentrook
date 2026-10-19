@@ -37,6 +37,15 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
     body = json.loads(Path(args.file).read_text(encoding="utf-8"))
     config = ServeConfig.from_env()
+    case_probes = "fixture" in body and (body.get("options") or {}).get("probes")
+    if (args.probes or case_probes) and not config.test_mode:
+        what = "--probes" if args.probes else "a case file with options.probes"
+        print(
+            f"sentrook scan: {what} (probe ablation) is only available in test mode; "
+            "set SENTROOK_TEST_MODE=1",
+            file=sys.stderr,
+        )
+        return 2
     runtime = ServeRuntime.build(config)
     if "fixture" in body:
         options = testnest_options(body)
@@ -87,7 +96,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--envelopes", action="store_true", help="also print the probe envelopes and prepared views"
     )
-    scan.add_argument("--probes", help="comma-separated probes to enable (ablation)")
+    scan.add_argument(
+        "--probes", help="comma-separated probes to enable (ablation; test mode only)"
+    )
     scan.set_defaults(func=_cmd_scan)
 
     srv = sub.add_parser(
@@ -100,9 +111,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from ..serve.config import ConfigError
+
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except ConfigError as e:
+        print(f"sentrook {args.command}: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":  # pragma: no cover
