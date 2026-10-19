@@ -15,7 +15,7 @@ Nothing here is installable yet. See [CLAUDE.md](CLAUDE.md) for the repo layout 
 
 ## Configuration
 
-The scanner is configured through `SENTROOK_*` environment variables. The Jev probes read:
+The scanner is configured through `SENTROOK_*` environment variables. The Jev probes and convergence read:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -23,8 +23,9 @@ The scanner is configured through `SENTROOK_*` environment variables. The Jev pr
 | `SENTROOK_JEV_API_KEY` | unset | API key for the Decisions API |
 | `SENTROOK_JEV_MODEL` | `typesafe/jev-1.13` | Jev model |
 | `SENTROOK_JEV_TIMEOUT_MS` | `20000` | Per-request timeout |
-| `SENTROOK_JEV_EXPOSURE_QUESTIONS` | `exposure-v1` | Exposure question set (`exposure-v1`, or `exposure-v2` on the redacted view) |
-| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v1` | Call question set (`call-v1`, or `call-v2`, which also sees the turn's inputs) |
+| `SENTROOK_JEV_EXPOSURE_QUESTIONS` | `exposure-v2` | Exposure question set on the redacted view (`exposure-v1`, the frozen set, stays selectable) |
+| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v2` | Call question set, which also sees the turn's inputs (`call-v1`, the frozen set, stays selectable) |
+| `SENTROOK_CONVERGENCE` | `conv-v3` | Convergence parameter set (`conv-v1` and `conv-v2` stay selectable) |
 
 ## License
 
