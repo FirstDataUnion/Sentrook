@@ -2,7 +2,9 @@
 # Weekly (or on demand) it regenerates sentrook/sentrook/prepare/redact_shapes.yaml at the newest
 # gitleaks release tag, moves GITLEAKS_TAG in the Makefile to match, and opens or updates the pull
 # request chore/redact-shapes-<tag> when anything changed. ci.yml's `make redact-shapes-check` then
-# holds the file to that tag.
+# holds the file to that tag. GITLEAKS_TAG is also the gitleaks image security.yml scans with, so the
+# same PR moves the secret scanner; the workflow file itself is not edited, which the default token
+# could not push.
 #
 # Pull requests opened with the default GITHUB_TOKEN do not trigger other workflows, so ci.yml does not
 # run on them by itself. This job runs the unit tests and reports the result in the PR body; to get
@@ -118,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Regenerates \`sentrook/sentrook/prepare/redact_shapes.yaml\` from gitleaks \`$TAG\` (was \`$CURRENT\`) and moves \`GITLEAKS_TAG\` in the Makefile to match."
+            echo "Regenerates \`sentrook/sentrook/prepare/redact_shapes.yaml\` from gitleaks \`$TAG\` (was \`$CURRENT\`) and moves \`GITLEAKS_TAG\` in the Makefile to match, which also moves the gitleaks image the \`security\` workflow scans with."
             echo
             echo "## Shapes"
             cat "$RUNNER_TEMP/summary.md"

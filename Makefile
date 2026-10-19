@@ -14,7 +14,8 @@ help:
 	@echo "              a weekly workflow opens a PR moving GITLEAKS_TAG to each new release)"
 
 # The gitleaks release the vendor key shapes of the second redaction pass are generated from.
-# CI checks the file against it; .github/workflows/redact-shapes-refresh.yml moves it.
+# Also the gitleaks image security.yml scans with. CI checks the file against it;
+# .github/workflows/redact-shapes-refresh.yml moves it.
 GITLEAKS_TAG ?= v8.30.1
 
 install:

@@ -24,11 +24,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The gitleaks release is GITLEAKS_TAG in the Makefile, the one the redaction shapes are
+      # generated from; redact-shapes-refresh.yml moves it to each new release.
       - name: Gitleaks
         run: |
           set -euo pipefail
+          tag=$(sed -n 's/^GITLEAKS_TAG ?= //p' Makefile)
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::GITLEAKS_TAG in the Makefile is not a release tag: '$tag'"
+            exit 1
+          fi
           docker run --rm -v "${PWD}:/repo" -w /repo \
-            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            "ghcr.io/gitleaks/gitleaks:$tag" \
             detect --source=/repo --config=/repo/.gitleaks.toml \
             --verbose --redact --exit-code=1
 
