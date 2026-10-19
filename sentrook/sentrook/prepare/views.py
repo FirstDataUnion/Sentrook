@@ -10,14 +10,25 @@ sees are a deliberate v1.1 cache invalidation, versioned here.
 (`history[].risk`, `tiers`, `action_fingerprint`), which a model must not get to see. `view` selects the
 keys one question group sees: exposure questions see the request and new inputs; call questions see the
 request, pending call, history arguments, grants and trigger.
+
+The v1.1 question-set pass adds a second views version, `trim-v2`, beside the frozen v1 views (which stay byte for
+byte as they are): `call-v2` adds the turn's `new_inputs` between `history` and `pending_call`, so a
+question can weigh a listing or a read before a bulk or publishing call, with per-input and total
+content caps; `exposure-v2` has the `exposure` keys. Both v2 views end with the scanner's second
+redaction pass (`redact`).
 """
 
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 from typing import Any
 
+from ..jev.chunking import BUDGET_TOKENS, est_tokens
+from .redact import second_pass
+
 VIEWS_VERSION = "trim-v1"
+VIEWS_VERSION_V2 = "trim-v2"
 
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
@@ -27,6 +38,8 @@ STRIP_PENDING_CALL = frozenset({"call_id", "host_call_id", "batch"})
 
 EXPOSURE = "exposure"
 CALL = "call"
+EXPOSURE_V2 = "exposure-v2"
+CALL_V2 = "call-v2"
 VIEW_KEYS: dict[str, tuple[str, ...]] = {
     EXPOSURE: ("planir_version", "host", "trigger", "request", "new_inputs"),
     CALL: (
@@ -39,7 +52,37 @@ VIEW_KEYS: dict[str, tuple[str, ...]] = {
         "pending_call",
         "grants",
     ),
+    EXPOSURE_V2: ("planir_version", "host", "trigger", "request", "new_inputs"),
+    CALL_V2: (
+        "planir_version",
+        "host",
+        "session",
+        "trigger",
+        "request",
+        "history",
+        "new_inputs",
+        "pending_call",
+        "grants",
+    ),
 }
+#: Views version per view name.
+VIEW_VERSIONS: dict[str, str] = {
+    EXPOSURE: VIEWS_VERSION,
+    CALL: VIEWS_VERSION,
+    EXPOSURE_V2: VIEWS_VERSION_V2,
+    CALL_V2: VIEWS_VERSION_V2,
+}
+#: Which probe a view serves.
+VIEW_KIND: dict[str, str] = {EXPOSURE: EXPOSURE, EXPOSURE_V2: EXPOSURE, CALL: CALL, CALL_V2: CALL}
+
+#: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
+#: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
+CALL_INPUT_CAP_CHARS = 6000
+CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
+#: Room left in the chunking budget for the call questions, which repeat the preamble per question
+#: (`est_tokens` of the built call-v2 questions is about 7.2k).
+CALL_QUESTIONS_RESERVE_TOKENS = 7500
+CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 
 
 def trim(raw: dict[str, Any]) -> dict[str, Any]:
@@ -83,3 +126,105 @@ def exposure_view(
 
 def call_view(raw: dict[str, Any]) -> dict[str, Any]:
     return view(trim(raw), CALL)
+
+
+@dataclass(frozen=True)
+class BuiltView:
+    """A v2 view and what building it did."""
+
+    state: dict[str, Any]
+    redactions: int = 0
+    #: At least one `new_inputs` content was cut by a cap.
+    inputs_truncated: bool = False
+    #: The view was still over the budget after the caps, so every content was emptied.
+    inputs_stripped: bool = False
+
+
+def _cut(entry: dict[str, Any], kept: int, of: int) -> None:
+    entry["content"] = entry["content"][:kept]
+    entry["scanner_truncated"] = {"kept_chars": kept, "of_chars": of}
+
+
+def cap_inputs(
+    inputs: list[Any],
+    *,
+    per_input: int = CALL_INPUT_CAP_CHARS,
+    total: int = CALL_INPUTS_TOTAL_CAP_CHARS,
+) -> bool:
+    """Cap each string `content` at `per_input` characters (head kept), then the sum at `total`:
+    the most recent inputs (highest `input_seq`, such as the listing right before the pending call)
+    keep their content and the earliest lose theirs first; metadata always stays. Entries without an
+    integer `input_seq` count as earliest; ties keep list order. Mutates the entries; returns whether
+    anything was cut."""
+    entries = [
+        (i, e)
+        for i, e in enumerate(inputs)
+        if isinstance(e, dict) and isinstance(e.get("content"), str)
+    ]
+
+    def recency(item: tuple[int, dict[str, Any]]) -> tuple[bool, int, int]:
+        i, e = item
+        seq = e.get("input_seq")
+        has_seq = isinstance(seq, int) and not isinstance(seq, bool)
+        return (has_seq, seq if has_seq else 0, i)
+
+    cut = False
+    remaining = total
+    for _, entry in sorted(entries, key=recency, reverse=True):
+        of = len(entry["content"])
+        kept = min(of, per_input, remaining)
+        remaining -= kept
+        if kept < of:
+            _cut(entry, kept, of)
+            cut = True
+    return cut
+
+
+def strip_inputs(inputs: list[Any]) -> None:
+    for entry in inputs:
+        if not isinstance(entry, dict) or not isinstance(entry.get("content"), str):
+            continue
+        prior = entry.get("scanner_truncated") or {}
+        of = prior.get("of_chars", len(entry["content"]))
+        _cut(entry, 0, of)
+
+
+def exposure_view_v2(raw: dict[str, Any], *, only_input_seqs: set[int] | None = None) -> BuiltView:
+    v = view(trim(raw), EXPOSURE_V2)
+    if only_input_seqs is not None:
+        v["new_inputs"] = [
+            n for n in v.get("new_inputs") or [] if n.get("input_seq") in only_input_seqs
+        ]
+    state, count = second_pass(v)
+    return BuiltView(state=state, redactions=count)
+
+
+def call_view_v2(
+    raw: dict[str, Any], *, budget_tokens: int = CALL_STATE_BUDGET_TOKENS
+) -> BuiltView:
+    """The call view plus the turn's inputs, capped, then redacted. If the capped view is still over
+    the budget, every input keeps its metadata and loses its content."""
+    v = view(trim(raw), CALL_V2)
+    inputs = v.get("new_inputs")
+    truncated = stripped = False
+    if isinstance(inputs, list):
+        truncated = cap_inputs(inputs)
+        if est_tokens(v) > budget_tokens:
+            strip_inputs(inputs)
+            truncated = stripped = True
+    state, count = second_pass(v)
+    return BuiltView(
+        state=state, redactions=count, inputs_truncated=truncated, inputs_stripped=stripped
+    )
+
+
+def build_views(
+    raw: dict[str, Any], *, exposure_input_seqs: set[int] | None
+) -> dict[str, BuiltView]:
+    """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built)."""
+    return {
+        EXPOSURE: BuiltView(state=exposure_view(raw, only_input_seqs=exposure_input_seqs)),
+        CALL: BuiltView(state=call_view(raw)),
+        EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
+        CALL_V2: call_view_v2(raw),
+    }

@@ -52,6 +52,13 @@ SIGNALS: dict[str, Signal] = {
         ),
         Signal("suspicion.concealment", "suspicion", Merge.MAX, True, "Call hides what it does"),
         Signal(
+            "suspicion.overreach",
+            "suspicion",
+            Merge.MAX,
+            True,
+            "Call acts on more than the request covers, judged against what the agent read",
+        ),
+        Signal(
             "suspicion.distrust",
             "suspicion",
             Merge.MAX_OVER_SUBJECTS,
@@ -117,6 +124,7 @@ REASONS: dict[str, str] = {
     # call (Jev)
     "call.not_supported_by_request": "The call does not follow from what you asked for.",
     "jev.concealment": "The call hides what it does.",
+    "jev.scope_overreach": "The call acts on more than you asked for, going by what the agent read.",
     "jev.sensitivity": "The call touches sensitive data.",
     "jev.reach": "The call's effects reach beyond the workspace.",
     "jev.irreversibility": "The call cannot easily be undone.",

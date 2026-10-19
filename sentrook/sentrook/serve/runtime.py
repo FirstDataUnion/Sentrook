@@ -40,6 +40,8 @@ class ServeRuntime:
             api_key=config.jev_api_key,
             model=config.jev_model,
             timeout_s=config.jev_timeout_s,
+            exposure_question_set=config.jev_exposure_question_set,
+            call_question_set=config.jev_call_question_set,
         )
         if decider is None:
             decider = DecisionsClient(jev)
@@ -86,6 +88,11 @@ class ServeRuntime:
                 "base_url": cfg.jev_base_url,
                 "model": cfg.jev_model,
                 "key_configured": bool(cfg.jev_api_key),
+                "question_sets": {
+                    "exposure": self.scanner.jev_question_sets["exposure"].name,
+                    "call": self.scanner.jev_question_sets["call"].name,
+                },
+                "views": dict(self.scanner.jev_views),
             },
             "oracle": self.scanner.config.oracle.name if self.scanner.config.oracle else "null",
             "convergence": self.scanner.config.params.name,

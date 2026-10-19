@@ -65,6 +65,7 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
             untrusted_origin=g("suspicion.untrusted_origin"),
             misalignment=g("suspicion.misalignment"),
             concealment=g("suspicion.concealment"),
+            overreach=g("suspicion.overreach"),
             distrust=g("suspicion.distrust"),
             request_origin=g("suspicion.request_origin"),
             retry_after_denial=g("suspicion.retry_after_denial"),
@@ -167,6 +168,7 @@ def converge(
     token_key: str | bytes,
     started: float | None = None,
     probes_enabled: list[str] | None = None,
+    views: str = "trim-v1",
 ) -> ConvergeResult:
     claims = collect(envelopes)
     merged = merge(claims)
@@ -268,7 +270,7 @@ def converge(
             versions={
                 "convergence": params.name,
                 "probes_enabled": probes_enabled or [env.step.value for env in envelopes],
-                "views": "trim-v1",
+                "views": views,
                 "taint_link": tiers.taint_link,
                 "flags": sorted(f.value for f in flags),
                 "token_status": prepared.state.status.value,

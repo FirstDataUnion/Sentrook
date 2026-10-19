@@ -14,8 +14,9 @@ before any probe.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
    introduced first is not promoted by a later echo).
 7. Compute the pending call's action fingerprint.
-8. Build the Jev state views (v1: byte-identical to the runner's `trim-v1`; the second redaction pass
-   is a no-op here, see `views`).
+8. Build the Jev state views: the v1 views byte-identical to the runner's `trim-v1`, and the v1.1 question-set pass's
+   `trim-v2` views (`call-v2` with the turn's inputs, `exposure-v2`) after the second redaction pass
+   (`redact`). The configured question sets choose which view each Jev probe sends.
 """
 
 from __future__ import annotations
@@ -124,6 +125,12 @@ class Prepared:
     prior_untrusted: frozenset[str] = frozenset()
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
+    #: Views version per view name (`trim-v1` for `exposure`/`call`, `trim-v2` for the v2 views).
+    views_version: dict[str, str] = field(default_factory=dict)
+    #: Second-pass redactions over the v2 views.
+    redactions: int = 0
+    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
+    view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def platform(self) -> str:
@@ -531,9 +538,15 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for i in inputs
         if i.trust is Trust.UNTRUSTED and i.new and i.input.content
     }
-    jev_views = {
-        views.EXPOSURE: views.exposure_view(raw, only_input_seqs=untrusted_seqs),
-        views.CALL: views.call_view(raw),
+    built = views.build_views(raw, exposure_input_seqs=untrusted_seqs)
+    jev_views = {name: b.state for name, b in built.items()}
+    view_meta = {
+        name: {
+            "redactions": b.redactions,
+            "inputs_truncated": b.inputs_truncated,
+            "inputs_stripped": b.inputs_stripped,
+        }
+        for name, b in built.items()
     }
 
     return Prepared(
@@ -555,4 +568,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         warnings=warns,
         prior_untrusted=prior_untrusted,
         grant_hits=grant_hits,
+        views_version={name: views.VIEW_VERSIONS[name] for name in built},
+        redactions=sum(b.redactions for b in built.values()),
+        view_meta=view_meta,
     )

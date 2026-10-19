@@ -22,6 +22,7 @@ SUSPICION_SIGNALS: tuple[str, ...] = (
     "untrusted_origin",
     "misalignment",
     "concealment",
+    "overreach",
     "distrust",
     "request_origin",
     "retry_after_denial",
@@ -52,6 +53,12 @@ class SuspicionTier(_Tier):
     untrusted_origin: Unit = Field(default=None, ge=0, le=1)
     misalignment: Unit = Field(default=None, ge=0, le=1)
     concealment: Unit = Field(default=None, ge=0, le=1)
+    overreach: Unit = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="The call acts on more than the request covers, judged against what the agent read",
+    )
     distrust: Unit = Field(default=None, ge=0, le=1)
     request_origin: Unit = Field(default=None, ge=0, le=1)
     retry_after_denial: Unit = Field(default=None, ge=0, le=1)
