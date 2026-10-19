@@ -26,7 +26,7 @@ from ..enums import Enforce, SessionFlag
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Role, normalise_path
+from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape
@@ -530,12 +530,23 @@ def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
     heads = set(shape.heads)
     if shape.substitution and heads & fetch and heads & (shells | evals):
         return "substitution"
-    fetched_file = any(
-        s.head in fetch and (set(s.flags) & out_flags or any(f.startswith("-o") for f in s.flags))
+    fetch_segments = [
+        s
         for s in shape.segments
-    )
-    if fetched_file and any(
-        s.head in shells | interp or (s.head == "chmod" and any("x" in f for f in s.flags))
+        if s.head in fetch
+        and (set(s.flags) & out_flags or any(f.startswith("-o") for f in s.flags))
+    ]
+    # The fetched file run directly (`./helper.bin`): the parser reports the basename as the head.
+    fetched_names = {
+        os.path.basename(t.rstrip("/"))
+        for s in fetch_segments
+        for t in s.positional
+        if not _URL_RE.match(t)
+    }
+    if fetch_segments and any(
+        s.head in shells | interp
+        or (s.head == "chmod" and any("x" in f for f in [*s.flags, *s.positional[:1]]))
+        or (s.head in fetched_names and s.head not in fetch)
         for s in shape.segments
     ):
         return "fetch_then_run"
@@ -1152,33 +1163,24 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
 
 def _resolve_target(tok: str, cwd: str, ctx: Context) -> tuple[str, bool]:
     """Resolve a destructive-head argument against the running cwd; returns (path, wildcard)."""
-    tok = tok.strip().strip("'\"")
-    wildcard = False
-    if tok.endswith(("/*", "/**")):
-        tok = tok.rsplit("/", 1)[0] or "/"
-        wildcard = True
-    elif "*" in tok or "?" in tok:
-        tok = re.split(r"[*?]", tok, maxsplit=1)[0]
-        tok = tok.rsplit("/", 1)[0] if "/" in tok else tok
-        wildcard = True
-        if not tok:
-            tok = "."
-    if not tok.startswith(("/", "~", "$HOME")):
-        tok = cwd.rstrip("/") + "/" + tok.removeprefix("./") if tok not in (".", "./") else cwd
-    return (
-        normalise_path(tok, home=ctx.prepared.home, workspace_root=ctx.prepared.workspace_root),
-        wildcard,
+    return resolve_token(
+        tok, cwd, home=ctx.prepared.home, workspace_root=ctx.prepared.workspace_root
     )
 
 
-def _is_scratch(value: str, ctx: Context) -> bool:
-    ws = ctx.prepared.workspace_root.rstrip("/")
+def is_scratch(value: str, workspace_root: str, lists: Lists) -> bool:
+    """Inside the workspace, or in an absolute temporary directory (`/tmp`, `/var/tmp`, `/dev/shm`)."""
+    ws = workspace_root.rstrip("/")
     if value == ws or value.startswith(ws + "/"):
         return True
-    if _match_any(ctx.lists.patterns("destructive", "scratch", "tmp_patterns"), value):
+    if _match_any(lists.patterns("destructive", "scratch", "tmp_patterns"), value):
         return True
-    seg = ctx.lists.get("destructive", "scratch", "workspace_segment")
+    seg = lists.get("destructive", "scratch", "workspace_segment")
     return bool(seg and re.search(str(seg), value, re.IGNORECASE))
+
+
+def _is_scratch(value: str, ctx: Context) -> bool:
+    return is_scratch(value, ctx.prepared.workspace_root, ctx.lists)
 
 
 def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -1191,7 +1193,8 @@ def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
     prefixes = tuple(lists.strings("destructive", "head_prefixes"))
     verbs = lists.rules("destructive", "verbs")
     ignore = lists.patterns("destructive", "ignore_path_patterns")
-    granted = ctx.host_approval_granted and a.source == "pending"
+    # The host's approval of the pending call covers the agent-written file that call runs.
+    granted = ctx.host_approval_granted and a.source in ("pending", "written_file")
     ws = ctx.prepared.workspace_root.rstrip("/")
 
     targets: list[tuple[str, bool, str]] = []  # (path, wildcard, mechanism)

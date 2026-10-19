@@ -40,6 +40,7 @@ LIST_NAMES: tuple[str, ...] = (
     "installers",
     "selfmod",
     "extent",
+    "lineage",
     "weights",
 )
 

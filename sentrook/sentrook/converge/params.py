@@ -51,7 +51,11 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     agreement = raw.get("agreement") or {}
     rnr = raw.get("request_named_relief") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
-    context = _override(ContextParams(name=f"{raw['name']}/context"), raw.get("context") or {})
+    context_section = dict(raw.get("context") or {})
+    lineage = context_section.pop("lineage", None)
+    if isinstance(lineage, dict):  # `context.lineage.<key>` sets `ContextParams.lineage_<key>`
+        context_section.update({f"lineage_{k}": v for k, v in lineage.items()})
+    context = _override(ContextParams(name=f"{raw['name']}/context"), context_section)
     return ConvergenceParams(
         name=raw["name"],
         u=float(raw.get("u", 0.25)),

@@ -6,7 +6,7 @@
 # (a relative `tmp/` is a directory inside the workspace, not `/tmp`), and the workspace is the
 # deployment's `host.workspace_root`, not any directory that sounds like one.
 
-version: 1
+version: 2
 
 # Heads whose positional arguments are destroyed.
 heads:
@@ -77,3 +77,19 @@ ignore_path_patterns:
   - '/dist(?:/|\Z)'
   - '/build(?:/|\Z)'
   - '/\.cache(?:/|\Z)'
+
+# Words in the agent's own saved listing of a tree that mark part of it as irreplaceable. The context
+# probe reads a history write that lists paths under a tree the pending call destroys; a listing with
+# one of these markers means the agent recorded that the tree holds something that cannot come back.
+# A listing without a marker contributes nothing.
+irreplaceable_markers:
+  patterns:
+    - '\bonly copy\b'
+    - '\bno other cop(?:y|ies)\b'
+    - '\bnot rebuildable\b'
+    - '\bcannot be (?:rebuilt|recovered|recreated|replaced|restored)\b'
+    - '\bno backups?\b'
+    - '\boriginals?\b'
+    - '\bmaster cop(?:y|ies)\b'
+    - '\bsole cop(?:y|ies)\b'
+    - '\birreplaceable\b'

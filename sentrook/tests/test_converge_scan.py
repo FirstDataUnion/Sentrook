@@ -241,6 +241,13 @@ def test_prepared_views_for_test_mode(attack_case):
         "grants",
     }
     assert views["jev_exposure_state"]["new_inputs"][0]["input_seq"] == 1
+    assert views["lineage"] == {  # names only; the worked example has no lineage
+        "executed": None,
+        "sent": [],
+        "moved_in": [],
+        "listings": [],
+        "destructive_targets": [],
+    }
 
 
 # --------------------------------------------------------------------------- properties

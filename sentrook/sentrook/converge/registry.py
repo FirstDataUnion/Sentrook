@@ -143,6 +143,13 @@ REASONS: dict[str, str] = {
     "origin.agent_created_dirty_lineage": "{subject} was created by the agent from content it read.",
     "origin.request_named": "You named {subject} in your request.",
     "origin.granted": "A grant covers {subject}.",
+    "origin.lookalike_of_named_host": "{subject} imitates a host you named in your request; you did not name it.",
+    # lineage (context): what the agent did earlier in the session around this call
+    "lineage.moved_into_destroyed_tree": "Earlier in this session the agent moved {subject} into the directory this command deletes, so it is deleted too.",
+    "lineage.listing_marks_irreplaceable": "The agent's own saved listing of {subject} notes that part of it cannot be replaced, and this command deletes it.",
+    "lineage.secret_carried_to_send": "The agent wrote secret values into {subject}, and this call sends or publishes it.",
+    "lineage.lookalike_of_named_host": "{subject} looks like a host you named in your request but is a different host.",
+    "lineage.filter_silences_security_notices": "The call installs a filter at {subject} that hides sign-in or security notices from you.",
     # trigger
     "trigger.owner": "The request came from you.",
     "trigger.scheduled": "This is a scheduled run.",
