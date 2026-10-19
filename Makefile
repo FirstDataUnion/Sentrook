@@ -1,4 +1,4 @@
-# Sentrook 2.0 scanner. Design and work packages: Notion, "Sentrook 2.0 build plan".
+# Sentrook 2.0 scanner.
 # Everything runs through uv; `make install` creates .venv with the dev extras.
 .PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check
 
