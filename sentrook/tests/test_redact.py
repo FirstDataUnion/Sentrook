@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v1): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v2): one positive per secret shape,
 the negatives that must survive (emails, hosts, placeholders, ordinary prose), and linear time.
 
 Secret-shaped values are built at runtime from obviously fake, low-entropy parts, so no literal in this
@@ -95,7 +95,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v1"
+    assert REDACTION_VERSION == "redact-v2"
 
 
 def test_two_shapes_on_one_value_count_once():

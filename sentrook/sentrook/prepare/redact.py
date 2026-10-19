@@ -1,4 +1,5 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v1`, added with the v1.1 question-set pass).
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v2`; `redact-v1` came with the
+v1.1 question-set pass and kept its vendor shapes in code).
 
 The plugin redacts secrets before a PlanIR leaves the host (`options.redaction`, usually `standard`).
 This pass catches well-known secret shapes that slipped through, so a model never sees a live key in a
@@ -6,8 +7,9 @@ view Sentrook builds. It is deliberately conservative: recipients, names, hosts 
 stay, because Jev needs them to judge alignment. A replaced value becomes `⟦secret:scanner⟧`; the
 preamble already tells Jev that a placeholder still marks a real secret.
 
-Every pattern is linear-time: no nested quantifiers, no unbounded repetition followed by a suffix that
-can fail (the JWT tail and the PEM end line are matched anchored, from where the head ended).
+Every pattern does bounded work per position: no nested quantifiers, no unbounded repetition followed
+by a suffix that can fail (the JWT tail and the PEM end line are matched anchored, from where the head
+ended), and the imported vendor shapes have their repetition capped.
 """
 
 from __future__ import annotations
@@ -15,26 +17,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
-REDACTION_VERSION = "redact-v1"
+from .redact_shapes import load_shapes
+from .redact_shapes import spans as shape_spans
+
+REDACTION_VERSION = "redact-v2"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest PEM body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
 
-#: Vendor key shapes: fixed prefix, fixed charset, minimum length. The look-behind keeps a prefix inside
-#: a longer word (`disk-usage-…`, `task-…`) from matching.
-_B = r"(?<![A-Za-z0-9])"
-VENDOR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("aws_access_key_id", re.compile(_B + r"AKIA[0-9A-Z]{16}")),
-    ("openai_anthropic", re.compile(_B + r"sk-[A-Za-z0-9_-]{20,}")),
-    ("stripe", re.compile(_B + r"sk_(?:live|test)_[A-Za-z0-9]{16,}")),
-    ("github_token", re.compile(_B + r"gh[pousr]_[A-Za-z0-9]{36}")),
-    ("github_pat", re.compile(_B + r"github_pat_[A-Za-z0-9_]{22,}")),
-    ("slack", re.compile(_B + r"xox[abprs]-[A-Za-z0-9-]{10,}")),
-    ("google_api_key", re.compile(_B + r"AIza[0-9A-Za-z_-]{35}")),
-    ("gitlab_pat", re.compile(_B + r"glpat-[A-Za-z0-9_-]{20}")),
-    ("npm_token", re.compile(_B + r"npm_[A-Za-z0-9]{36}")),
-    ("huggingface", re.compile(_B + r"hf_[A-Za-z0-9]{30,}")),
-)
+#: Vendor key shapes (fixed prefix, fixed charset, minimum length) are data: `redact_shapes.yaml`,
+#: mostly generated from the gitleaks default rules (`prepare.redact_shapes`, `prepare.redact_import`).
+#: The shapes below stay in code: they are the catch-all and never depend on the import.
 
 _JWT_HEAD = re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}")
 _JWT_TAIL = re.compile(r"\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
@@ -81,8 +74,8 @@ def _spans(text: str) -> list[tuple[int, int]]:
         tail = _JWT_TAIL.match(text, m.end())
         if tail is not None:
             spans.append((m.start(), tail.end()))
-    for _name, rx in VENDOR_PATTERNS:
-        spans.extend(m.span() for m in rx.finditer(text))
+    for shape in load_shapes().shapes:
+        spans.extend(shape_spans(shape.compiled, text))
     spans.extend(m.span("v") for m in _BEARER.finditer(text))
     spans.extend(m.span("v") for m in _ASSIGN.finditer(text))
     return spans

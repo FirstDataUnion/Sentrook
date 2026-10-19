@@ -29,6 +29,7 @@ from .oracle.client import NullOracle, OracleClient, SeedOracle
 from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
+from .prepare.redact_shapes import load_shapes
 from .prepare.views import CALL, EXPOSURE, VIEW_VERSIONS
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
@@ -81,7 +82,11 @@ class ScanResult:
             )
         out["views"] = dict(self.jev_views)
         out["views_version"] = {k: VIEW_VERSIONS.get(v) for k, v in self.jev_views.items()}
-        out["redaction"] = {"version": REDACTION_VERSION, "count": redactions}
+        out["redaction"] = {
+            "version": REDACTION_VERSION,
+            "shapes": load_shapes().version,
+            "count": redactions,
+        }
         if self.prepared is not None:
             out["lineage"] = self.prepared.lineage.names(self.prepared.home)
         return out
