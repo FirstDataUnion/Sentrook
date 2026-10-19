@@ -9,7 +9,7 @@ attack, and relief comes from grants and the oracle in convergence.
 Classes:
   C1  credential material reached        C2  exfiltration (source × sink), plain sends
   C3  untrusted code executed            C4  self-modification and persistence
-  C4* guardrail tampering (floor)        C7  destruction outside scratch (pack host_gated)
+  C4* guardrail tampering (floor)        C7  destruction outside scratch (host_gated; SQL arm tier1)
   C8  privilege change (sudo arm host_gated)   C9  irreversible remote side effects
   C10 secret written into an artefact    extent: recursive / wildcard / bulk raise reach
 """
@@ -397,10 +397,12 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     return []
 
 
-def _history_placeholder_paths(ctx: Context) -> set[str]:
+def _placeholder_paths(ctx: Context) -> set[str]:
+    """Paths written with a secret placeholder: by an earlier step, or by a sibling in the
+    pending call's batch (a file staged for the send in the same turn)."""
     out: set[str] = set()
     open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
-    for h in ctx.prepared.history:
+    for h in [*ctx.prepared.history, *ctx.prepared.siblings]:
         if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
             out.add(
                 normalise_path(
@@ -412,7 +414,7 @@ def _history_placeholder_paths(ctx: Context) -> set[str]:
 
 def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
     sources: list[Source] = []
-    written_with_placeholder = _history_placeholder_paths(ctx)
+    written_with_placeholder = _placeholder_paths(ctx)
     attached = {p.value for p in a.attachments}
     for p in a.paths:
         if a.kind is ToolKind.EXEC and p.is_destination and not p.is_source:
@@ -1186,7 +1188,8 @@ def _is_scratch(value: str, ctx: Context) -> bool:
 def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C7: a destructive verb with at least one path outside scratch (pack `host_gated`). The
     workspace root itself, or `workspace/*`, is workspace-wide. With the host's approval already
-    granted the evidence is recorded and nothing is contributed."""
+    granted the evidence is recorded and nothing is contributed. Destructive SQL is the separate
+    `detect_sql_destruction` (pack `tier1`)."""
     out: list[Finding] = []
     lists = ctx.lists
     heads = set(lists.strings("destructive", "heads"))
@@ -1232,20 +1235,6 @@ def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 if p.is_destination:
                     targets.append((p.value, "*" in a.text, "unparsed"))
 
-    sql_text = a.scan_text if a.kind is ToolKind.EXEC else a.content
-    sql = _match_any(lists.patterns("destructive", "sql_patterns"), sql_text) if sql_text else None
-    if sql is not None:
-        f = Finding(
-            rule="C7.sql",
-            cls="C7",
-            reason="destroy.sql",
-            detail={"mechanism": sql.group(0)[:80], "host_approval_granted": granted},
-        )
-        if not granted:
-            f.add(IRREVERSIBILITY, ctx.weight("destroy", "irreversibility"))
-            f.add(REACH, ctx.weight("destroy", "reach_host"))
-        out.append(f)
-
     seen: set[str] = set()
     for value, wildcard, mechanism in targets:
         if value in seen or _match_any(ignore, value):
@@ -1274,6 +1263,35 @@ def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(IRREVERSIBILITY, ctx.weight("destroy", "irreversibility"), subject)
             f.add(REACH, ctx.weight("destroy", reach_key), subject)
         out.append(f)
+    return out
+
+
+def detect_sql_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
+    """C7, the SQL arm (pack `tier1`): a destructive SQL statement in exec text or in a query
+    argument destroys data in a live store, which no host-side approval of the shell command
+    gates, so it stays on when file destruction is left to the host. With the host's approval
+    already granted the evidence is recorded and nothing is contributed."""
+    sql_text = a.scan_text if a.kind is ToolKind.EXEC else a.content
+    if not sql_text:
+        return []
+    granted = ctx.host_approval_granted and a.source in ("pending", "written_file")
+    out: list[Finding] = []
+    for rx in ctx.lists.patterns("destructive", "sql_patterns"):
+        m = rx.search(sql_text)
+        if m is None:
+            continue
+        detail: dict[str, Any] = {
+            "mechanism": m.group(0)[:80],
+            "host_approval_granted": granted,
+        }
+        if m.groups() and m.group(1):
+            detail["target"] = m.group(1).strip('"`;')
+        f = Finding(rule="C7.sql", cls="C7", reason="destroy.sql", detail=detail)
+        if not granted:
+            f.add(IRREVERSIBILITY, ctx.weight("destroy", "irreversibility"))
+            f.add(REACH, ctx.weight("destroy", "reach_host"))
+        out.append(f)
+        break  # one finding per call: the statement, not every verb in it
     return out
 
 
@@ -1462,7 +1480,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 f.flags.append(SessionFlag.HOLDS_SENSITIVE)
                 out.append(f)
         elif verb == "push" and SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
-            if _history_placeholder_paths(ctx):
+            if _placeholder_paths(ctx):
                 f = Finding(
                     rule="C10.push_with_secret",
                     cls="C10",
@@ -1553,6 +1571,7 @@ DETECTORS: tuple[tuple[Detector, str, str], ...] = (
     (detect_guardrail, "C4*", PACK_TIER1),
     (detect_selfmod, "C4", PACK_TIER1),
     (detect_destruction, "C7", PACK_HOST_GATED),
+    (detect_sql_destruction, "C7", PACK_TIER1),
     (detect_privilege, "C8", PACK_TIER1),  # the sudo arm gates itself on host_gated
     (detect_remote, "C9", PACK_TIER1),
     (detect_artefact, "C10", PACK_TIER1),

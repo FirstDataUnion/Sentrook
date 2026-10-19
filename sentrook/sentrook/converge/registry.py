@@ -150,6 +150,7 @@ REASONS: dict[str, str] = {
     "lineage.secret_carried_to_send": "The agent wrote secret values into {subject}, and this call sends or publishes it.",
     "lineage.lookalike_of_named_host": "{subject} looks like a host you named in your request but is a different host.",
     "lineage.filter_silences_security_notices": "The call installs a filter at {subject} that hides sign-in or security notices from you.",
+    "lineage.listing_marks_live_table": "The agent's own listing of the database shows that the table this command destroys holds live data.",
     # trigger
     "trigger.owner": "The request came from you.",
     "trigger.scheduled": "This is a scheduled run.",
@@ -196,6 +197,7 @@ REASONS: dict[str, str] = {
     "relief.destination_grant": "A grant covers {subject}.",
     "relief.file_grant": "A grant covers access to {subject}.",
     "relief.request_named_destination": "You named {subject} as the destination in your request.",
+    "relief.known_good_destination": "{subject} is a known good destination.",
     # AIRA: consequence classes (C1 to C10) and extent
     "path.credential_store": "{subject} is a credential store.",
     "path.credential_bearing_config": "{subject} is configuration that carries credentials.",

@@ -6,12 +6,16 @@
 - **Request-named destination relief**: on an owner-sender turn, a destination or
   recipient the owner named verbatim in the request is treated as a matched destination grant, for
   sends only, never for code sources or installs.
+- **Known-good destination relief**: a destination or recipient the entity oracle marks `known_good`
+  is treated the same way, for sends only, unless it reached the agent through untrusted content
+  (a destination dictated by something the agent read keeps its origin, however reputable).
 - Grants sanction access, never what happens to the data afterwards: relief never clears session flags
   and never lowers a floor (floors are applied after relief).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..planir.models import SenderRelation, ToolKind
@@ -51,7 +55,10 @@ def _exec_op(prepared: Prepared) -> str:
     return "exec" if kind is ToolKind.EXEC else "read"
 
 
-def compute_relief(prepared: Prepared, params: ConvergenceParams) -> list[Relief]:
+def compute_relief(
+    prepared: Prepared, params: ConvergenceParams, known_good: Iterable[str] = ()
+) -> list[Relief]:
+    """`known_good`: entity ids the oracle probe reported as `known_good` in this scan."""
     out: list[Relief] = []
     grants = {g.grant_ref: g for g in prepared.planir.grants}
     off_host = _has_off_host_destination(prepared)
@@ -121,4 +128,29 @@ def compute_relief(prepared: Prepared, params: ConvergenceParams) -> list[Relief
                         (("suspicion.distrust", ent.id), ("suspicion.untrusted_origin", ent.id)),
                     )
                 )
+
+    if params.known_good_relief:
+        relieved = {r.subject for r in out}
+        for eid in known_good:
+            ent = prepared.entities.by_id(eid)
+            if ent is None or eid in relieved:
+                continue
+            if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
+                continue
+            roles = {r.value for r in ent.roles}
+            if not roles & set(params.request_named_roles):
+                continue
+            if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
+                continue  # reputation sanctions sending to a host, never running code from it
+            if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
+                continue  # a destination taken from content the agent read keeps its origin
+            out.append(
+                Relief(
+                    None,
+                    eid,
+                    "distrust+untrusted_origin",
+                    "relief.known_good_destination",
+                    (("suspicion.distrust", eid), ("suspicion.untrusted_origin", eid)),
+                )
+            )
     return out
