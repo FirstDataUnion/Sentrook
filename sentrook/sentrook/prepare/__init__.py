@@ -140,6 +140,9 @@ class Lineage:
     #: Normalised paths the pending call destroys (rm, shred, srm, unlink, rmdir, truncate,
     #: find -delete, find -exec rm).
     destructive_targets: list[str] = field(default_factory=list)
+    #: Database objects the pending call destroys (DROP, TRUNCATE, DELETE without WHERE), as
+    #: written in the command or query.
+    sql_targets: list[str] = field(default_factory=list)
 
     def names(self, home: str | None = None) -> dict[str, Any]:
         """The lineage as display paths and steps, never content."""
@@ -162,6 +165,7 @@ class Lineage:
             ],
             "listings": [disp(w.path) for w in self.listings],
             "destructive_targets": [disp(t) for t in self.destructive_targets],
+            "sql_targets": list(self.sql_targets),
         }
 
 
@@ -198,6 +202,10 @@ class Prepared:
     views_version: dict[str, str] = field(default_factory=dict)
     #: Second-pass redactions over the v2 views.
     redactions: int = 0
+    #: Entity-library verdicts for the call's own entities (`kind`, `value`, `verdict`, optional
+    #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
+    #: is sent. Empty until then, and for views without the block.
+    oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
     #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -553,9 +561,27 @@ def _moved_in(
     return out
 
 
+def _sql_targets(pending: CanonicalCall) -> list[str]:
+    """Database objects the pending call destroys: the object named by a destructive SQL
+    statement (`destructive.yaml` `sql_patterns`) in an exec command or a query argument."""
+    text = pending.command if pending.tool_kind is ToolKind.EXEC else pending.get("content")
+    if not isinstance(text, str) or not text:
+        return []
+    from ..aira.lists import load_lists
+
+    out: list[str] = []
+    for rx in load_lists().patterns("destructive", "sql_patterns"):
+        for m in rx.finditer(text):
+            name = m.group(1).strip('"`;') if m.groups() else None
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
 def _lineage(
     planir: PlanIR,
     pending: CanonicalCall,
+    siblings: list[CanonicalCall],
     history: list[CanonicalCall],
     table: EntityTable,
     written: WrittenFile | None,
@@ -564,6 +590,7 @@ def _lineage(
 ) -> Lineage:
     lineage = Lineage(executed=written)
     lineage.destructive_targets = _destructive_targets(pending, home, ws)
+    lineage.sql_targets = _sql_targets(pending)
 
     written_paths = {
         normalise_path(c.path, home=home, workspace_root=ws)
@@ -578,6 +605,32 @@ def _lineage(
         sent = _find_written(planir, history, ent.value, home, ws)
         if sent is not None:
             lineage.sent.append(sent)
+
+    # A file a sibling in the same batch writes and the pending call sends is staged for the
+    # send: no earlier step shows the write, so the sibling's content is the file's content.
+    staged = {
+        normalise_path(s.path, home=home, workspace_root=ws): s
+        for s in siblings
+        if s.tool_kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT) and s.path
+    }
+    if staged:
+        already = {w.path for w in lineage.sent}
+        for ent in table.pending():
+            if ent.kind is not EntityKind.PATH or Role.DATA_SOURCE not in ent.roles:
+                continue
+            sib = staged.get(ent.value)
+            if sib is None or ent.value in already:
+                continue
+            if written is not None and ent.value == written.path:
+                continue
+            lineage.sent.append(
+                WrittenFile(
+                    path=ent.value,
+                    step=planir.session.step,
+                    content=str(sib.get("content") or ""),
+                    truncated=False,
+                )
+            )
 
     lineage.moved_in = _moved_in(history, lineage.destructive_targets, home, ws)
     for item in lineage.moved_in:
@@ -751,7 +804,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             break
         coverage.append(CoverageNote("written_file_not_visible", exe.display))
 
-    lineage = _lineage(planir, pending, history, table, written, home, ws)
+    lineage = _lineage(planir, pending, siblings, history, table, written, home, ws)
 
     # 6. untrusted set
     for ent in table:
@@ -815,6 +868,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         prior_untrusted=prior_untrusted,
         grant_hits=grant_hits,
         views_version={name: views.VIEW_VERSIONS[name] for name in built},
-        redactions=sum(b.redactions for b in built.values()),
+        # call-v3 is call-v2's content with a block the probe adds later, so its redactions are
+        # call-v2's and are not counted twice.
+        redactions=sum(
+            b.redactions for n, b in built.items() if n in (views.EXPOSURE_V2, views.CALL_V2)
+        ),
         view_meta=view_meta,
     )

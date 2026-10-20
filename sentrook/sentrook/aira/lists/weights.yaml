@@ -1,7 +1,7 @@
 # Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
 # overlay may override any scalar here. Values are 0–1 on the signal's own scale.
 
-version: 5
+version: 6
 
 # C1: credential material reached. Keyed by path group.
 sensitivity:
@@ -27,6 +27,10 @@ send:
 code:
   reach: 0.75
   irreversibility: 0.7
+  # Code fetched from a host that is not a listed installer and run (or installed from a URL there)
+  # has the agent's own read access, so its sensitivity is what the agent can read, not what the
+  # command names: the personal-or-business level. Listed installer hosts carry none of this.
+  sensitivity_unvetted: 0.67
   package_irreversibility: 0.6
   decode_concealment: 1.0
   decode_floor_min_risk: 0.9

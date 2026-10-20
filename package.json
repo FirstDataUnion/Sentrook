@@ -1,8 +1,10 @@
 {
   "name": "sentrook",
   "private": true,
-  "description": "JS workspace root for the 2.0 plugins (none yet).",
-  "workspaces": [],
+  "description": "JS workspace root for the 2.0 plugins.",
+  "workspaces": [
+    "integrations/openclaw/plugin"
+  ],
   "scripts": {
     "changeset": "changeset",
     "version": "changeset version && npm install --package-lock-only"

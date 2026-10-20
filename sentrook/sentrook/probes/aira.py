@@ -12,9 +12,9 @@ that file's content is analysed as a command of its own (source `written_file`, 
 cwd) with the same detectors and packs, and its findings merge like a sibling's: a script that uploads
 a file, or fetches a binary and runs it, carries the consequence it would carry typed at the prompt.
 
-Packs: `tier1` (always on) carries C1, C2, C3, C4, C4*, C9, C10 and extent; `host_gated` carries
-C7 and the sudo arm of C8, and is on when `planir.options.packs` lists it (or the constructor's
-`enabled_packs` does).
+Packs: `tier1` (always on) carries C1, C2, C3, C4, C4*, C7's SQL arm, C9, C10 and extent;
+`host_gated` carries C7's file-destruction arm and the sudo arm of C8, and is on when
+`planir.options.packs` lists it (or the constructor's `enabled_packs` does).
 """
 
 from __future__ import annotations

@@ -1,0 +1,58 @@
+{
+  "name": "@firstdataunion/sentrook-openclaw",
+  "version": "2.0.0-beta.0",
+  "description": "OpenClaw plugin: scans agent tool calls with Sentrook.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "license": "MIT",
+  "author": "FirstDataUnion",
+  "files": [
+    "dist/",
+    "index.ts",
+    "approvalPolicy.ts",
+    "auth.ts",
+    "cli.ts",
+    "config.ts",
+    "decision.ts",
+    "planir.ts",
+    "redact.ts",
+    "scanClient.ts",
+    "scanErrorPolicy.ts",
+    "store.ts",
+    "traffic.ts",
+    "verify.ts",
+    "openclaw.plugin.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FirstDataUnion/Sentrook.git",
+    "directory": "integrations/openclaw/plugin"
+  },
+  "homepage": "https://github.com/FirstDataUnion/Sentrook/tree/main/integrations/openclaw/plugin",
+  "bugs": {
+    "url": "https://github.com/FirstDataUnion/Sentrook/issues"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "esbuild index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --legal-comments=none",
+    "prepack": "npm run build",
+    "test": "node --experimental-strip-types --test *.test.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "pack:check": "npm run build && node --experimental-strip-types packCheck.ts"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ]
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3"
+  }
+}

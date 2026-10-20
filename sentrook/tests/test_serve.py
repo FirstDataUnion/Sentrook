@@ -88,7 +88,7 @@ def oidc_server(monkeypatch):
 def test_health_and_metrics(server):
     with httpx.Client(base_url=server.url) as c:
         h = c.get("/healthz").json()
-        assert h["ok"] and h["test_mode"] and "auth" not in h and h["convergence"] == "conv-v1"
+        assert h["ok"] and h["test_mode"] and "auth" not in h and h["convergence"] == "conv-v3"
         m = c.get("/metrics")
         assert m.status_code == 200 and b"http_requests_total" in m.content
         assert c.get("/nope").status_code == 404

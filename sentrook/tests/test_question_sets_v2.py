@@ -105,6 +105,7 @@ def test_call_v2_view_adds_the_inputs_between_history_and_pending_call(harm_case
         CALL: "trim-v1",
         EXPOSURE_V2: "trim-v2",
         CALL_V2: "trim-v2",
+        "call-v3": "trim-v3",
     }
 
 
@@ -401,8 +402,22 @@ def test_question_set_env_round_trip_and_health():
     assert cfg.jev_exposure_question_set == "exposure-v2" and cfg.jev_call_question_set == "call-v2"
     default = ServeConfig.from_env({})
     assert (default.jev_exposure_question_set, default.jev_call_question_set) == (
+        "exposure-v2",
+        "call-v3",
+    )
+    assert default.convergence == "conv-v3"
+    # the frozen v1 sets and conv-v1 stay selectable for the Jev-only comparison
+    frozen = ServeConfig.from_env(
+        {
+            "SENTROOK_JEV_EXPOSURE_QUESTIONS": "exposure-v1",
+            "SENTROOK_JEV_CALL_QUESTIONS": "call-v1",
+            "SENTROOK_CONVERGENCE": "conv-v1",
+        }
+    )
+    assert (frozen.jev_exposure_question_set, frozen.jev_call_question_set, frozen.convergence) == (
         "exposure-v1",
         "call-v1",
+        "conv-v1",
     )
     runtime = ServeRuntime.build(
         ServeConfig(
