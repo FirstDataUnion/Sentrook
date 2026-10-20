@@ -587,6 +587,28 @@ def _decode_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
     return None
 
 
+def _is_listed_installer(host: str, ctx: Context) -> bool:
+    host = host.lower().strip(".")
+    for listed in ctx.lists.strings("installers", "installer_hosts"):
+        listed = listed.lower().strip(".")
+        if host == listed or host.endswith("." + listed):
+            return True
+    return False
+
+
+def _add_unvetted_sensitivity(
+    f: Finding, code_source: EntityRef | None, subject: str | None, ctx: Context
+) -> None:
+    """Code from a host that is not a listed installer runs with the agent's own read access: its
+    sensitivity is what the agent can read (`weights.yaml` `code.sensitivity_unvetted`), whatever
+    the command names. A listed installer host, or no host at all, adds nothing."""
+    if code_source is None or _is_listed_installer(code_source.value, ctx):
+        return
+    weight = ctx.weight("code", "sensitivity_unvetted")
+    if weight > 0:
+        f.add(SENSITIVITY, weight, subject, "code.unvetted_source")
+
+
 def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C3: fetch-to-shell, decode-to-shell (floor), install-from-URL, package install, running a
     file written since a fetch."""
@@ -634,6 +656,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": fetch_mech},
         )
         f.add(REACH, reach, host_subject).add(IRREVERSIBILITY, irr, host_subject)
+        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
         if obfuscated:
             f.detail["revealed_by"] = sorted(a.encodings)
             f.add(
@@ -700,6 +723,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": from_url.group(0)[:80]},
         )
         f.add(REACH, reach, subject).add(IRREVERSIBILITY, irr, subject)
+        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
         out.append(f)
 
     install_heads = set(lists.strings("installers", "package_install_heads"))

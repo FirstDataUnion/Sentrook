@@ -5,7 +5,8 @@
   `suspicion.exposure`; above the taint threshold it sets the `tainted` session flag. It is skipped
   when there is nothing new and untrusted to read.
 - `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger; `call-v2`
-  adds the turn's inputs) with the `call-v1` or `call-v2` questions and contributes misalignment,
+  adds the turn's inputs; `call-v3` adds the entity library's verdicts for the call's own entities,
+  filled from the oracle probe) with the `call-v1`, `call-v2` or `call-v3` questions and contributes misalignment,
   concealment, sensitivity, reach, irreversibility, self-modification, `suspicion.overreach` (call-v2's
   `scope_overreach`) and `confidence.model_certainty` (the mean confidence over Score and Choice
   answers). The `untrusted_origin` answer is recorded in evidence only; the
@@ -13,8 +14,9 @@
 
 The question set's `state_view` selects which prepared view a probe sends.
 
-Both run in parallel under the scan's thread pool and never raise: an API failure is an envelope with
-status `error` or `timeout`, and the scan continues as `degraded`.
+Both run in parallel under the scan's thread pool (after the oracle probe when the call view carries
+`reputation`) and never raise: an API failure is an envelope with status `error` or `timeout`, and
+the scan continues as `degraded`.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from ..jev.chunking import chunk_exposure_state, est_tokens
 from ..jev.client import ApiError, Decider, DecisionResult, JevConfig
 from ..jev.questions import QuestionSet, build_body, load_question_set
 from ..prepare import Prepared
-from ..prepare.views import VIEW_KEYS
+from ..prepare.views import REPUTATION, VIEW_KEYS, with_reputation
 from .base import Contribution, Envelope
 
 PROBE_VERSION = "jev/2.0.0a1"
@@ -114,6 +116,8 @@ class _JevProbe:
         if self.step is ProbeStep.JEV_CALL and "new_inputs" in VIEW_KEYS.get(self.view_name, ()):
             out["inputs_truncated"] = bool(meta.get("inputs_truncated"))
             out["inputs_stripped"] = bool(meta.get("inputs_stripped"))
+        if self.step is ProbeStep.JEV_CALL and REPUTATION in VIEW_KEYS.get(self.view_name, ()):
+            out["reputation_entries"] = len(prepared.oracle_verdicts)
         return out
 
     def _no_view(self) -> Envelope:
@@ -243,8 +247,13 @@ class JevCallProbe(_JevProbe):
         super().__init__(decider, config, question_set or config.call_question_set)
 
     def state_for(self, prepared: Prepared) -> dict[str, Any]:
-        """The configured call view. Raises KeyError when it was not prepared."""
-        return prepared.views[self.view_name]
+        """The configured call view. Raises KeyError when it was not prepared. A view that carries
+        `reputation` (call-v3) gets the oracle verdicts the scan stored on `prepared`; with none
+        known the key is absent."""
+        state = prepared.views[self.view_name]
+        if REPUTATION in VIEW_KEYS.get(self.view_name, ()):
+            return with_reputation(state, prepared.oracle_verdicts)
+        return state
 
     def run(self, prepared: Prepared, *, repeat: int | None = None) -> Envelope:
         try:

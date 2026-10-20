@@ -16,6 +16,11 @@ byte as they are): `call-v2` adds the turn's `new_inputs` between `history` and 
 question can weigh a listing or a read before a bulk or publishing call, with per-input and total
 content caps; `exposure-v2` has the `exposure` keys. Both v2 views end with the scanner's second
 redaction pass (`redact`).
+
+`trim-v3` adds `call-v3`: the call-v2 view plus a `reputation` block after `grants` holding the
+entity library's `known_good` and `known_bad` verdicts for the call's own hosts, recipients and
+packages. The block is filled by the call probe from the oracle probe's result (the scan runs the
+oracle first when the call view asks for it), and is absent when nothing is known.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from .redact import second_pass
 
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
+VIEWS_VERSION_V3 = "trim-v3"
 
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
@@ -40,6 +46,9 @@ EXPOSURE = "exposure"
 CALL = "call"
 EXPOSURE_V2 = "exposure-v2"
 CALL_V2 = "call-v2"
+CALL_V3 = "call-v3"
+#: The call-v3 block of entity-library verdicts, added by the call probe once the oracle has run.
+REPUTATION = "reputation"
 VIEW_KEYS: dict[str, tuple[str, ...]] = {
     EXPOSURE: ("planir_version", "host", "trigger", "request", "new_inputs"),
     CALL: (
@@ -64,6 +73,18 @@ VIEW_KEYS: dict[str, tuple[str, ...]] = {
         "pending_call",
         "grants",
     ),
+    CALL_V3: (
+        "planir_version",
+        "host",
+        "session",
+        "trigger",
+        "request",
+        "history",
+        "new_inputs",
+        "pending_call",
+        "grants",
+        REPUTATION,
+    ),
 }
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
@@ -71,9 +92,16 @@ VIEW_VERSIONS: dict[str, str] = {
     CALL: VIEWS_VERSION,
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
+    CALL_V3: VIEWS_VERSION_V3,
 }
 #: Which probe a view serves.
-VIEW_KIND: dict[str, str] = {EXPOSURE: EXPOSURE, EXPOSURE_V2: EXPOSURE, CALL: CALL, CALL_V2: CALL}
+VIEW_KIND: dict[str, str] = {
+    EXPOSURE: EXPOSURE,
+    EXPOSURE_V2: EXPOSURE,
+    CALL: CALL,
+    CALL_V2: CALL,
+    CALL_V3: CALL,
+}
 
 #: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
 #: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
@@ -204,7 +232,34 @@ def call_view_v2(
 ) -> BuiltView:
     """The call view plus the turn's inputs, capped, then redacted. If the capped view is still over
     the budget, every input keeps its metadata and loses its content."""
-    v = view(trim(raw), CALL_V2)
+    return _call_view_with_inputs(raw, CALL_V2, budget_tokens=budget_tokens)
+
+
+def call_view_v3(
+    raw: dict[str, Any], *, budget_tokens: int = CALL_STATE_BUDGET_TOKENS
+) -> BuiltView:
+    """The call-v2 view, which the call probe completes with `reputation` (the entity library's
+    `known_good` and `known_bad` verdicts for the call's hosts, recipients and packages, from the
+    oracle probe) once that probe has run; see `with_reputation`. The raw request carries no such
+    key, so the prepared view has none."""
+    return _call_view_with_inputs(raw, CALL_V3, budget_tokens=budget_tokens)
+
+
+def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> dict[str, Any]:
+    """A copy of a call-v3 state with the `reputation` block appended after `grants`; with no
+    known verdicts the key is absent, so the model's default (nothing vouched for) applies and the
+    request body is the same as it would be without an oracle."""
+    out = dict(state)
+    out.pop(REPUTATION, None)
+    if verdicts:
+        out[REPUTATION] = [dict(v) for v in verdicts]
+    return out
+
+
+def _call_view_with_inputs(
+    raw: dict[str, Any], name: str, *, budget_tokens: int = CALL_STATE_BUDGET_TOKENS
+) -> BuiltView:
+    v = view(trim(raw), name)
     inputs = v.get("new_inputs")
     truncated = stripped = False
     if isinstance(inputs, list):
@@ -227,4 +282,5 @@ def build_views(
         CALL: BuiltView(state=call_view(raw)),
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
         CALL_V2: call_view_v2(raw),
+        CALL_V3: call_view_v3(raw),
     }

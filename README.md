@@ -24,7 +24,7 @@ The scanner is configured through `SENTROOK_*` environment variables. The Jev pr
 | `SENTROOK_JEV_MODEL` | `typesafe/jev-1.13` | Jev model |
 | `SENTROOK_JEV_TIMEOUT_MS` | `20000` | Per-request timeout |
 | `SENTROOK_JEV_EXPOSURE_QUESTIONS` | `exposure-v2` | Exposure question set on the redacted view (`exposure-v1`, the frozen set, stays selectable) |
-| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v2` | Call question set, which also sees the turn's inputs (`call-v1`, the frozen set, stays selectable) |
+| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v3` | Call question set: the turn's inputs plus the entity library's verdicts (`call-v2` without the verdicts and `call-v1`, the frozen set, stay selectable) |
 | `SENTROOK_CONVERGENCE` | `conv-v3` | Convergence parameter set (`conv-v1` and `conv-v2` stay selectable) |
 
 ## License
