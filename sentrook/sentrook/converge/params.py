@@ -32,6 +32,8 @@ class ConvergenceParams:
     request_named_relief: bool = True
     request_named_owner_only: bool = True
     request_named_roles: tuple[str, ...] = ("data_destination", "recipient")
+    #: A `known_good` oracle verdict on a destination or recipient relieves it like a grant.
+    known_good_relief: bool = True
     reason_min_value: float = 0.2
     oracle: OracleParams = field(default_factory=OracleParams)
     context: ContextParams = field(default_factory=ContextParams)
@@ -50,8 +52,13 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     raw = json.loads(path.read_text(encoding="utf-8"))
     agreement = raw.get("agreement") or {}
     rnr = raw.get("request_named_relief") or {}
+    kgr = raw.get("known_good_relief") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
-    context = _override(ContextParams(name=f"{raw['name']}/context"), raw.get("context") or {})
+    context_section = dict(raw.get("context") or {})
+    lineage = context_section.pop("lineage", None)
+    if isinstance(lineage, dict):  # `context.lineage.<key>` sets `ContextParams.lineage_<key>`
+        context_section.update({f"lineage_{k}": v for k, v in lineage.items()})
+    context = _override(ContextParams(name=f"{raw['name']}/context"), context_section)
     return ConvergenceParams(
         name=raw["name"],
         u=float(raw.get("u", 0.25)),
@@ -67,6 +74,7 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         request_named_relief=bool(rnr.get("enabled", True)),
         request_named_owner_only=bool(rnr.get("owner_only", True)),
         request_named_roles=tuple(rnr.get("roles") or ("data_destination", "recipient")),
+        known_good_relief=bool(kgr.get("enabled", True)),
         reason_min_value=float(raw.get("reason_min_value", 0.2)),
         oracle=oracle,
         context=context,

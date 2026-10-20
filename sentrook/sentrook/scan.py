@@ -24,13 +24,17 @@ from . import __version__
 from .converge import ConvergenceParams, ConvergeResult, converge, load_params
 from .enums import ProbeStatus, ProbeStep
 from .jev.client import Decider, JevConfig
+from .jev.questions import QuestionSet, load_question_set
 from .oracle.client import NullOracle, OracleClient, SeedOracle
 from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
+from .prepare.redact import REDACTION_VERSION
+from .prepare.redact_shapes import load_shapes
+from .prepare.views import CALL, EXPOSURE, REPUTATION, VIEW_KEYS, VIEW_VERSIONS
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
 from .probes.jev import JevCallProbe, JevExposureProbe
-from .probes.oracle import EntityOracleProbe
+from .probes.oracle import EntityOracleProbe, verdicts_for_view
 from .response.models import Response
 
 ALL_PROBES: tuple[ProbeStep, ...] = tuple(ProbeStep)
@@ -55,17 +59,36 @@ class ScanResult:
     envelopes: list[Envelope] = field(default_factory=list)
     prepared: Prepared | None = None
     converge: ConvergeResult | None = None
+    #: The view each Jev probe is configured to send (from the question sets' `state_view`).
+    jev_views: dict[str, str] = field(default_factory=lambda: {EXPOSURE: EXPOSURE, CALL: CALL})
 
     @property
     def prepared_views(self) -> dict[str, Any]:
-        """What the Jev probes were sent, for the test-mode `prepared` block and parity checks."""
+        """What the Jev probes were sent (or, for a probe that did not run, the configured view), the
+        view names and versions, the second redaction pass, and the history lineage (paths and
+        steps only, never content), for the test-mode `prepared` block and the runner's parity
+        checks (which apply only to `trim-v1` views)."""
         out: dict[str, Any] = {}
         for env in self.envelopes:
             if env.step in (ProbeStep.JEV_EXPOSURE, ProbeStep.JEV_CALL) and "state" in env.evidence:
                 out[f"{env.step.value}_state"] = env.evidence["state"]
+        redactions = 0
         if self.prepared is not None:
-            out.setdefault("jev_exposure_state", self.prepared.views.get("exposure"))
-            out.setdefault("jev_call_state", self.prepared.views.get("call"))
+            out.setdefault("jev_exposure_state", self.prepared.views.get(self.jev_views[EXPOSURE]))
+            out.setdefault("jev_call_state", self.prepared.views.get(self.jev_views[CALL]))
+            redactions = sum(
+                (self.prepared.view_meta.get(name) or {}).get("redactions", 0)
+                for name in set(self.jev_views.values())
+            )
+        out["views"] = dict(self.jev_views)
+        out["views_version"] = {k: VIEW_VERSIONS.get(v) for k, v in self.jev_views.items()}
+        out["redaction"] = {
+            "version": REDACTION_VERSION,
+            "shapes": load_shapes().version,
+            "count": redactions,
+        }
+        if self.prepared is not None:
+            out["lineage"] = self.prepared.lineage.names(self.prepared.home)
         return out
 
 
@@ -94,9 +117,30 @@ def _aira_factory(prepared: Prepared, config: ScannerConfig) -> Probe | None:
     return AiraProbe(enabled_packs=set(packs))
 
 
+def views_label(jev_views: dict[str, str]) -> str:
+    """The `metadata.versions.views` value: one views version, or one per probe when they differ."""
+    versions = {k: VIEW_VERSIONS.get(v, v) for k, v in jev_views.items()}
+    if len(set(versions.values())) == 1:
+        return next(iter(versions.values()))
+    return ",".join(f"{k}:{v}" for k, v in versions.items())
+
+
 class Scanner:
     def __init__(self, config: ScannerConfig):
         self.config = config
+        #: Loaded once; an unknown set name fails here, at startup.
+        self.jev_question_sets: dict[str, QuestionSet] = {
+            EXPOSURE: load_question_set(config.jev.exposure_question_set),
+            CALL: load_question_set(config.jev.call_question_set),
+        }
+        self.jev_views: dict[str, str] = {
+            k: qs.state_view for k, qs in self.jev_question_sets.items()
+        }
+
+    @property
+    def call_view_wants_reputation(self) -> bool:
+        """The configured call view carries the entity library's verdicts (call-v3)."""
+        return REPUTATION in VIEW_KEYS.get(self.jev_views.get(CALL, ""), ())
 
     def _probes(self, prepared: Prepared, options: ScanOptions) -> dict[ProbeStep, Probe | None]:
         cfg = self.config
@@ -106,10 +150,12 @@ class Scanner:
         else:
             oracle = cfg.oracle or NullOracle()
         probes: dict[ProbeStep, Probe | None] = {
-            ProbeStep.JEV_EXPOSURE: JevExposureProbe(cfg.decider, cfg.jev)
+            ProbeStep.JEV_EXPOSURE: JevExposureProbe(
+                cfg.decider, cfg.jev, self.jev_question_sets[EXPOSURE]
+            )
             if cfg.decider is not None
             else None,
-            ProbeStep.JEV_CALL: JevCallProbe(cfg.decider, cfg.jev)
+            ProbeStep.JEV_CALL: JevCallProbe(cfg.decider, cfg.jev, self.jev_question_sets[CALL])
             if cfg.decider is not None
             else None,
             ProbeStep.AIRA: cfg.extra_probes[ProbeStep.AIRA](prepared, cfg)
@@ -160,7 +206,8 @@ class Scanner:
             return ScanResult(
                 response=Response.errored(
                     str(raw.get("request_id") or ""), self.config.scanner_version, e.code, e.message
-                )
+                ),
+                jev_views=dict(self.jev_views),
             )
         except Exception as e:  # noqa: BLE001 (a malformed body is an error response, never a 500)
             return ScanResult(
@@ -169,15 +216,31 @@ class Scanner:
                     self.config.scanner_version,
                     "invalid_planir",
                     repr(e),
-                )
+                ),
+                jev_views=dict(self.jev_views),
             )
 
         enabled = tuple(options.probes_enabled or self.config.probes_enabled)
         probes = self._probes(prepared, options)
         envelopes: dict[ProbeStep, Envelope] = {}
+        # A call view that carries the entity library's verdicts needs the oracle's answer first;
+        # the oracle is deterministic and local or one short HTTP round trip, the Jev call is the
+        # long one, so it runs alone before the pool. Without the oracle (disabled or not
+        # configured) the view simply has no `reputation` block.
+        oracle = probes.get(ProbeStep.ENTITY_ORACLE)
+        if (
+            self.call_view_wants_reputation
+            and oracle is not None
+            and ProbeStep.ENTITY_ORACLE.value in enabled
+        ):
+            env = self._run_probe(ProbeStep.ENTITY_ORACLE, oracle, prepared, options)
+            envelopes[ProbeStep.ENTITY_ORACLE] = env
+            prepared.oracle_verdicts = verdicts_for_view(env)
         with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
             futures = {}
             for step in ALL_PROBES:
+                if step in envelopes:
+                    continue
                 probe = probes.get(step)
                 if step.value not in enabled:
                     envelopes[step] = Envelope.skipped(
@@ -204,9 +267,14 @@ class Scanner:
             token_key=self.config.token_key,
             started=started,
             probes_enabled=list(enabled),
+            views=views_label(self.jev_views),
         )
         return ScanResult(
-            response=result.response, envelopes=ordered, prepared=prepared, converge=result
+            response=result.response,
+            envelopes=ordered,
+            prepared=prepared,
+            converge=result,
+            jev_views=dict(self.jev_views),
         )
 
 

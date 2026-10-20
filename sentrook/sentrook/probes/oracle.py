@@ -53,6 +53,32 @@ class OracleParams:
     coverage_unavailable: float = 0.7
 
 
+VIEW_VERDICTS = (VerdictKind.KNOWN_GOOD.value, VerdictKind.KNOWN_BAD.value)
+
+
+def verdicts_for_view(envelope: Envelope) -> list[dict[str, object]]:
+    """The `reputation` entries a call-v3 view carries: every `known_good` or `known_bad` entity in
+    an OK oracle envelope, as `kind`, `value`, `verdict` (and `tier` when the library gives one),
+    sorted for a stable request body. Unknown entities are left out: not vouched for is the
+    model's default."""
+    if envelope.status is not ProbeStatus.OK:
+        return []
+    out: list[dict[str, object]] = []
+    for info in (envelope.evidence.get("entities") or {}).values():
+        if not isinstance(info, dict) or info.get("verdict") not in VIEW_VERDICTS:
+            continue
+        entry: dict[str, object] = {
+            "kind": info.get("kind"),
+            "value": info.get("value"),
+            "verdict": info.get("verdict"),
+        }
+        if info.get("tier"):
+            entry["tier"] = info["tier"]
+        out.append(entry)
+    out.sort(key=lambda e: (str(e["kind"]), str(e["value"]), str(e["verdict"])))
+    return out
+
+
 class EntityOracleProbe:
     step = ProbeStep.ENTITY_ORACLE
 

@@ -1,0 +1,149 @@
+# Keeps the vendor key shapes of the second redaction pass on the latest gitleaks release.
+# Weekly (or on demand) it regenerates sentrook/sentrook/prepare/redact_shapes.yaml at the newest
+# gitleaks release tag, moves GITLEAKS_TAG in the Makefile to match, and opens or updates the pull
+# request chore/redact-shapes-<tag> when anything changed. ci.yml's `make redact-shapes-check` then
+# holds the file to that tag. GITLEAKS_TAG is also the gitleaks image security.yml scans with, so the
+# same PR moves the secret scanner; the workflow file itself is not edited, which the default token
+# could not push.
+#
+# Pull requests opened with the default GITHUB_TOKEN do not trigger other workflows, so ci.yml does not
+# run on them by itself. This job runs the unit tests and reports the result in the PR body; to get
+# the full CI run, push an empty commit to the branch or close and reopen the PR. Setting the
+# REDACT_SHAPES_PR_TOKEN secret (a fine-grained token with contents and pull-requests write on this
+# repository) makes the PR trigger CI directly.
+name: redact-shapes-refresh
+
+on:
+  schedule:
+    - cron: "41 6 * * 1" # weekly Monday 06:41 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sentrook-redact-shapes-refresh
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Latest gitleaks release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          headers="$RUNNER_TEMP/release.headers"
+          body="$RUNNER_TEMP/release.json"
+          status=$(curl -sS -o "$body" -D "$headers" -w '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/gitleaks/gitleaks/releases/latest)
+          if [ "$status" = "403" ] || [ "$status" = "429" ]; then
+            reset=$(sed -n 's/^x-ratelimit-reset: *\([0-9]*\).*/\1/Ip' "$headers")
+            when=$([ -n "$reset" ] && date -u -d "@$reset" '+%Y-%m-%d %H:%M UTC' || echo "an unknown time")
+            echo "::error::GitHub API rate limit reached (HTTP $status), resets at $when. Re-run the workflow then."
+            exit 1
+          fi
+          if [ "$status" != "200" ]; then
+            echo "::error::gitleaks latest release lookup failed (HTTP $status)"
+            cat "$body"
+            exit 1
+          fi
+          tag=$(jq -r .tag_name "$body")
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::unexpected gitleaks release tag: $tag"
+            exit 1
+          fi
+          current=$(sed -n 's/^GITLEAKS_TAG ?= //p' Makefile)
+          echo "pinned $current, latest $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        run: make install
+
+      - name: Regenerate the shapes and move GITLEAKS_TAG
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          uv run sentrook redact-shapes import --tag "$TAG" --summary "$RUNNER_TEMP/summary.md"
+          sed -i -E "s/^GITLEAKS_TAG \?= .*/GITLEAKS_TAG ?= $TAG/" Makefile
+          make redact-shapes-check
+
+      - name: Changed
+        id: diff
+        run: |
+          paths=(Makefile sentrook/sentrook/prepare/redact_shapes.yaml)
+          if [ -n "$(git status --porcelain -- "${paths[@]}")" ]; then
+            git diff --stat -- "${paths[@]}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "redact_shapes.yaml and GITLEAKS_TAG are current"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Unit tests
+        id: tests
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: make test
+
+      - name: Pull request body
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+          CURRENT: ${{ steps.latest.outputs.current }}
+          TESTS: ${{ steps.tests.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Regenerates \`sentrook/sentrook/prepare/redact_shapes.yaml\` from gitleaks \`$TAG\` (was \`$CURRENT\`) and moves \`GITLEAKS_TAG\` in the Makefile to match, which also moves the gitleaks image the \`security\` workflow scans with."
+            echo
+            echo "## Shapes"
+            cat "$RUNNER_TEMP/summary.md"
+            echo
+            echo "Unit tests at \`$TAG\`: **$TESTS** ([run]($RUN_URL))."
+            echo
+            echo "## Before merging"
+            echo "- [ ] If shapes were added, removed or changed, give \`prepare/redact.py\` a new \`REDACTION_VERSION\` and add a CHANGELOG entry: the masked set, the v2 view bytes and the Jev cache keys change."
+            echo "- [ ] Run CI on this PR (it does not start by itself when opened with the default token: push an empty commit or close and reopen)."
+            echo
+            echo "Opened by \`.github/workflows/redact-shapes-refresh.yml\`."
+          } > "$RUNNER_TEMP/body.md"
+
+      - name: Open or update the pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.REDACT_SHAPES_PR_TOKEN || github.token }}
+          branch: chore/redact-shapes-${{ steps.latest.outputs.tag }}
+          delete-branch: true
+          add-paths: |
+            Makefile
+            sentrook/sentrook/prepare/redact_shapes.yaml
+          commit-message: "Redaction shapes: gitleaks ${{ steps.latest.outputs.tag }}"
+          title: "Redaction shapes: gitleaks ${{ steps.latest.outputs.tag }}"
+          body-path: ${{ runner.temp }}/body.md

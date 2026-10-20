@@ -52,6 +52,13 @@ SIGNALS: dict[str, Signal] = {
         ),
         Signal("suspicion.concealment", "suspicion", Merge.MAX, True, "Call hides what it does"),
         Signal(
+            "suspicion.overreach",
+            "suspicion",
+            Merge.MAX,
+            True,
+            "Call acts on more than the request covers, judged against what the agent read",
+        ),
+        Signal(
             "suspicion.distrust",
             "suspicion",
             Merge.MAX_OVER_SUBJECTS,
@@ -117,6 +124,7 @@ REASONS: dict[str, str] = {
     # call (Jev)
     "call.not_supported_by_request": "The call does not follow from what you asked for.",
     "jev.concealment": "The call hides what it does.",
+    "jev.scope_overreach": "The call acts on more than you asked for, going by what the agent read.",
     "jev.sensitivity": "The call touches sensitive data.",
     "jev.reach": "The call's effects reach beyond the workspace.",
     "jev.irreversibility": "The call cannot easily be undone.",
@@ -135,6 +143,14 @@ REASONS: dict[str, str] = {
     "origin.agent_created_dirty_lineage": "{subject} was created by the agent from content it read.",
     "origin.request_named": "You named {subject} in your request.",
     "origin.granted": "A grant covers {subject}.",
+    "origin.lookalike_of_named_host": "{subject} imitates a host you named in your request; you did not name it.",
+    # lineage (context): what the agent did earlier in the session around this call
+    "lineage.moved_into_destroyed_tree": "Earlier in this session the agent moved {subject} into the directory this command deletes, so it is deleted too.",
+    "lineage.listing_marks_irreplaceable": "The agent's own saved listing of {subject} notes that part of it cannot be replaced, and this command deletes it.",
+    "lineage.secret_carried_to_send": "The agent wrote secret values into {subject}, and this call sends or publishes it.",
+    "lineage.lookalike_of_named_host": "{subject} looks like a host you named in your request but is a different host.",
+    "lineage.filter_silences_security_notices": "The call installs a filter at {subject} that hides sign-in or security notices from you.",
+    "lineage.listing_marks_live_table": "The agent's own listing of the database shows that the table this command destroys holds live data.",
     # trigger
     "trigger.owner": "The request came from you.",
     "trigger.scheduled": "This is a scheduled run.",
@@ -181,6 +197,7 @@ REASONS: dict[str, str] = {
     "relief.destination_grant": "A grant covers {subject}.",
     "relief.file_grant": "A grant covers access to {subject}.",
     "relief.request_named_destination": "You named {subject} as the destination in your request.",
+    "relief.known_good_destination": "{subject} is a known good destination.",
     # AIRA: consequence classes (C1 to C10) and extent
     "path.credential_store": "{subject} is a credential store.",
     "path.credential_bearing_config": "{subject} is configuration that carries credentials.",
@@ -195,6 +212,7 @@ REASONS: dict[str, str] = {
     "exfil.session_holds_sensitive": "The agent read sensitive data earlier in this session and this call sends data out.",
     "send.off_host": "The call sends data to {subject}.",
     "code.fetch_to_shell": "The command fetches content from {subject} and runs it.",
+    "code.unvetted_source": "{subject} is not a known installer host, and code run from it has the agent's own access to everything it can read.",
     "code.decode_to_shell": "The command decodes a hidden payload and runs it.",
     "code.install_from_url": "The command installs software from {subject}.",
     "code.package_install": "The command installs the package {subject}.",

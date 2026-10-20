@@ -1,16 +1,22 @@
 """The two Jev probes.
 
 - `JevExposureProbe` sends the exposure view (request text plus the new untrusted inputs) with the
-  `exposure-v1` questions and contributes `suspicion.exposure`; above the taint threshold it sets the
-  `tainted` session flag. It is skipped when there is nothing new and untrusted to read.
-- `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger) with
-  the `call-v1` questions and contributes misalignment, concealment, sensitivity, reach,
-  irreversibility, self-modification and `confidence.model_certainty` (the mean confidence over Score
-  and Choice answers). The `untrusted_origin` answer is recorded in evidence only;
-  the context probe owns that signal. The action category goes in evidence for the tool description.
+  `exposure-v1` questions (or `exposure-v2` on the redacted `exposure-v2` view) and contributes
+  `suspicion.exposure`; above the taint threshold it sets the `tainted` session flag. It is skipped
+  when there is nothing new and untrusted to read.
+- `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger; `call-v2`
+  adds the turn's inputs; `call-v3` adds the entity library's verdicts for the call's own entities,
+  filled from the oracle probe) with the `call-v1`, `call-v2` or `call-v3` questions and contributes misalignment,
+  concealment, sensitivity, reach, irreversibility, self-modification, `suspicion.overreach` (call-v2's
+  `scope_overreach`) and `confidence.model_certainty` (the mean confidence over Score and Choice
+  answers). The `untrusted_origin` answer is recorded in evidence only; the
+  context probe owns that signal. The action category goes in evidence for the tool description.
 
-Both run in parallel under the scan's thread pool and never raise: an API failure is an envelope with
-status `error` or `timeout`, and the scan continues as `degraded`.
+The question set's `state_view` selects which prepared view a probe sends.
+
+Both run in parallel under the scan's thread pool (after the oracle probe when the call view carries
+`reputation`) and never raise: an API failure is an envelope with status `error` or `timeout`, and
+the scan continues as `degraded`.
 """
 
 from __future__ import annotations
@@ -23,14 +29,15 @@ from ..jev.chunking import chunk_exposure_state, est_tokens
 from ..jev.client import ApiError, Decider, DecisionResult, JevConfig
 from ..jev.questions import QuestionSet, build_body, load_question_set
 from ..prepare import Prepared
-from ..prepare.views import EXPOSURE, exposure_view
+from ..prepare.views import REPUTATION, VIEW_KEYS, with_reputation
 from .base import Contribution, Envelope
 
 PROBE_VERSION = "jev/2.0.0a1"
 
 EXPOSURE_QUESTIONS = ("exposure_instructions", "exposure_task_change", "exposure_authority")
-#: call-v1 question → signal, for Score and Noul questions
+#: call question → signal, for Score and Noul questions (a set without the question contributes nothing)
 CALL_SIGNALS: dict[str, str] = {
+    "scope_overreach": "suspicion.overreach",
     "concealment": "suspicion.concealment",
     "sensitivity": "consequence.sensitivity",
     "reach": "consequence.reach",
@@ -73,10 +80,15 @@ def _usage_summary(results: list[DecisionResult]) -> dict[str, Any]:
 class _JevProbe:
     step: ProbeStep
 
-    def __init__(self, decider: Decider, config: JevConfig, question_set: str):
+    def __init__(self, decider: Decider, config: JevConfig, question_set: str | QuestionSet):
         self.decider = decider
         self.config = config
-        self.qs: QuestionSet = load_question_set(question_set)
+        self.qs: QuestionSet = (
+            question_set
+            if isinstance(question_set, QuestionSet)
+            else load_question_set(question_set)
+        )
+        self.view_name = self.qs.state_view
 
     @property
     def versions(self) -> dict[str, str | None]:
@@ -93,6 +105,30 @@ class _JevProbe:
         if resolved:
             v["model"] = resolved
         return v
+
+    def _view_evidence(self, prepared: Prepared) -> dict[str, Any]:
+        meta = prepared.view_meta.get(self.view_name) or {}
+        out: dict[str, Any] = {
+            "view": self.view_name,
+            "views_version": prepared.views_version.get(self.view_name),
+            "redactions": meta.get("redactions", 0),
+        }
+        if self.step is ProbeStep.JEV_CALL and "new_inputs" in VIEW_KEYS.get(self.view_name, ()):
+            out["inputs_truncated"] = bool(meta.get("inputs_truncated"))
+            out["inputs_stripped"] = bool(meta.get("inputs_stripped"))
+        if self.step is ProbeStep.JEV_CALL and REPUTATION in VIEW_KEYS.get(self.view_name, ()):
+            out["reputation_entries"] = len(prepared.oracle_verdicts)
+        return out
+
+    def _no_view(self) -> Envelope:
+        env = Envelope.failed(
+            self.step,
+            ProbeStatus.ERROR,
+            f"view {self.view_name!r} (question set {self.qs.name}) was not prepared",
+            self.versions,
+        )
+        env.evidence["view"] = self.view_name
+        return env
 
     def _call(self, state: dict[str, Any], repeat: int | None) -> DecisionResult:
         body = build_body(self.qs, state, model=self.config.model, provider=self.config.provider)
@@ -118,19 +154,28 @@ class _JevProbe:
 class JevExposureProbe(_JevProbe):
     step = ProbeStep.JEV_EXPOSURE
 
-    def __init__(self, decider: Decider, config: JevConfig):
-        super().__init__(decider, config, config.exposure_question_set)
+    def __init__(
+        self, decider: Decider, config: JevConfig, question_set: QuestionSet | None = None
+    ):
+        super().__init__(decider, config, question_set or config.exposure_question_set)
 
     def state_for(self, prepared: Prepared) -> dict[str, Any] | None:
+        """The configured exposure view with only the new untrusted inputs that carry content; None
+        when there are none. Raises KeyError when the view was not prepared."""
         seqs = {
             i.input.input_seq for i in prepared.untrusted_inputs(new_only=True) if i.input.content
         }
         if not seqs:
             return None
-        return exposure_view(prepared.raw, only_input_seqs=seqs)
+        v = dict(prepared.views[self.view_name])
+        v["new_inputs"] = [n for n in v.get("new_inputs") or [] if n.get("input_seq") in seqs]
+        return v
 
     def run(self, prepared: Prepared, *, repeat: int | None = None) -> Envelope:
-        state = self.state_for(prepared)
+        try:
+            state = self.state_for(prepared)
+        except KeyError:
+            return self._no_view()
         if state is None:
             return Envelope.skipped(
                 self.step, "no new untrusted inputs with content", self.versions
@@ -179,7 +224,7 @@ class JevExposureProbe(_JevProbe):
             ],
             flags_set=flags,
             evidence={
-                "view": EXPOSURE,
+                **self._view_evidence(prepared),
                 "state": state,
                 "checks": checks,
                 "chunks": len(chunks),
@@ -196,14 +241,25 @@ class JevExposureProbe(_JevProbe):
 class JevCallProbe(_JevProbe):
     step = ProbeStep.JEV_CALL
 
-    def __init__(self, decider: Decider, config: JevConfig):
-        super().__init__(decider, config, config.call_question_set)
+    def __init__(
+        self, decider: Decider, config: JevConfig, question_set: QuestionSet | None = None
+    ):
+        super().__init__(decider, config, question_set or config.call_question_set)
 
     def state_for(self, prepared: Prepared) -> dict[str, Any]:
-        return prepared.views["call"]
+        """The configured call view. Raises KeyError when it was not prepared. A view that carries
+        `reputation` (call-v3) gets the oracle verdicts the scan stored on `prepared`; with none
+        known the key is absent."""
+        state = prepared.views[self.view_name]
+        if REPUTATION in VIEW_KEYS.get(self.view_name, ()):
+            return with_reputation(state, prepared.oracle_verdicts)
+        return state
 
     def run(self, prepared: Prepared, *, repeat: int | None = None) -> Envelope:
-        state = self.state_for(prepared)
+        try:
+            state = self.state_for(prepared)
+        except KeyError:
+            return self._no_view()
         started = time.perf_counter()
         try:
             res = self._call(state, repeat)
@@ -268,7 +324,7 @@ class JevCallProbe(_JevProbe):
             latency_ms=latency,
             contributions=contributions,
             evidence={
-                "view": "call",
+                **self._view_evidence(prepared),
                 "state": state,
                 "answers": answers,
                 "action_category": category,

@@ -6,7 +6,7 @@
 # (a relative `tmp/` is a directory inside the workspace, not `/tmp`), and the workspace is the
 # deployment's `host.workspace_root`, not any directory that sounds like one.
 
-version: 1
+version: 3
 
 # Heads whose positional arguments are destroyed.
 heads:
@@ -53,11 +53,27 @@ verbs:
     note: chmod 000 (denies the owner access)
 
 # Destructive SQL, in exec text or in an MCP `sql`/`query` argument (canonical `content`). `DELETE
-# FROM` fires only without a WHERE clause.
+# FROM` fires only without a WHERE clause. Group 1, where present, is the object destroyed; the
+# lineage record carries it so the context probe can look it up in the agent's own listings.
 sql_patterns:
+  - '\bDROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLLECTION)\s+(?:IF\s+EXISTS\s+)?([\w."`]+)'
   - '\bDROP\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|COLLECTION)\b'
-  - '\bTRUNCATE\s+(?:TABLE\s+)?[\w."`]+'
-  - '\bDELETE\s+FROM\s+[\w."`]+(?!\s+WHERE\b)\s*(?:;|\)|\Z)'
+  - '\bTRUNCATE\s+(?:TABLE\s+)?([\w."`]+)'
+  - '\bDELETE\s+FROM\s+([\w."`]+)(?!\s+WHERE\b)\s*(?:;|\)|\Z)'
+
+# Marks in the agent's own listing of a database (a `\dt+`, `SHOW TABLES`, count or describe
+# result in the turn's inputs) that the object a destructive statement names holds live data: a
+# non-zero row count, a reference from another table, or a word that says it is in use. The
+# context probe reads the line that names the object; a line without a mark contributes nothing.
+live_table_markers:
+  patterns:
+    - '\b[1-9]\d*(?:[,_]\d{3})*\s*rows?\b'
+    - '\breferenced\s+by\b'
+    - '\bforeign\s+key\b'
+    - '\bin\s+use\b'
+    - '\blive\b'
+    - '\bproduction\b'
+    - '\bactive\b'
 
 # Scratch space. `tmp` is a regex over the normalised path; the workspace is resolved from the
 # request (`host.workspace_root`) plus the generic `workspace(s)` segment carried from 1.x.
@@ -77,3 +93,19 @@ ignore_path_patterns:
   - '/dist(?:/|\Z)'
   - '/build(?:/|\Z)'
   - '/\.cache(?:/|\Z)'
+
+# Words in the agent's own saved listing of a tree that mark part of it as irreplaceable. The context
+# probe reads a history write that lists paths under a tree the pending call destroys; a listing with
+# one of these markers means the agent recorded that the tree holds something that cannot come back.
+# A listing without a marker contributes nothing.
+irreplaceable_markers:
+  patterns:
+    - '\bonly copy\b'
+    - '\bno other cop(?:y|ies)\b'
+    - '\bnot rebuildable\b'
+    - '\bcannot be (?:rebuilt|recovered|recreated|replaced|restored)\b'
+    - '\bno backups?\b'
+    - '\boriginals?\b'
+    - '\bmaster cop(?:y|ies)\b'
+    - '\bsole cop(?:y|ies)\b'
+    - '\birreplaceable\b'

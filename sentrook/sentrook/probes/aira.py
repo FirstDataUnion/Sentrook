@@ -7,9 +7,14 @@
 `holds_sensitive` session flag; and evidence (classes, internal rule ids, the exec shape summary,
 packs, per-finding detail). It never raises: a failure is `Envelope.failed`.
 
-Packs: `tier1` (always on) carries C1, C2, C3, C4, C4*, C9, C10 and extent; `host_gated` carries
-C7 and the sudo arm of C8, and is on when `planir.options.packs` lists it (or the constructor's
-`enabled_packs` does).
+When the pending call runs a file the agent wrote earlier in the session (`prepared.written_file`),
+that file's content is analysed as a command of its own (source `written_file`, the pending call's
+cwd) with the same detectors and packs, and its findings merge like a sibling's: a script that uploads
+a file, or fetches a binary and runs it, carries the consequence it would carry typed at the prompt.
+
+Packs: `tier1` (always on) carries C1, C2, C3, C4, C4*, C7's SQL arm, C9, C10 and extent;
+`host_gated` carries C7's file-destruction arm and the sudo arm of C8, and is on when
+`planir.options.packs` lists it (or the constructor's `enabled_packs` does).
 """
 
 from __future__ import annotations
@@ -23,6 +28,9 @@ from ..aira.analysis import analyse
 from ..aira.detectors import PACK_TIER1, Context, Finding, call_label, run_detectors
 from ..aira.lists import Lists, load_lists
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
+from ..planir.canonical import CanonicalCall, canonicalise
+from ..planir.models import Provider, ProviderKind, ToolKind
+from ..prepare.entities import display_path
 from ..probes.base import Contribution, Envelope, Floor
 
 __all__ = ["AiraProbe", "AIRA_VERSION"]
@@ -89,7 +97,13 @@ class AiraProbe:
         skipped: list[str] = []
         seen_contributions: set[tuple[str, float, str | None, str | None]] = set()
 
-        for call in [prepared.pending, *prepared.siblings]:
+        written_call = written_file_call(prepared)
+        written_evidence: dict[str, Any] | None = None
+        calls = [prepared.pending]
+        if written_call is not None:
+            calls.append(written_call)
+        calls.extend(prepared.siblings)
+        for call in calls:
             a = analyse(call, prepared, self.lists)
             findings, skipped_here = run_detectors(a, ctx)
             skipped = skipped_here
@@ -127,6 +141,15 @@ class AiraProbe:
                 shape_summary = summary
                 paths_evidence = call_paths
                 hosts_evidence = [h.value for h in a.hosts]
+            elif call is written_call:
+                written = prepared.written_file
+                written_evidence = {
+                    "path": display_path(written.path, prepared.home),
+                    "step": written.step,
+                    "classes": sorted({f.cls for f in findings}),
+                    "rules": [f.rule for f in findings],
+                    "shape": summary,
+                }
             else:
                 siblings_evidence[label] = {
                     "classes": sorted({f.cls for f in findings}),
@@ -146,6 +169,8 @@ class AiraProbe:
             "skipped_classes": skipped,
             "findings": evidence_findings,
         }
+        if written_evidence is not None:
+            evidence["written_file"] = written_evidence
         if siblings_evidence:
             evidence["siblings"] = siblings_evidence
         return Envelope(
@@ -158,6 +183,41 @@ class AiraProbe:
             flags_set=flags,
             evidence=evidence,
         )
+
+
+_INTERPRETERS = {"python": "python", "python3": "python", "python2": "python", "node": "node"}
+
+
+def written_file_call(prepared: Any) -> CanonicalCall | None:
+    """The agent-written file the pending call runs, as a synthetic exec call (source
+    `written_file`) whose command is the file's content and whose cwd is the pending call's. A file
+    run by a Python or Node interpreter is marked as interpreter source so the shell parser does not
+    read it as shell. None when the pending call runs no agent-written file."""
+    written = getattr(prepared, "written_file", None)
+    if written is None or not written.content.strip():
+        return None
+    pending = prepared.pending
+    arguments: dict[str, Any] = {"command": written.content}
+    cwd = pending.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        arguments["cwd"] = cwd
+    call = canonicalise(
+        prepared.platform,
+        source="written_file",
+        tool=pending.tool,
+        tool_kind=ToolKind.EXEC,
+        provider=Provider(kind=ProviderKind.HOST),
+        arguments=arguments,
+        call_id=None,
+        step=written.step,
+    )
+    head = (pending.command or "").strip().split(maxsplit=1)
+    interpreter = _INTERPRETERS.get(head[0].rsplit("/", 1)[-1]) if head else None
+    if interpreter is None and written.path.endswith((".py", ".js", ".mjs", ".cjs")):
+        interpreter = "python" if written.path.endswith(".py") else "node"
+    if interpreter is not None:
+        call.args["interpreter"] = interpreter
+    return call
 
 
 def findings_of(envelope: Envelope) -> list[dict[str, Any]]:

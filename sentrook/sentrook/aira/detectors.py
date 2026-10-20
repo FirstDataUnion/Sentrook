@@ -9,7 +9,7 @@ attack, and relief comes from grants and the oracle in convergence.
 Classes:
   C1  credential material reached        C2  exfiltration (source × sink), plain sends
   C3  untrusted code executed            C4  self-modification and persistence
-  C4* guardrail tampering (floor)        C7  destruction outside scratch (pack host_gated)
+  C4* guardrail tampering (floor)        C7  destruction outside scratch (host_gated; SQL arm tier1)
   C8  privilege change (sudo arm host_gated)   C9  irreversible remote side effects
   C10 secret written into an artefact    extent: recursive / wildcard / bulk raise reach
 """
@@ -26,7 +26,7 @@ from ..enums import Enforce, SessionFlag
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Role, normalise_path
+from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape
@@ -397,10 +397,12 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     return []
 
 
-def _history_placeholder_paths(ctx: Context) -> set[str]:
+def _placeholder_paths(ctx: Context) -> set[str]:
+    """Paths written with a secret placeholder: by an earlier step, or by a sibling in the
+    pending call's batch (a file staged for the send in the same turn)."""
     out: set[str] = set()
     open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
-    for h in ctx.prepared.history:
+    for h in [*ctx.prepared.history, *ctx.prepared.siblings]:
         if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
             out.add(
                 normalise_path(
@@ -412,7 +414,7 @@ def _history_placeholder_paths(ctx: Context) -> set[str]:
 
 def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
     sources: list[Source] = []
-    written_with_placeholder = _history_placeholder_paths(ctx)
+    written_with_placeholder = _placeholder_paths(ctx)
     attached = {p.value for p in a.attachments}
     for p in a.paths:
         if a.kind is ToolKind.EXEC and p.is_destination and not p.is_source:
@@ -530,12 +532,23 @@ def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
     heads = set(shape.heads)
     if shape.substitution and heads & fetch and heads & (shells | evals):
         return "substitution"
-    fetched_file = any(
-        s.head in fetch and (set(s.flags) & out_flags or any(f.startswith("-o") for f in s.flags))
+    fetch_segments = [
+        s
         for s in shape.segments
-    )
-    if fetched_file and any(
-        s.head in shells | interp or (s.head == "chmod" and any("x" in f for f in s.flags))
+        if s.head in fetch
+        and (set(s.flags) & out_flags or any(f.startswith("-o") for f in s.flags))
+    ]
+    # The fetched file run directly (`./helper.bin`): the parser reports the basename as the head.
+    fetched_names = {
+        os.path.basename(t.rstrip("/"))
+        for s in fetch_segments
+        for t in s.positional
+        if not _URL_RE.match(t)
+    }
+    if fetch_segments and any(
+        s.head in shells | interp
+        or (s.head == "chmod" and any("x" in f for f in [*s.flags, *s.positional[:1]]))
+        or (s.head in fetched_names and s.head not in fetch)
         for s in shape.segments
     ):
         return "fetch_then_run"
@@ -572,6 +585,28 @@ def _decode_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
         if set(shape.heads) & (shells | evals):
             return "substitution"
     return None
+
+
+def _is_listed_installer(host: str, ctx: Context) -> bool:
+    host = host.lower().strip(".")
+    for listed in ctx.lists.strings("installers", "installer_hosts"):
+        listed = listed.lower().strip(".")
+        if host == listed or host.endswith("." + listed):
+            return True
+    return False
+
+
+def _add_unvetted_sensitivity(
+    f: Finding, code_source: EntityRef | None, subject: str | None, ctx: Context
+) -> None:
+    """Code from a host that is not a listed installer runs with the agent's own read access: its
+    sensitivity is what the agent can read (`weights.yaml` `code.sensitivity_unvetted`), whatever
+    the command names. A listed installer host, or no host at all, adds nothing."""
+    if code_source is None or _is_listed_installer(code_source.value, ctx):
+        return
+    weight = ctx.weight("code", "sensitivity_unvetted")
+    if weight > 0:
+        f.add(SENSITIVITY, weight, subject, "code.unvetted_source")
 
 
 def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -621,6 +656,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": fetch_mech},
         )
         f.add(REACH, reach, host_subject).add(IRREVERSIBILITY, irr, host_subject)
+        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
         if obfuscated:
             f.detail["revealed_by"] = sorted(a.encodings)
             f.add(
@@ -687,6 +723,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": from_url.group(0)[:80]},
         )
         f.add(REACH, reach, subject).add(IRREVERSIBILITY, irr, subject)
+        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
         out.append(f)
 
     install_heads = set(lists.strings("installers", "package_install_heads"))
@@ -1152,46 +1189,39 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
 
 def _resolve_target(tok: str, cwd: str, ctx: Context) -> tuple[str, bool]:
     """Resolve a destructive-head argument against the running cwd; returns (path, wildcard)."""
-    tok = tok.strip().strip("'\"")
-    wildcard = False
-    if tok.endswith(("/*", "/**")):
-        tok = tok.rsplit("/", 1)[0] or "/"
-        wildcard = True
-    elif "*" in tok or "?" in tok:
-        tok = re.split(r"[*?]", tok, maxsplit=1)[0]
-        tok = tok.rsplit("/", 1)[0] if "/" in tok else tok
-        wildcard = True
-        if not tok:
-            tok = "."
-    if not tok.startswith(("/", "~", "$HOME")):
-        tok = cwd.rstrip("/") + "/" + tok.removeprefix("./") if tok not in (".", "./") else cwd
-    return (
-        normalise_path(tok, home=ctx.prepared.home, workspace_root=ctx.prepared.workspace_root),
-        wildcard,
+    return resolve_token(
+        tok, cwd, home=ctx.prepared.home, workspace_root=ctx.prepared.workspace_root
     )
 
 
-def _is_scratch(value: str, ctx: Context) -> bool:
-    ws = ctx.prepared.workspace_root.rstrip("/")
+def is_scratch(value: str, workspace_root: str, lists: Lists) -> bool:
+    """Inside the workspace, or in an absolute temporary directory (`/tmp`, `/var/tmp`, `/dev/shm`)."""
+    ws = workspace_root.rstrip("/")
     if value == ws or value.startswith(ws + "/"):
         return True
-    if _match_any(ctx.lists.patterns("destructive", "scratch", "tmp_patterns"), value):
+    if _match_any(lists.patterns("destructive", "scratch", "tmp_patterns"), value):
         return True
-    seg = ctx.lists.get("destructive", "scratch", "workspace_segment")
+    seg = lists.get("destructive", "scratch", "workspace_segment")
     return bool(seg and re.search(str(seg), value, re.IGNORECASE))
+
+
+def _is_scratch(value: str, ctx: Context) -> bool:
+    return is_scratch(value, ctx.prepared.workspace_root, ctx.lists)
 
 
 def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C7: a destructive verb with at least one path outside scratch (pack `host_gated`). The
     workspace root itself, or `workspace/*`, is workspace-wide. With the host's approval already
-    granted the evidence is recorded and nothing is contributed."""
+    granted the evidence is recorded and nothing is contributed. Destructive SQL is the separate
+    `detect_sql_destruction` (pack `tier1`)."""
     out: list[Finding] = []
     lists = ctx.lists
     heads = set(lists.strings("destructive", "heads"))
     prefixes = tuple(lists.strings("destructive", "head_prefixes"))
     verbs = lists.rules("destructive", "verbs")
     ignore = lists.patterns("destructive", "ignore_path_patterns")
-    granted = ctx.host_approval_granted and a.source == "pending"
+    # The host's approval of the pending call covers the agent-written file that call runs.
+    granted = ctx.host_approval_granted and a.source in ("pending", "written_file")
     ws = ctx.prepared.workspace_root.rstrip("/")
 
     targets: list[tuple[str, bool, str]] = []  # (path, wildcard, mechanism)
@@ -1229,20 +1259,6 @@ def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 if p.is_destination:
                     targets.append((p.value, "*" in a.text, "unparsed"))
 
-    sql_text = a.scan_text if a.kind is ToolKind.EXEC else a.content
-    sql = _match_any(lists.patterns("destructive", "sql_patterns"), sql_text) if sql_text else None
-    if sql is not None:
-        f = Finding(
-            rule="C7.sql",
-            cls="C7",
-            reason="destroy.sql",
-            detail={"mechanism": sql.group(0)[:80], "host_approval_granted": granted},
-        )
-        if not granted:
-            f.add(IRREVERSIBILITY, ctx.weight("destroy", "irreversibility"))
-            f.add(REACH, ctx.weight("destroy", "reach_host"))
-        out.append(f)
-
     seen: set[str] = set()
     for value, wildcard, mechanism in targets:
         if value in seen or _match_any(ignore, value):
@@ -1271,6 +1287,35 @@ def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(IRREVERSIBILITY, ctx.weight("destroy", "irreversibility"), subject)
             f.add(REACH, ctx.weight("destroy", reach_key), subject)
         out.append(f)
+    return out
+
+
+def detect_sql_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
+    """C7, the SQL arm (pack `tier1`): a destructive SQL statement in exec text or in a query
+    argument destroys data in a live store, which no host-side approval of the shell command
+    gates, so it stays on when file destruction is left to the host. With the host's approval
+    already granted the evidence is recorded and nothing is contributed."""
+    sql_text = a.scan_text if a.kind is ToolKind.EXEC else a.content
+    if not sql_text:
+        return []
+    granted = ctx.host_approval_granted and a.source in ("pending", "written_file")
+    out: list[Finding] = []
+    for rx in ctx.lists.patterns("destructive", "sql_patterns"):
+        m = rx.search(sql_text)
+        if m is None:
+            continue
+        detail: dict[str, Any] = {
+            "mechanism": m.group(0)[:80],
+            "host_approval_granted": granted,
+        }
+        if m.groups() and m.group(1):
+            detail["target"] = m.group(1).strip('"`;')
+        f = Finding(rule="C7.sql", cls="C7", reason="destroy.sql", detail=detail)
+        if not granted:
+            f.add(IRREVERSIBILITY, ctx.weight("destroy", "irreversibility"))
+            f.add(REACH, ctx.weight("destroy", "reach_host"))
+        out.append(f)
+        break  # one finding per call: the statement, not every verb in it
     return out
 
 
@@ -1459,7 +1504,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 f.flags.append(SessionFlag.HOLDS_SENSITIVE)
                 out.append(f)
         elif verb == "push" and SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
-            if _history_placeholder_paths(ctx):
+            if _placeholder_paths(ctx):
                 f = Finding(
                     rule="C10.push_with_secret",
                     cls="C10",
@@ -1550,6 +1595,7 @@ DETECTORS: tuple[tuple[Detector, str, str], ...] = (
     (detect_guardrail, "C4*", PACK_TIER1),
     (detect_selfmod, "C4", PACK_TIER1),
     (detect_destruction, "C7", PACK_HOST_GATED),
+    (detect_sql_destruction, "C7", PACK_TIER1),
     (detect_privilege, "C8", PACK_TIER1),  # the sudo arm gates itself on host_gated
     (detect_remote, "C9", PACK_TIER1),
     (detect_artefact, "C10", PACK_TIER1),

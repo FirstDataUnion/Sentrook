@@ -1,16 +1,9 @@
-.git
-.venv
+# The image needs only the Python package and its build metadata.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!sentrook/sentrook
 **/__pycache__
-**/*.pyc
-.pytest_cache
-.ruff_cache
-# Local OpenClaw fixture data (gitignored, large session transcripts)
-openclaw_example
-# Node artifacts from the OpenClaw plugin
-integrations/openclaw/plugin/node_modules
-# Build caches
-**/.fastembed_cache
-# Gitignored local Rookery library mirror (if present in context)
-rules/
-corpus/
-eval/
+**/*.py[cod]

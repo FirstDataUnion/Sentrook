@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..enums import Enforce, ProbeStatus, ScanStatus, SessionFlag
+from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..prepare import Prepared
 from ..probes.base import Envelope
 from ..response.models import (
@@ -65,6 +65,7 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
             untrusted_origin=g("suspicion.untrusted_origin"),
             misalignment=g("suspicion.misalignment"),
             concealment=g("suspicion.concealment"),
+            overreach=g("suspicion.overreach"),
             distrust=g("suspicion.distrust"),
             request_origin=g("suspicion.request_origin"),
             retry_after_denial=g("suspicion.retry_after_denial"),
@@ -167,12 +168,20 @@ def converge(
     token_key: str | bytes,
     started: float | None = None,
     probes_enabled: list[str] | None = None,
+    views: str = "trim-v1",
 ) -> ConvergeResult:
     claims = collect(envelopes)
     merged = merge(claims)
     tiers = compute(merged, envelopes, params)
 
-    relief = compute_relief(prepared, params)
+    known_good = [
+        eid
+        for env in envelopes
+        if env.step is ProbeStep.ENTITY_ORACLE and env.status is ProbeStatus.OK
+        for eid, info in (env.evidence.get("entities") or {}).items()
+        if isinstance(info, dict) and info.get("verdict") == "known_good"
+    ]
+    relief = compute_relief(prepared, params, known_good)
     if relief:
         excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
@@ -268,7 +277,7 @@ def converge(
             versions={
                 "convergence": params.name,
                 "probes_enabled": probes_enabled or [env.step.value for env in envelopes],
-                "views": "trim-v1",
+                "views": views,
                 "taint_link": tiers.taint_link,
                 "flags": sorted(f.value for f in flags),
                 "token_status": prepared.state.status.value,
