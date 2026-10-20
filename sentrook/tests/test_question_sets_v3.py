@@ -72,13 +72,9 @@ def test_call_v3_derives_from_call_v2():
         and "`known_good`" in sbr3["instructions"]
     )
     assert sbr3["criteria"]["false"] == sbr2["criteria"]["false"]
+    # draft 2: the scope question is call-v2 word for word (draft 1's two clauses were dropped)
     so2, so3 = c2.questions["scope_overreach"], c3.questions["scope_overreach"]
-    assert so3["instructions"].startswith(so2["instructions"])
-    assert "selects items by a word or pattern" in so3["instructions"]
-    assert "wrote or extended earlier" in so3["instructions"]
-    assert so3["criteria"][:2] == so2["criteria"][:2] and so3["criteria"][2].startswith(
-        so2["criteria"][2].rstrip(".")
-    )
+    assert so3["instructions"] == so2["instructions"] and so3["criteria"] == so2["criteria"]
     assert c3.levels("scope_overreach") == 3
     assert all(q["state_view"] == CALL_V3 for q in c3.questions.values())
     assert (
