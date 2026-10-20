@@ -30,11 +30,11 @@ from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
-from .prepare.views import CALL, EXPOSURE, VIEW_VERSIONS
+from .prepare.views import CALL, EXPOSURE, REPUTATION, VIEW_KEYS, VIEW_VERSIONS
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
 from .probes.jev import JevCallProbe, JevExposureProbe
-from .probes.oracle import EntityOracleProbe
+from .probes.oracle import EntityOracleProbe, verdicts_for_view
 from .response.models import Response
 
 ALL_PROBES: tuple[ProbeStep, ...] = tuple(ProbeStep)
@@ -137,6 +137,11 @@ class Scanner:
             k: qs.state_view for k, qs in self.jev_question_sets.items()
         }
 
+    @property
+    def call_view_wants_reputation(self) -> bool:
+        """The configured call view carries the entity library's verdicts (call-v3)."""
+        return REPUTATION in VIEW_KEYS.get(self.jev_views.get(CALL, ""), ())
+
     def _probes(self, prepared: Prepared, options: ScanOptions) -> dict[ProbeStep, Probe | None]:
         cfg = self.config
         oracle: OracleClient
@@ -218,9 +223,24 @@ class Scanner:
         enabled = tuple(options.probes_enabled or self.config.probes_enabled)
         probes = self._probes(prepared, options)
         envelopes: dict[ProbeStep, Envelope] = {}
+        # A call view that carries the entity library's verdicts needs the oracle's answer first;
+        # the oracle is deterministic and local or one short HTTP round trip, the Jev call is the
+        # long one, so it runs alone before the pool. Without the oracle (disabled or not
+        # configured) the view simply has no `reputation` block.
+        oracle = probes.get(ProbeStep.ENTITY_ORACLE)
+        if (
+            self.call_view_wants_reputation
+            and oracle is not None
+            and ProbeStep.ENTITY_ORACLE.value in enabled
+        ):
+            env = self._run_probe(ProbeStep.ENTITY_ORACLE, oracle, prepared, options)
+            envelopes[ProbeStep.ENTITY_ORACLE] = env
+            prepared.oracle_verdicts = verdicts_for_view(env)
         with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
             futures = {}
             for step in ALL_PROBES:
+                if step in envelopes:
+                    continue
                 probe = probes.get(step)
                 if step.value not in enabled:
                     envelopes[step] = Envelope.skipped(

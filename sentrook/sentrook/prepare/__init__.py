@@ -202,6 +202,10 @@ class Prepared:
     views_version: dict[str, str] = field(default_factory=dict)
     #: Second-pass redactions over the v2 views.
     redactions: int = 0
+    #: Entity-library verdicts for the call's own entities (`kind`, `value`, `verdict`, optional
+    #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
+    #: is sent. Empty until then, and for views without the block.
+    oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
     #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -864,6 +868,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         prior_untrusted=prior_untrusted,
         grant_hits=grant_hits,
         views_version={name: views.VIEW_VERSIONS[name] for name in built},
-        redactions=sum(b.redactions for b in built.values()),
+        # call-v3 is call-v2's content with a block the probe adds later, so its redactions are
+        # call-v2's and are not counted twice.
+        redactions=sum(
+            b.redactions for n, b in built.items() if n in (views.EXPOSURE_V2, views.CALL_V2)
+        ),
         view_meta=view_meta,
     )

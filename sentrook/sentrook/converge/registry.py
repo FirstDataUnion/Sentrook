@@ -212,6 +212,7 @@ REASONS: dict[str, str] = {
     "exfil.session_holds_sensitive": "The agent read sensitive data earlier in this session and this call sends data out.",
     "send.off_host": "The call sends data to {subject}.",
     "code.fetch_to_shell": "The command fetches content from {subject} and runs it.",
+    "code.unvetted_source": "{subject} is not a known installer host, and code run from it has the agent's own access to everything it can read.",
     "code.decode_to_shell": "The command decodes a hidden payload and runs it.",
     "code.install_from_url": "The command installs software from {subject}.",
     "code.package_install": "The command installs the package {subject}.",
