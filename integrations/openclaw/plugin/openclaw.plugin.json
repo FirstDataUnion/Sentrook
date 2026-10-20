@@ -1,0 +1,67 @@
+{
+  "id": "sentrook",
+  "name": "Sentrook",
+  "description": "Scans agent tool calls with Sentrook and allows, asks for approval, or blocks them.",
+  "activation": { "onCapabilities": ["hook"] },
+  "contracts": { "agentToolResultMiddleware": ["openclaw"] },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "scanUrl": { "type": "string", "description": "Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1." },
+      "rookeryUrl": { "type": "string", "description": "Rookery base URL (same host rule as scanUrl)." },
+      "oidcIssuer": { "type": "string", "description": "Identity service issuer URL (same host rule as scanUrl)." },
+      "clientId": { "description": "Scan client id, or an env SecretRef. Prefer SENTROOK_SCAN_CLIENT_ID in the state-dir .env." },
+      "clientSecret": { "description": "Env SecretRef only in practice; prefer SENTROOK_SCAN_CLIENT_SECRET in the state-dir .env." },
+      "oidcAudience": { "type": "string" },
+      "oidcScope": { "type": "string" },
+      "mode": { "type": "string", "enum": ["enforce", "observe"], "description": "observe scores and logs every call but never blocks or asks." },
+      "reviewAt": { "type": "number", "minimum": 0, "maximum": 100, "description": "Ask the user at or above this risk (default 45)." },
+      "blockAt": { "type": "number", "minimum": 0, "maximum": 101, "description": "Block at or above this risk (default 80)." },
+      "onScanError": { "type": "string", "enum": ["allow", "deny", "review"] },
+      "timeoutMs": { "type": "number", "minimum": 1000 },
+      "approval": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "interactiveTimeoutMs": { "type": "number", "minimum": 1 },
+          "scheduledTimeoutMs": { "type": "number", "minimum": 1 },
+          "scheduledTimeoutBehavior": { "type": "string", "enum": ["allow", "deny"] },
+          "scheduledIntentKinds": { "type": "array", "items": { "type": "string", "enum": ["user", "cron", "subagent", "system"] } }
+        }
+      },
+      "stateDir": { "type": "string" },
+      "trafficLog": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "path": { "type": "string" },
+          "maxBytes": { "type": "number", "minimum": 1024 }
+        }
+      },
+      "historyLimit": { "type": "number", "minimum": 1, "maximum": 200 },
+      "inputCapBytes": { "type": "number", "minimum": 1024 },
+      "historyArgsCapBytes": { "type": "number", "minimum": 256 },
+      "packs": { "type": "array", "items": { "type": "string" } },
+      "trustedSenders": { "type": "array", "items": { "type": "string" } },
+      "trustedRoles": { "type": "array", "items": { "type": "string" } },
+      "grants": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "pattern"],
+          "properties": {
+            "kind": { "type": "string", "description": "destination | file | provider" },
+            "pattern": { "type": "string" },
+            "allows": { "type": "array", "items": { "type": "string" } },
+            "scope": { "type": "string", "enum": ["session", "persistent"] },
+            "granted_at": { "type": "string" }
+          }
+        }
+      },
+      "channelBindings": { "type": "array", "items": { "type": "string" }, "description": "Channels this deployment normally delivers to; sent as destination grants." }
+    }
+  }
+}

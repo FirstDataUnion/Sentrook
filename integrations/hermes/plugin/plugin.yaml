@@ -1,0 +1,63 @@
+name: sentrook
+version: 2.0.0-beta.0
+# Hermes installers cap install at manifest_version 1; no v2-only fields are used.
+manifest_version: 1
+api_version: 1
+description: >
+  Scans agent tool calls with Sentrook and allows, escalates to Hermes's native approval, or blocks them.
+author: First Data Union
+license: Apache-2.0
+homepage: https://github.com/FirstDataUnion/Sentrook
+tags:
+  - security
+  - scan
+provides_hooks:
+  - pre_llm_call
+  - post_api_request
+  - pre_tool_call
+  - post_tool_call
+  - post_approval_response
+# Credentials live in ~/.hermes/.env (SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET), never here.
+config_schema:
+  scan_url:
+    type: str
+    description: Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1. Env SENTROOK_SCAN_URL.
+  rookery_url:
+    type: str
+    description: Rookery base URL (same host rule). Env SENTROOK_ROOKERY_URL.
+  oidc_issuer:
+    type: str
+    description: Identity service issuer URL (same host rule). Env SENTROOK_OIDC_ISSUER.
+  mode:
+    type: str
+    default: enforce
+    description: enforce | observe. observe scores and logs every call but never blocks or asks. Env SENTROOK_MODE.
+  review_at:
+    type: float
+    default: 45
+    description: Ask for approval at or above this risk. Env SENTROOK_REVIEW_AT.
+  block_at:
+    type: float
+    default: 80
+    description: Block at or above this risk. Env SENTROOK_BLOCK_AT.
+  on_scan_error:
+    type: str
+    default: review
+    description: >
+      allow | deny | review when Sentrook returns no usable score. Auth and configuration errors never
+      fail open; unattended runs block. Env SENTROOK_ON_SCAN_ERROR.
+  attended_platforms:
+    type: list
+    description: >
+      Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
+      Hermes approval prompts). Elsewhere outside chat platforms, reviews block. Env SENTROOK_ATTENDED_PLATFORMS.
+  timeout_ms:
+    type: int
+    default: 30000
+    description: Wait for /scan in ms (the token mint has its own budget). Env SENTROOK_SCAN_TIMEOUT_MS.
+  channel_bindings:
+    type: list
+    description: Channels this deployment normally delivers to; sent as destination grants.
+  grants:
+    type: list
+    description: "Owner grants: [{kind: destination|file|provider, pattern, allows?, scope?}]."

@@ -1,0 +1,97 @@
+"""`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works."""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Callable
+from typing import Any
+
+from .auth import (
+    clear_scan_token_cache,
+    env_with_hermes_dotenv,
+    get_scan_access_token,
+    http_json,
+    resolve_oidc_credentials,
+)
+from .config import resolve_config
+
+
+def run_verify(
+    settings: dict[str, Any], env: dict[str, str] | None = None, timeout: float = 8.0
+) -> list[tuple[str, bool, str]]:
+    env = env_with_hermes_dotenv(env)
+    cfg = resolve_config(settings, env)
+    ep = cfg.endpoints
+    checks: list[tuple[str, bool, str]] = []
+    for name, e in (("scan URL", ep.scan), ("Rookery URL", ep.rookery), ("OIDC issuer", ep.issuer)):
+        checks.append(
+            (name, e.ok, (e.url + (" (dev endpoints)" if ep.dev else "")) if e.ok else e.reason)
+        )
+    oidc = resolve_oidc_credentials(settings, env, ep.issuer.url) if ep.issuer.ok else None
+    checks.append(
+        (
+            "credentials",
+            oidc is not None,
+            f"client {oidc.client_id}, audience {oidc.audience}"
+            if oidc
+            else "SENTROOK_SCAN_CLIENT_ID / _SECRET not set",
+        )
+    )
+    if ep.scan.ok:
+        try:
+            status, body, _ = http_json(f"{ep.scan.url}/healthz", timeout=timeout)
+            info = body if isinstance(body, dict) else {}
+            checks.append(
+                (
+                    "scanner health",
+                    status == 200 and info.get("ok") is not False,
+                    f"HTTP {status} version={info.get('version', '?')} env={info.get('environment', '?')}",
+                )
+            )
+        except OSError as exc:
+            checks.append(("scanner health", False, str(exc)[:160]))
+    if oidc:
+        clear_scan_token_cache()
+        try:
+            get_scan_access_token(oidc, timeout=timeout)
+            checks.append(("token mint", True, f"issued by {oidc.issuer}"))
+        except Exception as exc:  # noqa: BLE001
+            checks.append(("token mint", False, str(exc)[:200]))
+    checks.append(
+        (
+            "policy",
+            True,
+            f"mode={cfg.mode} review>={cfg.review_at} block>={cfg.block_at} on_scan_error={cfg.on_scan_error}",
+        )
+    )
+    checks.append(
+        ("traffic log", True, str(cfg.traffic_log_path) if cfg.traffic_log_enabled else "off")
+    )
+    return checks
+
+
+def format_report(checks: list[tuple[str, bool, str]]) -> str:
+    return "\n".join(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}" for name, ok, detail in checks)
+
+
+def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
+    def setup(parser: argparse.ArgumentParser) -> None:
+        sub = parser.add_subparsers(dest="sentrook_cmd")
+        sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
+
+    def handler(args: argparse.Namespace) -> None:
+        if getattr(args, "sentrook_cmd", None) != "verify":
+            print("usage: hermes sentrook verify")
+            return
+        checks = run_verify(settings())
+        print(format_report(checks))
+        if not all(ok for _, ok, _ in checks):
+            raise SystemExit(1)
+
+    ctx.register_cli_command(
+        name="sentrook",
+        help="Sentrook plugin helpers (verify)",
+        description="Sentrook plugin helpers",
+        setup_fn=setup,
+        handler_fn=handler,
+    )
