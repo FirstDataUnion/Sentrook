@@ -25,6 +25,12 @@ the call, with no model and no raw text.
 - Sticky `suspicion.exposure` from `tainted`; `consequence.sensitivity` from `holds_sensitive` when
   the call has a data destination; the `escalating` flag from the history tier scores; coverage from a
   stale carried request, a fresh session and truncated or dropped content.
+- Escalation: in an escalating session (the flag set earlier, or the last few history consequence
+  tiers each rising), a call that has a consequence of its own (a destination or recipient, code it
+  fetches or runs, or a destructive target) carries sensitivity, reach and irreversibility at one step
+  above the session's last consequence tier. The step moves a borderline call up about one band; a
+  call already scored higher keeps its own values, and nothing is added on the suspicion side, so the
+  trend never decides intent on its own.
 """
 
 from __future__ import annotations
@@ -100,6 +106,9 @@ class ContextParams:
     sticky_exposure: float = 0.7
     holds_sensitive_sensitivity: float = 0.8
     escalation_rise: float = 0.1
+    #: In an escalating session, a call with a consequence of its own carries sensitivity, reach and
+    #: irreversibility at the session's last consequence tier plus this step (0 turns it off).
+    escalation_consequence_step: float = 0.2
     coverage_stale_request: float = 0.9
     coverage_very_stale_request: float = 0.8
     coverage_fresh_session: float = 0.7
@@ -765,16 +774,56 @@ class ContextProbe:
 
     # ------------------------------------------------------------------ flags and coverage
 
-    def _escalating(self, prepared: Prepared) -> bool:
-        tiers = [
-            h.tiers.consequence
+    @staticmethod
+    def _consequence_tiers(prepared: Prepared) -> list[float]:
+        return [
+            float(h.tiers.consequence)
             for h in prepared.planir.history
             if h.tiers and h.tiers.consequence is not None
         ]
-        tail = tiers[-3:]
+
+    def _escalating(self, prepared: Prepared) -> bool:
+        tail = self._consequence_tiers(prepared)[-3:]
         return len(tail) >= 2 and all(
             b >= a + self.params.escalation_rise for a, b in zip(tail, tail[1:], strict=False)
         )
+
+    @staticmethod
+    def _has_consequence(prepared: Prepared) -> bool:
+        """The call itself can do harm: it has a destination or recipient, fetches or runs code, or
+        destroys something. A read-only call with none of these is not lifted by the trend."""
+        if prepared.lineage.destructive_targets or prepared.lineage.sql_targets:
+            return True
+        return any(ent.roles & set(KEY_ROLES) for ent in prepared.entities.pending())
+
+    def _escalation(
+        self, prepared: Prepared, escalating: bool, evidence: dict
+    ) -> list[Contribution]:
+        """An escalating session scores a call that has a consequence of its own at least one step
+        above the session's last consequence tier, on sensitivity, reach and irreversibility. These
+        merge by max, so a call already scored higher on its own keeps its values."""
+        step = self.params.escalation_consequence_step
+        if not escalating or step <= 0:
+            return []
+        tiers = self._consequence_tiers(prepared)
+        record: dict[str, Any] = {
+            "last_tier": tiers[-1] if tiers else None,
+            "call_has_consequence": self._has_consequence(prepared),
+            "value": None,
+        }
+        evidence["escalation"] = record
+        if not tiers or not record["call_has_consequence"]:
+            return []
+        value = round(min(1.0, max(0.0, tiers[-1]) + step), 4)
+        record["value"] = value
+        return [
+            Contribution(signal=signal, value=value, reason="escalation.consequence_rising")
+            for signal in (
+                "consequence.sensitivity",
+                "consequence.reach",
+                "consequence.irreversibility",
+            )
+        ]
 
     def run(self, prepared: Prepared) -> Envelope:
         started = time.perf_counter()
@@ -820,9 +869,11 @@ class ContextProbe:
                         reason="sensitivity.session_holds_sensitive",
                     )
                 )
-            if SessionFlag.ESCALATING in prior_flags or self._escalating(prepared):
+            escalating = SessionFlag.ESCALATING in prior_flags or self._escalating(prepared)
+            if escalating:
                 flags.append(SessionFlag.ESCALATING)
-            evidence["escalating"] = SessionFlag.ESCALATING in flags
+            evidence["escalating"] = escalating
+            contributions += self._escalation(prepared, escalating, evidence)
 
             coverage = 1.0
             carried = prepared.planir.request.carried_from_turn

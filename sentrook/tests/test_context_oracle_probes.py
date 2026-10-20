@@ -1010,3 +1010,115 @@ def test_lineage_secret_staged_by_a_sibling_is_carried_to_send(attack_case):
 
     _, env = _context_run(case("rows: 31\n"))
     assert lineage_of(env, "lineage.secret_carried_to_send") == []
+
+
+# --------------------------------------------------------------------------- escalation
+
+
+def _escalation_run(attack_case, tiers, tool_kind, arguments, *, escalating=False, params=None):
+    from sentrook.probes.context import ContextParams
+
+    history = []
+    for i, tier in enumerate(tiers, start=1):
+        step = _step(i, "file_read", {"path": f"/home/node/work/notes-{i}.md"})
+        step["tiers"] = {"suspicion": 0.1, "consequence": tier, "confidence": 0.9}
+        history.append(step)
+    raw = _trajectory(attack_case)
+    raw["request"]["text"] = "Tidy up the notes."
+    raw["new_inputs"] = []
+    raw["history"] = history
+    raw["session"]["step"] = len(history) + 1
+    raw["pending_call"].update(
+        {
+            "call_id": f"c{len(history) + 1}",
+            "tool": tool_kind,
+            "tool_kind": tool_kind,
+            "provider": {"kind": "host"},
+            "arguments": arguments,
+        }
+    )
+    seed = {**_LINEAGE_SEED, "escalating": escalating}
+    p = prepare(
+        raw,
+        PrepareOptions(token_key=KEY, clock=CLOCK, deterministic_salt="testnest", state_seed=seed),
+    )
+    env = ContextProbe(ContextParams(**(params or {}))).run(p)
+    assert env.status is ProbeStatus.OK, env.evidence
+    return env
+
+
+def escalation_of(env):
+    return sorted(
+        (c.signal, c.value)
+        for c in env.contributions
+        if c.reason == "escalation.consequence_rising"
+    )
+
+
+_WRITE = {"path": "/home/node/work/summary.md", "content": "summary\n"}
+_READ = {"path": "/home/node/work/summary.md"}
+
+
+def test_escalation_lifts_a_call_with_a_consequence(attack_case):
+    env = _escalation_run(attack_case, [0.2, 0.45, 0.7], "file_write", _WRITE)
+    assert SessionFlag.ESCALATING in env.flags_set
+    assert escalation_of(env) == [
+        ("consequence.irreversibility", 0.9),
+        ("consequence.reach", 0.9),
+        ("consequence.sensitivity", 0.9),
+    ]
+    assert env.evidence["escalation"] == {
+        "last_tier": 0.7,
+        "call_has_consequence": True,
+        "value": 0.9,
+    }
+    # nothing on the suspicion side: the trend does not decide intent
+    assert all(
+        not c.signal.startswith("suspicion.")
+        for c in env.contributions
+        if c.reason == "escalation.consequence_rising"
+    )
+    # capped at 1
+    env = _escalation_run(attack_case, [0.4, 0.65, 0.9], "file_write", _WRITE)
+    assert {v for _, v in escalation_of(env)} == {1.0}
+    # a destructive command counts as a consequence
+    env = _escalation_run(
+        attack_case, [0.2, 0.45, 0.7], "exec", {"command": "rm -rf /home/node/work/old"}
+    )
+    assert len(escalation_of(env)) == 3
+
+
+def test_escalation_does_not_lift_a_read_only_call(attack_case):
+    env = _escalation_run(attack_case, [0.2, 0.45, 0.7], "file_read", _READ)
+    assert SessionFlag.ESCALATING in env.flags_set
+    assert escalation_of(env) == []
+    assert env.evidence["escalation"]["call_has_consequence"] is False
+
+
+def test_escalation_flat_tiers_and_no_flag_leave_the_call_alone(attack_case):
+    env = _escalation_run(attack_case, [0.5, 0.5], "file_write", _WRITE)
+    assert SessionFlag.ESCALATING not in env.flags_set
+    assert escalation_of(env) == []
+    assert "escalation" not in env.evidence
+
+
+def test_escalation_sticky_prior_flag_counts(attack_case):
+    env = _escalation_run(attack_case, [0.5, 0.5], "file_write", _WRITE, escalating=True)
+    assert SessionFlag.ESCALATING in env.flags_set
+    assert {v for _, v in escalation_of(env)} == {0.7}
+    # no tier to step from: the flag is kept but nothing is contributed
+    env = _escalation_run(attack_case, [], "file_write", _WRITE, escalating=True)
+    assert SessionFlag.ESCALATING in env.flags_set
+    assert escalation_of(env) == []
+
+
+def test_escalation_step_zero_turns_it_off(attack_case):
+    env = _escalation_run(
+        attack_case,
+        [0.2, 0.45, 0.7],
+        "file_write",
+        _WRITE,
+        params={"escalation_consequence_step": 0.0},
+    )
+    assert SessionFlag.ESCALATING in env.flags_set
+    assert escalation_of(env) == []
