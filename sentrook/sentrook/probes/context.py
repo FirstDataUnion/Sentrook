@@ -13,7 +13,9 @@ the call, with no model and no raw text.
   session's salt, so a plugin's echoed fingerprint is not required).
 - History lineage (`_lineage`), from the record `prepare` builds: an item the agent moved or copied
   into the tree the call destroys (when it came from outside scratch); the agent's own saved listing
-  of that tree marking part of it irreplaceable; an agent-written file carrying secret values that
+  of that tree marking part of it irreplaceable; the agent's own listing of a database showing
+  that the table a destructive statement names holds live data; an agent-written file carrying
+  secret values (written earlier, or staged by a sibling in the same batch) that
   the call sends or publishes, when the request does not ask for a secret to go; a host one
   character (or one confusable) away from a host the owner named; an agent-written filter installed
   where it silences sign-in and security notices (a persistent change to the account's alerting,
@@ -34,7 +36,7 @@ from typing import Any
 
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall
-from ..planir.models import SenderBasis, SenderRelation, ToolKind, TriggerKind
+from ..planir.models import InputKind, SenderBasis, SenderRelation, ToolKind, TriggerKind
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role, extract_call
 from ..prepare.fingerprint import Fingerprint, fingerprint
@@ -113,6 +115,10 @@ class ContextParams:
     #: The agent's saved listing of the destroyed tree marks part of it irreplaceable.
     lineage_listing_irreversibility: float = 1.0
     lineage_listing_overreach: float = 0.6
+    #: The agent's own listing of the database shows the object a destructive SQL statement
+    #: names holds live data (rows, references, in use).
+    lineage_live_table_irreversibility: float = 1.0
+    lineage_live_table_overreach: float = 0.6
     #: An agent-written file carrying secret values is sent or published.
     lineage_secret_send_overreach: float = 0.8
     #: A host a character or a confusable away from a host the owner named (0 also drops the
@@ -136,6 +142,13 @@ _CONFUSABLES = (
     ("3", "e"),
     ("5", "s"),
 )
+
+
+def _sql_object_name(target: str) -> str:
+    """The bare object name of a SQL target: quotes and backticks dropped, the last dotted
+    component (`public."temp_users"` -> `temp_users`)."""
+    bare = target.strip().strip(";").replace('"', "").replace("`", "")
+    return bare.rsplit(".", 1)[-1]
 
 
 def _fold(label: str) -> str:
@@ -380,6 +393,44 @@ class ContextProbe:
                         reason,
                     )
                     emit("suspicion.overreach", p.lineage_listing_overreach, subject, reason)
+
+        # 2b. The agent's own listing of the database shows the table the statement destroys is live.
+        if (
+            lin.sql_targets
+            and p.lineage_live_table_irreversibility + p.lineage_live_table_overreach > 0
+        ):
+            markers = lists.patterns("destructive", "live_table_markers", "patterns")
+            reason = "lineage.listing_marks_live_table"
+            live: list[dict[str, Any]] = []
+            for target in lin.sql_targets:
+                name = _sql_object_name(target)
+                if len(name) < 3:
+                    continue
+                word = re.compile(r"(?<![\w$])" + re.escape(name) + r"(?![\w$])", re.IGNORECASE)
+                for inp in prepared.inputs:
+                    if inp.input.kind is not InputKind.TOOL_RESULT or inp.input.tool_kind not in (
+                        ToolKind.EXEC,
+                        ToolKind.MCP,
+                    ):
+                        continue  # only the agent's own query of the store is a listing of it
+                    for line in (inp.input.content or "").splitlines():
+                        if word.search(line) and any(rx.search(line) for rx in markers):
+                            live.append({"target": target, "input_seq": inp.input.input_seq})
+                            emit(
+                                "consequence.irreversibility",
+                                p.lineage_live_table_irreversibility,
+                                None,
+                                reason,
+                            )
+                            emit(
+                                "suspicion.overreach", p.lineage_live_table_overreach, None, reason
+                            )
+                            break
+                    else:
+                        continue
+                    break
+            if live:
+                record["live_tables"] = live
 
         # 3. Secret values carried into a send or publish the owner did not ask a secret to go with.
         asked_for_secret = any(

@@ -247,6 +247,7 @@ def test_prepared_views_for_test_mode(attack_case):
         "moved_in": [],
         "listings": [],
         "destructive_targets": [],
+        "sql_targets": [],
     }
 
 
@@ -607,3 +608,35 @@ def test_conv_v2_loads_and_only_changes_the_oracle_table():
         v1.request_named_relief,
     )
     assert v2.context == v1.context.__class__(name=v2.context.name)
+
+
+def test_known_good_destination_relief(twin_case, attack_case, tmp_path):
+    from dataclasses import replace
+
+    # Without the grant, the oracle's known_good verdict alone sanctions the destination.
+    case = copy.deepcopy(twin_case)
+    case["fixture"]["grants"] = []
+    r = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
+    assert [(x.grant_ref, x.effect) for x in r.relief_applied] == [
+        (None, "distrust+untrusted_origin")
+    ]
+    assert any(x.code == "relief.known_good_destination" for x in r.reasons)
+    assert r.tree.suspicion.distrust is None
+    assert (r.tree.suspicion.untrusted_origin or 0.0) <= 0.2  # only the credential path remains
+
+    # Switched off by parameters, the agent-chosen host keeps its origin.
+    off = scanner(BENIGN_ANSWERS, params=replace(load_params(), known_good_relief=False))
+    r_off = off.scan(case["fixture"], options(case)).response
+    assert r_off.relief_applied == [] and r_off.tree.suspicion.untrusted_origin > 0.2
+    assert r_off.risk > r.risk
+
+    # A known_good host that reached the agent through untrusted content gets no relief.
+    case = copy.deepcopy(attack_case)
+    case["oracle_seed"]["entities"][0]["verdict"] = "known_good"
+    r = scanner(ATTACK_ANSWERS).scan(case["fixture"], options(case)).response
+    assert r.relief_applied == [] and r.tree.suspicion.untrusted_origin == 1.0
+
+    assert load_params("conv-v3").known_good_relief is True
+    p = tmp_path / "conv-x.json"
+    p.write_text('{"name": "conv-x", "known_good_relief": {"enabled": false}}', encoding="utf-8")
+    assert load_params(p).known_good_relief is False

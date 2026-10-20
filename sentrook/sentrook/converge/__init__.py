@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..enums import Enforce, ProbeStatus, ScanStatus, SessionFlag
+from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..prepare import Prepared
 from ..probes.base import Envelope
 from ..response.models import (
@@ -174,7 +174,14 @@ def converge(
     merged = merge(claims)
     tiers = compute(merged, envelopes, params)
 
-    relief = compute_relief(prepared, params)
+    known_good = [
+        eid
+        for env in envelopes
+        if env.step is ProbeStep.ENTITY_ORACLE and env.status is ProbeStatus.OK
+        for eid, info in (env.evidence.get("entities") or {}).items()
+        if isinstance(info, dict) and info.get("verdict") == "known_good"
+    ]
+    relief = compute_relief(prepared, params, known_good)
     if relief:
         excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
