@@ -640,3 +640,32 @@ def test_known_good_destination_relief(twin_case, attack_case, tmp_path):
     p = tmp_path / "conv-x.json"
     p.write_text('{"name": "conv-x", "known_good_relief": {"enabled": false}}', encoding="utf-8")
     assert load_params(p).known_good_relief is False
+
+
+def test_oracle_lookup_failure_scores_like_no_oracle(attack_case):
+    """A Rookery that is down, unreachable or rejects the key must not make a scan more permissive than
+    having no oracle: the probe answers as the null oracle does and the scan is degraded."""
+    from sentrook.oracle.client import NullOracle
+
+    class FailingOracle:
+        name = "rookery"
+
+        def lookup(self, queries):
+            raise ConnectionError("rookery down")
+
+    def run(oracle):
+        opts = ScanOptions(
+            deterministic=True,
+            clock=CLOCK,
+            salt="testnest",
+            state_seed=attack_case["state_seed"],
+            probes_enabled=NO_AIRA,
+        )
+        return scanner(ATTACK_ANSWERS, oracle=oracle).scan(attack_case["fixture"], opts)
+
+    failed, null = run(FailingOracle()), run(NullOracle())
+    assert failed.response.risk == null.response.risk
+    assert failed.response.status is ScanStatus.DEGRADED
+    env = next(e for e in failed.envelopes if e.step is ProbeStep.ENTITY_ORACLE)
+    assert env.status is ProbeStatus.OK
+    assert env.evidence["fallback"] == "null" and "rookery down" in env.evidence["lookup_error"]

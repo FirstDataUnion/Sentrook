@@ -111,3 +111,6 @@ Three deterministic blind spots shown by the first pass of new suite cases throu
 - `openclaw sentrook verify` / `hermes sentrook verify`: endpoints, credentials, scanner health, token mint.
 - `make plugin-test`, `make hermes-plugin-test`, and `make plugin-planir-check` (the scanner's models and invariant checks must accept every PlanIR the plugins build in their integration tests); CI job `plugins`.
 - `Dockerfile`: the scan service image (`sentrook serve`, non-root, health check on `/healthz`).
+
+### A failed oracle lookup scores like no oracle (2026-10-20)
+- `probes.oracle`: when the entity oracle's lookup raises (Rookery down, unreachable, or the key rejected), the probe answers as the null oracle does (every entity `unknown`, coverage lowered) instead of failing with no contributions, which had dropped the unknown-destination distrust and scored such a scan lower than a scanner with no oracle configured. The evidence carries `lookup_error` and `fallback: null`, and convergence reports the scan `degraded`. Test-mode scans use the seed oracle and are unaffected.
