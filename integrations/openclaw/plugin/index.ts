@@ -10,7 +10,7 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
-import { buildPlanir, PLUGIN_VERSION } from "./planir.ts";
+import { buildPlanir, hostLabels, PLUGIN_VERSION } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -31,6 +31,7 @@ interface OpenClawPluginApi {
   config?: any;
   logger: PluginLogger;
   registrationMode?: string;
+  runtime?: { version?: unknown };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
@@ -108,6 +109,14 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    // The runtime is a proxy that throws outside full registration.
+    let hostVersion: string | undefined;
+    try {
+      const v = api.runtime?.version;
+      if (typeof v === "string" && v) hostVersion = v;
+    } catch {
+      hostVersion = undefined;
+    }
     const store = new Store(boot.stateDir);
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
@@ -281,6 +290,7 @@ const plugin = {
         run,
         assistant: store.loadAssistant(ctx?.sessionKey),
         parents: store.parents(),
+        hostVersion,
       });
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
@@ -374,6 +384,7 @@ const plugin = {
         verdict,
         decision: entry.decision,
         latency_ms: result.ok ? result.latencyMs : null,
+        host_labels: hostLabels(run, ctx),
         planir: built.planir,
         response: result.ok ? result.response : null,
         failure: result.ok ? null : { kind: result.kind, status: result.status ?? null, detail: result.detail },
