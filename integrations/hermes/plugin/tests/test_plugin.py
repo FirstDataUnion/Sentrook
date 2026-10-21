@@ -158,3 +158,29 @@ def test_attended_platforms_setting_turns_api_server_reviews_into_approvals(harn
     assert call(harness, "c1", "rm REVIEW")["action"] == "block"
     monkeypatch.setenv("SENTROOK_ATTENDED_PLATFORMS", "api_server")
     assert call(harness, "c2", "rm REVIEW")["action"] == "approve"
+
+
+def test_settings_come_from_config_yaml_and_apply_without_a_restart(harness):
+    turn(harness)
+    assert call(harness, "c1", "rm REVIEW")["action"] == "approve"
+    harness.ctx.settings["mode"] = "observe"
+    assert call(harness, "c2", "rm REVIEW") is None
+    assert harness.traffic()[1]["mode"] == "observe"
+
+
+def test_verify_reads_the_settings(harness, monkeypatch):
+    harness.ctx.settings.update(
+        {"mode": "observe", "scan_url": "https://dev.sentrook.firstdataunion.org"}
+    )
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    monkeypatch.setattr(plugin.cli, "get_scan_access_token", lambda *a, **k: "tok")
+    report = {name: detail for name, _, detail in plugin.cli.run_verify(plugin._settings(), env={})}
+    assert report["scan URL"].startswith("https://dev.sentrook.firstdataunion.org")
+    assert "mode=observe" in report["policy"]
+
+
+def test_every_manifest_setting_is_read():
+    import yaml
+
+    manifest = yaml.safe_load((Path(plugin.__file__).parent / "plugin.yaml").read_text())
+    assert set(manifest["config_schema"]) <= set(plugin.SETTINGS_KEYS)

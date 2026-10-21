@@ -127,3 +127,6 @@ Three deterministic blind spots shown by the first pass of new suite cases throu
 ### OpenClaw plugin 2.0.0-beta.2: tool-result middleware on OpenClaw 2026.9 (2026-10-21)
 - The tool-result middleware is registered for the `openclaw` runtime by name. Without `runtimes`, OpenClaw 2026.9 targets every runtime it knows (`openclaw` and `codex`) and rejected the registration because the manifest declares `openclaw` only, so tool results reached the scanner through `after_tool_call`'s 8K cap instead of in full. OpenClaw 2026.10 defaults to the declared runtimes and was unaffected.
 
+### Hermes plugin 2.0.0-beta.1: settings from config.yaml (2026-10-21)
+- The plugin never read its settings: Hermes exposes `plugins.entries.sentrook.settings` one key at a time (`ctx.get_config(key)`), and the plugin asked for the whole mapping, got nothing and fell back to env and defaults. A `mode: observe` or dev endpoint set with `hermes config set` was ignored (the plugin ran in enforce mode against the production endpoints), and `hermes sentrook verify` reported the defaults. Each setting is now read by key, on every call, so a change applies without a restart. Env-only configuration (the e2e sandbox) was unaffected.
+

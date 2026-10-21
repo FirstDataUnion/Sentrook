@@ -76,8 +76,14 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin, "_traffic", None)
 
     class Ctx:
+        """Hermes's plugin context: settings are read one key at a time, like `ctx.get_config`."""
+
         def __init__(self):
             self.hooks = {}
+            self.settings = {}
+
+        def get_config(self, key, default=None):
+            return self.settings.get(key, default)
 
         def register_hook(self, name, fn):
             self.hooks[name] = fn
