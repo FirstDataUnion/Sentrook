@@ -124,3 +124,6 @@ Three deterministic blind spots shown by the first pass of new suite cases throu
 - `host.platform_version` comes from the plugin runtime's OpenClaw version (it was always `unknown`).
 - The traffic log records the raw host labels each trigger and sender was derived from (`host_labels`: trigger, channel, message provider, owner flags, whether a sender id was present; never the id), so a misread label can be traced from the log.
 
+### OpenClaw plugin 2.0.0-beta.2: tool-result middleware on OpenClaw 2026.9 (2026-10-21)
+- The tool-result middleware is registered for the `openclaw` runtime by name. Without `runtimes`, OpenClaw 2026.9 targets every runtime it knows (`openclaw` and `codex`) and rejected the registration because the manifest declares `openclaw` only, so tool results reached the scanner through `after_tool_call`'s 8K cap instead of in full. OpenClaw 2026.10 defaults to the declared runtimes and was unaffected.
+

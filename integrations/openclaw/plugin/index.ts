@@ -59,6 +59,9 @@ const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "block
 
 const LOG = "[sentrook]";
 
+/** Must match `contracts.agentToolResultMiddleware` in openclaw.plugin.json. */
+export const MIDDLEWARE_RUNTIMES = ["openclaw"];
+
 function intentKindOf(triggerKind: string): IntentKind {
   if (triggerKind === "message") return "user";
   if (triggerKind === "subagent") return "subagent";
@@ -198,14 +201,19 @@ const plugin = {
     });
 
     try {
-      api.registerAgentToolResultMiddleware?.((event: any) => {
-        const id = event?.toolCallId;
-        if (typeof id === "string") {
-          fullResults.set(id, resultText(event?.result));
-          if (fullResults.size > 500) fullResults.delete(fullResults.keys().next().value!);
-        }
-        return undefined;
-      });
+      // Name the runtime: without `runtimes`, OpenClaw 2026.9 targets every runtime it knows (openclaw and
+      // codex) and rejects the registration when the manifest's contract names fewer.
+      api.registerAgentToolResultMiddleware?.(
+        (event: any) => {
+          const id = event?.toolCallId;
+          if (typeof id === "string") {
+            fullResults.set(id, resultText(event?.result));
+            if (fullResults.size > 500) fullResults.delete(fullResults.keys().next().value!);
+          }
+          return undefined;
+        },
+        { runtimes: MIDDLEWARE_RUNTIMES },
+      );
     } catch (err) {
       api.logger.warn(`${LOG} result middleware unavailable (tool results capped at the hook's 8K): ${String(err)}`);
     }

@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
-import plugin from "./index.ts";
+import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -280,4 +280,12 @@ test("marker lines stay in the request text outside the system agent", async () 
   assert.equal(h.scans[0].request.text, text);
   assert.equal(h.scans[0].trigger.sender.relation, "other");
   assert.equal(h.scans[0].host.platform_version, "unknown");
+});
+
+test("the result middleware names the runtimes the manifest declares", () => {
+  const seen: any[] = [];
+  setup({}, {}, { registerAgentToolResultMiddleware: (_h: unknown, opts: unknown) => seen.push(opts) });
+  const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
+  assert.deepEqual(seen, [{ runtimes: MIDDLEWARE_RUNTIMES }]);
+  assert.deepEqual(MIDDLEWARE_RUNTIMES, manifest.contracts.agentToolResultMiddleware);
 });
