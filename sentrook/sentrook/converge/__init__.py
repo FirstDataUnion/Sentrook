@@ -217,6 +217,7 @@ def converge(
     coverage_codes = {c.code for c in prepared.coverage}
     degraded = (
         any(s in (ProbeStatus.ERROR, ProbeStatus.TIMEOUT) for s in probe_statuses)
+        or any(env.evidence.get("fallback") for env in envelopes)
         or bool(coverage_codes & _DEGRADING_COVERAGE)
         or prepared.state.fresh
     )

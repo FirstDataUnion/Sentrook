@@ -170,6 +170,7 @@ REASONS: dict[str, str] = {
     "retry.denied_consequence_carried": "The consequences of the action you denied earlier carry over to this retry.",
     # session
     "sensitivity.session_holds_sensitive": "The agent read sensitive data earlier in this session and this call sends data out.",
+    "escalation.consequence_rising": "Each recent step in this session had larger consequences than the one before, so this call is scored at least a step above the last.",
     # reputation (oracle)
     "reputation.local_host": "{subject} is this machine.",
     "reputation.unknown_host_as_data_destination": "We have no reputation data for {subject}, which receives data here.",

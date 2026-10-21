@@ -13,7 +13,7 @@ import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.0";
+export const PLUGIN_VERSION = "2.0.0-beta.1";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
@@ -73,8 +73,45 @@ export function providerFor(config: any, name: string): Provider {
   return { kind: "mcp", name: server, identity, transport };
 }
 
+/**
+ * A turn of OpenClaw's built-in system agent (the Control UI's setup and repair assistant): run with
+ * trigger `manual` on message provider `openclaw`. OpenClaw serves that chat only to an `operator.admin`
+ * client, the same test it uses to flag a chat sender as the owner, so the operator typed this turn.
+ */
+export function isSystemAgentTurn(run: RunContext): boolean {
+  return run.trigger === "manual" && run.messageProvider === "openclaw";
+}
+
+/** Host-authored marker lines OpenClaw prefixes to a system agent turn (not the operator's words). */
+const SYSTEM_AGENT_MARKERS = /^(?:\[(?:ui-context|proposal-resolved)\][^\n]*\n)+/;
+
+export function requestTextOf(run: RunContext): string {
+  const text = String(run.currentUserMessage ?? run.prompt ?? "");
+  return isSystemAgentTurn(run) ? text.replace(SYSTEM_AGENT_MARKERS, "") : text;
+}
+
+/** The raw host labels the trigger and sender were derived from, for the local traffic log only. */
+export function hostLabels(run: RunContext, ctx: any): Record<string, unknown> {
+  const requester = ctx?.requester;
+  return {
+    trigger: run.trigger ?? null,
+    channel: run.channel ?? null,
+    message_provider: run.messageProvider ?? null,
+    sender_is_owner: run.senderIsOwner ?? null,
+    agent_id: ctx?.agentId ?? null,
+    requester: requester
+      ? {
+          channel: requester.channel ?? null,
+          sender_is_owner: requester.senderIsOwner ?? null,
+          has_sender_id: requester.senderId != null,
+        }
+      : null,
+  };
+}
+
 export function triggerKind(run: RunContext): string {
   if (run.inputProvenance?.sourceRole === "subagent") return "subagent";
+  if (isSystemAgentTurn(run)) return "message";
   switch (run.trigger) {
     case "user":
       return "message";
@@ -104,7 +141,11 @@ export function senderOf(
   run: RunContext,
   cfg: Pick<PluginConfig, "trustedSenders" | "trustedRoles">,
 ): { relation: string; basis: string[] } {
-  if (requester?.senderIsOwner === true || (!requester && run.senderIsOwner === true)) {
+  if (
+    requester?.senderIsOwner === true ||
+    (!requester && run.senderIsOwner === true) ||
+    isSystemAgentTurn(run)
+  ) {
     return { relation: "owner", basis: ["host_owner_flag"] };
   }
   const senderId = requester?.senderId ?? run.senderId;
@@ -158,6 +199,8 @@ export interface BuildInput {
   run: RunContext;
   assistant: any;
   parents: Record<string, string>;
+  /** OpenClaw's version, from the plugin runtime. */
+  hostVersion?: string;
 }
 
 export interface Built {
@@ -215,7 +258,7 @@ export function buildPlanir(b: BuildInput): Built {
   const sentInputs = sess.buffer.filter((i) => windowIds.has(i.call_id));
   const history = window.map(({ _host_call_id: _drop, ...h }) => h as Omit<HistoryEntry, "_host_call_id">);
 
-  const requestText = run.currentUserMessage ?? run.prompt ?? "";
+  const requestText = requestTextOf(run);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
@@ -228,7 +271,7 @@ export function buildPlanir(b: BuildInput): Built {
     origin: "live",
     host: {
       platform: "openclaw",
-      platform_version: process.env.OPENCLAW_VERSION ?? "unknown",
+      platform_version: b.hostVersion ?? process.env.OPENCLAW_VERSION ?? "unknown",
       plugin_version: PLUGIN_VERSION,
       workspace_root: run.workspaceDir ?? "",
       home: homedir(),
@@ -247,7 +290,9 @@ export function buildPlanir(b: BuildInput): Built {
     },
     trigger: {
       kind: triggerKind(run),
-      channel: channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider),
+      channel: isSystemAgentTurn(run)
+        ? "chat"
+        : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider)),
       sender: senderOf(ctx.requester, run, cfg),
     },
     request: { text: redactor.string(String(requestText)), carried_from_turn: null },

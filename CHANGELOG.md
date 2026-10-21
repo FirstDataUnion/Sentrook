@@ -111,3 +111,16 @@ Three deterministic blind spots shown by the first pass of new suite cases throu
 - `openclaw sentrook verify` / `hermes sentrook verify`: endpoints, credentials, scanner health, token mint.
 - `make plugin-test`, `make hermes-plugin-test`, and `make plugin-planir-check` (the scanner's models and invariant checks must accept every PlanIR the plugins build in their integration tests); CI job `plugins`.
 - `Dockerfile`: the scan service image (`sentrook serve`, non-root, health check on `/healthz`).
+
+### A failed oracle lookup scores like no oracle (2026-10-20)
+- `probes.oracle`: when the entity oracle's lookup raises (Rookery down, unreachable, or the key rejected), the probe answers as the null oracle does (every entity `unknown`, coverage lowered) instead of failing with no contributions, which had dropped the unknown-destination distrust and scored such a scan lower than a scanner with no oracle configured. The evidence carries `lookup_error` and `fallback: null`, and convergence reports the scan `degraded`. Test-mode scans use the seed oracle and are unaffected.
+
+### An escalating session lifts the call's consequence (2026-10-20)
+- `probes.context`: the `escalating` flag was set and kept but scored nothing. In an escalating session (the flag set earlier, or the last few history consequence tiers each rising by at least `escalation_rise`), a call with a consequence of its own (a destination or recipient, code it fetches or runs, or a destructive target) now carries sensitivity, reach and irreversibility at the session's last consequence tier plus `escalation_consequence_step` (default 0.2, capped at 1; 0 turns it off), reason `escalation.consequence_rising`. Under the mean consequence formula this moves a borderline call up about one band. The values merge by max, so a call already scored higher keeps its own; nothing is added on the suspicion side, so the trend never decides intent on its own; a read-only call, a session with level tiers, or a flag with no tier to step from is left alone. The evidence records the last tier, whether the call has a consequence and the value given. Deterministic, so the suite replays from the cache.
+
+### OpenClaw plugin 2.0.0-beta.1: first live traffic (2026-10-21)
+- OpenClaw's built-in system agent (the Control UI's setup and repair assistant, run with trigger `manual` on message provider `openclaw`) went out as trigger `system` from an `other` sender. OpenClaw serves that chat only to an `operator.admin` client, its own test for the owner, so these turns now go out as an owner message on `chat`.
+- The `[ui-context]` and `[proposal-resolved]` marker lines OpenClaw prefixes to a system agent turn are dropped from the request text; they are host hints, not the operator's words. The same text from any other sender is kept as written.
+- `host.platform_version` comes from the plugin runtime's OpenClaw version (it was always `unknown`).
+- The traffic log records the raw host labels each trigger and sender was derived from (`host_labels`: trigger, channel, message provider, owner flags, whether a sender id was present; never the id), so a misread label can be traced from the log.
+

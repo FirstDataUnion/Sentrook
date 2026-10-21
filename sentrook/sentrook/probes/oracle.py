@@ -14,7 +14,14 @@ import time
 from dataclasses import dataclass, field
 
 from ..enums import Enforce, ProbeStatus, ProbeStep
-from ..oracle.client import EntityQuery, OracleClient, OracleResult, VerdictKind, is_local_host
+from ..oracle.client import (
+    EntityQuery,
+    NullOracle,
+    OracleClient,
+    OracleResult,
+    VerdictKind,
+    is_local_host,
+)
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role
 from .base import Contribution, Envelope, Floor
@@ -116,20 +123,17 @@ class EntityOracleProbe:
             )
             for e in remote
         ]
+        lookup_error: str | None = None
         try:
             result: OracleResult = (
                 self.client.lookup(queries) if queries else OracleResult({}, None, available=True)
             )
         except Exception as e:  # noqa: BLE001 (a probe never raises)
-            env = Envelope.failed(
-                self.step,
-                ProbeStatus.ERROR,
-                repr(e),
-                self.versions,
-                latency_ms=(time.perf_counter() - started) * 1000,
-            )
-            env.evidence["queries"] = [q.to_wire() for q in queries]
-            return env
+            # A failed lookup must not score lower than having no oracle at all: answer as the null
+            # oracle does (everything unknown, coverage lowered) and say so in the evidence, which
+            # makes the scan degraded.
+            lookup_error = repr(e)
+            result = NullOracle().lookup(queries)
 
         contributions: list[Contribution] = []
         floors: list[Floor] = []
@@ -231,5 +235,6 @@ class EntityOracleProbe:
                 "available": result.available,
                 "queried": len(queries),
                 "local": [e.id for e in local],
+                **({"lookup_error": lookup_error, "fallback": "null"} if lookup_error else {}),
             },
         )
