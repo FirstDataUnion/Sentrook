@@ -30,14 +30,43 @@ logger = logging.getLogger("sentrook")
 #: History decisions after which the tool did not run.
 NOT_RUN = frozenset({"blocked", "denied_by_user", "review_timed_out", "blocked_on_error"})
 
-_settings: dict[str, Any] = {}
+#: Every key the plugin reads from `plugins.entries.sentrook.settings` in config.yaml.
+SETTINGS_KEYS = (
+    "scan_url",
+    "rookery_url",
+    "oidc_issuer",
+    "client_id",
+    "client_secret",
+    "oidc_audience",
+    "oidc_scope",
+    "mode",
+    "review_at",
+    "block_at",
+    "on_scan_error",
+    "attended_platforms",
+    "timeout_ms",
+    "channel_bindings",
+    "grants",
+    "state_dir",
+    "traffic_log",
+    "history_limit",
+    "input_cap_bytes",
+    "history_args_cap_bytes",
+    "packs",
+)
+
+_ctx: Any = None
 _store: Store | None = None
 _traffic: TrafficLog | None = None
 
 
+def _settings() -> dict[str, Any]:
+    return settings_from_ctx(_ctx)
+
+
 def _load() -> tuple[PluginConfig, dict[str, str]]:
     env = env_with_hermes_dotenv()
-    return resolve_config(_settings, env), env
+    return resolve_config(_settings(), env), env
 
 
 def _state(cfg: PluginConfig) -> tuple[Store, TrafficLog]:
@@ -181,7 +210,7 @@ def _scan_one(
     else:
         result = post_scan(
             scan_url=ep.scan.url,
-            oidc=resolve_oidc_credentials(_settings, env, ep.issuer.url),
+            oidc=resolve_oidc_credentials(_settings(), env, ep.issuer.url),
             body=json.dumps(planir, ensure_ascii=False, default=str).encode(),
             timeout_ms=cfg.timeout_ms,
         )
@@ -405,15 +434,15 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
 
 
 def register(ctx: Any) -> None:
-    global _settings
-    _settings = _settings_from_ctx(ctx)
+    global _ctx
+    _ctx = ctx
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_api_request", on_post_api_request)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_approval_response", on_post_approval_response)
     try:
-        cli.register_cli(ctx, lambda: _settings)
+        cli.register_cli(ctx, _settings)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin CLI commands
         logger.info("sentrook CLI not registered: %s", exc)
     cfg, _ = _load()
@@ -440,18 +469,21 @@ def register(ctx: Any) -> None:
         )
 
 
-def _settings_from_ctx(ctx: Any) -> dict[str, Any]:
-    for name in ("get_settings", "settings", "plugin_settings", "get_config"):
-        attr = getattr(ctx, name, None)
+def settings_from_ctx(ctx: Any) -> dict[str, Any]:
+    """The plugin's settings, read on every call so `hermes config set` applies without a restart.
+
+    Hermes exposes them one key at a time (`ctx.get_config(key)`, cached by Hermes); a host without
+    it gives no settings, and everything resolves from env and defaults.
+    """
+    get = getattr(ctx, "get_config", None)
+    if not callable(get):
+        return {}
+    out: dict[str, Any] = {}
+    for key in SETTINGS_KEYS:
         try:
-            value = attr() if callable(attr) else attr
-        except TypeError:
-            try:
-                value = attr("sentrook")
-            except Exception:  # noqa: BLE001
-                value = None
-        except Exception:  # noqa: BLE001
+            value = get(key, None)
+        except Exception:  # noqa: BLE001 - a rejected or unreadable key is treated as unset
             value = None
-        if isinstance(value, dict):
-            return value
-    return {}
+        if value is not None:
+            out[key] = value
+    return out
