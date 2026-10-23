@@ -20,3 +20,16 @@ Public repo. On 2026-10-01 `main` was reset to a clean slate for the Sentrook 2.
   so old fixtures stay visible until those branches are gone.
 - `release-plugin.yml` and `release-hermes-plugin.yml` must stay on `main` (a dispatchable workflow has
   to exist on the default branch). They fail on `main` until the new plugins exist; that is expected.
+
+## Backlog
+Bugs, gaps, debt, feature ideas and design questions are tracked in the Notion database "Sentrook Features" (find
+it with the Notion search tool; its "How to use this page" callout is the convention, read it before filing).
+- **Suggest, then file.** When you find something worth tracking that is outside your task, name it to the user
+  with a proposed title, Kind and one line of evidence, and file it when they agree. File without asking only when
+  the user asked for the write-up. Do not fix it silently in an unrelated change or leave it only in chat.
+- **One ticket, one change.** Search first and extend a matching ticket instead of duplicating it. Each ticket
+  stands alone for an agent that never saw your conversation: Problem, Where, Fix (or Options), Tests, Reproduce,
+  Related. Status Idea; never set Priority.
+- **Public repo:** internal reasoning, case ids and design references live in the ticket. Code, tests, commit
+  messages and PR text state the rule in plain words and never cite the ticket or internal documents.
+- **Finding work:** pick from the "Ready for agents" view; set In progress and put the PR in PRs.
