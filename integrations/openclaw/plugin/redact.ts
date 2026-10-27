@@ -27,13 +27,76 @@ interface Shape {
   re: RegExp;
   /** Replace only this named group; the rest of the match (a key, a scheme) stays. */
   group?: string;
+  /** A match counts only when its value passes this check. */
+  check?: (value: string) => boolean;
 }
 
 const KEY_NAMES =
-  "api[_-]?key|apikey|secret|token|access[_-]?key|private[_-]?key|passw(?:or)?d|passwd|client[_-]?secret|auth[_-]?token";
+  "api[_-]?key|apikey|secret[_-]?key|secret|token|access[_-]?key|private[_-]?key|passw(?:or)?d|passwd|passphrase" +
+  "|client[_-]?secret|auth[_-]?token|bearer";
+/**
+ * A key that ends in a credential word: `GITHUB_TOKEN`, `api_key`, `secretAccessKey`, `logintoken`, and `tok`.
+ * A key with letters before its credential word starts at a word boundary; a bare credential word may follow
+ * `_` (`MY_VERY_LONG_SERVICE_NAME_TOKEN`). A key right after `/` (a URL segment) or `⟦` (a placeholder label)
+ * does not count.
+ */
+const CREDENTIAL_KEY =
+  `(?:(?<![A-Za-z0-9/⟦_.-])[A-Za-z0-9_.-]{1,40}(?:${KEY_NAMES})|(?<![A-Za-z0-9/⟦])(?:${KEY_NAMES}|tok))(?![A-Za-z0-9])`;
 
+/** Words that introduce a secret in prose: "the database password is X", "gateway token X". */
+const PROSE_CUES = "password|passwd|passphrase|token|secret|api[ _-]?key|bearer";
+/** A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. */
+const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>\\\\]{5,199}[^\\s\"'`⟦⟧$<>\\\\.,;:!?)\\]])";
+/**
+ * Words, not secrets: one or more words with at most a capital first letter, maybe hyphenated (`required`,
+ * `Read-only`, `ENABLED`), an identifier (`accessToken`, `GITHUB_TOKEN`), or a hyphenated name with two or
+ * more plain words in it (`gpt-4o-mini`, `min-length-12`).
+ */
+const ORDINARY_WORD = /^(?:[A-Za-z][a-z]*(?:-[A-Za-z][a-z]*)*|[A-Z]+|[a-z]+(?:[A-Z][a-z]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)$/;
+const isOrdinary = (v: string) => ORDINARY_WORD.test(v) || v.split("-").filter((p) => /^[a-z]{2,}$/.test(p)).length >= 2;
+/** What a sentence names: paths, URLs, masks and templates, code, dates, hex addresses, key fingerprints. */
+const NAMED_THING = /^[/~.*{\[(]|:\/\/|\(|^[0-9]{4}-[0-9]{2}-[0-9]{2}|^0x[0-9a-fA-F]{40}$|^(?:SHA256|MD5):/;
+
+/**
+ * Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the name of
+ * an environment variable (`token: GITHUB_TOKEN`).
+ */
+const keyValue = (v: string) => !v.includes("://") && !/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v);
+/** An upper-case name with a credential word inside it names many things; only a long value counts. */
+const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v);
+/** After "password is" or "token:": six or more characters that are not words or a number. */
+const statedValue = (v: string) => v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v);
+/** Straight after a cue word ("backup key X"): twelve or more characters with letters and digits. */
+const bareValue = (v: string) =>
+  v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
+
+/**
+ * "password is X", "the password is now X", "the token for prod: X". The words between cue and value stay
+ * inside one clause and one quoted string and never reach into a placeholder; a cue inside a path, host or
+ * name (`/token:8443`, `x.secret`) does not count.
+ */
+const proseStated = (cues: string) =>
+  new RegExp(
+    `(?<![A-Za-z0-9_/.⟦-])(?:${cues})(?![A-Za-z0-9_])[^\\n:.;=\"'\`⟦]{0,40}?` +
+      `(?:\\s(?:is|was)(?:\\s+(?:now|still|currently|set\\s+to|changed\\s+to))?\\s+|:[ \\t]*)${PROSE_VALUE}`,
+    "gi",
+  );
+/** "gateway token X", "secret X". */
+const proseBare = (cues: string) => new RegExp(`(?<![A-Za-z0-9_/.⟦-])(?:${cues})[ \\t]+${PROSE_VALUE}`, "gi");
+
+/**
+ * Kinds name a value's own shape (`github`, `jwt`, `private_key`). Every rule that finds a value by its
+ * context (a key, a header, a sentence, a URL) says `credential`, so one value gets one placeholder
+ * whichever rule found it.
+ */
 const SHAPES: Shape[] = [
-  { kind: "private_key", re: /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\r\n \t]{0,8000}(?:-----END [A-Z ]{0,40}PRIVATE KEY-----)?/g },
+  {
+    // The whole block up to its END line, whatever the body holds (escaped `\n` in a JSON-encoded result,
+    // PGP armour headers); a block cut off before its END line runs over the base64 body. The body never
+    // holds a run of five dashes, so the search for END stops at the next armour line.
+    kind: "private_key",
+    re: /-----BEGIN [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----(?:(?:[^-]|-(?!----)){0,8000}-----END [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----|[A-Za-z0-9+/=\\\r\n \t]{0,8000})/g,
+  },
   { kind: "jwt", re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g },
   { kind: "openai", re: /sk-(?:proj|svcacct|admin|live)-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}/g },
   { kind: "anthropic", re: /sk-ant-[A-Za-z0-9_-]{10,}/g },
@@ -50,9 +113,23 @@ const SHAPES: Shape[] = [
   { kind: "huggingface", re: /\bhf_[A-Za-z0-9]{20,}/g },
   { kind: "groq", re: /\bgsk_[A-Za-z0-9]{20,}/g },
   {
-    kind: "bearer",
-    re: /(?:authorization["']?[ \t]*[:=][ \t]*["']?)?bearer[ \t]+(?<v>[^\s"'⟦][^\s"']{19,})/gi,
+    kind: "credential",
+    re: /(?:authorization["']?[ \t]*[:=][ \t]*["']?)?bearer[ \t]+(?<v>[^\s"'⟦\\][^\s"'\\]{19,})/gi,
     group: "v",
+  },
+  {
+    // The password in `scheme://user:PASS@host` (the user may be empty, the password may hold `@`); user
+    // and host stay.
+    kind: "credential",
+    re: /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/[^\s/?#@:"'<>\\⟦]{0,256}:(?<v>[^\s/?@"'<>\\⟦$*{][^\s/?"'<>\\]{0,255})@/g,
+    group: "v",
+  },
+  {
+    // A private calendar feed: `…/private-<token>/basic.ics`.
+    kind: "credential",
+    re: /\/private-(?<v>[A-Za-z0-9]{16,128})(?![A-Za-z0-9])/g,
+    group: "v",
+    check: (v) => /[0-9]/.test(v),
   },
   {
     // `--password x`, `--api-key=x`, `--token "x"`
@@ -61,22 +138,48 @@ const SHAPES: Shape[] = [
     group: "v",
   },
   {
-    // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x` (`_` is not alphanumeric, so the key's own
-    // prefix passes the lookbehind). A key right after `/` (a URL segment) or `⟦` (a placeholder
-    // label) does not count; values that are variable references or masks stay.
+    // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
+    // Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
+    // escaped and a plain copy of one value get the same placeholder.
     kind: "credential",
     re: new RegExp(
-      `(?<![A-Za-z0-9/⟦])(?:${KEY_NAMES})(?![A-Za-z0-9])["']?\\s*[=:]\\s*["']?` +
-        `(?!\\d{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{<%&,;\`][^\\s"'&,;<>\`]{7,})`,
+      `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
+        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'&,;<>\`\\\\]{7,})`,
       "gi",
     ),
     group: "v",
+    check: keyValue,
   },
+  {
+    // `"password": "words, & symbols"`: in a JSON pair the whole quoted string is the value.
+    kind: "credential",
+    re: new RegExp(`${CREDENTIAL_KEY}\\\\?["']\\s*:\\s*\\\\?"(?<v>[^"\\\\\\n⟦$*{[<%][^"\\\\\\n]{7,199})\\\\?"`, "gi"),
+    group: "v",
+    check: keyValue,
+  },
+  {
+    // An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
+    // path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+    kind: "credential",
+    re: new RegExp(
+      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{7,})`,
+      "g",
+    ),
+    group: "v",
+    check: innerKeyValue,
+  },
+  { kind: "credential", re: proseStated(PROSE_CUES), group: "v", check: statedValue },
+  { kind: "credential", re: proseBare(`${PROSE_CUES}|key`), group: "v", check: bareValue },
 ];
 
-/** Object keys whose whole value is a credential. Bounded `pass` so `compass` and `passage` stay. */
+/**
+ * Object keys whose whole value is a credential: any key that ends in a credential word (`password`,
+ * `secretAccessKey`, `logintoken`). `pass`, `tok` and `credentials` count only as a whole word, so
+ * `compass` and `passage` stay.
+ */
 const CREDENTIAL_FIELD =
-  /^(?:.*[_-])?(?:token|password|passwd|pass|secret|api[_-]?key|apikey|auth[_-]?token|credentials?|bearer|private[_-]?key|client[_-]?secret)$/i;
+  /^(?:.*[_-])?(?:pass|tok|credentials?)$|(?:token|password|passwd|passphrase|secret|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|auth[_-]?token|bearer|private[_-]?key|client[_-]?secret)$/i;
 
 function spansOf(text: string): Array<[number, number, string]> {
   const spans: Array<[number, number, string]> = [];
@@ -91,7 +194,7 @@ function spansOf(text: string): Array<[number, number, string]> {
       }
       if (shape.group) {
         const idx = m.indices?.groups?.[shape.group];
-        if (idx) spans.push([idx[0], idx[1], shape.kind]);
+        if (idx && (!shape.check || shape.check(text.slice(idx[0], idx[1])))) spans.push([idx[0], idx[1], shape.kind]);
       } else {
         spans.push([m.index, m.index + m[0].length, shape.kind]);
       }
@@ -112,7 +215,10 @@ function spansOf(text: string): Array<[number, number, string]> {
 
 export function createRedactor(level: RedactionLevel, salt: string): Redactor {
   const ref = (value: string) => createHmac("sha256", salt).update(value).digest("hex").slice(0, 4);
-  const placeholder = (kind: string, value: string) => `⟦secret:${kind}:${ref(value)}⟧`;
+  // A private key is hashed without its line breaks, plain or escaped, so a key keeps its placeholder
+  // however many times the text around it was JSON-encoded.
+  const placeholder = (kind: string, value: string) =>
+    `⟦secret:${kind}:${ref(kind === "private_key" ? value.replace(/\\+[rnt]|\s+/g, "") : value)}⟧`;
 
   const redactString = (text: string): string => {
     if (level === "off" || !text) return text;
@@ -133,7 +239,8 @@ export function createRedactor(level: RedactionLevel, salt: string): Redactor {
     if (Array.isArray(value)) return value.map((v) => walk(v, depth + 1));
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (level !== "off" && CREDENTIAL_FIELD.test(k) && typeof v === "string" && v && !v.startsWith("⟦")) {
+      // A URL under a credential key (`forgotPassword`) goes through the text rules, which keep its host.
+      if (level !== "off" && CREDENTIAL_FIELD.test(k) && typeof v === "string" && v && !v.startsWith("⟦") && keyValue(v)) {
         out[k] = placeholder("credential", v);
       } else {
         out[k] = walk(v, depth + 1);

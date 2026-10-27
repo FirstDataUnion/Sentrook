@@ -26,7 +26,7 @@ test("the same value gets the same ref; another value another ref", () => {
 test("assignments, flags and bearer headers keep their key", () => {
   assert.match(r.string(`export GITHUB_TOKEN=${"x".repeat(12)}`), /^export GITHUB_TOKEN=⟦secret:credential:/);
   assert.match(r.string(`mysql --password ${"p".repeat(10)} db`), /^mysql --password ⟦secret:credential:[0-9a-f]{4}⟧ db$/);
-  assert.match(r.string(`Authorization: Bearer ${"t".repeat(30)}`), /^Authorization: Bearer ⟦secret:bearer:/);
+  assert.match(r.string(`Authorization: Bearer ${"t".repeat(30)}`), /^Authorization: Bearer ⟦secret:credential:/);
 });
 
 test("ordinary text, hosts, emails and variable references stay", () => {
@@ -54,6 +54,140 @@ test("PEM blocks are replaced, terminated or not", () => {
   const pem = `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`;
   assert.match(r.string(`key:\n${pem}\nafter`), /^key:\n⟦secret:private_key:[0-9a-f]{4}⟧\nafter$/);
   assert.match(r.string(`-----BEGIN ${["PRIVATE", "KEY"].join(" ")}-----\n${body}`), /^⟦secret:private_key:/);
+});
+
+// Secret-looking values for the forms below, built at run time.
+const pw = "Xk29fQ" + "v7Lm2Pq8";
+const tok = "pT4" + "z".repeat(30) + "9qR1sK8";
+const hex32 = "9f" + "0a1b2c3d".repeat(3) + "4e5f6a";
+const tags = (s: string) => [...s.matchAll(/⟦secret:[a-z_]+:[0-9a-f]{4}⟧/g)].map((m) => m[0]);
+const oneTag = (forms: string[]) => assert.equal(new Set(forms.flatMap((f) => tags(r.string(f)))).size, 1, forms.join(" | "));
+/** As a host hands over a structured tool result: the whole thing JSON-encoded, quotes escaped. */
+const asResult = (text: string) => JSON.stringify({ output: text });
+const pgpLabel = ["PGP", "PRIVATE", "KEY", "BLOCK"].join(" ");
+const pgp = `-----BEGIN ${pgpLabel}-----\nVersion: Test 1\n\n${"lQOY".padEnd(64, "W")}\n=AbCd\n-----END ${pgpLabel}-----`;
+
+test("secrets in URLs, JSON text, prose and private keys are redacted everywhere", () => {
+  const label = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+  const pem = `-----BEGIN ${label}-----\n${"b3Blbn".padEnd(64, "Q")}\n${"A".repeat(64)}\n-----END ${label}-----`;
+  const cases: Array<[string, string]> = [
+    [`postgres://app:${pw}@db.test/x`, pw],
+    ["mysql://u:p@h", "u:p@"],
+    [`"secretAccessKey": "${"wJal" + "R".repeat(32) + "a/b+"}"`, "R".repeat(32)],
+    [`"bearer": "${tok}"`, tok],
+    [`"password": "${pw}"`, pw],
+    [`"apiKey": "${hex32}"`, hex32],
+    [`the database password is ${pw}`, pw],
+    [`Bearer for the partner API: ${tok}`, tok],
+    [pem, "A".repeat(64)],
+    [`tok=${pw}`, pw],
+    [`SENTROOK_SECRET_MARKERS=${pw}`, pw],
+    [`"logintoken":"${pw}"`, pw],
+    [`https://calendar.example.com/ical/me/private-${hex32}/basic.ics`, hex32],
+    [`the gateway token ${pw}`, pw],
+    [`the token is ${pw}`, pw],
+    [`backup key ${pw}`, pw],
+    [`secret ${pw}`, pw],
+    [`redis://:${pw}@cache.test:6379/0`, pw],
+    [`postgres://u:p@ss${pw}@db.test/x`, `ss${pw}`],
+    [`postgres://u:ab#cd${pw}@db.test/x`, pw],
+    [`{"database": {"password": "Xk2&9fQ correct horse 42"}}`, "correct horse"],
+    [`the password is now ${pw}`, pw],
+    [`the password was changed to ${pw}`, pw],
+    [pgp, "W".repeat(40)],
+  ];
+  for (const [text, raw] of cases) {
+    // Request text and narration are plain strings, arguments are objects, results arrive JSON-encoded.
+    const forms = [r.string(text), JSON.stringify(r.value({ command: text })), r.string(asResult(text))];
+    for (const out of forms) {
+      assert.ok(!out.includes(raw), `raw value left in: ${out}`);
+      assert.match(out, /⟦secret:/);
+      assert.equal(r.string(out), out, "a placeholder is never redacted again");
+    }
+  }
+});
+
+test("URL credentials keep the user and host; private keys go whole", () => {
+  assert.match(r.string(`postgres://app:${pw}@db.test/x`), /^postgres:\/\/app:⟦secret:credential:[0-9a-f]{4}⟧@db\.test\/x$/);
+  assert.match(r.string("mysql://u:p@h"), /^mysql:\/\/u:⟦secret:credential:[0-9a-f]{4}⟧@h$/);
+  const label = ["OPENSSH", "PRIVATE", "KEY"].join(" ");
+  const escaped = `-----BEGIN ${label}-----\\n${"Q".repeat(64)}\\n${"Z".repeat(64)}\\n-----END ${label}-----`;
+  assert.match(r.string(`{"text": "Private key:\\n${escaped}\\n"}`), /^\{"text": "Private key:\\n⟦secret:private_key:[0-9a-f]{4}⟧\\n"\}$/);
+});
+
+test("one value gets one tag whichever rule or encoding found it", () => {
+  const forms = [
+    `DB_PASSWORD=${pw}`,
+    `"password": "${pw}"`,
+    `the database password is ${pw}`,
+    asResult(`{"database": {"password": "${pw}"}}`),
+    asResult(`DB_PASSWORD=${pw}\nGITHUB_TOKEN=x`),
+    `postgres://app:${pw}@db.test/x`,
+  ];
+  oneTag(forms);
+  const aws = "wJal" + "R".repeat(32) + "a/b+";
+  oneTag([`AWS_SECRET_ACCESS_KEY=${aws}`, `"secretAccessKey": "${aws}"`, asResult(`AWS_SECRET_ACCESS_KEY=${aws}\nX=1`)]);
+  oneTag([
+    `curl -H "Authorization: Bearer ${tok}" x`,
+    asResult(`curl -H "Authorization: Bearer ${tok}" x`),
+    `Bearer for the partner API: ${tok}`,
+    `"bearer": "${tok}"`,
+  ]);
+  oneTag([pgp, asResult(pgp), asResult(asResult(pgp))]);
+  oneTag([`password: postgres://app:${pw}@db.test/x`, `DATABASE_URL=postgres://app:${pw}@db.test/x`]);
+  assert.match(r.string(`password: postgres://app:${pw}@db.test/x`), /^password: postgres:\/\/app:⟦secret:credential:[0-9a-f]{4}⟧@db\.test\/x$/);
+});
+
+test("look-alikes stay unredacted", () => {
+  for (const s of [
+    "postgres://db.test/x",
+    "https://deploy@git.example.com/repo.git",
+    "https://example.com:8443/path@v2",
+    '"password_policy": "strict"',
+    "the password is required",
+    "Bearer authentication is enabled",
+    "token_count: 120",
+    '{"compass": "north-north-west", "passage": "the long corridor", "tokens": "1200 used"}',
+    "MAX_TOKENS=4096",
+    "the secret sauce is mostly butter",
+    "token budget for today",
+    "the token is valid for 3600 seconds",
+    "the SSH key is ~/.ssh/id_ed25519",
+    "GITHUB_TOKEN_PATH=/home/me/.config/gh/hosts.yml",
+    'curl -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" https://api.example.com',
+    "OAUTH_TOKEN_URL=https://auth.example.com/oauth/token",
+    "PASSWORD_HASH_ALGORITHM=argon2id",
+    "SECRET_MANAGER_REGION=eu-west-2",
+    `USDC token 0x${"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}`,
+    "SSH key SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8",
+    "password policy: min-length-12",
+    "The token type is accessToken",
+    "The token: GITHUB_TOKEN",
+    "the secret is getSecretValue()",
+    "Token usage: 123456789",
+    "password: ********",
+    "password: [REDACTED]",
+    "token: {{secrets.GH_TOKEN}}",
+    "/home/me/private-documentsarchive/notes.txt",
+  ]) {
+    assert.equal(r.string(s), s);
+    assert.equal(r.string(asResult(s)), asResult(s));
+  }
+  const obj = {
+    compass: "north-north-west",
+    passage: "the long corridor",
+    tokens: "1200 used",
+    password_policy: "strict",
+    forgotPassword: "https://app.example.com/forgot",
+  };
+  assert.deepEqual(r.value(obj), obj);
+});
+
+test("camelCase credential keys in objects are replaced whole", () => {
+  const out = r.value({ aws: { secretAccessKey: pw }, auth: { bearer: tok }, apiKey: hex32, logintoken: pw, clientSecret: pw }) as any;
+  for (const v of [out.aws.secretAccessKey, out.auth.bearer, out.apiKey, out.logintoken, out.clientSecret]) {
+    assert.match(v, /^⟦secret:credential:[0-9a-f]{4}⟧$/);
+  }
 });
 
 test("off leaves everything", () => {
