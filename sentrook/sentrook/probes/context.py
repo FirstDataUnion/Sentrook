@@ -443,7 +443,7 @@ class ContextProbe:
 
         # 3. Secret values carried into a send or publish the owner did not ask a secret to go with.
         asked_for_secret = any(
-            rx.search(prepared.planir.request.text or "")
+            rx.search(prepared.request_words or "")
             for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
         )
         if (

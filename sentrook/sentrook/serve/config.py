@@ -101,11 +101,11 @@ class ServeConfig:
     jev_api_key: str | None = None
     jev_model: str = DEFAULT_MODEL
     jev_timeout_s: float = 20.0
-    # Shipped defaults: the call-v3 / exposure-v2 question sets and conv-v3. The frozen v1 sets and
+    # Shipped defaults: the call-v4 / exposure-v2 question sets and conv-v3. The frozen v1 sets and
     # conv-v1 / conv-v2 stay selectable (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the
     # Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
     jev_exposure_question_set: str = "exposure-v2"
-    jev_call_question_set: str = "call-v3"
+    jev_call_question_set: str = "call-v4"
     oracle_url: str | None = None
     oracle_api_key: str | None = None
     probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
@@ -184,7 +184,7 @@ class ServeConfig:
                 env, "SENTROOK_JEV_EXPOSURE_QUESTIONS", "exposure-v2", "exposure"
             ),
             jev_call_question_set=_question_set(
-                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v3", "call"
+                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v4", "call"
             ),
             oracle_url=(env.get("SENTROOK_ORACLE_URL") or "").strip() or None,
             oracle_api_key=(env.get("SENTROOK_ORACLE_API_KEY") or "").strip() or None,
