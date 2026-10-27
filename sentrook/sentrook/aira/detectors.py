@@ -29,10 +29,11 @@ from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
-from .exec_shape import ExecSegment, ExecShape
+from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
 from .lists import Lists, Rule
 from .path_classes import _URL_RE, locations_of
 from .sensitive_paths import basename_pattern
+from .stage_programs import stage_runs_stdin
 
 SENSITIVITY = "consequence.sensitivity"
 REACH = "consequence.reach"
@@ -525,9 +526,11 @@ def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
     evals = set(lists.strings("installers", "eval_heads"))
     out_flags = set(lists.strings("installers", "fetch_output_flags"))
     for stages in _stage_heads(shape):
-        heads = [s.head for s in stages]
-        for i, h in enumerate(heads):
-            if h in fetch and any(t in shells | interp | evals for t in heads[i + 1 :]):
+        for i, seg in enumerate(stages):
+            if seg.head in fetch and any(
+                t.head in evals or (t.head in shells | interp and stage_runs_stdin(t, lists))
+                for t in stages[i + 1 :]
+            ):
                 return "pipeline"
     heads = set(shape.heads)
     if shape.substitution and heads & fetch and heads & (shells | evals):
@@ -552,6 +555,23 @@ def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
         for s in shape.segments
     ):
         return "fetch_then_run"
+    return None
+
+
+def _text_fetch_to_shell(text: str, ctx: Context) -> re.Match[str] | None:
+    """The text fallback, for fetch-to-shell shapes the command's parse does not show (inside a
+    quoted program, a decoded URL parameter). A match whose line parses as a pipeline goes through
+    the same stage check as the command, so a stage that brings its own program is silent here too;
+    one that does not parse still counts."""
+    for rx in ctx.lists.patterns("installers", "fetch_to_shell_patterns"):
+        for m in rx.finditer(text):
+            end = text.find("\n", m.start())
+            shape = derive_exec_shape(
+                text[m.start() : end if end >= 0 else None], ctx.lists.path_groups
+            )
+            if shape.parse_ok and shape.pipelines and _fetch_to_shell(shape, ctx) is None:
+                continue
+            return m
     return None
 
 
@@ -624,7 +644,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
 
     # What the command does as written, and what it does once decoding is undone.
     raw_fetch = _fetch_to_shell(a.shape, ctx)
-    text_fetch = _match_any(lists.patterns("installers", "fetch_to_shell_patterns"), a.text)
+    text_fetch = _text_fetch_to_shell(a.text, ctx)
     decoded_fetch = _fetch_to_shell(a.decoded_shape, ctx)
     decoded_pipe = a.decoded_shape is not None and bool(
         set(a.decoded_shape.sinks) & {"pipe_to_shell", "pipe_to_interpreter"}

@@ -2,7 +2,7 @@
 # installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
 # min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
 
-version: 3
+version: 4
 
 fetch_heads:
   - curl
@@ -38,6 +38,90 @@ eval_heads:
   - eval
   - source
   - "."
+
+# A shell or interpreter stage after a fetch in a pipeline runs the fetched bytes only when it reads
+# its program from stdin. Given its own program, by a program flag (`python3 -c '…'`,
+# `python3 -m json.tool`, `node -e '…'`) or a script file (`python3 tools/fmt.py`), it reads stdin as
+# data. Per head family:
+# - `program_flags` take the program (inline code, a module or a file) as their value, separate or
+#   attached (`-mjson.tool`, `--eval=…`);
+# - `stdin_flags` make the stage read code from stdin whatever else is given (`bash -s`, `python3 -i`);
+# - `value_flags` take a separate value that is not a script (`bash -o pipefail`);
+# - `bundle_letters` are the no-value letters that may come before a program or stdin letter in one
+#   bundle (`perl -ne`, `bash -ec`); any other letter ends the bundle undecided;
+# - `subcommands` are skipped before the script (`deno run x.ts`), `program_subcommands` take the
+#   program as the next argument (`deno eval '…'`), `stdin_modules` read code from stdin
+#   (`python3 -m code`).
+# A bare `-`, or stdin named as a path (`stdin_paths`), is a program read from stdin, and only a
+# positional that looks like a path (a `/` or a `.` in it) counts as a script file. A head with no
+# entry here always counts as running stdin.
+stdin_paths: [/dev/stdin, /dev/fd/0, /proc/self/fd/0]
+stage_programs:
+  - heads: [python, python2, python3]
+    program_flags: [-c, -m]
+    stdin_flags: [-i]
+    value_flags: [-W, -X, --check-hash-based-pycs]
+    bundle_letters: bBdEIOPqsSuvx
+    stdin_modules: [code, IPython, ptpython, bpython, pdb]
+  - heads: [node]
+    program_flags: [-e, --eval, -p, --print]
+    stdin_flags: [-i, --interactive]
+    value_flags: [-r, --require, --import, --loader, --experimental-loader, -C, --conditions, --input-type]
+  - heads: [deno, bun]
+    program_flags: [-e, --eval]
+    value_flags: [-r, --require, --import, --config, -c, --cwd]
+    subcommands: [run]
+    program_subcommands: [eval]
+  - heads: [perl]
+    program_flags: [-e, -E]
+    value_flags: [-I, -M, -m]
+    bundle_letters: aclnpsStTuUwWX
+  - heads: [ruby]
+    program_flags: [-e]
+    value_flags: [-r, -I, -E, -C, -F, --encoding]
+    bundle_letters: acdlnpsSvwy
+  - heads: [php]
+    program_flags: [-r, -R, -B, -E, -F, -f]
+    stdin_flags: [-a]
+    value_flags: [-c, -d, -z, -t]
+    bundle_letters: nqeHC
+  - heads: [lua]
+    program_flags: [-e]
+    stdin_flags: [-i]
+    value_flags: [-l]
+  - heads: [osascript]
+    program_flags: [-e]
+    value_flags: [-l, -s]
+  - heads: [sh, bash, zsh, dash, ksh, ash, fish, csh, tcsh]
+    program_flags: [-c, --command]
+    stdin_flags: [-s]
+    value_flags: [-o, +o, -O, +O, --rcfile, --init-file]
+    bundle_letters: abefhiklmnprtuvxBCEHPT
+# An inline program that runs its own input as code (`python3 -c "exec(sys.stdin.read())"`,
+# `bash -c "$(cat)"`) still runs the fetched bytes. A plain match on the program text: any of these
+# anywhere in it counts.
+inline_stdin_exec_patterns:
+  - '(?:\b(?:__)?builtins(?:__)?\.|(?<![\w.]))(?:exec|eval|execfile|compile|instance_eval|class_eval|module_eval)\b'
+  - '\b(?:system|popen|spawn|spawnSync|execSync|execFileSync|runInThisContext|runInNewContext|runInContext)\b'
+  - '\b(?:subprocess|child_process|pty\.spawn|runpy|run_path)\b'
+  - '(?-i:\bFunction)\s*\('
+  # Code reached indirectly (`__import__('builtins').exec`, `getattr(__builtins__, …)`) and loaders
+  # that run what they read (`pickle.load`, `yaml.unsafe_load`).
+  - '\b__import__\b|\bgetattr\s*\(\s*__builtins__'
+  - '\b(?:pickle|cPickle|dill|marshal|shelve)\.loads?\b|\byaml\.(?:unsafe_|full_)?load(?:_all)?\s*\('
+  # The stdin stream named as a file to load (`do "/dev/stdin"`, `include "php://stdin"`).
+  - '/dev/stdin|/dev/fd/0\b|/proc/self/fd/0\b|php://stdin'
+  # The calling shell substitutes the piped bytes in as the program (`python3 -c "$(cat)"`); the
+  # quoting is gone by now, so any substitution counts.
+  - '\$\(|`\s*cat\b'
+shell_inline_stdin_exec_patterns:
+  - '\$\(|`'
+  - '/dev/stdin|/dev/fd/0\b|/proc/self/fd/0\b|<&0'
+  - '(?:^|[\s;&|(])(?:eval|source|exec|\.)(?:\s|$)'
+  # A variable run as a command (`while read -r l; do $l; done`).
+  - '(?:^|[;&|({]|\bdo\b|\bthen\b|\belse\b)\s*"?\$\{?\w'
+  - '\b(?:ba|z|da|k|a|fi|c|tc)?sh\b'
+  - '\b(?:python[23]?|node|deno|bun|perl|ruby|php|lua|osascript)\b'
 
 # A fetch head that writes to a file (`curl -o x.sh … && bash x.sh`): these flags mark the write.
 fetch_output_flags:
