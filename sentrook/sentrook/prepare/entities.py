@@ -13,6 +13,7 @@ module only has to be right enough for the oracle and the context probe to ask t
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -153,7 +154,8 @@ _URL_RE = re.compile(r"https?://[^\s\"'<>`|;)\]}]+", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
 # A bare hostname: two or more labels, alphabetic TLD. Lookbehind excludes path components, emails and
 # scheme-prefixed forms (those are caught by _URL_RE / _EMAIL_RE); the extension list excludes files.
-_HOST_RE = re.compile(r"(?<![\w@/.:+-])((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w/-])")
+# The lookahead also refuses a stop before `.label`, so `a.b.net/x` is not read as `a.b`.
+_HOST_RE = re.compile(r"(?<![\w@/.:+-])((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w/-]|\.[\w-])")
 _FILE_EXTENSIONS = frozenset(
     """md txt json yaml yml py sh js ts tsx jsx csv env log cfg conf ini toml xml html htm pdf png jpg
     jpeg gif svg zip tar gz tgz bz2 xz lock sqlite db bak tmp rst mjs cjs go rs java kt rb php sql
@@ -165,8 +167,60 @@ _FILE_EXTENSIONS = frozenset(
 _IMPORT_LIST_RE = re.compile(r"\bimport\s+(?:[\w.]+(?:\s+as\s+\w+)?\s*,\s*)*$")
 _FROM_IMPORT_RE = re.compile(r"\bfrom\s+$")
 _IMPORT_AFTER_RE = re.compile(r"\s+import\b")
+# Other places a bare dotted token names code or configuration rather than a host: the module run by
+# `python -m`, the key of a config command, and the text of an inline program (`python -c`, `node -e`,
+# …), where only URLs and whole quoted string literals can name a host.
+_PY_MODULE_RE = re.compile(r"\bpython[\d.]*\s+(?:-[A-Za-z]+\s+)*?-m\s*([\w.]+)")
+# Config commands are found by head and walked token by token (see `_config_key_spans`); a regex with a
+# repeated flag group backtracks exponentially on a run of flags with no key after it.
+_CONFIG_HEAD_RE = re.compile(r"\b(openclaw|hermes|git)\b")
+_CONFIG_VERBS = {
+    "openclaw": frozenset({"set", "get", "unset"}),
+    "hermes": frozenset({"set", "get", "unset", "edit", "show", "reset"}),
+    "git": frozenset({"set", "get", "unset"}),
+}
+_CONFIG_VALUE_FLAGS = frozenset({"--file", "-f", "--blob", "-C", "-c"})
+_CONFIG_KEY_TOKEN_RE = re.compile(r"[A-Za-z][\w.-]*")
+_TOKEN_RE = re.compile(r"\S+")
+# Search tools whose pattern argument is a regex, not a host (`grep -A 30 "tools.profile" ref.md`).
+_SEARCH_HEAD_RE = re.compile(r"\b(?:git\s+grep|grep|egrep|fgrep|rg|ag|ack)\b")
+_SEARCH_PATTERN_FLAGS = frozenset({"-e", "--regexp"})
+_SEARCH_VALUE_FLAGS = frozenset(
+    """-A -B -C -m -f -d -D -g -t -T -M -j --file --glob --iglob --type --type-not --max-count
+    --context --before-context --after-context --max-depth --include --exclude --exclude-dir
+    --ignore-dir""".split()
+)
+_SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&"})
+_INLINE_PROGRAM_RE = re.compile(
+    r"\b(?:python[\d.]*\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c"
+    r"|(?:node|nodejs|bun)\s+(?:-\S+\s+)*?(?:-e|--eval|-p|--print)"
+    r"|(?:perl|ruby)\s+(?:-\S+\s+)*?-[A-Za-z]*[eE]"
+    r"|php\s+(?:-\S+\s+)*?-r"
+    r"|deno\s+eval)[\s=]+"
+)
+# Host-taking arguments: a host given to curl or wget without a scheme (`curl host.example/path`,
+# `wget host:8080/x`), `--host`/`--hostname`, and a `Host:` header. These are hosts whatever their
+# suffix, so the file-extension filter does not apply.
+_HOST_ARG_RE = re.compile(
+    r"(?:--host(?:name)?[=\s]+|\bHost:\s*)['\"]?((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w-])",
+    re.IGNORECASE,
+)
+_FETCH_ARGS_RE = re.compile(r"\b(?:curl|wget)\s+([^;&|\n]*)")
+_SCHEMELESS_URL_RE = re.compile(
+    r"\A['\"]?(?:[\w.-]+@)?((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?::\d+)?/"
+)
+_WORD_RE = re.compile(r"\S*")
+_PORT_RE = re.compile(r":\d{1,5}")
+_FETCH_FILE_FLAGS = frozenset(
+    """-o --output -O --output-document -T --upload-file -K --config -P --directory-prefix -i
+    --input-file --cacert --capath --cert -E --key -b --cookie -c --cookie-jar -D --dump-header
+    --netrc-file --trace --trace-ascii --stderr --ca-certificate --certificate --private-key
+    --load-cookies --save-cookies""".split()
+)
 _IPV4_RE = re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?![\w.])")
 _PATH_RE = re.compile(r"(?<![\w.:-])((?:~|\$HOME|\.{1,2})?/(?:[\w.@%+~-]+/)*[\w.@%+~-]+/?)")
+# The process's own streams: redirecting to or reading from these moves no data to or from a file.
+_STREAM_PATHS = frozenset({"/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr"})
 _SSH_HOST_RE = re.compile(
     r"(?:ssh|scp|rsync|sftp)\s+(?:-\S+\s+)*(?:[\w.-]+@)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})"
 )
@@ -391,7 +445,7 @@ class Found:
 
 
 def _is_code_reference(text: str, start: int, end: int) -> bool:
-    if text[end : end + 1] == "(":
+    if text[end : end + 1] in ("(", "["):
         return True
     line = text[text.rfind("\n", 0, start) + 1 : start]
     if _IMPORT_LIST_RE.search(line):
@@ -399,7 +453,133 @@ def _is_code_reference(text: str, start: int, end: int) -> bool:
     return bool(_FROM_IMPORT_RE.search(line) and _IMPORT_AFTER_RE.match(text, end))
 
 
-def _hosts_in(text: str) -> list[str]:
+def _line_end(text: str, start: int) -> int:
+    end = text.find("\n", start)
+    return end if end >= 0 else len(text)
+
+
+def _quoted_span(text: str, start: int) -> tuple[int, int]:
+    """The extent of the shell word starting at `start`: inside its quotes when quoted (to the end of
+    the line when the quote is not closed), else up to the next whitespace."""
+    quote = text[start : start + 1]
+    if quote == "'":
+        close = text.find("'", start + 1)
+        return start + 1, close if close >= 0 else _line_end(text, start)
+    if quote == '"':
+        i = start + 1
+        while i < len(text):
+            if text[i] == "\\":
+                i += 2
+                continue
+            if text[i] == '"':
+                return start + 1, i
+            i += 1
+        return start + 1, _line_end(text, start)
+    return start, _WORD_RE.match(text, start).end()  # type: ignore[union-attr]
+
+
+def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], list[range]]:
+    """Spans where a bare dotted token is not a host: (always skipped, inline program text). In
+    program text a token is kept only when it is a whole quoted string literal."""
+    skip = [range(*m.span(1)) for m in _PY_MODULE_RE.finditer(text)]
+    skip += _config_key_spans(text)
+    skip += _search_pattern_spans(text)
+    programs = [range(0, len(text))] if inline_program else []
+    for m in _INLINE_PROGRAM_RE.finditer(text):
+        programs.append(range(*_quoted_span(text, m.end())))
+    return skip, programs
+
+
+def _config_key_spans(text: str) -> list[range]:
+    """The key argument of `openclaw config set|get|unset <key>`, `hermes config [verb] <key>` and
+    `git [-C dir] config [verb] <key>`, skipping flags (and the value of `--file`/`-f`/`--blob`)."""
+    spans: list[range] = []
+    for m in _CONFIG_HEAD_RE.finditer(text):
+        head = m.group(1)
+        toks = list(
+            itertools.islice(_TOKEN_RE.finditer(text, m.end(), _line_end(text, m.end())), 32)
+        )
+        i = 0
+        while head == "git" and i < len(toks) and toks[i].group(0) in ("-C", "-c"):
+            i += 2
+        if i >= len(toks) or toks[i].group(0) != "config":
+            continue
+        i += 1
+        if i < len(toks) and toks[i].group(0) in _CONFIG_VERBS[head]:
+            i += 1
+        elif head == "openclaw":
+            continue
+        while i < len(toks) and toks[i].group(0).startswith("-"):
+            i += 2 if toks[i].group(0) in _CONFIG_VALUE_FLAGS else 1
+        if i < len(toks):
+            key = _CONFIG_KEY_TOKEN_RE.match(toks[i].group(0))
+            if key:
+                spans.append(range(toks[i].start(), toks[i].start() + key.end()))
+    return spans
+
+
+def _search_pattern_spans(text: str) -> list[range]:
+    """The pattern argument of grep-like tools: each `-e`/`--regexp` value, or else the first
+    positional. Later positionals are files and are left alone."""
+    spans: list[range] = []
+    for m in _SEARCH_HEAD_RE.finditer(text):
+        toks = itertools.islice(_TOKEN_RE.finditer(text, m.end(), _line_end(text, m.end())), 32)
+        explicit = False
+        take: str | None = None  # "pattern" or "value": what the previous flag consumes
+        for tok in toks:
+            word = tok.group(0)
+            if word in _SHELL_SEPARATORS:
+                break
+            if take is not None:
+                if take == "pattern":
+                    spans.append(range(*tok.span()))
+                take = None
+                continue
+            if word in _SEARCH_PATTERN_FLAGS:
+                take, explicit = "pattern", True
+            elif word.startswith("--regexp="):
+                spans.append(range(tok.start() + len("--regexp="), tok.end()))
+                explicit = True
+            elif word in _SEARCH_VALUE_FLAGS:
+                take = "value"
+            elif word.startswith("-") and word != "-":
+                continue
+            else:
+                if not explicit:
+                    spans.append(range(*tok.span()))
+                break
+    return spans
+
+
+def _is_quoted_literal(text: str, start: int, end: int) -> bool:
+    """A whole quoted string literal, optionally with a port (`'host.example:443'`)."""
+    port = _PORT_RE.match(text, end)
+    if port:
+        end = port.end()
+    return text[start - 1 : start] in ("'", '"') and text[end : end + 1] in ("'", '"', "\\")
+
+
+def _host_arg_hosts(text: str) -> list[str]:
+    """Hosts in host-taking arguments: `--host`, `Host:`, and curl or wget targets without a
+    scheme (skipping the files their flags name)."""
+    hosts = [normalise_host(m.group(1)) for m in _HOST_ARG_RE.finditer(text)]
+    for m in _FETCH_ARGS_RE.finditer(text):
+        prev = ""
+        for tok in m.group(1).split():
+            file_flag = prev in _FETCH_FILE_FLAGS or re.fullmatch(r"-[A-Za-z]*o", prev)
+            prev = tok
+            if file_flag:
+                continue
+            u = _SCHEMELESS_URL_RE.match(tok)
+            if u:
+                hosts.append(normalise_host(u.group(1)))
+    return hosts
+
+
+def _hosts_in(text: str, *, inline_program: bool = False) -> list[str]:
+    """Hosts named in `text`: URLs, emails, host-taking arguments, IPv4 addresses, and bare dotted
+    tokens outside code and config-key positions. With `inline_program` the whole text is program
+    source (a Hermes `execute_code` body)."""
     hosts: list[str] = []
     for m in _URL_RE.finditer(text):
         h = host_of_url(m.group(0))
@@ -412,15 +592,26 @@ def _hosts_in(text: str) -> list[str]:
             hosts.append(normalise_host(m.group(1)))
     for m in _IPV4_RE.finditer(text):
         hosts.append(m.group(1))
-    stripped = _URL_RE.sub(" ", _EMAIL_RE.sub(" ", text))
+    hosts.extend(_host_arg_hosts(text))
+
+    def _blank(m: re.Match[str]) -> str:  # keeps offsets, so the spans below line up
+        return " " * len(m.group(0))
+
+    stripped = _URL_RE.sub(_blank, _EMAIL_RE.sub(_blank, text))
+    skip, programs = _non_host_spans(stripped, inline_program=inline_program)
     for m in _HOST_RE.finditer(stripped):
         cand = m.group(1)
+        start, end = m.span(1)
         tld = cand.rsplit(".", 1)[-1].lower()
         if tld in _FILE_EXTENSIONS or cand.lower() in ("e.g", "i.e", "etc.etc"):
             continue
         if cand[0].isdigit() and cand.replace(".", "").isdigit():
             continue
-        if _is_code_reference(stripped, m.start(1), m.end(1)):
+        if _is_code_reference(stripped, start, end):
+            continue
+        if any(start < r.stop and end > r.start for r in skip):
+            continue
+        if any(start in r for r in programs) and not _is_quoted_literal(stripped, start, end):
             continue
         hosts.append(normalise_host(cand))
     return list(dict.fromkeys(hosts))
@@ -443,6 +634,8 @@ def paths_in(
         if re.fullmatch(r"/\d+", raw):
             continue
         norm = normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd)
+        if norm in _STREAM_PATHS or norm.startswith("/dev/fd/"):
+            continue
         out.append((norm, display_path(norm, home)))
     return list(dict.fromkeys(out))
 
@@ -526,11 +719,17 @@ def _recipients_in(values: list[str]) -> list[Found]:
 
 
 def extract_mentions(
-    text: str, *, home: str | None, workspace_root: str | None, role: Role | None = Role.MENTIONED
+    text: str,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    role: Role | None = Role.MENTIONED,
+    inline_program: bool = False,
 ) -> list[Found]:
-    """Entities named in free text (request, inputs, content): hosts, emails, paths, packages."""
+    """Entities named in free text (request, inputs, content): hosts, emails, paths, packages.
+    `inline_program` marks the text as program source (see `_hosts_in`)."""
     found: list[Found] = []
-    for h in _hosts_in(text):
+    for h in _hosts_in(text, inline_program=inline_program):
         found.append(Found(EntityKind.HOST, h, h, role))
     for m in _EMAIL_RE.finditer(text):
         norm = normalise_recipient(m.group(1))
@@ -659,7 +858,7 @@ def fetched_then_run(
             base, _ = resolve_token(tokens[1], base, home=home, workspace_root=workspace_root)
             continue
         if tokens[0] in _FETCH_HEADS:
-            seg_hosts = _hosts_in(" ".join(tokens[1:]))
+            seg_hosts = _hosts_in(" ".join(tokens))
             for raw in _fetch_outputs(tokens):
                 path, _ = resolve_token(raw, base, home=home, workspace_root=workspace_root)
                 fetched.append((idx, path, seg_hosts))
@@ -695,11 +894,16 @@ def fetched_then_run(
 
 
 def extract_exec(
-    command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
+    command: str,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    cwd: str | None,
+    inline_program: bool = False,
 ) -> list[Found]:
     """Entities a shell command touches, with roles from the command's shape. A host the command
     fetches a file from and then runs that file (or clones and builds) is a code source, whatever
-    else the command does."""
+    else the command does. `inline_program` marks the command as program source (see `_hosts_in`)."""
     found: list[Found] = []
     egress = bool(_EGRESS_MARKERS.search(command))
     to_interpreter = bool(_PIPE_TO_INTERPRETER.search(command))
@@ -707,7 +911,7 @@ def extract_exec(
         command, home=home, workspace_root=workspace_root, cwd=cwd
     )
 
-    for h in _hosts_in(command):
+    for h in _hosts_in(command, inline_program=inline_program):
         if h in ("localhost",):
             role = Role.DATA_SOURCE
         elif h in code_hosts:
@@ -796,10 +1000,23 @@ def extract_call(
 
     if kind is ToolKind.EXEC:
         cmd = call.command or ""
-        found.extend(extract_exec(cmd, home=home, workspace_root=workspace_root, cwd=cwd))
+        inline = bool(call.get("interpreter"))
+        found.extend(
+            extract_exec(
+                cmd, home=home, workspace_root=workspace_root, cwd=cwd, inline_program=inline
+            )
+        )
         decoded = call.analysis_text
         if decoded != call.text:
-            found.extend(extract_exec(decoded, home=home, workspace_root=workspace_root, cwd=cwd))
+            found.extend(
+                extract_exec(
+                    decoded,
+                    home=home,
+                    workspace_root=workspace_root,
+                    cwd=cwd,
+                    inline_program=inline,
+                )
+            )
         if cwd:
             norm = normalise_path(cwd, home=home, workspace_root=workspace_root)
             found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.MENTIONED))

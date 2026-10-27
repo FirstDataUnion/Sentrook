@@ -9,7 +9,7 @@ from ..response.models import ToolDescription
 
 _TEMPLATES: dict[str, str] = {
     "reads_local_data": "Reads {src}",
-    "fetches_remote_content": "Fetches content from {dst_or_src}",
+    "fetches_remote_content": "Fetches content from {remote}",
     "writes_local_files": "Writes {dst}",
     "deletes_data": "Deletes {dst_or_src}",
     "runs_code_or_installer": "Runs code from {code}",
@@ -47,8 +47,24 @@ def describe(prepared: Prepared, category: str | None) -> ToolDescription:
     rcpt = _first(prepared, {Role.RECIPIENT}) or dst
     code = _first(prepared, {Role.CODE_SOURCE, Role.EXECUTABLE}) or "an unnamed source"
     dst_or_src = _first(prepared, {Role.DATA_DESTINATION, Role.DATA_SOURCE}) or "a resource"
+    # A fetch names the host it reads from, whichever role the command's shape gave it (piping a
+    # download into a pretty-printer makes it a code source); a local path only when no host is named.
+    remote = (
+        _first(
+            prepared,
+            {Role.DATA_SOURCE, Role.DATA_DESTINATION, Role.CODE_SOURCE},
+            {EntityKind.HOST},
+        )
+        or dst_or_src
+    )
     template = _TEMPLATES[cat].format(
-        src=src, dst=dst, rcpt=rcpt, code=code, dst_or_src=dst_or_src, tool=prepared.pending.tool
+        src=src,
+        dst=dst,
+        rcpt=rcpt,
+        code=code,
+        dst_or_src=dst_or_src,
+        remote=remote,
+        tool=prepared.pending.tool,
     )
     return ToolDescription(category=cat, template=template)
 

@@ -185,7 +185,9 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
         if decoded_cmd != command:
             found.extend(extract_exec(decoded_cmd, home=home, workspace_root=ws, cwd=cwd_raw))
     if inline_code and command:
-        found.extend(extract_mentions(command, home=home, workspace_root=ws, role=None))
+        found.extend(
+            extract_mentions(command, home=home, workspace_root=ws, role=None, inline_program=True)
+        )
 
     paths: dict[str, PathRef] = {}
     hosts: dict[str, EntityRef] = {}
