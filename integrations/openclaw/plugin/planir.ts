@@ -88,8 +88,9 @@ const SYSTEM_AGENT_MARKERS = /^(?:\[(?:ui-context|proposal-resolved)\][^\n]*\n)+
 /**
  * The queued system events of a heartbeat run. OpenClaw sends the generic heartbeat prompt as the turn's prompt
  * and the events beside it, in a runtime-context message that closes the message list (`before_agent_run`), with
- * each event as a `System: [time] text` fragment. The events are what the heartbeat is about, so they go into the
- * request text as those plain lines. A carrier that is not the last message belongs to an earlier turn.
+ * the events as `conversation-data` fragments of `System: [time] text` lines. The events are what the heartbeat is
+ * about, so they go into the request text as those plain lines; fragments of any other kind are left out. A
+ * carrier that is not the last message belongs to an earlier turn.
  */
 export function heartbeatEventsOf(messages: unknown): string | undefined {
   if (!Array.isArray(messages) || !messages.length) return undefined;
@@ -97,7 +98,7 @@ export function heartbeatEventsOf(messages: unknown): string | undefined {
   if (last?.role !== "custom" || last?.customType !== "openclaw.runtime-context") return undefined;
   const fragments: unknown[] = Array.isArray(last.details?.fragments) ? last.details.fragments : [];
   const text = fragments
-    .map((f: any) => (typeof f?.text === "string" ? f.text.trim() : ""))
+    .map((f: any) => (f?.kind === "conversation-data" && typeof f?.text === "string" ? f.text.trim() : ""))
     .filter(Boolean)
     .join("\n");
   return text || undefined;

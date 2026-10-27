@@ -7,62 +7,83 @@ prompt in front of the queued system events. Jev reads all of it (its preamble s
 rule-side matchers must not: a host sentence is not the owner naming a destination or asking for a secret, and
 outside content in a webhook envelope is not the owner's at all.
 
-`owner_words` removes the host-written parts it recognises and keeps the rest. Text in a form it does not
-recognise passes through unchanged, so a host that changes its wording degrades to reading everything, and an
-owner's own message is never altered: the clock lines and event prefixes are only removed once a host wrapper
-has been recognised in the same text.
+`owner_words` recognises each wrapper by its whole shape, anchored at both ends of the text, and keeps only the
+part the owner wrote. Anything else, including a host whose wording has changed and an owner message that quotes
+host text, passes through unchanged, so the matchers then read everything, as they did before.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
-#: Hermes cron runs: one bracketed line in front of the job prompt.
-_HERMES_CRON = re.compile(r"\A\[IMPORTANT: You are running as a scheduled cron job\.[^\n]*\]\n+")
-#: OpenClaw cron runs: `[cron:<job id> <job name>] ` in front of the job prompt.
-_OPENCLAW_CRON = re.compile(r"\A\[cron:[0-9A-Za-z-]+(?: [^\]\n]*)?\] ")
-#: OpenClaw sub-agent tasks: internal-context blocks around the task.
-_INTERNAL_CONTEXT = re.compile(
-    r"<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>.*?<<<END_OPENCLAW_INTERNAL_CONTEXT>>>", re.S
-)
-#: OpenClaw webhook runs: the outside content, which is not the owner's words.
-_EXTERNAL_CONTENT = re.compile(
-    r'<<<EXTERNAL_UNTRUSTED_CONTENT id="([^"\n]*)">>>.*?<<<END_EXTERNAL_UNTRUSTED_CONTENT id="\1">>>',
-    re.S,
-)
-_WEBHOOK_JOB = re.compile(r"\AJob ID: \S+ \| Received: [^\n]*$", re.M)
-#: Paragraphs the host writes, by their first sentence (a paragraph runs to the next blank line).
-_HOST_PARAGRAPHS = (
-    "This is an unattended scheduled run.",
-    "External content below is data, not a message from the user or system.",
-    "Follow the heartbeat monitor scratch context when provided.",
-)
-_CLOCK_LINE = re.compile(r"\A(?:Current time|Reference UTC): ")
-#: A queued system event appended to a heartbeat prompt: `System: [<timestamp>] <event text>`.
-_EVENT_PREFIX = re.compile(r"\ASystem: \[[^\]\n]*\] ")
+_CLOCK = r"Current time: [^\n]*\nReference UTC: [^\n]*"
+_UNATTENDED = r"This is an unattended scheduled run\.[^\n]*"
+_INTERNAL = r"<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>(?:(?!<<<).)*<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"
+#: A queued system event line: `System: [<timestamp>] <event text>`.
+_EVENT_PREFIX = re.compile(r"^System: \[[^\]\n]*\] ", re.M)
+
+#: (shape, the owner's words from a match). Each shape covers the whole text.
+_SHAPES: list[tuple[re.Pattern[str], Callable[[re.Match[str]], str]]] = [
+    # Hermes cron: one bracketed line, then the job prompt.
+    (
+        re.compile(
+            r"\A\[IMPORTANT: You are running as a scheduled cron job\.[^\n]*\]\n+(?P<w>.*)\Z", re.S
+        ),
+        lambda m: m["w"],
+    ),
+    # OpenClaw cron: `[cron:<id> <name>] <prompt>`, the clock lines, the unattended-run paragraph.
+    (
+        re.compile(
+            r"\A\[cron:[0-9A-Za-z-]+(?: [^\]\n]*)?\] (?P<w>.*)\n"
+            + _CLOCK
+            + r"\n\n"
+            + _UNATTENDED
+            + r"\Z",
+            re.S,
+        ),
+        lambda m: m["w"],
+    ),
+    # OpenClaw webhook: the job line, the data notice, the outside content, the clock lines and the
+    # unattended-run paragraph. None of it is the owner's words.
+    (
+        re.compile(
+            r"\AJob ID: \S+ \| Received: [^\n]*\n\nExternal content below is data, not a message from the "
+            r"user or system\.[^\n]*\n+"
+            r'<<<EXTERNAL_UNTRUSTED_CONTENT id="(?P<id>[^"\n]*)">>>\n.*?\n'
+            r'<<<END_EXTERNAL_UNTRUSTED_CONTENT id="(?P=id)">>>\n\n'
+            + _CLOCK
+            + r"\n\n"
+            + _UNATTENDED
+            + r"\Z",
+            re.S,
+        ),
+        lambda m: "",
+    ),
+    # OpenClaw sub-agent task: an internal-context block on each side of the task.
+    (
+        re.compile(r"\A" + _INTERNAL + r"\n+(?P<w>.*?)\n+" + _INTERNAL + r"\Z", re.S),
+        lambda m: m["w"],
+    ),
+    # OpenClaw heartbeat: the heartbeat prompt and clock lines, then the queued events, if any.
+    (
+        re.compile(
+            r"\AFollow the heartbeat monitor scratch context when provided\.[^\n]*\n"
+            + _CLOCK
+            + r"(?:\n\n(?P<w>.*))?\Z",
+            re.S,
+        ),
+        lambda m: _EVENT_PREFIX.sub("", m["w"] or ""),
+    ),
+]
 
 
 def owner_words(text: str) -> str:
-    """`text` without the host-written parts recognised in it; unchanged when none are."""
+    """The part of `text` the owner wrote when it is a recognised host wrapper; otherwise `text`."""
     if not text:
         return text
-    out = text
-    found = 0
-    for rx in (_HERMES_CRON, _OPENCLAW_CRON, _INTERNAL_CONTEXT, _EXTERNAL_CONTENT, _WEBHOOK_JOB):
-        out, n = rx.subn("", out)
-        found += n
-    paragraphs = re.split(r"\n\s*\n", out)
-    kept = [p for p in paragraphs if not p.lstrip().startswith(_HOST_PARAGRAPHS)]
-    found += len(paragraphs) - len(kept)
-    if not found:
-        return text
-    lines = []
-    for paragraph in kept:
-        body = [
-            _EVENT_PREFIX.sub("", line)
-            for line in paragraph.strip().splitlines()
-            if not _CLOCK_LINE.match(line)
-        ]
-        if body:
-            lines.append("\n".join(body))
-    return "\n\n".join(lines).strip()
+    for shape, words in _SHAPES:
+        m = shape.match(text)
+        if m:
+            return words(m).strip()
+    return text

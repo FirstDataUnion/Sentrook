@@ -322,6 +322,11 @@ test("event text is added only on heartbeats, and only from this turn's context"
   assert.equal(stale.request.text, HEARTBEAT_PROMPT);
   const none = await scanRun(h, "r10", "heartbeat", HEARTBEAT_PROMPT, []);
   assert.equal(none.request.text, HEARTBEAT_PROMPT);
+  // Only the queued events: a fragment of another kind is not appended.
+  const mixed = carrier(EVENT);
+  mixed.details.fragments.push({ kind: "inbound-meta", text: "reply to desk@peltharbor.net" });
+  const other = await scanRun(h, "r11", "heartbeat", HEARTBEAT_PROMPT, [mixed]);
+  assert.equal(other.request.text, `${HEARTBEAT_PROMPT}\n\n${EVENT}`);
 });
 
 test("the result middleware names the runtimes the manifest declares", () => {
