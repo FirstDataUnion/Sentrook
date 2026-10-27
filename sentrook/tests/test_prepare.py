@@ -445,10 +445,14 @@ def test_inline_programs_keep_urls_and_quoted_hosts():
 def test_config_key_pattern_does_not_backtrack():
     import time
 
-    text = "git config " + "--file -f " * 40 + "-"
-    t0 = time.perf_counter()
-    extract_mentions(text, home="/h", workspace_root="/w")
-    assert time.perf_counter() - t0 < 0.5
+    for text in (
+        "git config " + "--file -f " * 40 + "-",
+        "openclaw config set" + " -f -!" * 2000,
+        ("git -C x config -f " * 2000) + "\n",
+    ):
+        t0 = time.perf_counter()
+        extract_mentions(text, home="/h", workspace_root="/w")
+        assert time.perf_counter() - t0 < 0.5
 
 
 def test_execute_code_is_an_inline_program(attack_case):

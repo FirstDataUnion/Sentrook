@@ -13,6 +13,7 @@ module only has to be right enough for the oracle and the context probe to ask t
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -169,13 +170,17 @@ _IMPORT_AFTER_RE = re.compile(r"\s+import\b")
 # `python -m`, the key of a config command, and the text of an inline program (`python -c`, `node -e`,
 # …), where only URLs and whole quoted string literals can name a host.
 _PY_MODULE_RE = re.compile(r"\bpython[\d.]*\s+(?:-[A-Za-z]+\s+)*?-m\s*([\w.]+)")
-# Flag alternatives are mutually exclusive so a failed key match cannot backtrack exponentially.
-_CONFIG_KEY_RE = re.compile(
-    r"\b(?:openclaw\s+config\s+(?:set|get|unset)"
-    r"|hermes\s+config(?:\s+(?:set|get|unset|edit|show|reset))?"
-    r"|git(?:\s+-[Cc]\s+\S+)*\s+config(?:\s+(?:set|get|unset))?)"
-    r"(?:\s+(?:--file|-f|--blob)\s+\S+|\s+(?!(?:--file|-f|--blob)\s)-\S+)*\s+([A-Za-z][\w.-]*)"
-)
+# Config commands are found by head and walked token by token (see `_config_key_spans`); a regex with a
+# repeated flag group backtracks exponentially on a run of flags with no key after it.
+_CONFIG_HEAD_RE = re.compile(r"\b(openclaw|hermes|git)\b")
+_CONFIG_VERBS = {
+    "openclaw": frozenset({"set", "get", "unset"}),
+    "hermes": frozenset({"set", "get", "unset", "edit", "show", "reset"}),
+    "git": frozenset({"set", "get", "unset"}),
+}
+_CONFIG_VALUE_FLAGS = frozenset({"--file", "-f", "--blob", "-C", "-c"})
+_CONFIG_KEY_TOKEN_RE = re.compile(r"[A-Za-z][\w.-]*")
+_TOKEN_RE = re.compile(r"\S+")
 _INLINE_PROGRAM_RE = re.compile(
     r"\b(?:python[\d.]*\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c"
     r"|(?:node|nodejs|bun)\s+(?:-\S+\s+)*?(?:-e|--eval|-p|--print)"
@@ -467,11 +472,39 @@ def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], li
     """Spans where a bare dotted token is not a host: (always skipped, inline program text). In
     program text a token is kept only when it is a whole quoted string literal."""
     skip = [range(*m.span(1)) for m in _PY_MODULE_RE.finditer(text)]
-    skip += [range(*m.span(1)) for m in _CONFIG_KEY_RE.finditer(text)]
+    skip += _config_key_spans(text)
     programs = [range(0, len(text))] if inline_program else []
     for m in _INLINE_PROGRAM_RE.finditer(text):
         programs.append(range(*_quoted_span(text, m.end())))
     return skip, programs
+
+
+def _config_key_spans(text: str) -> list[range]:
+    """The key argument of `openclaw config set|get|unset <key>`, `hermes config [verb] <key>` and
+    `git [-C dir] config [verb] <key>`, skipping flags (and the value of `--file`/`-f`/`--blob`)."""
+    spans: list[range] = []
+    for m in _CONFIG_HEAD_RE.finditer(text):
+        head = m.group(1)
+        toks = list(
+            itertools.islice(_TOKEN_RE.finditer(text, m.end(), _line_end(text, m.end())), 32)
+        )
+        i = 0
+        while head == "git" and i < len(toks) and toks[i].group(0) in ("-C", "-c"):
+            i += 2
+        if i >= len(toks) or toks[i].group(0) != "config":
+            continue
+        i += 1
+        if i < len(toks) and toks[i].group(0) in _CONFIG_VERBS[head]:
+            i += 1
+        elif head == "openclaw":
+            continue
+        while i < len(toks) and toks[i].group(0).startswith("-"):
+            i += 2 if toks[i].group(0) in _CONFIG_VALUE_FLAGS else 1
+        if i < len(toks):
+            key = _CONFIG_KEY_TOKEN_RE.match(toks[i].group(0))
+            if key:
+                spans.append(range(toks[i].start(), toks[i].start() + key.end()))
+    return spans
 
 
 def _is_quoted_literal(text: str, start: int, end: int) -> bool:
