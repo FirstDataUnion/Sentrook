@@ -20,6 +20,9 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import urlsplit
 
+from ..aira.exec_shape import derive_exec_shape
+from ..aira.lists import load_lists
+from ..aira.stage_programs import stage_runs_stdin
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ProviderKind, ToolKind
 
@@ -326,6 +329,7 @@ _PIPE_TO_INTERPRETER = re.compile(
     r"\|\s*(?:sudo\s+)?(?:ba|z|k|c|da|fi)?sh\b|\|\s*(?:python[23]?|node|perl|ruby|deno|bun)\b|source\s+<\(|\beval\s+",
     re.IGNORECASE,
 )
+_PIPE_STAGE_HEAD = re.compile(r"(?:ba|z|k|c|da|fi)?sh|python[23]?|node|perl|ruby|deno|bun")
 _READING_HEADS = re.compile(
     r"(?:^|[\s;&|(])(?:cat|head|tail|tac|less|more|strings|xxd|od|base64|gpg|openssl|jq|yq|grep|rg|awk|sed|cut|sort|uniq|wc|tar|zip|gzip|cp|scp|rsync)\s+([^;&|\n]*)",
     re.IGNORECASE,
@@ -893,6 +897,38 @@ def fetched_then_run(
     return hosts, executables
 
 
+def pipes_into_code(command: str, *, inline_program: bool = False) -> bool:
+    """Whether the command pipes something into a stage that runs it as code (`… | sh`,
+    `… | python3`), or evaluates text (`source <(…)`, `eval …`).
+
+    A pipe into a shell or interpreter that brings its own program (`… | python3 -m json.tool`)
+    hands it data, not code: when every pipe the text shows is a stage of a parsed pipeline, the
+    stages decide, by the same rule AIRA's code checks use. Anything the parse does not settle keeps
+    the text answer: a pipe inside an argument or assignment (a quoted program, a decoded URL
+    parameter), a command or process substitution (`tee >(sh)`), a heredoc, a command that does
+    not parse, or an inline program."""
+    matches = list(_PIPE_TO_INTERPRETER.finditer(command))
+    if not matches:
+        return False
+    if inline_program or any(not m.group(0).startswith("|") for m in matches):
+        return True
+    lists = load_lists()
+    shape = derive_exec_shape(command, lists.path_groups)
+    if not shape.parse_ok or shape.substitution or "heredoc" in shape.sinks:
+        return True
+    if any(_PIPE_TO_INTERPRETER.search(t) for t in (shape.argv, *shape.env_assignments)):
+        return True
+    stages = [
+        shape.segments[i]
+        for p in shape.pipelines
+        for i in p[1:]
+        if i < len(shape.segments) and _PIPE_STAGE_HEAD.fullmatch(shape.segments[i].head)
+    ]
+    if len(stages) != len(matches):
+        return True
+    return any(stage_runs_stdin(s, lists) for s in stages)
+
+
 def extract_exec(
     command: str,
     *,
@@ -906,7 +942,7 @@ def extract_exec(
     else the command does. `inline_program` marks the command as program source (see `_hosts_in`)."""
     found: list[Found] = []
     egress = bool(_EGRESS_MARKERS.search(command))
-    to_interpreter = bool(_PIPE_TO_INTERPRETER.search(command))
+    to_interpreter = pipes_into_code(command, inline_program=inline_program)
     code_hosts, run_files = fetched_then_run(
         command, home=home, workspace_root=workspace_root, cwd=cwd
     )

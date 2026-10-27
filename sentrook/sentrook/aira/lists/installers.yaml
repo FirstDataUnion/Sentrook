@@ -62,7 +62,7 @@ stage_programs:
     stdin_flags: [-i]
     value_flags: [-W, -X, --check-hash-based-pycs]
     bundle_letters: bBdEIOPqsSuvx
-    stdin_modules: [code, IPython, ptpython, bpython]
+    stdin_modules: [code, IPython, ptpython, bpython, pdb]
   - heads: [node]
     program_flags: [-e, --eval, -p, --print]
     stdin_flags: [-i, --interactive]
@@ -105,6 +105,10 @@ inline_stdin_exec_patterns:
   - '\b(?:system|popen|spawn|spawnSync|execSync|execFileSync|runInThisContext|runInNewContext|runInContext)\b'
   - '\b(?:subprocess|child_process|pty\.spawn|runpy|run_path)\b'
   - '(?-i:\bFunction)\s*\('
+  # Code reached indirectly (`__import__('builtins').exec`, `getattr(__builtins__, …)`) and loaders
+  # that run what they read (`pickle.load`, `yaml.unsafe_load`).
+  - '\b__import__\b|\bgetattr\s*\(\s*__builtins__'
+  - '\b(?:pickle|cPickle|dill|marshal|shelve)\.loads?\b|\byaml\.(?:unsafe_|full_)?load(?:_all)?\s*\('
   # The stdin stream named as a file to load (`do "/dev/stdin"`, `include "php://stdin"`).
   - '/dev/stdin|/dev/fd/0\b|/proc/self/fd/0\b|php://stdin'
   # The calling shell substitutes the piped bytes in as the program (`python3 -c "$(cat)"`); the

