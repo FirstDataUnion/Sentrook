@@ -4,6 +4,8 @@ Public repo. On 2026-10-01 `main` was reset to start the Sentrook 2.0 rebuild. T
 pipeline (Jev probes, AIRA, entity oracle, context, convergence) and initial plugins are now
 implemented here; the design reference is in Notion, "Sentrook 2.0".
 
+Current goal: see the callout at the top of the Sentrook 2.0 Notion page.
+
 ## Where things are
 - `main` (this branch): active 2.0 implementation. Scanner code is in `sentrook/`; initial/beta
   OpenClaw and Hermes plugins are in `integrations/openclaw/plugin/` and
@@ -37,4 +39,19 @@ it with the Notion search tool; its "How to use this page" callout is the conven
   Related. Status Idea; never set Priority.
 - **Public repo:** internal reasoning, case ids and design references live in the ticket. Code, tests, commit
   messages and PR text state the rule in plain words and never cite the ticket or internal documents.
-- **Finding work:** pick from the "Ready for agents" view; set In progress and put the PR in PRs.
+
+## Working a ticket
+- Pick a Ready ticket with no Owner, highest priority first. Don't start Idea or Needs design tickets.
+  If it lists open points or needs a design call, stop and ask Oli.
+- Claim before coding: Status In progress, Owner Oli (agents have no Notion identity), branch name in PRs.
+- One ticket, one change. Write the ticket's "must fire / must stay silent" tests first.
+- Before opening the PR: run `make lint` and `make test` (plus `make schema-check` / `make plugin-test`
+  where touched). Put the commands and results in the PR description and the ticket's Evidence.
+- Have a fresh reviewer check the diff against the ticket's Problem, Fix and Tests only; skip style.
+- Open the PR against `main`, add it to PRs, Status In review.
+- After merge: Status Done, merged PR in PRs, Evidence says what changed. Agents may set Done once
+  the merge is verified (`gh pr view <n> --json state`).
+- PR closed unmerged: Status back to Ready, clear Owner, add a note. No movement for 7 days: say so in the ticket.
+- Found other work? Suggest a ticket (title, Kind, one line of evidence); file it only if Oli agrees.
+- PR text and commit messages never cite the ticket or internal documents.
+
