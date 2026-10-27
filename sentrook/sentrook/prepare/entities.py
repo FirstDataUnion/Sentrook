@@ -169,9 +169,12 @@ _IMPORT_AFTER_RE = re.compile(r"\s+import\b")
 # `python -m`, the key of a config command, and the text of an inline program (`python -c`, `node -e`,
 # …), where only URLs and whole quoted string literals can name a host.
 _PY_MODULE_RE = re.compile(r"\bpython[\d.]*\s+(?:-[A-Za-z]+\s+)*?-m\s*([\w.]+)")
+# Flag alternatives are mutually exclusive so a failed key match cannot backtrack exponentially.
 _CONFIG_KEY_RE = re.compile(
-    r"\b(?:(?:openclaw|hermes)\s+config\s+(?:set|get|unset)|git\s+config(?:\s+(?:set|get|unset))?)"
-    r"(?:\s+(?:--file|-f|--blob)\s+\S+|\s+-\S+)*\s+([A-Za-z][\w.-]*)"
+    r"\b(?:openclaw\s+config\s+(?:set|get|unset)"
+    r"|hermes\s+config(?:\s+(?:set|get|unset|edit|show|reset))?"
+    r"|git(?:\s+-[Cc]\s+\S+)*\s+config(?:\s+(?:set|get|unset))?)"
+    r"(?:\s+(?:--file|-f|--blob)\s+\S+|\s+(?!(?:--file|-f|--blob)\s)-\S+)*\s+([A-Za-z][\w.-]*)"
 )
 _INLINE_PROGRAM_RE = re.compile(
     r"\b(?:python[\d.]*\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c"
@@ -192,8 +195,12 @@ _SCHEMELESS_URL_RE = re.compile(
     r"\A['\"]?(?:[\w.-]+@)?((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?::\d+)?/"
 )
 _WORD_RE = re.compile(r"\S*")
+_PORT_RE = re.compile(r":\d{1,5}")
 _FETCH_FILE_FLAGS = frozenset(
-    "-o --output -O --output-document -T --upload-file -K --config -P --directory-prefix -i --input-file".split()
+    """-o --output -O --output-document -T --upload-file -K --config -P --directory-prefix -i
+    --input-file --cacert --capath --cert -E --key -b --cookie -c --cookie-jar -D --dump-header
+    --netrc-file --trace --trace-ascii --stderr --ca-certificate --certificate --private-key
+    --load-cookies --save-cookies""".split()
 )
 _IPV4_RE = re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?![\w.])")
 _PATH_RE = re.compile(r"(?<![\w.:-])((?:~|\$HOME|\.{1,2})?/(?:[\w.@%+~-]+/)*[\w.@%+~-]+/?)")
@@ -431,13 +438,18 @@ def _is_code_reference(text: str, start: int, end: int) -> bool:
     return bool(_FROM_IMPORT_RE.search(line) and _IMPORT_AFTER_RE.match(text, end))
 
 
+def _line_end(text: str, start: int) -> int:
+    end = text.find("\n", start)
+    return end if end >= 0 else len(text)
+
+
 def _quoted_span(text: str, start: int) -> tuple[int, int]:
     """The extent of the shell word starting at `start`: inside its quotes when quoted (to the end of
-    the text when the quote is not closed), else up to the next whitespace."""
+    the line when the quote is not closed), else up to the next whitespace."""
     quote = text[start : start + 1]
     if quote == "'":
         close = text.find("'", start + 1)
-        return start + 1, close if close >= 0 else len(text)
+        return start + 1, close if close >= 0 else _line_end(text, start)
     if quote == '"':
         i = start + 1
         while i < len(text):
@@ -447,7 +459,7 @@ def _quoted_span(text: str, start: int) -> tuple[int, int]:
             if text[i] == '"':
                 return start + 1, i
             i += 1
-        return start + 1, len(text)
+        return start + 1, _line_end(text, start)
     return start, _WORD_RE.match(text, start).end()  # type: ignore[union-attr]
 
 
@@ -463,6 +475,10 @@ def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], li
 
 
 def _is_quoted_literal(text: str, start: int, end: int) -> bool:
+    """A whole quoted string literal, optionally with a port (`'host.example:443'`)."""
+    port = _PORT_RE.match(text, end)
+    if port:
+        end = port.end()
     return text[start - 1 : start] in ("'", '"') and text[end : end + 1] in ("'", '"', "\\")
 
 
@@ -516,7 +532,7 @@ def _hosts_in(text: str, *, inline_program: bool = False) -> list[str]:
             continue
         if _is_code_reference(stripped, start, end):
             continue
-        if any(start in r for r in skip):
+        if any(start < r.stop and end > r.start for r in skip):
             continue
         if any(start in r for r in programs) and not _is_quoted_literal(stripped, start, end):
             continue
