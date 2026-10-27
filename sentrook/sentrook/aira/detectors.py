@@ -29,7 +29,7 @@ from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
-from .exec_shape import ExecSegment, ExecShape
+from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
 from .lists import Lists, Rule
 from .path_classes import _URL_RE, locations_of
 from .sensitive_paths import basename_pattern
@@ -515,6 +515,92 @@ def _stage_heads(shape: ExecShape) -> list[list[ExecSegment]]:
     return [[shape.segments[i] for i in p if i < len(shape.segments)] for p in shape.pipelines]
 
 
+def _stage_program(head: str, lists: Lists) -> dict[str, Any] | None:
+    for entry in lists.get("installers", "stage_programs", default=[]) or []:
+        if isinstance(entry, dict) and head in (entry.get("heads") or ()):
+            return entry
+    return None
+
+
+def _looks_like_script(token: str) -> bool:
+    return "/" in token or "." in token.lstrip(".")
+
+
+def _stage_runs_stdin(seg: ExecSegment, lists: Lists, shells: set[str]) -> bool:
+    """Whether a pipeline stage takes its program from stdin, so that what is piped into it runs.
+
+    A stage given its own program (a program flag, a script file) reads stdin as data, unless that
+    inline program itself runs its input (`exec(sys.stdin.read())`, `bash -c "$(cat)"`). Anything
+    the argv walk cannot settle counts as running stdin.
+    """
+    entry = _stage_program(seg.head, lists)
+    if entry is None:
+        return True
+    program = {str(f) for f in entry.get("program_flags") or ()}
+    stdin = {str(f) for f in entry.get("stdin_flags") or ()}
+    values = {str(f) for f in entry.get("value_flags") or ()}
+    bundle = str(entry.get("bundle_letters") or "")
+    subcommands = {str(s) for s in entry.get("subcommands") or ()}
+    program_subcommands = {str(s) for s in entry.get("program_subcommands") or ()}
+    stdin_modules = {str(m) for m in entry.get("stdin_modules") or ()}
+    program_letters = {f[1] for f in program if len(f) == 2 and f[0] == "-" and f[1] != "-"}
+    stdin_letters = {f[1] for f in stdin if len(f) == 2 and f[0] == "-" and f[1] != "-"}
+    key = "shell_inline_stdin_exec_patterns" if seg.head in shells else "inline_stdin_exec_patterns"
+    runs_input = lists.patterns("installers", key)
+    from_stdin = {"-", *lists.strings("installers", "stdin_paths")}
+
+    def inline(flag: str, value: str | None) -> bool:
+        if value is None:
+            return True
+        if flag == "-m":
+            return value in stdin_modules
+        return _match_any(runs_input, value) is not None
+
+    argv = seg.argv
+    i, first_positional = 0, True
+    while i < len(argv):
+        token = argv[i]
+        nxt = argv[i + 1] if i + 1 < len(argv) else None
+        if token in from_stdin:
+            return True
+        if token == "--":
+            return nxt is None or nxt in from_stdin or not _looks_like_script(nxt)
+        if token in stdin:
+            return True
+        if token in program:
+            return inline(token, nxt)
+        if token.startswith("--") and "=" in token:
+            name, value = token.split("=", 1)
+            if name in program:
+                return inline(name, value)
+            i += 1
+            continue
+        if token in values:
+            i += 2
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            for j, letter in enumerate(token[1:], start=1):
+                if letter in stdin_letters:
+                    return True
+                if letter in program_letters:
+                    return inline(f"-{letter}", token[j + 1 :] or nxt)
+                if letter not in bundle:
+                    break
+            i += 1
+            continue
+        if token.startswith(("-", "+")):
+            i += 1
+            continue
+        if first_positional and token in subcommands:
+            first_positional = False
+            i += 1
+            continue
+        if first_positional and token in program_subcommands:
+            return inline(token, nxt)
+        return not _looks_like_script(token)
+    return True
+
+
 def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
     if shape is None:
         return None
@@ -525,9 +611,12 @@ def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
     evals = set(lists.strings("installers", "eval_heads"))
     out_flags = set(lists.strings("installers", "fetch_output_flags"))
     for stages in _stage_heads(shape):
-        heads = [s.head for s in stages]
-        for i, h in enumerate(heads):
-            if h in fetch and any(t in shells | interp | evals for t in heads[i + 1 :]):
+        for i, seg in enumerate(stages):
+            if seg.head in fetch and any(
+                t.head in evals
+                or (t.head in shells | interp and _stage_runs_stdin(t, lists, shells))
+                for t in stages[i + 1 :]
+            ):
                 return "pipeline"
     heads = set(shape.heads)
     if shape.substitution and heads & fetch and heads & (shells | evals):
@@ -552,6 +641,23 @@ def _fetch_to_shell(shape: ExecShape | None, ctx: Context) -> str | None:
         for s in shape.segments
     ):
         return "fetch_then_run"
+    return None
+
+
+def _text_fetch_to_shell(text: str, ctx: Context) -> re.Match[str] | None:
+    """The text fallback, for fetch-to-shell shapes the command's parse does not show (inside a
+    quoted program, a decoded URL parameter). A match whose line parses as a pipeline goes through
+    the same stage check as the command, so a stage that brings its own program is silent here too;
+    one that does not parse still counts."""
+    for rx in ctx.lists.patterns("installers", "fetch_to_shell_patterns"):
+        for m in rx.finditer(text):
+            end = text.find("\n", m.start())
+            shape = derive_exec_shape(
+                text[m.start() : end if end >= 0 else None], ctx.lists.path_groups
+            )
+            if shape.parse_ok and shape.pipelines and _fetch_to_shell(shape, ctx) is None:
+                continue
+            return m
     return None
 
 
@@ -624,7 +730,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
 
     # What the command does as written, and what it does once decoding is undone.
     raw_fetch = _fetch_to_shell(a.shape, ctx)
-    text_fetch = _match_any(lists.patterns("installers", "fetch_to_shell_patterns"), a.text)
+    text_fetch = _text_fetch_to_shell(a.text, ctx)
     decoded_fetch = _fetch_to_shell(a.decoded_shape, ctx)
     decoded_pipe = a.decoded_shape is not None and bool(
         set(a.decoded_shape.sinks) & {"pipe_to_shell", "pipe_to_interpreter"}
