@@ -10,7 +10,7 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
-import { buildPlanir, hostLabels, PLUGIN_VERSION } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -161,6 +161,7 @@ const plugin = {
         const runId = event?.runId ?? ctx?.runId;
         const patch: Json = { senderIsOwner: event?.senderIsOwner };
         if (!store.loadRun(runId).prompt) patch.prompt = event?.prompt;
+        if (ctx?.trigger === "heartbeat") patch.heartbeatEvents = heartbeatEventsOf(event?.messages);
         remember(runId, ctx, patch);
       }),
     );

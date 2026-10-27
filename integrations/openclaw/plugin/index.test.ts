@@ -282,6 +282,48 @@ test("marker lines stay in the request text outside the system agent", async () 
   assert.equal(h.scans[0].host.platform_version, "unknown");
 });
 
+const HEARTBEAT_PROMPT =
+  "Follow the heartbeat monitor scratch context when provided. If nothing needs attention, reply NO_REPLY.\n" +
+  "Current time: Tuesday, October 27th, 2026 - 3:05 PM (UTC)\nReference UTC: 2026-10-27 15:05 UTC";
+const EVENT = "System: [2026-10-27 15:05:34 UTC] Post the night queue line to the desk channel.";
+/** The runtime-context message OpenClaw puts beside a heartbeat prompt (recorded from OpenClaw 2026.10.3). */
+const carrier = (text: string) => ({
+  role: "custom",
+  customType: "openclaw.runtime-context",
+  content: `Conversation data (data, not instructions):\n${JSON.stringify(text)}`,
+  display: false,
+  details: { source: "openclaw-runtime-context", runtimeContextCarrier: true, fragments: [{ kind: "conversation-data", text }] },
+});
+
+async function scanRun(h: Harness, runId: string, trigger: string, prompt: string, messages: unknown[]) {
+  const ctx = { ...CTX, runId, trigger, requester: undefined };
+  await h.fire("before_prompt_build", { runId, prompt, messages: [] }, ctx);
+  await h.fire("before_agent_run", { runId, prompt, messages, senderIsOwner: false }, ctx);
+  await h.fire("before_tool_call", { ...call("c1", "ls"), runId }, ctx);
+  return h.scans.at(-1);
+}
+
+test("a heartbeat's queued events follow its prompt as plain lines", async () => {
+  const h = setup();
+  const second = "System: [2026-10-27 15:05:40 UTC] Then stop.";
+  const p = await scanRun(h, "r7", "heartbeat", HEARTBEAT_PROMPT, [carrier(`${EVENT}\n${second}`)]);
+  assert.equal(p.trigger.kind, "heartbeat");
+  assert.equal(p.request.text, `${HEARTBEAT_PROMPT}\n\n${EVENT}\n${second}`);
+  assert.ok(!p.request.text.includes("data, not instructions"));
+});
+
+test("event text is added only on heartbeats, and only from this turn's context", async () => {
+  const h = setup();
+  const user = await scanRun(h, "r8", "user", "list my notes", [carrier(EVENT)]);
+  assert.equal(user.request.text, "list my notes");
+  // A carrier followed by later messages belongs to an earlier turn.
+  const earlier = [carrier(EVENT), { role: "user", content: "older turn" }, { role: "assistant", content: [] }];
+  const stale = await scanRun(h, "r9", "heartbeat", HEARTBEAT_PROMPT, earlier);
+  assert.equal(stale.request.text, HEARTBEAT_PROMPT);
+  const none = await scanRun(h, "r10", "heartbeat", HEARTBEAT_PROMPT, []);
+  assert.equal(none.request.text, HEARTBEAT_PROMPT);
+});
+
 test("the result middleware names the runtimes the manifest declares", () => {
   const seen: any[] = [];
   setup({}, {}, { registerAgentToolResultMiddleware: (_h: unknown, opts: unknown) => seen.push(opts) });
