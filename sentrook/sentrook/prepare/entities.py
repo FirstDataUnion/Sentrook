@@ -154,7 +154,8 @@ _URL_RE = re.compile(r"https?://[^\s\"'<>`|;)\]}]+", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
 # A bare hostname: two or more labels, alphabetic TLD. Lookbehind excludes path components, emails and
 # scheme-prefixed forms (those are caught by _URL_RE / _EMAIL_RE); the extension list excludes files.
-_HOST_RE = re.compile(r"(?<![\w@/.:+-])((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w/-])")
+# The lookahead also refuses a stop before `.label`, so `a.b.net/x` is not read as `a.b`.
+_HOST_RE = re.compile(r"(?<![\w@/.:+-])((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24})(?![\w/-]|\.[\w-])")
 _FILE_EXTENSIONS = frozenset(
     """md txt json yaml yml py sh js ts tsx jsx csv env log cfg conf ini toml xml html htm pdf png jpg
     jpeg gif svg zip tar gz tgz bz2 xz lock sqlite db bak tmp rst mjs cjs go rs java kt rb php sql
@@ -181,6 +182,15 @@ _CONFIG_VERBS = {
 _CONFIG_VALUE_FLAGS = frozenset({"--file", "-f", "--blob", "-C", "-c"})
 _CONFIG_KEY_TOKEN_RE = re.compile(r"[A-Za-z][\w.-]*")
 _TOKEN_RE = re.compile(r"\S+")
+# Search tools whose pattern argument is a regex, not a host (`grep -A 30 "tools.profile" ref.md`).
+_SEARCH_HEAD_RE = re.compile(r"\b(?:git\s+grep|grep|egrep|fgrep|rg|ag|ack)\b")
+_SEARCH_PATTERN_FLAGS = frozenset({"-e", "--regexp"})
+_SEARCH_VALUE_FLAGS = frozenset(
+    """-A -B -C -m -f -d -D -g -t -T -M -j --file --glob --iglob --type --type-not --max-count
+    --context --before-context --after-context --max-depth --include --exclude --exclude-dir
+    --ignore-dir""".split()
+)
+_SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&"})
 _INLINE_PROGRAM_RE = re.compile(
     r"\b(?:python[\d.]*\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c"
     r"|(?:node|nodejs|bun)\s+(?:-\S+\s+)*?(?:-e|--eval|-p|--print)"
@@ -473,6 +483,7 @@ def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], li
     program text a token is kept only when it is a whole quoted string literal."""
     skip = [range(*m.span(1)) for m in _PY_MODULE_RE.finditer(text)]
     skip += _config_key_spans(text)
+    skip += _search_pattern_spans(text)
     programs = [range(0, len(text))] if inline_program else []
     for m in _INLINE_PROGRAM_RE.finditer(text):
         programs.append(range(*_quoted_span(text, m.end())))
@@ -504,6 +515,39 @@ def _config_key_spans(text: str) -> list[range]:
             key = _CONFIG_KEY_TOKEN_RE.match(toks[i].group(0))
             if key:
                 spans.append(range(toks[i].start(), toks[i].start() + key.end()))
+    return spans
+
+
+def _search_pattern_spans(text: str) -> list[range]:
+    """The pattern argument of grep-like tools: each `-e`/`--regexp` value, or else the first
+    positional. Later positionals are files and are left alone."""
+    spans: list[range] = []
+    for m in _SEARCH_HEAD_RE.finditer(text):
+        toks = itertools.islice(_TOKEN_RE.finditer(text, m.end(), _line_end(text, m.end())), 32)
+        explicit = False
+        take: str | None = None  # "pattern" or "value": what the previous flag consumes
+        for tok in toks:
+            word = tok.group(0)
+            if word in _SHELL_SEPARATORS:
+                break
+            if take is not None:
+                if take == "pattern":
+                    spans.append(range(*tok.span()))
+                take = None
+                continue
+            if word in _SEARCH_PATTERN_FLAGS:
+                take, explicit = "pattern", True
+            elif word.startswith("--regexp="):
+                spans.append(range(tok.start() + len("--regexp="), tok.end()))
+                explicit = True
+            elif word in _SEARCH_VALUE_FLAGS:
+                take = "value"
+            elif word.startswith("-") and word != "-":
+                continue
+            else:
+                if not explicit:
+                    spans.append(range(*tok.span()))
+                break
     return spans
 
 

