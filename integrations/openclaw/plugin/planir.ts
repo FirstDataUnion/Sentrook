@@ -85,9 +85,30 @@ export function isSystemAgentTurn(run: RunContext): boolean {
 /** Host-authored marker lines OpenClaw prefixes to a system agent turn (not the operator's words). */
 const SYSTEM_AGENT_MARKERS = /^(?:\[(?:ui-context|proposal-resolved)\][^\n]*\n)+/;
 
+/**
+ * The queued system events of a heartbeat run. OpenClaw sends the generic heartbeat prompt as the turn's prompt
+ * and the events beside it, in a runtime-context message that closes the message list (`before_agent_run`), with
+ * the events as `conversation-data` fragments of `System: [time] text` lines. The events are what the heartbeat is
+ * about, so they go into the request text as those plain lines; fragments of any other kind are left out. A
+ * carrier that is not the last message belongs to an earlier turn.
+ */
+export function heartbeatEventsOf(messages: unknown): string | undefined {
+  if (!Array.isArray(messages) || !messages.length) return undefined;
+  const last = messages[messages.length - 1];
+  if (last?.role !== "custom" || last?.customType !== "openclaw.runtime-context") return undefined;
+  const fragments: unknown[] = Array.isArray(last.details?.fragments) ? last.details.fragments : [];
+  const text = fragments
+    .map((f: any) => (f?.kind === "conversation-data" && typeof f?.text === "string" ? f.text.trim() : ""))
+    .filter(Boolean)
+    .join("\n");
+  return text || undefined;
+}
+
 export function requestTextOf(run: RunContext): string {
   const text = String(run.currentUserMessage ?? run.prompt ?? "");
-  return isSystemAgentTurn(run) ? text.replace(SYSTEM_AGENT_MARKERS, "") : text;
+  if (isSystemAgentTurn(run)) return text.replace(SYSTEM_AGENT_MARKERS, "");
+  if (run.trigger === "heartbeat" && run.heartbeatEvents) return [text, run.heartbeatEvents].filter(Boolean).join("\n\n");
+  return text;
 }
 
 /** The raw host labels the trigger and sender were derived from, for the local traffic log only. */

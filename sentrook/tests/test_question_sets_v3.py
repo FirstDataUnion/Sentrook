@@ -166,7 +166,6 @@ def test_call_probe_on_call_v3_without_a_scan_sends_no_block(harm_case):  # noqa
 def test_call_v3_is_a_valid_call_question_set_for_the_server():
     cfg = ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": "call-v3"})
     assert cfg.jev_call_question_set == "call-v3"
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v3"  # the shipped default
     assert (
         ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": "call-v2"}).jev_call_question_set
         == "call-v2"

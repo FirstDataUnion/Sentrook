@@ -58,6 +58,7 @@ from .entities import (
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
+from .host_text import owner_words
 from .trust import Trust, classify
 
 __all__ = [
@@ -208,6 +209,9 @@ class Prepared:
     oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
     #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
+    #: matchers read. Jev's views carry the full text.
+    request_words: str = ""
 
     @property
     def platform(self) -> str:
@@ -722,9 +726,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 origin=Origin.SIBLING,
                 ref=sib.call_id,
             )
-    for f in extract_mentions(planir.request.text, home=home, workspace_root=ws, role=None):
+    words = owner_words(planir.request.text)
+    for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
-    _mark_request_named(planir.request.text, table)
+    _mark_request_named(words, table)
 
     grant_hits: dict[str, list[str]] = {}
     for grant in planir.grants:
@@ -822,8 +827,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if not agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
-    _mark_display_named(planir.request.text, table)
-    _mark_self_copy(planir.request.text, table, [pending, *siblings])
+    _mark_display_named(words, table)
+    _mark_self_copy(words, table, [pending, *siblings])
     _inherit_recipient_domain(table)
 
     # 7. fingerprint
@@ -874,4 +879,5 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             b.redactions for n, b in built.items() if n in (views.EXPOSURE_V2, views.CALL_V2)
         ),
         view_meta=view_meta,
+        request_words=words,
     )
