@@ -54,8 +54,12 @@ const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>
  */
 const ORDINARY_WORD = /^(?:[A-Za-z][a-z]*(?:-[A-Za-z][a-z]*)*|[A-Z]+|[a-z]+(?:[A-Z][a-z]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)$/;
 const isOrdinary = (v: string) => ORDINARY_WORD.test(v) || v.split("-").filter((p) => /^[a-z]{2,}$/.test(p)).length >= 2;
-/** What a sentence names: paths, URLs, masks and templates, code, dates, hex addresses, key fingerprints. */
-const NAMED_THING = /^[/~.*{\[(]|:\/\/|\(|^[0-9]{4}-[0-9]{2}-[0-9]{2}|^0x[0-9a-fA-F]{40}$|^(?:SHA256|MD5):/;
+/**
+ * What a sentence names: paths, URLs, masks and templates, code, dates, hex addresses, key fingerprints,
+ * email addresses, host and file names (a host may carry a port and a path) and relative paths to a file.
+ */
+const NAMED_THING =
+  /^[/~.*{\[(]|:\/\/|\(|^[0-9]{4}-[0-9]{2}-[0-9]{2}|^0x[0-9a-fA-F]{40}$|^(?:SHA256|MD5):|^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}$|^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.[a-z]{2,24}(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~%\/-]*)?$|^(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$/;
 
 /**
  * Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the name of
@@ -119,9 +123,10 @@ const SHAPES: Shape[] = [
   },
   {
     // The password in `scheme://user:PASS@host` (the user may be empty, the password may hold `@`); user
-    // and host stay.
+    // and host stay. A host name and port before a list or a fragment (`cache.test:6379,admin@…`) hold
+    // no password.
     kind: "credential",
-    re: /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/[^\s/?#@:"'<>\\⟦]{0,256}:(?<v>[^\s/?@"'<>\\⟦$*{][^\s/?"'<>\\]{0,255})@/g,
+    re: /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}:\/\/(?!(?:[A-Za-z0-9-]{1,63}\.){1,10}[A-Za-z]{2,24}:[0-9]{1,5}[,;#])[^\s/?#@:"'<>\\⟦]{0,256}:(?<v>[^\s/?@"'<>\\⟦$*{][^\s/?"'<>\\]{0,255})@/g,
     group: "v",
   },
   {
