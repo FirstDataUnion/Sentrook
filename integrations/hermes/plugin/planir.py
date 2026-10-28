@@ -20,7 +20,7 @@ from .config import PluginConfig
 from .intent import channel_of, resolve_platform, sender_of, trigger_kind
 from .redact import Redactor, cap_args
 
-PLUGIN_VERSION = "2.0.0-beta.1"
+PLUGIN_VERSION = "2.0.0-beta.2"
 
 TOOL_KIND = {
     "terminal": "exec",

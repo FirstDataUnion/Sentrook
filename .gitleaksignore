@@ -1,0 +1,5 @@
+# Findings in commits already pushed, by gitleaks fingerprint (commit:file:rule:line). Only for fake values
+# that were replaced in a later commit; the current tree must scan clean without these.
+# A made-up SSH key fingerprint in a redaction look-alike test, now built at run time.
+5558eed14f76ca1fb3cb407906beae142917fcda:integrations/openclaw/plugin/redact.test.ts:generic-api-key:162
+5558eed14f76ca1fb3cb407906beae142917fcda:integrations/hermes/plugin/tests/test_units.py:generic-api-key:242

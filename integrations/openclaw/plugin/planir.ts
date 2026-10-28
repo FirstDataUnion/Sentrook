@@ -13,7 +13,7 @@ import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.2";
+export const PLUGIN_VERSION = "2.0.0-beta.3";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
