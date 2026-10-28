@@ -1,6 +1,6 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v3): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v4): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text, prose, whole
-private keys), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
+private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
 
 Secret-shaped values are built at runtime from obviously fake, low-entropy parts, so no literal in this
@@ -101,7 +101,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v3"
+    assert REDACTION_VERSION == "redact-v4"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -125,6 +125,10 @@ def test_two_shapes_on_one_value_count_once():
         '\\"password\\": \\"' * 70_000,
         "postgres://" + "u" * 300 + ":" * 100_000,
         "SECRET_" * 140_000,
+        "mysql " * 30 + '-p"' + "a" * 1_000_000,
+        ('mysql -p\\"' + "a" * 100) * 10_000,
+        "sshpass -e " * 100_000,
+        "--password " * 100_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
@@ -190,6 +194,19 @@ MUST_REPLACE = [
     (OPENSSH_BLOCK, "A" * 64),
     (OPENSSH_BLOCK.replace("\n", "\\n"), "A" * 64),
     (PGP, "W" * 40),
+    (f"mysql -u app --password {PW} -h db.test", PW),
+    (f"mysql --password '{PW}' db", PW),
+    (f"mysql --password={PW} db", PW),
+    (f"tool --api-key {PW}", PW),
+    (f'tool --token "{PW}"', PW),
+    (f"tool --token-value {PW}", PW),
+    (f"mysql -p{PW} db", PW),
+    (f"/usr/bin/mysqldump -u app -p'{PW}' db", PW),
+    (f"sshpass -p {PW} ssh h", PW),
+    (f"sshpass -v -p{PW} ssh -p 2222 h", PW),
+    (f"tool --password {PW[:4]}\\!{PW[4:]}", PW[4:]),
+    (f"sudo mysql -p{PW} db", PW),
+    (f"docker exec -it db mysql -uroot -p{PW} db", PW),
 ]
 
 MUST_STAY = [
@@ -233,6 +250,26 @@ MUST_STAY = [
     "copy key id_ed25519.pub to the server",
     "hosts=redis://cache.test:6379,admin@example.test",
     "see https://example.com:8443#contact@example.test",
+    "tool --secret-file /etc/app/secret.txt",
+    'tool --secret-file "/etc/app/secret.txt"',
+    "tool --token-path ~/.config/t",
+    "tool --password-file ./pw.txt",
+    "tool --token-url https://auth.example.test/token",
+    "ssh -p 2222 host",
+    "mysql --password $DB_PASSWORD db",
+    'mysql --password "$DB_PASSWORD" db',
+    "mysql --password ******** db",
+    "mysql -u app -p db",
+    "mysql -P 3306 -h db.test --port 3306",
+    "sshpass -f ~/.pw ssh -p 2222 host",
+    "sshpass -e ssh -p 2222 host",
+    "find /var/lib/mysql -perm 600 -type f",
+    "find / -name mysql -prune",
+    "docker run -d --name mysql -p3306:3306 mysql:8",
+    "restart mysql\nthen ssh -p2222 host",
+    "tool --token-ttl 3600 --auth-type basic --secret-name prod-db",
+    "tool --password-file secrets/db_password",
+    "tool --secret-file C:\\secrets\\x.txt",
 ]
 
 
@@ -272,6 +309,29 @@ def test_url_credentials_keep_user_and_host_and_private_keys_go_whole():
         assert n == 1 and "BEGIN" not in out and "END" not in out, out
 
 
+def test_password_flags_keep_the_flag_and_json_stays_json():
+    assert redact_text(f"mysql -u app --password {PW} -h db.test") == (
+        f"mysql -u app --password {P} -h db.test",
+        1,
+    )
+    assert redact_text(f"mysql --password '{PW}' db") == (f"mysql --password '{P}' db", 1)
+    assert redact_text(f"tool --token-value {PW} --token-ttl 3600") == (
+        f"tool --token-value {P} --token-ttl 3600",
+        1,
+    )
+    assert redact_text(f"mysql -p{PW} db") == (f"mysql -p{P} db", 1)
+    assert redact_text(f"sshpass -p {PW} ssh -p 2222 h") == (f"sshpass -p {P} ssh -p 2222 h", 1)
+    for text in (
+        f"mysql --password {PW}",
+        f'tool --token "{PW}"',
+        f"mysql -p{PW}",
+        f'sshpass -p "{PW}" ssh h',
+    ):
+        out, n = redact_text(_as_result(text))
+        assert n == 1 and PW not in out, out
+        assert json.loads(out)["output"].startswith(text[:6]), "the JSON around a value stays"
+
+
 def test_json_encoded_keys_are_replaced():
     out, n = redact_text(json.dumps({"o": json.dumps({"password": PW})}))
     assert PW not in out and n == 1
@@ -289,16 +349,12 @@ def _plugin_module():
 
 
 def test_rules_are_the_plugins_rules():
-    """The copied patterns are the plugin's, character for character (its command-line flag rule and
-    vendor list aside), so a rule changed in one copy and not the other fails here."""
+    """The copied patterns are the plugin's, character for character (its vendor list aside), so a rule
+    changed in one copy and not the other fails here."""
     from sentrook.prepare import redact
 
     plugin = _plugin_module()
-    theirs = [
-        rx.pattern
-        for kind, rx, _, _ in plugin._SHAPES
-        if kind == "credential" and not rx.pattern.startswith("(?i)--")
-    ]
+    theirs = [rx.pattern for kind, rx, _, _ in plugin._SHAPES if kind == "credential"]
     assert [rx.pattern for rx, _ in redact._CONTEXT] == theirs
     shapes = {kind: rx.pattern for kind, rx, _, _ in plugin._SHAPES}
     assert redact._PRIVATE_KEY.pattern == shapes["private_key"]
@@ -308,7 +364,7 @@ def test_rules_are_the_plugins_rules():
 
 def test_parity_with_the_hermes_plugin():
     """The same spans as the plugin's text rules; only the placeholder differs. Inputs are the forms
-    both catch: the plugin's own vendor list and its command-line flag rule are not part of this pass."""
+    both catch: the plugin's own vendor list is not part of this pass."""
     plugin = _plugin_module().Redactor("standard", "parity")
     texts = [t for t, _ in MUST_REPLACE] + MUST_STAY
     texts += [
