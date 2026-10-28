@@ -36,7 +36,7 @@ from ..aira.lists import Lists, load_lists
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
-from ..prepare.entities import display_path, fed_paths
+from ..prepare.entities import Role, display_path, fed_paths
 from ..probes.base import Contribution, Envelope, Floor
 
 __all__ = ["AiraProbe", "AIRA_VERSION"]
@@ -117,7 +117,8 @@ class AiraProbe:
             label = call_label(call)
             is_sibling = call is not prepared.pending and call is not written_call
             if call is prepared.pending:
-                pending_paths = [p.value for p in a.paths]
+                # What the call reads, runs, sends or writes; not its cwd or a path a message names.
+                pending_paths = [p.value for p in a.paths if p.roles - {Role.MENTIONED}]
             feeds = is_sibling and bool(
                 fed_paths([p.value for p in a.paths if p.is_destination], pending_paths)
             )
