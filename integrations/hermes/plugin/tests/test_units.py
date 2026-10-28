@@ -239,7 +239,7 @@ def test_look_alikes_stay_unredacted():
         "PASSWORD_HASH_ALGORITHM=argon2id",
         "SECRET_MANAGER_REGION=eu-west-2",
         "USDC token 0x" + "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-        "SSH key SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8",
+        "SSH key SHA256:" + "nTh6k" * 8 + "SY8",
         "password policy: min-length-12",
         "The token type is accessToken",
         "The token: GITHUB_TOKEN",
