@@ -7,6 +7,12 @@
 `holds_sensitive` session flag; and evidence (classes, internal rule ids, the exec shape summary,
 packs, per-finding detail). It never raises: a failure is `Envelope.failed`.
 
+Siblings are analysed with the same detectors, but each sibling is also scanned as its own pending
+call, so its findings are evidence here (`counted: false`) unless the batch itself is the attack:
+the sibling tampers with a guardrail or the host's approval settings (which covers every call in
+the batch), or it writes a path the pending call reads, runs, sends or writes through (or a
+directory or link above one), so the sibling decides what the pending call acts on.
+
 When the pending call runs a file the agent wrote earlier in the session (`prepared.written_file`),
 that file's content is analysed as a command of its own (source `written_file`, the pending call's
 cwd) with the same detectors and packs, and its findings merge like a sibling's: a script that uploads
@@ -30,7 +36,7 @@ from ..aira.lists import Lists, load_lists
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
-from ..prepare.entities import display_path
+from ..prepare.entities import display_path, fed_paths
 from ..probes.base import Contribution, Envelope, Floor
 
 __all__ = ["AiraProbe", "AIRA_VERSION"]
@@ -103,15 +109,26 @@ class AiraProbe:
         if written_call is not None:
             calls.append(written_call)
         calls.extend(prepared.siblings)
+        pending_paths: list[str] = []
         for call in calls:
             a = analyse(call, prepared, self.lists)
             findings, skipped_here = run_detectors(a, ctx)
             skipped = skipped_here
             label = call_label(call)
+            is_sibling = call is not prepared.pending and call is not written_call
+            if call is prepared.pending:
+                pending_paths = [p.value for p in a.paths]
+            feeds = is_sibling and bool(
+                fed_paths([p.value for p in a.paths if p.is_destination], pending_paths)
+            )
             for f in findings:
                 classes.add(f.cls)
                 if f.rule not in rules:
                     rules.append(f.rule)
+                counted = not is_sibling or feeds or counts_for_the_batch(f)
+                evidence_findings.append({**f.to_evidence(label), "counted": counted})
+                if not counted:
+                    continue
                 for c in f.contributions:
                     if c.reason and c.reason not in reasons:
                         reasons.append(c.reason)
@@ -125,7 +142,6 @@ class AiraProbe:
                 for flag in f.flags:
                     if flag not in flags:
                         flags.append(flag)
-                evidence_findings.append(f.to_evidence(label))
             summary = a.shape.summary() if a.shape is not None else None
             call_paths = [
                 {
@@ -152,6 +168,7 @@ class AiraProbe:
                 }
             else:
                 siblings_evidence[label] = {
+                    "feeds_pending": feeds,
                     "classes": sorted({f.cls for f in findings}),
                     "rules": [f.rule for f in findings],
                     "shape": summary,
@@ -183,6 +200,12 @@ class AiraProbe:
             flags_set=flags,
             evidence=evidence,
         )
+
+
+def counts_for_the_batch(finding: Finding) -> bool:
+    """A sibling finding that lifts every call in its batch: tampering with a guardrail, or with
+    the host's own approval settings, leaves the other calls unguarded whatever they touch."""
+    return finding.cls == "C4*" or finding.rule == "C4.host_approvals"
 
 
 _INTERPRETERS = {"python": "python", "python3": "python", "python2": "python", "node": "node"}

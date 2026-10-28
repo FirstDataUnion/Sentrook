@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import itertools
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -801,6 +802,14 @@ def is_under(path: str, root: str) -> bool:
     """`path` is `root` or inside it."""
     root = root.rstrip("/")
     return not root or path == root or path.startswith(root + "/")
+
+
+def fed_paths(written: Iterable[str], used: Iterable[str]) -> list[str]:
+    """The `used` paths that a call writing `written` decides: the same path, or one inside a
+    written directory or link. A sibling that writes what the pending call reads, runs, sends or
+    writes through makes the two calls one action."""
+    roots = [w for w in written if w.rstrip("/")]
+    return [u for u in used if any(is_under(u, r) for r in roots)]
 
 
 _FETCH_HEADS = frozenset({"curl", "wget"})
