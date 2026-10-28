@@ -805,11 +805,15 @@ def is_under(path: str, root: str) -> bool:
 
 
 def fed_paths(written: Iterable[str], used: Iterable[str]) -> list[str]:
-    """The `used` paths that a call writing `written` decides: the same path, or one inside a
-    written directory or link. A sibling that writes what the pending call reads, runs, sends or
-    writes through makes the two calls one action."""
+    """The `used` paths that a call writing `written` decides: the same path, one inside a written
+    directory or link, or a directory the write lands in (archiving or uploading a staging
+    directory takes the file written into it). A sibling that writes what the pending call reads,
+    runs, sends or writes through makes the two calls one action. The filesystem root decides
+    nothing."""
     roots = [w for w in written if w.rstrip("/")]
-    return [u for u in used if any(is_under(u, r) for r in roots)]
+    return [
+        u for u in used if u.rstrip("/") and any(is_under(u, r) or is_under(r, u) for r in roots)
+    ]
 
 
 _FETCH_HEADS = frozenset({"curl", "wget"})
