@@ -714,8 +714,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
 
     # 5. entities
     table = EntityTable()
-    pending_found = extract_call(pending, home=home, workspace_root=ws)
-    for f in pending_found:
+    for f in extract_call(pending, home=home, workspace_root=ws):
         table.add(f.kind, f.value, display=f.display, role=f.role, origin=Origin.PENDING_CALL)
     for sib in siblings:
         for f in extract_call(sib, home=home, workspace_root=ws):
@@ -728,24 +727,31 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 ref=sib.call_id,
             )
     # What the siblings write, and the pending command read through it: the resolved command's
-    # entities take the pending call's roles and the sibling's origin.
-    writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
-    resolved = resolve_pending(
-        platform, pending, writes, pending_found, home=home, workspace_root=ws
-    )
-    for call in resolved:
-        for f in extract_call(call, home=home, workspace_root=ws):
-            known = table.get(f.kind, f.value)
-            if known is not None and Origin.PENDING_CALL in known.origins:
-                continue
-            table.add(
-                f.kind,
-                f.value,
-                display=f.display,
-                role=f.role,
-                origin=Origin.SIBLING,
-                ref=call.call_id,
+    # entities take the pending call's roles and the sibling's origin. A failure here leaves the
+    # scan without the join rather than failing it.
+    writes: list[SiblingWrite] = []
+    resolved: list[CanonicalCall] = []
+    try:
+        writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
+        resolution = resolve_pending(platform, pending, writes, home=home, workspace_root=ws)
+        resolved = resolution.calls
+        if resolution.truncated:
+            coverage.append(
+                CoverageNote("sibling_join_truncated", f"first {len(resolved)} resolved commands")
             )
+        for call in resolved:
+            for f in extract_call(call, home=home, workspace_root=ws):
+                table.add(
+                    f.kind,
+                    f.value,
+                    display=f.display,
+                    role=f.role,
+                    origin=Origin.SIBLING,
+                    ref=call.call_id,
+                )
+    except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
+        writes, resolved = [], []
+        coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
