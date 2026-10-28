@@ -13,6 +13,10 @@ the sibling tampers with a guardrail or the host's approval settings (which cove
 the batch), or it writes a path the pending call reads, runs, sends or writes through (or a
 directory or link above one), so the sibling decides what the pending call acts on.
 
+When a sibling decides what the pending command acts on (`prepared.resolved`: the command read
+through the file, link or archive a sibling writes), each resolved command is analysed as the
+pending call's own action, and its findings count.
+
 When the pending call runs a file the agent wrote earlier in the session (`prepared.written_file`),
 that file's content is analysed as a command of its own (source `written_file`, the pending call's
 cwd) with the same detectors and packs, and its findings merge like a sibling's: a script that uploads
@@ -108,14 +112,17 @@ class AiraProbe:
         calls = [prepared.pending]
         if written_call is not None:
             calls.append(written_call)
+        resolved = list(getattr(prepared, "resolved", []) or [])
+        calls.extend(resolved)
         calls.extend(prepared.siblings)
+        resolved_evidence: list[dict[str, Any]] = []
         pending_paths: list[str] = []
         for call in calls:
             a = analyse(call, prepared, self.lists)
             findings, skipped_here = run_detectors(a, ctx)
             skipped = skipped_here
             label = call_label(call)
-            is_sibling = call is not prepared.pending and call is not written_call
+            is_sibling = call.source == "sibling"
             if call is prepared.pending:
                 # What the call reads, runs, sends or writes; not its cwd or a path a message names.
                 pending_paths = [p.value for p in a.paths if p.roles - {Role.MENTIONED}]
@@ -158,6 +165,16 @@ class AiraProbe:
                 shape_summary = summary
                 paths_evidence = call_paths
                 hosts_evidence = [h.value for h in a.hosts]
+            elif call.source == "resolved":
+                resolved_evidence.append(
+                    {
+                        "command": call.command,
+                        "from": call.call_id,
+                        "classes": sorted({f.cls for f in findings}),
+                        "rules": [f.rule for f in findings],
+                        "paths": call_paths,
+                    }
+                )
             elif call is written_call:
                 written = prepared.written_file
                 written_evidence = {
@@ -189,6 +206,8 @@ class AiraProbe:
         }
         if written_evidence is not None:
             evidence["written_file"] = written_evidence
+        if resolved_evidence:
+            evidence["resolved"] = resolved_evidence
         if siblings_evidence:
             evidence["siblings"] = siblings_evidence
         return Envelope(

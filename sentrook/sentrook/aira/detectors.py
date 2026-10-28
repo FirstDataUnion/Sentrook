@@ -27,6 +27,7 @@ from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
+from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
@@ -403,13 +404,14 @@ def _placeholder_paths(ctx: Context) -> set[str]:
     pending call's batch (a file staged for the send in the same turn)."""
     out: set[str] = set()
     open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
-    for h in [*ctx.prepared.history, *ctx.prepared.siblings]:
+    home, ws = ctx.prepared.home, ctx.prepared.workspace_root
+    for h in ctx.prepared.history:
         if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
-            out.add(
-                normalise_path(
-                    h.path, home=ctx.prepared.home, workspace_root=ctx.prepared.workspace_root
-                )
-            )
+            out.add(normalise_path(h.path, home=home, workspace_root=ws))
+    for s in ctx.prepared.siblings:
+        for w in sibling_writes(s, home=home, workspace_root=ws):
+            if w.content is not None and open_ in w.content:
+                out.add(w.path)
     return out
 
 
