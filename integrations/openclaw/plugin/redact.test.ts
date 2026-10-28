@@ -101,6 +101,19 @@ test("secrets in URLs, JSON text, prose and private keys are redacted everywhere
     [`the password is now ${pw}`, pw],
     [`the password was changed to ${pw}`, pw],
     [pgp, "W".repeat(40)],
+    [`mysql -u app --password ${pw} -h db.test`, pw],
+    [`mysql --password '${pw}' db`, pw],
+    [`mysql --password=${pw} db`, pw],
+    [`tool --api-key ${pw}`, pw],
+    [`tool --token "${pw}"`, pw],
+    [`tool --token-value ${pw}`, pw],
+    [`mysql -p${pw} db`, pw],
+    [`/usr/bin/mysqldump -u app -p'${pw}' db`, pw],
+    [`sshpass -p ${pw} ssh h`, pw],
+    [`sshpass -v -p${pw} ssh -p 2222 h`, pw],
+    [`tool --password ${pw.slice(0, 4)}\\!${pw.slice(4)}`, pw.slice(4)],
+    [`sudo mysql -p${pw} db`, pw],
+    [`docker exec -it db mysql -uroot -p${pw} db`, pw],
   ];
   for (const [text, raw] of cases) {
     // Request text and narration are plain strings, arguments are objects, results arrive JSON-encoded.
@@ -144,6 +157,28 @@ test("one value gets one tag whichever rule or encoding found it", () => {
   assert.match(r.string(`password: postgres://app:${pw}@db.test/x`), /^password: postgres:\/\/app:⟦secret:credential:[0-9a-f]{4}⟧@db\.test\/x$/);
 });
 
+test("password flags keep the flag, and JSON around a value stays JSON", () => {
+  const tag = "⟦secret:credential:[0-9a-f]{4}⟧";
+  assert.match(r.string(`mysql -u app --password ${pw} -h db.test`), new RegExp(`^mysql -u app --password ${tag} -h db\\.test$`));
+  assert.match(r.string(`mysql -p${pw} db`), new RegExp(`^mysql -p${tag} db$`));
+  assert.match(r.string(`sshpass -p ${pw} ssh -p 2222 h`), new RegExp(`^sshpass -p ${tag} ssh -p 2222 h$`));
+  oneTag([
+    `mysql --password ${pw}`,
+    `tool --token "${pw}"`,
+    `tool --token '${pw}'`,
+    asResult(`tool --token "${pw}"`),
+    `mysql -p${pw}`,
+    `sshpass -p ${pw} ssh h`,
+    `export API_TOKEN=${pw}`,
+  ]);
+  assert.match(r.string(`tool --token '${pw}'`), new RegExp(`^tool --token '${tag}'$`));
+  for (const text of [`mysql --password ${pw}`, `tool --token "${pw}"`, `mysql -p${pw}`, `sshpass -p "${pw}" ssh h`]) {
+    const out = r.string(asResult(text));
+    assert.ok(!out.includes(pw) && tags(out).length === 1, out);
+    assert.ok(JSON.parse(out).output.startsWith(text.slice(0, 6)), "the JSON around a value stays");
+  }
+});
+
 test("look-alikes stay unredacted", () => {
   for (const s of [
     "postgres://db.test/x",
@@ -185,6 +220,26 @@ test("look-alikes stay unredacted", () => {
     "copy key id_ed25519.pub to the server",
     "hosts=redis://cache.test:6379,admin@example.test",
     "see https://example.com:8443#contact@example.test",
+    "tool --secret-file /etc/app/secret.txt",
+    'tool --secret-file "/etc/app/secret.txt"',
+    "tool --token-path ~/.config/t",
+    "tool --password-file ./pw.txt",
+    "tool --token-url https://auth.example.test/token",
+    "ssh -p 2222 host",
+    "mysql --password $DB_PASSWORD db",
+    'mysql --password "$DB_PASSWORD" db',
+    "mysql --password ******** db",
+    "mysql -u app -p db",
+    "mysql -P 3306 -h db.test --port 3306",
+    "sshpass -f ~/.pw ssh -p 2222 host",
+    "sshpass -e ssh -p 2222 host",
+    "find /var/lib/mysql -perm 600 -type f",
+    "find / -name mysql -prune",
+    "docker run -d --name mysql -p3306:3306 mysql:8",
+    "restart mysql\nthen ssh -p2222 host",
+    "tool --token-ttl 3600 --auth-type basic --secret-name prod-db",
+    "tool --password-file secrets/db_password",
+    "tool --secret-file C:\\secrets\\x.txt",
   ]) {
     assert.equal(r.string(s), s);
     assert.equal(r.string(asResult(s)), asResult(s));
@@ -212,10 +267,16 @@ test("off leaves everything", () => {
 });
 
 test("long inputs stay fast", () => {
-  const long = `${"a".repeat(200_000)} ${"token_".repeat(20_000)} ${"_".repeat(100_000)}`;
-  const t0 = performance.now();
-  r.string(long);
-  assert.ok(performance.now() - t0 < 2000, "redaction must be roughly linear");
+  for (const long of [
+    `${"a".repeat(200_000)} ${"token_".repeat(20_000)} ${"_".repeat(100_000)}`,
+    `${"mysql ".repeat(30)}-p"${"a".repeat(1_000_000)}`,
+    "sshpass -e ".repeat(100_000),
+    "--password ".repeat(100_000),
+  ]) {
+    const t0 = performance.now();
+    r.string(long);
+    assert.ok(performance.now() - t0 < 2000, "redaction must be roughly linear");
+  }
 });
 
 test("capHeadTail keeps head and tail", () => {

@@ -75,6 +75,28 @@ const bareValue = (v: string) =>
   v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
 
 /**
+ * A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names (a path,
+ * URL, mask or template), so `--secret-file PATH` keeps its path.
+ */
+const flagValue = (v: string) => !v.startsWith("$") && !NAMED_THING.test(v);
+/**
+ * After a flag with a suffix, which often names a setting (`--token-ttl 3600`, `--auth-type basic`,
+ * `--password-file secrets/db`): also not a word, a number or a path.
+ */
+const suffixedFlagValue = (v: string) => flagValue(v) && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !/[/\\]/.test(v);
+/**
+ * After a MySQL client's `-p`: also not a word or a port mapping, which belong to another command on the line
+ * (`find / -name mysql -prune`, `docker run --name mysql -p3306:3306`).
+ */
+const mysqlPassword = (v: string) => flagValue(v) && !isOrdinary(v) && !/^[0-9]{1,5}:[0-9]/.test(v);
+/**
+ * A command-line value, without its quotes: quoted, up to 256 characters (plain, or with escaped quotes as in a
+ * JSON-encoded result), or bare up to a quote or the end of the command. A bare value keeps an escaped
+ * character but ends at an escaped quote, newline or tab, so the JSON around it stays.
+ */
+const FLAG_VALUE = `(?:\\\\?["'])?(?<v>(?!⟦)(?:(?<=\\\\")[^"\\\\]{1,256}(?=\\\\")|(?<=")(?<!\\\\")(?:[^"\\\\]|\\\\.){1,256}(?=")|(?<=')(?:[^'\\\\]|\\\\.){1,256}(?=')|(?<![\\\\"'])[^\\s;|&⟦"'\\\\-](?:[^\\s;|&"'\\\\]|\\\\[^\\s"nrt])*))`;
+
+/**
  * "password is X", "the password is now X", "the token for prod: X". The words between cue and value stay
  * inside one clause and one quoted string and never reach into a placeholder; a cue inside a path, host or
  * name (`/token:8443`, `x.secret`) does not count.
@@ -137,10 +159,35 @@ const SHAPES: Shape[] = [
     check: (v) => /[0-9]/.test(v),
   },
   {
-    // `--password x`, `--api-key=x`, `--token "x"`
+    // `--password x`, `--api-key=x`, `--token "x"`.
     kind: "credential",
-    re: /--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:-\w+)?(?:\s*=\s*|\s+)(?<v>"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&⟦-][^\s;|&]*)/gi,
+    re: new RegExp(`--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)(?:\\s*=\\s*|\\s+)${FLAG_VALUE}`, "gi"),
     group: "v",
+    check: flagValue,
+  },
+  {
+    // `--token-value x`. After a suffixed flag a path, URL or setting stays (`--secret-file /etc/app/x`,
+    // `--token-url https://…`, `--token-ttl 3600`).
+    kind: "credential",
+    re: new RegExp(`--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)-\\w+(?:\\s*=\\s*|\\s+)${FLAG_VALUE}`, "gi"),
+    group: "v",
+    check: suffixedFlagValue,
+  },
+  {
+    // `mysql -pX`: MySQL and MariaDB clients take a password only attached to `-p`. The client is a command
+    // word (not a directory such as `/var/lib/mysql`, unless under a `bin/`), and the search stops at the end
+    // of its command, an escaped newline included.
+    kind: "credential",
+    re: new RegExp(`(?:(?<![^\\s;|&(\`"'])|(?<=bin/)|(?<=\\\\[nt]))(?:mysql[a-z]{0,8}|mariadb(?:-?[a-z]{1,8})?)(?![\\w.-])[^\\n;|&\\\\]{0,200}?\\s-p${FLAG_VALUE}`, "g"),
+    group: "v",
+    check: mysqlPassword,
+  },
+  {
+    // `sshpass -p X`, after any of sshpass's own options; a `-p` in the command it runs is not its.
+    kind: "credential",
+    re: new RegExp(`(?<![\\w-])sshpass(?:\\s+-[fdP][ \\t]*[^\\s-]\\S*|\\s+-[ehvV]){0,4}\\s+-p[ \\t]*${FLAG_VALUE}`, "g"),
+    group: "v",
+    check: flagValue,
   },
   {
     // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.

@@ -1,5 +1,5 @@
 name: sentrook
-version: 2.0.0-beta.3
+version: 2.0.0-beta.4
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1

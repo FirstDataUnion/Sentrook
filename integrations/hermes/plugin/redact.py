@@ -93,6 +93,38 @@ def _bare_value(v: str) -> bool:
     )
 
 
+def _flag_value(v: str) -> bool:
+    """A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names
+    (a path, URL, mask or template), so `--secret-file PATH` keeps its path."""
+    return not v.startswith("$") and not _NAMED_THING.search(v)
+
+
+def _suffixed_flag_value(v: str) -> bool:
+    """After a flag with a suffix, which often names a setting (`--token-ttl 3600`, `--auth-type basic`,
+    `--password-file secrets/db`): also not a word, a number or a path."""
+    return (
+        _flag_value(v)
+        and not _is_ordinary(v)
+        and not re.fullmatch(r"[0-9]+", v)
+        and not re.search(r"[/\\]", v)
+    )
+
+
+def _mysql_password(v: str) -> bool:
+    """After a MySQL client's `-p`: also not a word or a port mapping, which belong to another command on
+    the line (`find / -name mysql -prune`, `docker run --name mysql -p3306:3306`)."""
+    return _flag_value(v) and not _is_ordinary(v) and not re.match(r"[0-9]{1,5}:[0-9]", v)
+
+
+# A command-line value, without its quotes: quoted, up to 256 characters (plain, or with escaped quotes
+# as in a JSON-encoded result), or bare up to a quote or the end of the command. A bare value keeps an
+# escaped character but ends at an escaped quote, newline or tab, so the JSON around it stays.
+_FLAG_VALUE = (
+    r"(?:\\?[\"'])?(?P<v>(?!⟦)(?:(?<=\\\")[^\"\\]{1,256}(?=\\\")|(?<=\")(?<!\\\")(?:[^\"\\]|\\.){1,256}(?=\")"
+    r"|(?<=')(?:[^'\\]|\\.){1,256}(?=')|(?<![\\\"'])[^\s;|&⟦\"'\\-](?:[^\s;|&\"'\\]|\\[^\s\"nrt])*))"
+)
+
+
 def _prose_stated(cues: str) -> re.Pattern[str]:
     """ "password is X", "the password is now X", "the token for prod: X". The words between cue and value
     stay inside one clause and one quoted string and never reach into a placeholder; a cue inside a path,
@@ -211,15 +243,47 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         lambda v: re.search(r"[0-9]", v) is not None,
     ),
     (
-        # `--password x`, `--api-key=x`, `--token "x"`
+        # `--password x`, `--api-key=x`, `--token "x"`.
         "credential",
         re.compile(
             r"(?i)--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)"
-            r"(?:-\w+)?(?:\s*=\s*|\s+)"
-            r"(?P<v>\"[^\"\\]*(?:\\.[^\"\\]*)*\"|'[^'\\]*(?:\\.[^'\\]*)*'|[^\s;|&⟦-][^\s;|&]*)"
+            r"(?:\s*=\s*|\s+)" + _FLAG_VALUE
         ),
         "v",
-        None,
+        _flag_value,
+    ),
+    (
+        # `--token-value x`. After a suffixed flag a path, URL or setting stays (`--secret-file /etc/app/x`,
+        # `--token-url https://…`, `--token-ttl 3600`).
+        "credential",
+        re.compile(
+            r"(?i)--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)"
+            r"-\w+(?:\s*=\s*|\s+)" + _FLAG_VALUE
+        ),
+        "v",
+        _suffixed_flag_value,
+    ),
+    (
+        # `mysql -pX`: MySQL and MariaDB clients take a password only attached to `-p`. The client is a command
+        # word (not a directory such as `/var/lib/mysql`, unless under a `bin/`), and the search stops at the end
+        # of its command, an escaped newline included.
+        "credential",
+        re.compile(
+            r"(?:(?<![^\s;|&(`\"'])|(?<=bin/)|(?<=\\[nt]))(?:mysql[a-z]{0,8}|mariadb(?:-?[a-z]{1,8})?)"
+            r"(?![\w.-])[^\n;|&\\]{0,200}?\s-p" + _FLAG_VALUE
+        ),
+        "v",
+        _mysql_password,
+    ),
+    (
+        # `sshpass -p X`, after any of sshpass's own options; a `-p` in the command it runs is not its.
+        "credential",
+        re.compile(
+            r"(?<![\w-])sshpass(?:\s+-[fdP][ \t]*[^\s-]\S*|\s+-[ehvV]){0,4}\s+-p[ \t]*"
+            + _FLAG_VALUE
+        ),
+        "v",
+        _flag_value,
     ),
     (
         # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
