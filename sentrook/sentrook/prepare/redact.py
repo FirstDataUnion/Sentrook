@@ -1,12 +1,13 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v3`; `redact-v2` moved the
-vendor shapes to data, `redact-v1` came with the v1.1 question-set pass).
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v4`; `redact-v3` took the
+plugins' text rules but their command-line flag rule, `redact-v2` moved the vendor shapes to data,
+`redact-v1` came with the v1.1 question-set pass).
 
 The plugin redacts secrets before a PlanIR leaves the host (`options.redaction`, usually `standard`).
 This pass catches secrets that slipped through (an older plugin, redaction `off`, another client), so a
 model never sees a live key in a view Sentrook builds. Its text rules are the Hermes plugin's
 (`integrations/hermes/plugin/redact.py`), kept as a copy with a parity test, plus the vendor shapes in
-`redact_shapes.yaml`; the plugin's command-line flag rule is left out, since `--secret-file PATH` would
-hide a path. It is deliberately conservative: recipients, names, hosts and email addresses stay, because
+`redact_shapes.yaml`. Command-line password flags count (`--password X`, `mysql -pX`, `sshpass -p X`),
+but a path or URL after a flag stays (`--secret-file PATH`). It is deliberately conservative: recipients, names, hosts and email addresses stay, because
 Jev needs them to judge alignment (a URL loses only its password). A replaced value becomes
 `⟦secret:scanner⟧`; the preamble already tells Jev that a placeholder still marks a real secret.
 
@@ -24,7 +25,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v3"
+REDACTION_VERSION = "redact-v4"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -120,6 +121,37 @@ def _bare_value(v: str) -> bool:
     )
 
 
+def _flag_value(v: str) -> bool:
+    """A command-line value: not a variable reference (`$DB_PASSWORD`) and not something a sentence names
+    (a path, URL, mask or template), so `--secret-file PATH` keeps its path."""
+    return not v.startswith("$") and not _NAMED_THING.search(v)
+
+
+def _suffixed_flag_value(v: str) -> bool:
+    """After a flag with a suffix, which often names a setting (`--token-ttl 3600`, `--auth-type basic`,
+    `--password-file secrets/db`): also not a word, a number or a path."""
+    return (
+        _flag_value(v)
+        and not _is_ordinary(v)
+        and not re.fullmatch(r"[0-9]+", v)
+        and not re.search(r"[/\\]", v)
+    )
+
+
+def _mysql_password(v: str) -> bool:
+    """After a MySQL client's `-p`: also not a word or a port mapping, which belong to another command on
+    the line (`find / -name mysql -prune`, `docker run --name mysql -p3306:3306`)."""
+    return _flag_value(v) and not _is_ordinary(v) and not re.match(r"[0-9]{1,5}:[0-9]", v)
+
+
+#: A command-line value, without its quotes: quoted, up to 256 characters (plain, or with escaped quotes
+#: as in a JSON-encoded result), or bare up to a quote or the end of the command. A bare value keeps an
+#: escaped character but ends at an escaped quote, newline or tab, so the JSON around it stays.
+_FLAG_VALUE = (
+    r"(?:\\?[\"'])?(?P<v>(?!⟦)(?:(?<=\\\")[^\"\\]{1,256}(?=\\\")|(?<=\")(?<!\\\")(?:[^\"\\]|\\.){1,256}(?=\")"
+    r"|(?<=')(?:[^'\\]|\\.){1,256}(?=')|(?<![\\\"'])[^\s;|&⟦\"'\\-](?:[^\s;|&\"'\\]|\\[^\s\"nrt])*))"
+)
+
 #: Values found by their context: (pattern, check). Group `v` is replaced and the context stays; with a
 #: check, a match counts only when its value passes it.
 _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
@@ -147,6 +179,41 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
     (
         re.compile(r"/private-(?P<v>[A-Za-z0-9]{16,128})(?![A-Za-z0-9])"),
         lambda v: re.search(r"[0-9]", v) is not None,
+    ),
+    # `--password x`, `--api-key=x`, `--token "x"`.
+    (
+        re.compile(
+            r"(?i)--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)"
+            r"(?:\s*=\s*|\s+)" + _FLAG_VALUE
+        ),
+        _flag_value,
+    ),
+    # `--token-value x`. After a suffixed flag a path, URL or setting stays (`--secret-file /etc/app/x`,
+    # `--token-url https://…`, `--token-ttl 3600`).
+    (
+        re.compile(
+            r"(?i)--(?:pass(?:wd|word)?|secret|token|api[_-]?key|auth(?:entication)?(?:-?token)?|credential)"
+            r"-\w+(?:\s*=\s*|\s+)" + _FLAG_VALUE
+        ),
+        _suffixed_flag_value,
+    ),
+    # `mysql -pX`: MySQL and MariaDB clients take a password only attached to `-p`. The client is a command
+    # word (not a directory such as `/var/lib/mysql`, unless under a `bin/`), and the search stops at the end
+    # of its command, an escaped newline included.
+    (
+        re.compile(
+            r"(?:(?<![^\s;|&(`\"'])|(?<=bin/)|(?<=\\[nt]))(?:mysql[a-z]{0,8}|mariadb(?:-?[a-z]{1,8})?)"
+            r"(?![\w.-])[^\n;|&\\]{0,200}?\s-p" + _FLAG_VALUE
+        ),
+        _mysql_password,
+    ),
+    # `sshpass -p X`, after any of sshpass's own options; a `-p` in the command it runs is not its.
+    (
+        re.compile(
+            r"(?<![\w-])sshpass(?:\s+-[fdP][ \t]*[^\s-]\S*|\s+-[ehvV]){0,4}\s+-p[ \t]*"
+            + _FLAG_VALUE
+        ),
+        _flag_value,
     ),
     # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash; a port
