@@ -44,9 +44,13 @@ _PROSE_VALUE = (
 _ORDINARY_WORD = re.compile(
     r"(?:[A-Za-z][a-z]*(?:-[A-Za-z][a-z]*)*|[A-Z]+|[a-z]+(?:[A-Z][a-z]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)"
 )
-# What a sentence names: paths, URLs, masks and templates, code, dates, hex addresses, key fingerprints.
+# What a sentence names: paths, URLs, masks and templates, code, dates, hex addresses, key fingerprints,
+# email addresses, host and file names (a host may carry a port and a path) and relative paths to a file.
 _NAMED_THING = re.compile(
     r"^[/~.*{\[(]|://|\(|^[0-9]{4}-[0-9]{2}-[0-9]{2}|^0x[0-9a-fA-F]{40}$|^(?:SHA256|MD5):"
+    r"|^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}$"
+    r"|^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.[a-z]{2,24}(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~%/-]*)?$"
+    r"|^(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$"
 )
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
 
@@ -187,10 +191,13 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     ),
     (
         # The password in `scheme://user:PASS@host` (the user may be empty, the password may hold `@`); user
-        # and host stay.
+        # and host stay. A host name and port before a list or a fragment (`cache.test:6379,admin@…`) hold
+        # no password.
         "credential",
         re.compile(
-            r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s/?#@:\"'<>\\⟦]{0,256}:"
+            r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{0,30}://"
+            r"(?!(?:[A-Za-z0-9-]{1,63}\.){1,10}[A-Za-z]{2,24}:[0-9]{1,5}[,;#])"
+            r"[^\s/?#@:\"'<>\\⟦]{0,256}:"
             r"(?P<v>[^\s/?@\"'<>\\⟦$*{][^\s/?\"'<>\\]{0,255})@"
         ),
         "v",
