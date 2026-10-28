@@ -59,6 +59,7 @@ from .entities import (
 )
 from .fingerprint import Fingerprint, fingerprint
 from .host_text import owner_words
+from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
 from .trust import Trust, classify
 
 __all__ = [
@@ -192,6 +193,9 @@ class Prepared:
     views: dict[str, dict[str, Any]]
     created_paths: dict[str, int] = field(default_factory=dict)
     written_file: WrittenFile | None = None
+    #: The pending command read through its siblings' writes (`sibling_join.resolve_pending`):
+    #: synthetic exec calls, source `resolved`. Empty when no sibling write reaches the command.
+    resolved: list[CanonicalCall] = field(default_factory=list)
     lineage: Lineage = field(default_factory=Lineage)
     coverage: list[CoverageNote] = field(default_factory=list)
     warnings: list[Warning_] = field(default_factory=list)
@@ -585,7 +589,7 @@ def _sql_targets(pending: CanonicalCall) -> list[str]:
 def _lineage(
     planir: PlanIR,
     pending: CanonicalCall,
-    siblings: list[CanonicalCall],
+    writes: list[SiblingWrite],
     history: list[CanonicalCall],
     table: EntityTable,
     written: WrittenFile | None,
@@ -612,18 +616,14 @@ def _lineage(
 
     # A file a sibling in the same batch writes and the pending call sends is staged for the
     # send: no earlier step shows the write, so the sibling's content is the file's content.
-    staged = {
-        normalise_path(s.path, home=home, workspace_root=ws): s
-        for s in siblings
-        if s.tool_kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT) and s.path
-    }
+    staged = {w.path: w.content for w in writes if w.content is not None}
     if staged:
         already = {w.path for w in lineage.sent}
         for ent in table.pending():
             if ent.kind is not EntityKind.PATH or Role.DATA_SOURCE not in ent.roles:
                 continue
-            sib = staged.get(ent.value)
-            if sib is None or ent.value in already:
+            content = staged.get(ent.value)
+            if content is None or ent.value in already:
                 continue
             if written is not None and ent.value == written.path:
                 continue
@@ -631,7 +631,7 @@ def _lineage(
                 WrittenFile(
                     path=ent.value,
                     step=planir.session.step,
-                    content=str(sib.get("content") or ""),
+                    content=content,
                     truncated=False,
                 )
             )
@@ -726,6 +726,32 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 origin=Origin.SIBLING,
                 ref=sib.call_id,
             )
+    # What the siblings write, and the pending command read through it: the resolved command's
+    # entities take the pending call's roles and the sibling's origin. A failure here leaves the
+    # scan without the join rather than failing it.
+    writes: list[SiblingWrite] = []
+    resolved: list[CanonicalCall] = []
+    try:
+        writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
+        resolution = resolve_pending(platform, pending, writes, home=home, workspace_root=ws)
+        resolved = resolution.calls
+        if resolution.truncated:
+            coverage.append(
+                CoverageNote("sibling_join_truncated", f"first {len(resolved)} resolved commands")
+            )
+        for call in resolved:
+            for f in extract_call(call, home=home, workspace_root=ws):
+                table.add(
+                    f.kind,
+                    f.value,
+                    display=f.display,
+                    role=f.role,
+                    origin=Origin.SIBLING,
+                    ref=call.call_id,
+                )
+    except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
+        writes, resolved = [], []
+        coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
@@ -809,7 +835,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             break
         coverage.append(CoverageNote("written_file_not_visible", exe.display))
 
-    lineage = _lineage(planir, pending, siblings, history, table, written, home, ws)
+    lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
 
     # 6. untrusted set
     for ent in table:
@@ -867,6 +893,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         views=jev_views,
         created_paths=created,
         written_file=written,
+        resolved=resolved,
         lineage=lineage,
         coverage=coverage,
         warnings=warns,
