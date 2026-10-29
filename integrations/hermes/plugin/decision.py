@@ -7,6 +7,7 @@ but never applied.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -49,25 +50,51 @@ def describe(resp: dict[str, Any], tool: str) -> str:
     )
 
 
-def _reasons(resp: dict[str, Any], limit: int) -> str:
+def _reason_codes(resp: dict[str, Any]) -> list[str]:
     seen: list[str] = []
     for r in resp.get("reasons") or []:
         code = r.get("code") if isinstance(r, dict) else None
         if isinstance(code, str) and code and code not in seen:
             seen.append(code)
-    return ", ".join(seen[:limit])
+    return seen
+
+
+def _reasons(resp: dict[str, Any], limit: int) -> str:
+    return ", ".join(_reason_codes(resp)[:limit])
 
 
 def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[: max(0, n - 1)] + "…"
 
 
+def scores_line(resp: dict[str, Any]) -> str:
+    """The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none.
+    A score that is not a finite number is left out; the rest are held to 0-1."""
+    parts = [
+        f"{name} {round(min(max(v, 0.0), 1.0) * 100)}"
+        for name, v in tiers_of(resp).items()
+        if v is not None and math.isfinite(v)
+    ]
+    return f"Scores: {', '.join(parts)}." if parts else ""
+
+
+def _fit(head: str, desc: str, codes: list[str], tail: str, limit: int) -> str:
+    """`head`, the description, up to 3 reason codes and `tail` within `limit`. Reason codes go
+    first, then the description is shortened; `head` and `tail` always stay."""
+    tail = f" {tail}" if tail else ""
+    for k in range(min(3, len(codes)), -1, -1):
+        why = f" Why: {', '.join(codes[:k])}." if k else ""
+        text = f"{head}{desc}.{why}{tail}"
+        if len(text) <= limit:
+            return text
+    return f"{head}{_clip(desc, limit - len(head) - len(tail) - 1)}.{tail}"
+
+
 def review_message(resp: dict[str, Any], tool: str) -> str:
     risk = round(float(resp.get("risk") or 0))
-    why = _reasons(resp, 3)
-    return _clip(
-        f"Sentrook (risk {risk}): {describe(resp, tool)}." + (f" Why: {why}." if why else ""),
-        REVIEW_MESSAGE_MAX,
+    head = f"Sentrook (risk {risk}): "
+    return _fit(
+        head, describe(resp, tool), _reason_codes(resp), scores_line(resp), REVIEW_MESSAGE_MAX
     )
 
 

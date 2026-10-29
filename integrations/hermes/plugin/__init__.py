@@ -11,9 +11,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
-from . import cli, commands
+from . import cli, commands, owner
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -88,6 +89,42 @@ def _rule_key(fingerprint: str | None, request_id: str) -> str:
     """Hermes persists Session/Always approvals per rule key. Keyed on the action fingerprint, an approval
     covers the same action (same source and destination) again, not other calls of the same tool."""
     return "sentrook:" + hashlib.sha256((fingerprint or request_id).encode()).hexdigest()[:16]
+
+
+# ---- owner-only commands ----------------------------------------------------------------------------
+
+
+def owner_command(verb: str, fn: Callable[[str], str]) -> Callable[..., str]:
+    """A slash-command handler that runs `fn` only for the owner and audits every attempt.
+
+    Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
+    through this. Any failure while checking the sender refuses the command.
+    """
+
+    def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
+        try:
+            cfg, env = _load()
+            store, traffic = _state(cfg)
+        except Exception as exc:  # noqa: BLE001 - nowhere to audit; refuse
+            logger.warning("owner check for %s failed: %s", verb, exc)
+            return owner.refusal(verb)
+        try:
+            check = owner.gate(verb, traffic, store.salt(), facts=session_facts(), env=env)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("owner check for %s failed: %s", verb, exc)
+            owner.audit(
+                traffic,
+                verb,
+                {"owner": False, "basis": ["none"], "platform": ""},
+                ref=None,
+                reason="error",
+            )
+            return owner.refusal(verb)
+        if not check["owner"]:
+            return owner.refusal(verb)
+        return fn(raw_args)
+
+    return handler
 
 
 # ---- context joins ---------------------------------------------------------------------------------
