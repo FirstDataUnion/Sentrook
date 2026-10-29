@@ -79,7 +79,8 @@ def test_overlay_merges_additively(tmp_path: Path):
     over = load_lists_from(LISTS_DIR, tmp_path)
     weights_base = base.raw["weights"]["version"]
     assert "sensitive_paths=2+9" in over.version and f"weights={weights_base}+2" in over.version
-    assert "guardrail=1;" in over.version  # untouched lists keep their version
+    guardrail_base = base.raw["guardrail"]["version"]
+    assert f"guardrail={guardrail_base};" in over.version  # untouched lists keep their version
     assert over.path_groups["credential_store"].search("/srv/vault.tok")
     assert over.path_groups["sensitive"].search("/srv/vault.tok")  # composition sees the overlay
     assert not base.path_groups["credential_store"].search("/srv/vault.tok")
