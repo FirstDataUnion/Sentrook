@@ -1,7 +1,8 @@
 /**
- * `openclaw sentrook verify`
+ * `openclaw sentrook verify` and `openclaw sentrook status`
  */
 
+import { runSentrookCommand, SUBCOMMANDS } from "./commands.ts";
 import { formatVerifyReport, runVerify } from "./verify.ts";
 
 /** The commander-like surface OpenClaw passes to registerCli. */
@@ -21,5 +22,11 @@ export function registerSentrookCli(program: { command: (name: string) => CliCom
       const checks = await runVerify(pluginConfig());
       console.log(formatVerifyReport(checks));
       if (checks.some((c) => !c.ok)) process.exitCode = 1;
+    });
+  root
+    .command("status")
+    .description(SUBCOMMANDS.status!.description)
+    .action(async () => {
+      console.log(await runSentrookCommand("status", { pluginConfig: pluginConfig(), env: process.env }));
     });
 }

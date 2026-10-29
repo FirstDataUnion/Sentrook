@@ -80,6 +80,7 @@ def harness(tmp_path, monkeypatch):
 
         def __init__(self):
             self.hooks = {}
+            self.commands = {}
             self.settings = {}
 
         def get_config(self, key, default=None):
@@ -90,6 +91,13 @@ def harness(tmp_path, monkeypatch):
 
         def register_cli_command(self, **kw):
             self.cli = kw
+
+        def register_command(self, name, handler, description="", args_hint=""):
+            self.commands[name] = {
+                "handler": handler,
+                "description": description,
+                "args_hint": args_hint,
+            }
 
     ctx = Ctx()
     plugin.register(ctx)
