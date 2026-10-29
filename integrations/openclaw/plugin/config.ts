@@ -63,7 +63,9 @@ export interface PluginConfig {
   packs: string[];
   trustedSenders: string[];
   trustedRoles: string[];
+  /** Grants from the plugin config; a scan also sends the bindings and the grants set by command. */
   grants: GrantConfig[];
+  channelBindings: string[];
 }
 
 type Env = NodeJS.ProcessEnv;
@@ -172,7 +174,16 @@ export function resolveEndpoints(cfg: Record<string, unknown>, env: Env): Endpoi
   };
 }
 
-function parseGrants(raw: unknown): GrantConfig[] {
+/**
+ * No scope means a standing grant. Any value other than exactly `session` or `persistent` reads as
+ * `session`, so a typo never widens relief.
+ */
+function grantScope(raw: unknown): "session" | "persistent" {
+  if (raw === undefined || raw === null) return "persistent";
+  return raw === "persistent" ? "persistent" : "session";
+}
+
+export function parseGrants(raw: unknown): GrantConfig[] {
   if (!Array.isArray(raw)) return [];
   const out: GrantConfig[] = [];
   for (const g of raw) {
@@ -185,19 +196,11 @@ function parseGrants(raw: unknown): GrantConfig[] {
       kind,
       pattern,
       ...(Array.isArray(rec.allows) ? { allows: list(rec.allows) } : {}),
-      scope: rec.scope === "session" ? "session" : "persistent",
+      scope: grantScope(rec.scope),
       ...(str(rec.granted_at) ? { granted_at: str(rec.granted_at) } : {}),
     });
   }
   return out;
-}
-
-/**
- * Channel bindings (where a scheduled job or route is expected to deliver) become destination grants:
- * a cron delivery to its usual channel is sanctioned even though the channel is not in the prompt.
- */
-function channelBindingGrants(raw: unknown): GrantConfig[] {
-  return list(raw).map((pattern) => ({ kind: "destination", pattern, scope: "persistent" as const }));
 }
 
 export function resolveConfig(pluginConfig: Record<string, unknown> | undefined, env: Env): PluginConfig {
@@ -230,6 +233,9 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     packs: list(cfg.packs).length ? list(cfg.packs) : ["tier1"],
     trustedSenders: list(cfg.trustedSenders ?? env.SENTROOK_TRUSTED_SENDERS),
     trustedRoles: list(cfg.trustedRoles ?? env.SENTROOK_TRUSTED_ROLES),
-    grants: [...parseGrants(cfg.grants), ...channelBindingGrants(cfg.channelBindings)],
+    grants: parseGrants(cfg.grants),
+    // Where a scheduled job or route is expected to deliver; sent as destination grants, so a cron
+    // delivery to its usual channel is sanctioned even though the channel is not in the prompt.
+    channelBindings: list(cfg.channelBindings),
   };
 }

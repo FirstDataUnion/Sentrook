@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "grants": [
+    {
+      "id": "gr-1a2b3c",
+      "kind": "destination",
+      "pattern": "#ops",
+      "scope": "session",
+      "granted_at": "2026-10-29T09:00:00Z",
+      "set_by": { "basis": ["local_terminal"], "platform": "" }
+    },
+    {
+      "id": "gr-4d5e6f",
+      "kind": "provider",
+      "pattern": "npm:left-pad",
+      "scope": "persistent",
+      "granted_at": "2026-10-27T10:00:00Z",
+      "expires_at": "2026-10-28T00:00:00Z",
+      "set_by": { "basis": ["host_allowlist_dm"], "platform": "mattermost", "sender_ref": "u_0123456789abcdef" }
+    },
+    {
+      "id": "gr-7a8b9c",
+      "kind": "file",
+      "pattern": "/srv/reports/*",
+      "scope": "persistent",
+      "allows": ["write"],
+      "granted_at": "2026-10-29T09:00:00Z",
+      "expires_at": "2026-11-05T09:00:00Z",
+      "set_by": { "basis": ["operator.admin"], "channel": "webchat" }
+    },
+    { "id": "gr-bad001", "kind": "destination", "pattern": "#typo", "scope": "persistant", "granted_at": "2026-10-29T09:10:00Z" },
+    { "id": "gr-bad002", "kind": "destination" }
+  ],
+  "bindings": [
+    { "pattern": "discord:1234", "granted_at": "2026-10-29T09:05:00Z", "set_by": { "basis": ["local_terminal"], "platform": "" } }
+  ]
+}

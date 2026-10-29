@@ -141,8 +141,11 @@ def build_planir(
     facts: dict[str, str],
     env: dict[str, str],
     host_cfg: dict[str, Any],
+    grants: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids)."""
+    """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
+
+    `grants`: every grant in force (`grants.effective`); the config grants alone when not given."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -247,7 +250,9 @@ def build_planir(
             "arguments": cap_args(args, cfg.input_cap_bytes),
             "batch": {"siblings": siblings},
         },
-        "grants": relevant_grants(cfg.grants, json.dumps(raw_args, default=str)),
+        "grants": relevant_grants(
+            cfg.grants if grants is None else grants, json.dumps(raw_args, default=str)
+        ),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }
     return {

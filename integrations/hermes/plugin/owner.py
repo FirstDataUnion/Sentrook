@@ -81,10 +81,12 @@ def audit(
 def gate(
     verb: str, traffic: TrafficLog, salt: str, *, facts: dict[str, str], env: dict[str, str]
 ) -> dict[str, Any]:
-    """Decide whether this command may run and audit the decision."""
+    """Decide whether this command may run and audit the decision. The result also carries the
+    hashed sender (`sender_ref`), for commands that record who made a change."""
     check = owner_of(facts, env, engaged=gateway_engaged())
-    audit(traffic, verb, check, ref=sender_ref(facts.get("user_id") or "", salt))
-    return check
+    ref = sender_ref(facts.get("user_id") or "", salt)
+    audit(traffic, verb, check, ref=ref)
+    return {**check, "sender_ref": ref}
 
 
 def refusal(verb: str) -> str:

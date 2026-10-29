@@ -12,9 +12,10 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, owner
+from . import cli, commands, grants, owner
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -94,11 +95,12 @@ def _rule_key(fingerprint: str | None, request_id: str) -> str:
 # ---- owner-only commands ----------------------------------------------------------------------------
 
 
-def owner_command(verb: str, fn: Callable[[str], str]) -> Callable[..., str]:
+def owner_command(verb: str, fn: Callable[[str, dict[str, Any]], str]) -> Callable[..., str]:
     """A slash-command handler that runs `fn` only for the owner and audits every attempt.
 
     Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
-    through this. Any failure while checking the sender refuses the command.
+    through this. Any failure while checking the sender refuses the command. `fn` gets the raw
+    arguments and who ran it: `{"basis", "platform", "sender_ref"}`.
     """
 
     def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
@@ -122,7 +124,7 @@ def owner_command(verb: str, fn: Callable[[str], str]) -> Callable[..., str]:
             return owner.refusal(verb)
         if not check["owner"]:
             return owner.refusal(verb)
-        return fn(raw_args)
+        return fn(raw_args, {k: check[k] for k in ("basis", "platform", "sender_ref")})
 
     return handler
 
@@ -229,6 +231,7 @@ def _scan_one(
         facts=facts,
         env=env,
         host_cfg=host_cfg,
+        grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC)),
     )
     planir = built["planir"]
     unattended = is_unattended(

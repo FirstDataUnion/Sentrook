@@ -82,6 +82,20 @@ def format_report(checks: list[tuple[str, bool, str]]) -> str:
 
 #: argparse gives the CLI its own help.
 CLI_COMMANDS = tuple(name for name in COMMANDS if name != "help")
+#: `grant`'s valued flags, declared to argparse so they may come before or after the positionals;
+#: the values themselves are checked by the shared parser.
+GRANT_FLAGS = ("scope", "allows", "expires")
+
+
+def _rest(cmd: str, args: argparse.Namespace) -> str:
+    """The text after the subcommand, as the slash form would receive it."""
+    arg = getattr(args, "sentrook_arg", "") or ""
+    words = arg if isinstance(arg, list) else [arg]
+    if cmd == "grant":
+        if args.persistent:
+            words.append("--persistent")
+        words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
+    return " ".join(words)
 
 
 def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGate) -> None:
@@ -90,14 +104,22 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
         sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
         for name in CLI_COMMANDS:
             p = sub.add_parser(name, help=COMMANDS[name].summary)
-            if COMMANDS[name].args:
+            if name == "grant":
+                p.add_argument("sentrook_arg", nargs="*", metavar="<kind> <pattern>")
+                p.add_argument("--persistent", action="store_true")
+                for flag in GRANT_FLAGS:
+                    p.add_argument(f"--{flag}")
+            elif COMMANDS[name].cli_rest:
+                p.add_argument(
+                    "sentrook_arg", nargs=argparse.REMAINDER, metavar=COMMANDS[name].args
+                )
+            elif COMMANDS[name].args:
                 p.add_argument("sentrook_arg", nargs="?", default="", metavar=COMMANDS[name].args)
 
     def handler(args: argparse.Namespace) -> None:
         cmd = getattr(args, "sentrook_cmd", None)
         if cmd in CLI_COMMANDS:
-            arg = getattr(args, "sentrook_arg", "") or ""
-            print(dispatch(f"{cmd} {arg}", settings(), gate=gate))
+            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate))
             return
         if cmd != "verify":
             print(f"usage: hermes sentrook {{{','.join(('verify', *CLI_COMMANDS))}}}")

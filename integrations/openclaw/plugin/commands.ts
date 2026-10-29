@@ -4,14 +4,16 @@
  * Both routes run the same subcommand table, so they print the same text. Subcommands report what the
  * plugin can see locally and never print credential values.
  *
- * `history` and `why` show past traffic, so only the owner may run them. OpenClaw tells a command
- * handler who the owner is only when the whole command requires a gateway scope, so they are commands
- * of their own, `/sentrook-history` and `/sentrook-why`, registered through `ownerCommand`;
- * `/sentrook` and its status stay open to everyone.
+ * `history` and `why` show past traffic, and `grants`, `grant`, `revoke` and `bind` list and change
+ * the grants and channel bindings set by command, so only the owner may run them. OpenClaw tells a
+ * command handler who the owner is only when the whole command requires a gateway scope, so they are
+ * commands of their own (`/sentrook-history`, `/sentrook-grant`, ...), registered through
+ * `ownerCommand`; `/sentrook` and its status stay open to everyone.
  */
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
-import { resolveConfig } from "./config.ts";
+import { type PluginConfig, resolveConfig } from "./config.ts";
+import * as grants from "./grants.ts";
 import {
   formatHistory,
   formatWhy,
@@ -23,14 +25,29 @@ import {
   parseRef,
   recentScans,
 } from "./history.ts";
-import { OWNER_SCOPES } from "./owner.ts";
+import { OWNER_SCOPES, refusal } from "./owner.ts";
 import { PLUGIN_VERSION } from "./planir.ts";
+
+/** Who ran an owner-only command, and what a change goes through. */
+export interface OwnerRun {
+  /** Stored as `set_by` on what the command adds. */
+  by: { basis: string[]; channel: string | null; sender_ref: string | null };
+  /** Throws once the sender is no longer the owner; called before each write. */
+  beforeWrite: () => void;
+  /** Writes one record to the traffic log. */
+  record: (record: Record<string, unknown>) => void;
+}
 
 export interface CommandContext {
   pluginConfig: Record<string, unknown>;
   /** Process env; the state-dir `.env` is merged in the same way as for scans. */
   env: NodeJS.ProcessEnv;
+  /** Set for owner-only subcommands once the sender has passed the owner check. */
+  owner?: OwnerRun;
 }
+
+/** How the owner types an owner-only subcommand, for usage and hints. */
+const CMD: grants.Cmd = (sub) => `/sentrook-${sub}`;
 
 export interface Subcommand {
   description: string;
@@ -52,8 +69,10 @@ export const SUBCOMMANDS: Record<string, Subcommand> = {
 export interface OwnerSubcommand extends Subcommand {
   /** The chat command, registered with the owner scopes. */
   command: string;
-  /** The optional argument, as shown in help. */
+  /** The arguments, as shown in help. */
   args: string;
+  /** The CLI takes everything after the subcommand (flags included) instead of one optional word. */
+  cliRest?: boolean;
 }
 
 export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
@@ -69,12 +88,63 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     description: "One scan's risk, tier scores, reason codes and entities",
     run: (ctx, rest) => whyText(ctx, rest),
   },
+  grants: {
+    command: "sentrook-grants",
+    args: "",
+    description: "Grants in force: from config (read-only) and set by command",
+    run: (ctx) => {
+      const cfg = configOf(ctx);
+      return grants.formatGrants(cfg, grants.load(cfg.stateDir), new Date(), CMD);
+    },
+  },
+  grant: {
+    command: "sentrook-grant",
+    args: "<kind> <pattern> [flags]",
+    description:
+      "Add a grant: kind destination|file|provider; flags --persistent (default session scope), " +
+      "--allows read,write (file only), --expires 12h",
+    cliRest: true,
+    run: (ctx, rest) =>
+      changed(ctx, "grant", (cfg, o) => grants.addGrant(cfg.stateDir, rest, o.by, new Date(), CMD, o.beforeWrite)),
+  },
+  revoke: {
+    command: "sentrook-revoke",
+    args: "<id>",
+    description: "Remove a grant set by command",
+    cliRest: true,
+    run: (ctx, rest) =>
+      changed(ctx, "revoke", (cfg, o) => grants.revoke(cfg.stateDir, cfg, rest, new Date(), CMD, o.beforeWrite)),
+  },
+  bind: {
+    command: "sentrook-bind",
+    args: "add|remove|list [channel]",
+    description: "List, add or remove a channel binding (an expected delivery destination)",
+    cliRest: true,
+    run: (ctx, rest) =>
+      changed(ctx, "bind", (cfg, o) => grants.bind(cfg.stateDir, cfg, rest, o.by, new Date(), CMD, o.beforeWrite)),
+  },
 };
+
+function configOf(ctx: CommandContext): PluginConfig {
+  return resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
+}
+
+/** Runs a grants change for the owner and writes it (if any) to the traffic log. */
+function changed(
+  ctx: CommandContext,
+  verb: string,
+  fn: (cfg: PluginConfig, owner: OwnerRun) => grants.ChangeResult,
+): string {
+  if (!ctx.owner) return refusal(verb);
+  const { reply, change } = fn(configOf(ctx), ctx.owner);
+  if (change) ctx.owner.record({ kind: "grants", ...change, by: ctx.owner.by });
+  return reply;
+}
 
 export function helpText(): string {
   const names = Object.keys(SUBCOMMANDS);
   const width = Math.max(...names.map((n) => n.length));
-  const owner = Object.values(OWNER_SUBCOMMANDS).map((o) => [`/${o.command} ${o.args}`, o.description] as const);
+  const owner = Object.values(OWNER_SUBCOMMANDS).map((o) => [`/${o.command} ${o.args}`.trimEnd(), o.description] as const);
   const ownerWidth = Math.max(...owner.map(([usage]) => usage.length));
   return [
     "Sentrook commands:",
@@ -90,7 +160,7 @@ export async function runSentrookCommand(args: string | undefined, ctx: CommandC
   const name = first.toLowerCase();
   if (Object.hasOwn(OWNER_SUBCOMMANDS, name)) {
     const o = OWNER_SUBCOMMANDS[name]!;
-    return `/sentrook ${name} is for the owner only: use /${o.command} ${o.args}.`;
+    return `/sentrook ${name} is for the owner only: use ${`/${o.command} ${o.args}`.trimEnd()}.`;
   }
   const sub = Object.hasOwn(SUBCOMMANDS, name) ? SUBCOMMANDS[name]! : SUBCOMMANDS.help!;
   return await sub.run(ctx, rest.join(" "));
@@ -117,6 +187,7 @@ function whyText(ctx: CommandContext, rest: string): string {
 function statusText(ctx: CommandContext): string {
   const env = envWithOpenclawDotenv(ctx.env);
   const cfg = resolveConfig(ctx.pluginConfig, env);
+  const [grantCount, bindingCount] = grants.counts(cfg, grants.load(cfg.stateDir));
   const { scan, dev } = cfg.endpoints;
   const scanHost = scan.ok ? `${new URL(scan.url).host}${dev ? " (dev endpoints)" : ""}` : `invalid (${scan.reason})`;
   const missing = [
@@ -131,6 +202,7 @@ function statusText(ctx: CommandContext): string {
     `scan host: ${scanHost}`,
     `credentials: ${missing.length ? `no (${missing.join(", ")} not set)` : "yes"}`,
     `traffic log: ${cfg.trafficLog.enabled ? "enabled" : "disabled"}, ${cfg.trafficLog.path}`,
-    `config grants: ${cfg.grants.length}`,
+    `grants: ${grantCount}`,
+    `channel bindings: ${bindingCount}`,
   ].join("\n");
 }
