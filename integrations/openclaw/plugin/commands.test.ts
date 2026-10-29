@@ -85,6 +85,27 @@ test("status shows an invalid scan endpoint as invalid", async () => {
   assert.match(text, /^scan host: invalid \(URL host scan\.elsewhere\.example is not a firstdataunion\.org host/m);
 });
 
+test("status does not quote an unparseable scan URL, which may hold a secret", async () => {
+  const text = await runSentrookCommand("status", {
+    pluginConfig: { scanUrl: `https://u:${SECRET}@bad host` },
+    env: { OPENCLAW_STATE_DIR: stateDir() },
+  });
+  assert.match(text, /^scan host: invalid \(invalid URL\)$/m);
+  assert.ok(!text.includes(SECRET));
+});
+
+test("a subcommand gets the rest of the input", async () => {
+  const seen: string[] = [];
+  SUBCOMMANDS.probe = { description: "test only", run: (_ctx, rest) => (seen.push(rest), "") };
+  try {
+    await runSentrookCommand("  probe  a   b ", { pluginConfig: {}, env: {} });
+    await runSentrookCommand("probe", { pluginConfig: {}, env: {} });
+  } finally {
+    delete SUBCOMMANDS.probe;
+  }
+  assert.deepEqual(seen, ["a b", ""]);
+});
+
 test("help, no input and unknown input all return the help text", async () => {
   const ctx = { pluginConfig: {}, env: { OPENCLAW_STATE_DIR: stateDir() } };
   const help = helpText();
@@ -96,7 +117,7 @@ test("help, no input and unknown input all return the help text", async () => {
 });
 
 /** Registers the plugin with fake host registrars and returns the slash handler and CLI actions. */
-async function registered(pluginConfig: Record<string, unknown>) {
+async function registered(pluginConfig: Record<string, unknown>, registrationMode = "full") {
   const commands: any[] = [];
   const cliActions: Record<string, () => Promise<void> | void> = {};
   const node = (prefix: string): any => {
@@ -114,7 +135,7 @@ async function registered(pluginConfig: Record<string, unknown>) {
   let cliRegistrar: ((ctx: { program: any }) => Promise<void> | void) | undefined;
   plugin.register({
     pluginConfig,
-    registrationMode: "full",
+    registrationMode,
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     on: () => undefined,
     registerCli: (r: any) => {
@@ -149,6 +170,12 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
   assert.equal(def.agentPromptGuidance, undefined);
   assert.deepEqual(await def.handler({ args: "nonsense" }), { text: helpText() });
   assert.deepEqual(await def.handler({}), { text: helpText() });
+});
+
+test("CLI metadata loading registers the CLI but not the chat command", async () => {
+  const { commands, cliActions } = await registered({}, "cli-metadata");
+  assert.equal(commands.length, 0);
+  assert.ok(cliActions["sentrook status"]);
 });
 
 test("openclaw sentrook status prints exactly what /sentrook status returns", async () => {

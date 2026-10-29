@@ -17,7 +17,8 @@ export interface CommandContext {
 
 export interface Subcommand {
   description: string;
-  run: (ctx: CommandContext) => string | Promise<string>;
+  /** `rest` is the input after the subcommand name, trimmed. */
+  run: (ctx: CommandContext, rest: string) => string | Promise<string>;
 }
 
 export const SUBCOMMANDS: Record<string, Subcommand> = {
@@ -41,16 +42,19 @@ export function helpText(): string {
 
 /** Runs the subcommand named by the first word of `args`; anything else gets the help text. */
 export async function runSentrookCommand(args: string | undefined, ctx: CommandContext): Promise<string> {
-  const name = (args ?? "").trim().split(/\s+/)[0]!.toLowerCase();
+  const [first = "", ...rest] = (args ?? "").trim().split(/\s+/);
+  const name = first.toLowerCase();
   const sub = Object.hasOwn(SUBCOMMANDS, name) ? SUBCOMMANDS[name]! : SUBCOMMANDS.help!;
-  return await sub.run(ctx);
+  return await sub.run(ctx, rest.join(" "));
 }
 
 function statusText(ctx: CommandContext): string {
   const env = envWithOpenclawDotenv(ctx.env);
   const cfg = resolveConfig(ctx.pluginConfig, env);
   const { scan, dev } = cfg.endpoints;
-  const scanHost = scan.ok ? `${new URL(scan.url).host}${dev ? " (dev endpoints)" : ""}` : `invalid (${scan.reason})`;
+  // An unparseable URL's reason quotes the raw value, which may hold anything; chat gets only the verdict.
+  const reason = scan.ok ? "" : scan.reason.startsWith("invalid URL") ? "invalid URL" : scan.reason;
+  const scanHost = scan.ok ? `${new URL(scan.url).host}${dev ? " (dev endpoints)" : ""}` : `invalid (${reason})`;
   const missing = [
     resolveSecretString(ctx.pluginConfig.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
