@@ -1,9 +1,10 @@
 # Guardrail tampering (C4*): the canonical list behind the `guardrail_tampering` floor.
 #
 # Covers OpenClaw and Hermes. The floor blocks writes, edits, deletes, truncations, moves and
-# redirects into Sentrook's own state, disabling or removing the Sentrook plugin, config commands
-# that touch the Sentrook entry, agent-led gateway stops, and host-guardrail changes. Reads and
-# lists are always allowed; `restart` and `reload` are allowed.
+# redirects into Sentrook's own state, disabling or removing the Sentrook plugin, the plugin's own
+# commands other than its reads, config commands that touch the Sentrook entry, agent-led gateway
+# stops, and host-guardrail changes. Reads and lists are always allowed; `restart` and `reload` are
+# allowed.
 #
 # Layout convention: every 2.0 plugin-side file lives under one directory, `<state>/sentrook/`
 # (grants, state cache, placeholder map, operator log, anything added later). The list names the
@@ -20,7 +21,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 2
+version: 3
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -70,6 +71,19 @@ plugin_cli:
     subcommand: plugins
     blocked_verbs: [disable, remove, uninstall, rm, delete]
 
+# `openclaw sentrook <verb> ...` / `hermes sentrook <verb> ...`: the plugin's own commands. Only the
+# verbs listed as allowed, or no verb at all, pass; every other verb takes the floor, so a command the
+# plugin adds later (grants, snooze, bindings, history) is covered until it is listed here. The verb is
+# the first word after the subcommand that is not an option. Commands typed in a terminal are not
+# agent calls and never reach the scanner.
+plugin_command_cli:
+  - head: openclaw
+    subcommand: sentrook
+    allowed_verbs: [status, verify]
+  - head: hermes
+    subcommand: sentrook
+    allowed_verbs: [status, verify]
+
 # `openclaw config <verb> ...` / `hermes config <verb> ...`: a mutating verb whose arguments name a
 # Sentrook key, or the plugin enable/disable lists. `get`, `show`, `list` are reads.
 config_cli:
@@ -93,7 +107,7 @@ gateway_cli:
     subcommand: gateway
     blocked_verbs: [stop, kill, shutdown, down, halt]
 
-# How the three CLI lists above find `<head> <subcommand> <verb>` in a command. Options between the
+# How the four CLI lists above find `<head> <subcommand> <verb>` in a command. Options between the
 # head and the subcommand are skipped, with or without a value (`hermes --profile work plugins ...`,
 # `-p work`, `--profile=work`, `openclaw --dev gateway stop`); values are not known per flag, so a
 # word after an option is tried both as its value and as the subcommand. Quoted text stays one word.
