@@ -130,7 +130,8 @@ def parse_endpoint(raw: str, dev: bool) -> Endpoint:
         parts = urlsplit(raw.strip())
         port = parts.port
     except ValueError:
-        return Endpoint(False, reason=f"invalid URL: {raw[:80]}")
+        # Not echoed: the text may hold a password, and `/sentrook status` shows this reason in a chat.
+        return Endpoint(False, reason="invalid URL (could not be parsed)")
     if parts.scheme not in ("http", "https"):
         return Endpoint(False, reason=f"URL must be http or https (got {parts.scheme or 'none'})")
     if parts.username or parts.password:
