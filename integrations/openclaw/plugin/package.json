@@ -14,6 +14,7 @@
     "cli.ts",
     "config.ts",
     "decision.ts",
+    "owner.ts",
     "planir.ts",
     "redact.ts",
     "scanClient.ts",
