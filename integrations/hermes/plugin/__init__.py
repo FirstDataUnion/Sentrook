@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any
 
-from . import cli
+from . import cli, commands
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -445,6 +445,10 @@ def register(ctx: Any) -> None:
         cli.register_cli(ctx, _settings)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin CLI commands
         logger.info("sentrook CLI not registered: %s", exc)
+    try:
+        commands.register_slash(ctx, _settings)
+    except Exception as exc:  # noqa: BLE001 - older hosts without plugin slash commands
+        logger.info("/sentrook not registered: %s", exc)
     cfg, _ = _load()
     ep = cfg.endpoints
 
