@@ -179,6 +179,92 @@ def test_verify_reads_the_settings(harness, monkeypatch):
     assert "mode=observe" in report["policy"]
 
 
+def slash(h, raw_args, **context):
+    return h.ctx.commands["sentrook"]["handler"](raw_args, **context)
+
+
+def test_status_shows_config_facts_and_never_credential_values(harness):
+    harness.ctx.settings.update(
+        {
+            "mode": "observe",
+            "review_at": 30,
+            "on_scan_error": "deny",
+            "client_id": "cid-7f3a91",
+            "client_secret": "cs-b04e2d77",
+            "grants": [{"kind": "destination", "pattern": "#ops"}],
+            "channel_bindings": ["#alerts"],
+        }
+    )
+    out = slash(harness, "status")
+    for line in (
+        f"Sentrook plugin {plugin.PLUGIN_VERSION}",
+        "mode: observe",
+        "review at: 30, block at: 80",
+        "on scan error: deny",
+        "scan host: http://scan.test (dev endpoints)",
+        "credentials: present",
+        f"traffic log: on, {harness.dir / 'sentrook' / 'traffic.jsonl'}",
+        "grants: 2",
+    ):
+        assert line in out.splitlines()
+    for secret in ("cid-7f3a91", "cs-b04e2d77", "secret-value"):
+        assert secret not in out
+
+
+def test_status_reports_missing_credentials_and_a_disabled_traffic_log(harness, monkeypatch):
+    monkeypatch.delenv("SENTROOK_SCAN_CLIENT_SECRET")
+    harness.ctx.settings["traffic_log"] = {"enabled": False}
+    out = slash(harness, "status").splitlines()
+    assert "credentials: missing (SENTROOK_SCAN_CLIENT_ID / _SECRET)" in out
+    assert "traffic log: off" in out
+
+
+def test_status_shows_an_invalid_scan_url_without_scanning(harness, monkeypatch):
+    monkeypatch.delenv("SENTROOK_DEV_ENDPOINTS")
+    out = slash(harness, "STATUS ")
+    assert "scan host: invalid (URL must be https" in out
+    assert harness.scans == []
+
+
+def test_status_never_echoes_an_unparseable_scan_url(harness):
+    harness.ctx.settings["scan_url"] = "https://u:pw-91c7e2@scan.test:99999"
+    out = slash(harness, "status")
+    assert "scan host: invalid (invalid URL (could not be parsed))" in out.splitlines()
+    assert "pw-91c7e2" not in out
+
+
+def test_unknown_or_empty_input_returns_help(harness):
+    help_text = slash(harness, "help")
+    assert "/sentrook status" in help_text and "hermes sentrook" in help_text
+    assert slash(harness, "") == help_text
+    assert slash(harness, "frobnicate now") == help_text
+
+
+def test_the_handler_takes_hermes_session_context(harness):
+    assert slash(harness, "status", source="telegram", session_id="S1").startswith("Sentrook")
+    assert harness.ctx.commands["sentrook"]["args_hint"]
+
+
+def test_the_cli_status_matches_the_slash_status(harness, capsys):
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    harness.ctx.cli["setup_fn"](parser)
+    harness.ctx.cli["handler_fn"](parser.parse_args(["status"]))
+    assert capsys.readouterr().out == slash(harness, "status") + "\n"
+
+
+def test_hosts_without_slash_commands_still_register(harness):
+    class OldCtx:
+        def get_config(self, key, default=None):
+            return default
+
+        def register_hook(self, name, fn):
+            pass
+
+    plugin.register(OldCtx())
+
+
 def test_every_manifest_setting_is_read():
     import yaml
 

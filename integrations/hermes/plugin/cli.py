@@ -1,4 +1,7 @@
-"""`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works."""
+"""`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works.
+
+The `/sentrook` subcommands (`commands.COMMANDS`, except help) are `hermes sentrook` subcommands too.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ from .auth import (
     http_json,
     resolve_oidc_credentials,
 )
+from .commands import COMMANDS, dispatch
 from .config import resolve_config
 
 
@@ -74,14 +78,24 @@ def format_report(checks: list[tuple[str, bool, str]]) -> str:
     return "\n".join(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}" for name, ok, detail in checks)
 
 
+#: argparse gives the CLI its own help.
+CLI_COMMANDS = tuple(name for name in COMMANDS if name != "help")
+
+
 def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
     def setup(parser: argparse.ArgumentParser) -> None:
         sub = parser.add_subparsers(dest="sentrook_cmd")
         sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
+        for name in CLI_COMMANDS:
+            sub.add_parser(name, help=COMMANDS[name].summary)
 
     def handler(args: argparse.Namespace) -> None:
-        if getattr(args, "sentrook_cmd", None) != "verify":
-            print("usage: hermes sentrook verify")
+        cmd = getattr(args, "sentrook_cmd", None)
+        if cmd in CLI_COMMANDS:
+            print(dispatch(cmd, settings()))
+            return
+        if cmd != "verify":
+            print(f"usage: hermes sentrook {{{','.join(('verify', *CLI_COMMANDS))}}}")
             return
         checks = run_verify(settings())
         print(format_report(checks))
@@ -90,7 +104,7 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
 
     ctx.register_cli_command(
         name="sentrook",
-        help="Sentrook plugin helpers (verify)",
+        help=f"Sentrook plugin helpers ({', '.join(('verify', *CLI_COMMANDS))})",
         description="Sentrook plugin helpers",
         setup_fn=setup,
         handler_fn=handler,
