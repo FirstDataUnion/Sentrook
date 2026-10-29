@@ -20,7 +20,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 1
+version: 2
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -92,6 +92,29 @@ gateway_cli:
   - head: hermes
     subcommand: gateway
     blocked_verbs: [stop, kill, shutdown, down, halt]
+
+# How the three CLI lists above find `<head> <subcommand> <verb>` in a command. Options between the
+# head and the subcommand are skipped, with or without a value (`hermes --profile work plugins ...`,
+# `-p work`, `--profile=work`, `openclaw --dev gateway stop`); values are not known per flag, so a
+# word after an option is tried both as its value and as the subcommand. Quoted text stays one word.
+#
+# Launchers that run a CLI by name are peeled off first, with their own options, so
+# `uv run --with x hermes plugins ...` and `npx -y openclaw@latest plugins ...` read as the bare CLI.
+# Launchers stack (`uv run python -m ...`). `sudo`, `env`, `timeout` and full paths are already
+# handled by the shell parse.
+cli_launchers:
+  - [uv, run]
+  - [uvx]
+  - [npx]
+  - [pnpm, exec]
+  - [pnpm, dlx]
+  - [bunx]
+# `<interpreter> [options] -m <module> ...`: the interpreter heads, and the modules that are a CLI's
+# entry point (the module or anything under it) mapped to that CLI's head.
+cli_module_runner_patterns:
+  - '\Apython(?:[23](?:\.\d+)?)?\Z'
+cli_modules:
+  hermes_cli: hermes
 
 # Killing the gateway process by other means. Regex over the command text.
 process_kill_patterns:
