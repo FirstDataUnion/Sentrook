@@ -1,0 +1,11 @@
+scan: 4444a1b2-0000-4000-8000-000000000004
+time: 2026-10-29 09:20:00 UTC
+tool: terminal, step 4
+risk: 92, scanner floor: block
+action: blocked
+review: -
+scores: suspicion 92, consequence 50, confidence 80
+reasons: exfil.exec_egress, secret.read
+entities:
+  E1 host: cl0ud-sync.io
+  E2 file: ~/.ssh/id_ed25519
