@@ -12,6 +12,7 @@
     "approvalPolicy.ts",
     "auth.ts",
     "cli.ts",
+    "commands.ts",
     "config.ts",
     "decision.ts",
     "planir.ts",

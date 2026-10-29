@@ -8,6 +8,7 @@
 
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
+import { runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION } from "./planir.ts";
@@ -34,6 +35,12 @@ interface OpenClawPluginApi {
   runtime?: { version?: unknown };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
+  registerCommand?: (def: {
+    name: string;
+    description: string;
+    acceptsArgs?: boolean;
+    handler: (ctx: { args?: string }) => Promise<{ text: string }>;
+  }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
 }
 
@@ -102,9 +109,23 @@ const plugin = {
           const { registerSentrookCli } = await import("./cli.ts");
           registerSentrookCli(program, () => api.pluginConfig ?? {});
         },
-        { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify)", hasSubcommands: true }] },
+        { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
       if (mode === "cli-metadata") return;
+    }
+
+    // `/sentrook <subcommand>` in chat; the host answers it without a model request.
+    try {
+      api.registerCommand?.({
+        name: "sentrook",
+        description: "Sentrook plugin status and help",
+        acceptsArgs: true,
+        handler: async (ctx) => ({
+          text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
+        }),
+      });
+    } catch (err) {
+      api.logger.warn(`${LOG} /sentrook command unavailable: ${String(err)}`);
     }
 
     const loadConfig = (): { cfg: PluginConfig; env: NodeJS.ProcessEnv } => {
