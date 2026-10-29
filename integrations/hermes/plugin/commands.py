@@ -80,7 +80,7 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
         try:
             return dispatch(raw_args, settings())
         except Exception as exc:  # noqa: BLE001 - a reply beats a stack trace in the chat
-            logger.warning("/sentrook %s failed: %s", raw_args, exc)
+            logger.warning("/sentrook failed: %s", exc)
             return f"/sentrook failed ({type(exc).__name__}); see the Hermes log."
 
     ctx.register_command(

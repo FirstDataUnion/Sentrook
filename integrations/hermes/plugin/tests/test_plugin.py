@@ -226,6 +226,13 @@ def test_status_shows_an_invalid_scan_url_without_scanning(harness, monkeypatch)
     assert harness.scans == []
 
 
+def test_status_never_echoes_an_unparseable_scan_url(harness):
+    harness.ctx.settings["scan_url"] = "https://u:pw-91c7e2@scan.test:99999"
+    out = slash(harness, "status")
+    assert "scan host: invalid (invalid URL (could not be parsed))" in out.splitlines()
+    assert "pw-91c7e2" not in out
+
+
 def test_unknown_or_empty_input_returns_help(harness):
     help_text = slash(harness, "help")
     assert "/sentrook status" in help_text and "hermes sentrook" in help_text
