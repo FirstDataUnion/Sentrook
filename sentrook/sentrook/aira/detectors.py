@@ -1253,12 +1253,16 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     emit(reason, None, {"path": m.group(0), "mechanism": "content_match"})
                     break
 
-    # 3. CLI forms: plugin disable/remove, config entry, gateway stop, host approvals, process kill.
-    #    `<head> [options] <subcommand> <verb> …`, launchers peeled off (`cli_launchers`).
+    # 3. CLI forms: plugin disable/remove, the plugin's own commands, config entry, gateway stop,
+    #    host approvals, process kill. `<head> [options] <subcommand> <verb> …`, launchers peeled
+    #    off (`cli_launchers`).
     plugin_cli = lists.get("guardrail", "plugin_cli", default=[]) or []
+    command_cli = lists.get("guardrail", "plugin_command_cli", default=[]) or []
     config_cli = lists.get("guardrail", "config_cli", default=[]) or []
     gateway_cli = lists.get("guardrail", "gateway_cli", default=[]) or []
-    cli_heads = {str(e.get("head")).lower() for e in (*plugin_cli, *config_cli, *gateway_cli)}
+    cli_heads = {
+        str(e.get("head")).lower() for e in (*plugin_cli, *command_cli, *config_cli, *gateway_cli)
+    }
     for words, line in zip(a.segment_tokens(), a.segment_texts(), strict=True):
         tokens = _cli_tokens(words, cli_heads, lists)
         if not tokens:
@@ -1274,6 +1278,16 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                         rest
                     ):
                         emit("guardrail.plugin_disable", None, {"match": line[:120]})
+            for entry in command_cli:
+                if head == entry.get("head") and sub == entry.get("subcommand"):
+                    # The verb is the first word that is not an option; none is the help text.
+                    command = next(
+                        (t.lower() for t in tokens[at + 1 :] if not t.startswith("-")), ""
+                    )
+                    if command and command not in {
+                        v.lower() for v in entry.get("allowed_verbs", [])
+                    }:
+                        emit("guardrail.plugin_command", None, {"match": line[:120]})
             for entry in config_cli:
                 if head == entry.get("head") and sub == entry.get("subcommand"):
                     if verb in {v.lower() for v in entry.get("mutating_verbs", [])}:

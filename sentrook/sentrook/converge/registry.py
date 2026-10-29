@@ -226,6 +226,7 @@ REASONS: dict[str, str] = {
     "selfmod.startup": "The call changes files that run at startup.",
     "selfmod.hooks": "The call changes hooks.",
     "guardrail.plugin_disable": "The call disables or removes the Sentrook plugin. Make this change yourself through Sentrook's own controls.",
+    "guardrail.plugin_command": "The call runs one of the Sentrook plugin's own commands, which only you may run. Run it yourself.",
     "guardrail.state_dir_write": "The call writes into Sentrook's state directory. Make this change yourself through Sentrook's own controls.",
     "guardrail.config_entry": "The call edits the Sentrook configuration entry. Make this change yourself through Sentrook's own controls.",
     "guardrail.gateway_stop": "The call stops the agent gateway. Make this change yourself.",
