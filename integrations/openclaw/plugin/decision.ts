@@ -37,22 +37,46 @@ export function describe(resp: ScanResponse, toolName: string): string {
   return template.replace(/\{(E\d+)\}/g, (_m, id: string) => entities[id]?.display ?? id);
 }
 
+function reasonCodes(resp: ScanResponse): string[] {
+  return [...new Set((resp.reasons ?? []).map((r) => r.code).filter(Boolean))];
+}
+
 function reasonText(resp: ScanResponse, max = 3): string {
-  const codes = (resp.reasons ?? []).map((r) => r.code).filter(Boolean);
-  const unique = [...new Set(codes)].slice(0, max);
-  return unique.length ? unique.join(", ") : "";
+  return reasonCodes(resp).slice(0, max).join(", ");
 }
 
 function clip(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, Math.max(0, n - 1))}…`;
 }
 
+/** The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none. */
+export function scoresLine(resp: ScanResponse): string {
+  const parts = Object.entries(tiersOf(resp))
+    .filter((e): e is [string, number] => e[1] !== null)
+    .map(([name, v]) => `${name} ${Math.round(v * 100)}`);
+  return parts.length ? `Scores: ${parts.join(", ")}.` : "";
+}
+
+/**
+ * The description, up to 3 reason codes and `tail` within `limit`. Reason codes go first, then the
+ * description is shortened; `tail` always stays.
+ */
+function fit(desc: string, codes: string[], tail: string, limit: number): string {
+  const end = tail ? ` ${tail}` : "";
+  for (let k = Math.min(3, codes.length); k >= 0; k--) {
+    const why = k ? ` Why: ${codes.slice(0, k).join(", ")}.` : "";
+    const text = `${desc}.${why}${end}`;
+    if (text.length <= limit) return text;
+  }
+  return `${clip(desc, limit - end.length - 1)}.${end}`;
+}
+
 export function reviewCopy(resp: ScanResponse, toolName: string): { title: string; description: string } {
-  const risk = Math.round(resp.risk ?? 0);
-  const reasons = reasonText(resp);
+  const risk = ` (risk ${Math.round(resp.risk ?? 0)})`;
+  const head = "Sentrook: review ";
   return {
-    title: clip(`Sentrook: review ${toolName} (risk ${risk})`, 80),
-    description: clip(`${describe(resp, toolName)}.${reasons ? ` Why: ${reasons}.` : ""}`, 256),
+    title: `${head}${clip(toolName, 80 - head.length - risk.length)}${risk}`,
+    description: fit(describe(resp, toolName), reasonCodes(resp), scoresLine(resp), 256),
   };
 }
 
