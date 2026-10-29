@@ -87,11 +87,11 @@ test("status shows an invalid scan endpoint as invalid", async () => {
 
 test("status does not quote an unparseable scan URL, which may hold a secret", async () => {
   const text = await runSentrookCommand("status", {
-    pluginConfig: { scanUrl: `https://u:${SECRET}@bad host` },
+    pluginConfig: { scanUrl: "https://u:pw-91c7e2@scan.test:99999" },
     env: { OPENCLAW_STATE_DIR: stateDir() },
   });
-  assert.match(text, /^scan host: invalid \(invalid URL\)$/m);
-  assert.ok(!text.includes(SECRET));
+  assert.match(text, /^scan host: invalid \(invalid URL \(could not be parsed\)\)$/m);
+  assert.ok(!text.includes("pw-91c7e2"));
 });
 
 test("a subcommand gets the rest of the input", async () => {

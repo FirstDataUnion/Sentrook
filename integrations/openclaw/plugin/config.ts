@@ -127,7 +127,8 @@ export function parseEndpoint(raw: string, dev: boolean): Endpoint {
   try {
     parsed = new URL(raw.trim());
   } catch {
-    return { ok: false, reason: `invalid URL: ${raw.slice(0, 80)}` };
+    // Never quote the input: a URL that fails to parse can still carry a password.
+    return { ok: false, reason: "invalid URL (could not be parsed)" };
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return { ok: false, reason: `URL must be http or https (got ${parsed.protocol})` };

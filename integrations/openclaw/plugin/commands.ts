@@ -52,9 +52,7 @@ function statusText(ctx: CommandContext): string {
   const env = envWithOpenclawDotenv(ctx.env);
   const cfg = resolveConfig(ctx.pluginConfig, env);
   const { scan, dev } = cfg.endpoints;
-  // An unparseable URL's reason quotes the raw value, which may hold anything; chat gets only the verdict.
-  const reason = scan.ok ? "" : scan.reason.startsWith("invalid URL") ? "invalid URL" : scan.reason;
-  const scanHost = scan.ok ? `${new URL(scan.url).host}${dev ? " (dev endpoints)" : ""}` : `invalid (${reason})`;
+  const scanHost = scan.ok ? `${new URL(scan.url).host}${dev ? " (dev endpoints)" : ""}` : `invalid (${scan.reason})`;
   const missing = [
     resolveSecretString(ctx.pluginConfig.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
