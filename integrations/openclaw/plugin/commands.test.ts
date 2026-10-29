@@ -40,7 +40,7 @@ test("status shows the config-derived facts", async () => {
     },
     env: { OPENCLAW_STATE_DIR: stateDir() },
   });
-  assert.match(text, new RegExp(`plugin: ${PLUGIN_VERSION.replace(/\./g, "\\.")}\\b`));
+  assert.match(text, new RegExp(`plugin: ${PLUGIN_VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`));
   assert.match(text, /^mode: observe$/m);
   assert.match(text, /^review at: 50, block at: 90$/m);
   assert.match(text, /^on scan error: review$/m);
