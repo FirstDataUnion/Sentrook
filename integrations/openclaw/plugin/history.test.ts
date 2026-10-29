@@ -207,6 +207,7 @@ test("history and why are owner commands that require the admin scope", async ()
     "sentrook-grants",
     "sentrook-history",
     "sentrook-revoke",
+    "sentrook-snooze",
     "sentrook-why",
   ]);
   for (const name of ["sentrook-history", "sentrook-why"]) {

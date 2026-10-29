@@ -162,10 +162,10 @@ async function captureLog(fn: () => Promise<void> | void): Promise<string> {
 
 test("the plugin registers /sentrook as an argument-taking command with no scopes or prompt guidance", async () => {
   const { commands } = await registered({});
-  // The others are the owner-only history and grants commands.
+  // The others are the owner-only history, grants and snooze commands.
   assert.deepEqual(
     commands.map((c) => c.name),
-    ["sentrook", "sentrook-history", "sentrook-why", "sentrook-grants", "sentrook-grant", "sentrook-revoke", "sentrook-bind"],
+    ["sentrook", "sentrook-history", "sentrook-why", "sentrook-grants", "sentrook-grant", "sentrook-revoke", "sentrook-bind", "sentrook-snooze"],
   );
   const def = commands[0];
   assert.equal(def.acceptsArgs, true);

@@ -12,7 +12,8 @@ from plugin import auth, scan_client  # noqa: E402
 
 
 class FakeScanner:
-    """Risk from markers in the command; 500 when the command says FAIL."""
+    """Risk from markers in the command; 500 when the command says FAIL; FLOOR enforces a review
+    below the review line."""
 
     def __init__(self):
         self.scans = []
@@ -30,6 +31,7 @@ class FakeScanner:
             if "FAIL" in cmd:
                 return 500, {"error": {"code": "boom"}}, {}
             risk = 92 if "EXFIL" in cmd else 55 if "REVIEW" in cmd else 5
+            enforced = "review" if "FLOOR" in cmd else None
             step = p["session"]["step"]
             return (
                 200,
@@ -38,7 +40,7 @@ class FakeScanner:
                     "request_id": p["request_id"],
                     "status": "ok",
                     "risk": risk,
-                    "enforced": None,
+                    "enforced": enforced,
                     "tree": {
                         "suspicion": {"score": risk / 100},
                         "consequence": {"score": 0.5},

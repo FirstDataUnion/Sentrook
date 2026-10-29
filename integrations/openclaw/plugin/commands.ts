@@ -4,8 +4,10 @@
  * Both routes run the same subcommand table, so they print the same text. Subcommands report what the
  * plugin can see locally and never print credential values.
  *
- * `history` and `why` show past traffic, and `grants`, `grant`, `revoke` and `bind` list and change
- * the grants and channel bindings set by command, so only the owner may run them. OpenClaw tells a
+ * `history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
+ * grants and channel bindings set by command, and `snooze` relaxes review prompts, so only the owner
+ * may run them. `snooze` covers the session the command was sent from; the command line has none, so
+ * there it can only snooze every session. OpenClaw tells a
  * command handler who the owner is only when the whole command requires a gateway scope, so they are
  * commands of their own (`/sentrook-history`, `/sentrook-grant`, ...), registered through
  * `ownerCommand`; `/sentrook` and its status stay open to everyone.
@@ -27,6 +29,7 @@ import {
 } from "./history.ts";
 import { OWNER_SCOPES, refusal } from "./owner.ts";
 import { PLUGIN_VERSION } from "./planir.ts";
+import * as snooze from "./snooze.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
 export interface OwnerRun {
@@ -44,6 +47,8 @@ export interface CommandContext {
   env: NodeJS.ProcessEnv;
   /** Set for owner-only subcommands once the sender has passed the owner check. */
   owner?: OwnerRun;
+  /** The session the command was sent from (as scans key it); unset when there is none. */
+  session?: string;
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
@@ -123,21 +128,46 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     run: (ctx, rest) =>
       changed(ctx, "bind", (cfg, o) => grants.bind(cfg.stateDir, cfg, rest, o.by, new Date(), CMD, o.beforeWrite)),
   },
+  snooze: {
+    command: "sentrook-snooze",
+    args: "[duration|off|status] [--all]",
+    description:
+      "Allow review prompts in this session (--all: every session) for a duration, default 1h, at most 24h; " +
+      "never blocks, enforced reviews or unattended runs; off; status",
+    cliRest: true,
+    run: (ctx, rest) =>
+      changed(
+        ctx,
+        "snooze",
+        (cfg, o) =>
+          snooze.run(
+            cfg.stateDir,
+            rest,
+            ctx.session ? snooze.sessionRef(ctx.session) : null,
+            o.by,
+            new Date(),
+            CMD,
+            o.beforeWrite,
+          ),
+        "snooze",
+      ),
+  },
 };
 
 function configOf(ctx: CommandContext): PluginConfig {
   return resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
 }
 
-/** Runs a grants change for the owner and writes it (if any) to the traffic log. */
+/** Runs a change for the owner and writes it (if any) to the traffic log as a `kind` record. */
 function changed(
   ctx: CommandContext,
   verb: string,
-  fn: (cfg: PluginConfig, owner: OwnerRun) => grants.ChangeResult,
+  fn: (cfg: PluginConfig, owner: OwnerRun) => { reply: string; change: object | null },
+  kind = "grants",
 ): string {
   if (!ctx.owner) return refusal(verb);
   const { reply, change } = fn(configOf(ctx), ctx.owner);
-  if (change) ctx.owner.record({ kind: "grants", ...change, by: ctx.owner.by });
+  if (change) ctx.owner.record({ kind, ...change, by: ctx.owner.by });
   return reply;
 }
 
@@ -204,5 +234,6 @@ function statusText(ctx: CommandContext): string {
     `traffic log: ${cfg.trafficLog.enabled ? "enabled" : "disabled"}, ${cfg.trafficLog.path}`,
     `grants: ${grantCount}`,
     `channel bindings: ${bindingCount}`,
+    `snooze: ${snooze.statusLine(snooze.load(cfg.stateDir), new Date())}`,
   ].join("\n");
 }

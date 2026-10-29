@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "snoozes": [
+    {
+      "scope": "session",
+      "session_ref": "s_3696ad59777e",
+      "set_at": "2026-10-29T11:30:00Z",
+      "expires_at": "2026-10-29T12:30:00Z",
+      "set_by": {"basis": ["host_allowlist_dm"], "platform": "telegram", "sender_ref": "u_0123456789abcdef"}
+    },
+    {
+      "scope": "all",
+      "set_at": "2026-10-29T10:00:00Z",
+      "expires_at": "2026-10-29T14:05:00Z",
+      "set_by": {"basis": ["local_terminal"], "platform": "", "sender_ref": null}
+    },
+    {
+      "scope": "session",
+      "session_ref": "s_adfa2b24c2d9",
+      "set_at": "2026-10-29T09:00:00Z",
+      "expires_at": "2026-10-29T13:00:00Z",
+      "set_by": {"basis": ["local_terminal"], "platform": "", "sender_ref": null}
+    },
+    {"scope": "session", "session_ref": "s_000000000001", "set_at": "2026-10-28T09:00:00Z", "expires_at": "2026-10-28T10:00:00Z"},
+    {"scope": "session", "session_ref": "s_000000000002", "set_at": "2026-10-29T11:00:00Z", "expires_at": "2026-10-31T11:00:00Z"},
+    {"scope": "session", "session_ref": "s_000000000003", "set_at": "2026-10-29T11:00:00Z"},
+    {"scope": "session", "session_ref": "s_000000000004", "expires_at": "tomorrow"},
+    {"scope": "everything", "expires_at": "2026-10-29T13:00:00Z"},
+    "not an entry"
+  ]
+}

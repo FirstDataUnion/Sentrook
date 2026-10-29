@@ -22,6 +22,7 @@
     "redact.ts",
     "scanClient.ts",
     "scanErrorPolicy.ts",
+    "snooze.ts",
     "store.ts",
     "traffic.ts",
     "verify.ts",

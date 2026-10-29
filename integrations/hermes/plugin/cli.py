@@ -95,6 +95,8 @@ def _rest(cmd: str, args: argparse.Namespace) -> str:
         if args.persistent:
             words.append("--persistent")
         words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
+    if cmd == "snooze" and args.all:
+        words.append("--all")
     return " ".join(words)
 
 
@@ -109,6 +111,9 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
                 p.add_argument("--persistent", action="store_true")
                 for flag in GRANT_FLAGS:
                     p.add_argument(f"--{flag}")
+            elif name == "snooze":
+                p.add_argument("sentrook_arg", nargs="*", metavar="duration|off|status")
+                p.add_argument("--all", action="store_true", help="every session")
             elif COMMANDS[name].cli_rest:
                 p.add_argument(
                     "sentrook_arg", nargs=argparse.REMAINDER, metavar=COMMANDS[name].args

@@ -161,7 +161,10 @@ export function actionOf(scan: Rec, resolution: Rec | null): string {
   }
   if (scan.mode === "observe") return verdict === "review" || verdict === "block" ? `observed (would ${verdict})` : "allowed";
   if (verdict === "block") return "blocked";
-  if (verdict === "review") return decision === "blocked" ? "blocked (no reviewer)" : "review";
+  if (verdict === "review") {
+    if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";
+    return decision === "blocked" ? "blocked (no reviewer)" : "review";
+  }
   if (verdict === "allow") return "allowed";
   return text(decision || "?", 30);
 }

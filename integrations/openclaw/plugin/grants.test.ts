@@ -425,7 +425,7 @@ test("an unreadable grants file blocks changes but not scans", async () => {
 test("the CLI forms match the chat forms and are audited as the local terminal", async () => {
   fixtureFile();
   const r = await registered(fixtureConfig());
-  assert.deepEqual(r.unknownOptions.sort(), ["sentrook bind [args...]", "sentrook grant [args...]", "sentrook revoke [args...]"]);
+  assert.deepEqual(r.unknownOptions.sort(), ["sentrook bind [args...]", "sentrook grant [args...]", "sentrook revoke [args...]", "sentrook snooze [args...]"]);
   assert.equal(await cli(r, "sentrook grants"), await run(r, "sentrook-grants", ""));
   assert.equal(await cli(r, "sentrook bind [args...]", ["list"]), await run(r, "sentrook-bind", "list"));
   const out = await cli(r, "sentrook grant [args...]", ["file", "/srv/x/*", "--allows", "read", "--persistent"]);

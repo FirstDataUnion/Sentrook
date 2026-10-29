@@ -17,6 +17,7 @@ import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
+import * as snooze from "./snooze.ts";
 import { type HistoryEntry, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
@@ -99,6 +100,12 @@ function sessionIdOf(ctx: any): string {
   return ctx?.sessionId || ctx?.sessionKey || "unknown";
 }
 
+/** The session a command was sent from, keyed as `sessionIdOf` keys scans; undefined when there is none. */
+function commandSessionOf(ctx: any): string | undefined {
+  const sid = ctx?.sessionId || ctx?.sessionKey;
+  return typeof sid === "string" && sid ? sid : undefined;
+}
+
 const plugin = {
   id: "sentrook",
   name: "Sentrook",
@@ -148,11 +155,12 @@ const plugin = {
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
     );
-    // `/sentrook-history`, `/sentrook-why` and the grants commands: owner only, audited in the traffic log.
+    // `/sentrook-history`, `/sentrook-why`, the grants commands and `/sentrook-snooze`: owner only,
+    // audited in the traffic log.
     for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
       try {
         api.registerCommand?.({
-          ...ownerCommand<OwnerContext & { args?: string }>(
+          ...ownerCommand<OwnerContext & { args?: string; sessionId?: string; sessionKey?: string }>(
             {
               name: sub.command,
               verb,
@@ -171,6 +179,7 @@ const plugin = {
                       beforeWrite: gate.beforeWrite,
                       record: (record) => traffic.write(record),
                     },
+                    session: commandSessionOf(ctx),
                   },
                   (ctx.args ?? "").trim(),
                 ),
@@ -399,6 +408,7 @@ const plugin = {
       let hook: BeforeToolCallResult | undefined;
       let verdict: Verdict | null = null;
       let onError = false;
+      let snoozed = false;
       if (result.ok) {
         const resp = result.response;
         verdict = decide(resp, cfg);
@@ -412,6 +422,14 @@ const plugin = {
         } else if (verdict === "block") {
           entry.decision = "blocked";
           hook = { block: true, blockReason: blockReason(resp, event.toolName) };
+        } else if (
+          !timing.unattended &&
+          snooze.applies(resp) &&
+          snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
+        ) {
+          // The owner snoozed reviews for this session: scanned and logged, not asked.
+          entry.decision = "allowed";
+          snoozed = true;
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -453,6 +471,7 @@ const plugin = {
         mode: cfg.mode,
         verdict,
         decision: entry.decision,
+        ...(snoozed ? { snoozed: true } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
         host_labels: hostLabels(run, ctx),
         planir: built.planir,
@@ -462,7 +481,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );
