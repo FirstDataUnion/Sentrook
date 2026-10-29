@@ -204,7 +204,8 @@ def test_status_shows_config_facts_and_never_credential_values(harness):
         "scan host: http://scan.test (dev endpoints)",
         "credentials: present",
         f"traffic log: on, {harness.dir / 'sentrook' / 'traffic.jsonl'}",
-        "grants: 2",
+        "grants: 1 in config, 0 by command",
+        "channel bindings: 1 in config, 0 by command",
     ):
         assert line in out.splitlines()
     for secret in ("cid-7f3a91", "cs-b04e2d77", "secret-value"):

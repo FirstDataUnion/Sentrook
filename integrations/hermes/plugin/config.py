@@ -65,7 +65,9 @@ class PluginConfig:
     history_args_cap_bytes: int
     packs: list[str]
     attended_platforms: frozenset[str] = frozenset()
+    #: Grants from the settings; a scan also sends the bindings and the grants set by command.
     grants: list[dict[str, Any]] = field(default_factory=list)
+    channel_bindings: list[str] = field(default_factory=list)
 
 
 def hermes_home(env: dict[str, str]) -> Path:
@@ -171,7 +173,15 @@ def resolve_endpoints(cfg: dict[str, Any], env: dict[str, str]) -> Endpoints:
     )
 
 
-def _grants(raw: Any) -> list[dict[str, Any]]:
+def _scope(raw: Any) -> str:
+    """No scope means a standing grant. Any value other than exactly `session` or `persistent` reads
+    as `session`, so a typo never widens relief."""
+    if raw is None:
+        return "persistent"
+    return raw if raw in ("session", "persistent") else "session"
+
+
+def parse_grants(raw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for g in raw if isinstance(raw, list) else []:
         if not isinstance(g, dict) or not _str(g.get("kind")) or not _str(g.get("pattern")):
@@ -179,7 +189,7 @@ def _grants(raw: Any) -> list[dict[str, Any]]:
         grant: dict[str, Any] = {
             "kind": g["kind"].strip(),
             "pattern": g["pattern"].strip(),
-            "scope": "session" if g.get("scope") == "session" else "persistent",
+            "scope": _scope(g.get("scope")),
         }
         if isinstance(g.get("allows"), list):
             grant["allows"] = _list(g["allows"])
@@ -236,9 +246,6 @@ def resolve_config(
             p.lower()
             for p in _list(cfg.get("attended_platforms") or env.get("SENTROOK_ATTENDED_PLATFORMS"))
         ),
-        grants=_grants(cfg.get("grants"))
-        + [
-            {"kind": "destination", "pattern": p, "scope": "persistent"}
-            for p in _list(cfg.get("channel_bindings"))
-        ],
+        grants=parse_grants(cfg.get("grants")),
+        channel_bindings=_list(cfg.get("channel_bindings")),
     )

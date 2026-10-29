@@ -4,6 +4,7 @@ the separate `hermes cron run` process.
 - `sessions/<sid>.json`: step counter, input sequence, state token, history, input buffer
 - `turns/<turn_id>.json`: turn context from `pre_llm_call` and `post_api_request`
 - `reviews.json`: rule_key → (session, request id) for joining approval answers
+- `grants.json`: grants and channel bindings set by command (see `grants`)
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
@@ -131,3 +132,23 @@ class Store:
             value = cur.pop(rule_key, None)
             self._write(path, cur)
             return value
+
+    def load_grants(self) -> dict[str, Any] | None:
+        """`grants.json`, empty when absent; None when it exists but cannot be read, so a change never
+        overwrites entries it could not see."""
+        path = self.dir / "grants.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "grants": [], "bindings": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("grants", [])
+        data.setdefault("bindings", [])
+        if not isinstance(data["grants"], list) or not isinstance(data["bindings"], list):
+            return None
+        return data
+
+    def save_grants(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "grants.json", value)

@@ -57,7 +57,12 @@ config_schema:
     description: Wait for /scan in ms (the token mint has its own budget). Env SENTROOK_SCAN_TIMEOUT_MS.
   channel_bindings:
     type: list
-    description: Channels this deployment normally delivers to; sent as destination grants.
+    description: >
+      Channels this deployment normally delivers to; sent as destination grants. `/sentrook bind`
+      adds more without editing this (kept in the state dir's grants.json).
   grants:
     type: list
-    description: "Owner grants: [{kind: destination|file|provider, pattern, allows?, scope?}]."
+    description: >
+      Owner grants: [{kind: destination|file|provider, pattern, allows?, scope?}]. scope is
+      persistent when absent; any value other than session or persistent reads as session.
+      `/sentrook grant` adds more without editing this (kept in the state dir's grants.json).

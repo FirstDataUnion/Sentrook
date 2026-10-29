@@ -83,7 +83,9 @@ def gated(harness, monkeypatch):
     # A chat turn runs in the gateway; no platform at all models the local terminal.
     monkeypatch.setattr(owner, "gateway_engaged", lambda: bool(facts.get("platform")))
     ran = []
-    handler = plugin.owner_command("grant", lambda raw_args: ran.append(raw_args) or "granted")
+    handler = plugin.owner_command(
+        "grant", lambda raw_args, _who: ran.append(raw_args) or "granted"
+    )
     commands = lambda: [r for r in harness.traffic() if r["kind"] == "command"]  # noqa: E731
     return facts, handler, ran, commands
 

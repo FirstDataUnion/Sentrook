@@ -81,8 +81,6 @@ test("grants and channel bindings", () => {
     },
     {},
   );
-  assert.deepEqual(cfg.grants, [
-    { kind: "destination", pattern: "*.mycorp.example", scope: "persistent" },
-    { kind: "destination", pattern: "#ops-alerts", scope: "persistent" },
-  ]);
+  assert.deepEqual(cfg.grants, [{ kind: "destination", pattern: "*.mycorp.example", scope: "persistent" }]);
+  assert.deepEqual(cfg.channelBindings, ["#ops-alerts"]);
 });

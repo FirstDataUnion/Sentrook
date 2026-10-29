@@ -15,6 +15,7 @@
     "commands.ts",
     "config.ts",
     "decision.ts",
+    "grants.ts",
     "history.ts",
     "owner.ts",
     "planir.ts",

@@ -47,7 +47,8 @@ test("status shows the config-derived facts", async () => {
   assert.match(text, /^scan host: sentrook\.firstdataunion\.org$/m);
   assert.match(text, /^credentials: no\b/m);
   assert.match(text, new RegExp(`^traffic log: disabled, ${path.join(stateDir(), "sentrook", "traffic.jsonl")}$`, "m"));
-  assert.match(text, /^config grants: 3$/m);
+  assert.match(text, /^grants: 2 in config, 0 by command$/m);
+  assert.match(text, /^channel bindings: 1 in config, 0 by command$/m);
 });
 
 test("status says credentials are present without printing them, from env, the state-dir .env or plugin config", async () => {
@@ -161,10 +162,10 @@ async function captureLog(fn: () => Promise<void> | void): Promise<string> {
 
 test("the plugin registers /sentrook as an argument-taking command with no scopes or prompt guidance", async () => {
   const { commands } = await registered({});
-  // The other two are the owner-only history commands.
+  // The others are the owner-only history and grants commands.
   assert.deepEqual(
     commands.map((c) => c.name),
-    ["sentrook", "sentrook-history", "sentrook-why"],
+    ["sentrook", "sentrook-history", "sentrook-why", "sentrook-grants", "sentrook-grant", "sentrook-revoke", "sentrook-bind"],
   );
   const def = commands[0];
   assert.equal(def.acceptsArgs, true);

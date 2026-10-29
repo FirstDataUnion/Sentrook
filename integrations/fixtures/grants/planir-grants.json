@@ -1,0 +1,9 @@
+[
+  { "kind": "destination", "pattern": "*.mycorp.example", "scope": "persistent" },
+  { "kind": "file", "pattern": "~/notes/*", "scope": "session", "allows": ["read", "write"] },
+  { "kind": "destination", "pattern": "#daily-brief", "scope": "persistent" },
+  { "kind": "destination", "pattern": "#ops", "scope": "session", "granted_at": "2026-10-29T09:00:00Z" },
+  { "kind": "file", "pattern": "/srv/reports/*", "scope": "persistent", "allows": ["write"], "granted_at": "2026-10-29T09:00:00Z" },
+  { "kind": "destination", "pattern": "#typo", "scope": "session", "granted_at": "2026-10-29T09:10:00Z" },
+  { "kind": "destination", "pattern": "discord:1234", "scope": "persistent", "granted_at": "2026-10-29T09:05:00Z" }
+]

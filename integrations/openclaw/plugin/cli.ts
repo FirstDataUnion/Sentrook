@@ -1,7 +1,8 @@
 /**
- * `openclaw sentrook verify`, `status`, `history [n]` and `why [request_id]`.
+ * `openclaw sentrook verify`, `status`, `history [n]`, `why [request_id]`, `grants`, `grant`, `revoke`
+ * and `bind`.
  *
- * `history` and `why` print what `/sentrook-history` and `/sentrook-why` return. On the command line
+ * The owner-only ones print what their `/sentrook-<verb>` chat commands return. On the command line
  * the person typing is at the gateway host's shell, so counts as the owner; each run is audited as a
  * `command` record with basis `local_terminal`.
  */
@@ -19,6 +20,8 @@ interface CliCommand {
   command: (name: string) => CliCommand;
   option: (flags: string, description?: string) => CliCommand;
   action: (fn: (...args: any[]) => void | Promise<void>) => CliCommand;
+  /** commander: unknown options become arguments, so the grant flags reach the shared parser. */
+  allowUnknownOption?: () => CliCommand;
 }
 
 export function registerSentrookCli(program: { command: (name: string) => CliCommand }, pluginConfig: () => Record<string, unknown>): void {
@@ -38,16 +41,24 @@ export function registerSentrookCli(program: { command: (name: string) => CliCom
       console.log(await runSentrookCommand("status", { pluginConfig: pluginConfig(), env: process.env }));
     });
   for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
-    root
-      .command(`${verb} ${sub.args.replace("|last", "")}`)
-      .description(sub.description)
-      .action(async (arg?: unknown) => {
-        const ctx = { pluginConfig: pluginConfig(), env: process.env };
-        const { trafficLog } = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
-        // No sender id on the command line, so no salt is needed.
-        const audit = { traffic: new TrafficLog(trafficLog.path, trafficLog.maxBytes, trafficLog.enabled), salt: () => "" };
-        auditCommand(audit, {}, verb, "allowed", ["local_terminal"]);
-        console.log(await sub.run(ctx, typeof arg === "string" ? arg.trim() : ""));
-      });
+    const command = root.command(sub.cliRest ? `${verb} [args...]` : `${verb} ${sub.args.replace("|last", "")}`.trimEnd());
+    if (sub.cliRest) command.allowUnknownOption?.();
+    command.description(sub.description).action(async (arg?: unknown) => {
+      const { trafficLog } = resolveConfig(pluginConfig(), envWithOpenclawDotenv(process.env));
+      // No sender id on the command line, so no salt is needed.
+      const audit = { traffic: new TrafficLog(trafficLog.path, trafficLog.maxBytes, trafficLog.enabled), salt: () => "" };
+      auditCommand(audit, {}, verb, "allowed", ["local_terminal"]);
+      const ctx = {
+        pluginConfig: pluginConfig(),
+        env: process.env,
+        owner: {
+          by: { basis: ["local_terminal"], channel: null, sender_ref: null },
+          beforeWrite: () => undefined,
+          record: (record: Record<string, unknown>) => audit.traffic.write(record),
+        },
+      };
+      const rest = Array.isArray(arg) ? arg.join(" ") : typeof arg === "string" ? arg.trim() : "";
+      console.log(await sub.run(ctx, rest));
+    });
   }
 }

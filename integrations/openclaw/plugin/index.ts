@@ -10,12 +10,13 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
+import * as grants from "./grants.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
-import { ownerCommand, type OwnerContext } from "./owner.ts";
+import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import { type HistoryEntry, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
@@ -147,7 +148,7 @@ const plugin = {
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
     );
-    // `/sentrook-history` and `/sentrook-why`: owner only, audited in the traffic log.
+    // `/sentrook-history`, `/sentrook-why` and the grants commands: owner only, audited in the traffic log.
     for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
       try {
         api.registerCommand?.({
@@ -156,8 +157,23 @@ const plugin = {
               name: sub.command,
               verb,
               description: sub.description,
-              handler: async (ctx) => ({
-                text: await sub.run({ pluginConfig: api.pluginConfig ?? {}, env: process.env }, (ctx.args ?? "").trim()),
+              handler: async (ctx, gate) => ({
+                text: await sub.run(
+                  {
+                    pluginConfig: api.pluginConfig ?? {},
+                    env: process.env,
+                    owner: {
+                      by: {
+                        basis: gate.basis,
+                        channel: typeof ctx.channel === "string" ? ctx.channel : null,
+                        sender_ref: senderRef(ctx.senderId, store.salt()),
+                      },
+                      beforeWrite: gate.beforeWrite,
+                      record: (record) => traffic.write(record),
+                    },
+                  },
+                  (ctx.args ?? "").trim(),
+                ),
               }),
             },
             { traffic, salt: () => store.salt() },
@@ -343,6 +359,7 @@ const plugin = {
         run,
         assistant: store.loadAssistant(ctx?.sessionKey),
         parents: store.parents(),
+        grants: grants.effective(cfg, store.loadGrants(), new Date()),
         hostVersion,
       });
       const body = JSON.stringify(built.planir);

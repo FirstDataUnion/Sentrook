@@ -1,0 +1,4 @@
+Channel bindings: 1 in config, 1 by command
+channel       details
+#daily-brief  config, read-only
+discord:1234  set 2026-10-29 09:05 UTC (local_terminal)

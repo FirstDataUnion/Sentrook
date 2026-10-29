@@ -4,7 +4,8 @@ Hermes runs plugin slash commands on gateway chats and in interactive `hermes ch
 request. Over the API server and `hermes chat --oneshot` the text goes to the model instead, so the
 CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are built from it.
 
-`history` and `why` show past traffic, so only the owner may run them: both forms go through the
+`history` and `why` show past traffic, and `grants`, `grant`, `revoke` and `bind` list and change the
+grants and channel bindings set by command, so only the owner may run them: both forms go through the
 owner check (`owner_command`), which audits every attempt. `status` and `help` stay open.
 """
 
@@ -13,37 +14,49 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
-from . import history
+from . import grants, history
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
-from .config import resolve_config
+from .config import PluginConfig, resolve_config
 from .owner import refusal
 from .planir import PLUGIN_VERSION
+from .traffic import TrafficLog
 
 logger = logging.getLogger("sentrook")
 
+#: Who ran an owner-only command: {"basis", "platform", "sender_ref"}.
+Who = dict[str, Any]
 #: (verb, fn) -> fn wrapped so it runs only for the owner; see `owner_command` in the package.
-OwnerGate = Callable[[str, Callable[[str], str]], Callable[[str], str]]
+OwnerGate = Callable[[str, Callable[[str, Who], str]], Callable[[str], str]]
+#: How the owner types a subcommand, for usage and hints.
+CMD = "/sentrook {}".format
 
 
 @dataclass(frozen=True)
 class Subcommand:
     summary: str
-    #: (text after the subcommand name, plugin settings, env or None for the process env) -> reply
-    run: Callable[[str, dict[str, Any], dict[str, str] | None], str]
-    #: The optional argument, as shown in help ("[n]"); also the CLI's optional positional.
+    #: (text after the subcommand name, plugin settings, env or None for the process env, who ran
+    #: it for owner-only subcommands) -> reply
+    run: Callable[[str, dict[str, Any], dict[str, str] | None, Who | None], str]
+    #: The arguments, as shown in help ("[n]").
     args: str = ""
     owner_only: bool = False
+    #: The CLI takes everything after the subcommand (flags included) instead of one optional word.
+    cli_rest: bool = False
 
 
-def run_status(rest: str, settings: dict[str, Any], env: dict[str, str] | None = None) -> str:
+def run_status(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
     """Config-derived facts only: no network calls, and credentials as present or missing, never values."""
     env = env_with_hermes_dotenv(env)
     cfg = resolve_config(settings, env)
     ep = cfg.endpoints
     scan = ep.scan.url + (" (dev endpoints)" if ep.dev else "") if ep.scan.ok else ""
     creds = resolve_oidc_credentials(settings, env, ep.issuer.url) is not None
+    grant_count, binding_count = grants.counts(cfg, grants.load(cfg.state_dir))
     return "\n".join(
         (
             f"Sentrook plugin {PLUGIN_VERSION}",
@@ -54,12 +67,15 @@ def run_status(rest: str, settings: dict[str, Any], env: dict[str, str] | None =
             "credentials: "
             + ("present" if creds else "missing (SENTROOK_SCAN_CLIENT_ID / _SECRET)"),
             "traffic log: " + (f"on, {cfg.traffic_log_path}" if cfg.traffic_log_enabled else "off"),
-            f"grants: {len(cfg.grants)}",
+            f"grants: {grant_count}",
+            f"channel bindings: {binding_count}",
         )
     )
 
 
-def run_history(rest: str, settings: dict[str, Any], env: dict[str, str] | None = None) -> str:
+def run_history(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
     cfg = resolve_config(settings, env_with_hermes_dotenv(env))
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
@@ -69,7 +85,9 @@ def run_history(rest: str, settings: dict[str, Any], env: dict[str, str] | None 
     return history.format_history(history.recent_scans(cfg.traffic_log_path, n), "/sentrook why")
 
 
-def run_why(rest: str, settings: dict[str, Any], env: dict[str, str] | None = None) -> str:
+def run_why(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
     cfg = resolve_config(settings, env_with_hermes_dotenv(env))
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
@@ -84,8 +102,58 @@ def run_why(rest: str, settings: dict[str, Any], env: dict[str, str] | None = No
     return f"No scan {rest} in the recent traffic log."
 
 
+def _changed(cfg: PluginConfig, result: tuple[str, dict[str, Any] | None], who: Who) -> str:
+    """The reply, after writing the change (if any) to the traffic log."""
+    reply, record = result
+    if record is not None:
+        TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled).write(
+            {"kind": "grants", **record, "by": who}
+        )
+    return reply
+
+
+def run_grants(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    return grants.format_grants(cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD)
+
+
+def run_grant(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    if who is None:
+        return refusal("grant")
+    now = datetime.now(UTC)
+    return _changed(cfg, grants.add_grant(cfg.state_dir, rest, who, now, CMD), who)
+
+
+def run_revoke(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    if who is None:
+        return refusal("revoke")
+    now = datetime.now(UTC)
+    return _changed(cfg, grants.revoke(cfg.state_dir, cfg, rest, now, CMD), who)
+
+
+def run_bind(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    if who is None:
+        return refusal("bind")
+    now = datetime.now(UTC)
+    return _changed(cfg, grants.bind(cfg.state_dir, cfg, rest, who, now, CMD), who)
+
+
 def run_help(
-    rest: str = "", settings: dict[str, Any] | None = None, env: dict[str, str] | None = None
+    rest: str = "",
+    settings: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
 ) -> str:
     usage = {name: f"{name} {c.args}".rstrip() for name, c in COMMANDS.items()}
     width = max(map(len, usage.values()))
@@ -118,6 +186,29 @@ COMMANDS: dict[str, Subcommand] = {
         args="[request_id|last]",
         owner_only=True,
     ),
+    "grants": Subcommand(
+        "grants in force: from config (read-only) and set by command",
+        run_grants,
+        owner_only=True,
+    ),
+    "grant": Subcommand(
+        "add a grant: kind destination|file|provider; flags --persistent (default session "
+        "scope), --allows read,write (file only), --expires 12h",
+        run_grant,
+        args="<kind> <pattern> [flags]",
+        owner_only=True,
+        cli_rest=True,
+    ),
+    "revoke": Subcommand(
+        "remove a grant set by command", run_revoke, args="<id>", owner_only=True, cli_rest=True
+    ),
+    "bind": Subcommand(
+        "list, add or remove a channel binding (an expected delivery destination)",
+        run_bind,
+        args="add|remove|list [channel]",
+        owner_only=True,
+        cli_rest=True,
+    ),
     "help": Subcommand("this list", run_help),
 }
 
@@ -139,7 +230,7 @@ def dispatch(
         return cmd.run(rest.strip(), settings, env)
     if gate is None:
         return refusal(name)
-    return gate(name, lambda r: cmd.run(r.strip(), settings, env))(rest)
+    return gate(name, lambda r, who: cmd.run(r.strip(), settings, env, who))(rest)
 
 
 def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGate) -> None:
@@ -153,6 +244,6 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
     ctx.register_command(
         name="sentrook",
         handler=handler,
-        description="Sentrook plugin status, scan history and help",
+        description="Sentrook plugin status, scan history, grants and help",
         args_hint=" | ".join(f"{name} {c.args}".rstrip() for name, c in COMMANDS.items()),
     )

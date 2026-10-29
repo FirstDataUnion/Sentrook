@@ -90,13 +90,19 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
         sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
         for name in CLI_COMMANDS:
             p = sub.add_parser(name, help=COMMANDS[name].summary)
-            if COMMANDS[name].args:
+            if COMMANDS[name].cli_rest:
+                p.add_argument(
+                    "sentrook_arg", nargs=argparse.REMAINDER, metavar=COMMANDS[name].args
+                )
+            elif COMMANDS[name].args:
                 p.add_argument("sentrook_arg", nargs="?", default="", metavar=COMMANDS[name].args)
 
     def handler(args: argparse.Namespace) -> None:
         cmd = getattr(args, "sentrook_cmd", None)
         if cmd in CLI_COMMANDS:
             arg = getattr(args, "sentrook_arg", "") or ""
+            if isinstance(arg, list):
+                arg = " ".join(arg)
             print(dispatch(f"{cmd} {arg}", settings(), gate=gate))
             return
         if cmd != "verify":
