@@ -16,15 +16,39 @@ def dm(user):
 
 
 def test_owner_is_an_allowlisted_dm_or_the_local_terminal():
-    assert owner.owner_of(dm("u1"), ALLOWLIST) == {
+    assert owner.owner_of(dm("u1"), ALLOWLIST, engaged=True) == {
         "owner": True,
         "basis": ["host_allowlist_dm"],
         "platform": "mattermost",
     }
-    assert owner.owner_of(dm("u1"), {"GATEWAY_ALLOWED_USERS": "u1"})["owner"]
+    assert owner.owner_of(dm("u1"), {"GATEWAY_ALLOWED_USERS": "u1"}, engaged=True)["owner"]
     # Inside a command handler an empty platform can only be the local CLI or TUI.
-    assert owner.owner_of({}, {}) == {"owner": True, "basis": ["local_terminal"], "platform": ""}
-    assert owner.owner_of({"platform": "cli"}, {})["owner"]
+    assert owner.owner_of({}, {}, engaged=False) == {
+        "owner": True,
+        "basis": ["local_terminal"],
+        "platform": "",
+    }
+    for platform in ("cli", "tui", "local"):
+        assert owner.owner_of({"platform": platform}, {}, engaged=None) == {
+            "owner": True,
+            "basis": ["local_terminal"],
+            "platform": platform,
+        }
+
+
+@pytest.mark.parametrize("engaged", [True, None])
+def test_empty_platform_is_refused_unless_the_gateway_is_known_idle(engaged):
+    """An empty platform is also what an unreadable session context looks like."""
+    assert owner.owner_of({}, {}, engaged=engaged) == {
+        "owner": False,
+        "basis": ["none"],
+        "platform": "",
+    }
+
+
+def test_gateway_engagement_unknown_without_the_host():
+    # The tests run without Hermes installed, so the gateway's session context cannot be imported.
+    assert owner.gateway_engaged() is None
 
 
 @pytest.mark.parametrize(
@@ -44,7 +68,7 @@ def test_owner_is_an_allowlisted_dm_or_the_local_terminal():
     ],
 )
 def test_everyone_else_is_refused(facts, env, basis):
-    check = owner.owner_of(facts, env)
+    check = owner.owner_of(facts, env, engaged=False)
     assert check["owner"] is False
     assert check["basis"] == basis
 
@@ -56,6 +80,8 @@ def gated(harness, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
+    # A chat turn runs in the gateway; no platform at all models the local terminal.
+    monkeypatch.setattr(owner, "gateway_engaged", lambda: bool(facts.get("platform")))
     ran = []
     handler = plugin.owner_command("grant", lambda raw_args: ran.append(raw_args) or "granted")
     commands = lambda: [r for r in harness.traffic() if r["kind"] == "command"]  # noqa: E731
@@ -111,6 +137,17 @@ def test_non_owner_is_refused_and_audited(gated, facts):
     assert rec["verb"] == "grant"
     assert rec["outcome"] == "refused"
     assert rec["basis"] != ["host_allowlist_dm"]
+    assert rec["sender_ref"] is None or rec["sender_ref"].startswith("u_")
+    assert "u1" not in str(rec) and "u2" not in str(rec)
+
+
+def test_unreadable_session_context_in_the_gateway_is_refused(gated, monkeypatch):
+    _facts, handler, ran, commands = gated
+    monkeypatch.setattr(owner, "gateway_engaged", lambda: True)
+    assert handler("").startswith("Only the owner")
+    assert ran == []
+    [rec] = commands()
+    assert (rec["outcome"], rec["basis"], rec["platform"]) == ("refused", ["none"], "")
 
 
 def test_allow_all_dm_is_refused(gated, monkeypatch):
@@ -132,3 +169,5 @@ def test_a_failing_owner_check_refuses(gated, monkeypatch):
     monkeypatch.setattr(plugin, "session_facts", boom)
     assert handler("").startswith("Only the owner")
     assert ran == []
+    [rec] = commands()
+    assert (rec["outcome"], rec["basis"], rec["reason"]) == ("refused", ["none"], "error")

@@ -102,8 +102,12 @@ def owner_command(verb: str, fn: Callable[[str], str]) -> Callable[..., str]:
     """
 
     def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
-        cfg, env = _load()
-        store, traffic = _state(cfg)
+        try:
+            cfg, env = _load()
+            store, traffic = _state(cfg)
+        except Exception as exc:  # noqa: BLE001 - nowhere to audit; refuse
+            logger.warning("owner check for %s failed: %s", verb, exc)
+            return owner.refusal(verb)
         try:
             check = owner.gate(verb, traffic, store.salt(), facts=session_facts(), env=env)
         except Exception as exc:  # noqa: BLE001
@@ -111,7 +115,7 @@ def owner_command(verb: str, fn: Callable[[str], str]) -> Callable[..., str]:
             owner.audit(
                 traffic,
                 verb,
-                {"owner": False, "basis": ["none"], "platform": None},
+                {"owner": False, "basis": ["none"], "platform": ""},
                 ref=None,
                 reason="error",
             )

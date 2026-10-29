@@ -174,6 +174,62 @@ test("an owner demoted mid-command is refused before the write", async () => {
   );
 });
 
+test("an owner check that cannot vouch synchronously is treated as stale", async () => {
+  const h = harness();
+  let ran = false;
+  const def = ownerCommand(
+    {
+      name: "grant",
+      description: "Grant",
+      handler: () => {
+        ran = true;
+        return { text: "granted" };
+      },
+    },
+    h,
+  );
+  const { ctx } = adminCtx({ assertOwnerCurrent: () => Promise.reject(new Error("demoted")) });
+  assert.match(String((await def.handler(ctx)).text), /^Only the owner/);
+  assert.equal(ran, false);
+  assert.equal(h.records()[0].reason, "stale_owner");
+});
+
+test("a failure inside the owner check refuses and is audited", async () => {
+  const h = harness();
+  let ran = false;
+  let calls = 0;
+  const def = ownerCommand(
+    {
+      name: "grant",
+      description: "Grant",
+      handler: () => {
+        ran = true;
+        return { text: "granted" };
+      },
+    },
+    {
+      ...h,
+      salt: () => {
+        if (calls++ === 0) throw new Error("state dir unreadable");
+        return SALT;
+      },
+    },
+  );
+  assert.match(String((await def.handler(adminCtx().ctx)).text), /^Only the owner/);
+  assert.equal(ran, false);
+  const [rec] = h.records();
+  assert.deepEqual([rec.outcome, rec.basis, rec.reason], ["refused", ["none"], "error"]);
+});
+
+test("odd context values do not break the check or leak a sender id", async () => {
+  const h = harness();
+  const def = ownerCommand({ name: "grant", description: "Grant", handler: () => ({ text: "ok" }) }, h);
+  const { ctx } = adminCtx({ senderId: 42, gatewayClientScopes: "operator.admin", channel: { id: "x" } });
+  assert.deepEqual(await def.handler(ctx), { text: "ok" });
+  const [rec] = h.records();
+  assert.deepEqual([rec.outcome, rec.basis, rec.sender_ref, rec.channel], ["allowed", ["sender_is_owner"], null, null]);
+});
+
 test("other handler errors propagate unchanged", async () => {
   const h = harness();
   const def = ownerCommand(

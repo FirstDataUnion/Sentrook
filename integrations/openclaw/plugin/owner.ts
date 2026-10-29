@@ -16,8 +16,9 @@
  * non-admin clients out of every plugin command ("requires authorization"). The plugin cannot see the
  * sender roster, so it cannot check those entries for you.
  *
- * Every attempt, allowed or refused, is written to the traffic log as a `command` record. A sender
- * id, when there is one, is stored only as a salted hash.
+ * Every attempt, allowed or refused, is written to the traffic log as a `command` record (none when
+ * the owner has turned the traffic log off). A sender id, when there is one, is stored only as a
+ * salted hash.
  */
 
 import { createHmac } from "node:crypto";
@@ -26,11 +27,11 @@ export const OWNER_SCOPES = ["operator.admin"];
 
 /** The fields of OpenClaw's command context the owner check reads. */
 export interface OwnerContext {
-  senderId?: string;
+  senderId?: unknown;
   channel?: string;
   senderIsOwner?: unknown;
   assertOwnerCurrent?: () => void;
-  gatewayClientScopes?: string[];
+  gatewayClientScopes?: unknown;
 }
 
 export interface OwnerAudit {
@@ -47,30 +48,48 @@ export interface OwnerGate {
 
 export class OwnerRefused extends Error {}
 
-export function senderRef(senderId: string | undefined, salt: string): string | null {
-  return senderId ? `u_${createHmac("sha256", salt).update(senderId).digest("hex").slice(0, 16)}` : null;
+export function senderRef(senderId: unknown, salt: string): string | null {
+  return typeof senderId === "string" && senderId ? `u_${createHmac("sha256", salt).update(senderId).digest("hex").slice(0, 16)}` : null;
 }
 
 export function refusal(verb: string): string {
   return `Only the owner can run /sentrook ${verb}: use the owner's Control UI connection (gateway scope operator.admin).`;
 }
 
+/** Write one `command` record to the traffic log. */
+export function auditCommand(
+  audit: OwnerAudit,
+  ctx: OwnerContext,
+  verb: string,
+  outcome: "allowed" | "refused",
+  basis: string[],
+  reason?: string,
+): void {
+  audit.traffic.write({
+    kind: "command",
+    verb,
+    outcome,
+    basis,
+    sender_ref: senderRef(ctx.senderId, audit.salt()),
+    channel: typeof ctx.channel === "string" ? ctx.channel : null,
+    ...(reason ? { reason } : {}),
+  });
+}
+
 /** Decide whether the sender may run this command and audit the decision. */
 export function ownerGate<C extends OwnerContext>(ctx: C, verb: string, audit: OwnerAudit): OwnerGate {
-  const basis = ctx.gatewayClientScopes?.includes("operator.admin") ? ["operator.admin"] : ["sender_is_owner"];
+  const scopes = ctx.gatewayClientScopes;
+  const basis = Array.isArray(scopes) && scopes.includes("operator.admin") ? ["operator.admin"] : ["sender_is_owner"];
   const record = (outcome: "allowed" | "refused", recordBasis: string[], reason?: string) =>
-    audit.traffic.write({
-      kind: "command",
-      verb,
-      outcome,
-      basis: recordBasis,
-      sender_ref: senderRef(ctx.senderId, audit.salt()),
-      channel: ctx.channel ?? null,
-      ...(reason ? { reason } : {}),
-    });
+    auditCommand(audit, ctx, verb, outcome, recordBasis, reason);
+  // The host's check is synchronous; anything else cannot vouch for this write, so it counts as stale.
   const current = (): boolean => {
     try {
-      ctx.assertOwnerCurrent?.();
+      const result: unknown = ctx.assertOwnerCurrent?.();
+      if (result && typeof (result as PromiseLike<unknown>).then === "function") {
+        Promise.resolve(result).catch(() => undefined);
+        return false;
+      }
       return true;
     } catch {
       return false;
@@ -124,6 +143,11 @@ export function ownerCommand<C extends OwnerContext>(def: OwnerCommandDef<C>, au
       try {
         gate = ownerGate(ctx, verb, audit);
       } catch {
+        try {
+          auditCommand(audit, {}, verb, "refused", ["none"], "error");
+        } catch {
+          // nothing more to record
+        }
         return { text: refusal(verb) };
       }
       if (!gate.owner) return { text: refusal(verb) };
