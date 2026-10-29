@@ -186,10 +186,11 @@ export class Store {
     if (!existsSync(file)) return { version: 1, grants: [], bindings: [] };
     const data = this.readJson<unknown>(file, null);
     if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-    const g = data as GrantsFile;
-    g.grants ??= [];
-    g.bindings ??= [];
-    return Array.isArray(g.grants) && Array.isArray(g.bindings) ? g : null;
+    const g = data as Record<string, unknown>;
+    // A key that is present must hold a list (null included): otherwise it is unreadable.
+    if (!Object.hasOwn(g, "grants")) g.grants = [];
+    if (!Object.hasOwn(g, "bindings")) g.bindings = [];
+    return Array.isArray(g.grants) && Array.isArray(g.bindings) ? (g as GrantsFile) : null;
   }
 
   saveGrants(value: GrantsFile): void {

@@ -32,7 +32,11 @@ ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 MAX_PATTERN = 256
 MAX_EXPIRY = timedelta(days=365)
-_DURATION = re.compile(r"(\d{1,6})([mhd])")
+_DURATION = re.compile(r"([0-9]{1,6})([mhd])")
+#: The only time form read back from the file; both plugins accept exactly this.
+_ISO = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?"
+)
 _UNITS = {"m": "minutes", "h": "hours", "d": "days"}
 #: Serialises read-modify-write of the file within this process; writes are atomic across processes.
 _LOCK = threading.Lock()
@@ -51,7 +55,8 @@ def _iso(dt: datetime) -> str:
 
 
 def _when(raw: Any) -> datetime | None:
-    if not isinstance(raw, str) or not raw.strip():
+    """An ISO time with a `T` (no offset means UTC); anything else is unreadable."""
+    if not isinstance(raw, str) or not _ISO.fullmatch(raw.strip()):
         return None
     try:
         dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
@@ -272,17 +277,18 @@ def _change(
     now: datetime,
     fn: Callable[[dict[str, Any]], tuple[str, dict[str, Any] | None]],
 ) -> tuple[str, dict[str, Any] | None]:
-    """Read the file, apply `fn` (reply, change record or None), and write it back if it changed."""
+    """Read the file, apply `fn` (reply, change record or None), and write it back if it changed.
+    A write also drops expired grants; `fn` still sees them, so revoking one works."""
     store = Store(state_dir)
     with _LOCK:
         data = store.load_grants()
         if data is None:
             return _unreadable(state_dir), None
-        data["grants"] = [
-            g for g in data["grants"] if not (isinstance(g, dict) and expired(g, now))
-        ]
         reply, record = fn(data)
         if record is not None:
+            data["grants"] = [
+                g for g in data["grants"] if not (isinstance(g, dict) and expired(g, now))
+            ]
             store.save_grants(data)
         return reply, record
 

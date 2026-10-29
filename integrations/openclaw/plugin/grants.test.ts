@@ -375,6 +375,40 @@ test("expired grants are not sent and are dropped on the next change", async () 
   assert.ok(!ids.includes("gr-4d5e6f") && ids.includes("gr-1a2b3c"));
 });
 
+test("an expired grant can still be revoked", async () => {
+  fixtureFile();
+  const r = await registered(fixtureConfig());
+  assert.equal(await run(r, "sentrook-revoke", "gr-4d5e6f"), "Revoked gr-4d5e6f: provider npm:left-pad.");
+  assert.deepEqual(
+    records("grants").map((c) => c.op),
+    ["revoke"],
+  );
+});
+
+test("an over-broad pattern is stored as typed: whether it relieves is the scanner's call", async () => {
+  const r = await registered();
+  const out = await run(r, "sentrook-grant", "destination *");
+  assert.ok(out.startsWith("Granted ") && out.endsWith(": destination * (session)."), out);
+  assert.equal(stored().grants[0].pattern, "*");
+});
+
+for (const expiresAt of ["2026-11-05 09:00:00", "11/05/2026", "Nov 5 2026 09:00", "2026-11-05", "soon", 7]) {
+  test(`an expiry in any other form counts as past: ${expiresAt}`, async () => {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(file, JSON.stringify({ grants: [{ id: "gr-000001", kind: "destination", pattern: "#ops", expires_at: expiresAt }] }));
+    const r = await registered();
+    assert.deepEqual(await r.scan("post to #ops"), []);
+    assert.ok((await run(r, "sentrook-grants", "")).includes("expired ?"));
+  });
+}
+
+test("a null list makes the file unreadable", async () => {
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(file, '{"grants": null}');
+  const r = await registered();
+  assert.ok((await run(r, "sentrook-bind", "add #x")).includes("could not be read"));
+});
+
 test("an unreadable grants file blocks changes but not scans", async () => {
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(file, "{not json");

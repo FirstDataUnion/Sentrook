@@ -145,6 +145,7 @@ class Store:
             return None
         data.setdefault("grants", [])
         data.setdefault("bindings", [])
+        # A key that is present must hold a list (null included): otherwise it is unreadable.
         if not isinstance(data["grants"], list) or not isinstance(data["bindings"], list):
             return None
         return data

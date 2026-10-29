@@ -295,6 +295,37 @@ def test_expired_grants_are_not_sent_and_are_dropped_on_the_next_change(term):
     assert "gr-1a2b3c" in [g.get("id") for g in stored(term)["grants"]]
 
 
+def test_an_expired_grant_can_still_be_revoked(term):
+    fixture_state(term)
+    assert slash(term, "revoke gr-4d5e6f") == "Revoked gr-4d5e6f: provider npm:left-pad."
+    assert [r["op"] for r in records(term, "grants")] == ["revoke"]
+
+
+def test_an_over_broad_pattern_is_stored_as_typed(term):
+    """Whether a pattern is too broad to relieve on is the scanner's call, not the plugin's."""
+    out = slash(term, "grant destination *")
+    assert out.startswith("Granted ") and out.endswith(": destination * (session).")
+    assert stored(term)["grants"][0]["pattern"] == "*"
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    ["2026-11-05 09:00:00", "11/05/2026", "Nov 5 2026 09:00", "2026-11-05", "soon", 7],
+)
+def test_an_expiry_in_any_other_form_counts_as_past(term, expires_at):
+    term.file.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"id": "gr-000001", "kind": "destination", "pattern": "#ops", "expires_at": expires_at}
+    term.file.write_text(json.dumps({"grants": [entry]}))
+    assert scan_grants(term, "post to #ops") == []
+    assert "expired ?" in slash(term, "grants")
+
+
+def test_a_null_list_makes_the_file_unreadable(term):
+    term.file.parent.mkdir(parents=True, exist_ok=True)
+    term.file.write_text('{"grants": null}')
+    assert "could not be read" in slash(term, "bind add #x")
+
+
 def test_an_unreadable_grants_file_blocks_changes_but_not_scans(term):
     term.ctx.settings["grants"] = [{"kind": "destination", "pattern": "#ops"}]
     term.file.parent.mkdir(parents=True, exist_ok=True)
@@ -314,6 +345,9 @@ def test_the_cli_forms_match_the_slash_forms(term, capsys):
     out = cli(term, capsys, "grant", "file", "/srv/x/*", "--allows", "read", "--persistent")
     gid = out.split()[1].rstrip(":")
     assert out == f"Granted {gid}: file /srv/x/* (persistent, allows read)."
+    first = cli(term, capsys, "grant", "--persistent", "--expires=1h", "destination", "#y")
+    assert first.endswith(").") and ": destination #y (persistent, expires " in first
+    slash(term, f"revoke {first.split()[1].rstrip(':')}")
     assert cli(term, capsys, "grant", "file", "/x", "--scope", "persistant").startswith(
         'Unknown scope "persistant"'
     )

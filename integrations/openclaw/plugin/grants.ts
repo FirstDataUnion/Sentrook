@@ -51,11 +51,14 @@ export function load(stateDir: string): GrantsFile | null {
 const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
+/** The only time form read back from the file; both plugins accept exactly this. */
+const ISO = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:\d{2})?$/;
+
+/** An ISO time with a `T` (no offset means UTC); anything else is unreadable. */
 function when(raw: unknown): Date | null {
-  if (typeof raw !== "string" || !raw.trim()) return null;
-  const s = raw.trim();
-  // An offset-less time is UTC, as on the Hermes side.
-  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) || !s.includes("T") ? s : `${s}Z`);
+  const m = typeof raw === "string" ? ISO.exec(raw.trim()) : null;
+  if (!m) return null;
+  const d = new Date(`${m[1]}${m[2] ?? "Z"}`);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
@@ -241,7 +244,10 @@ export function parseGrant(rest: string): ParsedGrant | string {
   return grant;
 }
 
-/** Read the file, apply `fn`, and write it back (after `beforeWrite`) if it made a change. */
+/**
+ * Read the file, apply `fn`, and write it back (after `beforeWrite`) if it made a change. A write
+ * also drops expired grants; `fn` still sees them, so revoking one works.
+ */
 function change(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
   const store = new Store(stateDir);
   const data = store.loadGrants();
@@ -251,9 +257,9 @@ function change(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeRes
       change: null,
     };
   }
-  data.grants = data.grants.filter((g) => !(g && typeof g === "object" && expired(g as Entry, now)));
   const result = fn(data);
   if (result.change) {
+    data.grants = data.grants.filter((g) => !(g && typeof g === "object" && expired(g as Entry, now)));
     beforeWrite();
     store.saveGrants(data);
   }
