@@ -1,0 +1,8 @@
+scan: 5555a1b2-0000-4000-8000-000000000005
+time: 2026-10-29 09:25:00 UTC
+tool: web_fetch, step 5
+risk: - (scan failed: http, HTTP 500)
+action: blocked (scan error)
+review: -
+reasons: none
+entities: none

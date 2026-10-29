@@ -479,11 +479,11 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_approval_response", on_post_approval_response)
     try:
-        cli.register_cli(ctx, _settings)
+        cli.register_cli(ctx, _settings, owner_command)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin CLI commands
         logger.info("sentrook CLI not registered: %s", exc)
     try:
-        commands.register_slash(ctx, _settings)
+        commands.register_slash(ctx, _settings, owner_command)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin slash commands
         logger.info("/sentrook not registered: %s", exc)
     cfg, _ = _load()

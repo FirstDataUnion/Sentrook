@@ -1,6 +1,8 @@
 """`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works.
 
-The `/sentrook` subcommands (`commands.COMMANDS`, except help) are `hermes sentrook` subcommands too.
+The `/sentrook` subcommands (`commands.COMMANDS`, except help) are `hermes sentrook` subcommands too,
+with the same output. Owner-only ones go through the same owner check, where the local terminal counts
+as the owner.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from .auth import (
     http_json,
     resolve_oidc_credentials,
 )
-from .commands import COMMANDS, dispatch
+from .commands import COMMANDS, OwnerGate, dispatch
 from .config import resolve_config
 
 
@@ -82,17 +84,20 @@ def format_report(checks: list[tuple[str, bool, str]]) -> str:
 CLI_COMMANDS = tuple(name for name in COMMANDS if name != "help")
 
 
-def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
+def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGate) -> None:
     def setup(parser: argparse.ArgumentParser) -> None:
         sub = parser.add_subparsers(dest="sentrook_cmd")
         sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
         for name in CLI_COMMANDS:
-            sub.add_parser(name, help=COMMANDS[name].summary)
+            p = sub.add_parser(name, help=COMMANDS[name].summary)
+            if COMMANDS[name].args:
+                p.add_argument("sentrook_arg", nargs="?", default="", metavar=COMMANDS[name].args)
 
     def handler(args: argparse.Namespace) -> None:
         cmd = getattr(args, "sentrook_cmd", None)
         if cmd in CLI_COMMANDS:
-            print(dispatch(cmd, settings()))
+            arg = getattr(args, "sentrook_arg", "") or ""
+            print(dispatch(f"{cmd} {arg}", settings(), gate=gate))
             return
         if cmd != "verify":
             print(f"usage: hermes sentrook {{{','.join(('verify', *CLI_COMMANDS))}}}")

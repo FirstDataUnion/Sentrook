@@ -8,13 +8,14 @@
 
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
-import { runSentrookCommand } from "./commands.ts";
+import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
+import { ownerCommand, type OwnerContext } from "./owner.ts";
 import { type HistoryEntry, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
@@ -39,7 +40,8 @@ interface OpenClawPluginApi {
     name: string;
     description: string;
     acceptsArgs?: boolean;
-    handler: (ctx: { args?: string }) => Promise<{ text: string }>;
+    requiredScopes?: string[];
+    handler: (ctx: any) => Promise<{ text?: string }>;
   }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
 }
@@ -145,6 +147,27 @@ const plugin = {
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
     );
+    // `/sentrook-history` and `/sentrook-why`: owner only, audited in the traffic log.
+    for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
+      try {
+        api.registerCommand?.({
+          ...ownerCommand<OwnerContext & { args?: string }>(
+            {
+              name: sub.command,
+              verb,
+              description: sub.description,
+              handler: async (ctx) => ({
+                text: await sub.run({ pluginConfig: api.pluginConfig ?? {}, env: process.env }, (ctx.args ?? "").trim()),
+              }),
+            },
+            { traffic, salt: () => store.salt() },
+          ),
+          acceptsArgs: true,
+        });
+      } catch (err) {
+        api.logger.warn(`${LOG} /${sub.command} command unavailable: ${String(err)}`);
+      }
+    }
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
 

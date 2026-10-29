@@ -3,10 +3,27 @@
  *
  * Both routes run the same subcommand table, so they print the same text. Subcommands report what the
  * plugin can see locally and never print credential values.
+ *
+ * `history` and `why` show past traffic, so only the owner may run them. OpenClaw tells a command
+ * handler who the owner is only when the whole command requires a gateway scope, so they are commands
+ * of their own, `/sentrook-history` and `/sentrook-why`, registered through `ownerCommand`;
+ * `/sentrook` and its status stay open to everyone.
  */
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
+import {
+  formatHistory,
+  formatWhy,
+  HISTORY_DEFAULT,
+  HISTORY_MAX,
+  LOG_OFF,
+  NO_SCANS,
+  parseCount,
+  parseRef,
+  recentScans,
+} from "./history.ts";
+import { OWNER_SCOPES } from "./owner.ts";
 import { PLUGIN_VERSION } from "./planir.ts";
 
 export interface CommandContext {
@@ -32,20 +49,69 @@ export const SUBCOMMANDS: Record<string, Subcommand> = {
   },
 };
 
+export interface OwnerSubcommand extends Subcommand {
+  /** The chat command, registered with the owner scopes. */
+  command: string;
+  /** The optional argument, as shown in help. */
+  args: string;
+}
+
+export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
+  history: {
+    command: "sentrook-history",
+    args: "[n]",
+    description: `Last n scans (default ${HISTORY_DEFAULT}, at most ${HISTORY_MAX}): time, tool, risk, action, review`,
+    run: (ctx, rest) => historyText(ctx, rest),
+  },
+  why: {
+    command: "sentrook-why",
+    args: "[request_id|last]",
+    description: "One scan's risk, tier scores, reason codes and entities",
+    run: (ctx, rest) => whyText(ctx, rest),
+  },
+};
+
 export function helpText(): string {
   const names = Object.keys(SUBCOMMANDS);
   const width = Math.max(...names.map((n) => n.length));
-  return ["Sentrook commands:", ...names.map((n) => `  /sentrook ${n.padEnd(width)}  ${SUBCOMMANDS[n]!.description}`)].join(
-    "\n",
-  );
+  const owner = Object.values(OWNER_SUBCOMMANDS).map((o) => [`/${o.command} ${o.args}`, o.description] as const);
+  const ownerWidth = Math.max(...owner.map(([usage]) => usage.length));
+  return [
+    "Sentrook commands:",
+    ...names.map((n) => `  /sentrook ${n.padEnd(width)}  ${SUBCOMMANDS[n]!.description}`),
+    `Owner only (gateway scope ${OWNER_SCOPES.join(", ")}):`,
+    ...owner.map(([usage, description]) => `  ${usage.padEnd(ownerWidth)}  ${description}`),
+  ].join("\n");
 }
 
 /** Runs the subcommand named by the first word of `args`; anything else gets the help text. */
 export async function runSentrookCommand(args: string | undefined, ctx: CommandContext): Promise<string> {
   const [first = "", ...rest] = (args ?? "").trim().split(/\s+/);
   const name = first.toLowerCase();
+  if (Object.hasOwn(OWNER_SUBCOMMANDS, name)) {
+    const o = OWNER_SUBCOMMANDS[name]!;
+    return `/sentrook ${name} is for the owner only: use /${o.command} ${o.args}.`;
+  }
   const sub = Object.hasOwn(SUBCOMMANDS, name) ? SUBCOMMANDS[name]! : SUBCOMMANDS.help!;
   return await sub.run(ctx, rest.join(" "));
+}
+
+function historyText(ctx: CommandContext, rest: string): string {
+  const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
+  if (!cfg.trafficLog.enabled) return LOG_OFF;
+  const n = parseCount(rest);
+  if (n === null) return `usage: /sentrook-history [n], n from 1 to ${HISTORY_MAX}`;
+  return formatHistory(recentScans(cfg.trafficLog.path, n), "/sentrook-why");
+}
+
+function whyText(ctx: CommandContext, rest: string): string {
+  const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
+  if (!cfg.trafficLog.enabled) return LOG_OFF;
+  const match = parseRef(rest);
+  if (match === null) return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history";
+  const [found] = recentScans(cfg.trafficLog.path, 1, match);
+  if (found) return formatWhy(...found);
+  return rest === "" || rest.toLowerCase() === "last" ? NO_SCANS : `No scan ${rest} in the recent traffic log.`;
 }
 
 function statusText(ctx: CommandContext): string {

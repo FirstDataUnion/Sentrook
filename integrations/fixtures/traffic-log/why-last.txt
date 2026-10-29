@@ -1,0 +1,9 @@
+scan: 8888a1b2-0000-4000-8000-000000000008
+time: 2026-10-29 09:45:00 UTC
+tool: terminal, step 8
+risk: 66
+action: review
+review: no answer
+scores: suspicion 50, consequence 50, confidence 80
+reasons: egress.new_host
+entities: none
