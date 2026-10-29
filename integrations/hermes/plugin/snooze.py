@@ -169,7 +169,8 @@ def usage(cmd: Cmd) -> str:
     c = cmd("snooze")
     return (
         f"usage: {c} [duration] [--all], {c} off [--all] or {c} status\n"
-        "duration is 1m to 24h (default 1h); a snooze covers this session unless --all"
+        "duration is 1m to 24h (default 1h); a snooze covers this session unless --all; off ends the "
+        "snoozes that apply here (this session's and an --all one), off --all ends every snooze"
     )
 
 

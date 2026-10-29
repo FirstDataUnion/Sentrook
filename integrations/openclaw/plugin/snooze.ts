@@ -7,7 +7,8 @@
  * A snooze never applies to:
  * - a block;
  * - a review the scanner enforces (`enforced` is review or block);
- * - an unattended run (cron, subagent), where the review stands;
+ * - any run not started by a human message (cron, heartbeat, subagent, hook, or a trigger the plugin
+ *   could not tell), where the review stands;
  * - a scan error, or observe mode.
  *
  * A session is named by its `session_ref`, the same hash a scan sends. A command with no current
@@ -54,12 +55,27 @@ export function load(stateDir: string): SnoozeFile | null {
 export const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
-/** An ISO time with a `T` (no offset means UTC); anything else is unreadable. */
+/**
+ * An ISO time with a `T` (no offset means UTC); anything else is unreadable. A field out of range
+ * (`24:00`, `02-30`) is unreadable too, as it is to the Hermes plugin, rather than rolled forward.
+ */
 export function when(raw: unknown): Date | null {
   const m = typeof raw === "string" ? ISO.exec(raw.trim()) : null;
   if (!m) return null;
-  const d = new Date(`${m[1]}${m[2] ?? "Z"}`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const [y, mo, d, h, mi, s = 0] = m[1]!.split(/[-T:]/).map(Number) as number[];
+  const local = new Date(Date.UTC(y!, mo! - 1, d!, h!, mi!, Math.floor(s)));
+  if (
+    local.getUTCFullYear() !== y ||
+    local.getUTCMonth() !== mo! - 1 ||
+    local.getUTCDate() !== d ||
+    local.getUTCHours() !== h ||
+    local.getUTCMinutes() !== mi ||
+    local.getUTCSeconds() !== Math.floor(s)
+  ) {
+    return null;
+  }
+  const at = new Date(`${m[1]}${m[2] ?? "Z"}`);
+  return Number.isNaN(at.getTime()) ? null : at;
 }
 
 function left(ms: number): string {
@@ -147,7 +163,8 @@ export function usage(cmd: Cmd): string {
   const c = cmd("snooze");
   return (
     `usage: ${c} [duration] [--all], ${c} off [--all] or ${c} status\n` +
-    "duration is 1m to 24h (default 1h); a snooze covers this session unless --all"
+    "duration is 1m to 24h (default 1h); a snooze covers this session unless --all; off ends the " +
+    "snoozes that apply here (this session's and an --all one), off --all ends every snooze"
   );
 }
 

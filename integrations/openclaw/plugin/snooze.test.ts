@@ -89,7 +89,7 @@ afterEach(() => {
 });
 
 /** Registers the plugin with fake host registrars: its chat commands, CLI actions and hooks. */
-async function registered() {
+async function registered(pluginConfig: Record<string, unknown> = {}) {
   const commands: Record<string, any> = {};
   const cliActions: Record<string, (...args: unknown[]) => Promise<void> | void> = {};
   const on: Record<string, Array<(e: any, c: any) => any>> = {};
@@ -108,7 +108,7 @@ async function registered() {
   };
   let cliRegistrar: ((ctx: { program: any }) => Promise<void> | void) | undefined;
   plugin.register({
-    pluginConfig: {},
+    pluginConfig,
     registrationMode: "full",
     config: { tools: { exec: { mode: "full" } } },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
@@ -126,10 +126,13 @@ async function registered() {
     for (const h of on[hook] ?? []) out = await h(event, ctx);
     return out;
   };
-  /** One scan of `command` in session `sid`: the hook's result and the scan's traffic record. */
-  const scan = async (command: string, sid = "S1", trigger?: string) => {
+  /**
+   * One scan of `command` in session `sid`, from a run with `trigger` (null: not recorded) and
+   * `extra` run context: the hook's result and the scan's traffic record.
+   */
+  const scan = async (command: string, sid = "S1", trigger: string | null = "user", extra: Record<string, unknown> = {}) => {
     const runId = `r-${sid}`;
-    const ctx = { sessionKey: `agent:main:${sid}`, sessionId: sid, agentId: "main", runId, ...(trigger ? { trigger } : {}) };
+    const ctx = { sessionKey: `agent:main:${sid}`, sessionId: sid, agentId: "main", runId, ...(trigger ? { trigger } : {}), ...extra };
     await fire("before_prompt_build", { runId, prompt: trigger === "cron" ? "[cron:abc nightly] run" : "tidy up" }, ctx);
     const out = await fire("before_tool_call", { toolName: "exec", toolCallId: `c${scans.length}`, runId, params: { command } }, ctx);
     return { out, rec: records("scan").at(-1) };
@@ -217,7 +220,7 @@ test("entries that must never apply: expired, too far away, no or unreadable exp
   const data = snooze.load(stateDir);
   assert.ok(snooze.active(data, S1, NOW));
   assert.ok(snooze.active(data, "s_adfa2b24c2d9", NOW));
-  for (const ref of ["s_000000000001", "s_000000000002", "s_000000000003", "s_000000000004", "s_x"]) {
+  for (const ref of [1, 2, 3, 4, 5, 6].map((i) => `s_00000000000${i}`).concat("s_x")) {
     assert.ok(!snooze.active(data, ref, NOW), ref);
   }
   assert.ok(!snooze.active(data, S1, new Date(NOW.getTime() + 30 * 60_000)));
@@ -289,6 +292,31 @@ test("an unattended review is not snoozed", async () => {
   assert.ok(out.requireApproval);
   assert.equal(out.requireApproval.timeoutBehavior, "deny");
   assert.equal(rec.snoozed, undefined);
+});
+
+test("a subagent review is not snoozed, even where the approval policy calls subagents attended", async () => {
+  put(entry("session", snooze.sessionRef("sub-1")), entry("all"));
+  const r = await registered({ approval: { scheduledIntentKinds: ["cron"] } });
+  const { out, rec } = await r.scan("rm REVIEW", "sub-1", "user", { inputProvenance: { sourceRole: "subagent" } });
+  assert.equal(scans.at(-1).trigger.kind, "subagent");
+  assert.ok(out.requireApproval);
+  assert.equal(rec.snoozed, undefined);
+});
+
+test("a run whose trigger was not recorded is not snoozed", async () => {
+  put(entry(), entry("all"));
+  const r = await registered();
+  const { out, rec } = await r.scan("rm REVIEW", "S1", null);
+  assert.equal(scans.at(-1).trigger.kind, "unknown");
+  assert.ok(out.requireApproval);
+  assert.equal(rec.snoozed, undefined);
+});
+
+test("an expiry with a field out of range is unreadable, not rolled forward", () => {
+  assert.equal(snooze.when("2026-10-29T24:00Z"), null);
+  assert.equal(snooze.when("2026-02-30T00:00Z"), null);
+  assert.equal(snooze.when("2026-10-29T12:30:60Z"), null);
+  assert.equal(snooze.when("2026-10-29T12:30:59.5+01:00")?.toISOString(), "2026-10-29T11:30:59.500Z");
 });
 
 test("an expired snooze no longer applies", async () => {

@@ -423,6 +423,9 @@ const plugin = {
           entry.decision = "blocked";
           hook = { block: true, blockReason: blockReason(resp, event.toolName) };
         } else if (
+          // Only a human's message: a run whose trigger is unknown or not a message is never snoozed,
+          // whatever the approval timeout policy calls attended.
+          triggerKind === "message" &&
           !timing.unattended &&
           snooze.applies(resp) &&
           snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())

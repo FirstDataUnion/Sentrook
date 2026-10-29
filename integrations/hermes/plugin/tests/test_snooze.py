@@ -119,7 +119,7 @@ def test_entries_that_must_never_apply(tmp_path):
     data = snooze.load(tmp_path)
     assert snooze.active(data, S1, NOW)
     assert snooze.active(data, "s_adfa2b24c2d9", NOW)
-    for ref in ("s_000000000001", "s_000000000002", "s_000000000003", "s_000000000004", "s_x"):
+    for ref in [*(f"s_00000000000{i}" for i in range(1, 7)), "s_x"]:
         assert not snooze.active(data, ref, NOW), ref
     assert not snooze.active(data, S1, NOW + timedelta(minutes=30))
 
@@ -185,6 +185,13 @@ def test_an_unattended_review_is_still_a_block(term):
     put(term, entry(ref=snooze.session_ref("cron-1")), entry("all"))
     turn(term, sid="cron-1", platform="cron")
     out, rec = call(term, "rm REVIEW", sid="cron-1")
+    assert out["action"] == "block" and "snoozed" not in rec
+
+
+def test_a_subagent_review_is_still_a_block(term):
+    put(term, entry(ref=snooze.session_ref("sub-1")), entry("all"))
+    turn(term, sid="sub-1", platform="subagent")
+    out, rec = call(term, "rm REVIEW", sid="sub-1")
     assert out["action"] == "block" and "snoozed" not in rec
 
 
