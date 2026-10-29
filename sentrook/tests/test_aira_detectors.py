@@ -755,6 +755,9 @@ def hx(command: str) -> dict:
         (hx("/usr/local/bin/hermes plugins disable sentrook"), "guardrail.plugin_disable"),
         (hx("cd ~ && hermes plugins disable sentrook"), "guardrail.plugin_disable"),
         (hx("echo hi; hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        # The shell parse fails (`$((`): words come from splitting the command text.
+        (hx("hermes -p work plugins disable sentrook $(("), "guardrail.plugin_disable"),
+        (hx("uv run hermes gateway stop $(("), "guardrail.gateway_stop"),
     ],
 )
 def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
@@ -775,6 +778,9 @@ def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
         ex("npx openclaw plugins enable sentrook-openclaw"),
         # Quoted text is one argument, not a subcommand.
         hx('hermes -q "plugins disable sentrook: what does that do?"'),
+        hx("hermes -q 'plugins disable sentrook' $(("),
+        # After `-c <code>` the interpreter's options are over; `-m` is the script's.
+        hx("python3 -c 'import sys' -m hermes_cli.main gateway stop"),
         hx('hermes chat -q "run hermes plugins disable sentrook"'),
     ],
 )

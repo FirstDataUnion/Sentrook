@@ -1140,6 +1140,8 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
         if _match_any(runners, name):
             for i in _after_options(current, 1):
                 tok = current[i]
+                if tok.startswith("-c"):
+                    break  # the interpreter's options end at `-c <code>`
                 if tok == "-m" and i + 1 < len(current):
                     module, rest = current[i + 1].lower(), current[i + 2 :]
                 elif tok.startswith("-m") and len(tok) > 2:
