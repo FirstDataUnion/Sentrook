@@ -7,6 +7,7 @@ but never applied.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -67,8 +68,13 @@ def _clip(s: str, n: int) -> str:
 
 
 def scores_line(resp: dict[str, Any]) -> str:
-    """The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none."""
-    parts = [f"{name} {round(v * 100)}" for name, v in tiers_of(resp).items() if v is not None]
+    """The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none.
+    A score that is not a finite number is left out; the rest are held to 0-1."""
+    parts = [
+        f"{name} {round(min(max(v, 0.0), 1.0) * 100)}"
+        for name, v in tiers_of(resp).items()
+        if v is not None and math.isfinite(v)
+    ]
     return f"Scores: {', '.join(parts)}." if parts else ""
 
 

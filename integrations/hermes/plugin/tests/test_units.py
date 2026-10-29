@@ -84,6 +84,14 @@ def test_review_message_shows_the_scores():
         _scored(tree={"suspicion": {"score": 0.92}, "consequence": {"score": None}}), "exec"
     )
     assert partial.endswith(" Scores: suspicion 92.")
+    odd = {
+        "suspicion": {"score": float("inf")},
+        "consequence": {"score": 1e300},
+        "confidence": {"score": -0.5},
+    }
+    assert review_message(_scored(tree=odd), "exec").endswith(
+        " Scores: consequence 100, confidence 0."
+    )
 
 
 @pytest.mark.parametrize(

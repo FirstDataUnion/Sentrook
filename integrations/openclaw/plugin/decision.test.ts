@@ -58,6 +58,8 @@ test("the review card shows the tree scores", () => {
   );
   const partial = reviewCopy(scored({ tree: { suspicion: { score: 0.92 }, consequence: { score: null } } }), "exec");
   assert.ok(partial.description.endsWith(" Scores: suspicion 92."));
+  const odd = { suspicion: { score: Infinity }, consequence: { score: 1e300 }, confidence: { score: -0.5 } };
+  assert.ok(reviewCopy(scored({ tree: odd }), "exec").description.endsWith(" Scores: consequence 100, confidence 0."));
 });
 
 test("without a tree the review card has no scores", () => {

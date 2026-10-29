@@ -49,11 +49,14 @@ function clip(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, Math.max(0, n - 1))}…`;
 }
 
-/** The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none. */
+/**
+ * The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none. A score that
+ * is not a finite number is left out; the rest are held to 0-1.
+ */
 export function scoresLine(resp: ScanResponse): string {
   const parts = Object.entries(tiersOf(resp))
-    .filter((e): e is [string, number] => e[1] !== null)
-    .map(([name, v]) => `${name} ${Math.round(v * 100)}`);
+    .filter((e): e is [string, number] => e[1] !== null && Number.isFinite(e[1]))
+    .map(([name, v]) => `${name} ${Math.round(Math.min(Math.max(v, 0), 1) * 100)}`);
   return parts.length ? `Scores: ${parts.join(", ")}.` : "";
 }
 
