@@ -13,8 +13,9 @@ from test_aira_detectors import ex, run
 
 from sentrook.enums import Enforce
 from sentrook.oracle.client import EntityQuery, SeedOracle, VerdictKind
-from sentrook.prepare.entities import EntityKind, extract_exec
+from sentrook.prepare.entities import EntityKind, Origin, extract_exec
 from sentrook.probes.oracle import EntityOracleProbe
+from sentrook.state.token import entity_hash, seed_state
 
 
 def packages(cmd: str) -> set[str]:
@@ -54,6 +55,41 @@ def test_seed_written_unfolded_matches():
         [EntityQuery("package", "pypi:foo-bar-baz")]
     )
     assert r.get("package", "pypi:foo-bar-baz").verdict is VerdictKind.KNOWN_GOOD
+
+
+def owner_named(request: str, cmd: str, value: str = "pypi:foo-bar") -> bool:
+    p, _ = run(ex(cmd, request=request))
+    return Origin.REQUEST in p.entities.get(EntityKind.PACKAGE, value).origins
+
+
+@pytest.mark.parametrize(
+    "request_text, cmd",
+    [
+        ("please install the foo_bar package", "pip install foo_bar"),
+        ("please install Foo_Bar", "pip install Foo_Bar"),
+        ("add foo.bar to the env", "pip install foo.bar==1.0"),
+        ("please install foo-bar", "pip install foo_bar"),
+        ("install pypi:foo_bar", "pip install foo-bar"),
+    ],
+)
+def test_owner_named_package_keeps_request_origin_in_any_spelling(request_text, cmd):
+    assert owner_named(request_text, cmd)
+
+
+@pytest.mark.parametrize("request_text", ["please install foobar", "install foo_bars", "foo"])
+def test_other_words_do_not_name_the_package(request_text):
+    assert not owner_named(request_text, "pip install foo_bar")
+
+
+def test_npm_request_match_stays_exact():
+    assert not owner_named("install foo-bar", "npm install foo_bar", "npm:foo_bar")
+    assert owner_named("install foo_bar", "npm install foo_bar", "npm:foo_bar")
+
+
+def test_seeded_untrusted_pypi_name_is_folded():
+    state = seed_state({"untrusted_entities": ["pypi:Foo_Bar", "npm:foo_bar"]}, salt="s")
+    assert state.has_untrusted(entity_hash("s", "package", "pypi:foo-bar"))
+    assert state.has_untrusted(entity_hash("s", "package", "npm:foo_bar"))
 
 
 def test_runs_of_separators_fold_to_one():
