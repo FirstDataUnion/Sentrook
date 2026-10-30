@@ -1,27 +1,39 @@
 # Sentrook (2.0 rebuild)
 
-Public repo. On 2026-10-01 `main` was reset to start the Sentrook 2.0 rebuild. The new scan
-pipeline (Jev probes, AIRA, entity oracle, context, convergence) and initial plugins are now
-implemented here; the design reference is in Notion, "Sentrook 2.0".
+Public repo. On 2026-10-01 `main` was reset to start the Sentrook 2.0 rebuild. `main` now holds the 2.0 scan
+service, both 2.0 host plugins (in beta) and their install guides; the design reference is in Notion, "Sentrook 2.0".
 
 Current goal: see the callout at the top of the Sentrook 2.0 Notion page.
 
 ## Where things are
-- `main` (this branch): active 2.0 implementation. Scanner code is in `sentrook/`; initial/beta
-  OpenClaw and Hermes plugins are in `integrations/openclaw/plugin/` and
-  `integrations/hermes/plugin/`. The repository also includes the scanner container image and CI.
-  `testnest/` is the 1.x harness (**reference, does not run**).
+- `main` (this branch): active 2.0 implementation.
+  - `sentrook/`: the scan service (PlanIR models and validation, prepare/redaction, Jev probes, AIRA, oracle client,
+    convergence, HTTP service) and its tests. `schema/` is generated from its models (`make schema`).
+  - `integrations/openclaw/plugin/` (TypeScript) and `integrations/hermes/plugin/` (stdlib Python): the 2.0 plugins,
+    including their owner commands (status, history, why, grants, bind, snooze).
+  - `integrations/fixtures/`: golden fixtures both plugin suites check, so the two hosts give the same answers.
+  - `integrations/openclaw/README.md`, `integrations/hermes/README.md`: the user install guides (install to first
+    scan, commands, observe/enforce, what is sent, uninstall). The root `README.md` links to them.
+  - `Dockerfile`: the scanner image. `testnest/` is the 1.x harness (**reference, does not run**).
 - `release/1.x`: the 1.x line as deployed (engine 1.0.3, OpenClaw plugin 1.0.5, Hermes beta). Hotfixes only.
 - `archive/pre-2.0-main`: old `main` tip. Contains the **plugin dashboard work** (commit `63e0170`,
   `integrations/openclaw/plugin/dashboard*.ts`, `control-ui.*`) and the unreleased rearchitecture phases.
 - `engine/2.0-policy-switch`: unmerged engine commits that Rookery's pin (`4ff6fb9`) still points at. Do not delete.
+
+## Checks
+`make lint`, `make test`, `make schema-check` (scan service); `make plugin-test` (OpenClaw, needs `npm ci` in the
+plugin dir), `make hermes-plugin-test`, `make plugin-planir-check` (both plugins' requests against the models).
 
 ## Rules for agents
 - Do not read or copy from `release/1.x` or `archive/pre-2.0-main` unless the task says to. They are
   reference, not the design. Use `git show <branch>:<path>`.
 - Prefer the current 2.0 plugin implementations under `integrations/`; the archived dashboard and
   pre-2.0 plugin code are reference only.
-- Fixtures and the private library live in the **Rookery** repo for now (`fixtures/`).
+- TestNest fixtures and the private entity library live in the **Rookery** repo (`fixtures/`). Only the plugins'
+  shared goldens live here, in `integrations/fixtures/`.
+- A change to a plugin's install steps, settings, commands or what it sends updates that host's install guide in the
+  same PR. The plugin endpoints default to the hosted service; `SENTROOK_DEV_ENDPOINTS=1` is for local stacks and
+  never belongs in the guides.
 - Do not trim `.gitleaks.toml` allowlists or `.github/secret_scanning.yml`: gitleaks scans every ref,
   so old fixtures stay visible until those branches are gone.
 - `release-plugin.yml` and `release-hermes-plugin.yml` must stay on `main` (a dispatchable workflow has

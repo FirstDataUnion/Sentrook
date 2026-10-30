@@ -33,7 +33,7 @@
     "url": "git+https://github.com/FirstDataUnion/Sentrook.git",
     "directory": "integrations/openclaw/plugin"
   },
-  "homepage": "https://github.com/FirstDataUnion/Sentrook/tree/main/integrations/openclaw/plugin",
+  "homepage": "https://github.com/FirstDataUnion/Sentrook/tree/main/integrations/openclaw",
   "bugs": {
     "url": "https://github.com/FirstDataUnion/Sentrook/issues"
   },

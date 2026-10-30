@@ -7,15 +7,42 @@ Sentrook is a runtime security scanner for open-source AI agents, developed by
 [FIDU](https://firstdataunion.org). It reviews an agent's pending tool calls, in the context of the
 trajectory that led to them, and flags or blocks the dangerous ones.
 
-**Sentrook 2.0 is being rebuilt.** This branch is a clean start for the new scan pipeline. The
-currently published offering (engine 1.x and the `@firstdataunion/sentrook-openclaw` plugin) is in
-maintenance mode and lives on the [`release/1.x`](../../tree/release/1.x) branch.
+Sentrook runs as a plugin inside the agent host. The plugin builds a description of each pending call (what the
+owner asked for, the call and its arguments, recent inputs and history), redacts secrets on the host, and sends it
+to the hosted scan service. The service scores the risk and the plugin allows the call, asks the owner, or blocks it.
 
-Nothing here is installable yet. See [CLAUDE.md](CLAUDE.md) for the repo layout and conventions.
+**Status: 2.0 beta.** The install guides start you in observe mode, where every call is scored and logged but
+nothing is blocked or asked; enforce mode is one setting away. The 1.x line (engine 1.x and plugin 1.0.x) is in maintenance on the
+[`release/1.x`](../../tree/release/1.x) branch.
 
-## Configuration
+## Install
 
-The scanner is configured through `SENTROOK_*` environment variables. The Jev probes and convergence read:
+| Host | Guide |
+| --- | --- |
+| [OpenClaw](https://github.com/openclaw/openclaw) | [integrations/openclaw/README.md](integrations/openclaw/README.md) |
+| [Hermes Agent](https://github.com/NousResearch/hermes-agent) | [integrations/hermes/README.md](integrations/hermes/README.md) |
+
+Each guide covers credentials, install, a first scan, the plugin's commands, observe and enforce mode, what is sent
+to the scan service, and uninstalling.
+
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `sentrook/` | The scan service (Python): request validation and preparation, the Jev probes, AIRA, the entity oracle, convergence and the HTTP service |
+| `integrations/openclaw/plugin/` | The OpenClaw plugin (TypeScript) |
+| `integrations/hermes/plugin/` | The Hermes plugin (Python, standard library only) |
+| `integrations/fixtures/` | Shared fixtures both plugins are tested against |
+| `schema/` | JSON Schemas for the scan request and response, generated from the models |
+| `testnest/` | The 1.x scenario harness, kept as reference; it does not run on `main` |
+
+Development uses [uv](https://docs.astral.sh/uv/) and `make`: `make install`, then `make lint` and `make test`
+for the service, `make plugin-test` and `make hermes-plugin-test` for the plugins.
+
+## Scan service configuration
+
+For running the scan service yourself; plugin users don't need this. The scanner is configured through
+`SENTROOK_*` environment variables. The Jev probes and convergence read:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
