@@ -21,7 +21,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 3
+version: 4
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -73,8 +73,9 @@ plugin_cli:
 
 # `openclaw sentrook <verb> ...` / `hermes sentrook <verb> ...`: the plugin's own commands. Only the
 # verbs listed as allowed, or no verb at all, pass; every other verb takes the floor, so a command the
-# plugin adds later (grants, snooze, bindings, history) is covered until it is listed here. The verb is
-# the first word after the subcommand that is not an option. Commands typed in a terminal are not
+# plugin adds later (grants, snooze, bindings, history) is covered until it is listed here. Every word
+# after the subcommand's options that could be the verb is checked (see below), so with an option that
+# might take a value (`-p status grant`) the floor fires if either word is not an allowed verb. Commands typed in a terminal are not
 # agent calls and never reach the scanner.
 plugin_command_cli:
   - head: openclaw
@@ -108,27 +109,56 @@ gateway_cli:
     blocked_verbs: [stop, kill, shutdown, down, halt]
 
 # How the four CLI lists above find `<head> <subcommand> <verb>` in a command. Options between the
-# head and the subcommand are skipped, with or without a value (`hermes --profile work plugins ...`,
-# `-p work`, `--profile=work`, `openclaw --dev gateway stop`); values are not known per flag, so a
-# word after an option is tried both as its value and as the subcommand. Quoted text stays one word.
+# head and the subcommand, and between the subcommand and the verb, are skipped, with or without a
+# value (`hermes --profile work plugins ...`, `hermes plugins -p work disable ...`, `--profile=work`,
+# `openclaw --dev gateway stop`); values are not known per flag, so a word after an option is tried
+# both as its value and as the subcommand or verb. Quoted text stays one word, and quotes or
+# backslashes inside a word are removed as the shell does (`sent""rook` reads as `sentrook`).
 #
 # Launchers that run a CLI by name are peeled off first, with their own options, so
 # `uv run --with x hermes plugins ...` and `npx -y openclaw@latest plugins ...` read as the bare CLI.
 # Launchers stack (`uv run python -m ...`). `sudo`, `env`, `timeout` and full paths are already
 # handled by the shell parse.
+#
+# The first entry whose words match is used, so a one-word entry (`[pnpm]`) comes after the longer
+# entries that start with the same word. A launcher is only peeled when the word after its options
+# is a known CLI head (or another launcher), so `pnpm install`, `pnpm test` and `yarn build` are
+# untouched; `exec` is listed here for the same reason.
 cli_launchers:
   - [uv, run]
+  - [uv, tool, run]
   - [uvx]
+  - [pipx, run]
   - [npx]
+  - [npm, exec]
+  - [npm, x]
   - [pnpm, exec]
   - [pnpm, dlx]
+  - [pnpm]
+  - [yarn, dlx]
+  - [yarn]
   - [bunx]
+  - [bun, x]
+  - [exec]
 # `<interpreter> [options] -m <module> ...`: the interpreter heads, and the modules that are a CLI's
 # entry point (the module or anything under it) mapped to that CLI's head.
 cli_module_runner_patterns:
   - '\Apython(?:[23](?:\.\d+)?)?\Z'
 cli_modules:
   hermes_cli: hermes
+# `<runtime> [options] <script> ...`: the runtime heads, and per CLI head the script paths that are
+# that CLI's entry point. Code given inline (`node -e`) ends the runtime's options.
+cli_script_runner_patterns:
+  - '\Anode(?:js)?\Z'
+cli_scripts:
+  openclaw:
+    path_patterns:
+      - '(?:\A|/)openclaw(?:\.[cm]?js)?\Z'
+      - '(?:\A|/)node_modules/openclaw/'
+
+# A shell running a script given with `-c` (`bash -c '…'`, `sh -lc '…'`, heads from
+# `installers.shell_heads`): the four CLI lists above are also matched against the script's own
+# commands.
 
 # Killing the gateway process by other means. Regex over the command text.
 process_kill_patterns:

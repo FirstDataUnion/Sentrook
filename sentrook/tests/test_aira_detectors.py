@@ -759,6 +759,44 @@ def hx(command: str) -> dict:
         # The shell parse fails (`$((`): words come from splitting the command text.
         (hx("hermes -p work plugins disable sentrook $(("), "guardrail.plugin_disable"),
         (hx("uv run hermes gateway stop $(("), "guardrail.gateway_stop"),
+        # More launchers that run a CLI by name.
+        (hx("uv tool run hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (ex("npm exec openclaw plugins disable sentrook-openclaw"), "guardrail.plugin_disable"),
+        (ex("npm exec -- openclaw plugins disable sentrook-openclaw"), "guardrail.plugin_disable"),
+        (ex("npm x -y openclaw gateway stop"), "guardrail.gateway_stop"),
+        (ex("bun x openclaw gateway stop"), "guardrail.gateway_stop"),
+        (ex("yarn dlx openclaw plugins remove sentrook-openclaw"), "guardrail.plugin_disable"),
+        (hx("pipx run hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (ex("pnpm openclaw plugins disable sentrook-openclaw"), "guardrail.plugin_disable"),
+        (ex("yarn openclaw gateway stop"), "guardrail.gateway_stop"),
+        (hx("exec hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("exec -a agent uv run hermes gateway stop"), "guardrail.gateway_stop"),
+        # node running the CLI's entry script.
+        (ex("node openclaw.mjs plugins disable sentrook-openclaw"), "guardrail.plugin_disable"),
+        (
+            ex(
+                "node --no-warnings ~/.npm-global/lib/node_modules/openclaw/openclaw.mjs gateway stop"
+            ),
+            "guardrail.gateway_stop",
+        ),
+        # Options between the subcommand and the verb.
+        (hx("hermes plugins -p work disable sentrook"), "guardrail.plugin_disable"),
+        (hx("hermes plugins --profile=work disable sentrook"), "guardrail.plugin_disable"),
+        (
+            ex("openclaw config --json set plugins.entries.sentrook.enabled false"),
+            "guardrail.config_entry",
+        ),
+        (ex("openclaw gateway --force stop"), "guardrail.gateway_stop"),
+        # A shell running the command as its `-c` script.
+        (hx("bash -c 'hermes plugins disable sentrook'"), "guardrail.plugin_disable"),
+        (hx('bash -lc "cd ~ && hermes gateway stop"'), "guardrail.gateway_stop"),
+        (ex("sh -c 'npx openclaw plugins disable sentrook-openclaw'"), "guardrail.plugin_disable"),
+        (hx("bash -c \"sh -c 'hermes plugins disable sentrook'\""), "guardrail.plugin_disable"),
+        # Quotes the shell removes from inside a word.
+        (hx('hermes plugins disable sent""rook'), "guardrail.plugin_disable"),
+        (hx("hermes plugins disable 'sent'rook"), "guardrail.plugin_disable"),
+        (hx("hermes plugins disable sent\\rook"), "guardrail.plugin_disable"),
+        (hx("her''mes gateway stop"), "guardrail.gateway_stop"),
     ],
 )
 def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
@@ -783,6 +821,28 @@ def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
         # After `-c <code>` the interpreter's options are over; `-m` is the script's.
         hx("python3 -c 'import sys' -m hermes_cli.main gateway stop"),
         hx('hermes chat -q "run hermes plugins disable sentrook"'),
+        # Options between the subcommand and a read verb.
+        hx("hermes plugins -p work list"),
+        hx("hermes plugins --help"),
+        hx("openclaw gateway --json status"),
+        # Launchers and wrappers running something else.
+        ex("npm exec eslint ."),
+        ex("npm exec -- prettier --check ."),
+        hx("uv tool run ruff check"),
+        hx("pipx run black ."),
+        ex("bun x vitest"),
+        ex("yarn dlx create-vite app"),
+        ex("pnpm install"),
+        ex("pnpm test"),
+        ex("yarn build"),
+        hx("exec ls"),
+        ex("node server.mjs"),
+        ex("node -e 'console.log(1)' openclaw.mjs gateway stop"),
+        ex("node scripts/openclaw-report.mjs gateway stop"),
+        # A shell `-c` script that only mentions the command, or runs a read.
+        hx("bash -c 'echo hermes plugins disable sentrook'"),
+        hx("bash -c 'hermes plugins list'"),
+        hx("bash script.sh hermes plugins disable sentrook"),
     ],
 )
 def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
@@ -808,6 +868,14 @@ def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
         hx("python3 -m hermes_cli.main sentrook grant host example.test"),
         ex("npx -y openclaw@latest sentrook snooze 1h"),
         hx("cd ~ && hermes sentrook grant host example.test"),
+        ex("node openclaw.mjs sentrook snooze 1h"),
+        ex("pnpm openclaw sentrook snooze 1h"),
+        hx("exec hermes sentrook grant host example.test"),
+        hx("sh -c 'hermes sentrook grant host example.test'"),
+        hx('hermes sent""rook grant host example.test'),
+        # An option before the verb might take the next word as its value, so every word that
+        # could be the verb is checked.
+        hx("hermes sentrook -p status grant host example.test"),
     ],
 )
 def test_c4star_plugin_commands_take_the_floor(raw):
@@ -827,6 +895,10 @@ def test_c4star_plugin_commands_take_the_floor(raw):
         hx("hermes sentrook --help"),
         hx("hermes -p work sentrook status"),
         hx("uv run hermes sentrook verify"),
+        hx("hermes sentrook --json status"),
+        hx("bash -c 'hermes sentrook status'"),
+        ex("node openclaw.mjs sentrook verify"),
+        ex("npm exec openclaw sentrook status"),
         # Another CLI, or the word as an argument rather than the subcommand.
         hx("sentrook scan case.json"),
         hx("hermes plugins list sentrook"),
