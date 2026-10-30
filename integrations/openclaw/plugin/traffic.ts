@@ -36,7 +36,9 @@ export class TrafficLog {
       const fd = openSync(this.file, "a+", 0o600);
       try {
         const lead = torn(fd) ? "\n" : "";
-        writeSync(fd, `${lead}${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`);
+        const buf = Buffer.from(`${lead}${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`);
+        // Like appendFileSync: keep writing after a short write, so a full disk ends in an error.
+        for (let off = 0; off < buf.length; ) off += writeSync(fd, buf, off);
       } finally {
         closeSync(fd);
       }
