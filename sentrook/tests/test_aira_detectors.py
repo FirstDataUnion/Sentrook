@@ -670,6 +670,50 @@ def test_c4_reads_are_not_self_modification():
         assert "C4" not in classes(env), raw
 
 
+def _tool_sib(tool: str, arguments: dict[str, Any]) -> dict:
+    return {"call_id": "sib_1", "tool": tool, "tool_kind": "other", "arguments": arguments}
+
+
+SKILL_READS = [
+    ("skills_read", {"name": "calendar"}),
+    ("skills_list", {}),
+    ("skill_view", {"name": "calendar"}),
+    ("skill_workshop", {"action": "list"}),
+    ("skill_workshop", {"action": "read", "name": "calendar"}),
+]
+
+
+@pytest.mark.parametrize("tool, arguments", SKILL_READS)
+def test_c4_reading_a_skill_is_not_self_modification(tool, arguments):
+    _, env = run(planir(tool, "other", arguments))
+    assert "C4" not in classes(env) and of(env, SELF) == []
+    _, env = run(ex("python3 ~/workspace/cal.py today", siblings=[_tool_sib(tool, arguments)]))
+    assert env.evidence["siblings"]["sib_1"]["classes"] == []
+    assert of(env, SELF) == []
+
+
+@pytest.mark.parametrize(
+    "tool, arguments",
+    [
+        ("skill_create", {"name": "calendar", "content": "x"}),
+        ("skill_manage", {"action": "create", "name": "calendar"}),
+        ("skill_install", {"name": "calendar"}),
+        ("skill_uninstall", {"name": "calendar"}),
+        ("skill_workshop", {"action": "create", "name": "calendar"}),
+        ("skill_workshop", {"action": "patch", "name": "calendar"}),
+        ("skill_workshop", {"action": "delete", "name": "calendar"}),
+        ("plugin_install", {"plugin": "@acme/weather"}),
+    ],
+)
+def test_c4_changing_a_skill_or_plugin_is_self_modification(tool, arguments):
+    _, env = run(planir(tool, "other", arguments))
+    assert "C4" in classes(env)
+    (sm,) = of(env, SELF, "selfmod.plugin")
+    assert sm.value == 1.0
+    _, env = run(ex("python3 ~/workspace/cal.py today", siblings=[_tool_sib(tool, arguments)]))
+    assert env.evidence["siblings"]["sib_1"]["rules"] == ["C4.plugin"]
+
+
 # --------------------------------------------------------------------------- C4*
 
 
