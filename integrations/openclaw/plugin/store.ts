@@ -5,6 +5,8 @@
  * - `runs/<runId>.json`: run context joined from agent hooks (trigger, request, sender facts)
  * - `assistant/<sessionKey>.json`: the latest assistant message (narration and sibling calls)
  * - `subagents.json`: child session key → parent session key
+ * - `grants.json`: grants and channel bindings set by command (see `grants.ts`)
+ * - `snooze.json`: snoozes set by command (see `snooze.ts`)
  * - `salt`: per-install key for placeholder refs and hashed ids
  *
  * Writes are atomic (temp file then rename). Read-modify-write of a session goes through
@@ -65,6 +67,19 @@ export interface Session {
 }
 
 export type RunContext = Record<string, any>;
+
+export interface GrantsFile {
+  version?: number;
+  grants: unknown[];
+  bindings: unknown[];
+  [key: string]: unknown;
+}
+
+export interface SnoozeFile {
+  version?: number;
+  snoozes: unknown[];
+  [key: string]: unknown;
+}
 
 const fileKey = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
 
@@ -167,6 +182,41 @@ export class Store {
 
   loadAssistant(sessionKey: string | undefined): any {
     return sessionKey ? this.readJson<any>(path.join(this.dir, "assistant", `${fileKey(sessionKey)}.json`), null) : null;
+  }
+
+  /**
+   * `grants.json`, empty when absent; null when it exists but cannot be read, so a change never
+   * overwrites entries it could not see.
+   */
+  loadGrants(): GrantsFile | null {
+    const file = path.join(this.dir, "grants.json");
+    if (!existsSync(file)) return { version: 1, grants: [], bindings: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const g = data as Record<string, unknown>;
+    // A key that is present must hold a list (null included): otherwise it is unreadable.
+    if (!Object.hasOwn(g, "grants")) g.grants = [];
+    if (!Object.hasOwn(g, "bindings")) g.bindings = [];
+    return Array.isArray(g.grants) && Array.isArray(g.bindings) ? (g as GrantsFile) : null;
+  }
+
+  saveGrants(value: GrantsFile): void {
+    this.writeJson(path.join(this.dir, "grants.json"), value);
+  }
+
+  /** `snooze.json`, empty when absent; null when it exists but cannot be read. */
+  loadSnooze(): SnoozeFile | null {
+    const file = path.join(this.dir, "snooze.json");
+    if (!existsSync(file)) return { version: 1, snoozes: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const s = data as Record<string, unknown>;
+    if (!Object.hasOwn(s, "snoozes")) s.snoozes = [];
+    return Array.isArray(s.snoozes) ? (s as SnoozeFile) : null;
+  }
+
+  saveSnooze(value: SnoozeFile): void {
+    this.writeJson(path.join(this.dir, "snooze.json"), value);
   }
 
   setParent(child: string, parent: string): void {

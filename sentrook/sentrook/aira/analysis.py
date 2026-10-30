@@ -129,6 +129,12 @@ class CallAnalysis:
             return [self.normalised_command()]
         return [self.scan_text]
 
+    def segment_tokens(self) -> list[list[str]]:
+        """`segment_texts` as words. From the parse, a quoted argument stays one word."""
+        if self.shape is not None and self.shape.parse_ok and self.shape.segments:
+            return [[s.head, *s.argv] for s in self.shape.segments]
+        return [line.split() for line in self.segment_texts()]
+
     def normalised_command(self) -> str:
         cmd = self.command or ""
         norm = normalise_text(cmd)

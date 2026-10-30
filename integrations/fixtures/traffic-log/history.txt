@@ -1,0 +1,11 @@
+Last 8 scans, newest first:
+id        time (UTC)           tool        risk  action                   review
+8888a1b2  2026-10-29 09:45:00  terminal    66    review                   no answer
+7777a1b2  2026-10-29 09:40:00  write_file  47    observed (would review)  -
+6666a1b2  2026-10-29 09:30:00  terminal    58    review                   denied
+5555a1b2  2026-10-29 09:25:00  web_fetch   -     blocked (scan error)     -
+4444a1b2  2026-10-29 09:20:00  terminal    92    blocked                  -
+3333a1b2  2026-10-29 09:05:00  terminal    55    review                   approved
+2222a1b2  2026-10-29 09:01:00  terminal    61    blocked (no reviewer)    -
+1111a1b2  2026-10-29 09:00:00  read_file   5     allowed                  -
+Details: {why} <id>

@@ -1,0 +1,4 @@
+Last 1 scan, newest first:
+id        time (UTC)           tool                                      risk  action  review
+aaaa0001  2026-10-29 11:00:00  mcp__🙂tools__éééééééééééééééééééééééééé…  93    review  approved
+Details: {why} <id>

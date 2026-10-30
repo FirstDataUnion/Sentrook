@@ -45,6 +45,15 @@ test("credentials and metadata addresses are refused even in dev mode", () => {
   assert.equal(parseEndpoint("file:///etc/passwd", true).ok, false);
 });
 
+test("a URL that cannot be parsed is refused without quoting it", () => {
+  for (const dev of [false, true]) {
+    assert.deepEqual(parseEndpoint("https://u:pw-91c7e2@scan.test:99999", dev), {
+      ok: false,
+      reason: "invalid URL (could not be parsed)",
+    });
+  }
+});
+
 test("the dev switch is read from env, never plugin config", () => {
   const cfg = resolveConfig({ scanUrl: "http://sentrook:8080", devEndpoints: true }, {});
   assert.equal(cfg.endpoints.scan.ok, false);
@@ -72,8 +81,6 @@ test("grants and channel bindings", () => {
     },
     {},
   );
-  assert.deepEqual(cfg.grants, [
-    { kind: "destination", pattern: "*.mycorp.example", scope: "persistent" },
-    { kind: "destination", pattern: "#ops-alerts", scope: "persistent" },
-  ]);
+  assert.deepEqual(cfg.grants, [{ kind: "destination", pattern: "*.mycorp.example", scope: "persistent" }]);
+  assert.deepEqual(cfg.channelBindings, ["#ops-alerts"]);
 });

@@ -11,9 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from . import cli
+from . import cli, commands, grants, owner, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -88,6 +90,43 @@ def _rule_key(fingerprint: str | None, request_id: str) -> str:
     """Hermes persists Session/Always approvals per rule key. Keyed on the action fingerprint, an approval
     covers the same action (same source and destination) again, not other calls of the same tool."""
     return "sentrook:" + hashlib.sha256((fingerprint or request_id).encode()).hexdigest()[:16]
+
+
+# ---- owner-only commands ----------------------------------------------------------------------------
+
+
+def owner_command(verb: str, fn: Callable[[str, dict[str, Any]], str]) -> Callable[..., str]:
+    """A slash-command handler that runs `fn` only for the owner and audits every attempt.
+
+    Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
+    through this. Any failure while checking the sender refuses the command. `fn` gets the raw
+    arguments and who ran it: `{"basis", "platform", "sender_ref"}`.
+    """
+
+    def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
+        try:
+            cfg, env = _load()
+            store, traffic = _state(cfg)
+        except Exception as exc:  # noqa: BLE001 - nowhere to audit; refuse
+            logger.warning("owner check for %s failed: %s", verb, exc)
+            return owner.refusal(verb)
+        try:
+            check = owner.gate(verb, traffic, store.salt(), facts=session_facts(), env=env)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("owner check for %s failed: %s", verb, exc)
+            owner.audit(
+                traffic,
+                verb,
+                {"owner": False, "basis": ["none"], "platform": ""},
+                ref=None,
+                reason="error",
+            )
+            return owner.refusal(verb)
+        if not check["owner"]:
+            return owner.refusal(verb)
+        return fn(raw_args, {k: check[k] for k in ("basis", "platform", "sender_ref")})
+
+    return handler
 
 
 # ---- context joins ---------------------------------------------------------------------------------
@@ -192,6 +231,7 @@ def _scan_one(
         facts=facts,
         env=env,
         host_cfg=host_cfg,
+        grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC)),
     )
     planir = built["planir"]
     unattended = is_unattended(
@@ -234,6 +274,7 @@ def _scan_one(
 
     directive: dict[str, Any] | None = None
     verdict: str | None = None
+    snoozed = False
     if isinstance(result, ScanOk):
         resp = result.response
         verdict = decide(resp, cfg.review_at, cfg.block_at)
@@ -248,6 +289,12 @@ def _scan_one(
             # A review nobody can answer (or Hermes would auto-approve) is a block.
             entry["decision"] = "blocked"
             directive = {"action": "block", "message": block_reason(resp, built["tool"])}
+        elif snooze.applies(resp) and snooze.active(
+            store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+        ):
+            # The owner snoozed reviews for this session: scanned and logged, not asked.
+            entry["decision"] = "allowed"
+            snoozed = True
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
             key = _rule_key(resp.get("action_fingerprint"), planir["request_id"])
@@ -291,6 +338,7 @@ def _scan_one(
             "mode": cfg.mode,
             "verdict": verdict,
             "decision": entry["decision"],
+            **({"snoozed": True} if snoozed else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
             "response": result.response if isinstance(result, ScanOk) else None,
@@ -301,7 +349,7 @@ def _scan_one(
     )
     if isinstance(result, ScanOk):
         logger.info(
-            "scan step=%s tool=%s risk=%s enforced=%s status=%s verdict=%s decision=%s ms=%s",
+            "scan step=%s tool=%s risk=%s enforced=%s status=%s verdict=%s decision=%s%s ms=%s",
             built["step"],
             built["tool"],
             result.response.get("risk"),
@@ -309,6 +357,7 @@ def _scan_one(
             result.response.get("status"),
             verdict,
             entry["decision"],
+            " (snoozed)" if snoozed else "",
             result.latency_ms,
         )
     return directive
@@ -442,9 +491,13 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_approval_response", on_post_approval_response)
     try:
-        cli.register_cli(ctx, _settings)
+        cli.register_cli(ctx, _settings, owner_command)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin CLI commands
         logger.info("sentrook CLI not registered: %s", exc)
+    try:
+        commands.register_slash(ctx, _settings, owner_command)
+    except Exception as exc:  # noqa: BLE001 - older hosts without plugin slash commands
+        logger.info("/sentrook not registered: %s", exc)
     cfg, _ = _load()
     ep = cfg.endpoints
 

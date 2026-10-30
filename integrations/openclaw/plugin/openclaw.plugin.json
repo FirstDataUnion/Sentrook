@@ -56,12 +56,12 @@
             "kind": { "type": "string", "description": "destination | file | provider" },
             "pattern": { "type": "string" },
             "allows": { "type": "array", "items": { "type": "string" } },
-            "scope": { "type": "string", "enum": ["session", "persistent"] },
+            "scope": { "type": "string", "enum": ["session", "persistent"], "description": "persistent when absent; /sentrook-grant adds grants without editing config." },
             "granted_at": { "type": "string" }
           }
         }
       },
-      "channelBindings": { "type": "array", "items": { "type": "string" }, "description": "Channels this deployment normally delivers to; sent as destination grants." }
+      "channelBindings": { "type": "array", "items": { "type": "string" }, "description": "Channels this deployment normally delivers to; sent as destination grants. /sentrook-bind adds more without editing config." }
     }
   }
 }

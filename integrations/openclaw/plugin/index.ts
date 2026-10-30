@@ -8,12 +8,16 @@
 
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
+import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
+import * as grants from "./grants.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
+import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
+import * as snooze from "./snooze.ts";
 import { type HistoryEntry, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
@@ -34,6 +38,13 @@ interface OpenClawPluginApi {
   runtime?: { version?: unknown };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
+  registerCommand?: (def: {
+    name: string;
+    description: string;
+    acceptsArgs?: boolean;
+    requiredScopes?: string[];
+    handler: (ctx: any) => Promise<{ text?: string }>;
+  }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
 }
 
@@ -89,6 +100,12 @@ function sessionIdOf(ctx: any): string {
   return ctx?.sessionId || ctx?.sessionKey || "unknown";
 }
 
+/** The session a command was sent from, keyed as `sessionIdOf` keys scans; undefined when there is none. */
+function commandSessionOf(ctx: any): string | undefined {
+  const sid = ctx?.sessionId || ctx?.sessionKey;
+  return typeof sid === "string" && sid ? sid : undefined;
+}
+
 const plugin = {
   id: "sentrook",
   name: "Sentrook",
@@ -102,9 +119,23 @@ const plugin = {
           const { registerSentrookCli } = await import("./cli.ts");
           registerSentrookCli(program, () => api.pluginConfig ?? {});
         },
-        { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify)", hasSubcommands: true }] },
+        { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
       if (mode === "cli-metadata") return;
+    }
+
+    // `/sentrook <subcommand>` in chat; the host answers it without a model request.
+    try {
+      api.registerCommand?.({
+        name: "sentrook",
+        description: "Sentrook plugin status and help",
+        acceptsArgs: true,
+        handler: async (ctx) => ({
+          text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
+        }),
+      });
+    } catch (err) {
+      api.logger.warn(`${LOG} /sentrook command unavailable: ${String(err)}`);
     }
 
     const loadConfig = (): { cfg: PluginConfig; env: NodeJS.ProcessEnv } => {
@@ -124,6 +155,44 @@ const plugin = {
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
     );
+    // `/sentrook-history`, `/sentrook-why`, the grants commands and `/sentrook-snooze`: owner only,
+    // audited in the traffic log.
+    for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
+      try {
+        api.registerCommand?.({
+          ...ownerCommand<OwnerContext & { args?: string; sessionId?: string; sessionKey?: string }>(
+            {
+              name: sub.command,
+              verb,
+              description: sub.description,
+              handler: async (ctx, gate) => ({
+                text: await sub.run(
+                  {
+                    pluginConfig: api.pluginConfig ?? {},
+                    env: process.env,
+                    owner: {
+                      by: {
+                        basis: gate.basis,
+                        channel: typeof ctx.channel === "string" ? ctx.channel : null,
+                        sender_ref: senderRef(ctx.senderId, store.salt()),
+                      },
+                      beforeWrite: gate.beforeWrite,
+                      record: (record) => traffic.write(record),
+                    },
+                    session: commandSessionOf(ctx),
+                  },
+                  (ctx.args ?? "").trim(),
+                ),
+              }),
+            },
+            { traffic, salt: () => store.salt() },
+          ),
+          acceptsArgs: true,
+        });
+      } catch (err) {
+        api.logger.warn(`${LOG} /${sub.command} command unavailable: ${String(err)}`);
+      }
+    }
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
 
@@ -299,6 +368,7 @@ const plugin = {
         run,
         assistant: store.loadAssistant(ctx?.sessionKey),
         parents: store.parents(),
+        grants: grants.effective(cfg, store.loadGrants(), new Date()),
         hostVersion,
       });
       const body = JSON.stringify(built.planir);
@@ -338,6 +408,7 @@ const plugin = {
       let hook: BeforeToolCallResult | undefined;
       let verdict: Verdict | null = null;
       let onError = false;
+      let snoozed = false;
       if (result.ok) {
         const resp = result.response;
         verdict = decide(resp, cfg);
@@ -351,6 +422,17 @@ const plugin = {
         } else if (verdict === "block") {
           entry.decision = "blocked";
           hook = { block: true, blockReason: blockReason(resp, event.toolName) };
+        } else if (
+          // Only a human's message: a run whose trigger is unknown or not a message is never snoozed,
+          // whatever the approval timeout policy calls attended.
+          triggerKind === "message" &&
+          !timing.unattended &&
+          snooze.applies(resp) &&
+          snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
+        ) {
+          // The owner snoozed reviews for this session: scanned and logged, not asked.
+          entry.decision = "allowed";
+          snoozed = true;
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -392,6 +474,7 @@ const plugin = {
         mode: cfg.mode,
         verdict,
         decision: entry.decision,
+        ...(snoozed ? { snoozed: true } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
         host_labels: hostLabels(run, ctx),
         planir: built.planir,
@@ -401,7 +484,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );

@@ -39,7 +39,7 @@ export function toolKind(name: string): string {
   return "other";
 }
 
-const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+export const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
 function normaliseTransport(t: unknown): string | null {
   if (typeof t !== "string" || !t) return null;
@@ -222,6 +222,8 @@ export interface BuildInput {
   parents: Record<string, string>;
   /** OpenClaw's version, from the plugin runtime. */
   hostVersion?: string;
+  /** Every grant in force (`grants.effective`); the config grants alone when not given. */
+  grants?: GrantConfig[];
 }
 
 export interface Built {
@@ -330,7 +332,7 @@ export function buildPlanir(b: BuildInput): Built {
       arguments: capArgs(args, cfg.inputCapBytes),
       batch: { siblings },
     },
-    grants: relevantGrants(cfg.grants, JSON.stringify(event.params ?? {})),
+    grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {})),
     options: { packs: cfg.packs, redaction: redactor.level },
   };
 

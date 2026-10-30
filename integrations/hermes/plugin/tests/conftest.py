@@ -12,7 +12,8 @@ from plugin import auth, scan_client  # noqa: E402
 
 
 class FakeScanner:
-    """Risk from markers in the command; 500 when the command says FAIL."""
+    """Risk from markers in the command; 500 when the command says FAIL; FLOOR enforces a review
+    below the review line."""
 
     def __init__(self):
         self.scans = []
@@ -30,6 +31,7 @@ class FakeScanner:
             if "FAIL" in cmd:
                 return 500, {"error": {"code": "boom"}}, {}
             risk = 92 if "EXFIL" in cmd else 55 if "REVIEW" in cmd else 5
+            enforced = "review" if "FLOOR" in cmd else None
             step = p["session"]["step"]
             return (
                 200,
@@ -38,7 +40,7 @@ class FakeScanner:
                     "request_id": p["request_id"],
                     "status": "ok",
                     "risk": risk,
-                    "enforced": None,
+                    "enforced": enforced,
                     "tree": {
                         "suspicion": {"score": risk / 100},
                         "consequence": {"score": 0.5},
@@ -80,6 +82,7 @@ def harness(tmp_path, monkeypatch):
 
         def __init__(self):
             self.hooks = {}
+            self.commands = {}
             self.settings = {}
 
         def get_config(self, key, default=None):
@@ -90,6 +93,13 @@ def harness(tmp_path, monkeypatch):
 
         def register_cli_command(self, **kw):
             self.cli = kw
+
+        def register_command(self, name, handler, description="", args_hint=""):
+            self.commands[name] = {
+                "handler": handler,
+                "description": description,
+                "args_hint": args_hint,
+            }
 
     ctx = Ctx()
     plugin.register(ctx)

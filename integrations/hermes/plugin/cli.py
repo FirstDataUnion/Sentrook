@@ -1,4 +1,9 @@
-"""`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works."""
+"""`hermes sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works.
+
+The `/sentrook` subcommands (`commands.COMMANDS`, except help) are `hermes sentrook` subcommands too,
+with the same output. Owner-only ones go through the same owner check, where the local terminal counts
+as the owner.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from .auth import (
     http_json,
     resolve_oidc_credentials,
 )
+from .commands import COMMANDS, OwnerGate, dispatch
 from .config import resolve_config
 
 
@@ -74,14 +80,54 @@ def format_report(checks: list[tuple[str, bool, str]]) -> str:
     return "\n".join(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}" for name, ok, detail in checks)
 
 
-def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
+#: argparse gives the CLI its own help.
+CLI_COMMANDS = tuple(name for name in COMMANDS if name != "help")
+#: `grant`'s valued flags, declared to argparse so they may come before or after the positionals;
+#: the values themselves are checked by the shared parser.
+GRANT_FLAGS = ("scope", "allows", "expires")
+
+
+def _rest(cmd: str, args: argparse.Namespace) -> str:
+    """The text after the subcommand, as the slash form would receive it."""
+    arg = getattr(args, "sentrook_arg", "") or ""
+    words = arg if isinstance(arg, list) else [arg]
+    if cmd == "grant":
+        if args.persistent:
+            words.append("--persistent")
+        words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
+    if cmd == "snooze" and args.all:
+        words.append("--all")
+    return " ".join(words)
+
+
+def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGate) -> None:
     def setup(parser: argparse.ArgumentParser) -> None:
         sub = parser.add_subparsers(dest="sentrook_cmd")
         sub.add_parser("verify", help="Check endpoints, credentials, scanner health and token mint")
+        for name in CLI_COMMANDS:
+            p = sub.add_parser(name, help=COMMANDS[name].summary)
+            if name == "grant":
+                p.add_argument("sentrook_arg", nargs="*", metavar="<kind> <pattern>")
+                p.add_argument("--persistent", action="store_true")
+                for flag in GRANT_FLAGS:
+                    p.add_argument(f"--{flag}")
+            elif name == "snooze":
+                p.add_argument("sentrook_arg", nargs="*", metavar="duration|off|status")
+                p.add_argument("--all", action="store_true", help="every session")
+            elif COMMANDS[name].cli_rest:
+                p.add_argument(
+                    "sentrook_arg", nargs=argparse.REMAINDER, metavar=COMMANDS[name].args
+                )
+            elif COMMANDS[name].args:
+                p.add_argument("sentrook_arg", nargs="?", default="", metavar=COMMANDS[name].args)
 
     def handler(args: argparse.Namespace) -> None:
-        if getattr(args, "sentrook_cmd", None) != "verify":
-            print("usage: hermes sentrook verify")
+        cmd = getattr(args, "sentrook_cmd", None)
+        if cmd in CLI_COMMANDS:
+            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate))
+            return
+        if cmd != "verify":
+            print(f"usage: hermes sentrook {{{','.join(('verify', *CLI_COMMANDS))}}}")
             return
         checks = run_verify(settings())
         print(format_report(checks))
@@ -90,7 +136,7 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]]) -> None:
 
     ctx.register_cli_command(
         name="sentrook",
-        help="Sentrook plugin helpers (verify)",
+        help=f"Sentrook plugin helpers ({', '.join(('verify', *CLI_COMMANDS))})",
         description="Sentrook plugin helpers",
         setup_fn=setup,
         handler_fn=handler,

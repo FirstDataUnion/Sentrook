@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from sentrook.converge.registry import REASONS
 from sentrook.enums import Enforce, ProbeStatus, ProbeStep, SessionFlag
 from sentrook.prepare import PrepareOptions, prepare
 from sentrook.prepare.entities import EntityKind
@@ -712,6 +713,130 @@ def _floor(env: Envelope, reason: str):
 def test_c4star_exec_forms_take_the_floor(raw, reason):
     _, env = run(raw)
     _floor(env, reason)
+
+
+def hx(command: str) -> dict:
+    return ex(command, platform="hermes")
+
+
+@pytest.mark.parametrize(
+    "raw, reason",
+    [
+        # Global flags (with or without a value) between the head and the subcommand.
+        (hx("hermes --profile work plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("hermes -p work plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("hermes --profile=work plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("hermes -p plugins plugins disable sentrook"), "guardrail.plugin_disable"),
+        (ex("openclaw --dev gateway stop"), "guardrail.gateway_stop"),
+        (
+            hx("hermes -p work config set plugins.disabled sentrook"),
+            "guardrail.config_entry",
+        ),
+        # Launchers that run the CLI by name.
+        (hx("uv run hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("uv run --with rich hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("uvx --from hermes-agent hermes gateway stop"), "guardrail.gateway_stop"),
+        (hx("python3 -m hermes_cli.main plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("python -u -m hermes_cli.main gateway stop"), "guardrail.gateway_stop"),
+        (
+            hx("uv run python -m hermes_cli.main -p work plugins disable sentrook"),
+            "guardrail.plugin_disable",
+        ),
+        (ex("npx openclaw plugins disable sentrook-openclaw"), "guardrail.plugin_disable"),
+        (ex("npx -y openclaw@latest plugins remove sentrook-openclaw"), "guardrail.plugin_disable"),
+        (
+            ex("pnpm exec openclaw config set plugins.entries.sentrook.enabled false"),
+            "guardrail.config_entry",
+        ),
+        (ex("pnpm dlx openclaw gateway stop"), "guardrail.gateway_stop"),
+        (ex("bunx openclaw plugins disable sentrook-openclaw"), "guardrail.plugin_disable"),
+        # Already caught through the shell parse; must keep firing.
+        (hx("sudo hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("env HERMES_HOME=/tmp/h hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("/usr/local/bin/hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("cd ~ && hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        (hx("echo hi; hermes plugins disable sentrook"), "guardrail.plugin_disable"),
+        # The shell parse fails (`$((`): words come from splitting the command text.
+        (hx("hermes -p work plugins disable sentrook $(("), "guardrail.plugin_disable"),
+        (hx("uv run hermes gateway stop $(("), "guardrail.gateway_stop"),
+    ],
+)
+def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
+    _, env = run(raw)
+    _floor(env, reason)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        hx("hermes plugins list"),
+        hx("hermes --profile work plugins list"),
+        hx("hermes config get sentrook"),
+        hx("uv run pytest"),
+        hx("uv run hermes gateway restart"),
+        hx("python3 -m pytest tests/plugins"),
+        hx("hermes -p work plugins disable other-plugin"),
+        ex("npx openclaw plugins enable sentrook-openclaw"),
+        # Quoted text is one argument, not a subcommand.
+        hx('hermes -q "plugins disable sentrook: what does that do?"'),
+        hx("hermes -q 'plugins disable sentrook' $(("),
+        # After `-c <code>` the interpreter's options are over; `-m` is the script's.
+        hx("python3 -c 'import sys' -m hermes_cli.main gateway stop"),
+        hx('hermes chat -q "run hermes plugins disable sentrook"'),
+    ],
+)
+def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
+    _, env = run(raw)
+    assert env.floors == [], floor_reasons(env)
+    assert not any(r.startswith("guardrail.") for r in reasons(env)), reasons(env)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        hx("hermes sentrook grant host example.test"),
+        ex("openclaw sentrook snooze 1h"),
+        hx("hermes sentrook history"),
+        hx("hermes --profile work sentrook grant host example.test"),
+        hx("uv run hermes sentrook snooze"),
+        hx("hermes sentrook revoke host example.test"),
+        ex("openclaw sentrook bind channel general"),
+        hx("hermes sentrook why"),
+        # Any verb not listed as a read, including ones the plugin does not have yet.
+        ex("openclaw sentrook quiet"),
+        hx("hermes sentrook --verbose grant host example.test"),
+        hx("python3 -m hermes_cli.main sentrook grant host example.test"),
+        ex("npx -y openclaw@latest sentrook snooze 1h"),
+        hx("cd ~ && hermes sentrook grant host example.test"),
+    ],
+)
+def test_c4star_plugin_commands_take_the_floor(raw):
+    _, env = run(raw)
+    _floor(env, "guardrail.plugin_command")
+    assert "guardrail.plugin_command" in REASONS
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        hx("hermes sentrook status"),
+        hx("hermes sentrook verify"),
+        ex("openclaw sentrook verify"),
+        ex("openclaw sentrook status"),
+        hx("hermes sentrook"),
+        hx("hermes sentrook --help"),
+        hx("hermes -p work sentrook status"),
+        hx("uv run hermes sentrook verify"),
+        # Another CLI, or the word as an argument rather than the subcommand.
+        hx("sentrook scan case.json"),
+        hx("hermes plugins list sentrook"),
+        hx('hermes chat -q "hermes sentrook grant host example.test"'),
+    ],
+)
+def test_c4star_plugin_read_commands_stay_silent(raw):
+    _, env = run(raw)
+    assert env.floors == [], floor_reasons(env)
+    assert not any(r.startswith("guardrail.") for r in reasons(env)), reasons(env)
 
 
 def test_c4star_file_tools_take_the_floor():

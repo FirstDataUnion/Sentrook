@@ -1,0 +1,7 @@
+{
+  "grants": [
+    { "kind": "destination", "pattern": "*.mycorp.example" },
+    { "kind": "file", "pattern": "~/notes/*", "allows": ["read", "write"], "scope": "sesion" }
+  ],
+  "channel_bindings": ["#daily-brief"]
+}
