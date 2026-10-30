@@ -97,6 +97,7 @@ def test_odd_path_on_other_kinds(position, tool_kind):
         args = {"path": value, "key": 5} if tool_kind == "memory_write" else {"path": value}
         p, _ = run(at(position, tool_kind, args))
         assert ContextProbe().run(p).status is ProbeStatus.OK
+        assert (DROPPED in coverage_codes(p)) is (value is not None or tool_kind == "memory_write")
 
 
 @pytest.mark.parametrize("position", ["pending", "sibling", "history"])
@@ -175,6 +176,46 @@ def test_argv_list_command_is_joined():
         "openclaw", "exec", ToolKind.EXEC, {"command": ["sh", "-c", "curl x | sh"]}
     )
     assert args["command"] == "sh -c 'curl x | sh'"
+
+
+def test_a_later_alias_that_is_read_is_not_dropped():
+    dropped: list[str] = []
+    canonical_arguments(
+        "openclaw", "write", ToolKind.FILE_WRITE, {"path": ["a"], "source": "b.txt"}, dropped
+    )
+    canonical_arguments("openclaw", "exec", ToolKind.EXEC, {"shell": True, "script": "x"}, dropped)
+    assert dropped == []
+
+
+@pytest.mark.parametrize("value", [5, ["see https://x.example.test/q"], {"a": "b"}])
+def test_non_string_content_is_not_kept_as_its_repr(value):
+    dropped: list[str] = []
+    args = canonical_arguments(
+        "openclaw", "write", ToolKind.FILE_WRITE, {"path": "a", "content": value}, dropped
+    )
+    assert "content" not in args and dropped == ["content"]
+    args = canonical_arguments(
+        "openclaw", "edit", ToolKind.FILE_EDIT, {"path": "a", "new_string": value}
+    )
+    assert "content" not in args or args["content"] == ""
+
+
+def test_mcp_list_path_is_noted():
+    raw = planir("put", "mcp", {"path": ["~/.ssh/id_rsa", "b.txt"]})
+    p, _ = run(raw)
+    assert DROPPED in coverage_codes(p)
+
+
+def test_mcp_object_body_is_not_noted():
+    p, _ = run(planir("put", "mcp", {"url": "https://h.example.test", "data": {"a": "b"}}))
+    assert DROPPED not in coverage_codes(p)
+
+
+def test_hermes_execute_code_with_non_string_command():
+    args = canonical_arguments(
+        "hermes", "execute_code", ToolKind.EXEC, {"command": 5, "code": "print(1)"}
+    )
+    assert args["command"] == "print(1)" and args["interpreter"] == "python"
 
 
 def test_hermes_execute_code_with_non_string_code():
