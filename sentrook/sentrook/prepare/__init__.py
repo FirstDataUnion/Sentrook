@@ -701,6 +701,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for s in (planir.pending_call.batch.siblings if planir.pending_call.batch else [])
     ]
     history = [canonical_history(platform, h) for h in planir.history]
+    for call in (pending, *siblings, *history):
+        if call.dropped:
+            where = call.source if call.step is None else f"{call.source} step {call.step}"
+            coverage.append(
+                CoverageNote("argument_dropped", f"{where} {call.tool}: {', '.join(call.dropped)}")
+            )
 
     # 4. trust
     inputs: list[PreparedInput] = []
