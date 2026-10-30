@@ -468,7 +468,7 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                         "kind": "tool_result",
                         "call_id": entry["call_id"],
                         "tool": entry["tool"],
-                        "tool_kind": entry.get("tool_kind") or tool_kind(tool_name),
+                        "tool_kind": entry.get("tool_kind") or tool_kind(tool_name, kw.get("args")),
                         "provider": entry["provider"],
                         "status": "ok" if status == "ok" else "error",
                         "content_type": "text",
