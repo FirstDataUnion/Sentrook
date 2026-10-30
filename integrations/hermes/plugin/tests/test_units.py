@@ -175,6 +175,7 @@ def test_process_control_kind_follows_the_action():
     assert tool_kind("process_manage", {"action": "respawn"}) == "exec"
     assert tool_kind("process_manage", {}) == "exec"
     assert tool_kind("process_manage") == "exec"
+    assert tool_kind("process_manage", {"action": ["poll"]}) == "exec"
     # Older Hermes versions name the tool `process`.
     assert tool_kind("process", {"action": "kill"}) == "exec"
     assert tool_kind("process", {"action": "poll"}) == "other"

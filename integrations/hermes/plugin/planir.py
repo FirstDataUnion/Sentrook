@@ -50,7 +50,7 @@ PROCESS_READ_ACTIONS = frozenset({"list", "poll", "log", "wait", "handoff"})
 def tool_kind(name: str, args: Any = None) -> str:
     if name in PROCESS_TOOLS:
         action = args.get("action") if isinstance(args, dict) else None
-        return "other" if action in PROCESS_READ_ACTIONS else "exec"
+        return "other" if isinstance(action, str) and action in PROCESS_READ_ACTIONS else "exec"
     if name in TOOL_KIND:
         return TOOL_KIND[name]
     if name.startswith("browser_"):
