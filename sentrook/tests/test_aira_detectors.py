@@ -789,6 +789,7 @@ def hx(command: str) -> dict:
         (ex("openclaw gateway --force stop"), "guardrail.gateway_stop"),
         # A shell running the command as its `-c` script.
         (hx("bash -c 'hermes plugins disable sentrook'"), "guardrail.plugin_disable"),
+        (hx("bash -o pipefail -c 'hermes gateway stop'"), "guardrail.gateway_stop"),
         (hx('bash -lc "cd ~ && hermes gateway stop"'), "guardrail.gateway_stop"),
         (ex("sh -c 'npx openclaw plugins disable sentrook-openclaw'"), "guardrail.plugin_disable"),
         (hx("bash -c \"sh -c 'hermes plugins disable sentrook'\""), "guardrail.plugin_disable"),
@@ -838,9 +839,12 @@ def test_c4star_cli_forms_survive_global_flags_and_launchers(raw, reason):
         hx("exec ls"),
         ex("node server.mjs"),
         ex("node -e 'console.log(1)' openclaw.mjs gateway stop"),
+        ex("node -pe 1 openclaw.mjs gateway stop"),
         ex("node scripts/openclaw-report.mjs gateway stop"),
-        # A shell `-c` script that only mentions the command, or runs a read.
+        # A shell `-c` script that only mentions the command, or runs a read; after a script file
+        # `-c` is the script's own argument.
         hx("bash -c 'echo hermes plugins disable sentrook'"),
+        ex("bash run.sh -c 'openclaw gateway stop'"),
         hx("bash -c 'hermes plugins list'"),
         hx("bash script.sh hermes plugins disable sentrook"),
     ],

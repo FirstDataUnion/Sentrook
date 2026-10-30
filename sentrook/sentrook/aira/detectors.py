@@ -1121,15 +1121,22 @@ def _shell_word(word: str) -> str:
 
 def _shell_script(words: list[str], shells: set[str]) -> str | None:
     """The script of `<shell> [options] -c <script> …`: the first word that is not an option after
-    a short-option cluster holding `c` (`-c`, `-lc`, `-ec`)."""
+    a short-option cluster holding `c` (`-c`, `-lc`, `-ec`). A script file before any `-c` ends
+    the shell's options (`bash run.sh -c x` passes `-c` to the script)."""
     if not words or _program_name(words[0]) not in shells:
         return None
     seen_c = False
+    takes_value = False
     for tok in words[1:]:
-        if tok.startswith("-") and len(tok) > 1:
+        if tok.startswith(("-", "+")) and len(tok) > 1:
             seen_c = seen_c or (not tok.startswith("--") and "c" in tok[1:])
+            takes_value = tok in {"-o", "+o", "-O", "+O"}
         elif seen_c:
             return tok
+        elif takes_value:
+            takes_value = False
+        else:
+            return None
     return None
 
 
@@ -1157,7 +1164,8 @@ def _cli_segments(a: CallAnalysis, lists: Lists) -> list[tuple[list[str], str]]:
     return out
 
 
-# Runtime options after which the rest is inline code, not a script path (`node -e '…'`).
+# Runtime options after which the rest is inline code, not a script path (`node -e '…'`); a
+# short-option cluster holding `e` or `p` (`-pe`) counts too.
 _INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print"})
 
 
@@ -1214,7 +1222,9 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
         elif _match_any(script_runners, name):
             for i in _after_options(current, 1):
                 tok = current[i]
-                if tok in _INLINE_CODE_FLAGS or tok.split("=", 1)[0] in _INLINE_CODE_FLAGS:
+                if tok.split("=", 1)[0] in _INLINE_CODE_FLAGS or (
+                    tok.startswith("-") and not tok.startswith("--") and set(tok[1:]) & {"e", "p"}
+                ):
                     break
                 head = next((h for h, p in scripts.items() if _match_any(p, tok)), None)
                 if head is not None and not tok.startswith("-"):
