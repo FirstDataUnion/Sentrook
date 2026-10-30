@@ -4,9 +4,13 @@ Hermes runs plugin slash commands on gateway chats and in interactive `hermes ch
 request. Over the API server and `hermes chat --oneshot` the text goes to the model instead, so the
 CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are built from it.
 
-`history` and `why` show past traffic, and `grants`, `grant`, `revoke` and `bind` list and change the
-grants and channel bindings set by command, so only the owner may run them: both forms go through the
-owner check (`owner_command`), which audits every attempt. `status` and `help` stay open.
+`history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
+grants and channel bindings set by command, and `snooze` relaxes review prompts, so only the owner may
+run them: both forms go through the owner check (`owner_command`), which audits every attempt.
+`status` and `help` stay open.
+
+`snooze` covers the session the slash command was sent from (Hermes passes its `session_id`); the CLI
+has no session, so there it can only snooze every session.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history
+from . import grants, history, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
@@ -45,6 +49,8 @@ class Subcommand:
     owner_only: bool = False
     #: The CLI takes everything after the subcommand (flags included) instead of one optional word.
     cli_rest: bool = False
+    #: `run` also gets the current session's id (`session_id`, "" when there is none).
+    session: bool = False
 
 
 def run_status(
@@ -69,6 +75,7 @@ def run_status(
             "traffic log: " + (f"on, {cfg.traffic_log_path}" if cfg.traffic_log_enabled else "off"),
             f"grants: {grant_count}",
             f"channel bindings: {binding_count}",
+            f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
         )
     )
 
@@ -102,12 +109,14 @@ def run_why(
     return f"No scan {rest} in the recent traffic log."
 
 
-def _changed(cfg: PluginConfig, result: tuple[str, dict[str, Any] | None], who: Who) -> str:
+def _changed(
+    cfg: PluginConfig, result: tuple[str, dict[str, Any] | None], who: Who, kind: str = "grants"
+) -> str:
     """The reply, after writing the change (if any) to the traffic log."""
     reply, record = result
     if record is not None:
         TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled).write(
-            {"kind": "grants", **record, "by": who}
+            {"kind": kind, **record, "by": who}
         )
     return reply
 
@@ -147,6 +156,21 @@ def run_bind(
         return refusal("bind")
     now = datetime.now(UTC)
     return _changed(cfg, grants.bind(cfg.state_dir, cfg, rest, who, now, CMD), who)
+
+
+def run_snooze(
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    session_id: str = "",
+) -> str:
+    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    if who is None:
+        return refusal("snooze")
+    ref = snooze.session_ref(session_id) if session_id else None
+    now = datetime.now(UTC)
+    return _changed(cfg, snooze.run(cfg.state_dir, rest, ref, who, now, CMD), who, "snooze")
 
 
 def run_help(
@@ -209,6 +233,15 @@ COMMANDS: dict[str, Subcommand] = {
         owner_only=True,
         cli_rest=True,
     ),
+    "snooze": Subcommand(
+        "allow review prompts in this session (--all: every session) for a duration, default "
+        "1h, at most 24h; never blocks, enforced reviews or unattended runs; off; status",
+        run_snooze,
+        args="[duration|off|status] [--all]",
+        owner_only=True,
+        cli_rest=True,
+        session=True,
+    ),
     "help": Subcommand("this list", run_help),
 }
 
@@ -218,9 +251,11 @@ def dispatch(
     settings: dict[str, Any],
     env: dict[str, str] | None = None,
     gate: OwnerGate | None = None,
+    session_id: str = "",
 ) -> str:
     """Run the named subcommand; empty or unknown input gets the help text. An owner-only
-    subcommand runs through `gate`, and is refused without one."""
+    subcommand runs through `gate`, and is refused without one. `session_id` is the session the
+    command was sent from ("" for none)."""
     name, _, rest = (raw_args or "").strip().partition(" ")
     name = name.lower()
     cmd = COMMANDS.get(name)
@@ -230,13 +265,17 @@ def dispatch(
         return cmd.run(rest.strip(), settings, env)
     if gate is None:
         return refusal(name)
-    return gate(name, lambda r, who: cmd.run(r.strip(), settings, env, who))(rest)
+    extra = {"session_id": session_id} if cmd.session else {}
+    return gate(name, lambda r, who: cmd.run(r.strip(), settings, env, who, **extra))(rest)
 
 
 def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGate) -> None:
-    def handler(raw_args: str = "", **_context: Any) -> str:
+    def handler(raw_args: str = "", **context: Any) -> str:
         try:
-            return dispatch(raw_args, settings(), gate=gate)
+            sid = context.get("session_id")
+            return dispatch(
+                raw_args, settings(), gate=gate, session_id=sid if isinstance(sid, str) else ""
+            )
         except Exception as exc:  # noqa: BLE001 - a reply beats a stack trace in the chat
             logger.warning("/sentrook failed: %s", exc)
             return f"/sentrook failed ({type(exc).__name__}); see the Hermes log."
@@ -244,6 +283,6 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
     ctx.register_command(
         name="sentrook",
         handler=handler,
-        description="Sentrook plugin status, scan history, grants and help",
+        description="Sentrook plugin status, scan history, grants, snooze and help",
         args_hint=" | ".join(f"{name} {c.args}".rstrip() for name, c in COMMANDS.items()),
     )

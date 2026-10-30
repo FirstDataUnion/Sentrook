@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, grants, owner
+from . import cli, commands, grants, owner, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -274,6 +274,7 @@ def _scan_one(
 
     directive: dict[str, Any] | None = None
     verdict: str | None = None
+    snoozed = False
     if isinstance(result, ScanOk):
         resp = result.response
         verdict = decide(resp, cfg.review_at, cfg.block_at)
@@ -288,6 +289,12 @@ def _scan_one(
             # A review nobody can answer (or Hermes would auto-approve) is a block.
             entry["decision"] = "blocked"
             directive = {"action": "block", "message": block_reason(resp, built["tool"])}
+        elif snooze.applies(resp) and snooze.active(
+            store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+        ):
+            # The owner snoozed reviews for this session: scanned and logged, not asked.
+            entry["decision"] = "allowed"
+            snoozed = True
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
             key = _rule_key(resp.get("action_fingerprint"), planir["request_id"])
@@ -331,6 +338,7 @@ def _scan_one(
             "mode": cfg.mode,
             "verdict": verdict,
             "decision": entry["decision"],
+            **({"snoozed": True} if snoozed else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
             "response": result.response if isinstance(result, ScanOk) else None,
@@ -341,7 +349,7 @@ def _scan_one(
     )
     if isinstance(result, ScanOk):
         logger.info(
-            "scan step=%s tool=%s risk=%s enforced=%s status=%s verdict=%s decision=%s ms=%s",
+            "scan step=%s tool=%s risk=%s enforced=%s status=%s verdict=%s decision=%s%s ms=%s",
             built["step"],
             built["tool"],
             result.response.get("risk"),
@@ -349,6 +357,7 @@ def _scan_one(
             result.response.get("status"),
             verdict,
             entry["decision"],
+            " (snoozed)" if snoozed else "",
             result.latency_ms,
         )
     return directive

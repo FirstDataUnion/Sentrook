@@ -39,7 +39,7 @@ export function toolKind(name: string): string {
   return "other";
 }
 
-const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+export const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
 function normaliseTransport(t: unknown): string | null {
   if (typeof t !== "string" || !t) return null;

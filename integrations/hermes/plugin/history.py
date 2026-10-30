@@ -163,6 +163,8 @@ def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
     if verdict == "block":
         return "blocked"
     if verdict == "review":
+        if decision == "allowed" and scan.get("snoozed") is True:
+            return "allowed (snoozed)"
         return "blocked (no reviewer)" if decision == "blocked" else "review"
     if verdict == "allow":
         return "allowed"

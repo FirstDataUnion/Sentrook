@@ -1,0 +1,4 @@
+Snooze: on in this session until 2026-10-29 12:30 UTC (30m left)
+Snooze: on in every session until 2026-10-29 14:05 UTC (2h 5m left)
+Other sessions snoozed: 1
+A snoozed review is allowed and logged; blocks, enforced reviews and unattended runs are never snoozed.
