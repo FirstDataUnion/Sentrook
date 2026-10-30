@@ -43,6 +43,7 @@ _DEGRADING_COVERAGE = {
     "content_missing",
     "written_file_truncated",
     "written_file_not_visible",
+    "argument_dropped",
 }
 
 

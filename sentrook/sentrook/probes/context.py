@@ -888,7 +888,12 @@ class ContextProbe:
             codes = {c.code for c in prepared.coverage}
             if codes & {"input_truncated", "written_file_truncated"}:
                 coverage = min(coverage, p.coverage_truncated)
-            if codes & {"content_dropped", "content_missing", "written_file_not_visible"}:
+            if codes & {
+                "content_dropped",
+                "content_missing",
+                "written_file_not_visible",
+                "argument_dropped",
+            }:
                 coverage = min(coverage, p.coverage_dropped)
             if coverage < 1.0:
                 contributions.append(
