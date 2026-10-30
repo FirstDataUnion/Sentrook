@@ -13,7 +13,7 @@ Current goal: see the callout at the top of the Sentrook 2.0 Notion page.
     including their owner commands (status, history, why, grants, bind, snooze).
   - `integrations/fixtures/`: golden fixtures both plugin suites check, so the two hosts give the same answers.
   - `integrations/openclaw/README.md`, `integrations/hermes/README.md`: the user install guides (install to first
-    scan, commands, observe/enforce, what is sent, uninstall). The root `README.md` links to them.
+    scan, bindings and grants, commands, enforce/observe, what is sent, uninstall). The root `README.md` links to them.
   - `Dockerfile`: the scanner image. `testnest/` is the 1.x harness (**reference, does not run**).
 - `release/1.x`: the 1.x line as deployed (engine 1.0.3, OpenClaw plugin 1.0.5, Hermes beta). Hotfixes only.
 - `archive/pre-2.0-main`: old `main` tip. Contains the **plugin dashboard work** (commit `63e0170`,

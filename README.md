@@ -11,8 +11,8 @@ Sentrook runs as a plugin inside the agent host. The plugin builds a description
 owner asked for, the call and its arguments, recent inputs and history), redacts secrets on the host, and sends it
 to the hosted scan service. The service scores the risk and the plugin allows the call, asks the owner, or blocks it.
 
-**Status: 2.0 beta.** The install guides start you in observe mode, where every call is scored and logged but
-nothing is blocked or asked; enforce mode is one setting away. The 1.x line (engine 1.x and plugin 1.0.x) is in maintenance on the
+**Status: 2.0 beta.** The install guides set Sentrook up in enforce mode. Observe mode, where every call is scored
+and logged but nothing is blocked or asked, is one setting away. The 1.x line (engine 1.x and plugin 1.0.x) is in maintenance on the
 [`release/1.x`](../../tree/release/1.x) branch.
 
 ## Install
@@ -22,8 +22,8 @@ nothing is blocked or asked; enforce mode is one setting away. The 1.x line (eng
 | [OpenClaw](https://github.com/openclaw/openclaw) | [integrations/openclaw/README.md](integrations/openclaw/README.md) |
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | [integrations/hermes/README.md](integrations/hermes/README.md) |
 
-Each guide covers credentials, install, a first scan, the plugin's commands, observe and enforce mode, what is sent
-to the scan service, and uninstalling.
+Each guide covers credentials, install, a first scan, channel bindings and grants, the plugin's commands, enforce and
+observe mode, what is sent to the scan service, and uninstalling.
 
 ## Repository layout
 

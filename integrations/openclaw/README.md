@@ -4,8 +4,8 @@ The Sentrook plugin scans each tool call your OpenClaw agent is about to make (s
 writes, web fetches, messages and so on), in the context of what you asked for and what the agent did on the way.
 Depending on the risk score it allows the call, asks you to approve it, or blocks it.
 
-This guide takes you from nothing to a first scan in **observe mode**, where Sentrook scores and logs every call
-but never blocks or asks. Switch to enforce mode once the scores look right to you.
+This guide installs Sentrook in **enforce mode**, where it protects the agent from the first call. To try it without
+it ever blocking or asking, use [observe mode](#observe-mode) instead.
 
 The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstDataUnion/Sentrook/issues>.
 
@@ -13,7 +13,7 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 - OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.10.3.
 - A shell on the machine that runs the OpenClaw gateway, as the user that runs it.
-- An account on the FIDU identity service, <https://identity.firstdataunion.org> (sign-up is open).
+- A free FIDU account, created at <https://identity.firstdataunion.org>.
 
 OpenClaw keeps its files in `~/.openclaw` unless `OPENCLAW_STATE_DIR` or `OPENCLAW_HOME` says otherwise. The
 paths below assume the default; substitute yours if it differs.
@@ -22,44 +22,42 @@ paths below assume the default; substitute yours if it differs.
 
 1. Sign in at <https://identity.firstdataunion.org>.
 2. Open the **Sentrook** tab and click **Create Credentials**. Any name will do (for example `openclaw-laptop`).
-3. Copy the **Client ID** and **Client Secret** somewhere private. The secret may not be shown again.
+3. Copy the **Client ID** and **Client Secret** somewhere private. The secret will not be shown again.
 
 The secret is a password: never paste it into a chat with your agent.
 
-## 2. Choose observe mode, before installing
+## 2. Add the credentials to OpenClaw
 
-Installing the plugin enables it straight away, so set its mode first and it starts in observe mode:
+Add them before installing: in enforce mode, a plugin without credentials stops every tool call.
+
+Open `~/.openclaw/.env` in a text editor (create it if it doesn't exist) and add these two lines at the end, with
+your own values:
+
+```
+SENTROOK_SCAN_CLIENT_ID=your-client-id
+SENTROOK_SCAN_CLIENT_SECRET=your-client-secret
+```
+
+Save the file, and make sure only your user can read it:
 
 ```bash
-openclaw config set plugins.entries.sentrook.config.mode observe
+chmod 600 ~/.openclaw/.env
+```
+
+Keep the credentials in `.env`, not in `openclaw.json`, which the agent can read. To replace them later, edit the same
+two lines and restart the gateway.
+
+## 3. Let Sentrook see your requests
+
+```bash
 openclaw config set plugins.entries.sentrook.hooks.allowConversationAccess true
 ```
 
-Until the plugin is installed, OpenClaw warns `plugin not found: sentrook (stale config entry ignored …)`. That
-is expected; the settings are kept and apply once it is installed.
+This lets the plugin read what you asked the agent for. Without it Sentrook cannot tell whether a call matches your
+request: scores are less accurate and more routine work asks for approval.
 
-`allowConversationAccess` lets the plugin read what you asked the agent for. Without it Sentrook cannot tell whether
-a call matches your request, and scores are less accurate.
-
-## 3. Save the credentials
-
-The plugin reads `SENTROOK_SCAN_CLIENT_ID` and `SENTROOK_SCAN_CLIENT_SECRET` from the environment or from
-`~/.openclaw/.env`. Keep them out of `openclaw.json`, which the agent can read. This block prompts for both
-(the secret is not echoed) and writes them to a file only your user can read; run it again to replace them:
-
-```bash
-{
-  ENV_FILE="${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME}/.openclaw}/.env"
-  read -r -p "Client ID: " SR_ID
-  read -r -s -p "Client Secret (hidden): " SR_SECRET; echo
-  mkdir -p "$(dirname "$ENV_FILE")" && touch "$ENV_FILE" && chmod 600 "$ENV_FILE"
-  grep -v -e '^SENTROOK_SCAN_CLIENT_ID=' -e '^SENTROOK_SCAN_CLIENT_SECRET=' "$ENV_FILE" > "$ENV_FILE.tmp" || true
-  printf 'SENTROOK_SCAN_CLIENT_ID=%s\nSENTROOK_SCAN_CLIENT_SECRET=%s\n' "$SR_ID" "$SR_SECRET" >> "$ENV_FILE.tmp"
-  mv "$ENV_FILE.tmp" "$ENV_FILE" && chmod 600 "$ENV_FILE"
-  unset SR_ID SR_SECRET
-  echo "Saved to $ENV_FILE"
-}
-```
+Until the plugin is installed, OpenClaw warns `plugin not found: sentrook (stale config entry ignored …)`. That is
+expected; the setting is kept and applies once the plugin is installed.
 
 ## 4. Install
 
@@ -84,12 +82,12 @@ openclaw plugins enable sentrook && openclaw gateway restart
 openclaw sentrook verify
 ```
 
-Every line should start with `ok`, and `policy` should show `mode=observe`:
+Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 | Failing line | Fix |
 | --- | --- |
-| `credentials` | Run step 3 again, then restart the gateway. |
-| `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and repeat step 3. |
+| `credentials` | Check the two lines in `.env` (step 2), then restart the gateway. |
+| `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and replace them in `.env`. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
 
@@ -104,11 +102,92 @@ Sentrook recorded:
 openclaw sentrook history 5
 ```
 
-Each row is one scan: time, tool, risk score, the action Sentrook would take, and the review outcome. In observe mode
-the action is recorded but never applied. `openclaw sentrook why last` shows the most recent scan in detail: risk,
-tier scores, reason codes and the entities it found.
+Each row is one scan: time, tool, risk score, the action Sentrook took, and the review outcome.
+`openclaw sentrook why last` shows the most recent scan in detail: risk, tier scores, reason codes and the entities
+it found (hosts, files, recipients, channels).
 
 If the history is empty, the agent has not made a tool call since the restart.
+
+## 7. Tell Sentrook what is normal for you
+
+Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
+work stops asking for approval:
+
+- **Channel bindings**: the channels this deployment normally delivers to, such as the chat your daily report goes
+  to. A send to a bound channel is not treated as an unfamiliar destination.
+- **Grants**: hosts, email domains or channels the agent may send to (`destination`), and files or folders it may
+  read or write (`file`).
+
+Neither ever lowers a scanner floor (reading your SSH keys and sending them somewhere is blocked whatever you grant),
+and a file grant never covers a call that also sends data off the machine. You don't need a grant to send to a
+destination you name yourself in your request: Sentrook already takes that into account.
+
+Run these commands in the owner's Control UI chat or on the machine (see [who may run them](#commands)). In chat
+the commands are `/sentrook-bind`, `/sentrook-grant` and so on. On the command line they are `openclaw sentrook bind`,
+`openclaw sentrook grant` and so on, with patterns in quotes so the shell leaves the `*` alone:
+`openclaw sentrook grant file '/home/you/notes/*' --allows read,write --persistent`.
+
+### Bind the channel a scheduled job reports to
+
+Say a daily-brief cron job posts to a Discord channel and Sentrook asks for approval each time. Find the scan and
+read the channel as Sentrook saw it:
+
+```
+/sentrook-history
+/sentrook-why <id>
+```
+
+The channel is listed under `entities`. Bind exactly that value (here, as an example, `channel:1234567890`), then
+check it:
+
+```
+/sentrook-bind add channel:1234567890
+/sentrook-bind list
+```
+
+Bindings stay until you remove them (`/sentrook-bind remove channel:1234567890`).
+
+### Typical grants
+
+A grant set by command lasts for the current session unless you add `--persistent`. `--expires` sets an end time.
+
+| You want the agent to | Grant |
+| --- | --- |
+| Call your company's own APIs and email your team | `/sentrook-grant destination *.example.com --persistent` (covers `example.com`, its subdomains and `@example.com` addresses) |
+| Post to one webhook or partner API | `/sentrook-grant destination hooks.partner.example --persistent` |
+| Keep notes in a folder | `/sentrook-grant file /home/you/notes/* --allows read,write --persistent` |
+| Write a nightly report | `/sentrook-grant file /srv/reports/* --allows write --persistent` |
+| Work on a client's site for the afternoon | `/sentrook-grant destination *.client.example --expires 4h` |
+
+Use full paths for file grants (`/home/you/notes/*`, not `~/notes/*`). A `*` matches anything, including `/`.
+Patterns that would match everything (`*`, `*.*`) are ignored.
+
+`/sentrook-grants` lists every grant in force with its id; `/sentrook-revoke <id>` removes one set by command.
+
+### Or keep them in config
+
+Grants and bindings can also live in `openclaw.json`, where the commands show them as read-only. Grants there last
+until you remove them:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "sentrook": {
+        "config": {
+          "channelBindings": ["channel:1234567890"],
+          "grants": [
+            { "kind": "destination", "pattern": "*.example.com" },
+            { "kind": "file", "pattern": "/home/you/notes/*", "allows": ["read", "write"] }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Merge this into your existing `plugins.entries.sentrook` entry, then restart the gateway.
 
 ## Commands
 
@@ -124,18 +203,17 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-grants` | Grants in force: from config (read-only) and set by command |
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only), `--allows read,write` (file only), `--expires 12h` |
 | `/sentrook-revoke <id>` | Remove a grant set by command |
-| `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings: the channels this deployment normally delivers to |
+| `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
 | `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h |
 
-`openclaw sentrook verify` exists only on the command line.
+`openclaw sentrook verify` exists only on the command line. There is no session on the command line, so
+`openclaw sentrook snooze` needs `--all`.
 
 **Owner only.** `/sentrook status` and `/sentrook help` are open to anyone who can message the agent. The dashed
 commands need the gateway scope `operator.admin`: the owner's default Control UI connection has it, and so does
 anyone holding the shared gateway token. Limited Control UI sessions are refused. On the command line, whoever can
 run `openclaw` on the machine counts as the owner. Every attempt, allowed or refused, is recorded in the traffic log
 (unless you turned it off).
-
-On the command line there is no session, so `openclaw sentrook snooze` needs `--all`.
 
 A snooze never relaxes a block, a review the scanner marks as enforced, or an unattended run (cron jobs, subagents,
 webhooks): those still stop.
@@ -148,21 +226,33 @@ bot first: `@yourbot /sentrook status`.
 > plugin commands, including `/sentrook status`, with "requires authorization". The plugin cannot see the sender
 > list, so it cannot warn you.
 
-## Observe, enforce and off
+## How enforce mode decides
+
+Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`reviewAt`, `blockAt`). Some findings,
+such as reading credentials and sending them off the machine, are floors that apply whatever the score.
+
+A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your answer
+(`approval.interactiveTimeoutMs`) and then denies the call. Cron jobs and subagents wait 30 minutes
+(`approval.scheduledTimeoutMs`) and then deny it too, unless you set `approval.scheduledTimeoutBehavior` to `allow`.
+
+When the scan service gives no usable answer the plugin asks you whether to run the call without a scan
+(`onScanError`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let
+through silently: even with `onScanError` set to `allow`, the call is blocked, or you are asked.
+
+## Observe mode
+
+In observe mode Sentrook scores and logs every call but never blocks or asks. Use it to try Sentrook before trusting
+it with your agent, or as the off switch if it gets in the way, or when the scan service is down and the agent has to
+keep working. History and why keep working.
 
 | To | Run, then `openclaw gateway restart` |
 | --- | --- |
-| Enforce: ask at risk 45 or above, block at 80 or above | `openclaw config set plugins.entries.sentrook.config.mode enforce` |
-| Go back to observe (the off switch: nothing is blocked or asked, scans are still logged) | `openclaw config set plugins.entries.sentrook.config.mode observe` |
+| Switch to observe | `openclaw config set plugins.entries.sentrook.config.mode observe` |
+| Switch back to enforce | `openclaw config set plugins.entries.sentrook.config.mode enforce` |
 | Stop scanning entirely (no calls are sent to Sentrook) | `openclaw plugins disable sentrook` |
 
-In enforce mode, when the scan service gives no usable answer the plugin asks you whether to run the call without a
-scan (`onScanError`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let
-through silently: even with `onScanError` set to `allow`, the call is blocked, or you are asked. If the scan service is down
-and you need the agent to keep working, switch to observe mode.
-
-Watch the history for a while before switching to enforce. If a channel you deliver to all the time (a daily report
-to your own chat, say) keeps being flagged, bind it with `/sentrook-bind add <channel>`.
+To start in observe mode from the beginning, set the mode alongside step 3, before installing. In observe mode the
+history's `action` column shows what Sentrook would have done, such as `observed (would review)`.
 
 ## What is sent
 
@@ -200,7 +290,9 @@ also come from a `SENTROOK_*` environment variable; the config value wins.
 | `blockAt` | `80` | Block at or above this risk |
 | `onScanError` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `timeoutMs` | `30000` | How long to wait for a scan |
-| `approval.interactiveTimeoutMs` | `300000` | How long a review waits for your answer |
+| `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
+| `approval.scheduledTimeoutMs` | `1800000` | How long a review in a cron job or subagent waits |
+| `approval.scheduledTimeoutBehavior` | `deny` | What a cron or subagent review does when nobody answers: `allow` or `deny` |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |
 | `grants` | | Standing grants, as `{kind, pattern, allows?, scope?}` objects |
@@ -218,7 +310,8 @@ openclaw plugins update sentrook && openclaw gateway restart
 openclaw plugins uninstall sentrook --force && openclaw gateway restart
 ```
 
-This removes the plugin and its settings. It leaves the traffic log, grants and snooze state in
-`~/.openclaw/sentrook/` and the credentials in `~/.openclaw/.env`. To remove those too, delete the folder, delete
-the two `SENTROOK_SCAN_CLIENT_*` lines from `.env`, and delete the credentials on the identity service's
-**Sentrook** tab. To install again later, start from step 2.
+This removes the plugin and its settings, including grants and bindings kept in `openclaw.json`. It leaves the
+traffic log, the grants and bindings set by command, and the snooze state in `~/.openclaw/sentrook/`, and the
+credentials in `~/.openclaw/.env`. To remove those too, delete the folder, delete the two `SENTROOK_SCAN_CLIENT_*`
+lines from `.env`, and delete the credentials on the identity service's **Sentrook** tab. To install again later,
+start from step 3.
