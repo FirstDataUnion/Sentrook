@@ -30,16 +30,12 @@ from pathlib import Path
 from typing import Any
 
 from .planir import _h
-from .store import Store
+from .store import Store, read_time
 
 DEFAULT = timedelta(hours=1)
 MAX = timedelta(hours=24)
 MAX_ENTRIES = 200
 _DURATION = re.compile(r"([0-9]{1,5})([mh])")
-#: The only time form read back from the file; both plugins accept exactly this.
-_ISO = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?"
-)
 RULE = (
     "A snoozed review is allowed and logged; blocks, enforced reviews and unattended runs are "
     "never snoozed."
@@ -65,17 +61,6 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def when(raw: Any) -> datetime | None:
-    """An ISO time with a `T` (no offset means UTC); anything else is unreadable."""
-    if not isinstance(raw, str) or not _ISO.fullmatch(raw.strip()):
-        return None
-    try:
-        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-
-
 def _show(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -99,7 +84,7 @@ def _live(e: Any, now: datetime) -> datetime | None:
             return None
     elif e.get("scope") != "all":
         return None
-    at = when(e.get("expires_at"))
+    at = read_time(e.get("expires_at"))
     return at if at is not None and now < at <= now + MAX else None
 
 

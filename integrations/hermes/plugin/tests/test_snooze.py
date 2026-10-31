@@ -14,6 +14,7 @@ import pytest
 
 import plugin
 from plugin import history, owner, snooze
+from plugin.store import read_time
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; `S1` is the session the fixture's first entry belongs to.
@@ -119,9 +120,42 @@ def test_entries_that_must_never_apply(tmp_path):
     data = snooze.load(tmp_path)
     assert snooze.active(data, S1, NOW)
     assert snooze.active(data, "s_adfa2b24c2d9", NOW)
-    for ref in [*(f"s_00000000000{i}" for i in range(1, 7)), "s_x"]:
+    for ref in [*(f"s_00000000000{i}" for i in range(1, 9)), "s_x"]:
         assert not snooze.active(data, ref, NOW), ref
     assert not snooze.active(data, S1, NOW + timedelta(minutes=30))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026-10-29T24:00Z",
+        "2026-10-29T12:60Z",
+        "2026-10-29T12:30:60Z",
+        "2026-02-30T00:00Z",
+        "2025-02-29T00:00Z",
+        "2026-13-01T00:00Z",
+        "2026-00-01T00:00Z",
+        "2026-10-00T00:00Z",
+        "0000-01-01T00:00Z",
+        "2026-10-29T12:00+24:00",
+        "2026-10-29T12:00+01:60",
+        "2026-10-29 12:00Z",
+        "tomorrow",
+        42,
+    ],
+)
+def test_a_time_with_a_field_out_of_range_is_unreadable_not_rolled_forward(raw):
+    assert read_time(raw) is None
+
+
+def test_a_time_in_range_reads_as_utc():
+    assert read_time("2026-10-29T12:30:59.5+01:00") == datetime(
+        2026, 10, 29, 11, 30, 59, 500_000, tzinfo=UTC
+    )
+    assert read_time("2028-02-29T00:00") == datetime(2028, 2, 29, tzinfo=UTC)
+    assert read_time(" 2026-10-29T23:59:59-23:59 ") == datetime(
+        2026, 10, 30, 23, 58, 59, tzinfo=UTC
+    )
 
 
 def test_an_unreadable_file_relaxes_nothing_and_refuses_changes(term):
@@ -239,7 +273,7 @@ def test_only_the_owner_may_snooze(term):
 def test_duration_default_limits_and_refusals(term):
     now = datetime.now(UTC)
     slash(term, "snooze")
-    exp = snooze.when(stored(term)["snoozes"][0]["expires_at"])
+    exp = read_time(stored(term)["snoozes"][0]["expires_at"])
     assert timedelta(minutes=59) < exp - now <= timedelta(hours=1, seconds=5)
     assert slash(term, "snooze 24h").startswith("Snoozed reviews in this session for 24h")
     for too_long in ("25h", "1441m", "2d"):

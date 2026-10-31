@@ -14,14 +14,52 @@ read-modify-write; `session_lock` serialises a whole scan per session.
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
+import re
 import secrets
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+#: The only time form read back from `grants.json` and `snooze.json`; both plugins accept exactly this.
+_ISO = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.[0-9]+)?)?"
+    r"(?:Z|[+-]([0-9]{2}):([0-9]{2}))?"
+)
+
+
+def read_time(raw: Any) -> datetime | None:
+    """A time from a state file: ISO with a `T`, no offset meaning UTC; anything else is unreadable.
+
+    A field out of range (`24:00`, `12:30:60`, `02-30`, year 0, offset `+24:00`) is unreadable too, as
+    it is to the OpenClaw plugin, on every Python version: `fromisoformat` alone accepts `24:00` on 3.14.
+    """
+    m = _ISO.fullmatch(raw.strip()) if isinstance(raw, str) else None
+    if not m:
+        return None
+    y, mo, d, h, mi, s, oh, om = (int(v or 0) for v in m.groups())
+    if not (
+        1 <= y
+        and 1 <= mo <= 12
+        and 1 <= d <= calendar.monthrange(y, mo)[1]
+        and h <= 23
+        and mi <= 59
+        and s <= 59
+        and oh <= 23
+        and om <= 59
+    ):
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
 
 _FKEY_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
 

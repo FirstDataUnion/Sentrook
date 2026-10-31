@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import PluginConfig, parse_grants
-from .store import Store
+from .store import Store, read_time
 
 KINDS = ("destination", "file", "provider")
 ALLOWS = ("read", "write", "edit", "delete", "exec")
@@ -33,10 +33,6 @@ SCOPES = ("session", "persistent")
 MAX_PATTERN = 256
 MAX_EXPIRY = timedelta(days=365)
 _DURATION = re.compile(r"([0-9]{1,6})([mhd])")
-#: The only time form read back from the file; both plugins accept exactly this.
-_ISO = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?"
-)
 _UNITS = {"m": "minutes", "h": "hours", "d": "days"}
 #: Serialises read-modify-write of the file within this process; writes are atomic across processes.
 _LOCK = threading.Lock()
@@ -54,17 +50,6 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _when(raw: Any) -> datetime | None:
-    """An ISO time with a `T` (no offset means UTC); anything else is unreadable."""
-    if not isinstance(raw, str) or not _ISO.fullmatch(raw.strip()):
-        return None
-    try:
-        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-
-
 def _show(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -77,7 +62,7 @@ def expired(entry: dict[str, Any], now: datetime) -> bool:
     """Past its expiry. An expiry that cannot be read counts as past, so it never widens relief."""
     if "expires_at" not in entry:
         return False
-    at = _when(entry["expires_at"])
+    at = read_time(entry["expires_at"])
     return at is None or at <= now
 
 
@@ -120,7 +105,7 @@ def effective(
 
 
 def _set_by(entry: dict[str, Any]) -> list[str]:
-    at = _when(entry.get("granted_at"))
+    at = read_time(entry.get("granted_at"))
     by = entry.get("set_by") if isinstance(entry.get("set_by"), dict) else {}
     basis = [str(b) for b in by.get("basis") or [] if isinstance(b, str)]
     text = "set" + (f" {_show(at)}" if at else "") + (f" ({'+'.join(basis)})" if basis else "")
@@ -152,7 +137,7 @@ def format_grants(cfg: PluginConfig, data: dict[str, Any] | None, now: datetime,
     for raw, g in file_rows:
         details = [f"allows {','.join(g['allows'])}"] if g.get("allows") else []
         if "expires_at" in raw:
-            at = _when(raw["expires_at"])
+            at = read_time(raw["expires_at"])
             past = expired(raw, now)
             details.append(f"{'expired' if past else 'expires'} {_show(at) if at else '?'}")
         rows.append(

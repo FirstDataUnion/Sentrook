@@ -25,15 +25,13 @@ import path from "node:path";
 
 import type { Cmd, Entry } from "./grants.ts";
 import { hash12 } from "./planir.ts";
-import { type SnoozeFile, Store } from "./store.ts";
+import { readTime, type SnoozeFile, Store } from "./store.ts";
 
 const MINUTE = 60_000;
 const DEFAULT_MS = 3600_000;
 const MAX_MS = 24 * 3600_000;
 const MAX_ENTRIES = 200;
 const DURATION = /^(\d{1,5})([mh])$/;
-/** The only time form read back from the file; both plugins accept exactly this. */
-const ISO = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:\d{2})?$/;
 export const RULE =
   "A snoozed review is allowed and logged; blocks, enforced reviews and unattended runs are never snoozed.";
 
@@ -55,29 +53,6 @@ export function load(stateDir: string): SnoozeFile | null {
 export const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
-/**
- * An ISO time with a `T` (no offset means UTC); anything else is unreadable. A field out of range
- * (`24:00`, `02-30`) is unreadable too, as it is to the Hermes plugin, rather than rolled forward.
- */
-export function when(raw: unknown): Date | null {
-  const m = typeof raw === "string" ? ISO.exec(raw.trim()) : null;
-  if (!m) return null;
-  const [y, mo, d, h, mi, s = 0] = m[1]!.split(/[-T:]/).map(Number) as number[];
-  const local = new Date(Date.UTC(y!, mo! - 1, d!, h!, mi!, Math.floor(s)));
-  if (
-    local.getUTCFullYear() !== y ||
-    local.getUTCMonth() !== mo! - 1 ||
-    local.getUTCDate() !== d ||
-    local.getUTCHours() !== h ||
-    local.getUTCMinutes() !== mi ||
-    local.getUTCSeconds() !== Math.floor(s)
-  ) {
-    return null;
-  }
-  const at = new Date(`${m[1]}${m[2] ?? "Z"}`);
-  return Number.isNaN(at.getTime()) ? null : at;
-}
-
 function left(ms: number): string {
   const minutes = Math.max(1, Math.ceil(ms / MINUTE));
   const h = Math.floor(minutes / 60);
@@ -98,7 +73,7 @@ function live(e: unknown, now: Date): Date | null {
   if (x.scope === "session") {
     if (typeof x.session_ref !== "string" || !x.session_ref) return null;
   } else if (x.scope !== "all") return null;
-  const at = when(x.expires_at);
+  const at = readTime(x.expires_at);
   return at && at.getTime() > now.getTime() && at.getTime() <= now.getTime() + MAX_MS ? at : null;
 }
 
