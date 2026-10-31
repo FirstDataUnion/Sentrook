@@ -90,10 +90,11 @@ const daysIn = (y: number, mo: number) =>
 /**
  * A time from a state file: ISO with a `T`, no offset meaning UTC; anything else is unreadable. A field
  * out of range (`24:00`, `12:30:60`, `02-30`, year 0, offset `+24:00`) is unreadable too, as it is to
- * the Hermes plugin, rather than rolled forward into a later time.
+ * the Hermes plugin, rather than rolled forward into a later time; so is a time whose UTC year is not
+ * 1-9999. Only ASCII spaces, tabs and line breaks around it are ignored.
  */
 export function readTime(raw: unknown): Date | null {
-  const text = typeof raw === "string" ? raw.trim() : "";
+  const text = typeof raw === "string" ? raw.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") : "";
   const m = ISO.exec(text);
   if (!m) return null;
   const [y, mo, d, h, mi, s, oh, om] = m.slice(1).map((v) => Number(v ?? 0)) as number[];
@@ -112,7 +113,8 @@ export function readTime(raw: unknown): Date | null {
     return null;
   }
   const at = new Date(/(?:Z|[+-]\d{2}:\d{2})$/.test(text) ? text : `${text}Z`);
-  return Number.isNaN(at.getTime()) ? null : at;
+  const year = at.getUTCFullYear();
+  return Number.isNaN(year) || year < 1 || year > 9999 ? null : at;
 }
 
 const fileKey = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);

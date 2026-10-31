@@ -140,6 +140,10 @@ def test_entries_that_must_never_apply(tmp_path):
         "2026-10-29T12:00+24:00",
         "2026-10-29T12:00+01:60",
         "2026-10-29 12:00Z",
+        "0001-01-01T00:00+01:00",
+        "9999-12-31T23:59-01:00",
+        "\x852026-10-29T12:00Z",
+        "\ufeff2026-10-29T12:00Z",
         "tomorrow",
         42,
     ],
@@ -153,6 +157,7 @@ def test_a_time_in_range_reads_as_utc():
         2026, 10, 29, 11, 30, 59, 500_000, tzinfo=UTC
     )
     assert read_time("2028-02-29T00:00") == datetime(2028, 2, 29, tzinfo=UTC)
+    assert read_time("\t2026-10-29T12:00Z\r\n") == datetime(2026, 10, 29, 12, tzinfo=UTC)
     assert read_time(" 2026-10-29T23:59:59-23:59 ") == datetime(
         2026, 10, 30, 23, 58, 59, tzinfo=UTC
     )

@@ -38,8 +38,11 @@ def read_time(raw: Any) -> datetime | None:
 
     A field out of range (`24:00`, `12:30:60`, `02-30`, year 0, offset `+24:00`) is unreadable too, as
     it is to the OpenClaw plugin, on every Python version: `fromisoformat` alone accepts `24:00` on 3.14.
+    So is a time whose UTC year is not 1-9999. Only ASCII spaces, tabs and line breaks around it are
+    ignored.
     """
-    m = _ISO.fullmatch(raw.strip()) if isinstance(raw, str) else None
+    text = raw.strip(" \t\r\n") if isinstance(raw, str) else ""
+    m = _ISO.fullmatch(text)
     if not m:
         return None
     y, mo, d, h, mi, s, oh, om = (int(v or 0) for v in m.groups())
@@ -55,10 +58,10 @@ def read_time(raw: Any) -> datetime | None:
     ):
         return None
     try:
-        dt = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-    except ValueError:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except (ValueError, OverflowError):
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 _FKEY_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")

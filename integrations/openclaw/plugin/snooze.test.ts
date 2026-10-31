@@ -327,6 +327,10 @@ test("a time with a field out of range is unreadable, not rolled forward", () =>
     "2026-10-29T12:00+24:00",
     "2026-10-29T12:00+01:60",
     "2026-10-29 12:00Z",
+    "0001-01-01T00:00+01:00",
+    "9999-12-31T23:59-01:00",
+    "\u00852026-10-29T12:00Z",
+    "\ufeff2026-10-29T12:00Z",
     "tomorrow",
     42,
   ]) {
@@ -335,6 +339,7 @@ test("a time with a field out of range is unreadable, not rolled forward", () =>
   assert.equal(readTime("2026-10-29T12:30:59.5+01:00")?.toISOString(), "2026-10-29T11:30:59.500Z");
   assert.equal(readTime("2028-02-29T00:00")?.toISOString(), "2028-02-29T00:00:00.000Z");
   assert.equal(readTime(" 2026-10-29T23:59:59-23:59 ")?.toISOString(), "2026-10-30T23:58:59.000Z");
+  assert.equal(readTime("\t2026-10-29T12:00Z\r\n")?.toISOString(), "2026-10-29T12:00:00.000Z");
 });
 
 test("an expired snooze no longer applies", async () => {
