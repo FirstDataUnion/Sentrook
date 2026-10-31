@@ -7,7 +7,7 @@
 # schedulers score at `host_scheduler`, 0.6, because a crontab entry is host persistence rather than
 # the agent's own scheduler).
 
-version: 3
+version: 4
 
 # Regex over one shell segment of the exec text.
 cli:
@@ -51,10 +51,10 @@ tool_names:
     reason: selfmod.scheduler
   - pattern: '(?:memory_(?:write|save|store|add|update|delete|forget)|save_memory|remember|forget|update_memory|memory)\Z'
     reason: selfmod.memory
-  # Skill tools match on a changing verb only: `skills_read`, `skills_list` and `skill_view` change
-  # nothing. `skill_workshop` (OpenClaw) is one tool for every skill action; its `action` argument
-  # decides, through `read_actions` below.
-  - pattern: '(?:skills?_(?:create|add|write|edit|patch|update|upgrade|install|uninstall|remove|delete|enable|disable|manage|workshop)|install_(?:plugin|skill)|plugin_(?:install|enable|disable|manage|remove))\Z'
+  # Skill and plugin tools match on a changing verb only: `skills_read`, `skill_view` and
+  # `plugin_list` change nothing. `skill_workshop` (OpenClaw) is one tool for every skill action; its
+  # `action` argument decides, through `read_actions` below, as it does for `plugin_manage`.
+  - pattern: '(?:(?:skills?|plugins?)_(?:create|add|write|edit|patch|update|upgrade|install|uninstall|remove|delete|enable|disable|manage)|skills?_workshop|(?:un)?install_(?:plugin|skill))\Z'
     reason: selfmod.plugin
   - pattern: '(?:update_config|set_config|config_set|update_settings|agent_config|configure_agent|update_system_prompt|set_persona)\Z'
     reason: selfmod.config
