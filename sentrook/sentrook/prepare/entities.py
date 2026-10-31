@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from ..aira.exec_shape import derive_exec_shape
 from ..aira.lists import load_lists
 from ..aira.stage_programs import stage_runs_stdin
+from ..oracle.client import fold_pypi_name
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ProviderKind, ToolKind
 
@@ -418,7 +419,7 @@ def normalise_package(ecosystem: str, name: str) -> str | None:
     if n.startswith("http://") or n.startswith("https://") or n.startswith("git+"):
         return "git+" + re.sub(r"^(git\+)?https?://", "", n).rstrip("/").removesuffix(".git")
     if ecosystem in ("pypi",):
-        n = re.split(r"[=<>!~\[;]", n)[0].lower()
+        n = fold_pypi_name(re.split(r"[=<>!~\[;]", n)[0])
     elif ecosystem == "npm":
         if n.startswith("@"):
             scope, _, rest = n[1:].partition("/")
