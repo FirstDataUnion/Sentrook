@@ -25,14 +25,12 @@ PLUGIN_VERSION = "2.0.0-beta.5"
 TOOL_KIND = {
     "terminal": "exec",
     "execute_code": "exec",
-    "process": "exec",
     "read_file": "file_read",
     "search_files": "file_read",
     "write_file": "file_write",
     "patch": "file_edit",
     "web_extract": "web_fetch",
     "web_search": "web_fetch",
-    "send_message": "message_send",
     "memory": "memory_write",
     "delegate_task": "subagent_spawn",
 }
@@ -42,7 +40,17 @@ def _h(s: Any) -> str:
     return hashlib.sha256(str(s).encode()).hexdigest()[:12]
 
 
-def tool_kind(name: str) -> str:
+# Hermes's process-control tool (`process_manage`; older versions name it `process`). Writing to, closing or
+# killing a running process is code execution; listing, polling, reading its log, waiting and handing it off
+# are not. An unknown or missing action keeps `exec`.
+PROCESS_TOOLS = ("process_manage", "process")
+PROCESS_READ_ACTIONS = frozenset({"list", "poll", "log", "wait", "handoff"})
+
+
+def tool_kind(name: str, args: Any = None) -> str:
+    if name in PROCESS_TOOLS:
+        action = args.get("action") if isinstance(args, dict) else None
+        return "other" if isinstance(action, str) and action in PROCESS_READ_ACTIONS else "exec"
     if name in TOOL_KIND:
         return TOOL_KIND[name]
     if name.startswith("browser_"):
@@ -163,9 +171,9 @@ def build_planir(
     platform = resolve_platform(turn.get("platform"), facts, env)
     parent = turn.get("parent_session_id") or None
     is_sub = platform == "subagent" or bool(parent)
-    tk = tool_kind(tool)
-    prv = provider_for(tool, host_cfg)
     raw_args = kw.get("args") if isinstance(kw.get("args"), dict) else {"value": kw.get("args")}
+    tk = tool_kind(tool, raw_args)
+    prv = provider_for(tool, host_cfg)
     args = redactor.value(raw_args)
 
     siblings = []
@@ -181,7 +189,7 @@ def build_planir(
                 {
                     "call_id": str(c["id"]),
                     "tool": name,
-                    "tool_kind": tool_kind(name),
+                    "tool_kind": tool_kind(name, sargs),
                     "provider": provider_for(name, host_cfg),
                     "arguments": cap_args(redactor.value(sargs), cfg.history_args_cap_bytes),
                 }
