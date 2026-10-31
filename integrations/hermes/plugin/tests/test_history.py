@@ -48,12 +48,6 @@ def cli(h, capsys, *argv):
     return capsys.readouterr().out.rstrip("\n")
 
 
-def untorn(h):
-    """Drop the fixture's torn last line, so the audit record appended next starts on its own line."""
-    text = h.log.read_text()
-    h.log.write_text(text[: text.rindex("\n") + 1])
-
-
 def commands(h):
     out = []
     for line in h.log.read_text().splitlines():
@@ -153,7 +147,6 @@ def test_a_missing_or_disabled_log(log):
 @pytest.mark.parametrize("verb", ["history", "why"])
 def test_a_non_owner_is_refused_and_audited(log, monkeypatch, facts, verb):
     monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "u1")
-    untorn(log)
     log.facts.update(facts)
     assert slash(log, f"{verb} 5") == owner.refusal(verb)
     [rec] = commands(log)
@@ -162,7 +155,6 @@ def test_a_non_owner_is_refused_and_audited(log, monkeypatch, facts, verb):
 
 def test_the_owner_is_audited_and_status_stays_open(log, monkeypatch):
     monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "u1")
-    untorn(log)
     log.facts.update({"platform": "mattermost", "chat_type": "dm", "user_id": "u1"})
     assert slash(log, "history").startswith("Last ")
     log.facts.update({"chat_type": "group"})
@@ -176,7 +168,6 @@ def test_the_owner_is_audited_and_status_stays_open(log, monkeypatch):
 
 
 def test_the_cli_forms_match_the_slash_forms(log, capsys):
-    untorn(log)
     assert cli(log, capsys, "history") == slash(log, "history")
     assert cli(log, capsys, "history", "2") == slash(log, "history 2")
     assert cli(log, capsys, "why") == slash(log, "why")
