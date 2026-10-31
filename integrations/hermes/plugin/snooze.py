@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .planir import _h
+from .planir import session_ref as session_ref  # what an entry is keyed on
 from .store import Store, read_time
 
 DEFAULT = timedelta(hours=1)
@@ -45,11 +45,6 @@ _LOCK = threading.Lock()
 
 #: (subcommand) -> the command as the owner types it, e.g. "/sentrook snooze".
 Cmd = Callable[[str], str]
-
-
-def session_ref(sid: str) -> str:
-    """The session's name in the file: the `session_ref` a scan of that session sends."""
-    return f"s_{_h(sid)}"
 
 
 def load(state_dir: Path) -> dict[str, Any] | None:

@@ -184,13 +184,14 @@ def format_history(
 ) -> str:
     if not scans:
         return NO_SCANS
-    table = [("id", "time (UTC)", "tool", "risk", "action", "review")]
+    table = [("id", "time (UTC)", "session", "tool", "risk", "action", "review")]
     for scan, resolution in scans:
         action = action_of(scan, resolution)
         table.append(
             (
                 str(scan["request_id"])[:8],
                 _time(scan.get("ts")),
+                _text(scan.get("session_ref") or "-", 20),
                 _text(scan.get("tool") or "?", 40),
                 _risk(_response(scan)),
                 action,

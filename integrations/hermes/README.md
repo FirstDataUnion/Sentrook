@@ -129,7 +129,10 @@ Bindings stay until you remove them (`/sentrook bind remove discord:#daily-brief
 
 ### Typical grants
 
-A grant set by command lasts for the current session unless you add `--persistent`. `--expires` sets an end time.
+A grant set by command covers only the session you set it in unless you add `--persistent`. It does not reach
+cron jobs, subagents or other chats, so a grant they need must be `--persistent`.
+`--expires` sets an end time. On the command line there is no session: add `--persistent`, or bind the grant to one
+session with `--session <ref>`, taking the ref from the `session` column of `/sentrook history`.
 
 | You want the agent to | Grant |
 | --- | --- |
@@ -166,7 +169,8 @@ Restart after editing.
 
 In a chat with the agent (gateway platforms, and interactive `hermes chat`) type `/sentrook <command>`. Hermes
 answers it without sending it to the model. On the command line the same commands are `hermes sentrook <command>`
-(all but `help`), plus `verify`. There is no session on the command line, so `hermes sentrook snooze` needs `--all`.
+(all but `help`), plus `verify`. There is no session on the command line, so `hermes sentrook snooze` needs `--all`
+and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
@@ -174,7 +178,7 @@ answers it without sending it to the model. On the command line the same command
 | `history [n]` | The last n scans (default 10) |
 | `why [request_id\|last]` | One scan in detail |
 | `grants` | Grants in force: from config (read-only) and set by command |
-| `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only), `--allows read,write` (file only), `--expires 12h` |
+| `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
 | `bind add\|remove\|list [channel]` | Manage channel bindings |
 | `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h |
