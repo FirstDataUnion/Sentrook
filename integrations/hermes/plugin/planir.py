@@ -40,6 +40,12 @@ def _h(s: Any) -> str:
     return hashlib.sha256(str(s).encode()).hexdigest()[:12]
 
 
+def session_ref(sid: str) -> str:
+    """A session's `session_ref`: what a scan of it sends, and what snoozes and session grants are
+    bound to."""
+    return f"s_{_h(sid)}"
+
+
 # Hermes's process-control tool (`process_manage`; older versions name it `process`). Writing to, closing or
 # killing a running process is code execution; listing, polling, reading its log, waiting and handing it off
 # are not. An unknown or missing action keeps `exec`.
@@ -227,7 +233,7 @@ def build_planir(
             },
         },
         "session": {
-            "session_ref": f"s_{_h(sid)}",
+            "session_ref": session_ref(sid),
             "routing_key": f"h_{_h(routing)}" if routing else None,
             "agent_ref": "a_main",
             "agent_role": "subagent" if is_sub else "main",

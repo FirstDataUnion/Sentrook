@@ -11,10 +11,18 @@ import { resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
+import { sessionRef } from "./planir.ts";
 
-/** Shared with the Hermes plugin's tests: both hosts print the same text for the same state. */
+/**
+ * Shared with the Hermes plugin's tests: both hosts print the same text for the same state. Times are
+ * read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
+ */
 const FIXTURES = fileURLToPath(new URL("../../fixtures/grants/", import.meta.url));
 const NOW = new Date("2026-10-29T12:00:00Z");
+const CMD = (s: string) => `/sentrook-${s}`;
+const S1 = sessionRef("S1");
+const S2 = sessionRef("S2");
+const NOTE = " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it).";
 const golden = (name: string) =>
   readFileSync(path.join(FIXTURES, name), "utf8").replace(/\n+$/, "").replaceAll("{bind}", "/sentrook-bind");
 
@@ -101,19 +109,22 @@ async function registered(pluginConfig: Record<string, unknown> = {}) {
     },
   } as any);
   await cliRegistrar!({ program: node("") });
-  const scan = async (command: string) => {
-    const ctx = { sessionKey: "agent:main:main", sessionId: "S1", agentId: "main", runId: "r1" };
+  /** The grants sent with one scan of `command` in session `sid` (keyed as the host keys it). */
+  const scan = async (command: string, sid = "S1", extra: Record<string, unknown> = {}) => {
+    const ctx = { sessionKey: `agent:main:${sid}`, sessionId: sid, agentId: "main", runId: "r1", ...extra };
     for (const h of on.before_tool_call ?? []) await h({ toolName: "exec", toolCallId: `c${scans.length}`, runId: "r1", params: { command } }, ctx);
     return scans.at(-1).grants;
   };
   return { commands, cliActions, scan, unknownOptions };
 }
 
-/** What the host passes an admitted owner on a Control UI connection. */
+/** What the host passes an admitted owner on a Control UI connection, sent from session `S1`. */
 function ownerCtx(args: string, extra: Record<string, unknown> = {}) {
   return {
     senderId: "",
     channel: "webchat",
+    sessionKey: "agent:main:S1",
+    sessionId: "S1",
     senderIsOwner: true,
     gatewayClientScopes: ["operator.read", "operator.write", "operator.admin"],
     assertOwnerCurrent: () => undefined,
@@ -167,22 +178,26 @@ test("the fixture renders", () => {
   fixtureFile();
   const cfg = resolveConfig(fixtureConfig(), process.env);
   const data = grants.load(cfg.stateDir);
-  assert.equal(grants.formatGrants(cfg, data, NOW, (s) => `/sentrook-${s}`), golden("grants.txt"));
+  assert.equal(grants.formatGrants(cfg, data, NOW, CMD, S1), golden("grants.txt"));
   assert.equal(grants.formatBindings(cfg, data), golden("bindings.txt"));
-  assert.deepEqual(grants.effective(cfg, data, NOW), JSON.parse(readFileSync(path.join(FIXTURES, "planir-grants.json"), "utf8")));
+  assert.deepEqual(grants.effective(cfg, data, NOW, S1), JSON.parse(readFileSync(path.join(FIXTURES, "planir-grants.json"), "utf8")));
+  // From the command line, every session grant shows the session it is bound to.
+  const listing = grants.formatGrants(cfg, data, NOW, CMD, null);
+  assert.ok(listing.includes(`session ${S1}; set 2026-10-29 09:00 UTC (local_terminal)`), listing);
+  assert.ok(!listing.includes("this session"));
 });
 
 test("a grant round-trips through the file and into scans", async () => {
   const r = await registered();
   const out = await run(r, "sentrook-grant", "destination #ops");
   const [g] = stored().grants;
-  assert.equal(out, `Granted ${g.id}: destination #ops (session).`);
+  assert.equal(out, `Granted ${g.id}: destination #ops (this session only).${NOTE}`);
   assert.match(g.id, /^gr-[0-9a-f]{6}$/);
-  assert.deepEqual([g.kind, g.pattern, g.scope], ["destination", "#ops", "session"]);
+  assert.deepEqual([g.kind, g.pattern, g.scope, g.session_ref], ["destination", "#ops", "session", S1]);
   assert.ok(!("allows" in g) && !("expires_at" in g));
   assert.deepEqual(g.set_by, { basis: ["operator.admin"], channel: "webchat", sender_ref: null });
   assert.ok(new Date(g.granted_at).getTime() <= Date.now());
-  assert.ok((await run(r, "sentrook-grants", "")).includes(`${g.id}  destination  session  #ops     set `));
+  assert.ok((await run(r, "sentrook-grants", "")).includes(`${g.id}  destination  session  #ops     this session; set `));
   assert.deepEqual(await r.scan("post to #ops"), [
     { grant_ref: "g_1", kind: "destination", pattern: "#ops", scope: "session", granted_at: g.granted_at },
   ]);
@@ -216,13 +231,16 @@ for (const [args, reply] of [
   ["destination #ops --expires 2w", 'Unknown expiry "2w": use a number with m, h or d, from 1m to 365d.'],
   ["destination #ops --expires 366d", 'Unknown expiry "366d": use a number with m, h or d, from 1m to 365d.'],
   ["destination #ops --expires", "--expires needs a value."],
+  ["destination #ops --session S2", 'Unknown session "S2": use a session ref (s_ and 12 hex digits) from /sentrook-history.'],
+  ["destination #ops --persistent --session s_0123456789ab", "--session applies to session grants only."],
+  ["destination #ops --session", "--session needs a value."],
   ["destination", ""],
   ["destination #ops extra", ""],
   [`destination ${"x".repeat(257)}`, "The pattern must be at most 256 printable characters."],
 ] as const) {
   test(`bad input is refused and nothing is written: ${args.slice(0, 40)}`, async () => {
     const r = await registered();
-    const usage = grants.grantUsage("/sentrook-grant");
+    const usage = grants.grantUsage(CMD);
     assert.equal(await run(r, "sentrook-grant", args), reply ? `${reply}\n${usage}` : usage);
     assert.ok(!existsSync(file));
     assert.deepEqual(records("grants"), []);
@@ -388,7 +406,7 @@ test("an expired grant can still be revoked", async () => {
 test("an over-broad pattern is stored as typed: whether it relieves is the scanner's call", async () => {
   const r = await registered();
   const out = await run(r, "sentrook-grant", "destination *");
-  assert.ok(out.startsWith("Granted ") && out.endsWith(": destination * (session)."), out);
+  assert.ok(out.startsWith("Granted ") && out.endsWith(`: destination * (this session only).${NOTE}`), out);
   assert.equal(stored().grants[0].pattern, "*");
 });
 
@@ -437,24 +455,26 @@ test("the CLI forms match the chat forms and are audited as the local terminal",
   fixtureFile();
   const r = await registered(fixtureConfig());
   assert.deepEqual(r.unknownOptions.sort(), ["sentrook bind [args...]", "sentrook grant [args...]", "sentrook revoke [args...]", "sentrook snooze [args...]"]);
-  assert.equal(await cli(r, "sentrook grants"), await run(r, "sentrook-grants", ""));
+  assert.equal(await cli(r, "sentrook grants"), await run(r, "sentrook-grants", "", { sessionId: undefined, sessionKey: undefined }));
   assert.equal(await cli(r, "sentrook bind [args...]", ["list"]), await run(r, "sentrook-bind", "list"));
   const out = await cli(r, "sentrook grant [args...]", ["file", "/srv/x/*", "--allows", "read", "--persistent"]);
   const id = out.split(" ")[1]!.replace(/:$/, "");
   assert.equal(out, `Granted ${id}: file /srv/x/* (persistent, allows read).`);
   assert.deepEqual(stored().grants.at(-1).set_by, { basis: ["local_terminal"], channel: null, sender_ref: null });
   assert.ok((await cli(r, "sentrook grant [args...]", ["file", "/x", "--scope", "persistant"])).startsWith('Unknown scope "persistant"'));
+  const bound = await cli(r, "sentrook grant [args...]", ["destination", "#z", "--session", S2]);
+  assert.ok(bound.endsWith(`: destination #z (session ${S2} only).${NOTE}`), bound);
   assert.equal(await cli(r, "sentrook revoke [args...]", [id]), `Revoked ${id}: file /srv/x/*.`);
   assert.equal(await cli(r, "sentrook bind [args...]", ["add", "discord:5"]), "Channel binding added: discord:5.");
   const cliRecords = records("command").filter((c) => c.basis[0] === "local_terminal");
-  assert.equal(cliRecords.length, 6);
+  assert.equal(cliRecords.length, 7);
 });
 
 test("status counts grants from both sources", async () => {
   fixtureFile();
   const r = await registered(fixtureConfig());
   const out = (await r.commands.sentrook.handler({ args: "status" })).text.split("\n");
-  assert.ok(out.includes("grants: 2 in config, 7 by command"), out.join("\n"));
+  assert.ok(out.includes("grants: 2 in config, 8 by command"), out.join("\n"));
   assert.ok(out.includes("channel bindings: 1 in config, 1 by command"));
 });
 
@@ -468,4 +488,102 @@ test("the grant commands are owner commands and listed in help", async () => {
   for (const o of ["grants", "grant", "revoke", "bind"]) assert.ok(help.includes(`/${OWNER_SUBCOMMANDS[o]!.command}`));
   assert.match(help, /^ {2}\/sentrook-grant <kind> <pattern> \[flags\] /m);
   assert.match(help, /^ {2}\/sentrook-bind add\|remove\|list \[channel\] /m);
+});
+
+// ---- session grants: bound to the session they were set in -------------------------------------------
+
+const patterns = (sent: any[]) => sent.map((g) => g.pattern);
+
+test("a session grant relieves only in its own session", async () => {
+  // Must relieve in session A; must stay silent in session B, a cron run and a subagent.
+  const r = await registered();
+  await run(r, "sentrook-grant", "destination #ops");
+  assert.deepEqual(patterns(await r.scan("post to #ops")), ["#ops"]);
+  assert.deepEqual(await r.scan("post to #ops", "S2"), []);
+  assert.deepEqual(await r.scan("post to #ops", "cron-run-1", { sessionKey: "agent:main:cron:daily", trigger: "cron" }), []);
+  assert.deepEqual(await r.scan("post to #ops", "sub-1", { sessionKey: "agent:main:subagent:sub-1" }), []);
+  assert.deepEqual(patterns(await r.scan("post to #ops")), ["#ops"]);
+  assert.equal(stored().grants[0].session_ref, S1);
+});
+
+test("the command and the scan name a session alike", async () => {
+  // The session_ref stored at command time is the one a scan of that session sends.
+  const r = await registered();
+  const sid = "7b0e6c1e-2f4a-4c55-9d1e-0a1b2c3d4e5f";
+  await run(r, "sentrook-grant", "destination #ops", { sessionKey: "agent:main:telegram:dm:42", sessionId: sid });
+  const [g] = stored().grants;
+  await r.scan("post to #ops", sid, { sessionKey: "agent:main:telegram:dm:42" });
+  assert.equal(g.session_ref, scans.at(-1).session.session_ref);
+  assert.deepEqual(patterns(scans.at(-1).grants), ["#ops"]);
+  // A command context with only a session key is keyed on it, as a scan with only a session key is.
+  await run(r, "sentrook-grant", "destination #key", { sessionKey: "agent:main:key-only", sessionId: undefined });
+  await r.scan("post to #key", "unused", { sessionKey: "agent:main:key-only", sessionId: undefined });
+  assert.equal(stored().grants[1].session_ref, scans.at(-1).session.session_ref);
+  assert.deepEqual(patterns(scans.at(-1).grants), ["#key"]);
+});
+
+test("a session grant needs a session", async () => {
+  // The CLI, or a command context with no session, must name one with --session or use --persistent.
+  const refusal =
+    "There is no current session here, so a session grant cannot be bound to one; give " +
+    "--session <ref> (from /sentrook-history) or --persistent (with --expires to end it).";
+  const r = await registered();
+  assert.equal(await cli(r, "sentrook grant [args...]", ["destination", "#ops"]), refusal);
+  assert.equal(await run(r, "sentrook-grant", "destination #ops", { sessionId: undefined, sessionKey: undefined }), refusal);
+  assert.equal(await run(r, "sentrook-grant", "destination #ops", { sessionId: "", sessionKey: "" }), refusal);
+  assert.ok(!existsSync(file));
+  assert.deepEqual(records("grants"), []);
+  const out = await cli(r, "sentrook grant [args...]", ["destination", "#ops", "--session", S2]);
+  assert.ok(out.endsWith(`: destination #ops (session ${S2} only).${NOTE}`), out);
+  assert.deepEqual(patterns(await r.scan("post to #ops", "S2")), ["#ops"]);
+  assert.deepEqual(await r.scan("post to #ops"), []);
+  const persistent = await cli(r, "sentrook grant [args...]", ["destination", "#all", "--persistent", "--expires", "1h"]);
+  assert.ok(persistent.includes(": destination #all (persistent, expires "), persistent);
+});
+
+test("a chat command can bind another session", async () => {
+  const r = await registered();
+  const out = await run(r, "sentrook-grant", `destination #ops --session ${S2}`);
+  assert.ok(out.endsWith(`: destination #ops (session ${S2} only).${NOTE}`), out);
+  assert.deepEqual(await r.scan("post to #ops"), []);
+  assert.deepEqual(patterns(await r.scan("post to #ops", "S2")), ["#ops"]);
+  const id = stored().grants[0].id;
+  assert.ok((await run(r, "sentrook-grants", "")).includes(`${id}  destination  session  #ops     session ${S2}; set `));
+  const fromS2 = await run(r, "sentrook-grants", "", { sessionKey: "agent:main:S2", sessionId: "S2" });
+  assert.ok(fromS2.includes(`${id}  destination  session  #ops     this session; set `), fromS2);
+});
+
+test("a session grant still expires", async () => {
+  mkdirSync(stateDir, { recursive: true });
+  const live = { id: "gr-000001", kind: "destination", pattern: "#ops", scope: "session", session_ref: S1, expires_at: "2099-01-01T00:00:00Z" };
+  writeFileSync(file, JSON.stringify({ grants: [live] }));
+  const r = await registered();
+  assert.deepEqual(patterns(await r.scan("post to #ops")), ["#ops"]);
+  writeFileSync(file, JSON.stringify({ grants: [{ ...live, expires_at: "2026-01-01T00:00:00Z" }] }));
+  assert.deepEqual(await r.scan("post to #ops"), []);
+});
+
+test("a session grant stored without a session is never sent", async () => {
+  mkdirSync(stateDir, { recursive: true });
+  const r = await registered();
+  const entry = { id: "gr-000001", kind: "destination", pattern: "#ops", scope: "session" };
+  for (const bad of [{}, { session_ref: "" }, { session_ref: null }, { session_ref: 7 }]) {
+    writeFileSync(file, JSON.stringify({ grants: [{ ...entry, ...bad }] }));
+    assert.deepEqual(await r.scan("post to #ops"), []);
+    assert.ok((await run(r, "sentrook-grants", "")).includes("gr-000001  destination  session  #ops     no session, never sent"));
+  }
+});
+
+test("persistent and config grants are sent in every session", async () => {
+  const r = await registered({ grants: [{ kind: "destination", pattern: "#cfg" }] });
+  const out = await run(r, "sentrook-grant", "destination #ops --persistent");
+  assert.ok(out.endsWith(": destination #ops (persistent)."), out);
+  assert.ok(!("session_ref" in stored().grants[0]));
+  for (const [sid, extra] of [
+    ["S1", {}],
+    ["S2", {}],
+    ["sub-1", { sessionKey: "agent:main:subagent:sub-1" }],
+  ] as const) {
+    assert.deepEqual(patterns(await r.scan("post to #ops and #cfg", sid, extra)), ["#cfg", "#ops"]);
+  }
 });

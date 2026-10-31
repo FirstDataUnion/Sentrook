@@ -12,7 +12,7 @@ import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -368,7 +368,7 @@ const plugin = {
         run,
         assistant: store.loadAssistant(ctx?.sessionKey),
         parents: store.parents(),
-        grants: grants.effective(cfg, store.loadGrants(), new Date()),
+        grants: grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
         hostVersion,
       });
       const body = JSON.stringify(built.planir);

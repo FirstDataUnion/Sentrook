@@ -84,7 +84,7 @@ def format_report(checks: list[tuple[str, bool, str]]) -> str:
 CLI_COMMANDS = tuple(name for name in COMMANDS if name != "help")
 #: `grant`'s valued flags, declared to argparse so they may come before or after the positionals;
 #: the values themselves are checked by the shared parser.
-GRANT_FLAGS = ("scope", "allows", "expires")
+GRANT_FLAGS = ("scope", "session", "allows", "expires")
 
 
 def _rest(cmd: str, args: argparse.Namespace) -> str:
