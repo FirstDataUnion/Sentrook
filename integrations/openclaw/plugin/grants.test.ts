@@ -392,7 +392,18 @@ test("an over-broad pattern is stored as typed: whether it relieves is the scann
   assert.equal(stored().grants[0].pattern, "*");
 });
 
-for (const expiresAt of ["2026-11-05 09:00:00", "11/05/2026", "Nov 5 2026 09:00", "2026-11-05", "soon", 7]) {
+for (const expiresAt of [
+  "2026-11-05 09:00:00",
+  "11/05/2026",
+  "Nov 5 2026 09:00",
+  "2026-11-05",
+  "soon",
+  7,
+  // A field out of range is unreadable, not rolled forward into a later time.
+  "2099-12-31T24:00Z",
+  "2099-02-30T00:00Z",
+  "2099-12-31T12:30:60Z",
+]) {
   test(`an expiry in any other form counts as past: ${expiresAt}`, async () => {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(file, JSON.stringify({ grants: [{ id: "gr-000001", kind: "destination", pattern: "#ops", expires_at: expiresAt }] }));
@@ -443,7 +454,7 @@ test("status counts grants from both sources", async () => {
   fixtureFile();
   const r = await registered(fixtureConfig());
   const out = (await r.commands.sentrook.handler({ args: "status" })).text.split("\n");
-  assert.ok(out.includes("grants: 2 in config, 4 by command"), out.join("\n"));
+  assert.ok(out.includes("grants: 2 in config, 7 by command"), out.join("\n"));
   assert.ok(out.includes("channel bindings: 1 in config, 1 by command"));
 });
 

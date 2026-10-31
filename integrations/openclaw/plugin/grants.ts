@@ -19,7 +19,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
-import { type GrantsFile, Store } from "./store.ts";
+import { type GrantsFile, readTime, Store } from "./store.ts";
 
 export const KINDS = ["destination", "file", "provider"];
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
@@ -51,17 +51,6 @@ export function load(stateDir: string): GrantsFile | null {
 const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
-/** The only time form read back from the file; both plugins accept exactly this. */
-const ISO = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:\d{2})?$/;
-
-/** An ISO time with a `T` (no offset means UTC); anything else is unreadable. */
-function when(raw: unknown): Date | null {
-  const m = typeof raw === "string" ? ISO.exec(raw.trim()) : null;
-  if (!m) return null;
-  const d = new Date(`${m[1]}${m[2] ?? "Z"}`);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 const NOT_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|[^\P{Zs} ]/u;
 
 function printable(s: string): boolean {
@@ -77,7 +66,7 @@ function clean(s: unknown, cap = 200): string {
 /** Past its expiry. An expiry that cannot be read counts as past, so it never widens relief. */
 export function expired(entry: Entry, now: Date): boolean {
   if (!("expires_at" in entry)) return false;
-  const at = when(entry.expires_at);
+  const at = readTime(entry.expires_at);
   return at === null || at.getTime() <= now.getTime();
 }
 
@@ -113,7 +102,7 @@ export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date)
 // ---- listing -----------------------------------------------------------------------------------------
 
 function setBy(entry: Entry): string[] {
-  const at = when(entry.granted_at);
+  const at = readTime(entry.granted_at);
   const by = entry.set_by && typeof entry.set_by === "object" ? entry.set_by : {};
   const basis = (Array.isArray(by.basis) ? by.basis : []).filter((b: unknown): b is string => typeof b === "string");
   const text = `set${at ? ` ${show(at)}` : ""}${basis.length ? ` (${basis.join("+")})` : ""}`;
@@ -138,7 +127,7 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
   for (const [raw, g] of file) {
     const details = g.allows?.length ? [`allows ${g.allows.join(",")}`] : [];
     if ("expires_at" in raw) {
-      const at = when(raw.expires_at);
+      const at = readTime(raw.expires_at);
       details.push(`${expired(raw, now) ? "expired" : "expires"} ${at ? show(at) : "?"}`);
     }
     rows.push([String(raw.id || "-"), g.kind, g.scope ?? "session", g.pattern, [...details, ...setBy(raw)].join("; ")]);

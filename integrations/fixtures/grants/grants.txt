@@ -1,9 +1,12 @@
-Grants: 2 in config, 4 by command
+Grants: 2 in config, 7 by command
 id         kind         scope       pattern           details
 cfg-1      destination  persistent  *.mycorp.example  config, read-only
 cfg-2      file         session     ~/notes/*         allows read,write; config, read-only
 gr-1a2b3c  destination  session     #ops              set 2026-10-29 09:00 UTC (local_terminal)
 gr-4d5e6f  provider     persistent  npm:left-pad      expired 2026-10-28 00:00 UTC; set 2026-10-27 10:00 UTC (host_allowlist_dm)
 gr-7a8b9c  file         persistent  /srv/reports/*    allows write; expires 2026-11-05 09:00 UTC; set 2026-10-29 09:00 UTC (operator.admin)
+gr-c1d2e3  destination  session     #hour-24          expired ?; set 2026-10-29 09:00 UTC
+gr-f4a5b6  destination  persistent  #feb-30           expired ?
+gr-a7b8c9  destination  session     #second-60        expired ?; set 2026-10-29 09:00 UTC
 gr-bad001  destination  session     #typo             set 2026-10-29 09:10 UTC
 Channel bindings: 1 in config, 1 by command; see {bind} list

@@ -310,7 +310,18 @@ def test_an_over_broad_pattern_is_stored_as_typed(term):
 
 @pytest.mark.parametrize(
     "expires_at",
-    ["2026-11-05 09:00:00", "11/05/2026", "Nov 5 2026 09:00", "2026-11-05", "soon", 7],
+    [
+        "2026-11-05 09:00:00",
+        "11/05/2026",
+        "Nov 5 2026 09:00",
+        "2026-11-05",
+        "soon",
+        7,
+        # A field out of range is unreadable, not rolled forward into a later time.
+        "2099-12-31T24:00Z",
+        "2099-02-30T00:00Z",
+        "2099-12-31T12:30:60Z",
+    ],
 )
 def test_an_expiry_in_any_other_form_counts_as_past(term, expires_at):
     term.file.parent.mkdir(parents=True, exist_ok=True)
@@ -359,7 +370,7 @@ def test_the_cli_forms_match_the_slash_forms(term, capsys):
 def test_status_counts_grants_from_both_sources(term):
     fixture_state(term)
     out = slash(term, "status").splitlines()
-    assert "grants: 2 in config, 4 by command" in out
+    assert "grants: 2 in config, 7 by command" in out
     assert "channel bindings: 1 in config, 1 by command" in out
 
 
