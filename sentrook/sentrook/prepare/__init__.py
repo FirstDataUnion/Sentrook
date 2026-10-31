@@ -257,7 +257,8 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
     """An owner may name a recipient, channel, account or host in a form the mention extractor does not
     produce on its own: a person's name (`Pay Mara Quill`), an account number, `#ops-yard` for a channel
     target, or a host that only the pending call spells out. A pending-call entity whose value appears
-    verbatim in the request (case-insensitive, whole token) is request-named."""
+    verbatim in the request (case-insensitive, whole token) is request-named. A PyPI name is folded on
+    extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does."""
     text = request_text.lower()
     if not text:
         return
@@ -281,10 +282,12 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
             candidates.update({name, "#" + name})
         if ent.kind is EntityKind.PACKAGE and ":" in ent.value:
             candidates.add(ent.value.split(":", 1)[1].lower())
+        pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
         for cand in candidates:
             if len(cand) < 3:
                 continue
-            if re.search(r"(?<![\w.@-])" + re.escape(cand) + r"(?![\w-])", text):
+            body = "[-_.]+".join(map(re.escape, cand.split("-"))) if pypi else re.escape(cand)
+            if re.search(r"(?<![\w.@-])" + body + r"(?![\w-])", text):
                 ent.add_origin(Origin.REQUEST, "verbatim")
                 break
 
@@ -701,6 +704,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for s in (planir.pending_call.batch.siblings if planir.pending_call.batch else [])
     ]
     history = [canonical_history(platform, h) for h in planir.history]
+    for call in (pending, *siblings, *history):
+        if call.dropped:
+            where = call.source if call.step is None else f"{call.source} step {call.step}"
+            coverage.append(
+                CoverageNote("argument_dropped", f"{where} {call.tool}: {', '.join(call.dropped)}")
+            )
 
     # 4. trust
     inputs: list[PreparedInput] = []
