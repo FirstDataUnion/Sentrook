@@ -674,17 +674,22 @@ def _tool_sib(tool: str, arguments: dict[str, Any]) -> dict:
     return {"call_id": "sib_1", "tool": tool, "tool_kind": "other", "arguments": arguments}
 
 
-SKILL_READS = [
+SKILL_AND_PLUGIN_READS = [
     ("skills_read", {"name": "calendar"}),
     ("skills_list", {}),
     ("skill_view", {"name": "calendar"}),
     ("skill_workshop", {"action": "list"}),
     ("skill_workshop", {"action": "read", "name": "calendar"}),
+    ("plugin_list", {}),
+    ("plugins_list", {}),
+    ("plugin_info", {"plugin": "@acme/weather"}),
+    ("plugin_status", {"plugin": "@acme/weather"}),
+    ("plugin_manage", {"action": "list"}),
 ]
 
 
-@pytest.mark.parametrize("tool, arguments", SKILL_READS)
-def test_c4_reading_a_skill_is_not_self_modification(tool, arguments):
+@pytest.mark.parametrize("tool, arguments", SKILL_AND_PLUGIN_READS)
+def test_c4_reading_a_skill_or_plugin_is_not_self_modification(tool, arguments):
     _, env = run(planir(tool, "other", arguments))
     assert "C4" not in classes(env) and of(env, SELF) == []
     _, env = run(ex("python3 ~/workspace/cal.py today", siblings=[_tool_sib(tool, arguments)]))
@@ -703,6 +708,14 @@ def test_c4_reading_a_skill_is_not_self_modification(tool, arguments):
         ("skill_workshop", {"action": "patch", "name": "calendar"}),
         ("skill_workshop", {"action": "delete", "name": "calendar"}),
         ("plugin_install", {"plugin": "@acme/weather"}),
+        ("plugin_uninstall", {"plugin": "@acme/weather"}),
+        ("plugin_update", {"plugin": "@acme/weather"}),
+        ("plugin_upgrade", {"plugin": "@acme/weather"}),
+        ("plugin_delete", {"plugin": "@acme/weather"}),
+        ("plugins_add", {"plugin": "@acme/weather"}),
+        ("uninstall_plugin", {"plugin": "@acme/weather"}),
+        ("uninstall_skill", {"name": "calendar"}),
+        ("plugin_manage", {"action": "remove", "plugin": "@acme/weather"}),
     ],
 )
 def test_c4_changing_a_skill_or_plugin_is_self_modification(tool, arguments):
@@ -711,7 +724,9 @@ def test_c4_changing_a_skill_or_plugin_is_self_modification(tool, arguments):
     (sm,) = of(env, SELF, "selfmod.plugin")
     assert sm.value == 1.0
     _, env = run(ex("python3 ~/workspace/cal.py today", siblings=[_tool_sib(tool, arguments)]))
-    assert env.evidence["siblings"]["sib_1"]["rules"] == ["C4.plugin"]
+    # a plugin delete is also a destructive tool name
+    expected = ["C4.plugin", "C9.delete"] if tool == "plugin_delete" else ["C4.plugin"]
+    assert env.evidence["siblings"]["sib_1"]["rules"] == expected
 
 
 # --------------------------------------------------------------------------- C4*
