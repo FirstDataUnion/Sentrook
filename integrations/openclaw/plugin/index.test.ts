@@ -111,6 +111,19 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+/** Adds a test's requests to the file the scanner's own validator checks (the plugin-planir-check Makefile target). */
+function dumpPlanirs(scans: any[]) {
+  const file = process.env.SENTROOK_PLANIR_DUMP;
+  if (!file) return;
+  let prior: any[] = [];
+  try {
+    prior = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+  writeFileSync(file, JSON.stringify([...prior, ...scans]));
+}
+
 const call = (id: string, command: string) => ({ toolName: "exec", toolCallId: id, runId: "r1", params: { command } });
 
 test("allow, block and review over one episode, with the state token and inputs carried", async () => {
@@ -180,8 +193,7 @@ test("allow, block and review over one episode, with the state token and inputs 
   assert.deepEqual(p4.history.map((x: any) => x.step), [1, 2, 3]);
   assert.equal(p4.session.step, 4);
 
-  // Lets the scanner's own validator check these requests (see the plugin Makefile target).
-  if (process.env.SENTROOK_PLANIR_DUMP) writeFileSync(process.env.SENTROOK_PLANIR_DUMP, JSON.stringify(h.scans));
+  dumpPlanirs(h.scans);
 
   const log = h.traffic();
   assert.deepEqual(log.map((l) => l.kind), ["scan", "scan", "scan", "resolution", "scan"]);
@@ -335,4 +347,130 @@ test("the result middleware names the runtimes the manifest declares", () => {
   const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
   assert.deepEqual(seen, [{ runtimes: MIDDLEWARE_RUNTIMES }]);
   assert.deepEqual(MIDDLEWARE_RUNTIMES, manifest.contracts.agentToolResultMiddleware);
+});
+
+const MCP_CONFIG = { tools: { exec: { mode: "full" } }, mcp: { servers: { notes: { command: "npx", args: ["-y", "@acme/notes-mcp"] } } } };
+/** A wrapper call as OpenClaw's tool search dispatches it: `{id, args}`, the id a tool name or a catalog id. */
+const wrapper = (id: string, params: Record<string, unknown>) => ({ toolName: "tool_call", toolCallId: id, runId: "r1", params });
+
+test("a tool_call wrapper is not scanned; the call inside it is, with the batch's narration and siblings", async () => {
+  const h = setup({}, {}, { config: MCP_CONFIG });
+  await h.fire("before_prompt_build", { runId: "r1", currentUserMessage: "check my notes and the disk", prompt: "p" });
+  await h.fire("before_message_write", {
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Searching notes and checking the disk." },
+        { type: "toolCall", id: "call_a", name: "tool_call", arguments: { id: "notes__search", args: { query: "q" } } },
+        { type: "toolCall", id: "call_b", name: "tool_call", arguments: { id: "openclaw:core:exec", args: { command: "df -h" } } },
+        { type: "toolCall", id: "call_c", name: "tool_call", arguments: { name: "web_fetch", url: "https://docs.test/a" } },
+        { type: "toolCall", id: "call_d", name: "read", arguments: { path: "/tmp/x" } },
+        { type: "toolCall", id: "call_e", name: "tool_call", arguments: { args: { id: "exec", command: "uptime" } } },
+        // OpenClaw rejects this one (`id` is not a string): shown as the wrapper it is.
+        { type: "toolCall", id: "call_f", name: "tool_call", arguments: { id: 5, name: "exec", command: "whoami" } },
+      ],
+    },
+  });
+
+  // Parallel wrappers: both wrapper hooks fire before either inner one.
+  assert.equal(await h.fire("before_tool_call", wrapper("call_a", { id: "notes__search", args: { query: "q" } })), undefined);
+  assert.equal(await h.fire("before_tool_call", wrapper("call_b", { id: "openclaw:core:exec", args: { command: "df -h" } })), undefined);
+  assert.equal(h.scans.length, 0, "the wrappers are not scanned");
+
+  const innerA = "tool_call:call_a:notes__search:1";
+  await h.fire("before_tool_call", { toolName: "notes__search", toolCallId: innerA, runId: "r1", params: { query: "q" } });
+  assert.equal(h.scans.length, 1);
+  const p1 = h.scans[0];
+  assert.equal(p1.session.step, 1);
+  assert.deepEqual(p1.history, []);
+  assert.equal(p1.pending_call.call_id, innerA);
+  assert.equal(p1.pending_call.tool, "notes__search");
+  assert.equal(p1.pending_call.tool_kind, "mcp");
+  assert.equal(p1.pending_call.provider.identity, "npm:@acme/notes-mcp");
+  assert.deepEqual(p1.pending_call.arguments, { query: "q" });
+  assert.equal(p1.pending_call.agent_narration, "Searching notes and checking the disk.");
+  const sib1 = p1.pending_call.batch.siblings;
+  assert.deepEqual(sib1.map((s: any) => s.call_id), ["call_b", "call_c", "call_d", "call_e", "call_f"], "the outer wrapper is not its own sibling");
+  assert.deepEqual(sib1[0], {
+    call_id: "call_b",
+    tool: "exec",
+    tool_kind: "exec",
+    provider: { kind: "host", name: null, identity: null, transport: null },
+    arguments: { command: "df -h" },
+  });
+  assert.deepEqual([sib1[1].tool, sib1[1].tool_kind, sib1[1].arguments], ["web_fetch", "web_fetch", { url: "https://docs.test/a" }]);
+  assert.deepEqual([sib1[2].tool, sib1[2].arguments], ["read", { path: "/tmp/x" }]);
+  assert.deepEqual([sib1[3].call_id, sib1[3].tool, sib1[3].arguments], ["call_e", "exec", { command: "uptime" }]);
+  assert.deepEqual([sib1[4].call_id, sib1[4].tool, sib1[4].tool_kind], ["call_f", "tool_call", "other"]);
+
+  // Two results: the inner call's own first, then the wrapper's envelope, which must not replace it.
+  await h.fire("after_tool_call", { toolName: "notes__search", toolCallId: innerA, result: "hit" });
+  await h.fire("after_tool_call", { toolName: "tool_call", toolCallId: "call_a", result: '{"tool":{"id":"mcp:notes:notes__search"},"result":"hit"}' });
+
+  const innerB = "tool_call:call_b:exec:2";
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: innerB, runId: "r1", params: { command: "df -h" } });
+  const p2 = h.scans[1];
+  assert.deepEqual(p2.history.map((x: any) => [x.call_id, x.tool]), [[innerA, "notes__search"]], "no history entry for a wrapper");
+  assert.deepEqual(p2.history[0].result, { status: "ok", size_bytes: 3 });
+  assert.deepEqual(p2.new_inputs.map((i: any) => [i.call_id, i.content]), [[innerA, "hit"]]);
+  assert.deepEqual(p2.pending_call.arguments, { command: "df -h" });
+  const sib2 = p2.pending_call.batch.siblings;
+  assert.deepEqual(sib2.map((s: any) => s.call_id), ["call_a", "call_c", "call_d", "call_e", "call_f"]);
+  assert.deepEqual([sib2[0].tool, sib2[0].tool_kind, sib2[0].provider.identity, sib2[0].arguments], [
+    "notes__search",
+    "mcp",
+    "npm:@acme/notes-mcp",
+    { query: "q" },
+  ]);
+  assert.deepEqual(h.traffic().map((l) => [l.kind, l.tool]), [["scan", "notes__search"], ["scan", "exec"]]);
+  dumpPlanirs(h.scans);
+});
+
+test("an inner call matches its wrapper by the id OpenClaw writes into it", async () => {
+  const h = setup();
+  const outer = "toolu 01/ä"; // OpenClaw replaces characters outside [A-Za-z0-9_.:-] in the outer id with "_".
+  await h.fire("before_message_write", {
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Two commands." },
+        { type: "toolCall", id: outer, name: "tool_call", arguments: { id: "exec", args: { command: "ls" } } },
+        { type: "toolCall", id: "c2", name: "exec", arguments: { command: "pwd" } },
+      ],
+    },
+  });
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "tool_call:toolu_01_:exec:1", runId: "r1", params: { command: "ls" } });
+  const p = h.scans[0];
+  assert.equal(p.pending_call.agent_narration, "Two commands.");
+  assert.deepEqual(p.pending_call.batch.siblings.map((s: any) => s.call_id), ["c2"]);
+});
+
+test("an inner call whose wrapper is not in the last assistant message has no batch", async () => {
+  const h = setup();
+  await h.fire("before_message_write", {
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Other batch." },
+        { type: "toolCall", id: "call_x", name: "tool_call", arguments: { id: "exec", args: { command: "ls" } } },
+        { type: "toolCall", id: "call_xy", name: "tool_call", arguments: { id: "exec", args: { command: "pwd" } } },
+      ],
+    },
+  });
+  // The real outer id is `call_xy:z`: neither wrapper whose id starts it is this call's wrapper.
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "tool_call:call_xy:z:exec:1", runId: "r1", params: { command: "ls" } });
+  assert.deepEqual(h.scans[0].pending_call.batch.siblings, []);
+  assert.equal(h.scans[0].pending_call.agent_narration, undefined);
+});
+
+test("a tool_call wrapper the host rejects (nested or unknown id) is never scanned", async () => {
+  const h = setup();
+  assert.equal(await h.fire("before_tool_call", wrapper("call_n", { id: "tool_call", args: { id: "exec", args: { command: "ls" } } })), undefined);
+  assert.equal(await h.fire("before_tool_call", wrapper("call_u", { id: "no_such_tool", args: {} })), undefined);
+  await h.fire("after_tool_call", { toolName: "tool_call", toolCallId: "call_n", error: "Tool not found" });
+  await h.fire("after_tool_call", { toolName: "tool_call", toolCallId: "call_u", error: "Tool not found" });
+  assert.equal(h.scans.length, 0);
+  await h.fire("before_tool_call", call("c1", "ls"));
+  assert.deepEqual(h.scans[0].history, []);
+  assert.deepEqual(h.scans[0].new_inputs, []);
 });
