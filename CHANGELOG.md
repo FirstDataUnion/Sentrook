@@ -232,3 +232,16 @@ An entity the library does not list but that is one slip away from one it vouche
 - `probes.oracle`: an unknown entity that is a near miss gets `near_miss_distrust` (0.9, reason `reputation.near_miss_<kind>`) when it receives data or supplies code or tools. It gets no floor. Read from or only mentioned, it keeps the unknown distrust. Coverage is lowered as for any unknown entity, and the evidence records `match` and `near_miss`.
 - `call-v5` (now the default for `SENTROOK_JEV_CALL_QUESTIONS`) is `call-v4` on the `call-v5` view (`trim-v4`). Its `reputation` block also lists near misses as `verdict: unknown` with `near_miss: <entry>`. One preamble sentence describes such entries, and one clause in `supported_by_request` says a near miss never stands in for the entry it imitates. `call-v4` and earlier send exactly what they sent before.
 - Tests: the rule table (must fire for TLD swaps, hyphens, confusables and one edit on hosts, MCP servers, packages, plugins, addresses and handles; must stay silent for exact entries, subdomains and siblings of an entry, short labels, IPs, another version, another image tag or digest, another PyPI spelling, one digit for another, an edit of a popular package, another ecosystem, URLs, another local part and channels), shared with Rookery's oracle. Seed and HTTP clients. Probe distrust by role, and a watched entry keeping its own distrust. The call-v5 body carries the near miss while call-v4's is unchanged, and the question-set diff.
+
+### Publish targets are destinations (2026-11-02)
+A command that publishes to a host named by an option was read as fetching from it: a host was a data destination only when curl or wget upload flags appeared, so `npm publish --registry URL` scored its registry as a data source, and the registry in `docker push reg.example.test/app` or `helm push … oci://reg.example.test` was not extracted at all.
+- `prepare.entities.publish_targets`: the target host of a publishing command is a data destination. The table covers:
+  - `npm`, `pnpm` and `yarn publish` (`--registry`);
+  - `twine upload` (`--repository-url`, `TWINE_REPOSITORY_URL`, and under `python -m`);
+  - `uv publish` (`--publish-url`, `UV_PUBLISH_URL`);
+  - `gem push` (`--host`);
+  - `cargo publish` (`--index`, `sparse+` prefix stripped);
+  - `dotnet nuget push` (`--source`);
+  - the image registry of `docker push` and `podman push`, and `helm push`'s `oci://` host.
+- The verb must lead the command's words, so `npm run publish`, an echoed command, `npm install --registry`, `twine check` and `docker pull` are unchanged. A publish without a target goes to the public default and names no host. The published artefact stays a data source, and other hosts in the command keep their roles.
+- Tests: must be a destination for every form above, including an option before the verb, `--opt=value`, `sudo` and a registry port; must stay a source or add nothing for installs, views, `run publish`, `echo`, `check`, pulls, and publishes with no target or a named repository; a near-miss registry as a publish target takes the near-miss distrust.

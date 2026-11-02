@@ -911,6 +911,98 @@ def fetched_then_run(
     return hosts, executables
 
 
+#: Publishing commands: head → (the verb word sequences that publish, the options that name the target).
+#: The target is where the package goes, so its host is a data destination. Installing, viewing or
+#: checking with the same option reads from the host and is left alone.
+_PUBLISH_COMMANDS: dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]] = {
+    "npm": ((("publish",),), ("--registry",)),
+    "pnpm": ((("publish",),), ("--registry",)),
+    "yarn": ((("publish",), ("npm", "publish")), ("--registry",)),
+    "twine": ((("upload",),), ("--repository-url",)),
+    "uv": ((("publish",),), ("--publish-url",)),
+    "gem": ((("push",),), ("--host",)),
+    "cargo": ((("publish",),), ("--index",)),
+    "dotnet": ((("nuget", "push"),), ("--source", "-s")),
+}
+#: Environment variables that name the target instead of an option.
+_PUBLISH_ENV = {"twine": ("TWINE_REPOSITORY_URL",), "uv": ("UV_PUBLISH_URL",)}
+#: Commands that push an image or chart; the target is the registry the reference names.
+_PUSH_COMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "docker": (("push",), ("image", "push")),
+    "podman": (("push",), ("image", "push")),
+    "helm": (("push",),),
+}
+_PYTHON_HEADS = frozenset({"python", "python3"})
+
+
+def _target_host(value: str) -> str | None:
+    """The host a publish target names: a URL (`sparse+https://…` too) or a bare `host[:port][/path]`."""
+    value = re.sub(r"^[a-z]+\+(?=[a-z]+://)", "", value.strip().strip("'\""))
+    if "://" in value:
+        return host_of_url(value)
+    head = value.split("/", 1)[0]
+    return normalise_host(head) if "." in head or head.startswith("localhost") else None
+
+
+def _image_registry(ref: str) -> str | None:
+    """The registry an image reference names (`reg.example.test:5000/team/app:1` → `reg.example.test`),
+    or None when it names none (`app:1`, `someuser/app`: the default registry)."""
+    if ref.startswith("oci://"):
+        return host_of_url(ref)
+    first, slash, _ = ref.partition("/")
+    if not slash or not ("." in first or ":" in first or first == "localhost"):
+        return None
+    return normalise_host(first)
+
+
+def publish_targets(command: str) -> set[str]:
+    """Hosts the command publishes to: the target a publishing command names by option or
+    environment variable (`npm publish --registry URL`, `TWINE_REPOSITORY_URL=URL twine upload`), or
+    the registry of the image or chart it pushes (`docker push reg.example.test/app`, `helm push chart
+    oci://reg.example.test/charts`). A publish that names no target goes to the public default, which
+    names no host here. The verb must lead the command's words, so `npm run publish` and an echoed
+    command are not publishes."""
+    out: set[str] = set()
+    shape = derive_exec_shape(command, load_lists().path_groups)
+    for seg in shape.segments:
+        head, argv = seg.head, list(seg.argv)
+        if head in _PYTHON_HEADS and len(argv) >= 2 and argv[0] == "-m":
+            head, argv = argv[1], argv[2:]
+        if head in _PUBLISH_COMMANDS:
+            verbs, options = _PUBLISH_COMMANDS[head]
+        elif head in _PUSH_COMMANDS:
+            verbs, options = _PUSH_COMMANDS[head], ()
+        else:
+            continue
+        words: list[str] = []
+        targets: list[str] = []
+        i = 0
+        while i < len(argv):
+            tok = argv[i]
+            name, eq, val = tok.partition("=")
+            if tok in options and i + 1 < len(argv):
+                targets.append(argv[i + 1])
+                i += 2
+                continue
+            if eq and name in options:
+                targets.append(val)
+            elif not tok.startswith("-"):
+                words.append(tok)
+            i += 1
+        verb = next((v for v in verbs if tuple(words[: len(v)]) == v), None)
+        if verb is None:
+            continue
+        for env in seg.env_assignments:
+            name, _, val = env.partition("=")
+            if name in _PUBLISH_ENV.get(head, ()):
+                targets.append(val)
+        hosts = [_target_host(t) for t in targets]
+        if head in _PUSH_COMMANDS:
+            hosts += [_image_registry(w) for w in words[len(verb) :]]
+        out.update(h for h in hosts if h)
+    return out
+
+
 def pipes_into_code(command: str, *, inline_program: bool = False) -> bool:
     """Whether the command pipes something into a stage that runs it as code (`… | sh`,
     `… | python3`), or evaluates text (`source <(…)`, `eval …`).
@@ -960,10 +1052,14 @@ def extract_exec(
     code_hosts, run_files = fetched_then_run(
         command, home=home, workspace_root=workspace_root, cwd=cwd
     )
+    published = set() if inline_program else publish_targets(command)
 
-    for h in _hosts_in(command, inline_program=inline_program):
+    named = _hosts_in(command, inline_program=inline_program)
+    for h in named + sorted(published - set(named)):
         if h in ("localhost",):
             role = Role.DATA_SOURCE
+        elif h in published:
+            role = Role.DATA_DESTINATION
         elif h in code_hosts:
             role = Role.CODE_SOURCE
         elif egress:
