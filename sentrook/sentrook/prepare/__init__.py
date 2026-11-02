@@ -807,7 +807,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if spec.actions:
                 if ent.id not in grant_actions:
                     grant_actions[ent.id], grant_reach[ent.id] = path_actions(
-                        pending, ent, home=home, workspace_root=ws
+                        pending, ent, home=home, workspace_root=ws, host_os=planir.host.os
                     )
                 if not grant_actions[ent.id] <= allowed:
                     continue

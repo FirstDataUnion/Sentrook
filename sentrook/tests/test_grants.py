@@ -293,10 +293,23 @@ def test_macos_wildcard_inside_the_grant_is_covered_in_any_case(twin_case):
 @pytest.mark.parametrize("os_name", ["linux", "unknown"])
 def test_linux_file_grant_keeps_letter_case(twin_case, os_name):
     host = {"os": os_name}
-    p, relief = run(twin_case, [file_grant("/srv/app/*", "read")], "cat /srv/App/x.csv", host=host)
+    p, _ = run(twin_case, [file_grant("/srv/app/*", "read")], "cat /srv/App/x.csv", host=host)
     assert Origin.GRANT not in path(p, "/srv/App/x.csv").origins and p.grant_hits == {}
     p, _ = run(twin_case, [file_grant("/srv/App/*", "read")], "cat /srv/App/x.csv", host=host)
     assert Origin.GRANT in path(p, "/srv/App/x.csv").origins
+
+
+@pytest.mark.parametrize(
+    ("allows", "command"),
+    [
+        ("delete", "rm -rf /Users/alex/notes/a.md /users/alex/*"),
+        ("delete", "rm -rf /Users/alex/notes/a.md /USERS/ALEX/*"),
+        ("read", "cat /Users/alex/notes/a.md && rm /users/alex/notes/a.md"),
+    ],
+)
+def test_macos_reach_past_the_grant_counts_in_any_case(twin_case, allows, command):
+    p, relief = run(twin_case, [file_grant("/Users/alex/notes/", allows)], command, host=MACOS)
+    assert relief == [] and Origin.GRANT not in path(p, "/Users/alex/notes/a.md").origins
 
 
 def test_linux_wildcard_into_a_differently_cased_folder_gives_nothing(twin_case):
@@ -337,6 +350,8 @@ def test_destination_and_provider_matching_still_ignores_case():
         id="E1", kind=EntityKind.HOST, value="Backup.MyCorp.com", display="Backup.MyCorp.com"
     )
     assert grant_matches("destination", "*.MYCORP.com", host, host_os="linux")
+    mcp = Entity(id="E2", kind=EntityKind.MCP_SERVER, value="npm:@Acme/Gmail-MCP", display="gmail")
+    assert grant_matches("provider", "npm:@acme/gmail-*", mcp, host_os="linux")
 
 
 # --------------------------------------------------------------------------- provider grants
