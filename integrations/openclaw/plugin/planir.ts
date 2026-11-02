@@ -256,10 +256,10 @@ function piecesIn(pattern: string, text: string): boolean {
 
 /** The arguments the scanner reads a command's working directory from, in its order. */
 const CWD_KEYS = ["cwd", "dir", "working_directory", "workdir"];
-/** A path that starts with `./`, where the scanner finds one. */
-const DOT_PATH = /(?<![\p{L}\p{N}_.:-])\.\//gu;
+/** A path that starts with `./`, where the scanner finds one (also after a JSON-escaped newline or tab). */
+const DOT_PATH = /(?:(?<![\p{L}\p{N}_.:-])|(?<=\\[ntr]))\.\//gu;
 
-/** The working directory the call names for itself, if any. */
+/** The working directory a command names for itself, if any. The scanner reads it for exec calls only. */
 export function callCwd(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
   for (const k of CWD_KEYS) {
@@ -273,7 +273,7 @@ export function callCwd(args: unknown): string | null {
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
  * call's provider identity. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
- * `$HOME/…` or full), and `./…` against the call's `cwd` or the workspace.
+ * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
  */
 export function relevantGrants(
   grants: GrantConfig[],
@@ -282,9 +282,8 @@ export function relevantGrants(
 ): Array<Record<string, unknown>> {
   const text = argsText.toLowerCase();
   let texts = [text];
-  for (const d of [opts.cwd, opts.workspace]) {
-    if (d) texts.push(text.replace(DOT_PATH, () => `${d.replace(/\/+$/, "").toLowerCase()}/`));
-  }
+  const base = opts.cwd || opts.workspace;
+  if (base) texts.push(text.replace(DOT_PATH, () => `${base.replace(/\/+$/, "").toLowerCase()}/`));
   let pats = grants.map((g) => g.pattern.toLowerCase());
   if (opts.home) {
     const root = opts.home.replace(/\/+$/, "").toLowerCase();
@@ -449,7 +448,7 @@ export function buildPlanir(b: BuildInput): Built {
       identity: provider.identity,
       home: homedir(),
       workspace: run.workspaceDir,
-      cwd: callCwd(event.params),
+      cwd: tk === "exec" ? callCwd(event.params) : null,
     }),
     options: { packs: cfg.packs, redaction: redactor.level },
   };

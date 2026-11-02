@@ -167,6 +167,29 @@
       "sent": true
     },
     {
+      "case": "file grant on a ./ path on a later line of a command",
+      "workspace": "/home/alex/proj",
+      "grant": { "kind": "file", "pattern": "/home/alex/proj/scripts/*", "scope": "persistent", "allows": ["exec"] },
+      "identity": null,
+      "arguments": { "command": "set -e\n./scripts/run.sh" },
+      "sent": true
+    },
+    {
+      "case": "~ file grant on a ./ path in a command run from ~",
+      "grant": { "kind": "file", "pattern": "~/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "command": "cat ./notes/a.md", "workdir": "~" },
+      "sent": true
+    },
+    {
+      "case": "file grant on a ./ path in a command run from elsewhere",
+      "workspace": "/home/alex",
+      "grant": { "kind": "file", "pattern": "/home/alex/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "command": "cat ./notes/a.md", "workdir": "/srv/app" },
+      "sent": false
+    },
+    {
       "case": "full-path file grant on a ./ path from a workspace elsewhere",
       "workspace": "/srv/app",
       "grant": { "kind": "file", "pattern": "/home/alex/notes/*", "scope": "persistent", "allows": ["read"] },
