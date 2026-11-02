@@ -60,8 +60,9 @@ hermes-plugin-test:
 # checks must accept every one.
 plugin-planir-check:
 	mkdir -p tmp
+	rm -f tmp/openclaw-planirs.json
 	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
-		node --experimental-strip-types --test --test-name-pattern="allow, block" index.test.ts
+		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned" index.test.ts
 	SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/hermes-planirs.json uv run python -m pytest -q \
 		integrations/hermes/plugin/tests/test_plugin.py -k episode
 	uv run python -c "import json; from sentrook.planir.models import PlanIR; \

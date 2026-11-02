@@ -20,6 +20,7 @@ from enum import StrEnum
 import jwt
 
 from ..enums import SessionFlag
+from ..oracle.client import fold_pypi_name
 
 TOKEN_VERSION = 1
 ALGORITHM = "HS256"
@@ -187,4 +188,6 @@ def _guess_kind(value: str) -> str:
 def _normalise_seed_value(kind: str, value: str) -> str:
     if kind in ("host", "recipient") and "@" in value or kind == "host":
         return value.strip().lower()
+    if kind == "package" and value.strip().startswith("pypi:"):
+        return "pypi:" + fold_pypi_name(value.strip()[5:])  # as extraction folds it
     return value.strip()

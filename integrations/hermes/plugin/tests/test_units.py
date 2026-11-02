@@ -7,6 +7,7 @@ import pytest
 from plugin.config import parse_endpoint, resolve_config
 from plugin.decision import REVIEW_MESSAGE_MAX, decide, review_message
 from plugin.intent import sender_of
+from plugin.planir import tool_kind
 from plugin.redact import Redactor, cap_args, cap_head_tail
 
 
@@ -162,6 +163,33 @@ def test_review_message_carries_no_redacted_data():
     resp["tree"]["extra"] = {"score": secret}
     msg = review_message(resp, "exec")
     assert secret not in msg and "Scores: suspicion 92, consequence 50, confidence 80." in msg
+
+
+def test_process_control_kind_follows_the_action():
+    # Writing to a running shell, closing its stdin or killing it is code execution; looking at it is not.
+    for action in ("write", "submit", "close", "kill"):
+        assert tool_kind("process_manage", {"action": action}) == "exec"
+    for action in ("list", "poll", "log", "wait", "handoff"):
+        assert tool_kind("process_manage", {"action": action}) == "other"
+    # An unknown or missing action keeps the stricter kind.
+    assert tool_kind("process_manage", {"action": "respawn"}) == "exec"
+    assert tool_kind("process_manage", {}) == "exec"
+    assert tool_kind("process_manage") == "exec"
+    assert tool_kind("process_manage", {"action": ["poll"]}) == "exec"
+    # Older Hermes versions name the tool `process`.
+    assert tool_kind("process", {"action": "kill"}) == "exec"
+    assert tool_kind("process", {"action": "poll"}) == "other"
+    assert tool_kind("process") == "exec"
+
+
+def test_other_tool_kinds_are_unchanged():
+    assert tool_kind("terminal", {"command": "ls"}) == "exec"
+    assert tool_kind("execute_code", {"code": "print(1)"}) == "exec"
+    assert tool_kind("read_file") == "file_read"
+    assert tool_kind("browser_navigate") == "browser"
+    assert tool_kind("mcp__fs__read") == "mcp"
+    # Hermes registers no agent-callable `send_message`.
+    assert tool_kind("send_message") == "other"
 
 
 def test_sender_mapping():

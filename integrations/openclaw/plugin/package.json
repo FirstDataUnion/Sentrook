@@ -1,6 +1,6 @@
 {
   "name": "@firstdataunion/sentrook-openclaw",
-  "version": "2.0.0-beta.5",
+  "version": "2.0.0-beta.6",
   "description": "OpenClaw plugin: scans agent tool calls with Sentrook.",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,7 +33,7 @@
     "url": "git+https://github.com/FirstDataUnion/Sentrook.git",
     "directory": "integrations/openclaw/plugin"
   },
-  "homepage": "https://github.com/FirstDataUnion/Sentrook/tree/main/integrations/openclaw/plugin",
+  "homepage": "https://github.com/FirstDataUnion/Sentrook/tree/main/integrations/openclaw",
   "bugs": {
     "url": "https://github.com/FirstDataUnion/Sentrook/issues"
   },
