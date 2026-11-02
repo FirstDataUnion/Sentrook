@@ -112,6 +112,11 @@ NEAR_MISS_CASES = [
     ("recipient", "lists@mail.hallowmere.net", ["@relay.keel"], None),
     ("recipient", "@relay", ["@relay.keel"], None),
     ("channel", "slack:#rel-ops", ["slack:#relops"], None),
+    ("host", "build02.acme-internal.net", ["build01.acme-internal.net"], None),
+    ("host", "build02internal.net", ["build01internal.net"], None),
+    ("recipient", "+15551234568", ["+15551234567"], None),
+    ("host", "cl0udsync.io", ["cloudsync.io"], ("cloudsync.io", "fold")),
+    ("host", "cloudsync2.io", ["cloudsync.io"], ("cloudsync.io", "edit")),
     ("package", "docker:node:22", ["docker:node:20"], None),
     ("package", "docker:node:22-alpine", ["docker:node:20-alpine"], None),
     ("package", "docker:ghcr.io/acme/app:1.3", ["docker:ghcr.io/acme/app:1.2"], None),
@@ -132,6 +137,25 @@ NEAR_MISS_CASES = [
 @pytest.mark.parametrize("kind,query,listed,expected", NEAR_MISS_CASES)
 def test_near_miss_rule(kind, query, listed, expected):
     assert near_miss_of(kind, query, listed) == expected
+
+
+def test_against_a_popular_package_only_fold_counts():
+    popular = {"pypi:pillow"}
+    assert near_miss_of("package", "pypi:willow", ["pypi:pillow"]) == ("pypi:pillow", "edit")
+    assert near_miss_of("package", "pypi:willow", ["pypi:pillow"], popular) is None
+    assert near_miss_of("package", "pypi:pil-low", ["pypi:pillow"], popular) == (
+        "pypi:pillow",
+        "fold",
+    )
+    assert near_miss_of("package", "pypi:pi11ow", ["pypi:pillow"], popular) == (
+        "pypi:pillow",
+        "fold",
+    )
+    # another entry that is not popular still takes an edit
+    assert near_miss_of("package", "pypi:willow", ["pypi:pillow", "pypi:wilow"], popular) == (
+        "pypi:wilow",
+        "edit",
+    )
 
 
 # --------------------------------------------------------------------------- the clients
@@ -422,3 +446,15 @@ def test_call_v5_is_the_shipped_default():
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set
             == name
         )
+
+
+def test_seed_oracle_takes_only_fold_against_a_popular_package():
+    o = SeedOracle(
+        _seed(
+            {"kind": "package", "value": "pypi:pillow", "verdict": "known_good", "tier": "popular"}
+        )
+    )
+    r = o.lookup([EntityQuery("package", "pypi:willow"), EntityQuery("package", "pypi:pil_low")])
+    assert r.get("package", "pypi:willow").match is Match.NONE
+    near = r.get("package", "pypi:pil_low")
+    assert near.match is Match.NEAR_MISS and near.near_miss["how"] == "fold"

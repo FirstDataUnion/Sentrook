@@ -25,7 +25,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from .near_miss import near_miss_of
+from .near_miss import FOLD_ONLY_TIERS, near_miss_of
 
 LOOKUP_PATH = "/entities/lookup"
 
@@ -154,7 +154,8 @@ class SeedOracle:
 
     def _near_miss(self, kind: str, norm: str) -> dict[str, Any] | None:
         listed = self._known_good.get(kind) or {}
-        found = near_miss_of(kind, norm, listed)
+        fold_only = {v for v, e in listed.items() if e.tier in FOLD_ONLY_TIERS}
+        found = near_miss_of(kind, norm, listed, fold_only)
         if found is None:
             return None
         entry, how = found

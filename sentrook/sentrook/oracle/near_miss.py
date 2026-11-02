@@ -5,7 +5,8 @@ the queried value could be mistaken for, and how the two differ (`how`, nearest 
 - `tld`: a host with the same registrable label under another suffix (`cindervale.io` for `cindervale.net`);
 - `fold`: equal once hyphens, dots and underscores are dropped and confusable characters folded together
   (`rn`/`m`, `vv`/`w`, `0`/`o`, `1`/`l`, `i`/`l`, `3`/`e`, `5`/`s`): `fern-mere` for `fernmere`;
-- `edit`: one insertion, deletion or substitution apart (`brindlfen` for `brindlefen`).
+- `edit`: one insertion, deletion or substitution apart (`brindlfen` for `brindlefen`). One digit for another
+  is not an edit: `build02` and `build01`, or two phone numbers, are numbered siblings, not imitations.
 
 What is compared, per kind:
 - a host: its registrable label (`reports.cindervale.net` → `cindervale`). A host under the same registrable
@@ -16,6 +17,9 @@ What is compared, per kind:
 - an email recipient: its domain, by the host rule, against listed addresses with the same local part;
   any other recipient (a handle) whole.
 Labels and names shorter than five characters never match: too many short names are one edit apart.
+Against an entry in a `FOLD_ONLY_TIERS` tier (the popular-package lists) only `fold` counts: those lists hold
+thousands of real names one letter apart (`pillow`, `willow`), and published typosquats of them are listed
+`known_bad` by name.
 Roles are ignored: a value that imitates a vouched-for entity is suspicious in whatever role it appears.
 
 Rookery's oracle implements the same rule; the two share a test table.
@@ -25,12 +29,13 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 
 MIN_LENGTH = 5
 #: `how`, nearest first.
 HOWS = ("tld", "fold", "edit")
 NAME_KINDS = ("package", "mcp_server", "plugin")
+FOLD_ONLY_TIERS = frozenset({"popular"})
 
 CONFUSABLES = (
     ("rn", "m"),
@@ -99,10 +104,18 @@ def _is_ip(host: str) -> bool:
     return True
 
 
+def _digit_swap(a: str, b: str) -> bool:
+    """`a` and `b` differ only in one digit replaced by another."""
+    if len(a) != len(b):
+        return False
+    diff = [(x, y) for x, y in zip(a, b, strict=True) if x != y]
+    return len(diff) == 1 and diff[0][0].isdigit() and diff[0][1].isdigit()
+
+
 def _differ(a: str, b: str) -> str | None:
     if fold(a) == fold(b):
         return "fold"
-    if edit_distance_le1(a, b):
+    if edit_distance_le1(a, b) and not _digit_swap(a, b):
         return "edit"
     return None
 
@@ -181,10 +194,13 @@ def how_near(kind: str, query: str, listed: str) -> str | None:
     return None
 
 
-def near_miss_of(kind: str, query: str, listed: Iterable[str]) -> tuple[str, str] | None:
+def near_miss_of(
+    kind: str, query: str, listed: Iterable[str], fold_only: Collection[str] = ()
+) -> tuple[str, str] | None:
     """The `known_good` entry (normalised values, same kind) nearest to `query`, as (entry, how), or None.
     None too when `query` is one of the listed parties (a subdomain of a listed host, a listed package at
-    another version). Ties go to the alphabetically first entry, so the answer is stable."""
+    another version). `fold_only`: the entries in a `FOLD_ONLY_TIERS` tier, against which an `edit` does not
+    count. Ties go to the alphabetically first entry, so the answer is stable."""
     best: tuple[int, str, str] | None = None
     for entry in listed:
         how = how_near(kind, query, entry)
@@ -192,6 +208,8 @@ def near_miss_of(kind: str, query: str, listed: Iterable[str]) -> tuple[str, str
             continue
         if how == "same":
             return None
+        if how == "edit" and entry in fold_only:
+            continue
         rank = (HOWS.index(how), entry, how)
         if best is None or rank < best:
             best = rank
