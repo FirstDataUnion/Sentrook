@@ -97,6 +97,40 @@ def test_episode_allow_block_review_with_token_and_inputs(harness):
     assert secret not in (h.dir / "sentrook" / "traffic.jsonl").read_text()
 
 
+def test_process_manage_kind_follows_the_action(harness):
+    h = harness
+    h.ctx.hooks["pre_llm_call"](turn_id="t1", user_message="stop the server", platform="cli", **SID)
+    h.ctx.hooks["post_api_request"](
+        turn_id="t1",
+        response={
+            "assistant_message": {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "function": {
+                            "name": "process_manage",
+                            "arguments": json.dumps({"action": action, "session_id": "p1"}),
+                        },
+                    }
+                    for cid, action in (("c1", "kill"), ("c2", "poll"))
+                ],
+            }
+        },
+        **SID,
+    )
+    h.ctx.hooks["pre_tool_call"](
+        tool_name="process_manage",
+        args={"action": "kill", "session_id": "p1"},
+        tool_call_id="c1",
+        turn_id="t1",
+        **SID,
+    )
+    pending = h.scans[0]["pending_call"]
+    assert pending["tool_kind"] == "exec"
+    assert [s["tool_kind"] for s in pending["batch"]["siblings"]] == ["other"]
+
+
 def test_unattended_review_blocks(harness):
     turn(harness, platform="cron")
     r = call(harness, "c1", "rm REVIEW")

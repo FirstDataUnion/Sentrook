@@ -3,10 +3,12 @@
  * failure) and one per review resolution, joined by `request_id`. Collected from day one so beta
  * traffic can be studied; nothing here is sent anywhere by the plugin.
  *
- * The file is created 0600 and rotated to `<path>.1` past `maxBytes`.
+ * The file is created 0600 and rotated to `<path>.1` past `maxBytes`. A write cut off mid-line (a
+ * crash, a full disk) leaves the file without a final newline; the next record then starts with one,
+ * so it lands on its own line.
  */
 
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeSync } from "node:fs";
 import path from "node:path";
 
 export class TrafficLog {
@@ -31,9 +33,26 @@ export class TrafficLog {
       } catch {
         // no file yet
       }
-      appendFileSync(this.file, `${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`, { mode: 0o600 });
+      const fd = openSync(this.file, "a+", 0o600);
+      try {
+        const lead = torn(fd) ? "\n" : "";
+        const buf = Buffer.from(`${lead}${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`);
+        // Like appendFileSync: keep writing after a short write, so a full disk ends in an error.
+        for (let off = 0; off < buf.length; ) off += writeSync(fd, buf, off);
+      } finally {
+        closeSync(fd);
+      }
     } catch (err) {
       this.onError(`traffic log write failed: ${String(err)}`);
     }
   }
+}
+
+/** True when the file is non-empty and does not end with a newline. */
+function torn(fd: number): boolean {
+  const size = fstatSync(fd).size;
+  if (size === 0) return false;
+  const last = Buffer.alloc(1);
+  readSync(fd, last, 0, 1, size - 1);
+  return last[0] !== 0x0a;
 }

@@ -11,6 +11,7 @@ import { actionOf, recentScans, reviewOf } from "./history.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 import * as snooze from "./snooze.ts";
+import { readTime } from "./store.ts";
 
 /**
  * Snooze: owner-only relief from review prompts, kept in `<state>/sentrook/snooze.json`.
@@ -220,7 +221,7 @@ test("entries that must never apply: expired, too far away, no or unreadable exp
   const data = snooze.load(stateDir);
   assert.ok(snooze.active(data, S1, NOW));
   assert.ok(snooze.active(data, "s_adfa2b24c2d9", NOW));
-  for (const ref of [1, 2, 3, 4, 5, 6].map((i) => `s_00000000000${i}`).concat("s_x")) {
+  for (const ref of [1, 2, 3, 4, 5, 6, 7, 8].map((i) => `s_00000000000${i}`).concat("s_x")) {
     assert.ok(!snooze.active(data, ref, NOW), ref);
   }
   assert.ok(!snooze.active(data, S1, new Date(NOW.getTime() + 30 * 60_000)));
@@ -312,11 +313,33 @@ test("a run whose trigger was not recorded is not snoozed", async () => {
   assert.equal(rec.snoozed, undefined);
 });
 
-test("an expiry with a field out of range is unreadable, not rolled forward", () => {
-  assert.equal(snooze.when("2026-10-29T24:00Z"), null);
-  assert.equal(snooze.when("2026-02-30T00:00Z"), null);
-  assert.equal(snooze.when("2026-10-29T12:30:60Z"), null);
-  assert.equal(snooze.when("2026-10-29T12:30:59.5+01:00")?.toISOString(), "2026-10-29T11:30:59.500Z");
+test("a time with a field out of range is unreadable, not rolled forward", () => {
+  for (const raw of [
+    "2026-10-29T24:00Z",
+    "2026-10-29T12:60Z",
+    "2026-10-29T12:30:60Z",
+    "2026-02-30T00:00Z",
+    "2025-02-29T00:00Z",
+    "2026-13-01T00:00Z",
+    "2026-00-01T00:00Z",
+    "2026-10-00T00:00Z",
+    "0000-01-01T00:00Z",
+    "2026-10-29T12:00+24:00",
+    "2026-10-29T12:00+01:60",
+    "2026-10-29 12:00Z",
+    "0001-01-01T00:00+01:00",
+    "9999-12-31T23:59-01:00",
+    "\u00852026-10-29T12:00Z",
+    "\ufeff2026-10-29T12:00Z",
+    "tomorrow",
+    42,
+  ]) {
+    assert.equal(readTime(raw), null, String(raw));
+  }
+  assert.equal(readTime("2026-10-29T12:30:59.5+01:00")?.toISOString(), "2026-10-29T11:30:59.500Z");
+  assert.equal(readTime("2028-02-29T00:00")?.toISOString(), "2028-02-29T00:00:00.000Z");
+  assert.equal(readTime(" 2026-10-29T23:59:59-23:59 ")?.toISOString(), "2026-10-30T23:58:59.000Z");
+  assert.equal(readTime("\t2026-10-29T12:00Z\r\n")?.toISOString(), "2026-10-29T12:00:00.000Z");
 });
 
 test("an expired snooze no longer applies", async () => {
@@ -378,7 +401,7 @@ test("duration: default, limits and refusals", async () => {
   const r = await registered();
   const now = Date.now();
   await run(r, "");
-  const exp = snooze.when(stored().snoozes[0].expires_at)!.getTime() - now;
+  const exp = readTime(stored().snoozes[0].expires_at)!.getTime() - now;
   assert.ok(exp > 59 * 60_000 && exp <= 3600_000 + 5_000);
   assert.match(await run(r, "24h"), /^Snoozed reviews in this session for 24h/);
   for (const tooLong of ["25h", "1441m", "2d"]) {

@@ -16,6 +16,7 @@ Three implementations:
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
@@ -80,7 +81,20 @@ def is_local_host(value: str) -> bool:
     return ip.is_loopback or ip.is_link_local or ip.is_unspecified
 
 
+# PyPI compares project names with every run of `-`, `_` and `.` read as one `-`, ignoring case
+# (`Foo_Bar`, `foo.bar` and `foo-bar` are one project). Only a value shaped like a project name is
+# folded; a local path or `.` given to an installer is only lower-cased.
+_PYPI_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?", re.IGNORECASE)
+
+
+def fold_pypi_name(name: str) -> str:
+    n = name.lower()
+    return re.sub(r"[-_.]+", "-", n) if _PYPI_NAME_RE.fullmatch(n) else n
+
+
 def _normalise(kind: str, value: str) -> str:
+    if kind == "package" and value.strip().lower().startswith("pypi:"):
+        return "pypi:" + fold_pypi_name(value.strip()[5:])
     if kind in ("host", "mcp_server", "package", "plugin"):
         return value.strip().lower()
     if kind == "recipient" and "@" in value:

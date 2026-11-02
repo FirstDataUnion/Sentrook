@@ -20,7 +20,7 @@ from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
 from .intent import is_unattended, session_facts
-from .planir import PLUGIN_VERSION, build_planir, hermes_config, tool_kind
+from .planir import PLUGIN_VERSION, build_planir, hermes_config, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import ScanFailure, scan_error_to_directive
@@ -231,7 +231,7 @@ def _scan_one(
         facts=facts,
         env=env,
         host_cfg=host_cfg,
-        grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC)),
+        grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid)),
     )
     planir = built["planir"]
     unattended = is_unattended(
@@ -468,7 +468,7 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                         "kind": "tool_result",
                         "call_id": entry["call_id"],
                         "tool": entry["tool"],
-                        "tool_kind": entry.get("tool_kind") or tool_kind(tool_name),
+                        "tool_kind": entry.get("tool_kind") or tool_kind(tool_name, args),
                         "provider": entry["provider"],
                         "status": "ok" if status == "ok" else "error",
                         "content_type": "text",

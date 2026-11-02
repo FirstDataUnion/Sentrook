@@ -25,14 +25,12 @@ PLUGIN_VERSION = "2.0.0-beta.5"
 TOOL_KIND = {
     "terminal": "exec",
     "execute_code": "exec",
-    "process": "exec",
     "read_file": "file_read",
     "search_files": "file_read",
     "write_file": "file_write",
     "patch": "file_edit",
     "web_extract": "web_fetch",
     "web_search": "web_fetch",
-    "send_message": "message_send",
     "memory": "memory_write",
     "delegate_task": "subagent_spawn",
 }
@@ -42,7 +40,23 @@ def _h(s: Any) -> str:
     return hashlib.sha256(str(s).encode()).hexdigest()[:12]
 
 
-def tool_kind(name: str) -> str:
+def session_ref(sid: str) -> str:
+    """A session's `session_ref`: what a scan of it sends, and what snoozes and session grants are
+    bound to."""
+    return f"s_{_h(sid)}"
+
+
+# Hermes's process-control tool (`process_manage`; older versions name it `process`). Writing to, closing or
+# killing a running process is code execution; listing, polling, reading its log, waiting and handing it off
+# are not. An unknown or missing action keeps `exec`.
+PROCESS_TOOLS = ("process_manage", "process")
+PROCESS_READ_ACTIONS = frozenset({"list", "poll", "log", "wait", "handoff"})
+
+
+def tool_kind(name: str, args: Any = None) -> str:
+    if name in PROCESS_TOOLS:
+        action = args.get("action") if isinstance(args, dict) else None
+        return "other" if isinstance(action, str) and action in PROCESS_READ_ACTIONS else "exec"
     if name in TOOL_KIND:
         return TOOL_KIND[name]
     if name.startswith("browser_"):
@@ -109,15 +123,42 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "mcp", "name": server, "identity": identity, "transport": transport}
 
 
-def relevant_grants(grants: list[dict[str, Any]], args_text: str) -> list[dict[str, Any]]:
-    """Only grants plausibly relevant to this call: the pattern (minus globs) appears in its arguments."""
+def _pieces_in(pattern: str, text: str) -> bool:
+    """The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex)."""
+    pieces = [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
+    if sum(map(len, pieces)) < 3:
+        return False
+    at = 0
+    for p in pieces:
+        at = text.find(p, at)
+        if at < 0:
+            return False
+        at += len(p)
+    return True
+
+
+def relevant_grants(
+    grants: list[dict[str, Any]],
+    args_text: str,
+    *,
+    identity: str | None = None,
+    home: str | None = None,
+) -> list[dict[str, Any]]:
+    """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
+    the owner's other grants out of the request, so it errs towards sending. A provider grant is also
+    matched against the call's provider identity, and paths under home match in either form (`~/…` or full)."""
     text = args_text.lower()
+    pats = [g["pattern"].lower() for g in grants]
+    if home:
+        root = home.rstrip("/").lower()
+        text = text.replace("~/", root + "/")
+        pats = [root + p[1:] if p.startswith("~/") else p for p in pats]
     out = []
-    for i, g in enumerate(grants):
-        needle = g["pattern"].lower()
-        needle = needle[2:] if needle.startswith("*.") else needle.lstrip("*")
-        needle = needle.replace("*", "")
-        if len(needle) >= 3 and needle in text:
+    for i, (g, pat) in enumerate(zip(grants, pats, strict=True)):
+        hay = [text]
+        if g["kind"] == "provider" and identity:
+            hay.append(identity.lower())
+        if any(_pieces_in(pat, h) for h in hay):
             out.append({"grant_ref": f"g_{i + 1}", **g})
     return out
 
@@ -163,9 +204,9 @@ def build_planir(
     platform = resolve_platform(turn.get("platform"), facts, env)
     parent = turn.get("parent_session_id") or None
     is_sub = platform == "subagent" or bool(parent)
-    tk = tool_kind(tool)
-    prv = provider_for(tool, host_cfg)
     raw_args = kw.get("args") if isinstance(kw.get("args"), dict) else {"value": kw.get("args")}
+    tk = tool_kind(tool, raw_args)
+    prv = provider_for(tool, host_cfg)
     args = redactor.value(raw_args)
 
     siblings = []
@@ -181,7 +222,7 @@ def build_planir(
                 {
                     "call_id": str(c["id"]),
                     "tool": name,
-                    "tool_kind": tool_kind(name),
+                    "tool_kind": tool_kind(name, sargs),
                     "provider": provider_for(name, host_cfg),
                     "arguments": cap_args(redactor.value(sargs), cfg.history_args_cap_bytes),
                 }
@@ -219,7 +260,7 @@ def build_planir(
             },
         },
         "session": {
-            "session_ref": f"s_{_h(sid)}",
+            "session_ref": session_ref(sid),
             "routing_key": f"h_{_h(routing)}" if routing else None,
             "agent_ref": "a_main",
             "agent_role": "subagent" if is_sub else "main",
@@ -251,7 +292,10 @@ def build_planir(
             "batch": {"siblings": siblings},
         },
         "grants": relevant_grants(
-            cfg.grants if grants is None else grants, json.dumps(raw_args, default=str)
+            cfg.grants if grants is None else grants,
+            json.dumps(raw_args, default=str, ensure_ascii=False),
+            identity=prv["identity"],
+            home=str(Path.home()),
         ),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }

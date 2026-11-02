@@ -178,12 +178,13 @@ export function reviewOf(action: string, resolution: Rec | null): string {
 
 export function formatHistory(scans: ScanWithResolution[], whyCommand: string): string {
   if (!scans.length) return NO_SCANS;
-  const table: string[][] = [["id", "time (UTC)", "tool", "risk", "action", "review"]];
+  const table: string[][] = [["id", "time (UTC)", "session", "tool", "risk", "action", "review"]];
   for (const [scan, resolution] of scans) {
     const action = actionOf(scan, resolution);
     table.push([
       String(scan.request_id).slice(0, 8),
       time(scan.ts),
+      text(scan.session_ref || "-", 20),
       text(scan.tool || "?", 40),
       risk(responseOf(scan)),
       action,
