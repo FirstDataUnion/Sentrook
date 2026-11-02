@@ -184,6 +184,11 @@ REASONS: dict[str, str] = {
     "reputation.known_bad_package": "{subject} is a known-bad package.",
     "reputation.known_bad_plugin": "{subject} is a known-bad plugin.",
     "reputation.known_bad_mcp_server": "{subject} is a known-bad tool server.",
+    "reputation.near_miss_host": "{subject} looks like a host in our library but is a different host.",
+    "reputation.near_miss_recipient": "{subject} looks like a recipient in our library but is a different one.",
+    "reputation.near_miss_package": "{subject} looks like a package in our library but is a different package.",
+    "reputation.near_miss_plugin": "{subject} looks like a plugin in our library but is a different plugin.",
+    "reputation.near_miss_mcp_server": "{subject} looks like a tool server in our library but is a different one.",
     # coverage
     "coverage.unknown_entities": "Some entities in this call are unknown to us.",
     "coverage.oracle_unavailable": "Reputation data was unavailable.",

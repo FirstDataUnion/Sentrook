@@ -51,7 +51,7 @@ For running the scan service yourself; plugin users don't need this. The scanner
 | `SENTROOK_JEV_MODEL` | `typesafe/jev-1.13` | Jev model |
 | `SENTROOK_JEV_TIMEOUT_MS` | `20000` | Per-request timeout |
 | `SENTROOK_JEV_EXPOSURE_QUESTIONS` | `exposure-v2` | Exposure question set on the redacted view (`exposure-v1`, the frozen set, stays selectable) |
-| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v4` | Call question set: the turn's inputs plus the entity library's verdicts, and a note that hosts may wrap the request in their own text (`call-v3` without the note, `call-v2` without the verdicts and `call-v1`, the frozen set, stay selectable) |
+| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v5` | Call question set: the turn's inputs plus the entity library's verdicts and near misses, and a note that hosts may wrap the request in their own text (`call-v4` without the near misses, `call-v3` without the note, `call-v2` without the verdicts and `call-v1`, the frozen set, stay selectable) |
 | `SENTROOK_CONVERGENCE` | `conv-v3` | Convergence parameter set (`conv-v1` and `conv-v2` stay selectable) |
 
 ## License

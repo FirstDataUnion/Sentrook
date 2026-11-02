@@ -2,8 +2,11 @@
 
 Looks up every off-host or installable entity the pending call (or a sibling, or the agent-written file
 it executes) touches, with its roles, and contributes `suspicion.distrust` per entity by verdict and
-role. A `known_bad` entity also raises the `known_bad_entity` floor (1.0, block). Unknown entities in a
-risky role lower `confidence.coverage`; so does an unavailable oracle. Paths are not reputation
+role. A `known_bad` entity also raises the `known_bad_entity` floor (1.0, block). An unknown entity that
+is a near miss of a `known_good` one (another TLD, a hyphen, a confusable character or one edit away)
+gets the near-miss distrust instead of the unknown one when it takes data, code or tools: it looks like
+a party the library vouches for and is not it. Unknown entities in a risky role lower
+`confidence.coverage`; so does an unavailable oracle. Paths are not reputation
 questions (their sensitivity comes from AIRA's path classes) and loopback hosts are the agent's own
 machine, so neither is looked up.
 """
@@ -16,9 +19,11 @@ from dataclasses import dataclass, field
 from ..enums import Enforce, ProbeStatus, ProbeStep
 from ..oracle.client import (
     EntityQuery,
+    Match,
     NullOracle,
     OracleClient,
     OracleResult,
+    Verdict,
     VerdictKind,
     is_local_host,
 )
@@ -55,24 +60,53 @@ class OracleParams:
         }
     )
     known_bad_distrust: float = 1.0
+    #: An unknown entity in one of `NEAR_MISS_ROLES` that is a near miss of a `known_good` entry.
+    near_miss_distrust: float = 0.9
     known_bad_floor: float = 1.0
     coverage_unknown_risky: float = 0.8
     coverage_unavailable: float = 0.7
 
 
+#: The roles in which a near miss takes the near-miss distrust: the entity receives data or supplies
+#: code or tools. Read from or only mentioned, it keeps the unknown distrust.
+NEAR_MISS_ROLES = frozenset(
+    {
+        Role.DATA_DESTINATION.value,
+        Role.RECIPIENT.value,
+        Role.CODE_SOURCE.value,
+        Role.EXECUTABLE.value,
+        Role.TOOL_PROVIDER.value,
+    }
+)
+
 VIEW_VERDICTS = (VerdictKind.KNOWN_GOOD.value, VerdictKind.KNOWN_BAD.value)
 
 
-def verdicts_for_view(envelope: Envelope) -> list[dict[str, object]]:
+def _near_miss(v: Verdict) -> dict | None:
+    """The `known_good` entry an unlisted entity imitates, or None."""
+    if v.verdict is not VerdictKind.UNKNOWN or v.distrust is not None:
+        return None
+    if v.match is not Match.NEAR_MISS or not v.near_miss:
+        return None
+    return v.near_miss
+
+
+def verdicts_for_view(envelope: Envelope, *, near_miss: bool = False) -> list[dict[str, object]]:
     """The `reputation` entries a call-v3 view carries: every `known_good` or `known_bad` entity in
     an OK oracle envelope, as `kind`, `value`, `verdict` (and `tier` when the library gives one),
     sorted for a stable request body. Unknown entities are left out: not vouched for is the
-    model's default."""
+    model's default. With `near_miss` (the call-v5 view), an unknown entity that is a near miss of a
+    `known_good` one is listed too, as `verdict: unknown` with the entry it imitates in `near_miss`."""
     if envelope.status is not ProbeStatus.OK:
         return []
     out: list[dict[str, object]] = []
     for info in (envelope.evidence.get("entities") or {}).values():
-        if not isinstance(info, dict) or info.get("verdict") not in VIEW_VERDICTS:
+        if not isinstance(info, dict):
+            continue
+        near = info.get("near_miss") if near_miss else None
+        if info.get("verdict") not in VIEW_VERDICTS and not (
+            info.get("verdict") == VerdictKind.UNKNOWN.value and isinstance(near, dict)
+        ):
             continue
         entry: dict[str, object] = {
             "kind": info.get("kind"),
@@ -81,6 +115,8 @@ def verdicts_for_view(envelope: Envelope) -> list[dict[str, object]]:
         }
         if info.get("tier"):
             entry["tier"] = info["tier"]
+        if isinstance(near, dict):
+            entry["near_miss"] = near.get("value")
         out.append(entry)
     out.sort(key=lambda e: (str(e["kind"]), str(e["value"]), str(e["verdict"])))
     return out
@@ -156,6 +192,7 @@ class EntityOracleProbe:
             }
         for ent in remote:
             v = result.get(ent.kind.value, ent.value)
+            near = _near_miss(v)
             roles = sorted(r.value for r in ent.roles) or [Role.MENTIONED.value]
             risky_role = max(roles, key=lambda r: self.params.unknown_by_role.get(r, 0.0))
             if v.verdict is VerdictKind.KNOWN_BAD:
@@ -184,6 +221,9 @@ class EntityOracleProbe:
                     else self.params.unknown_by_role.get(risky_role, 0.1)
                 )
                 reason = f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                if near is not None and risky_role in NEAR_MISS_ROLES:
+                    distrust = max(distrust, self.params.near_miss_distrust)
+                    reason = f"reputation.near_miss_{ent.kind.value}"
                 if risky_role in (
                     Role.DATA_DESTINATION.value,
                     Role.RECIPIENT.value,
@@ -207,6 +247,8 @@ class EntityOracleProbe:
                 "tier": v.tier,
                 "source": v.source,
                 "observations": v.observations or None,
+                "match": v.match.value if v.match else None,
+                "near_miss": near,
             }
         if not result.available:
             coverage = min(coverage, self.params.coverage_unavailable)

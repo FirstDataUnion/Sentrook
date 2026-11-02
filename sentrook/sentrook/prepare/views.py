@@ -21,6 +21,10 @@ redaction pass (`redact`).
 entity library's `known_good` and `known_bad` verdicts for the call's own hosts, recipients and
 packages. The block is filled by the call probe from the oracle probe's result (the scan runs the
 oracle first when the call view asks for it), and is absent when nothing is known.
+
+`trim-v4` adds `call-v5`: the call-v3 view whose `reputation` block also lists the call's unknown
+entities that are near misses of a `known_good` one (`verdict: unknown`, `near_miss`: the entry). The
+prepared state is call-v3's; only what the oracle fills in differs.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from .redact import second_pass
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
+VIEWS_VERSION_V4 = "trim-v4"
 
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
@@ -47,6 +52,7 @@ CALL = "call"
 EXPOSURE_V2 = "exposure-v2"
 CALL_V2 = "call-v2"
 CALL_V3 = "call-v3"
+CALL_V5 = "call-v5"
 #: The call-v3 block of entity-library verdicts, added by the call probe once the oracle has run.
 REPUTATION = "reputation"
 VIEW_KEYS: dict[str, tuple[str, ...]] = {
@@ -86,6 +92,9 @@ VIEW_KEYS: dict[str, tuple[str, ...]] = {
         REPUTATION,
     ),
 }
+VIEW_KEYS[CALL_V5] = VIEW_KEYS[CALL_V3]
+#: Views whose `reputation` block lists near misses as well as known verdicts.
+NEAR_MISS_VIEWS = frozenset({CALL_V5})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -93,6 +102,7 @@ VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
+    CALL_V5: VIEWS_VERSION_V4,
 }
 #: Which probe a view serves.
 VIEW_KIND: dict[str, str] = {
@@ -101,6 +111,7 @@ VIEW_KIND: dict[str, str] = {
     CALL: CALL,
     CALL_V2: CALL,
     CALL_V3: CALL,
+    CALL_V5: CALL,
 }
 
 #: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
@@ -276,11 +287,14 @@ def _call_view_with_inputs(
 def build_views(
     raw: dict[str, Any], *, exposure_input_seqs: set[int] | None
 ) -> dict[str, BuiltView]:
-    """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built)."""
+    """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
+    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs."""
+    v3 = call_view_v3(raw)
     return {
         EXPOSURE: BuiltView(state=exposure_view(raw, only_input_seqs=exposure_input_seqs)),
         CALL: BuiltView(state=call_view(raw)),
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
         CALL_V2: call_view_v2(raw),
-        CALL_V3: call_view_v3(raw),
+        CALL_V3: v3,
+        CALL_V5: v3,
     }

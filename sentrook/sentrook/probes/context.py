@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
+from ..oracle.near_miss import fold
 from ..planir.canonical import CanonicalCall
 from ..planir.models import InputKind, SenderBasis, SenderRelation, ToolKind, TriggerKind
 from ..prepare import Prepared
@@ -142,30 +143,11 @@ class ContextParams:
     lineage_filter_irreversibility: float = 0.6
 
 
-_CONFUSABLES = (
-    ("rn", "m"),
-    ("vv", "w"),
-    ("0", "o"),
-    ("1", "l"),
-    ("i", "l"),
-    ("3", "e"),
-    ("5", "s"),
-)
-
-
 def _sql_object_name(target: str) -> str:
     """The bare object name of a SQL target: quotes and backticks dropped, the last dotted
     component (`public."temp_users"` -> `temp_users`)."""
     bare = target.strip().strip(";").replace('"', "").replace("`", "")
     return bare.rsplit(".", 1)[-1]
-
-
-def _fold(label: str) -> str:
-    """A host label with confusable characters folded together, hyphens dropped."""
-    out = label.lower().replace("-", "")
-    for a, b in _CONFUSABLES:
-        out = out.replace(a, b)
-    return out
 
 
 def _hashes(hist: Fingerprint, echoed: Fingerprint | None, *roles: Role) -> frozenset[str]:
@@ -322,7 +304,7 @@ class ContextProbe:
                 theirs = _registrable_label(other.value)
                 if label == theirs or min(len(label), len(theirs)) < 5:
                     continue
-                if _edit_distance_le1(label, theirs) or _fold(label) == _fold(theirs):
+                if _edit_distance_le1(label, theirs) or fold(label) == fold(theirs):
                     out[ent.id] = other.value
                     break
         return out

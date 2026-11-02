@@ -30,7 +30,7 @@ from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
-from .prepare.views import CALL, EXPOSURE, REPUTATION, VIEW_KEYS, VIEW_VERSIONS
+from .prepare.views import CALL, EXPOSURE, NEAR_MISS_VIEWS, REPUTATION, VIEW_KEYS, VIEW_VERSIONS
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
 from .probes.jev import JevCallProbe, JevExposureProbe
@@ -235,7 +235,9 @@ class Scanner:
         ):
             env = self._run_probe(ProbeStep.ENTITY_ORACLE, oracle, prepared, options)
             envelopes[ProbeStep.ENTITY_ORACLE] = env
-            prepared.oracle_verdicts = verdicts_for_view(env)
+            prepared.oracle_verdicts = verdicts_for_view(
+                env, near_miss=self.jev_views.get(CALL) in NEAR_MISS_VIEWS
+            )
         with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
             futures = {}
             for step in ALL_PROBES:

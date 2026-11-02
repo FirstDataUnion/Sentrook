@@ -3,7 +3,9 @@
 `lookup` takes the entities a call touches, each with its role, and returns a verdict per entity:
 `known_good`, `known_bad` or `unknown` (unlisted entities are unknown), an optional explicit `distrust`,
 an optional `tier` (for example `infrastructure` for the verified installer list) and observations, plus
-the library snapshot the answers came from. Reputation depends on role: a host can be a fine code source
+the library snapshot the answers came from. `match` says whether a library entry answered (`exact`) or
+not, and when none did, whether the value is a near miss of a `known_good` entry (`near_miss`, with the
+entry in `near_miss`; see `near_miss.py`) or not (`none`). Reputation depends on role: a host can be a fine code source
 and a bad data destination, so the role travels with the query.
 
 Three implementations:
@@ -17,11 +19,13 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Protocol
 
 import httpx
+
+from .near_miss import FOLD_ONLY_TIERS, near_miss_of
 
 LOOKUP_PATH = "/entities/lookup"
 
@@ -30,6 +34,12 @@ class VerdictKind(StrEnum):
     KNOWN_GOOD = "known_good"
     KNOWN_BAD = "known_bad"
     UNKNOWN = "unknown"
+
+
+class Match(StrEnum):
+    EXACT = "exact"
+    NEAR_MISS = "near_miss"
+    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,10 @@ class Verdict:
     tier: str | None = None
     observations: dict[str, Any] = field(default_factory=dict)
     source: str = "unknown"  # seed | library | builtin | null
+    #: None when the oracle does not say (the null oracle, a library without near misses).
+    match: Match | None = None
+    #: With `match` near_miss: the `known_good` entry, `{value, verdict, tier?, how}`.
+    near_miss: dict[str, Any] | None = None
 
 
 @dataclass
@@ -103,7 +117,9 @@ def _normalise(kind: str, value: str) -> str:
 
 
 class SeedOracle:
-    """Verdicts from a TestNest `oracle_seed`. Hosts also match a seeded parent domain."""
+    """Verdicts from a TestNest `oracle_seed`. Hosts also match a seeded parent domain. An `unknown`
+    seed entry without a distrust says no more than leaving the entity out, so it is not an exact match
+    and the value can still be a near miss of a seeded `known_good` entry."""
 
     name = "seed"
 
@@ -131,6 +147,23 @@ class SeedOracle:
                 },
                 source="seed",
             )
+        self._known_good: dict[str, dict[str, Verdict]] = {}
+        for (kind, norm), v in self._by_key.items():
+            if v.verdict is VerdictKind.KNOWN_GOOD:
+                self._known_good.setdefault(kind, {})[norm] = v
+
+    def _near_miss(self, kind: str, norm: str) -> dict[str, Any] | None:
+        listed = self._known_good.get(kind) or {}
+        fold_only = {v for v, e in listed.items() if e.tier in FOLD_ONLY_TIERS}
+        found = near_miss_of(kind, norm, listed, fold_only)
+        if found is None:
+            return None
+        entry, how = found
+        out: dict[str, Any] = {"value": entry, "verdict": VerdictKind.KNOWN_GOOD.value}
+        if listed[entry].tier:
+            out["tier"] = listed[entry].tier
+        out["how"] = how
+        return out
 
     def lookup(self, queries: list[EntityQuery]) -> OracleResult:
         out: dict[tuple[str, str], Verdict] = {}
@@ -147,7 +180,15 @@ class SeedOracle:
                 hit = self._by_key.get(("host", q.value.split("@", 1)[1].lower()))
                 if hit is not None and hit.verdict is not VerdictKind.KNOWN_BAD:
                     hit = None  # a good mail domain says nothing about one address; a bad one taints it
-            out[(q.kind, q.value)] = hit if hit is not None else Verdict(kind=q.kind, value=q.value)
+            if hit is not None and (
+                hit.verdict is not VerdictKind.UNKNOWN or hit.distrust is not None
+            ):
+                out[(q.kind, q.value)] = replace(hit, match=Match.EXACT)
+                continue
+            v = replace(hit) if hit is not None else Verdict(kind=q.kind, value=q.value)
+            v.near_miss = self._near_miss(q.kind, key[1])
+            v.match = Match.NEAR_MISS if v.near_miss else Match.NONE
+            out[(q.kind, q.value)] = v
         return OracleResult(verdicts=out, library_snapshot=self.snapshot, available=True)
 
 
@@ -169,7 +210,8 @@ class NullOracle:
 
 class HttpOracle:
     """Rookery's oracle over HTTP. Wire shapes: request `{"entities": [{kind, value, roles}]}`, response
-    `{"verdicts": [{kind, value, verdict, distrust?, tier?, observations?}], "library_snapshot": "..."}`."""
+    `{"verdicts": [{kind, value, verdict, distrust?, tier?, observations?, match?, near_miss?}],
+    "library_snapshot": "..."}`."""
 
     name = "rookery"
 
@@ -189,6 +231,14 @@ class HttpOracle:
                 verdict = VerdictKind(str(v.get("verdict", "unknown")))
             except ValueError:
                 verdict = VerdictKind.UNKNOWN
+            try:
+                match = Match(v["match"]) if v.get("match") else None
+            except ValueError:
+                match = None
+            near = v.get("near_miss")
+            near_ok = (
+                match is Match.NEAR_MISS and isinstance(near, dict) and bool(near.get("value"))
+            )
             out[(v["kind"], v["value"])] = Verdict(
                 kind=v["kind"],
                 value=v["value"],
@@ -197,6 +247,8 @@ class HttpOracle:
                 tier=v.get("tier"),
                 observations=v.get("observations") or {},
                 source="library",
+                match=match if near_ok or match is not Match.NEAR_MISS else Match.NONE,
+                near_miss=dict(near) if near_ok else None,
             )
         for q in queries:
             out.setdefault((q.kind, q.value), Verdict(kind=q.kind, value=q.value, source="library"))
