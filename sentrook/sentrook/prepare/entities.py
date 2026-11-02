@@ -251,7 +251,7 @@ _CHAT_PLATFORMS = frozenset(
 )
 # Platforms whose bare numeric target is a phone number, an address.
 _PHONE_PLATFORMS = frozenset({"sms", "whatsapp", "signal", "imessage"})
-_PLATFORM_TARGET_RE = re.compile(r"([a-z][a-z0-9_-]{1,20}):(.+)")
+_PLATFORM_TARGET_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]{1,20}):(.+)")
 _E164_RE = re.compile(r"\+\d[\d\s().-]{5,}\d")
 _MATRIX_ROOM_RE = re.compile(r"![\w-]+:[\w.-]+")
 _CHANNEL_NAME_RE = re.compile(r"#[\w-]{2,}")
@@ -741,13 +741,34 @@ def _is_channel_target(value: str, *, chat: bool, platform: str | None) -> bool:
     if not chat:
         return False
     m = _PLATFORM_TARGET_RE.fullmatch(value)
-    if m and m.group(1) in _CHAT_PLATFORMS:
-        return not _is_address(m.group(2).strip(), m.group(1))
+    if m and m.group(1).lower() in _CHAT_PLATFORMS:
+        return not _is_address(m.group(2).strip(), m.group(1).lower())
     if _CHANNEL_NAME_RE.fullmatch(value) or _MATRIX_ROOM_RE.fullmatch(value):
         return True
     if _is_address(value, platform):
         return False
     return bool(_NUMERIC_ID_RE.fullmatch(value) or _ID_TOKEN_RE.fullmatch(value))
+
+
+def channel_names(value: str) -> set[str]:
+    """The shorter names an owner may use for a channel target, lower-cased: `ops-yard` and `#ops-yard`
+    for `channel:ops-yard`; for a platform-prefixed target, the part after the platform when it is a
+    `#name` or id-shaped (`#bot-home` for `discord:#bot-home`, not `general` for `slack:general`). A
+    Matrix room has none (the part after its `:` is the homeserver)."""
+    m = _CHANNEL_RE.fullmatch(value)
+    if m:
+        name = m.group(2).lower()
+        return {name, "#" + name}
+    m = _PLATFORM_TARGET_RE.fullmatch(value)
+    if m and m.group(1).lower() in _CHAT_PLATFORMS:
+        rest = m.group(2).strip()
+        if (
+            _CHANNEL_NAME_RE.fullmatch(rest)
+            or _NUMERIC_ID_RE.fullmatch(rest)
+            or _ID_TOKEN_RE.fullmatch(rest)
+        ):
+            return {rest.lower()}
+    return set()
 
 
 def _chat_send(call: CanonicalCall) -> tuple[bool, str | None]:
@@ -794,11 +815,12 @@ def extract_mentions(
     inline_program: bool = False,
 ) -> list[Found]:
     """Entities named in free text (request, inputs, content): hosts, emails, paths, packages,
-    channels. `inline_program` marks the text as program source (see `_hosts_in`). A channel token is
-    blanked before the other kinds are read, so a JID is not also a mailbox and a host."""
+    channels. `inline_program` marks the text as program source (see `_hosts_in`). A JID is blanked before
+    the other kinds are read, so it is not also a mailbox and a host."""
     channels = _channels_in(text)
-    for start, end, _ in channels:
-        text = text[:start] + " " * (end - start) + text[end:]
+    for start, end, value in channels:
+        if "@" in value:
+            text = text[:start] + " " * (end - start) + text[end:]
     found: list[Found] = []
     for h in _hosts_in(text, inline_program=inline_program):
         found.append(Found(EntityKind.HOST, h, h, role))

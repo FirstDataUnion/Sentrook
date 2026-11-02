@@ -44,6 +44,7 @@ from .entities import (
     EntityTable,
     Origin,
     Role,
+    channel_names,
     display_path,
     extract_call,
     extract_exec,
@@ -291,9 +292,8 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
         ):
             continue
         candidates = {ent.value.lower()}
-        if ent.kind is EntityKind.CHANNEL and ":" in ent.value:
-            name = ent.value.split(":", 1)[1].lower()
-            candidates.update({name, "#" + name})
+        if ent.kind is EntityKind.CHANNEL:
+            candidates.update(channel_names(ent.value))
         if ent.kind is EntityKind.PACKAGE and ":" in ent.value:
             candidates.add(ent.value.split(":", 1)[1].lower())
         pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")

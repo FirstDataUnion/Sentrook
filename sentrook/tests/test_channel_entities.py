@@ -19,7 +19,7 @@ from test_aira_detectors import CLOCK, KEY, planir
 from sentrook.enums import ProbeStatus
 from sentrook.oracle.client import EntityQuery, Match, SeedOracle, VerdictKind
 from sentrook.prepare import PrepareOptions, prepare
-from sentrook.prepare.entities import Role, extract_mentions
+from sentrook.prepare.entities import EntityKind, Origin, Role, extract_mentions
 from sentrook.probes.oracle import EntityOracleProbe
 
 
@@ -317,3 +317,61 @@ def test_slack_channel_id_is_looked_up_as_a_channel():
     info = [e for e in env.evidence["entities"].values() if e["value"] == "C0FF-OPS01"]
     assert len(info) == 1
     assert info[0]["kind"] == "channel" and info[0]["verdict"] == "known_good"
+
+
+def test_capitalised_platform_prefix_and_bare_chat_ids_without_a_platform():
+    assert target_kinds(
+        "send_message", "message_send", {"target": "Telegram:-1001234567890"}, "hermes"
+    ) == {("channel", "Telegram:-1001234567890")}
+    # With no platform named, a bare number is a chat id (Hermes reads it so), not a phone number.
+    assert target_kinds("send_message", "message_send", {"to": "5550142777"}) == {
+        ("channel", "5550142777")
+    }
+
+
+# --------------------------------------------------------------------------- free text: other kinds
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://files.example-corp.test/channel:C0FF12345/upload",
+        "see ~/notes/group:20251101/a.md",
+        "https://hooks.example-corp.test/thread:release-notes/x",
+    ],
+)
+def test_channel_tokens_inside_urls_and_paths_add_no_paths(text):
+    paths = {v for k, v in mentions(text) if k == "path"}
+    assert not any(p in ("/upload", "/a.md", "/x") for p in paths)
+
+
+# --------------------------------------------------------------------------- request-named relief
+
+
+def request_named(target: str, request: str, platform: str = "hermes") -> bool:
+    p = _prepare(
+        planir(
+            "send_message",
+            "message_send",
+            {"target": target, "message": "status: green"},
+            platform=platform,
+            request=request,
+        )
+    )
+    ent = next(e for e in p.entities.pending() if e.kind is EntityKind.CHANNEL)
+    return Origin.REQUEST in ent.origins
+
+
+@pytest.mark.parametrize(
+    ("target", "words", "named"),
+    [
+        ("channel:ops-yard", "Post the summary to #ops-yard", True),
+        ("discord:#bot-home", "Post the summary to #bot-home", True),
+        ("telegram:-1001234567890", "Send it to -1001234567890 please", True),
+        ("slack:general", "Write a general status update", False),
+        ("telegram:ops", "Send the ops report", False),
+        ("!kXbQwP:matrix.example.test", "Post the matrix.example.test outage summary", False),
+    ],
+)
+def test_request_names_a_channel_only_by_its_name_or_id(target, words, named):
+    assert request_named(target, words) is named

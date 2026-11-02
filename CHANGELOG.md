@@ -262,4 +262,5 @@ A chat message's target that was a channel id was extracted as a recipient, so t
 - Emails, phone numbers (and a bare number on SMS, WhatsApp, Signal or iMessage), `@handles` and names stay recipients, and a non-message tool's bare target is unchanged.
 - In free text, `user:`, `dm:` and `group:` name a channel only with an id-shaped id: numeric, a JID, or at least eight characters with a digit. `channel:` and `thread:` are unchanged.
 - `oracle.client.SeedOracle`: channel values match ignoring letter case.
+- Request-named relief: an owner names a channel target by its id or `#name` (`#bot-home` for `discord:#bot-home`, as `ops-yard` and `#ops-yard` already did for `channel:ops-yard`); a word after a platform prefix (`slack:general`) or a Matrix room's homeserver does not name it.
 - Tests: tool-group names in a skill's allow-list example stay silent; prefixed, JID, Slack, numeric, Matrix and Hermes `platform:id` targets are channels; addresses and non-message targets stay recipients; a Slack id seeded as a `known_good` channel matches.
