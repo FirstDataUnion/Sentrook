@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..enums import Enforce, SessionFlag
+from ..oracle.near_miss import edit_distance_le1, registrable
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
@@ -799,40 +800,13 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     return out
 
 
-_TLDS_2 = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
-
-
 def _registrable_label(host: str) -> str:
     """The label a person reads as the brand: `get.docker.com` → `docker`, `astral-sh.dev` →
     `astral-sh`, `foo.co.uk` → `foo`."""
-    parts = host.lower().strip(".").split(".")
-    if len(parts) >= 3 and parts[-2] in _TLDS_2 and len(parts[-1]) == 2:
-        return parts[-3]
-    return parts[-2] if len(parts) >= 2 else parts[0]
+    return registrable(host)[0]
 
 
-def _edit_distance_le1(a: str, b: str) -> bool:
-    if a == b:
-        return True
-    if abs(len(a) - len(b)) > 1:
-        return False
-    i = j = edits = 0
-    while i < len(a) and j < len(b):
-        if a[i] == b[j]:
-            i += 1
-            j += 1
-            continue
-        edits += 1
-        if edits > 1:
-            return False
-        if len(a) > len(b):
-            i += 1
-        elif len(b) > len(a):
-            j += 1
-        else:
-            i += 1
-            j += 1
-    return edits + (len(a) - i) + (len(b) - j) <= 1
+_edit_distance_le1 = edit_distance_le1
 
 
 def lookalike_of(host: str, listed_hosts: Iterable[str]) -> str | None:
