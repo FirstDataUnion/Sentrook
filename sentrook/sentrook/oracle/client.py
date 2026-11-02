@@ -109,7 +109,7 @@ def fold_pypi_name(name: str) -> str:
 def _normalise(kind: str, value: str) -> str:
     if kind == "package" and value.strip().lower().startswith("pypi:"):
         return "pypi:" + fold_pypi_name(value.strip()[5:])
-    if kind in ("host", "mcp_server", "package", "plugin"):
+    if kind in ("host", "mcp_server", "package", "plugin", "channel"):
         return value.strip().lower()
     if kind == "recipient" and "@" in value:
         return value.strip().lower()

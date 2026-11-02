@@ -252,3 +252,15 @@ A command that publishes to a host named by an option was read as fetching from 
 - A `--dry-run` sends nothing. Local transports (`dir:`, `oci-archive:`), option values and chart paths are never registries. A host that is also fetched and run keeps its code-source role beside the destination one. `localhost` stays the agent's own machine. A command that does not parse names no publish target, and one with no publishing head is not parsed for it.
 - The verb must lead the command's words, so `npm run publish`, an echoed command, `npm install --registry`, `twine check` and `docker pull` are unchanged. A publish without a target goes to the public default and names no host. The published artefact stays a data source, and other hosts in the command keep their roles.
 - Tests: must be a destination for every form above, including an option before the verb, `--opt=value`, `sudo` and a registry port; must stay a source or add nothing for installs, views, `run publish`, `echo`, `check`, pulls, and publishes with no target or a named repository; a near-miss registry as a publish target takes the near-miss distrust.
+
+### Channel ids are channels; tool-group names are not (2026-11-02)
+A chat message's target that was a channel id was extracted as a recipient, so the oracle looked it up as one and a library entry of kind `channel` never matched. In free text, `group:<word>` was read as a channel, so OpenClaw tool-group names in a tool allow list (`group:runtime`, `group:web`) became channel entities.
+- `prepare.entities`: a message send's target is a `channel` entity when it names one by id:
+  - a prefixed target (`channel:`, `user:`, `dm:`, `group:`, `thread:`), as before, for any tool;
+  - a WhatsApp JID (`<digits>@g.us`), for any tool, with no mailbox or host extracted from it;
+  - on a chat send (not mail): a platform-prefixed target (`telegram:-100…`, `slack:C0…`, `discord:#name`), a `#name`, a Matrix room, a numeric chat id, or a token of at least eight characters with a digit (a Slack id).
+- Emails, phone numbers (and a bare number on SMS, WhatsApp, Signal or iMessage), `@handles` and names stay recipients, and a non-message tool's bare target is unchanged.
+- In free text, `user:`, `dm:` and `group:` name a channel only with an id-shaped id: numeric, a JID, or at least eight characters with a digit. `channel:` and `thread:` are unchanged.
+- `oracle.client.SeedOracle`: channel values match ignoring letter case.
+- Request-named relief: an owner names a channel target by its id or `#name` (`#bot-home` for `discord:#bot-home`, as `ops-yard` and `#ops-yard` already did for `channel:ops-yard`); a word after a platform prefix (`slack:general`) or a Matrix room's homeserver does not name it.
+- Tests: tool-group names in a skill's allow-list example stay silent; prefixed, JID, Slack, numeric, Matrix and Hermes `platform:id` targets are channels; addresses and non-message targets stay recipients; a Slack id seeded as a `known_good` channel matches.

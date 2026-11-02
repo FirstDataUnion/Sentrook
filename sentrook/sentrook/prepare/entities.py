@@ -233,7 +233,28 @@ _NC_HOST_RE = re.compile(
     r"\b(?:nc|ncat|netcat|telnet)\s+(?:-\w+\s+)*([A-Za-z0-9.-]+\.[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})"
 )
 _DEV_TCP_RE = re.compile(r"/dev/tcp/([A-Za-z0-9.-]+)/\d+")
-_CHANNEL_RE = re.compile(r"\b(channel|user|dm|group|thread):([A-Za-z0-9_-]{3,})")
+# A channel target: `channel:<id>`, `user:<id>`, … The id may be a WhatsApp JID (`<digits>@g.us`).
+_JID_SUFFIX = r"@(?:g\.us|s\.whatsapp\.net|broadcast|newsletter|lid)"
+_CHANNEL_RE = re.compile(
+    r"\b(channel|user|dm|group|thread):([A-Za-z0-9_-]{3,}(?:" + _JID_SUFFIX + r")?)(?![\w@-]|\.\w)"
+)
+_JID_RE = re.compile(r"(?<![\w.@+-])\d{5,}(?:-\d+)?" + _JID_SUFFIX + r"(?![\w@-]|\.\w)")
+# In free text, `user:`, `dm:` and `group:` name a channel only with an id-shaped id: numeric, a JID, or
+# at least eight characters with a digit. A bare word (`group:runtime`, an OpenClaw tool group) is not.
+_WORD_PREFIXES = frozenset({"user", "dm", "group"})
+_ID_TOKEN_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_-]{7,}")
+_NUMERIC_ID_RE = re.compile(r"-?\d{3,}")
+# Chat platforms a message target may be prefixed with (`telegram:-100…`, `slack:C0…`, `discord:#x`).
+_CHAT_PLATFORMS = frozenset(
+    """telegram discord slack whatsapp signal matrix mattermost msteams teams googlechat imessage irc
+    line zulip rocketchat wechat feishu dingtalk sms""".split()
+)
+# Platforms whose bare numeric target is a phone number, an address.
+_PHONE_PLATFORMS = frozenset({"sms", "whatsapp", "signal", "imessage"})
+_PLATFORM_TARGET_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]{1,20}):(.+)")
+_E164_RE = re.compile(r"\+\d[\d\s().-]{5,}\d")
+_MATRIX_ROOM_RE = re.compile(r"![\w-]+:[\w.-]+")
+_CHANNEL_NAME_RE = re.compile(r"#[\w-]{2,}")
 _HANDLE_RE = re.compile(r"(?<![\w.])@([A-Za-z0-9_]{2,32})\b")
 _PHONE_RE = re.compile(r"(?<![\w-])(\+?\d[\d\s().-]{6,}\d)(?![\w-])")
 
@@ -698,14 +719,75 @@ def _packages_in(text: str) -> list[str]:
     return list(dict.fromkeys(pkgs))
 
 
-def _recipients_in(values: list[str]) -> list[Found]:
+def _is_address(value: str, platform: str | None) -> bool:
+    """An email, a phone number or an `@handle`: a recipient, not a channel. A WhatsApp JID is
+    shaped like an email but is a chat id."""
+    if _JID_RE.fullmatch(value):
+        return False
+    if value.startswith("@") or _EMAIL_RE.fullmatch(value) or _E164_RE.fullmatch(value):
+        return True
+    if value.isdigit():
+        return platform in _PHONE_PLATFORMS
+    return bool(_PHONE_RE.fullmatch(value))
+
+
+def _is_channel_target(value: str, *, chat: bool, platform: str | None) -> bool:
+    """A message target that names a channel. Any tool's prefixed target or JID counts; a chat send's
+    target also counts when it is platform-prefixed (`telegram:-100…`, `discord:#bot-home`), a `#name`,
+    a Matrix room or id-shaped (a numeric chat id, or at least eight characters with a digit, such as a
+    Slack id) and not an address."""
+    if _CHANNEL_RE.fullmatch(value) or _JID_RE.fullmatch(value):
+        return True
+    if not chat:
+        return False
+    m = _PLATFORM_TARGET_RE.fullmatch(value)
+    if m and m.group(1).lower() in _CHAT_PLATFORMS:
+        return not _is_address(m.group(2).strip(), m.group(1).lower())
+    if _CHANNEL_NAME_RE.fullmatch(value) or _MATRIX_ROOM_RE.fullmatch(value):
+        return True
+    if _is_address(value, platform):
+        return False
+    return bool(_NUMERIC_ID_RE.fullmatch(value) or _ID_TOKEN_RE.fullmatch(value))
+
+
+def channel_names(value: str) -> set[str]:
+    """The shorter names an owner may use for a channel target, lower-cased: `ops-yard` and `#ops-yard`
+    for `channel:ops-yard`; for a platform-prefixed target, the part after the platform when it is a
+    `#name` or id-shaped (`#bot-home` for `discord:#bot-home`, not `general` for `slack:general`). A
+    Matrix room has none (the part after its `:` is the homeserver)."""
+    m = _CHANNEL_RE.fullmatch(value)
+    if m:
+        name = m.group(2).lower()
+        return {name, "#" + name}
+    m = _PLATFORM_TARGET_RE.fullmatch(value)
+    if m and m.group(1).lower() in _CHAT_PLATFORMS:
+        rest = m.group(2).strip()
+        if (
+            _CHANNEL_NAME_RE.fullmatch(rest)
+            or _NUMERIC_ID_RE.fullmatch(rest)
+            or _ID_TOKEN_RE.fullmatch(rest)
+        ):
+            return {rest.lower()}
+    return set()
+
+
+def _chat_send(call: CanonicalCall) -> tuple[bool, str | None]:
+    """Whether a message send goes to a chat (not mail), and its platform when the call names one."""
+    platform = call.get("channel")
+    platform = platform.strip().lower() if isinstance(platform, str) else None
+    mail = platform in ("email", "mail", "smtp") or "mail" in call.tool.lower()
+    return not mail, platform
+
+
+def _recipients_in(
+    values: list[str], *, chat: bool = False, platform: str | None = None
+) -> list[Found]:
     out: list[Found] = []
     for v in values:
         v = v.strip()
         if not v:
             continue
-        m = _CHANNEL_RE.fullmatch(v)
-        if m:
+        if _is_channel_target(v, chat=chat, platform=platform):
             out.append(Found(EntityKind.CHANNEL, v, v, Role.RECIPIENT))
             continue
         if _EMAIL_RE.fullmatch(v):
@@ -732,8 +814,13 @@ def extract_mentions(
     role: Role | None = Role.MENTIONED,
     inline_program: bool = False,
 ) -> list[Found]:
-    """Entities named in free text (request, inputs, content): hosts, emails, paths, packages.
-    `inline_program` marks the text as program source (see `_hosts_in`)."""
+    """Entities named in free text (request, inputs, content): hosts, emails, paths, packages,
+    channels. `inline_program` marks the text as program source (see `_hosts_in`). A JID is blanked before
+    the other kinds are read, so it is not also a mailbox and a host."""
+    channels = _channels_in(text)
+    for start, end, value in channels:
+        if "@" in value:
+            text = text[:start] + " " * (end - start) + text[end:]
     found: list[Found] = []
     for h in _hosts_in(text, inline_program=inline_program):
         found.append(Found(EntityKind.HOST, h, h, role))
@@ -744,9 +831,26 @@ def extract_mentions(
         found.append(Found(EntityKind.PATH, norm, disp, role))
     for p in _packages_in(text):
         found.append(Found(EntityKind.PACKAGE, p, p, role))
-    for m in _CHANNEL_RE.finditer(text):
-        found.append(Found(EntityKind.CHANNEL, m.group(0), m.group(0), role))
+    for _, _, value in channels:
+        found.append(Found(EntityKind.CHANNEL, value, value, role))
     return found
+
+
+def _channels_in(text: str) -> list[tuple[int, int, str]]:
+    """Channel tokens in free text, as (start, end, value) in text order."""
+    out: list[tuple[int, int, str]] = []
+    for m in _CHANNEL_RE.finditer(text):
+        ident = m.group(2)
+        if m.group(1) in _WORD_PREFIXES and not (
+            _NUMERIC_ID_RE.fullmatch(ident) or "@" in ident or _ID_TOKEN_RE.fullmatch(ident)
+        ):
+            continue
+        out.append((m.start(), m.end(), m.group(0)))
+    taken = [(s, e) for s, e, _ in out]
+    for m in _JID_RE.finditer(text):
+        if not any(s <= m.start() < e for s, e in taken):
+            out.append((m.start(), m.end(), m.group(0)))
+    return sorted(out)
 
 
 # --------------------------------------------------------------------------- shell segments
@@ -1355,7 +1459,8 @@ def extract_call(
             extract_mentions(str(call.get("body") or ""), home=home, workspace_root=workspace_root)
         )
     elif kind is ToolKind.MESSAGE_SEND:
-        found.extend(_recipients_in(call.recipients))
+        chat, platform = _chat_send(call)
+        found.extend(_recipients_in(call.recipients, chat=chat, platform=platform))
         for a in call.get("attachments") or []:
             norm = normalise_path(a, home=home, workspace_root=workspace_root)
             found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.DATA_SOURCE))
