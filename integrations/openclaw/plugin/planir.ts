@@ -67,7 +67,8 @@ export function unwrapToolCall(params: unknown): { tool: string; arguments: Reco
   if (!isRecord(params)) return null;
   const key = SELECTORS.find((k) => params[k] != null);
   // OpenClaw also takes a selector given inside the arguments (`{args: {id, ...}}`).
-  if (!key) return isRecord(params.args) && SELECTORS.some((k) => params.args[k] != null) ? unwrapToolCall(params.args) : null;
+  const inside = params.args;
+  if (!key) return isRecord(inside) && SELECTORS.some((k) => inside[k] != null) ? unwrapToolCall(inside) : null;
   if (typeof params[key] !== "string" || !(params[key] as string).trim()) return null;
   const selector = (params[key] as string).trim();
   const dotted = Object.fromEntries(Object.entries(params).filter(([k]) => isDotted(k)).map(([k, v]) => [k.slice(5), v]));

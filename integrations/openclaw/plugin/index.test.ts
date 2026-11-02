@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -115,7 +115,12 @@ afterEach(() => {
 function dumpPlanirs(scans: any[]) {
   const file = process.env.SENTROOK_PLANIR_DUMP;
   if (!file) return;
-  const prior = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+  let prior: any[] = [];
+  try {
+    prior = JSON.parse(readFileSync(file, "utf8"));
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") throw err;
+  }
   writeFileSync(file, JSON.stringify([...prior, ...scans]));
 }
 
