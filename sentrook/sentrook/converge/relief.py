@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from ..planir.models import SenderRelation
 from ..prepare import Prepared
 from ..prepare.entities import Origin, Role
-from ..prepare.grants import GRANT_KINDS
+from ..prepare.grants import GRANT_KINDS, sends_off_host
 from .merge import ANY_SUBJECT
 from .params import ConvergenceParams
 
@@ -42,21 +42,13 @@ class Relief:
     excluded: tuple[tuple[str, str | None], ...]
 
 
-def _has_off_host_destination(prepared: Prepared) -> bool:
-    return any(
-        e.roles & {Role.DATA_DESTINATION, Role.RECIPIENT}
-        and e.kind.value in ("host", "recipient", "channel")
-        for e in prepared.entities.pending()
-    )
-
-
 def compute_relief(
     prepared: Prepared, params: ConvergenceParams, known_good: Iterable[str] = ()
 ) -> list[Relief]:
     """`known_good`: entity ids the oracle probe reported as `known_good` in this scan."""
     out: list[Relief] = []
     grants = {g.grant_ref: g for g in prepared.planir.grants}
-    off_host = _has_off_host_destination(prepared)
+    off_host = sends_off_host(prepared.pending, prepared.entities.pending())
 
     for grant_ref, entity_ids in prepared.grant_hits.items():
         grant = grants.get(grant_ref)

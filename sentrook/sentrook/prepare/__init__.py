@@ -57,7 +57,14 @@ from .entities import (
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
-from .grants import GRANT_KINDS, grant_matches, lapse, path_actions, tool_covers
+from .grants import (
+    GRANT_KINDS,
+    grant_matches,
+    lapse,
+    path_actions,
+    sends_off_host,
+    tool_covers,
+)
 from .host_text import owner_words
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
 from .trust import Trust, classify
@@ -777,10 +784,11 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     call_grants: list[str] = []
     grant_actions: dict[str, frozenset[str]] = {}
     grants_lapsed: dict[str, str] = {}
+    off_host = sends_off_host(pending, table.pending())
     for grant in planir.grants:
         spec = GRANT_KINDS.get(grant.kind)
-        if spec is None:
-            continue
+        if spec is None or (spec.local_only and off_host):
+            continue  # a file grant sanctions access, never sending the data off the host
         why = lapse(grant, planir)
         if why is not None:
             grants_lapsed[grant.grant_ref] = why
