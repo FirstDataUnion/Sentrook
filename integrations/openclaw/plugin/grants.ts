@@ -8,7 +8,13 @@
  * A grant set by command has the PlanIR grant fields (kind, pattern, scope, allows, granted_at) plus
  * an id, who set it (`set_by`: the owner basis, channel and hashed sender) and an optional
  * `expires_at`. Scope is `session` unless the owner asks for `persistent`; any other value is refused.
- * An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed
+ *
+ * A session grant is bound to one session: the one the command was sent from, or the one `--session`
+ * names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan of
+ * the session sends, and is sent only on scans of that session: not in cron jobs, subagents or other
+ * chats. A session grant with no session (the command line without `--session`) is refused, and one
+ * stored without a session is never sent. Persistent grants and the plugin config's grants are sent on
+ * every scan. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed
  * on as typed: Sentrook itself refuses patterns too broad to relieve on.
  *
  * Every change is written to the traffic log as a `grants` record (none when the owner has turned the
@@ -24,6 +30,7 @@ import { type GrantsFile, readTime, Store } from "./store.ts";
 export const KINDS = ["destination", "file", "provider"];
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
+const SESSION_REF = /^s_[0-9a-f]{12}$/;
 export const MAX_PATTERN = 256;
 const MAX_EXPIRY_MS = 365 * 24 * 3600_000;
 const UNIT_MS: Record<string, number> = { m: 60_000, h: 3600_000, d: 24 * 3600_000 };
@@ -86,11 +93,21 @@ function fileBindings(data: GrantsFile | null): Entry[] {
   );
 }
 
-/** Every grant a scan may send: config grants, config bindings, then live file entries. */
-export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date): GrantConfig[] {
+/** The session a session grant set by command is bound to; null when it has none. */
+function bound(raw: Entry): string | null {
+  return typeof raw.session_ref === "string" && raw.session_ref ? raw.session_ref : null;
+}
+
+/**
+ * Every grant a scan of the session `sessionRef` may send: config grants, config bindings, then live
+ * file entries (a session grant only in its own session).
+ */
+export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date, sessionRef: string): GrantConfig[] {
   const out: GrantConfig[] = cfg.grants.map((g) => ({ ...g }));
   for (const pattern of cfg.channelBindings) out.push({ kind: "destination", pattern, scope: "persistent" });
-  for (const [raw, g] of fileGrants(data)) if (!expired(raw, now)) out.push(g);
+  for (const [raw, g] of fileGrants(data)) {
+    if (!expired(raw, now) && (g.scope !== "session" || bound(raw) === sessionRef)) out.push(g);
+  }
   for (const b of fileBindings(data)) {
     const g: GrantConfig = { kind: "destination", pattern: b.pattern.trim(), scope: "persistent" };
     if (typeof b.granted_at === "string" && b.granted_at.trim()) g.granted_at = b.granted_at.trim();
@@ -115,7 +132,14 @@ function table(header: string[], rows: string[][], cap = 40): string[] {
   return all.map((r) => [...widths.map((w, i) => r[i]!.padEnd(w)), r.at(-1)!].join("  ").trimEnd());
 }
 
-export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Date, cmd: Cmd): string {
+function sessionOf(raw: Entry, ref: string | null): string {
+  const b = bound(raw);
+  if (b === null) return "no session, never sent";
+  return b === ref ? "this session" : `session ${b}`;
+}
+
+/** The grants in force, as seen from the session `ref` (null: no current session). */
+export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Date, cmd: Cmd, ref: string | null = null): string {
   const rows: string[][] = cfg.grants.map((g, i) => [
     `cfg-${i + 1}`,
     g.kind,
@@ -125,7 +149,8 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
   ]);
   const file = fileGrants(data);
   for (const [raw, g] of file) {
-    const details = g.allows?.length ? [`allows ${g.allows.join(",")}`] : [];
+    const details = g.scope === "session" ? [sessionOf(raw, ref)] : [];
+    if (g.allows?.length) details.push(`allows ${g.allows.join(",")}`);
     if ("expires_at" in raw) {
       const at = readTime(raw.expires_at);
       details.push(`${expired(raw, now) ? "expired" : "expires"} ${at ? show(at) : "?"}`);
@@ -162,11 +187,20 @@ export function counts(cfg: PluginConfig, data: GrantsFile | null): [string, str
 
 // ---- changes -----------------------------------------------------------------------------------------
 
-export function grantUsage(grantCmd: string): string {
+export function grantUsage(cmd: Cmd): string {
   return (
-    `usage: ${grantCmd} <kind> <pattern> [--persistent | --scope session|persistent] ` +
-    "[--allows read,write] [--expires 12h]\n" +
-    "kind is destination, file or provider; --allows is for file grants; scope defaults to session"
+    `usage: ${cmd("grant")} <kind> <pattern> [--persistent | --scope session|persistent] ` +
+    "[--session <ref>] [--allows read,write] [--expires 12h]\n" +
+    "kind is destination, file or provider; --allows is for file grants; scope defaults to " +
+    "session: this session only, or the one --session names (a ref from " +
+    `${cmd("history")}); cron jobs, subagents and other chats need --persistent`
+  );
+}
+
+function noSession(cmd: Cmd): string {
+  return (
+    "There is no current session here, so a session grant cannot be bound to one; " +
+    `give --session <ref> (from ${cmd("history")}) or --persistent (with --expires to end it).`
   );
 }
 
@@ -174,12 +208,13 @@ interface ParsedGrant {
   kind: string;
   pattern: string;
   scope: string;
+  session_ref?: string | null;
   allows?: string[];
   expiresInMs?: number;
 }
 
 /** The grant typed after `grant`, or the reason it is refused ("" for a plain usage error). */
-export function parseGrant(rest: string): ParsedGrant | string {
+export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
   const tokens = rest.split(/\s+/).filter(Boolean);
   const pos: string[] = [];
   const opts: Record<string, string> = {};
@@ -196,7 +231,7 @@ export function parseGrant(rest: string): ParsedGrant | string {
       opts.scope = "persistent";
       continue;
     }
-    if (!["scope", "allows", "expires"].includes(name)) return `Unknown option --${clean(name, 40)}.`;
+    if (!["scope", "session", "allows", "expires"].includes(name)) return `Unknown option --${clean(name, 40)}.`;
     if (value === undefined) {
       if (i >= tokens.length) return `--${name} needs a value.`;
       value = tokens[i++]!;
@@ -213,6 +248,13 @@ export function parseGrant(rest: string): ParsedGrant | string {
   const scope = opts.scope ?? "session";
   if (!SCOPES.includes(scope)) return `Unknown scope "${clean(scope, 40)}": use session or persistent.`;
   const grant: ParsedGrant = { kind, pattern, scope };
+  if (opts.session !== undefined) {
+    if (scope !== "session") return "--session applies to session grants only.";
+    if (!SESSION_REF.test(opts.session)) {
+      return `Unknown session "${clean(opts.session, 40)}": use a session ref (s_ and 12 hex digits) from ${cmd("history")}.`;
+    }
+    grant.session_ref = opts.session;
+  }
   if (opts.allows !== undefined) {
     if (kind !== "file") return "--allows applies to file grants only.";
     const allows = opts.allows.split(",").map((a) => a.trim()).filter(Boolean);
@@ -255,11 +297,24 @@ function change(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeRes
   return result;
 }
 
-export function addGrant(stateDir: string, rest: string, by: Entry, now: Date, cmd: Cmd, beforeWrite: () => void): ChangeResult {
-  const parsed = parseGrant(rest);
+/** `grant ...` from the session `ref` (null: no current session). */
+export function addGrant(
+  stateDir: string,
+  rest: string,
+  ref: string | null,
+  by: Entry,
+  now: Date,
+  cmd: Cmd,
+  beforeWrite: () => void,
+): ChangeResult {
+  const parsed = parseGrant(rest, cmd);
   if (typeof parsed === "string") {
-    const usage = grantUsage(cmd("grant"));
+    const usage = grantUsage(cmd);
     return { reply: parsed ? `${parsed}\n${usage}` : usage, change: null };
+  }
+  if (parsed.scope === "session") {
+    parsed.session_ref ??= ref;
+    if (parsed.session_ref === null) return { reply: noSession(cmd), change: null };
   }
   return change(
     stateDir,
@@ -274,10 +329,13 @@ export function addGrant(stateDir: string, rest: string, by: Entry, now: Date, c
       if (expires) entry.expires_at = iso(expires);
       entry.set_by = by;
       data.grants.push(entry);
-      const details = [entry.scope, ...(entry.allows ? [`allows ${entry.allows.join(",")}`] : [])];
+      const where =
+        entry.scope !== "session" ? entry.scope : entry.session_ref === ref ? "this session only" : `session ${entry.session_ref} only`;
+      const details = [where, ...(entry.allows ? [`allows ${entry.allows.join(",")}`] : [])];
       if (expires) details.push(`expires ${show(expires)}`);
+      const note = entry.scope === "session" ? " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)." : "";
       return {
-        reply: `Granted ${id}: ${entry.kind} ${entry.pattern} (${details.join(", ")}).`,
+        reply: `Granted ${id}: ${entry.kind} ${entry.pattern} (${details.join(", ")}).${note}`,
         change: { op: "grant", entry },
       };
     },

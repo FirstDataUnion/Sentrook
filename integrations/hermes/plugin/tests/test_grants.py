@@ -11,10 +11,16 @@ import pytest
 import plugin
 from plugin import grants, owner
 from plugin.config import resolve_config
+from plugin.planir import session_ref
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
+#: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "grants"
 NOW = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+CMD = "/sentrook {}".format
+S1 = session_ref("S1")
+S2 = session_ref("S2")
+NOTE = " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)."
 
 
 def golden(name):
@@ -34,8 +40,10 @@ def term(harness, monkeypatch):
     return harness
 
 
-def slash(h, raw_args):
-    return h.ctx.commands["sentrook"]["handler"](raw_args)
+def slash(h, raw_args, session_id="S1"):
+    """`/sentrook ...` sent from the session `session_id` (None: Hermes passed no session)."""
+    context = {} if session_id is None else {"session_id": session_id}
+    return h.ctx.commands["sentrook"]["handler"](raw_args, **context)
 
 
 def cli(h, capsys, *argv):
@@ -53,13 +61,14 @@ def records(h, kind):
     return [r for r in h.traffic() if r.get("kind") == kind]
 
 
-def scan_grants(h, cmd):
-    """The grants sent with one scan of `cmd`."""
+def scan_grants(h, cmd, sid="S1", **kw):
+    """The grants sent with one scan of `cmd` in session `sid`."""
     h.ctx.hooks["pre_tool_call"](
         tool_name="terminal",
         args={"command": cmd},
         tool_call_id=f"c{len(h.scans)}",
-        session_id="S1",
+        session_id=sid,
+        **kw,
     )
     return h.scans[-1]["grants"]
 
@@ -75,23 +84,28 @@ def test_the_fixture_renders(term):
     fixture_state(term)
     cfg = resolve_config(term.ctx.settings)
     data = grants.load(cfg.state_dir)
-    assert grants.format_grants(cfg, data, NOW, "/sentrook {}".format) == golden("grants.txt")
+    assert grants.format_grants(cfg, data, NOW, CMD, S1) == golden("grants.txt")
     assert grants.format_bindings(cfg, data) == golden("bindings.txt")
-    assert grants.effective(cfg, data, NOW) == json.loads(
+    assert grants.effective(cfg, data, NOW, S1) == json.loads(
         (FIXTURES / "planir-grants.json").read_text()
     )
+    # From the command line, every session grant shows the session it is bound to.
+    listing = grants.format_grants(cfg, data, NOW, CMD, None)
+    assert f"session {S1}; set 2026-10-29 09:00 UTC (local_terminal)" in listing
+    assert "this session" not in listing
 
 
 def test_a_grant_round_trips_through_the_file_and_into_scans(term):
     out = slash(term, "grant destination #ops")
     [g] = stored(term)["grants"]
-    assert out == f"Granted {g['id']}: destination #ops (session)."
+    assert out == f"Granted {g['id']}: destination #ops (this session only).{NOTE}"
     assert g["id"].startswith("gr-")
     assert (g["kind"], g["pattern"], g["scope"]) == ("destination", "#ops", "session")
+    assert g["session_ref"] == S1
     assert "allows" not in g and "expires_at" not in g
     assert g["set_by"] == {"basis": ["local_terminal"], "platform": "", "sender_ref": None}
     assert datetime.fromisoformat(g["granted_at"].replace("Z", "+00:00")) <= datetime.now(UTC)
-    assert f"{g['id']}  destination  session  #ops     set " in slash(term, "grants")
+    assert f"{g['id']}  destination  session  #ops     this session; set " in slash(term, "grants")
     sent = scan_grants(term, "post to #ops")
     assert sent == [
         {
@@ -153,6 +167,15 @@ def test_options_scope_allows_and_expiry(term):
             'Unknown expiry "366d": use a number with m, h or d, from 1m to 365d.',
         ),
         ("grant destination #ops --expires", "--expires needs a value."),
+        (
+            "grant destination #ops --session S2",
+            'Unknown session "S2": use a session ref (s_ and 12 hex digits) from /sentrook history.',
+        ),
+        (
+            "grant destination #ops --persistent --session s_0123456789ab",
+            "--session applies to session grants only.",
+        ),
+        ("grant destination #ops --session", "--session needs a value."),
         ("grant destination", None),
         ("grant destination #ops extra", None),
         ("grant destination " + "x" * 257, "The pattern must be at most 256 printable characters."),
@@ -160,7 +183,7 @@ def test_options_scope_allows_and_expiry(term):
 )
 def test_bad_input_is_refused_and_nothing_is_written(term, args, reply):
     out = slash(term, args)
-    usage = grants.grant_usage("/sentrook grant")
+    usage = grants.grant_usage(CMD)
     assert out == (f"{reply}\n{usage}" if reply else usage)
     assert not term.file.exists()
     assert records(term, "grants") == []
@@ -304,7 +327,9 @@ def test_an_expired_grant_can_still_be_revoked(term):
 def test_an_over_broad_pattern_is_stored_as_typed(term):
     """Whether a pattern is too broad to relieve on is the scanner's call, not the plugin's."""
     out = slash(term, "grant destination *")
-    assert out.startswith("Granted ") and out.endswith(": destination * (session).")
+    assert out.startswith("Granted ") and out.endswith(
+        f": destination * (this session only).{NOTE}"
+    )
     assert stored(term)["grants"][0]["pattern"] == "*"
 
 
@@ -351,7 +376,7 @@ def test_an_unreadable_grants_file_blocks_changes_but_not_scans(term):
 
 def test_the_cli_forms_match_the_slash_forms(term, capsys):
     fixture_state(term)
-    assert cli(term, capsys, "grants") == slash(term, "grants")
+    assert cli(term, capsys, "grants") == slash(term, "grants", session_id=None)
     assert cli(term, capsys, "bind", "list") == slash(term, "bind list")
     out = cli(term, capsys, "grant", "file", "/srv/x/*", "--allows", "read", "--persistent")
     gid = out.split()[1].rstrip(":")
@@ -362,6 +387,8 @@ def test_the_cli_forms_match_the_slash_forms(term, capsys):
     assert cli(term, capsys, "grant", "file", "/x", "--scope", "persistant").startswith(
         'Unknown scope "persistant"'
     )
+    bound = cli(term, capsys, "grant", "destination", "#z", "--session", S2)
+    assert bound.endswith(f": destination #z (session {S2} only).{NOTE}")
     assert cli(term, capsys, "revoke", gid) == f"Revoked {gid}: file /srv/x/*."
     assert cli(term, capsys, "bind", "add", "discord:5") == "Channel binding added: discord:5."
     assert {r["basis"][0] for r in records(term, "command")} == {"local_terminal"}
@@ -370,7 +397,7 @@ def test_the_cli_forms_match_the_slash_forms(term, capsys):
 def test_status_counts_grants_from_both_sources(term):
     fixture_state(term)
     out = slash(term, "status").splitlines()
-    assert "grants: 2 in config, 7 by command" in out
+    assert "grants: 2 in config, 8 by command" in out
     assert "channel bindings: 1 in config, 1 by command" in out
 
 
@@ -379,3 +406,91 @@ def test_help_lists_the_grant_commands(term):
     for usage in ("/sentrook grants", "/sentrook grant <kind> <pattern>", "/sentrook revoke <id>"):
         assert usage in text
     assert "/sentrook bind add|remove|list [channel]" in text
+
+
+# ---- session grants: bound to the session they were set in ------------------------------------------
+
+
+def test_a_session_grant_relieves_only_in_its_own_session(term):
+    """Must relieve in session A; must stay silent in session B, a cron run and a subagent."""
+    slash(term, "grant destination #ops")
+    [g] = stored(term)["grants"]
+    assert [x["pattern"] for x in scan_grants(term, "post to #ops")] == ["#ops"]
+    assert scan_grants(term, "post to #ops", sid="S2") == []
+    assert scan_grants(term, "post to #ops", sid="cron_daily_20261029") == []
+    assert scan_grants(term, "post to #ops", sid="sub-1", parent_session_id="S1") == []
+    assert [x["pattern"] for x in scan_grants(term, "post to #ops")] == ["#ops"]
+    assert g["session_ref"] == S1
+
+
+def test_the_command_and_the_scan_name_a_session_alike(term):
+    """The session_ref stored at command time is the one a scan of that session sends."""
+    slash(term, "grant destination #ops", session_id="20261029_093000_ab12cd")
+    [g] = stored(term)["grants"]
+    scan_grants(term, "post to #ops", sid="20261029_093000_ab12cd")
+    assert g["session_ref"] == term.scans[-1]["session"]["session_ref"]
+    assert term.scans[-1]["grants"][0]["pattern"] == "#ops"
+
+
+def test_a_session_grant_needs_a_session(term, capsys):
+    """The CLI, or a chat turn with no session, must name one with --session or use --persistent."""
+    refusal = (
+        "There is no current session here, so a session grant cannot be bound to one; give "
+        "--session <ref> (from /sentrook history) or --persistent (with --expires to end it)."
+    )
+    assert cli(term, capsys, "grant", "destination", "#ops") == refusal
+    assert slash(term, "grant destination #ops", session_id=None) == refusal
+    assert slash(term, "grant destination #ops", session_id="") == refusal
+    assert not term.file.exists()
+    assert records(term, "grants") == []
+    out = cli(term, capsys, "grant", "destination", "#ops", "--session", S2)
+    assert out.endswith(f": destination #ops (session {S2} only).{NOTE}")
+    assert scan_grants(term, "post to #ops", sid="S2")[0]["pattern"] == "#ops"
+    assert scan_grants(term, "post to #ops") == []
+    out = cli(term, capsys, "grant", "destination", "#all", "--persistent", "--expires", "1h")
+    assert ": destination #all (persistent, expires " in out
+
+
+def test_a_chat_command_can_bind_another_session(term):
+    out = slash(term, f"grant destination #ops --session {S2}")
+    assert out.endswith(f": destination #ops (session {S2} only).{NOTE}")
+    assert scan_grants(term, "post to #ops") == []
+    assert scan_grants(term, "post to #ops", sid="S2")[0]["pattern"] == "#ops"
+    gid = stored(term)["grants"][0]["id"]
+    assert f"{gid}  destination  session  #ops     session {S2}; set " in slash(term, "grants")
+    assert f"{gid}  destination  session  #ops     this session; set " in slash(
+        term, "grants", session_id="S2"
+    )
+
+
+def test_a_session_grant_still_expires(term):
+    term.file.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"id": "gr-000001", "kind": "destination", "pattern": "#ops", "scope": "session"}
+    live = {**entry, "session_ref": S1, "expires_at": "2099-01-01T00:00:00Z"}
+    term.file.write_text(json.dumps({"grants": [live]}))
+    assert [g["pattern"] for g in scan_grants(term, "post to #ops")] == ["#ops"]
+    term.file.write_text(json.dumps({"grants": [{**live, "expires_at": "2026-01-01T00:00:00Z"}]}))
+    assert scan_grants(term, "post to #ops") == []
+
+
+def test_a_session_grant_stored_without_a_session_is_never_sent(term):
+    term.file.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"id": "gr-000001", "kind": "destination", "pattern": "#ops", "scope": "session"}
+    for bad in ({}, {"session_ref": ""}, {"session_ref": None}, {"session_ref": 7}):
+        term.file.write_text(json.dumps({"grants": [{**entry, **bad}]}))
+        assert scan_grants(term, "post to #ops") == []
+        assert "gr-000001  destination  session  #ops     no session, never sent" in slash(
+            term, "grants"
+        )
+
+
+def test_persistent_and_config_grants_are_sent_in_every_session(term):
+    term.ctx.settings["grants"] = [{"kind": "destination", "pattern": "#cfg"}]
+    out = slash(term, "grant destination #ops --persistent")
+    assert out.endswith(": destination #ops (persistent).")
+    assert "session_ref" not in stored(term)["grants"][0]
+    for sid, kw in (("S1", {}), ("S2", {}), ("sub-1", {"parent_session_id": "S1"})):
+        assert [g["pattern"] for g in scan_grants(term, "post to #ops and #cfg", sid, **kw)] == [
+            "#cfg",
+            "#ops",
+        ]

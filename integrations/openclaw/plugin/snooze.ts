@@ -24,7 +24,8 @@
 import path from "node:path";
 
 import type { Cmd, Entry } from "./grants.ts";
-import { hash12 } from "./planir.ts";
+/** What an entry is keyed on. */
+export { sessionRef } from "./planir.ts";
 import { readTime, type SnoozeFile, Store } from "./store.ts";
 
 const MINUTE = 60_000;
@@ -39,11 +40,6 @@ export const RULE =
 export interface SnoozeResult {
   reply: string;
   change: { op: "set"; entry: Entry } | { op: "off"; entries: Entry[] } | null;
-}
-
-/** The session's name in the file: the `session_ref` a scan of that session sends. */
-export function sessionRef(sid: string): string {
-  return `s_${hash12(sid)}`;
 }
 
 export function load(stateDir: string): SnoozeFile | null {

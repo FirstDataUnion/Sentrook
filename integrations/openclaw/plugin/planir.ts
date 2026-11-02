@@ -41,6 +41,9 @@ export function toolKind(name: string): string {
 
 export const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
+/** A session's `session_ref`: what a scan of it sends, and what snoozes and session grants are bound to. */
+export const sessionRef = (sid: string) => `s_${hash12(sid)}`;
+
 function normaliseTransport(t: unknown): string | null {
   if (typeof t !== "string" || !t) return null;
   const v = t.toLowerCase();
@@ -302,7 +305,7 @@ export function buildPlanir(b: BuildInput): Built {
       policy: { exec_mode, approval_gating, result_masking: true },
     },
     session: {
-      session_ref: `s_${hash12(b.sid)}`,
+      session_ref: sessionRef(b.sid),
       routing_key: sessionKey ? `h_${hash12(sessionKey)}` : null,
       agent_ref: `a_${ctx.agentId ?? "main"}`,
       agent_role: isSub ? "subagent" : "main",

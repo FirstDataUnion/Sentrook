@@ -6,6 +6,7 @@
       "kind": "destination",
       "pattern": "#ops",
       "scope": "session",
+      "session_ref": "s_3696ad59777e",
       "granted_at": "2026-10-29T09:00:00Z",
       "set_by": { "basis": ["local_terminal"], "platform": "" }
     },
@@ -27,6 +28,15 @@
       "granted_at": "2026-10-29T09:00:00Z",
       "expires_at": "2026-11-05T09:00:00Z",
       "set_by": { "basis": ["operator.admin"], "channel": "webchat" }
+    },
+    {
+      "id": "gr-d4e5f6",
+      "kind": "destination",
+      "pattern": "#standup",
+      "scope": "session",
+      "session_ref": "s_adfa2b24c2d9",
+      "granted_at": "2026-10-29T10:00:00Z",
+      "set_by": { "basis": ["host_allowlist_dm"], "platform": "telegram", "sender_ref": "u_fedcba9876543210" }
     },
     { "id": "gr-c1d2e3", "kind": "destination", "pattern": "#hour-24", "scope": "session", "granted_at": "2026-10-29T09:00:00Z", "expires_at": "2026-10-29T24:00Z" },
     { "id": "gr-f4a5b6", "kind": "destination", "pattern": "#feb-30", "scope": "persistent", "granted_at": "2026-02-30T09:00:00Z", "expires_at": "2026-02-30T00:00Z" },

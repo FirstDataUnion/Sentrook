@@ -6,8 +6,14 @@ grants and bindings, in that order, so adding by command never renumbers a confi
 
 A grant set by command has the PlanIR grant fields (kind, pattern, scope, allows, granted_at) plus an
 id, who set it (`set_by`: the owner basis, platform and hashed sender) and an optional `expires_at`.
-Scope is `session` unless the owner asks for `persistent`; any other value is refused. An expired
-grant is not sent, and is dropped from the file on the next change. Patterns are passed on as typed:
+Scope is `session` unless the owner asks for `persistent`; any other value is refused.
+
+A session grant is bound to one session: the one the command was sent from, or the one `--session`
+names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan
+of the session sends, and is sent only on scans of that session: not in cron jobs, subagents or
+other chats. A session grant with no session (the command line without `--session`) is refused, and
+one stored without a session is never sent. Persistent grants and the plugin settings' grants are
+sent on every scan. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed on as typed:
 Sentrook itself refuses patterns too broad to relieve on.
 
 Every change is written to the traffic log as a `grants` record (none when the owner has turned the
@@ -30,6 +36,7 @@ from .store import Store, read_time
 KINDS = ("destination", "file", "provider")
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
+SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
 MAX_PATTERN = 256
 MAX_EXPIRY = timedelta(days=365)
 _DURATION = re.compile(r"([0-9]{1,6})([mhd])")
@@ -84,15 +91,26 @@ def _file_bindings(data: dict[str, Any] | None) -> list[dict[str, Any]]:
     ]
 
 
+def _bound(raw: dict[str, Any]) -> str | None:
+    """The session a session grant set by command is bound to; None when it has none."""
+    ref = raw.get("session_ref")
+    return ref if isinstance(ref, str) and ref else None
+
+
 def effective(
-    cfg: PluginConfig, data: dict[str, Any] | None, now: datetime
+    cfg: PluginConfig, data: dict[str, Any] | None, now: datetime, session_ref: str
 ) -> list[dict[str, Any]]:
-    """Every grant a scan may send: config grants, config bindings, then live file entries."""
+    """Every grant a scan of the session `session_ref` may send: config grants, config bindings,
+    then live file entries (a session grant only in its own session)."""
     out = [dict(g) for g in cfg.grants]
     out += [
         {"kind": "destination", "pattern": p, "scope": "persistent"} for p in cfg.channel_bindings
     ]
-    out += [g for raw, g in _file_grants(data) if not expired(raw, now)]
+    out += [
+        g
+        for raw, g in _file_grants(data)
+        if not expired(raw, now) and (g["scope"] != "session" or _bound(raw) == session_ref)
+    ]
     for b in _file_bindings(data):
         g = {"kind": "destination", "pattern": b["pattern"].strip(), "scope": "persistent"}
         if isinstance(b.get("granted_at"), str) and b["granted_at"].strip():
@@ -120,7 +138,17 @@ def _table(header: tuple[str, ...], rows: list[tuple[str, ...]], cap: int = 40) 
     ]
 
 
-def format_grants(cfg: PluginConfig, data: dict[str, Any] | None, now: datetime, cmd: Cmd) -> str:
+def _session_of(raw: dict[str, Any], ref: str | None) -> str:
+    bound = _bound(raw)
+    if bound is None:
+        return "no session, never sent"
+    return "this session" if bound == ref else f"session {bound}"
+
+
+def format_grants(
+    cfg: PluginConfig, data: dict[str, Any] | None, now: datetime, cmd: Cmd, ref: str | None = None
+) -> str:
+    """The grants in force, as seen from the session `ref` (None: no current session)."""
     rows = []
     for i, g in enumerate(cfg.grants, 1):
         details = [f"allows {','.join(g['allows'])}"] if g.get("allows") else []
@@ -135,7 +163,9 @@ def format_grants(cfg: PluginConfig, data: dict[str, Any] | None, now: datetime,
         )
     file_rows = _file_grants(data)
     for raw, g in file_rows:
-        details = [f"allows {','.join(g['allows'])}"] if g.get("allows") else []
+        details = [_session_of(raw, ref)] if g["scope"] == "session" else []
+        if g.get("allows"):
+            details.append(f"allows {','.join(g['allows'])}")
         if "expires_at" in raw:
             at = read_time(raw["expires_at"])
             past = expired(raw, now)
@@ -188,15 +218,24 @@ def counts(cfg: PluginConfig, data: dict[str, Any] | None) -> tuple[str, str]:
 # ---- changes ------------------------------------------------------------------------------------------
 
 
-def grant_usage(grant_cmd: str) -> str:
+def grant_usage(cmd: Cmd) -> str:
     return (
-        f"usage: {grant_cmd} <kind> <pattern> [--persistent | --scope session|persistent] "
-        "[--allows read,write] [--expires 12h]\n"
-        "kind is destination, file or provider; --allows is for file grants; scope defaults to session"
+        f"usage: {cmd('grant')} <kind> <pattern> [--persistent | --scope session|persistent] "
+        "[--session <ref>] [--allows read,write] [--expires 12h]\n"
+        "kind is destination, file or provider; --allows is for file grants; scope defaults to "
+        "session: this session only, or the one --session names (a ref from "
+        f"{cmd('history')}); cron jobs, subagents and other chats need --persistent"
     )
 
 
-def parse_grant(rest: str) -> dict[str, Any] | str:
+def _no_session(cmd: Cmd) -> str:
+    return (
+        "There is no current session here, so a session grant cannot be bound to one; "
+        f"give --session <ref> (from {cmd('history')}) or --persistent (with --expires to end it)."
+    )
+
+
+def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
     """The grant typed after `grant`, or the reason it is refused ("" for a plain usage error)."""
     tokens = rest.split()
     pos: list[str] = []
@@ -212,7 +251,7 @@ def parse_grant(rest: str) -> dict[str, Any] | str:
         if name == "persistent" and not eq:
             opts["scope"] = "persistent"
             continue
-        if name not in ("scope", "allows", "expires"):
+        if name not in ("scope", "session", "allows", "expires"):
             return f"Unknown option --{_clean(name, 40)}."
         if not eq:
             if i >= len(tokens):
@@ -231,6 +270,15 @@ def parse_grant(rest: str) -> dict[str, Any] | str:
     if scope not in SCOPES:
         return f'Unknown scope "{_clean(scope, 40)}": use session or persistent.'
     grant: dict[str, Any] = {"kind": kind, "pattern": pattern, "scope": scope}
+    if "session" in opts:
+        if scope != "session":
+            return "--session applies to session grants only."
+        if not SESSION_REF.fullmatch(opts["session"]):
+            return (
+                f'Unknown session "{_clean(opts["session"], 40)}": '
+                f"use a session ref (s_ and 12 hex digits) from {cmd('history')}."
+            )
+        grant["session_ref"] = opts["session"]
     if "allows" in opts:
         if kind != "file":
             return "--allows applies to file grants only."
@@ -279,12 +327,22 @@ def _change(
 
 
 def add_grant(
-    state_dir: Path, rest: str, by: dict[str, Any], now: datetime, cmd: Cmd
+    state_dir: Path,
+    rest: str,
+    ref: str | None,
+    by: dict[str, Any],
+    now: datetime,
+    cmd: Cmd,
 ) -> tuple[str, dict[str, Any] | None]:
-    parsed = parse_grant(rest)
+    """`grant ...` from the session `ref` (None: no current session)."""
+    parsed = parse_grant(rest, cmd)
     if isinstance(parsed, str):
-        usage = grant_usage(cmd("grant"))
+        usage = grant_usage(cmd)
         return (f"{parsed}\n{usage}" if parsed else usage), None
+    if parsed["scope"] == "session":
+        parsed.setdefault("session_ref", ref)
+        if parsed["session_ref"] is None:
+            return _no_session(cmd), None
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)}
@@ -297,12 +355,19 @@ def add_grant(
             entry["expires_at"] = _iso(now + span)
         entry["set_by"] = by
         data["grants"].append(entry)
-        details = [entry["scope"]]
+        if entry["scope"] != "session":
+            details = [entry["scope"]]
+        elif entry["session_ref"] == ref:
+            details = ["this session only"]
+        else:
+            details = [f"session {entry['session_ref']} only"]
         if entry.get("allows"):
             details.append(f"allows {','.join(entry['allows'])}")
         if span is not None:
             details.append(f"expires {_show(now + span)}")
         reply = f"Granted {gid}: {entry['kind']} {entry['pattern']} ({', '.join(details)})."
+        if entry["scope"] == "session":
+            reply += " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)."
         return reply, {"op": "grant", "entry": entry}
 
     return _change(state_dir, now, fn)
