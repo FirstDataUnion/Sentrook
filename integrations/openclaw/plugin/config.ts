@@ -45,6 +45,10 @@ export interface GrantConfig {
   allows?: string[];
   scope?: "session" | "persistent";
   granted_at?: string;
+  /** Sent for a session grant set by command: the session it is bound to. */
+  session_ref?: string;
+  /** Sent for a grant set by command with an expiry. */
+  expires_at?: string;
 }
 
 export interface PluginConfig {

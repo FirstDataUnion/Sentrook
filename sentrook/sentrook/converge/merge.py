@@ -1,7 +1,8 @@
 """Merge probe contributions into leaf signals (each signal's merge rule is in the signal registry).
 
 A `Merged` view is computed over all contributions minus an exclusion set (what relief removed), so
-relief can recompute by excluding `(signal, subject)` pairs rather than mutating envelopes.
+relief can recompute by excluding `(signal, subject)` pairs rather than mutating envelopes. A pair
+whose subject is `ANY_SUBJECT` excludes every claim to that signal.
 """
 
 from __future__ import annotations
@@ -11,6 +12,9 @@ from dataclasses import dataclass, field
 from ..enums import ProbeStatus
 from ..probes.base import Contribution, Envelope
 from .registry import SIGNALS, Merge
+
+#: Subject of an exclusion pair that removes a signal's claims whatever their subject.
+ANY_SUBJECT = "*"
 
 
 @dataclass(frozen=True)
@@ -59,7 +63,7 @@ def merge(claims: list[Claim], excluded: set[tuple[str, str | None]] | None = No
         if spec is None:
             merged.dropped.append(claim)
             continue
-        if (claim.signal, claim.subject) in excluded:
+        if (claim.signal, claim.subject) in excluded or (claim.signal, ANY_SUBJECT) in excluded:
             continue
         merged.claims.setdefault(claim.signal, []).append(claim)
     for signal, kept in merged.claims.items():

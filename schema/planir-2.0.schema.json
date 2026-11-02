@@ -95,6 +95,20 @@
           "title": "Allows",
           "type": "array"
         },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Any scope: the grant covers nothing from this time on",
+          "title": "Expires At"
+        },
         "grant_ref": {
           "title": "Grant Ref",
           "type": "string"
@@ -124,6 +138,19 @@
         "scope": {
           "$ref": "#/$defs/GrantScope",
           "default": "session"
+        },
+        "session_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Scope session only: the session the grant was given in. A session grant without one covers no session",
+          "title": "Session Ref"
         }
       },
       "required": [

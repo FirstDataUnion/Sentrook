@@ -197,6 +197,8 @@ REASONS: dict[str, str] = {
     # relief
     "relief.destination_grant": "A grant covers {subject}.",
     "relief.file_grant": "A grant covers access to {subject}.",
+    "relief.provider_grant": "A grant covers the tool provider {subject}.",
+    "relief.tool_grant": "A grant covers running {tool}.",
     "relief.request_named_destination": "You named {subject} as the destination in your request.",
     "relief.known_good_destination": "{subject} is a known good destination.",
     # AIRA: consequence classes (C1 to C10) and extent

@@ -48,7 +48,6 @@ from .entities import (
     extract_call,
     extract_exec,
     extract_mentions,
-    grant_matches,
     is_under,
     normalise_host,
     normalise_path,
@@ -58,6 +57,7 @@ from .entities import (
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
+from .grants import GRANT_KINDS, grant_matches, lapse, path_actions, tool_covers
 from .host_text import owner_words
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
 from .trust import Trust, classify
@@ -203,6 +203,13 @@ class Prepared:
     prior_untrusted: frozenset[str] = frozenset()
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
+    #: What the pending call does to each path a file grant pattern matched: entity id → actions.
+    grant_actions: dict[str, frozenset[str]] = field(default_factory=dict)
+    #: Grants that cover the whole call (a `tool` grant covering every command it runs).
+    call_grants: list[str] = field(default_factory=list)
+    #: Grants that do not apply to this request: grant_ref → `expired`, `unbound_session` or
+    #: `other_session` (`grants.lapse`).
+    grants_lapsed: dict[str, str] = field(default_factory=dict)
     #: Views version per view name (`trim-v1` for `exposure`/`call`, `trim-v2` for the v2 views).
     views_version: dict[str, str] = field(default_factory=dict)
     #: Second-pass redactions over the v2 views.
@@ -767,13 +774,34 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     _mark_request_named(words, table)
 
     grant_hits: dict[str, list[str]] = {}
+    call_grants: list[str] = []
+    grant_actions: dict[str, frozenset[str]] = {}
+    grants_lapsed: dict[str, str] = {}
     for grant in planir.grants:
+        spec = GRANT_KINDS.get(grant.kind)
+        if spec is None:
+            continue
+        why = lapse(grant, planir)
+        if why is not None:
+            grants_lapsed[grant.grant_ref] = why
+            continue
+        allowed = spec.allows(grant)
+        if spec.actions and not spec.entity_kinds:
+            if "exec" in allowed and tool_covers(grant.pattern, pending):
+                call_grants.append(grant.grant_ref)
+            continue
         for ent in list(table):
-            if (
+            if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
-            ) and grant_matches(grant.kind, grant.pattern, ent):
-                ent.add_origin(Origin.GRANT, grant.grant_ref)
-                grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
+            ) or not grant_matches(grant.kind, grant.pattern, ent):
+                continue
+            if spec.actions:
+                if ent.id not in grant_actions:
+                    grant_actions[ent.id] = path_actions(pending, ent, home=home, workspace_root=ws)
+                if not grant_actions[ent.id] <= allowed:
+                    continue
+            ent.add_origin(Origin.GRANT, grant.grant_ref)
+            grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
 
     for pi in inputs:
         content = pi.input.content or ""
@@ -908,6 +936,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         warnings=warns,
         prior_untrusted=prior_untrusted,
         grant_hits=grant_hits,
+        grant_actions=grant_actions,
+        call_grants=call_grants,
+        grants_lapsed=grants_lapsed,
         views_version={name: views.VIEW_VERSIONS[name] for name in built},
         # call-v3 is call-v2's content with a block the probe adds later, so its redactions are
         # call-v2's and are not counted twice.

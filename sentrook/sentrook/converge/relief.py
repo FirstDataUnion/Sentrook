@@ -1,8 +1,14 @@
 """Relief, applied after the first risk calculation.
 
+Grant relief follows the kinds table in `prepare.grants`, for grants live in this request (scope,
+expiry) that cover what the call does (`allows`):
+
 - A matched **destination** grant removes that subject's `distrust` and `untrusted_origin` contributions.
-- A matched **file** grant removes that subject's `sensitivity` contribution for the granted operation,
-  on the current call only, and never when the call has an off-host data destination.
+- A matched **file** grant removes that subject's `sensitivity` contribution, on the current call only,
+  and never when the call has an off-host data destination.
+- A matched **provider** grant removes that MCP server's or plugin's `distrust` contribution.
+- A **tool** grant covering every command the call runs removes the call's `self_modification`
+  contributions.
 - **Request-named destination relief**: on an owner-sender turn, a destination or
   recipient the owner named verbatim in the request is treated as a matched destination grant, for
   sends only, never for code sources or installs.
@@ -18,23 +24,19 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from ..planir.models import SenderRelation, ToolKind
+from ..planir.models import SenderRelation
 from ..prepare import Prepared
 from ..prepare.entities import Origin, Role
+from ..prepare.grants import GRANT_KINDS
+from .merge import ANY_SUBJECT
 from .params import ConvergenceParams
-
-_OP_FOR_KIND: dict[ToolKind, str] = {
-    ToolKind.FILE_READ: "read",
-    ToolKind.FILE_WRITE: "write",
-    ToolKind.FILE_EDIT: "edit",
-    ToolKind.MEMORY_WRITE: "write",
-}
 
 
 @dataclass(frozen=True)
 class Relief:
     grant_ref: str | None
-    subject: str
+    #: The relieved entity; None for relief on the whole call.
+    subject: str | None
     effect: str
     reason: str
     excluded: tuple[tuple[str, str | None], ...]
@@ -48,13 +50,6 @@ def _has_off_host_destination(prepared: Prepared) -> bool:
     )
 
 
-def _exec_op(prepared: Prepared) -> str:
-    kind = prepared.pending.tool_kind
-    if kind in _OP_FOR_KIND:
-        return _OP_FOR_KIND[kind]
-    return "exec" if kind is ToolKind.EXEC else "read"
-
-
 def compute_relief(
     prepared: Prepared, params: ConvergenceParams, known_good: Iterable[str] = ()
 ) -> list[Relief]:
@@ -62,48 +57,44 @@ def compute_relief(
     out: list[Relief] = []
     grants = {g.grant_ref: g for g in prepared.planir.grants}
     off_host = _has_off_host_destination(prepared)
-    op = _exec_op(prepared)
 
     for grant_ref, entity_ids in prepared.grant_hits.items():
         grant = grants.get(grant_ref)
-        if grant is None:
+        spec = GRANT_KINDS.get(grant.kind) if grant is not None else None
+        if spec is None or spec.reason is None or not spec.relieves:
             continue
+        if spec.local_only and off_host:
+            continue  # a grant sanctions access, never sending the data off the host
         for eid in entity_ids:
-            ent = prepared.entities.by_id(eid)
-            if ent is None:
+            if prepared.entities.by_id(eid) is None:
                 continue
-            if grant.kind == "destination":
-                out.append(
-                    Relief(
-                        grant_ref,
-                        eid,
-                        "distrust+untrusted_origin",
-                        "relief.destination_grant",
-                        (("suspicion.distrust", eid), ("suspicion.untrusted_origin", eid)),
-                    )
+            effect = "+".join(s.split(".", 1)[1] for s in spec.relieves)
+            if spec.actions:
+                effect += ":" + "+".join(sorted(prepared.grant_actions.get(eid, ())))
+            out.append(
+                Relief(
+                    grant_ref,
+                    eid,
+                    effect,
+                    spec.reason,
+                    tuple((s, eid) for s in spec.relieves),
                 )
-            elif grant.kind == "file":
-                allows = {a.lower() for a in grant.allows} or {"read"}
-                if op in allows and not off_host:
-                    out.append(
-                        Relief(
-                            grant_ref,
-                            eid,
-                            f"sensitivity:{op}",
-                            "relief.file_grant",
-                            (("consequence.sensitivity", eid),),
-                        )
-                    )
-            elif grant.kind == "provider":
-                out.append(
-                    Relief(
-                        grant_ref,
-                        eid,
-                        "distrust",
-                        "relief.destination_grant",
-                        (("suspicion.distrust", eid),),
-                    )
-                )
+            )
+
+    for grant_ref in prepared.call_grants:
+        grant = grants.get(grant_ref)
+        spec = GRANT_KINDS.get(grant.kind) if grant is not None else None
+        if spec is None or spec.reason is None or not spec.relieves_call:
+            continue
+        out.append(
+            Relief(
+                grant_ref,
+                None,
+                "+".join(s.split(".", 1)[1] for s in spec.relieves_call),
+                spec.reason,
+                tuple((s, ANY_SUBJECT) for s in spec.relieves_call),
+            )
+        )
 
     if params.request_named_relief:
         owner = prepared.planir.trigger.sender.relation is SenderRelation.OWNER

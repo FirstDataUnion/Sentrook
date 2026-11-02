@@ -114,11 +114,23 @@ def test_a_grant_round_trips_through_the_file_and_into_scans(term):
             "pattern": "#ops",
             "scope": "session",
             "granted_at": g["granted_at"],
+            "session_ref": S1,
         }
     ]
     assert slash(term, f"revoke {g['id']}") == f"Revoked {g['id']}: destination #ops."
     assert stored(term)["grants"] == []
     assert scan_grants(term, "post to #ops") == []
+
+
+def test_scans_send_the_expiry_and_bind_session_grants(term):
+    slash(term, "grant file /srv/reports/* --persistent --allows write --expires 12h")
+    slash(term, "grant destination #ops")
+    persistent, session = stored(term)["grants"]
+    sent = scan_grants(term, "cp a /srv/reports/today.md && post to #ops")
+    assert [(g["pattern"], g.get("expires_at"), g.get("session_ref")) for g in sent] == [
+        ("/srv/reports/*", persistent["expires_at"], None),
+        ("#ops", None, session["session_ref"]),
+    ]
 
 
 def test_options_scope_allows_and_expiry(term):

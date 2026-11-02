@@ -13,7 +13,9 @@ names (a `session_ref` as `history` shows it). It stores that `session_ref`, the
 of the session sends, and is sent only on scans of that session: not in cron jobs, subagents or
 other chats. A session grant with no session (the command line without `--session`) is refused, and
 one stored without a session is never sent. Persistent grants and the plugin settings' grants are
-sent on every scan. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed on as typed:
+sent on every scan. A scan sends a session grant with its `session_ref` and a grant with an expiry
+with its `expires_at`, and Sentrook checks both; a settings grant with scope session has no session,
+so Sentrook gives it no weight. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed on as typed:
 Sentrook itself refuses patterns too broad to relieve on.
 
 Every change is written to the traffic log as a `grants` record (none when the owner has turned the
@@ -106,11 +108,15 @@ def effective(
     out += [
         {"kind": "destination", "pattern": p, "scope": "persistent"} for p in cfg.channel_bindings
     ]
-    out += [
-        g
-        for raw, g in _file_grants(data)
-        if not expired(raw, now) and (g["scope"] != "session" or _bound(raw) == session_ref)
-    ]
+    for raw, g in _file_grants(data):
+        if expired(raw, now) or (g["scope"] == "session" and _bound(raw) != session_ref):
+            continue
+        if g["scope"] == "session":
+            g["session_ref"] = session_ref
+        at = read_time(raw.get("expires_at"))
+        if at is not None:
+            g["expires_at"] = _iso(at)
+        out.append(g)
     for b in _file_bindings(data):
         g = {"kind": "destination", "pattern": b["pattern"].strip(), "scope": "persistent"}
         if isinstance(b.get("granted_at"), str) and b["granted_at"].strip():

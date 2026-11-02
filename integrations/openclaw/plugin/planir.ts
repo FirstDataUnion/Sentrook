@@ -279,6 +279,8 @@ export function relevantGrants(
       ...(g.allows ? { allows: g.allows } : {}),
       scope: g.scope ?? "persistent",
       ...(g.granted_at ? { granted_at: g.granted_at } : {}),
+      ...(g.session_ref ? { session_ref: g.session_ref } : {}),
+      ...(g.expires_at ? { expires_at: g.expires_at } : {}),
     });
   });
   return out;

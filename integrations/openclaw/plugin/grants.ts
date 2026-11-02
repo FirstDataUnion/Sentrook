@@ -14,7 +14,9 @@
  * the session sends, and is sent only on scans of that session: not in cron jobs, subagents or other
  * chats. A session grant with no session (the command line without `--session`) is refused, and one
  * stored without a session is never sent. Persistent grants and the plugin config's grants are sent on
- * every scan. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed
+ * every scan. A scan sends a session grant with its `session_ref` and a grant with an expiry with its
+ * `expires_at`, and Sentrook checks both; a config grant with scope session has no session, so Sentrook
+ * gives it no weight. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed
  * on as typed: Sentrook itself refuses patterns too broad to relieve on.
  *
  * Every change is written to the traffic log as a `grants` record (none when the owner has turned the
@@ -106,7 +108,11 @@ export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date,
   const out: GrantConfig[] = cfg.grants.map((g) => ({ ...g }));
   for (const pattern of cfg.channelBindings) out.push({ kind: "destination", pattern, scope: "persistent" });
   for (const [raw, g] of fileGrants(data)) {
-    if (!expired(raw, now) && (g.scope !== "session" || bound(raw) === sessionRef)) out.push(g);
+    if (expired(raw, now) || (g.scope === "session" && bound(raw) !== sessionRef)) continue;
+    if (g.scope === "session") g.session_ref = sessionRef;
+    const at = readTime(raw.expires_at);
+    if (at !== null) g.expires_at = iso(at);
+    out.push(g);
   }
   for (const b of fileBindings(data)) {
     const g: GrantConfig = { kind: "destination", pattern: b.pattern.trim(), scope: "persistent" };

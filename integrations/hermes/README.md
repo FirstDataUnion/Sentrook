@@ -96,8 +96,8 @@ work stops asking for approval:
 
 - **Channel bindings**: the channels this deployment normally delivers to, such as the chat your daily report goes
   to. A send to a bound channel is not treated as an unfamiliar destination.
-- **Grants**: hosts, email domains or channels the agent may send to (`destination`), and files or folders it may
-  read or write (`file`).
+- **Grants**: hosts, email domains or channels the agent may send to (`destination`), files or folders it may
+  read, write or delete (`file`), and the MCP servers or plugins it may use (`provider`).
 
 Neither ever lowers a scanner floor (reading your SSH keys and sending them somewhere is blocked whatever you grant),
 and a file grant never covers a call that also sends data off the machine. You don't need a grant to send to a destination
@@ -141,16 +141,21 @@ session with `--session <ref>`, taking the ref from the `session` column of `/se
 | Keep notes in a folder | `/sentrook grant file /home/you/notes/* --allows read,write --persistent` |
 | Write a nightly report | `/sentrook grant file /srv/reports/* --allows write --persistent` |
 | Work on a client's site for the afternoon | `/sentrook grant destination *.client.example --expires 4h` |
+| Let it clear out a scratch folder | `/sentrook grant file /home/you/scratch/ --allows delete --persistent` |
+| Use your team's MCP servers | `/sentrook grant provider npm:@yourteam/ --persistent` |
 
 A file grant can use the full path or `~` for your home folder (`~/notes/*`). A `*` matches anything, including `/`.
-Patterns that would match everything (`*`, `*.*`) are ignored.
+A pattern ending in `/` covers that folder and everything in it. `--allows` must name everything the call does to
+the file: deleting it (`rm`, or moving it away) needs `delete`. Without `--allows` a file grant allows reading only.
+A provider pattern is the server's package as `/sentrook why` shows it, for example `npm:@yourteam/notes-mcp@1.4.0`;
+ending it in `/` covers the whole scope. Patterns that would match everything (`*`, `*.*`, `/`) are ignored.
 
 `/sentrook grants` lists every grant in force with its id; `/sentrook revoke <id>` removes one set by command.
 
 ### Or keep them in config
 
 Grants and bindings can also live in `config.yaml`, where the commands show them as read-only. Grants there last
-until you remove them:
+until you remove them (a config grant with scope `session` names no session, so Sentrook does not act on it):
 
 ```yaml
 plugins:
