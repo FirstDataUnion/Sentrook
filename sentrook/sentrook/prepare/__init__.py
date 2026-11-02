@@ -784,6 +784,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     call_grants: list[str] = []
     grant_actions: dict[str, frozenset[str]] = {}
     grants_lapsed: dict[str, str] = {}
+    grant_reach: dict[str, frozenset[str]] = {}
     off_host = sends_off_host(pending, table.pending())
     for grant in planir.grants:
         spec = GRANT_KINDS.get(grant.kind)
@@ -805,9 +806,20 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 continue
             if spec.actions:
                 if ent.id not in grant_actions:
-                    grant_actions[ent.id] = path_actions(pending, ent, home=home, workspace_root=ws)
+                    grant_actions[ent.id], grant_reach[ent.id] = path_actions(
+                        pending, ent, home=home, workspace_root=ws
+                    )
                 if not grant_actions[ent.id] <= allowed:
                     continue
+                if not all(
+                    grant_matches(
+                        grant.kind,
+                        grant.pattern,
+                        Entity("", EntityKind.PATH, g, display_path(g, home)),
+                    )
+                    for g in grant_reach[ent.id]
+                ):
+                    continue  # a wildcard in the call reaches beyond what the grant covers
             ent.add_origin(Origin.GRANT, grant.grant_ref)
             grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
 
