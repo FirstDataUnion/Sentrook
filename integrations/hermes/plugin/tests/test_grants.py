@@ -233,8 +233,10 @@ def test_config_scope_is_strict():
 
 # ---- config grants: a session scope names no session, so they are never sent -------------------------
 
-#: Two config grants that never apply (scope session, a scope typo) and two that apply everywhere.
+#: An entry the parser drops (no pattern), two config grants that never apply (scope session, a scope
+#: typo) and two that apply everywhere. The dropped entry takes no cfg-N.
 UNSENT_CONFIG = [
+    {"kind": "destination", "scope": "session"},
     {"kind": "destination", "pattern": "#ops", "scope": "session"},
     {"kind": "destination", "pattern": "#standup", "scope": "persistant"},
     {"kind": "destination", "pattern": "#daily"},
@@ -273,7 +275,7 @@ def test_listing_status_and_verify_flag_config_grants_never_sent(term, monkeypat
     report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
     # Reported, not failed: a grant that is never sent only makes Sentrook stricter.
     assert report["config grants"] == (True, f"4 in config; never sent: {UNSENT_SUMMARY}")
-    term.ctx.settings["grants"] = UNSENT_CONFIG[2:]
+    term.ctx.settings["grants"] = UNSENT_CONFIG[3:]
     assert "grants: 2 in config, 0 by command" in slash(term, "status").splitlines()
     report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
     assert report["config grants"] == (True, "2 in config")
@@ -286,7 +288,7 @@ def test_startup_warns_about_config_grants_never_sent(term, caplog):
     [warning] = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert UNSENT_SUMMARY in warning and "/sentrook grants" in warning
     caplog.clear()
-    term.ctx.settings["grants"] = UNSENT_CONFIG[2:]
+    term.ctx.settings["grants"] = UNSENT_CONFIG[3:]
     with caplog.at_level("WARNING", logger=plugin.logger.name):
         plugin.register(term.ctx)
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []

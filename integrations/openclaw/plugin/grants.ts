@@ -188,7 +188,6 @@ export function formatBindings(cfg: PluginConfig, data: GrantsFile | null): stri
   return lines.join("\n");
 }
 
-/** The `grants:` and `channel bindings:` lines of status. */
 /** The config grants that are never sent and why, e.g. `cfg-2 (no session)`; "" when none. */
 export function unsentSummary(cfg: PluginConfig): string {
   return Object.entries(cfg.unsentGrants)
@@ -196,6 +195,7 @@ export function unsentSummary(cfg: PluginConfig): string {
     .join(", ");
 }
 
+/** The `grants:` and `channel bindings:` lines of status. */
 export function counts(cfg: PluginConfig, data: GrantsFile | null): [string, string] {
   const unsent = Object.keys(cfg.unsentGrants).length;
   return [

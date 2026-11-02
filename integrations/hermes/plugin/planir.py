@@ -210,7 +210,8 @@ def build_planir(
 ) -> dict[str, Any]:
     """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
 
-    `grants`: every grant in force (`grants.effective`); the config grants alone when not given."""
+    `grants`: every grant in force (`grants.effective`); the persistent config grants alone when not
+    given (a config grant has no session, so a session one is never sent)."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -316,7 +317,7 @@ def build_planir(
             "batch": {"siblings": siblings},
         },
         "grants": relevant_grants(
-            cfg.grants if grants is None else grants,
+            [g for g in cfg.grants if g["scope"] == "persistent"] if grants is None else grants,
             json.dumps(raw_args, default=str, ensure_ascii=False),
             identity=prv["identity"],
             home=str(Path.home()),

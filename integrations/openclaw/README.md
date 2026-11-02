@@ -175,8 +175,8 @@ ending it in `/` covers the whole scope. Patterns that would match everything (`
 ### Or keep them in config
 
 Grants and bindings can also live in `openclaw.json`, where the commands show them as read-only. Grants there apply
-in every session until you remove them, so they need no `scope`. A config grant with scope `session` has no session
-to apply in and is never sent; `/sentrook-grants`, `/sentrook status` and `openclaw sentrook verify` flag it. Use
+in every session until you remove them, so they need no `scope`. A config grant with scope `session`, or with a scope
+Sentrook does not know, has no session to apply in and is never sent; `/sentrook-grants`, `/sentrook status` and `openclaw sentrook verify` flag it. Use
 `/sentrook-grant` for a grant in one session.
 
 ```json

@@ -534,8 +534,12 @@ test("a session grant relieves only in its own session", async () => {
 
 // ---- config grants: a session scope names no session, so they are never sent ---------------------------
 
-/** Two config grants that never apply (scope session, a scope typo) and two that apply everywhere. */
+/**
+ * An entry the parser drops (no pattern), two config grants that never apply (scope session, a scope
+ * typo) and two that apply everywhere. The dropped entry takes no cfg-N.
+ */
 const UNSENT_CONFIG = [
+  { kind: "destination", scope: "session" },
   { kind: "destination", pattern: "#ops", scope: "session" },
   { kind: "destination", pattern: "#standup", scope: "persistant" },
   { kind: "destination", pattern: "#daily" },
@@ -589,14 +593,14 @@ test("listing, status and verify flag config grants never sent", async () => {
     ok: true,
     detail: `4 in config; never sent: ${UNSENT_SUMMARY}`,
   });
-  assert.deepEqual(await verify({ grants: UNSENT_CONFIG.slice(2) }), { name: "config grants", ok: true, detail: "2 in config" });
+  assert.deepEqual(await verify({ grants: UNSENT_CONFIG.slice(3) }), { name: "config grants", ok: true, detail: "2 in config" });
 });
 
 test("startup warns about config grants never sent", async () => {
   const [warning, ...more] = (await registered({ grants: UNSENT_CONFIG })).warnings;
   assert.deepEqual(more, []);
   assert.ok(warning.includes(UNSENT_SUMMARY) && warning.includes("/sentrook-grants"), warning);
-  assert.deepEqual((await registered({ grants: UNSENT_CONFIG.slice(2) })).warnings, []);
+  assert.deepEqual((await registered({ grants: UNSENT_CONFIG.slice(3) })).warnings, []);
 });
 
 test("the command and the scan name a session alike", async () => {
