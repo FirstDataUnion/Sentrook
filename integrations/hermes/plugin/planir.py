@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import platform as _platform
+import re
 import time
 import uuid
 from pathlib import Path
@@ -139,25 +140,48 @@ def _pieces_in(pattern: str, text: str) -> bool:
     return True
 
 
+#: The arguments the scanner reads a command's working directory from, in its order.
+_CWD_KEYS = ("cwd", "dir", "working_directory", "workdir")
+#: A path that starts with `./`, where the scanner finds one.
+_DOT_PATH = re.compile(r"(?<![\w.:-])\./")
+
+
+def call_cwd(args: Any) -> str | None:
+    """The working directory the call names for itself, if any."""
+    if isinstance(args, dict):
+        for k in _CWD_KEYS:
+            if isinstance(args.get(k), str) and args[k]:
+                return args[k]
+    return None
+
+
 def relevant_grants(
     grants: list[dict[str, Any]],
     args_text: str,
     *,
     identity: str | None = None,
     home: str | None = None,
+    workspace: str | None = None,
+    cwd: str | None = None,
 ) -> list[dict[str, Any]]:
     """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
     the owner's other grants out of the request, so it errs towards sending. A provider grant is also
-    matched against the call's provider identity, and paths under home match in either form (`~/…` or full)."""
+    matched against the call's provider identity. Paths are read the way the scanner resolves them: under
+    home in any form (`~/…`, `$HOME/…` or full), and `./…` against the call's `cwd` or the workspace."""
     text = args_text.lower()
+    texts = [text] + [
+        _DOT_PATH.sub(lambda _, d=d: d.rstrip("/").lower() + "/", text)
+        for d in (cwd, workspace)
+        if d
+    ]
     pats = [g["pattern"].lower() for g in grants]
     if home:
         root = home.rstrip("/").lower()
-        text = text.replace("~/", root + "/")
+        texts = [t.replace("~/", root + "/").replace("$home/", root + "/") for t in texts]
         pats = [root + p[1:] if p.startswith("~/") else p for p in pats]
     out = []
     for i, (g, pat) in enumerate(zip(grants, pats, strict=True)):
-        hay = [text]
+        hay = list(texts)
         if g["kind"] == "provider" and identity:
             hay.append(identity.lower())
         if any(_pieces_in(pat, h) for h in hay):
@@ -298,6 +322,8 @@ def build_planir(
             json.dumps(raw_args, default=str, ensure_ascii=False),
             identity=prv["identity"],
             home=str(Path.home()),
+            workspace=os.getcwd(),
+            cwd=call_cwd(raw_args),
         ),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }

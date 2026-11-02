@@ -254,26 +254,46 @@ function piecesIn(pattern: string, text: string): boolean {
   return true;
 }
 
+/** The arguments the scanner reads a command's working directory from, in its order. */
+const CWD_KEYS = ["cwd", "dir", "working_directory", "workdir"];
+/** A path that starts with `./`, where the scanner finds one. */
+const DOT_PATH = /(?<![\p{L}\p{N}_.:-])\.\//gu;
+
+/** The working directory the call names for itself, if any. */
+export function callCwd(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  for (const k of CWD_KEYS) {
+    const v = (args as Record<string, unknown>)[k];
+    if (typeof v === "string" && v) return v;
+  }
+  return null;
+}
+
 /**
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
- * call's provider identity, and paths under home match in either form (`~/…` or full).
+ * call's provider identity. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
+ * `$HOME/…` or full), and `./…` against the call's `cwd` or the workspace.
  */
 export function relevantGrants(
   grants: GrantConfig[],
   argsText: string,
-  opts: { identity?: string | null; home?: string } = {},
+  opts: { identity?: string | null; home?: string; workspace?: string | null; cwd?: string | null } = {},
 ): Array<Record<string, unknown>> {
-  let text = argsText.toLowerCase();
+  const text = argsText.toLowerCase();
+  let texts = [text];
+  for (const d of [opts.cwd, opts.workspace]) {
+    if (d) texts.push(text.replace(DOT_PATH, () => `${d.replace(/\/+$/, "").toLowerCase()}/`));
+  }
   let pats = grants.map((g) => g.pattern.toLowerCase());
   if (opts.home) {
     const root = opts.home.replace(/\/+$/, "").toLowerCase();
-    text = text.replaceAll("~/", `${root}/`);
+    texts = texts.map((t) => t.replaceAll("~/", `${root}/`).replaceAll("$home/", `${root}/`));
     pats = pats.map((p) => (p.startsWith("~/") ? root + p.slice(1) : p));
   }
   const out: Array<Record<string, unknown>> = [];
   grants.forEach((g, i) => {
-    const hay = [text];
+    const hay = [...texts];
     if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
     if (!hay.some((h) => piecesIn(pats[i]!, h))) return;
     out.push({
@@ -428,6 +448,8 @@ export function buildPlanir(b: BuildInput): Built {
     grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {}), {
       identity: provider.identity,
       home: homedir(),
+      workspace: run.workspaceDir,
+      cwd: callCwd(event.params),
     }),
     options: { packs: cfg.packs, redaction: redactor.level },
   };
