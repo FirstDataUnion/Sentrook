@@ -802,12 +802,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for ent in list(table):
             if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
-            ) or not grant_matches(grant.kind, grant.pattern, ent):
+            ) or not grant_matches(grant.kind, grant.pattern, ent, host_os=planir.host.os):
                 continue
             if spec.actions:
                 if ent.id not in grant_actions:
                     grant_actions[ent.id], grant_reach[ent.id] = path_actions(
-                        pending, ent, home=home, workspace_root=ws
+                        pending, ent, home=home, workspace_root=ws, host_os=planir.host.os
                     )
                 if not grant_actions[ent.id] <= allowed:
                     continue
@@ -816,6 +816,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                         grant.kind,
                         grant.pattern,
                         Entity("", EntityKind.PATH, g, display_path(g, home)),
+                        host_os=planir.host.os,
                     )
                     for g in grant_reach[ent.id]
                 ):

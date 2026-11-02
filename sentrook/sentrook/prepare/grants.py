@@ -18,7 +18,8 @@ Matching, by kind:
 - `destination`: a host, recipient or channel against a glob; `*.example.com` also covers
   `example.com`, and a recipient is matched by its domain when the pattern has no `@`.
 - `file`: a path against a glob (`*` matches `/` too); a pattern ending in `/` covers that directory
-  and everything under it.
+  and everything under it. Letter case follows the host filesystem's default: it counts on Linux
+  (and when the host OS is unknown), not on macOS or Windows.
 - `provider`: an MCP server or plugin identity against a glob; a pattern ending in `/` covers the scope.
 - `tool`: the whole call, when every command in it is covered: a pattern without spaces against the
   command name (directory stripped), one with spaces against the whole command.
@@ -34,7 +35,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from ..planir.canonical import CanonicalCall
-from ..planir.models import Grant, GrantScope, PlanIR, ToolKind
+from ..planir.models import OS, Grant, GrantScope, PlanIR, ToolKind
 from .entities import (
     _ENV_ASSIGN_RE,
     _SEGMENT_SPLIT_RE,
@@ -214,7 +215,12 @@ def _command_sends(command: str, depth: int) -> bool:
 # --------------------------------------------------------------------------- matchers
 
 
-def _destination(pat: str, entity: Entity) -> bool:
+#: Host systems whose filesystems ignore letter case by default.
+_CASE_FOLDING_OS = frozenset({OS.MACOS, OS.WINDOWS})
+
+
+def _destination(pat: str, entity: Entity, host_os: OS) -> bool:
+    pat = pat.lower()
     value = entity.value.lower()
     if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
         value = value.split("@", 1)[1]
@@ -223,37 +229,41 @@ def _destination(pat: str, entity: Entity) -> bool:
     return pat.startswith("*.") and value == pat[2:]
 
 
-def _file(pat: str, entity: Entity) -> bool:
+def _file(pat: str, entity: Entity, host_os: OS) -> bool:
+    value, display = entity.value, entity.display
+    if host_os in _CASE_FOLDING_OS:
+        pat, value, display = pat.lower(), value.lower(), display.lower()
     if pat.endswith("/"):
         root = pat.rstrip("/")
-        return is_under(entity.value, root) or is_under(entity.display, root)
-    return fnmatch.fnmatch(entity.value, pat) or fnmatch.fnmatch(entity.display, pat)
+        return is_under(value, root) or is_under(display, root)
+    return fnmatch.fnmatchcase(value, pat) or fnmatch.fnmatchcase(display, pat)
 
 
-def _provider(pat: str, entity: Entity) -> bool:
+def _provider(pat: str, entity: Entity, host_os: OS) -> bool:
+    pat = pat.lower()
     value = entity.value.lower()
     if pat.endswith("/"):
         return value.startswith(pat)
     return fnmatch.fnmatch(value, pat)
 
 
-_ENTITY_MATCHERS: dict[str, Callable[[str, Entity], bool]] = {
+_ENTITY_MATCHERS: dict[str, Callable[[str, Entity, OS], bool]] = {
     "destination": _destination,
     "file": _file,
     "provider": _provider,
 }
 
 
-def grant_matches(kind: str, pattern: str, entity: Entity) -> bool:
-    """Does a grant of `kind` with `pattern` cover `entity`, before scope, expiry and `allows`?
-    Over-broad patterns never match."""
+def grant_matches(kind: str, pattern: str, entity: Entity, *, host_os: OS = OS.UNKNOWN) -> bool:
+    """Does a grant of `kind` with `pattern` cover `entity` on a `host_os` host, before scope, expiry
+    and `allows`? Over-broad patterns never match."""
     spec = GRANT_KINDS.get(kind)
     matcher = _ENTITY_MATCHERS.get(kind)
     if spec is None or matcher is None or entity.kind not in spec.entity_kinds:
         return False
     if over_broad(pattern):
         return False
-    return matcher(pattern.strip().lower(), entity)
+    return matcher(pattern.strip(), entity, OS(host_os))
 
 
 #: Commands that only move the shell around; a tool grant need not cover them.
@@ -323,7 +333,12 @@ _UNKNOWN = frozenset({"write", "delete"})
 
 
 def path_actions(
-    call: CanonicalCall, entity: Entity, *, home: str | None, workspace_root: str | None
+    call: CanonicalCall,
+    entity: Entity,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    host_os: OS = OS.UNKNOWN,
 ) -> tuple[frozenset[str], frozenset[str]]:
     """What `call` does to the path `entity` (read, write, edit, delete, exec: all of them), and the
     wildcard arguments that reach it, as absolute globs: a grant must cover those too.
@@ -334,14 +349,16 @@ def path_actions(
     Reading: `cat`, `grep` and the other readers. A command the scanner does not know (an
     interpreter, `git`, `tar`) may write and delete what it names. A wildcard argument counts for
     every path it could reach, and `sh -c '…'` is read through. Running it, or the call's role for it
-    (a write target), adds to what the command shows; a path the command shows nothing for is read."""
+    (a write target), adds to what the command shows; a path the command shows nothing for is read.
+    Letter case counts as it does for file grants on `host_os`."""
     if call.tool_kind in _OP_FOR_KIND:
         return frozenset({_OP_FOR_KIND[call.tool_kind]}), frozenset()
     found: set[str] = set()
     reach: set[str] = set()
     if call.tool_kind is ToolKind.EXEC:
         cwd = call.get("cwd") or workspace_root or "/"
-        found = _exec_actions(call.command or "", entity, cwd, home, workspace_root, 0, reach)
+        fold = OS(host_os) in _CASE_FOLDING_OS
+        found = _exec_actions(call.command or "", entity, cwd, home, workspace_root, 0, reach, fold)
     if Role.EXECUTABLE in entity.roles:
         found.add("exec")
     if Role.DATA_DESTINATION in entity.roles and not found & {"write", "delete"}:
@@ -357,12 +374,16 @@ def _exec_actions(
     ws: str | None,
     depth: int,
     reach: set[str],
+    fold: bool,
 ) -> set[str]:
     def here(tok: str) -> bool:
         norm, wildcard = resolve_token(tok, cwd, home=home, workspace_root=ws)
+        path = entity.value
+        if fold:
+            norm, path = norm.lower(), path.lower()
         if not wildcard:
-            return norm == entity.value
-        if norm == entity.value or is_under(entity.value, norm) or is_under(norm, entity.value):
+            return norm == path
+        if norm == path or is_under(path, norm) or is_under(norm, path):
             reach.add(_glob_path(tok.strip("'\""), cwd, home, ws))
             return True
         return False
@@ -395,7 +416,7 @@ def _exec_actions(
                 if tok.startswith("-") and not tok.startswith("--") and "c" in tok:
                     if depth < 3:
                         found |= _exec_actions(
-                            flags[i + 1], entity, cwd, home, ws, depth + 1, reach
+                            flags[i + 1], entity, cwd, home, ws, depth + 1, reach, fold
                         )
                     else:
                         found |= _UNKNOWN
