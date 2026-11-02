@@ -25,7 +25,7 @@ from sentrook.probes.oracle import EntityOracleProbe, verdicts_for_view
 from sentrook.scan import Scanner, ScannerConfig
 from sentrook.serve.config import ServeConfig
 
-# The rule's table. Rookery's oracle (rookery2/tests/test_near_miss.py) carries the same rows: keep the
+# The rule's table. Rookery's oracle carries the same rows: keep the
 # two in step.
 # (kind, query, known_good entries, expected (entry, how) or None)
 NEAR_MISS_CASES = [
