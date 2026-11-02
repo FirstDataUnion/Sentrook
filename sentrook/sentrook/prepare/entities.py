@@ -924,81 +924,228 @@ _PUBLISH_COMMANDS: dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]
     "cargo": ((("publish",),), ("--index",)),
     "dotnet": ((("nuget", "push"),), ("--source", "-s")),
 }
-#: Environment variables that name the target instead of an option.
-_PUBLISH_ENV = {"twine": ("TWINE_REPOSITORY_URL",), "uv": ("UV_PUBLISH_URL",)}
+#: Environment variables that name the target instead of an option (matched without case).
+_PUBLISH_ENV = {
+    "npm": ("npm_config_registry",),
+    "pnpm": ("npm_config_registry",),
+    "yarn": ("npm_config_registry", "yarn_npm_registry_server"),
+    "twine": ("twine_repository_url",),
+    "uv": ("uv_publish_url",),
+    "gem": ("rubygems_host",),
+}
 #: Commands that push an image or chart; the target is the registry the reference names.
 _PUSH_COMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
     "docker": (("push",), ("image", "push")),
     "podman": (("push",), ("image", "push")),
     "helm": (("push",),),
 }
-_PYTHON_HEADS = frozenset({"python", "python3"})
+#: `docker build --push` and `docker buildx build --push` publish the image they tag.
+_BUILD_PUSH_VERBS = (("buildx", "build"), ("build",), ("image", "build"))
+#: Options whose value is a separate word (global ones before the verb, and push options), per head.
+_VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "npm": frozenset(
+        {"-w", "--workspace", "--userconfig", "--tag", "--cache", "--prefix", "--otp", "--access"}
+    ),
+    "pnpm": frozenset({"-C", "--dir", "--filter", "-F", "--tag", "--otp", "--access"}),
+    "yarn": frozenset({"--cwd", "--tag", "--otp", "--access"}),
+    "twine": frozenset(
+        {"-r", "--repository", "-u", "--username", "-p", "--password", "--config-file", "--cert"}
+    ),
+    "uv": frozenset({"--directory", "--project", "--index", "--username", "--password", "--token"}),
+    "gem": frozenset({"-k", "--key", "--otp", "-p", "--http-proxy"}),
+    "cargo": frozenset({"--registry", "--token", "-p", "--package", "--manifest-path", "--target"}),
+    "dotnet": frozenset(
+        {"-k", "--api-key", "-ss", "--symbol-source", "-sk", "--symbol-api-key", "-t", "--timeout"}
+    ),
+    "docker": frozenset(
+        {
+            "-H",
+            "--host",
+            "--context",
+            "-c",
+            "--config",
+            "-l",
+            "--log-level",
+            "--platform",
+            "-t",
+            "--tag",
+            "-f",
+            "--file",
+            "--build-arg",
+            "--target",
+            "--output",
+            "-o",
+            "--builder",
+            "--cache-from",
+            "--cache-to",
+            "--label",
+            "--secret",
+            "--ssh",
+            "--progress",
+            "--iidfile",
+            "--metadata-file",
+        }
+    ),
+    "podman": frozenset(
+        {
+            "--connection",
+            "-c",
+            "--url",
+            "--identity",
+            "--authfile",
+            "--cert-dir",
+            "--creds",
+            "--digestfile",
+            "--format",
+            "-f",
+            "--sign-by",
+            "--platform",
+            "--compression-format",
+        }
+    ),
+    "helm": frozenset(
+        {
+            "--kube-context",
+            "-n",
+            "--namespace",
+            "--registry-config",
+            "--ca-file",
+            "--cert-file",
+            "--key-file",
+            "--username",
+            "--password",
+            "--repository-cache",
+            "--repository-config",
+        }
+    ),
+}
+_PUBLISH_HINT = re.compile(r"\b(?:npm|pnpm|yarn|twine|uv|gem|cargo|dotnet|docker|podman|helm)\b")
+_EXPORT_RE = re.compile(r"\bexport\s+([A-Za-z_]\w*)=(\S+)")
+_PYTHON_HEAD_RE = re.compile(r"python(?:\d+(?:\.\d+)?)?")
+#: A registry name: a dotted hostname, `localhost` or a bracketed IPv6 address, with an optional port.
+_REGISTRY_RE = re.compile(
+    r"(?:(?:[a-z0-9-]{1,63}\.)+[a-z][a-z0-9-]{1,23}|localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\])(?::\d{1,5})?",
+    re.IGNORECASE,
+)
 
 
 def _target_host(value: str) -> str | None:
-    """The host a publish target names: a URL (`sparse+https://…` too) or a bare `host[:port][/path]`."""
+    """The host a publish target names: a URL (`sparse+https://…` too) or a bare `host[:port][/path]`;
+    None for anything else (a repository name, a local feed directory)."""
     value = re.sub(r"^[a-z]+\+(?=[a-z]+://)", "", value.strip().strip("'\""))
     if "://" in value:
         return host_of_url(value)
-    head = value.split("/", 1)[0]
-    return normalise_host(head) if "." in head or head.startswith("localhost") else None
+    head = value.split("/", 1)[0].rsplit("@", 1)[-1]
+    if not _REGISTRY_RE.fullmatch(head) or head.rsplit(".", 1)[-1].lower() in _FILE_EXTENSIONS:
+        return None
+    return normalise_host(head).strip("[]")
 
 
 def _image_registry(ref: str) -> str | None:
     """The registry an image reference names (`reg.example.test:5000/team/app:1` → `reg.example.test`),
-    or None when it names none (`app:1`, `someuser/app`: the default registry)."""
-    if ref.startswith("oci://"):
-        return host_of_url(ref)
+    or None when it names none (`app:1`, `someuser/app`: the default registry; a local transport such
+    as `dir:` or `oci-archive:`). A `docker://` destination is read after its prefix."""
+    if ref.startswith(("oci://", "docker://")):
+        h = host_of_url(ref)
+        return h.strip("[]") if h else None
     first, slash, _ = ref.partition("/")
-    if not slash or not ("." in first or ":" in first or first == "localhost"):
+    if not slash or not _REGISTRY_RE.fullmatch(first):
         return None
-    return normalise_host(first)
+    return normalise_host(first).strip("[]")
+
+
+def _unwrap_launcher(head: str, argv: list[str]) -> tuple[str, list[str]]:
+    """The tool a launcher runs: `python3 [-I] -m twine …`, `npx [-y] npm@10 …`, `corepack pnpm …`,
+    `uvx twine …`, `uv run twine …`, `pipx run twine …`."""
+    for _ in range(3):
+        if _PYTHON_HEAD_RE.fullmatch(head) and "-m" in argv:
+            k = argv.index("-m")
+            if k + 1 < len(argv) and all(a.startswith("-") for a in argv[:k]):
+                head, argv = argv[k + 1], argv[k + 2 :]
+                continue
+        if head in ("npx", "uvx", "corepack") or (head in ("uv", "pipx") and argv[:1] == ["run"]):
+            rest = argv[1:] if head in ("uv", "pipx") else argv
+            rest = [a for a in itertools.dropwhile(lambda a: a.startswith("-"), rest)]
+            if rest:
+                head, argv = re.sub(r"(?<=.)@[^/]*$", "", rest[0]), rest[1:]
+                continue
+        break
+    return head, argv
 
 
 def publish_targets(command: str) -> set[str]:
     """Hosts the command publishes to: the target a publishing command names by option or
-    environment variable (`npm publish --registry URL`, `TWINE_REPOSITORY_URL=URL twine upload`), or
-    the registry of the image or chart it pushes (`docker push reg.example.test/app`, `helm push chart
+    environment variable (`npm publish --registry URL`, `TWINE_REPOSITORY_URL=URL twine upload`,
+    an earlier `export` of one), or the registry of the image or chart it pushes (`docker push
+    reg.example.test/app`, `docker buildx build --push -t reg.example.test/app .`, `helm push chart
     oci://reg.example.test/charts`). A publish that names no target goes to the public default, which
-    names no host here. The verb must lead the command's words, so `npm run publish` and an echoed
-    command are not publishes."""
+    names no host here, and a `--dry-run` sends nothing. The verb must lead the command's words, so
+    `npm run publish` and an echoed command are not publishes. A command that does not parse names
+    no publish target (its hosts keep the roles the text gives them)."""
     out: set[str] = set()
+    if not _PUBLISH_HINT.search(command):
+        return out
     shape = derive_exec_shape(command, load_lists().path_groups)
+    # the shell parse keeps no `export` segment, so exports are read from the text
+    exported = {m.group(1).lower(): m.group(2).strip("'\"") for m in _EXPORT_RE.finditer(command)}
     for seg in shape.segments:
-        head, argv = seg.head, list(seg.argv)
-        if head in _PYTHON_HEADS and len(argv) >= 2 and argv[0] == "-m":
-            head, argv = argv[1], argv[2:]
+        head, argv = _unwrap_launcher(seg.head, list(seg.argv))
         if head in _PUBLISH_COMMANDS:
             verbs, options = _PUBLISH_COMMANDS[head]
         elif head in _PUSH_COMMANDS:
             verbs, options = _PUSH_COMMANDS[head], ()
         else:
             continue
+        valued = _VALUE_OPTIONS.get(head, frozenset())
         words: list[str] = []
         targets: list[str] = []
+        flags: set[str] = set()
         i = 0
         while i < len(argv):
             tok = argv[i]
             name, eq, val = tok.partition("=")
-            if tok in options and i + 1 < len(argv):
+            scoped = head in ("npm", "pnpm", "yarn") and re.fullmatch(r"--@[\w.-]+:registry", name)
+            if (tok in options or (scoped and not eq)) and i + 1 < len(argv):
                 targets.append(argv[i + 1])
                 i += 2
                 continue
-            if eq and name in options:
+            if eq and (name in options or scoped):
                 targets.append(val)
-            elif not tok.startswith("-"):
+            elif tok in valued and i + 1 < len(argv):
+                if head == "docker" and tok in ("-t", "--tag"):
+                    targets.append("image:" + argv[i + 1])
+                i += 2
+                continue
+            elif tok.startswith("-"):
+                flags.add(name)
+            else:
                 words.append(tok)
             i += 1
-        verb = next((v for v in verbs if tuple(words[: len(v)]) == v), None)
-        if verb is None:
+        if "--dry-run" in flags:
             continue
-        for env in seg.env_assignments:
-            name, _, val = env.partition("=")
-            if name in _PUBLISH_ENV.get(head, ()):
-                targets.append(val)
-        hosts = [_target_host(t) for t in targets]
-        if head in _PUSH_COMMANDS:
-            hosts += [_image_registry(w) for w in words[len(verb) :]]
+        verb = next((v for v in verbs if tuple(words[: len(v)]) == v), None)
+        build_push = (
+            head == "docker"
+            and "--push" in flags
+            and any(tuple(words[: len(v)]) == v for v in _BUILD_PUSH_VERBS)
+        )
+        if verb is None and not build_push:
+            continue
+        env = {
+            **exported,
+            **{a.partition("=")[0].lower(): a.partition("=")[2] for a in seg.env_assignments},
+        }
+        targets += [env[n] for n in _PUBLISH_ENV.get(head, ()) if n in env]
+        hosts: list[str | None] = []
+        for t in targets:
+            if t.startswith("image:"):
+                hosts.append(_image_registry(t[6:]) if build_push else None)
+            else:
+                hosts.append(_target_host(t))
+        if verb is not None and head == "helm":
+            hosts += [_image_registry(w) for w in words[len(verb) :] if w.startswith("oci://")]
+        elif verb is not None and head in _PUSH_COMMANDS:
+            hosts += [_image_registry(w) for w in words[len(verb) : len(verb) + 2]]
         out.update(h for h in hosts if h)
     return out
 
@@ -1058,8 +1205,6 @@ def extract_exec(
     for h in named + sorted(published - set(named)):
         if h in ("localhost",):
             role = Role.DATA_SOURCE
-        elif h in published:
-            role = Role.DATA_DESTINATION
         elif h in code_hosts:
             role = Role.CODE_SOURCE
         elif egress:
@@ -1068,6 +1213,12 @@ def extract_exec(
             role = Role.CODE_SOURCE
         else:
             role = Role.DATA_SOURCE
+        if h in published and h != "localhost" and role is not Role.DATA_DESTINATION:
+            # a publish target is a destination whatever else the command does with the host
+            if role is not Role.CODE_SOURCE:
+                role = Role.DATA_DESTINATION
+            else:
+                found.append(Found(EntityKind.HOST, h, h, Role.DATA_DESTINATION))
         found.append(Found(EntityKind.HOST, h, h, role))
 
     for m in _EMAIL_RE.finditer(command):

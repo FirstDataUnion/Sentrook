@@ -243,5 +243,12 @@ A command that publishes to a host named by an option was read as fetching from 
   - `cargo publish` (`--index`, `sparse+` prefix stripped);
   - `dotnet nuget push` (`--source`);
   - the image registry of `docker push` and `podman push`, and `helm push`'s `oci://` host.
+- Also read:
+  - global options before the verb (`npm -w pkg publish`, `docker --context prod push`);
+  - launchers (`npx`, `corepack`, `uvx`, `uv run`, `pipx run`, `python3.12 -I -m`);
+  - the npm and RubyGems environment variables, an earlier `export`, and npm's `--@scope:registry`;
+  - `docker build --push` and `buildx build --push` tags;
+  - `podman push`'s `docker://` destination.
+- A `--dry-run` sends nothing. Local transports (`dir:`, `oci-archive:`), option values and chart paths are never registries. A host that is also fetched and run keeps its code-source role beside the destination one. `localhost` stays the agent's own machine. A command that does not parse names no publish target, and one with no publishing head is not parsed for it.
 - The verb must lead the command's words, so `npm run publish`, an echoed command, `npm install --registry`, `twine check` and `docker pull` are unchanged. A publish without a target goes to the public default and names no host. The published artefact stays a data source, and other hosts in the command keep their roles.
 - Tests: must be a destination for every form above, including an option before the verb, `--opt=value`, `sudo` and a registry port; must stay a source or add nothing for installs, views, `run publish`, `echo`, `check`, pulls, and publishes with no target or a named repository; a near-miss registry as a publish target takes the near-miss distrust.
