@@ -112,6 +112,20 @@ NEAR_MISS_CASES = [
     ("recipient", "lists@mail.hallowmere.net", ["@relay.keel"], None),
     ("recipient", "@relay", ["@relay.keel"], None),
     ("channel", "slack:#rel-ops", ["slack:#relops"], None),
+    ("package", "docker:node:22", ["docker:node:20"], None),
+    ("package", "docker:node:22-alpine", ["docker:node:20-alpine"], None),
+    ("package", "docker:ghcr.io/acme/app:1.3", ["docker:ghcr.io/acme/app:1.2"], None),
+    ("package", "docker:localhost:5000/postgres:16", ["docker:localhost:5000/postgres:15"], None),
+    ("package", "docker:node@sha256:abc123", ["docker:node:20"], None),
+    ("package", "docker:pstgres:16", ["docker:postgres:15"], ("docker:postgres:15", "edit")),
+    ("package", "pypi:python_dateutil@2.8", ["pypi:python-dateutil"], None),
+    ("mcp_server", "pypi:mcp_server_fetch", ["pypi:mcp-server-fetch"], None),
+    (
+        "mcp_server",
+        "pypi:mcp-server-fetcch",
+        ["pypi:mcp-server-fetch"],
+        ("pypi:mcp-server-fetch", "edit"),
+    ),
 ]
 
 

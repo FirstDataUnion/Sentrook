@@ -11,7 +11,8 @@ What is compared, per kind:
 - a host: its registrable label (`reports.cindervale.net` → `cindervale`). A host under the same registrable
   domain as a listed one is that party, never a near miss;
 - a package, MCP server or plugin: its name without a version, within one ecosystem (`npm:`, `pypi:`). The
-  same name at another version is that party;
+  same name at another version is that party, and so is a container image under another tag or digest
+  (`docker:node:22` for `docker:node:20`) or a PyPI project spelt with other separators (`Python_Dateutil`);
 - an email recipient: its domain, by the host rule, against listed addresses with the same local part;
   any other recipient (a handle) whole.
 Labels and names shorter than five characters never match: too many short names are one edit apart.
@@ -42,6 +43,7 @@ CONFUSABLES = (
 )
 _TLDS_2 = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
 _VERSION_RE = re.compile(r"@[^@/:\s]+$")
+_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]+$")
 _ECOSYSTEM_RE = re.compile(r"^([a-z][a-z0-9]{0,15}):(?!//)")
 
 
@@ -126,7 +128,14 @@ def _name(value: str) -> tuple[str, str] | None:
         return None
     m = _ECOSYSTEM_RE.match(value)
     eco, rest = (m.group(1), value[m.end() :]) if m else ("", value)
+    if eco == "docker":
+        # `[registry[:port]/]path[:tag][@sha256:digest]`: the tag sits after the last `/`.
+        rest = _DIGEST_RE.sub("", rest)
+        head, slash, last = rest.rpartition("/")
+        return eco, head + slash + last.split(":", 1)[0]
     name = _VERSION_RE.sub("", rest) or rest
+    if eco == "pypi":
+        name = re.sub(r"[-_.]+", "-", name)  # PyPI's own name comparison
     return eco, name
 
 
