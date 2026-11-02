@@ -4,6 +4,7 @@
 
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
+import { unsentSummary } from "./grants.ts";
 
 export interface VerifyCheck {
   name: string;
@@ -63,6 +64,13 @@ export async function runVerify(
     name: "traffic log",
     ok: true,
     detail: cfg.trafficLog.enabled ? cfg.trafficLog.path : "off",
+  });
+  // Reported, not failed: a config grant that is never sent only makes Sentrook stricter.
+  const unsent = unsentSummary(cfg);
+  checks.push({
+    name: "config grants",
+    ok: true,
+    detail: `${cfg.grants.length} in config${unsent ? `; never sent: ${unsent}` : ""}`,
   });
   return checks;
 }

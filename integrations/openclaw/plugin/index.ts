@@ -533,6 +533,13 @@ const plugin = {
     if (!ep.scan.ok || !ep.issuer.ok) {
       api.logger.error(`${LOG} endpoint configuration is invalid; every tool call will fail closed until fixed`);
     }
+    const unsent = grants.unsentSummary(boot);
+    if (unsent) {
+      api.logger.warn(
+        `${LOG} config grants never sent: ${unsent}. A config grant has no session: drop its scope to apply it in ` +
+          "every session, or use /sentrook-grant for one session; see /sentrook-grants",
+      );
+    }
   },
 };
 

@@ -322,7 +322,10 @@ export interface BuildInput {
   parents: Record<string, string>;
   /** OpenClaw's version, from the plugin runtime. */
   hostVersion?: string;
-  /** Every grant in force (`grants.effective`); the config grants alone when not given. */
+  /**
+   * Every grant in force (`grants.effective`); the persistent config grants alone when not given (a
+   * config grant has no session, so a session one is never sent).
+   */
   grants?: GrantConfig[];
 }
 
@@ -444,7 +447,7 @@ export function buildPlanir(b: BuildInput): Built {
       arguments: capArgs(args, cfg.inputCapBytes),
       batch: { siblings },
     },
-    grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {}), {
+    grants: relevantGrants(b.grants ?? cfg.grants.filter((g) => g.scope === "persistent"), JSON.stringify(event.params ?? {}), {
       identity: provider.identity,
       home: homedir(),
       workspace: run.workspaceDir,

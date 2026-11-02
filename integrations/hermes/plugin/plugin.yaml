@@ -63,6 +63,7 @@ config_schema:
   grants:
     type: list
     description: >
-      Owner grants: [{kind: destination|file|provider, pattern, allows?, scope?}]. scope is
-      persistent when absent; any value other than session or persistent reads as session.
+      Owner grants: [{kind: destination|file|provider, pattern, allows?}], applied in every session.
+      A grant here has no session, so one with scope session (or any scope other than persistent) is
+      never sent; status and verify flag it.
       `/sentrook grant` adds more without editing this (kept in the state dir's grants.json).

@@ -11,6 +11,7 @@ import { resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
+import { runVerify } from "./verify.ts";
 import { callCwd, relevantGrants, sessionRef } from "./planir.ts";
 
 /**
@@ -81,6 +82,7 @@ async function registered(pluginConfig: Record<string, unknown> = {}, hostConfig
   const cliActions: Record<string, (...args: unknown[]) => Promise<void> | void> = {};
   const on: Record<string, Array<(e: any, c: any) => any>> = {};
   const unknownOptions: string[] = [];
+  const warnings: string[] = [];
   const node = (prefix: string): any => {
     const self: any = {
       description: () => self,
@@ -99,7 +101,7 @@ async function registered(pluginConfig: Record<string, unknown> = {}, hostConfig
     pluginConfig,
     registrationMode: "full",
     config: { tools: { exec: { mode: "full" } }, ...hostConfig },
-    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    logger: { info: () => undefined, warn: (m: string) => void warnings.push(m), error: () => undefined },
     on: (hook: string, h: any) => (on[hook] ??= []).push(h),
     registerCli: (r: any) => {
       cliRegistrar = r;
@@ -118,7 +120,7 @@ async function registered(pluginConfig: Record<string, unknown> = {}, hostConfig
   /** The grants sent with one scan of `command` in session `sid`. */
   const scan = async (command: string, sid = "S1", extra: Record<string, unknown> = {}) =>
     (await call("exec", { command }, sid, extra)).grants;
-  return { commands, cliActions, call, scan, on, unknownOptions };
+  return { commands, cliActions, call, scan, on, unknownOptions, warnings };
 }
 
 /** What the host passes an admitted owner on a Control UI connection, sent from session `S1`. */
@@ -280,6 +282,12 @@ test("config scope is strict", () => {
     cfg.grants.map((g) => g.scope),
     ["persistent", "persistent", "session", "session", "session", "session"],
   );
+  assert.deepEqual(cfg.unsentGrants, {
+    2: "no session",
+    3: 'unknown scope "persistant"',
+    4: 'unknown scope "Persistent"',
+    5: "unknown scope true",
+  });
 });
 
 for (const [command, args] of [
@@ -492,7 +500,7 @@ test("status counts grants from both sources", async () => {
   fixtureFile();
   const r = await registered(fixtureConfig());
   const out = (await r.commands.sentrook.handler({ args: "status" })).text.split("\n");
-  assert.ok(out.includes("grants: 2 in config, 8 by command"), out.join("\n"));
+  assert.ok(out.includes("grants: 2 in config (1 never sent), 8 by command"), out.join("\n"));
   assert.ok(out.includes("channel bindings: 1 in config, 1 by command"));
 });
 
@@ -522,6 +530,77 @@ test("a session grant relieves only in its own session", async () => {
   assert.deepEqual(await r.scan("post to #ops", "sub-1", { sessionKey: "agent:main:subagent:sub-1" }), []);
   assert.deepEqual(patterns(await r.scan("post to #ops")), ["#ops"]);
   assert.equal(stored().grants[0].session_ref, S1);
+});
+
+// ---- config grants: a session scope names no session, so they are never sent ---------------------------
+
+/**
+ * An entry the parser drops (no pattern), two config grants that never apply (scope session, a scope
+ * typo) and two that apply everywhere. The dropped entry takes no cfg-N.
+ */
+const UNSENT_CONFIG = [
+  { kind: "destination", scope: "session" },
+  { kind: "destination", pattern: "#ops", scope: "session" },
+  { kind: "destination", pattern: "#standup", scope: "persistant" },
+  { kind: "destination", pattern: "#daily" },
+  { kind: "destination", pattern: "#weekly", scope: "persistent" },
+];
+const UNSENT_SUMMARY = 'cfg-1 (no session), cfg-2 (unknown scope "persistant")';
+
+test("a config session grant is never sent", async () => {
+  // Must stay silent in two sessions, a cron run and a subagent; persistent ones go everywhere.
+  const r = await registered({ grants: UNSENT_CONFIG });
+  const cmd = "post to #ops #standup #daily #weekly";
+  for (const [sid, extra] of [
+    ["S1", {}],
+    ["S2", {}],
+    ["cron-run-1", { sessionKey: "agent:main:cron:daily", trigger: "cron" }],
+    ["sub-1", { sessionKey: "agent:main:subagent:sub-1" }],
+  ] as const) {
+    const sent = await r.scan(cmd, sid, extra);
+    assert.deepEqual(
+      sent.map((g: any) => [g.pattern, g.scope]),
+      [
+        ["#daily", "persistent"],
+        ["#weekly", "persistent"],
+      ],
+    );
+  }
+});
+
+test("listing, status and verify flag config grants never sent", async () => {
+  const r = await registered({ grants: UNSENT_CONFIG });
+  const rows = Object.fromEntries(
+    (await run(r, "sentrook-grants", ""))
+      .split("\n")
+      .slice(2, 6)
+      .map((l) => [l.split(/\s+/)[0], l]),
+  );
+  assert.ok(rows["cfg-1"].endsWith("config, read-only; no session, never sent"), rows["cfg-1"]);
+  assert.ok(rows["cfg-2"].endsWith('config, read-only; unknown scope "persistant", never sent'), rows["cfg-2"]);
+  assert.ok(rows["cfg-3"].endsWith("config, read-only"));
+  assert.ok(rows["cfg-4"].endsWith("config, read-only"));
+  const status = (await r.commands.sentrook.handler({ args: "status" })).text.split("\n");
+  assert.ok(status.includes("grants: 4 in config (2 never sent), 0 by command"), status.join("\n"));
+  const noFetch = (async () => {
+    throw new Error("offline");
+  }) as unknown as typeof fetch;
+  const verify = async (cfg: Record<string, unknown>) =>
+    (await runVerify(cfg, { env: {}, fetchImpl: noFetch })).find((c) => c.name === "config grants");
+  // Reported, not failed: a grant that is never sent only makes Sentrook stricter.
+  assert.deepEqual(await verify({ grants: UNSENT_CONFIG }), {
+    name: "config grants",
+    ok: true,
+    detail: `4 in config; never sent: ${UNSENT_SUMMARY}`,
+  });
+  assert.deepEqual(await verify({ grants: UNSENT_CONFIG.slice(3) }), { name: "config grants", ok: true, detail: "2 in config" });
+});
+
+test("startup warns about config grants never sent", async () => {
+  const [warning, ...more] = (await registered({ grants: UNSENT_CONFIG })).warnings;
+  assert.deepEqual(more, []);
+  assert.ok(warning.includes(UNSENT_SUMMARY) && warning.includes("/sentrook-grants"), warning);
+  assert.deepEqual((await registered({ grants: UNSENT_CONFIG.slice(3) })).warnings, []);
 });
 
 test("the command and the scan name a session alike", async () => {

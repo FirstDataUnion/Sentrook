@@ -223,6 +223,75 @@ def test_config_scope_is_strict():
         "session",
         "session",
     ]
+    assert cfg.unsent_grants == {
+        2: "no session",
+        3: 'unknown scope "persistant"',
+        4: 'unknown scope "Persistent"',
+        5: "unknown scope true",
+    }
+
+
+# ---- config grants: a session scope names no session, so they are never sent -------------------------
+
+#: An entry the parser drops (no pattern), two config grants that never apply (scope session, a scope
+#: typo) and two that apply everywhere. The dropped entry takes no cfg-N.
+UNSENT_CONFIG = [
+    {"kind": "destination", "scope": "session"},
+    {"kind": "destination", "pattern": "#ops", "scope": "session"},
+    {"kind": "destination", "pattern": "#standup", "scope": "persistant"},
+    {"kind": "destination", "pattern": "#daily"},
+    {"kind": "destination", "pattern": "#weekly", "scope": "persistent"},
+]
+UNSENT_SUMMARY = 'cfg-1 (no session), cfg-2 (unknown scope "persistant")'
+
+
+def test_a_config_session_grant_is_never_sent(term):
+    """Must stay silent in two sessions, a cron run and a subagent; persistent ones go everywhere."""
+    term.ctx.settings["grants"] = UNSENT_CONFIG
+    cmd = "post to #ops #standup #daily #weekly"
+    for kw in (
+        {},
+        {"sid": "S2"},
+        {"sid": "cron_daily_20261029"},
+        {"sid": "sub-1", "parent_session_id": "S1"},
+    ):
+        sent = scan_grants(term, cmd, **kw)
+        assert [(g["pattern"], g["scope"]) for g in sent] == [
+            ("#daily", "persistent"),
+            ("#weekly", "persistent"),
+        ]
+
+
+def test_listing_status_and_verify_flag_config_grants_never_sent(term, monkeypatch):
+    term.ctx.settings["grants"] = UNSENT_CONFIG
+    rows = {line.split()[0]: line for line in slash(term, "grants").splitlines()[2:6]}
+    assert rows["cfg-1"].endswith("config, read-only; no session, never sent")
+    assert rows["cfg-2"].endswith('config, read-only; unknown scope "persistant", never sent')
+    assert rows["cfg-3"].endswith("config, read-only")
+    assert rows["cfg-4"].endswith("config, read-only")
+    assert "grants: 4 in config (2 never sent), 0 by command" in slash(term, "status").splitlines()
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    monkeypatch.setattr(plugin.cli, "get_scan_access_token", lambda *a, **k: "tok")
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    # Reported, not failed: a grant that is never sent only makes Sentrook stricter.
+    assert report["config grants"] == (True, f"4 in config; never sent: {UNSENT_SUMMARY}")
+    term.ctx.settings["grants"] = UNSENT_CONFIG[3:]
+    assert "grants: 2 in config, 0 by command" in slash(term, "status").splitlines()
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    assert report["config grants"] == (True, "2 in config")
+
+
+def test_startup_warns_about_config_grants_never_sent(term, caplog):
+    term.ctx.settings["grants"] = UNSENT_CONFIG
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        plugin.register(term.ctx)
+    [warning] = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert UNSENT_SUMMARY in warning and "/sentrook grants" in warning
+    caplog.clear()
+    term.ctx.settings["grants"] = UNSENT_CONFIG[3:]
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        plugin.register(term.ctx)
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 @pytest.mark.parametrize(
@@ -409,7 +478,7 @@ def test_the_cli_forms_match_the_slash_forms(term, capsys):
 def test_status_counts_grants_from_both_sources(term):
     fixture_state(term)
     out = slash(term, "status").splitlines()
-    assert "grants: 2 in config, 8 by command" in out
+    assert "grants: 2 in config (1 never sent), 8 by command" in out
     assert "channel bindings: 1 in config, 1 by command" in out
 
 
