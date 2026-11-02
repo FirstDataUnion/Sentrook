@@ -12,7 +12,7 @@ import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -62,8 +62,11 @@ export interface BeforeToolCallResult {
   };
 }
 
-/** Discovery tools have no side effects; the call they lead to is scanned on its own. */
-const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe"]);
+/**
+ * Tool search: discovery tools have no side effects, and `tool_call` only dispatches; the call they lead to is
+ * scanned on its own (a dispatched call fires its own tool hooks, with its own result).
+ */
+const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", TOOL_CALL]);
 
 /** History decisions after which the tool did not run. */
 const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error"]);

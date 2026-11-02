@@ -13,7 +13,7 @@ import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.5";
+export const PLUGIN_VERSION = "2.0.0-beta.6";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
@@ -39,7 +39,50 @@ export function toolKind(name: string): string {
   return "other";
 }
 
-export const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+/** Tool search's dispatcher: `{id, args}` runs the named tool, which fires its own tool hooks. */
+export const TOOL_CALL = "tool_call";
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A wrapper's id as OpenClaw writes it into the id of the call it dispatches. */
+const dispatchIdPart = (id: string) => id.trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120) || "call";
+
+/**
+ * The wrapper's id part of a dispatched call's id, `tool_call:<wrapper id>:<tool>:<n>`. Tool names hold no `:`, so
+ * the last two fields are the tool and the count, and the wrapper id may itself hold `:`.
+ */
+const dispatcherOf = (hostCallId: string | undefined) =>
+  hostCallId ? /^tool_call:(.+):[^:]+:\d+$/.exec(hostCallId)?.[1] : undefined;
+
+/** Tool search names a tool by its name or its catalog id, `<source>:<source name>:<tool name>`. */
+const CATALOG_ID = /^(?:openclaw|mcp|client):[^:]*:(.+)$/;
+const SELECTORS = ["id", "toolId", "name"];
+const isDotted = (k: string) => k.startsWith("args.") && k.length > 5;
+
+/**
+ * The call a `tool_call` wrapper names, read as OpenClaw reads it: the tool from `id`, `toolId` or `name`; the
+ * arguments from `args` (or `input`), else the wrapper's other fields; `args.<key>` fields join either.
+ */
+export function unwrapToolCall(params: unknown): { tool: string; arguments: Record<string, unknown> } | null {
+  if (!isRecord(params)) return null;
+  const key = SELECTORS.find((k) => params[k] != null);
+  // OpenClaw also takes a selector given inside the arguments (`{args: {id, ...}}`).
+  if (!key) return isRecord(params.args) && SELECTORS.some((k) => params.args[k] != null) ? unwrapToolCall(params.args) : null;
+  if (typeof params[key] !== "string" || !(params[key] as string).trim()) return null;
+  const selector = (params[key] as string).trim();
+  const dotted = Object.fromEntries(Object.entries(params).filter(([k]) => isDotted(k)).map(([k, v]) => [k.slice(5), v]));
+  const nested = params.args ?? params.input;
+  let args: Record<string, unknown>;
+  if (nested != null && !(isRecord(nested) && !Object.keys(nested).length)) {
+    args = isRecord(nested) ? { ...dotted, ...nested } : { value: nested };
+  } else {
+    const rest = Object.entries(params).filter(([k]) => k !== key && k !== "args" && k !== "input" && !isDotted(k));
+    args = { ...dotted, ...Object.fromEntries(rest) };
+  }
+  return { tool: CATALOG_ID.exec(selector)?.[1] ?? selector, arguments: args };
+}
+
+export const hash12 =(s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
 /** A session's `session_ref`: what a scan of it sends, and what snoozes and session grants are bound to. */
 export const sessionRef = (sid: string) => `s_${hash12(sid)}`;
@@ -289,21 +332,33 @@ export function buildPlanir(b: BuildInput): Built {
   const isSub = !!sessionKey && /(^|:)subagent:/.test(sessionKey);
   const parent = isSub ? b.parents[sessionKey!] : undefined;
   const assistant = b.assistant;
-  const inBatch = !!assistant?.calls?.some((c: any) => c.id === hostCallId);
+  const calls: any[] = Array.isArray(assistant?.calls) ? assistant.calls : [];
+  // A call a `tool_call` wrapper dispatched is in the message through its wrapper, which is not its sibling.
+  const outer = dispatcherOf(hostCallId);
+  const wrapper =
+    outer === undefined
+      ? undefined
+      : calls.find((c) => c.name === TOOL_CALL && typeof c.id === "string" && dispatchIdPart(c.id) === outer);
+  const inBatch = !!wrapper || calls.some((c) => c.id === hostCallId);
   const narration: string | undefined = (inBatch && assistant.text) || run.lastAssistantText || undefined;
   const tk = toolKind(event.toolName);
   const provider = providerFor(b.hostConfig, event.toolName);
   const args = redactor.value(event.params ?? {});
   const siblings = inBatch
-    ? assistant.calls
-        .filter((c: any) => c.id !== hostCallId)
-        .map((c: any) => ({
-          call_id: c.id,
-          tool: c.name ?? "unknown",
-          tool_kind: toolKind(c.name ?? ""),
-          provider: providerFor(b.hostConfig, c.name ?? ""),
-          arguments: capArgs(redactor.value(c.arguments ?? {}), cfg.historyArgsCapBytes),
-        }))
+    ? calls
+        .filter((c) => c.id !== hostCallId && c !== wrapper)
+        .map((c) => {
+          // A sibling wrapper is shown as the call it dispatches.
+          const inner = c.name === TOOL_CALL ? unwrapToolCall(c.arguments) : null;
+          const name: string = inner?.tool ?? c.name ?? "unknown";
+          return {
+            call_id: c.id,
+            tool: name,
+            tool_kind: toolKind(name),
+            provider: providerFor(b.hostConfig, name),
+            arguments: capArgs(redactor.value(inner?.arguments ?? c.arguments ?? {}), cfg.historyArgsCapBytes),
+          };
+        })
     : [];
 
   const window = sess.history.slice(-cfg.historyLimit);
