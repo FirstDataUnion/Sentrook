@@ -115,6 +115,20 @@
       "sent": false
     },
     {
+      "case": "folder file grant on a delete of the folder itself",
+      "grant": { "kind": "file", "pattern": "/home/alex/scratch/", "scope": "persistent", "allows": ["delete"] },
+      "identity": null,
+      "arguments": { "command": "rm -rf ~/scratch" },
+      "sent": true
+    },
+    {
+      "case": "provider scope grant on a call to a server in that scope",
+      "grant": { "kind": "provider", "pattern": "npm:@acme/", "scope": "persistent" },
+      "identity": "npm:@acme/notes-mcp",
+      "arguments": { "query": "groceries" },
+      "sent": true
+    },
+    {
       "case": "pattern too short to be worth sending",
       "grant": { "kind": "destination", "pattern": "*.io", "scope": "persistent" },
       "identity": null,

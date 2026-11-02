@@ -202,11 +202,26 @@ test("a grant round-trips through the file and into scans", async () => {
   assert.ok(new Date(g.granted_at).getTime() <= Date.now());
   assert.ok((await run(r, "sentrook-grants", "")).includes(`${g.id}  destination  session  #ops     this session; set `));
   assert.deepEqual(await r.scan("post to #ops"), [
-    { grant_ref: "g_1", kind: "destination", pattern: "#ops", scope: "session", granted_at: g.granted_at },
+    { grant_ref: "g_1", kind: "destination", pattern: "#ops", scope: "session", granted_at: g.granted_at, session_ref: g.session_ref },
   ]);
   assert.equal(await run(r, "sentrook-revoke", g.id), `Revoked ${g.id}: destination #ops.`);
   assert.deepEqual(stored().grants, []);
   assert.deepEqual(await r.scan("post to #ops"), []);
+});
+
+test("scans send the expiry and bind session grants", async () => {
+  const r = await registered();
+  await run(r, "sentrook-grant", "file /srv/reports/* --persistent --allows write --expires 12h");
+  await run(r, "sentrook-grant", "destination #ops");
+  const [persistent, session] = stored().grants;
+  const sent = await r.scan("cp a /srv/reports/today.md && post to #ops");
+  assert.deepEqual(
+    sent.map((g: any) => [g.pattern, g.expires_at, g.session_ref]),
+    [
+      ["/srv/reports/*", persistent.expires_at, undefined],
+      ["#ops", undefined, session.session_ref],
+    ],
+  );
 });
 
 test("options: scope, allows and expiry", async () => {

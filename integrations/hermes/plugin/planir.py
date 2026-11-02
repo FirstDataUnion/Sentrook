@@ -124,7 +124,9 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pieces_in(pattern: str, text: str) -> bool:
-    """The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex)."""
+    """The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex,
+    a trailing `/` the folder or scope itself)."""
+    pattern = pattern.rstrip("/")
     pieces = [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
     if sum(map(len, pieces)) < 3:
         return False

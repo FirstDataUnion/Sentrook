@@ -237,8 +237,12 @@ export function execPolicy(config: any): { exec_mode: string; approval_gating: b
   return { exec_mode: "unknown", approval_gating: false };
 }
 
-/** The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex). */
+/**
+ * The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex, a trailing `/`
+ * the folder or scope itself).
+ */
 function piecesIn(pattern: string, text: string): boolean {
+  pattern = pattern.replace(/\/+$/, "");
   const pieces = (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
   if (pieces.reduce((n, p) => n + p.length, 0) < 3) return false;
   let at = 0;
@@ -279,6 +283,8 @@ export function relevantGrants(
       ...(g.allows ? { allows: g.allows } : {}),
       scope: g.scope ?? "persistent",
       ...(g.granted_at ? { granted_at: g.granted_at } : {}),
+      ...(g.session_ref ? { session_ref: g.session_ref } : {}),
+      ...(g.expires_at ? { expires_at: g.expires_at } : {}),
     });
   });
   return out;

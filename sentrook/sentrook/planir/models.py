@@ -375,6 +375,14 @@ class Grant(_Model):
     )
     granted_at: datetime | None = None
     scope: GrantScope = GrantScope.SESSION
+    session_ref: str | None = Field(
+        default=None,
+        description="Scope session only: the session the grant was given in. A session grant "
+        "without one covers no session",
+    )
+    expires_at: datetime | None = Field(
+        default=None, description="Any scope: the grant covers nothing from this time on"
+    )
 
 
 class Options(_Model):

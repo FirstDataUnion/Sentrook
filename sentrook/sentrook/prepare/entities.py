@@ -1175,33 +1175,6 @@ def extract_call(
     return found
 
 
-def grant_matches(kind: str, pattern: str, entity: Entity) -> bool:
-    """Does a grant of `kind` with glob `pattern` cover `entity`? Over-broad patterns never match."""
-    import fnmatch
-
-    if pattern.strip() in ("*", "**", "*.*", "") or pattern.strip("*") == "":
-        return False
-    pat = pattern.strip().lower()
-    if kind == "destination" and entity.kind in (
-        EntityKind.HOST,
-        EntityKind.RECIPIENT,
-        EntityKind.CHANNEL,
-    ):
-        value = entity.value.lower()
-        if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
-            value = value.split("@", 1)[1]
-        if fnmatch.fnmatch(value, pat):
-            return True
-        if pat.startswith("*.") and value == pat[2:]:
-            return True
-        return False
-    if kind == "file" and entity.kind is EntityKind.PATH:
-        return fnmatch.fnmatch(entity.value, pat) or fnmatch.fnmatch(entity.display, pat)
-    if kind == "provider" and entity.kind in (EntityKind.MCP_SERVER, EntityKind.PLUGIN):
-        return fnmatch.fnmatch(entity.value.lower(), pat)
-    return False
-
-
 def any_text(value: Any) -> str:
     from ..planir.canonical import joined_text
 
