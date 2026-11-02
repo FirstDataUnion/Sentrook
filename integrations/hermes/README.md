@@ -142,7 +142,7 @@ session with `--session <ref>`, taking the ref from the `session` column of `/se
 | Write a nightly report | `/sentrook grant file /srv/reports/* --allows write --persistent` |
 | Work on a client's site for the afternoon | `/sentrook grant destination *.client.example --expires 4h` |
 
-Use full paths for file grants (`/home/you/notes/*`, not `~/notes/*`). A `*` matches anything, including `/`.
+A file grant can use the full path or `~` for your home folder (`~/notes/*`). A `*` matches anything, including `/`.
 Patterns that would match everything (`*`, `*.*`) are ignored.
 
 `/sentrook grants` lists every grant in force with its id; `/sentrook revoke <id>` removes one set by command.
@@ -239,7 +239,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
 - host facts: platform and plugin version, operating system, home and workspace paths, and whether Hermes's
   approvals and secret redaction are on;
-- the grants and channel bindings whose pattern appears in the call's arguments;
+- the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
+  server it calls;
 - references to the session and agent. Session ids are sent as hashes, not as the ids themselves.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and

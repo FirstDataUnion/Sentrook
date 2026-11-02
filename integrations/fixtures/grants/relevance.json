@@ -1,0 +1,125 @@
+{
+  "home": "/home/alex",
+  "cases": [
+    {
+      "case": "provider grant on a call to that MCP server's tool",
+      "grant": { "kind": "provider", "pattern": "npm:@acme/notes-mcp", "scope": "persistent" },
+      "identity": "npm:@acme/notes-mcp",
+      "arguments": { "query": "groceries" },
+      "sent": true
+    },
+    {
+      "case": "provider grant with a glob on a call to a matching MCP server",
+      "grant": { "kind": "provider", "pattern": "npm:*", "scope": "persistent" },
+      "identity": "npm:@acme/notes-mcp",
+      "arguments": { "query": "groceries" },
+      "sent": true
+    },
+    {
+      "case": "provider grant on a call to another MCP server",
+      "grant": { "kind": "provider", "pattern": "npm:@acme/notes-mcp", "scope": "persistent" },
+      "identity": "pypi:mail-mcp",
+      "arguments": { "to": "sam@example.com" },
+      "sent": false
+    },
+    {
+      "case": "provider identity is not matched for a destination grant",
+      "grant": { "kind": "destination", "pattern": "remote:*", "scope": "persistent" },
+      "identity": "remote:mcp.acme.example",
+      "arguments": { "query": "groceries" },
+      "sent": false
+    },
+    {
+      "case": "~ file grant on a read of an absolute path under home",
+      "grant": { "kind": "file", "pattern": "~/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "path": "/home/alex/notes/a.md" },
+      "sent": true
+    },
+    {
+      "case": "~ file grant on a read of a ~ path",
+      "grant": { "kind": "file", "pattern": "~/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "path": "~/notes/a.md" },
+      "sent": true
+    },
+    {
+      "case": "full-path file grant on a read of a ~ path",
+      "grant": { "kind": "file", "pattern": "/home/alex/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "path": "~/notes/a.md" },
+      "sent": true
+    },
+    {
+      "case": "~ file grant on a read under another user's home",
+      "grant": { "kind": "file", "pattern": "~/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "path": "/home/sam/notes/a.md" },
+      "sent": false
+    },
+    {
+      "case": "~ grant on the whole home folder on a write to a ~ path",
+      "grant": { "kind": "file", "pattern": "~/*", "scope": "persistent", "allows": ["write"] },
+      "identity": null,
+      "arguments": { "path": "~/foo.txt" },
+      "sent": true
+    },
+    {
+      "case": "full-path grant on the whole home folder on a write to a ~ path",
+      "grant": { "kind": "file", "pattern": "/home/alex/*", "scope": "persistent", "allows": ["write"] },
+      "identity": null,
+      "arguments": { "path": "~/foo.txt" },
+      "sent": true
+    },
+    {
+      "case": "~ file grant when home is the root folder",
+      "home": "/",
+      "grant": { "kind": "file", "pattern": "~/notes/*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "path": "/notes/a.md" },
+      "sent": true
+    },
+    {
+      "case": "~ file grant on a path with non-ASCII letters",
+      "grant": { "kind": "file", "pattern": "~/notes/café*", "scope": "persistent", "allows": ["read"] },
+      "identity": null,
+      "arguments": { "path": "/home/alex/notes/café.md" },
+      "sent": true
+    },
+    {
+      "case": "file grant with a * in the middle on a write that fits it",
+      "grant": { "kind": "file", "pattern": "/srv/*/reports/*", "scope": "persistent", "allows": ["write"] },
+      "identity": null,
+      "arguments": { "path": "/srv/app/reports/x.csv", "content": "a,b" },
+      "sent": true
+    },
+    {
+      "case": "file grant with a * in the middle whose pieces appear out of order",
+      "grant": { "kind": "file", "pattern": "/srv/*/reports/*", "scope": "persistent", "allows": ["write"] },
+      "identity": null,
+      "arguments": { "from": "/reports/q3.csv", "to": "/srv/app/" },
+      "sent": false
+    },
+    {
+      "case": "destination grant on a call to a subdomain",
+      "grant": { "kind": "destination", "pattern": "*.example.com", "scope": "persistent" },
+      "identity": null,
+      "arguments": { "url": "https://api.example.com/v1" },
+      "sent": true
+    },
+    {
+      "case": "destination grant on a call that names only another host",
+      "grant": { "kind": "destination", "pattern": "*.example.com", "scope": "persistent" },
+      "identity": null,
+      "arguments": { "url": "https://other.test/v1" },
+      "sent": false
+    },
+    {
+      "case": "pattern too short to be worth sending",
+      "grant": { "kind": "destination", "pattern": "*.io", "scope": "persistent" },
+      "identity": null,
+      "arguments": { "url": "https://cl0ud-sync.io/up" },
+      "sent": false
+    }
+  ]
+}

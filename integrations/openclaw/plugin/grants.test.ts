@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
@@ -11,7 +11,7 @@ import { resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
-import { sessionRef } from "./planir.ts";
+import { relevantGrants, sessionRef } from "./planir.ts";
 
 /**
  * Shared with the Hermes plugin's tests: both hosts print the same text for the same state. Times are
@@ -76,7 +76,7 @@ afterEach(() => {
 });
 
 /** Registers the plugin with fake host registrars: its chat commands, CLI actions and hooks. */
-async function registered(pluginConfig: Record<string, unknown> = {}) {
+async function registered(pluginConfig: Record<string, unknown> = {}, hostConfig: Record<string, unknown> = {}) {
   const commands: Record<string, any> = {};
   const cliActions: Record<string, (...args: unknown[]) => Promise<void> | void> = {};
   const on: Record<string, Array<(e: any, c: any) => any>> = {};
@@ -98,7 +98,7 @@ async function registered(pluginConfig: Record<string, unknown> = {}) {
   plugin.register({
     pluginConfig,
     registrationMode: "full",
-    config: { tools: { exec: { mode: "full" } } },
+    config: { tools: { exec: { mode: "full" } }, ...hostConfig },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     on: (hook: string, h: any) => (on[hook] ??= []).push(h),
     registerCli: (r: any) => {
@@ -109,13 +109,16 @@ async function registered(pluginConfig: Record<string, unknown> = {}) {
     },
   } as any);
   await cliRegistrar!({ program: node("") });
-  /** The grants sent with one scan of `command` in session `sid` (keyed as the host keys it). */
-  const scan = async (command: string, sid = "S1", extra: Record<string, unknown> = {}) => {
+  /** The scan request for one call of `toolName` in session `sid` (keyed as the host keys it). */
+  const call = async (toolName: string, params: Record<string, unknown>, sid = "S1", extra: Record<string, unknown> = {}) => {
     const ctx = { sessionKey: `agent:main:${sid}`, sessionId: sid, agentId: "main", runId: "r1", ...extra };
-    for (const h of on.before_tool_call ?? []) await h({ toolName: "exec", toolCallId: `c${scans.length}`, runId: "r1", params: { command } }, ctx);
-    return scans.at(-1).grants;
+    for (const h of on.before_tool_call ?? []) await h({ toolName, toolCallId: `c${scans.length}`, runId: "r1", params }, ctx);
+    return scans.at(-1);
   };
-  return { commands, cliActions, scan, unknownOptions };
+  /** The grants sent with one scan of `command` in session `sid`. */
+  const scan = async (command: string, sid = "S1", extra: Record<string, unknown> = {}) =>
+    (await call("exec", { command }, sid, extra)).grants;
+  return { commands, cliActions, call, scan, unknownOptions };
 }
 
 /** What the host passes an admitted owner on a Control UI connection, sent from session `S1`. */
@@ -586,4 +589,30 @@ test("persistent and config grants are sent in every session", async () => {
   ] as const) {
     assert.deepEqual(patterns(await r.scan("post to #ops and #cfg", sid, extra)), ["#cfg", "#ops"]);
   }
+});
+
+const RELEVANCE = JSON.parse(readFileSync(path.join(FIXTURES, "relevance.json"), "utf8"));
+
+/** Shared with the Hermes plugin's tests: both hosts send the same grants for the same call. */
+for (const c of RELEVANCE.cases) {
+  test(`relevance: ${c.case}`, () => {
+    const sent = relevantGrants([c.grant], JSON.stringify(c.arguments), { identity: c.identity, home: c.home ?? RELEVANCE.home });
+    assert.equal(sent.length > 0, c.sent);
+  });
+}
+
+test("provider and home grants reach the scan", async () => {
+  const mcp = { mcp: { servers: { notes: { command: "npx", args: ["-y", "@acme/notes-mcp"] } } } };
+  const r = await registered(
+    {
+      grants: [
+        { kind: "provider", pattern: "npm:@acme/notes-mcp" },
+        { kind: "file", pattern: "~/notes/*", allows: ["read"] },
+      ],
+    },
+    mcp,
+  );
+  const scan = await r.call("notes__read", { path: path.join(homedir(), "notes", "a.md") });
+  assert.equal(scan.pending_call.provider.identity, "npm:@acme/notes-mcp");
+  assert.deepEqual(patterns(scan.grants), ["npm:@acme/notes-mcp", "~/notes/*"]);
 });

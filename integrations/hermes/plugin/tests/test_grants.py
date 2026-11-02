@@ -11,7 +11,7 @@ import pytest
 import plugin
 from plugin import grants, owner
 from plugin.config import resolve_config
-from plugin.planir import session_ref
+from plugin.planir import relevant_grants, session_ref
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
@@ -494,3 +494,36 @@ def test_persistent_and_config_grants_are_sent_in_every_session(term):
             "#cfg",
             "#ops",
         ]
+
+
+RELEVANCE = json.loads((FIXTURES / "relevance.json").read_text())
+
+
+@pytest.mark.parametrize("c", RELEVANCE["cases"], ids=lambda c: c["case"])
+def test_a_grant_is_sent_when_the_call_could_be_covered_by_it(c):
+    """Shared with the OpenClaw plugin's tests: both hosts send the same grants for the same call."""
+    sent = relevant_grants(
+        [c["grant"]],
+        json.dumps(c["arguments"], ensure_ascii=False),
+        identity=c["identity"],
+        home=c.get("home", RELEVANCE["home"]),
+    )
+    assert bool(sent) is c["sent"]
+
+
+def test_provider_and_home_grants_reach_the_scan(term, monkeypatch):
+    mcp = {"mcp_servers": {"notes": {"command": "npx", "args": ["-y", "@acme/notes-mcp"]}}}
+    monkeypatch.setattr(plugin, "hermes_config", lambda: mcp)
+    term.ctx.settings["grants"] = [
+        {"kind": "provider", "pattern": "npm:@acme/notes-mcp"},
+        {"kind": "file", "pattern": "~/notes/*", "allows": ["read"]},
+    ]
+    term.ctx.hooks["pre_tool_call"](
+        tool_name="mcp__notes__read",
+        args={"path": str(Path.home() / "notes" / "a.md")},
+        tool_call_id="c0",
+        session_id="S1",
+    )
+    scan = term.scans[-1]
+    assert scan["pending_call"]["provider"]["identity"] == "npm:@acme/notes-mcp"
+    assert [g["pattern"] for g in scan["grants"]] == ["npm:@acme/notes-mcp", "~/notes/*"]

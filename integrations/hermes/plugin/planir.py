@@ -123,15 +123,42 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "mcp", "name": server, "identity": identity, "transport": transport}
 
 
-def relevant_grants(grants: list[dict[str, Any]], args_text: str) -> list[dict[str, Any]]:
-    """Only grants plausibly relevant to this call: the pattern (minus globs) appears in its arguments."""
+def _pieces_in(pattern: str, text: str) -> bool:
+    """The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex)."""
+    pieces = [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
+    if sum(map(len, pieces)) < 3:
+        return False
+    at = 0
+    for p in pieces:
+        at = text.find(p, at)
+        if at < 0:
+            return False
+        at += len(p)
+    return True
+
+
+def relevant_grants(
+    grants: list[dict[str, Any]],
+    args_text: str,
+    *,
+    identity: str | None = None,
+    home: str | None = None,
+) -> list[dict[str, Any]]:
+    """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
+    the owner's other grants out of the request, so it errs towards sending. A provider grant is also
+    matched against the call's provider identity, and paths under home match in either form (`~/…` or full)."""
     text = args_text.lower()
+    pats = [g["pattern"].lower() for g in grants]
+    if home:
+        root = home.rstrip("/").lower()
+        text = text.replace("~/", root + "/")
+        pats = [root + p[1:] if p.startswith("~/") else p for p in pats]
     out = []
-    for i, g in enumerate(grants):
-        needle = g["pattern"].lower()
-        needle = needle[2:] if needle.startswith("*.") else needle.lstrip("*")
-        needle = needle.replace("*", "")
-        if len(needle) >= 3 and needle in text:
+    for i, (g, pat) in enumerate(zip(grants, pats, strict=True)):
+        hay = [text]
+        if g["kind"] == "provider" and identity:
+            hay.append(identity.lower())
+        if any(_pieces_in(pat, h) for h in hay):
             out.append({"grant_ref": f"g_{i + 1}", **g})
     return out
 
@@ -265,7 +292,10 @@ def build_planir(
             "batch": {"siblings": siblings},
         },
         "grants": relevant_grants(
-            cfg.grants if grants is None else grants, json.dumps(raw_args, default=str)
+            cfg.grants if grants is None else grants,
+            json.dumps(raw_args, default=str, ensure_ascii=False),
+            identity=prv["identity"],
+            home=str(Path.home()),
         ),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }

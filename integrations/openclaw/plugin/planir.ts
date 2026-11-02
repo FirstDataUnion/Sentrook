@@ -193,13 +193,41 @@ export function execPolicy(config: any): { exec_mode: string; approval_gating: b
   return { exec_mode: "unknown", approval_gating: false };
 }
 
-/** Only grants plausibly relevant to this call: the pattern (minus globs) appears in its arguments. */
-export function relevantGrants(grants: GrantConfig[], argsText: string): Array<Record<string, unknown>> {
-  const text = argsText.toLowerCase();
+/** The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex). */
+function piecesIn(pattern: string, text: string): boolean {
+  const pieces = (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
+  if (pieces.reduce((n, p) => n + p.length, 0) < 3) return false;
+  let at = 0;
+  for (const p of pieces) {
+    at = text.indexOf(p, at);
+    if (at < 0) return false;
+    at += p.length;
+  }
+  return true;
+}
+
+/**
+ * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
+ * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
+ * call's provider identity, and paths under home match in either form (`~/…` or full).
+ */
+export function relevantGrants(
+  grants: GrantConfig[],
+  argsText: string,
+  opts: { identity?: string | null; home?: string } = {},
+): Array<Record<string, unknown>> {
+  let text = argsText.toLowerCase();
+  let pats = grants.map((g) => g.pattern.toLowerCase());
+  if (opts.home) {
+    const root = opts.home.replace(/\/+$/, "").toLowerCase();
+    text = text.replaceAll("~/", `${root}/`);
+    pats = pats.map((p) => (p.startsWith("~/") ? root + p.slice(1) : p));
+  }
   const out: Array<Record<string, unknown>> = [];
   grants.forEach((g, i) => {
-    const needle = g.pattern.toLowerCase().replace(/^\*\.?/, "").replace(/\*+/g, "");
-    if (needle.length < 3 || !text.includes(needle)) return;
+    const hay = [text];
+    if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
+    if (!hay.some((h) => piecesIn(pats[i]!, h))) return;
     out.push({
       grant_ref: `g_${i + 1}`,
       kind: g.kind,
@@ -335,7 +363,10 @@ export function buildPlanir(b: BuildInput): Built {
       arguments: capArgs(args, cfg.inputCapBytes),
       batch: { siblings },
     },
-    grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {})),
+    grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {}), {
+      identity: provider.identity,
+      home: homedir(),
+    }),
     options: { packs: cfg.packs, redaction: redactor.level },
   };
 
