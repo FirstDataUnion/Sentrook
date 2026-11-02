@@ -37,12 +37,6 @@ afterEach(() => {
   }
 });
 
-/** Drop the fixture's torn last line, so the audit record appended next starts on its own line. */
-function untorn() {
-  const text = readFileSync(logFile, "utf8");
-  writeFileSync(logFile, text.slice(0, text.lastIndexOf("\n") + 1));
-}
-
 function commandRecords() {
   return readFileSync(logFile, "utf8")
     .split("\n")
@@ -220,7 +214,6 @@ test("history and why are owner commands that require the admin scope", async ()
 
 for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
   test(`a non-owner is refused /${sub.command} and the refusal is audited`, async () => {
-    untorn();
     for (const extra of [
       { senderIsOwner: false },
       { senderIsOwner: undefined, assertOwnerCurrent: undefined },
@@ -246,7 +239,6 @@ for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
 }
 
 test("the owner is audited", async () => {
-  untorn();
   assert.ok((await run("sentrook-history", "")).startsWith("Last "));
   const [rec] = commandRecords();
   assert.deepEqual([rec.verb, rec.outcome, rec.basis], ["history", "allowed", ["operator.admin"]]);
@@ -266,7 +258,6 @@ test("/sentrook history and why point to the owner commands and show nothing", a
 });
 
 test("the CLI forms match the chat forms and are audited as the local terminal", async () => {
-  untorn();
   const { commands, cliActions } = await registered();
   const chat = async (name: string, args: string) => (await commands[name].handler(ownerCtx(args))).text;
   assert.equal(await captureLog(() => cliActions["sentrook history [n]"]!()), await chat("sentrook-history", ""));

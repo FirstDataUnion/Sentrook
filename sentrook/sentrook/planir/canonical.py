@@ -14,6 +14,7 @@ Two derived texts travel with each call:
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
@@ -86,6 +87,11 @@ _GENERIC_PATH_KEYS = ("path", "file", "filename", "file_path", "source", "target
 _GENERIC_CONTENT_KEYS = ("body", "content", "text", "message", "data", "sql", "query", "note")
 _GENERIC_PACKAGE_KEYS = ("package", "packages", "name_or_url", "plugin")
 _GENERIC_AMOUNT_KEYS = ("amount", "value", "sum")
+# Canonical keys read as text. An alias keeps only a string here: a list of files under `path` or a
+# memory key that is a number is left out (its string leaves still reach `text`). When no alias of
+# the key holds a string, the raw keys left out are named in `CanonicalCall.dropped`, so the rest of
+# the call is scored, with lower coverage.
+_TEXT_KEYS = frozenset({"command", "cwd", "path", "content", "url"})
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>`|;)\]}]+", re.IGNORECASE)
 
@@ -104,6 +110,8 @@ class CanonicalCall:
     args: dict[str, Any] = field(default_factory=dict)
     text: str = ""
     analysis_text: str = ""
+    #: Raw keys whose value was not kept because it was not the type the canonical key needs.
+    dropped: list[str] = field(default_factory=list)
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.args.get(key, default)
@@ -129,6 +137,27 @@ def _first(raw: dict[str, Any], keys: tuple[str, ...]) -> Any:
         if k in raw and raw[k] not in (None, ""):
             return raw[k]
     return None
+
+
+def _first_text(
+    raw: dict[str, Any], keys: tuple[str, ...], skipped: list[str], *, argv: bool = False
+) -> str | None:
+    """The first non-empty string among `keys`; with `argv`, a list of strings is a command's argv
+    and is quoted back into one command line. Values of another type are named in `skipped`."""
+    for k in keys:
+        v = raw.get(k)
+        if argv and isinstance(v, list) and v and all(isinstance(a, str) for a in v):
+            v = shlex.join(v)
+        if isinstance(v, str):
+            if v:
+                return v
+        elif v is not None and k not in skipped:
+            skipped.append(k)
+    return None
+
+
+def _first_str(raw: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    return _first_text(raw, keys, [])
 
 
 def _as_list(value: Any) -> list[str]:
@@ -193,39 +222,55 @@ def decode_url_queries(text: str) -> str:
 
 def _normalise_edits(raw: dict[str, Any]) -> list[dict[str, str]]:
     edits: list[dict[str, str]] = []
-    for e in raw.get("edits") or []:
+    raw_edits = raw.get("edits")
+    for e in raw_edits if isinstance(raw_edits, list) else []:
         if isinstance(e, dict):
             old = e.get("oldText", e.get("old_string", e.get("old_str", e.get("old", ""))))
             new = e.get("newText", e.get("new_string", e.get("new_str", e.get("new", ""))))
-            edits.append({"old": str(old or ""), "new": str(new or "")})
+            edits.append(
+                {
+                    "old": old if isinstance(old, str) else "",
+                    "new": new if isinstance(new, str) else "",
+                }
+            )
     if not edits:
-        old = _first(raw, ("old_string", "old_str", "oldText", "old"))
-        new = _first(raw, ("new_string", "new_str", "newText", "new", "content"))
+        old = _first_str(raw, ("old_string", "old_str", "oldText", "old"))
+        new = _first_str(raw, ("new_string", "new_str", "newText", "new", "content"))
         if old is not None or new is not None:
-            edits.append({"old": str(old or ""), "new": str(new or "")})
+            edits.append({"old": old or "", "new": new or ""})
     return edits
 
 
 def canonical_arguments(
-    platform: str, tool: str, tool_kind: ToolKind, raw: dict[str, Any]
+    platform: str,
+    tool: str,
+    tool_kind: ToolKind,
+    raw: dict[str, Any],
+    dropped: list[str] | None = None,
 ) -> dict[str, Any]:
     """Map raw arguments to canonical keys for `tool_kind`. Unknown shapes fall back to generic
-    role-ish keys so MCP and `other` tools still expose recipients, URLs, paths and content."""
+    role-ish keys so MCP and `other` tools still expose recipients, URLs, paths and content.
+    Keys read as text keep only strings; the raw keys left out for that are appended to `dropped`."""
     args: dict[str, Any] = {}
+    skipped: dict[str, list[str]] = {}  # canonical key -> raw keys left out for it
     aliases = _ALIASES.get(tool_kind, {})
     for canon, keys in aliases.items():
-        v = _first(raw, keys)
+        if canon in _TEXT_KEYS:
+            v = _first_text(raw, keys, skipped.setdefault(canon, []), argv=canon == "command")
+        else:
+            v = _first(raw, keys)
         if v is not None:
             args[canon] = v
 
     if tool_kind is ToolKind.EXEC:
+        code = raw.get("code")
         if (
             platform == "hermes"
             and tool == "execute_code"
-            and "code" in raw
-            and "command" not in raw
+            and isinstance(code, str)
+            and not isinstance(raw.get("command"), str)
         ):
-            args["command"] = raw["code"]
+            args["command"] = code
             args["interpreter"] = "python"
     if tool_kind is ToolKind.FILE_EDIT:
         edits = _normalise_edits(raw)
@@ -252,13 +297,15 @@ def canonical_arguments(
                 vals.extend(_as_list(raw[k]))
         if vals:
             args[canon] = list(dict.fromkeys(vals))
+    # A generic body or query is often an object (a JSON payload), so only a URL or path that is not
+    # a string counts as left out.
     if "url" not in args:
-        v = _first(raw, _GENERIC_URL_KEYS)
-        if isinstance(v, str):
+        v = _first_text(raw, _GENERIC_URL_KEYS, skipped.setdefault("url", []))
+        if v is not None:
             args["url"] = v
     if "path" not in args and tool_kind not in (ToolKind.EXEC,):
-        v = _first(raw, _GENERIC_PATH_KEYS)
-        if isinstance(v, str):
+        v = _first_text(raw, _GENERIC_PATH_KEYS, skipped.setdefault("path", []))
+        if v is not None:
             args["path"] = v
     if "content" not in args and tool_kind not in (ToolKind.EXEC, ToolKind.FILE_READ):
         v = _first(raw, _GENERIC_CONTENT_KEYS)
@@ -274,6 +321,12 @@ def canonical_arguments(
         args["action"] = raw["action"]
     if "password" in raw or "new_password" in raw or "secret" in raw:
         args["sets_credential"] = True
+    if dropped is not None:
+        # `target` is a path alias and a recipient key: read as recipients, it was not lost.
+        listed = {*_RECIPIENT_KEYS, *_CC_KEYS, *_BCC_KEYS, *_ATTACHMENT_KEYS}
+        for canon, keys in skipped.items():
+            if canon not in args:
+                dropped.extend(k for k in keys if k not in listed and k not in dropped)
     return args
 
 
@@ -289,6 +342,8 @@ def canonicalise(
     step: int | None = None,
 ) -> CanonicalCall:
     text = joined_text(arguments)
+    dropped: list[str] = []
+    args = canonical_arguments(platform, tool, tool_kind, arguments, dropped)
     return CanonicalCall(
         source=source,
         tool=tool,
@@ -297,9 +352,10 @@ def canonicalise(
         call_id=call_id,
         step=step,
         raw=arguments,
-        args=canonical_arguments(platform, tool, tool_kind, arguments),
+        args=args,
         text=text,
         analysis_text=decode_url_queries(text),
+        dropped=dropped,
     )
 
 

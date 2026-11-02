@@ -1,6 +1,7 @@
 """Local traffic log: one JSON line per scan (the redacted PlanIR as sent and the response or failure)
 and one per review resolution, joined by `request_id`. Nothing here is sent anywhere by the plugin.
-Created 0600 and rotated to `<path>.1` past `max_bytes`."""
+Created 0600 and rotated to `<path>.1` past `max_bytes`. A write cut off mid-line (a crash, a full disk)
+leaves the file without a final newline; the next record then starts with one, so it lands on its own line."""
 
 from __future__ import annotations
 
@@ -38,8 +39,17 @@ class TrafficLog:
                         self.path.replace(self.path.with_name(self.path.name + ".1"))
                 except FileNotFoundError:
                     pass
-                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
                 with os.fdopen(fd, "a", encoding="utf-8") as f:
-                    f.write(line + "\n")
+                    f.write(("\n" if _torn(fd) else "") + line + "\n")
         except OSError as exc:
             logger.warning("traffic log write failed: %s", exc)
+
+
+def _torn(fd: int) -> bool:
+    """True when the file is non-empty and does not end with a newline."""
+    size = os.fstat(fd).st_size
+    if size == 0:
+        return False
+    os.lseek(fd, size - 1, os.SEEK_SET)
+    return os.read(fd, 1) != b"\n"

@@ -9,8 +9,8 @@ grants and channel bindings set by command, and `snooze` relaxes review prompts,
 run them: both forms go through the owner check (`owner_command`), which audits every attempt.
 `status` and `help` stay open.
 
-`snooze` covers the session the slash command was sent from (Hermes passes its `session_id`); the CLI
-has no session, so there it can only snooze every session.
+`snooze` and a session `grant` cover the session the slash command was sent from (Hermes passes its
+`session_id`). The CLI has no session, so there a snooze needs `--all` and a session grant `--session`.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from . import grants, history, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
-from .planir import PLUGIN_VERSION
+from .planir import PLUGIN_VERSION, session_ref
 from .traffic import TrafficLog
 
 logger = logging.getLogger("sentrook")
@@ -122,20 +122,30 @@ def _changed(
 
 
 def run_grants(
-    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    session_id: str = "",
 ) -> str:
     cfg = resolve_config(settings, env_with_hermes_dotenv(env))
-    return grants.format_grants(cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD)
+    ref = session_ref(session_id) if session_id else None
+    return grants.format_grants(cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD, ref)
 
 
 def run_grant(
-    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    session_id: str = "",
 ) -> str:
     cfg = resolve_config(settings, env_with_hermes_dotenv(env))
     if who is None:
         return refusal("grant")
+    ref = session_ref(session_id) if session_id else None
     now = datetime.now(UTC)
-    return _changed(cfg, grants.add_grant(cfg.state_dir, rest, who, now, CMD), who)
+    return _changed(cfg, grants.add_grant(cfg.state_dir, rest, ref, who, now, CMD), who)
 
 
 def run_revoke(
@@ -168,7 +178,7 @@ def run_snooze(
     cfg = resolve_config(settings, env_with_hermes_dotenv(env))
     if who is None:
         return refusal("snooze")
-    ref = snooze.session_ref(session_id) if session_id else None
+    ref = session_ref(session_id) if session_id else None
     now = datetime.now(UTC)
     return _changed(cfg, snooze.run(cfg.state_dir, rest, ref, who, now, CMD), who, "snooze")
 
@@ -199,7 +209,7 @@ COMMANDS: dict[str, Subcommand] = {
     ),
     "history": Subcommand(
         f"last n scans (default {history.HISTORY_DEFAULT}, at most {history.HISTORY_MAX}): "
-        "time, tool, risk, action, review",
+        "time, session, tool, risk, action, review",
         run_history,
         args="[n]",
         owner_only=True,
@@ -214,14 +224,17 @@ COMMANDS: dict[str, Subcommand] = {
         "grants in force: from config (read-only) and set by command",
         run_grants,
         owner_only=True,
+        session=True,
     ),
     "grant": Subcommand(
-        "add a grant: kind destination|file|provider; flags --persistent (default session "
-        "scope), --allows read,write (file only), --expires 12h",
+        "add a grant: kind destination|file|provider; flags --persistent (default: this session "
+        "only, not cron jobs, subagents or other chats), --session <ref> (from history), "
+        "--allows read,write (file only), --expires 12h",
         run_grant,
         args="<kind> <pattern> [flags]",
         owner_only=True,
         cli_rest=True,
+        session=True,
     ),
     "revoke": Subcommand(
         "remove a grant set by command", run_revoke, args="<id>", owner_only=True, cli_rest=True

@@ -6,8 +6,8 @@
  *
  * `history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
  * grants and channel bindings set by command, and `snooze` relaxes review prompts, so only the owner
- * may run them. `snooze` covers the session the command was sent from; the command line has none, so
- * there it can only snooze every session. OpenClaw tells a
+ * may run them. `snooze` and a session `grant` cover the session the command was sent from; the
+ * command line has none, so there a snooze needs `--all` and a session grant `--session`. OpenClaw tells a
  * command handler who the owner is only when the whole command requires a gateway scope, so they are
  * commands of their own (`/sentrook-history`, `/sentrook-grant`, ...), registered through
  * `ownerCommand`; `/sentrook` and its status stay open to everyone.
@@ -28,7 +28,7 @@ import {
   recentScans,
 } from "./history.ts";
 import { OWNER_SCOPES, refusal } from "./owner.ts";
-import { PLUGIN_VERSION } from "./planir.ts";
+import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
 import * as snooze from "./snooze.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
@@ -84,7 +84,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   history: {
     command: "sentrook-history",
     args: "[n]",
-    description: `Last n scans (default ${HISTORY_DEFAULT}, at most ${HISTORY_MAX}): time, tool, risk, action, review`,
+    description: `Last n scans (default ${HISTORY_DEFAULT}, at most ${HISTORY_MAX}): time, session, tool, risk, action, review`,
     run: (ctx, rest) => historyText(ctx, rest),
   },
   why: {
@@ -99,18 +99,18 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     description: "Grants in force: from config (read-only) and set by command",
     run: (ctx) => {
       const cfg = configOf(ctx);
-      return grants.formatGrants(cfg, grants.load(cfg.stateDir), new Date(), CMD);
+      return grants.formatGrants(cfg, grants.load(cfg.stateDir), new Date(), CMD, refOf(ctx));
     },
   },
   grant: {
     command: "sentrook-grant",
     args: "<kind> <pattern> [flags]",
     description:
-      "Add a grant: kind destination|file|provider; flags --persistent (default session scope), " +
-      "--allows read,write (file only), --expires 12h",
+      "Add a grant: kind destination|file|provider; flags --persistent (default: this session only, " +
+      "not cron jobs, subagents or other chats), --session <ref> (from history), --allows read,write (file only), --expires 12h",
     cliRest: true,
     run: (ctx, rest) =>
-      changed(ctx, "grant", (cfg, o) => grants.addGrant(cfg.stateDir, rest, o.by, new Date(), CMD, o.beforeWrite)),
+      changed(ctx, "grant", (cfg, o) => grants.addGrant(cfg.stateDir, rest, refOf(ctx), o.by, new Date(), CMD, o.beforeWrite)),
   },
   revoke: {
     command: "sentrook-revoke",
@@ -143,7 +143,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
           snooze.run(
             cfg.stateDir,
             rest,
-            ctx.session ? snooze.sessionRef(ctx.session) : null,
+            refOf(ctx),
             o.by,
             new Date(),
             CMD,
@@ -153,6 +153,11 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
       ),
   },
 };
+
+/** The `session_ref` of the session the command was sent from; null when there is none. */
+function refOf(ctx: CommandContext): string | null {
+  return ctx.session ? sessionRef(ctx.session) : null;
+}
 
 function configOf(ctx: CommandContext): PluginConfig {
   return resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));

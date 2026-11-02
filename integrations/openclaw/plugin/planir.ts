@@ -13,7 +13,7 @@ import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.5";
+export const PLUGIN_VERSION = "2.0.0-beta.6";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
@@ -39,7 +39,54 @@ export function toolKind(name: string): string {
   return "other";
 }
 
-export const hash12 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+/** Tool search's dispatcher: `{id, args}` runs the named tool, which fires its own tool hooks. */
+export const TOOL_CALL = "tool_call";
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A wrapper's id as OpenClaw writes it into the id of the call it dispatches. */
+const dispatchIdPart = (id: string) => id.trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120) || "call";
+
+/**
+ * The wrapper's id part of a dispatched call's id, `tool_call:<wrapper id>:<tool>:<n>`. Tool names hold no `:`, so
+ * the last two fields are the tool and the count, and the wrapper id may itself hold `:`.
+ */
+const dispatcherOf = (hostCallId: string | undefined) =>
+  hostCallId ? /^tool_call:(.+):[^:]+:\d+$/.exec(hostCallId)?.[1] : undefined;
+
+/** Tool search names a tool by its name or its catalog id, `<source>:<source name>:<tool name>`. */
+const CATALOG_ID = /^(?:openclaw|mcp|client):[^:]*:(.+)$/;
+const SELECTORS = ["id", "toolId", "name"];
+const isDotted = (k: string) => k.startsWith("args.") && k.length > 5;
+
+/**
+ * The call a `tool_call` wrapper names, read as OpenClaw reads it: the tool from `id`, `toolId` or `name`; the
+ * arguments from `args` (or `input`), else the wrapper's other fields; `args.<key>` fields join either.
+ */
+export function unwrapToolCall(params: unknown): { tool: string; arguments: Record<string, unknown> } | null {
+  if (!isRecord(params)) return null;
+  const key = SELECTORS.find((k) => params[k] != null);
+  // OpenClaw also takes a selector given inside the arguments (`{args: {id, ...}}`).
+  const inside = params.args;
+  if (!key) return isRecord(inside) && SELECTORS.some((k) => inside[k] != null) ? unwrapToolCall(inside) : null;
+  if (typeof params[key] !== "string" || !(params[key] as string).trim()) return null;
+  const selector = (params[key] as string).trim();
+  const dotted = Object.fromEntries(Object.entries(params).filter(([k]) => isDotted(k)).map(([k, v]) => [k.slice(5), v]));
+  const nested = params.args ?? params.input;
+  let args: Record<string, unknown>;
+  if (nested != null && !(isRecord(nested) && !Object.keys(nested).length)) {
+    args = isRecord(nested) ? { ...dotted, ...nested } : { value: nested };
+  } else {
+    const rest = Object.entries(params).filter(([k]) => k !== key && k !== "args" && k !== "input" && !isDotted(k));
+    args = { ...dotted, ...Object.fromEntries(rest) };
+  }
+  return { tool: CATALOG_ID.exec(selector)?.[1] ?? selector, arguments: args };
+}
+
+export const hash12 =(s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
+
+/** A session's `session_ref`: what a scan of it sends, and what snoozes and session grants are bound to. */
+export const sessionRef = (sid: string) => `s_${hash12(sid)}`;
 
 function normaliseTransport(t: unknown): string | null {
   if (typeof t !== "string" || !t) return null;
@@ -190,13 +237,41 @@ export function execPolicy(config: any): { exec_mode: string; approval_gating: b
   return { exec_mode: "unknown", approval_gating: false };
 }
 
-/** Only grants plausibly relevant to this call: the pattern (minus globs) appears in its arguments. */
-export function relevantGrants(grants: GrantConfig[], argsText: string): Array<Record<string, unknown>> {
-  const text = argsText.toLowerCase();
+/** The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex). */
+function piecesIn(pattern: string, text: string): boolean {
+  const pieces = (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
+  if (pieces.reduce((n, p) => n + p.length, 0) < 3) return false;
+  let at = 0;
+  for (const p of pieces) {
+    at = text.indexOf(p, at);
+    if (at < 0) return false;
+    at += p.length;
+  }
+  return true;
+}
+
+/**
+ * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
+ * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
+ * call's provider identity, and paths under home match in either form (`~/…` or full).
+ */
+export function relevantGrants(
+  grants: GrantConfig[],
+  argsText: string,
+  opts: { identity?: string | null; home?: string } = {},
+): Array<Record<string, unknown>> {
+  let text = argsText.toLowerCase();
+  let pats = grants.map((g) => g.pattern.toLowerCase());
+  if (opts.home) {
+    const root = opts.home.replace(/\/+$/, "").toLowerCase();
+    text = text.replaceAll("~/", `${root}/`);
+    pats = pats.map((p) => (p.startsWith("~/") ? root + p.slice(1) : p));
+  }
   const out: Array<Record<string, unknown>> = [];
   grants.forEach((g, i) => {
-    const needle = g.pattern.toLowerCase().replace(/^\*\.?/, "").replace(/\*+/g, "");
-    if (needle.length < 3 || !text.includes(needle)) return;
+    const hay = [text];
+    if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
+    if (!hay.some((h) => piecesIn(pats[i]!, h))) return;
     out.push({
       grant_ref: `g_${i + 1}`,
       kind: g.kind,
@@ -258,21 +333,33 @@ export function buildPlanir(b: BuildInput): Built {
   const isSub = !!sessionKey && /(^|:)subagent:/.test(sessionKey);
   const parent = isSub ? b.parents[sessionKey!] : undefined;
   const assistant = b.assistant;
-  const inBatch = !!assistant?.calls?.some((c: any) => c.id === hostCallId);
+  const calls: any[] = Array.isArray(assistant?.calls) ? assistant.calls : [];
+  // A call a `tool_call` wrapper dispatched is in the message through its wrapper, which is not its sibling.
+  const outer = dispatcherOf(hostCallId);
+  const wrapper =
+    outer === undefined
+      ? undefined
+      : calls.find((c) => c.name === TOOL_CALL && typeof c.id === "string" && dispatchIdPart(c.id) === outer);
+  const inBatch = !!wrapper || calls.some((c) => c.id === hostCallId);
   const narration: string | undefined = (inBatch && assistant.text) || run.lastAssistantText || undefined;
   const tk = toolKind(event.toolName);
   const provider = providerFor(b.hostConfig, event.toolName);
   const args = redactor.value(event.params ?? {});
   const siblings = inBatch
-    ? assistant.calls
-        .filter((c: any) => c.id !== hostCallId)
-        .map((c: any) => ({
-          call_id: c.id,
-          tool: c.name ?? "unknown",
-          tool_kind: toolKind(c.name ?? ""),
-          provider: providerFor(b.hostConfig, c.name ?? ""),
-          arguments: capArgs(redactor.value(c.arguments ?? {}), cfg.historyArgsCapBytes),
-        }))
+    ? calls
+        .filter((c) => c.id !== hostCallId && c !== wrapper)
+        .map((c) => {
+          // A sibling wrapper is shown as the call it dispatches.
+          const inner = c.name === TOOL_CALL ? unwrapToolCall(c.arguments) : null;
+          const name: string = inner?.tool ?? c.name ?? "unknown";
+          return {
+            call_id: c.id,
+            tool: name,
+            tool_kind: toolKind(name),
+            provider: providerFor(b.hostConfig, name),
+            arguments: capArgs(redactor.value(inner?.arguments ?? c.arguments ?? {}), cfg.historyArgsCapBytes),
+          };
+        })
     : [];
 
   const window = sess.history.slice(-cfg.historyLimit);
@@ -302,7 +389,7 @@ export function buildPlanir(b: BuildInput): Built {
       policy: { exec_mode, approval_gating, result_masking: true },
     },
     session: {
-      session_ref: `s_${hash12(b.sid)}`,
+      session_ref: sessionRef(b.sid),
       routing_key: sessionKey ? `h_${hash12(sessionKey)}` : null,
       agent_ref: `a_${ctx.agentId ?? "main"}`,
       agent_role: isSub ? "subagent" : "main",
@@ -332,7 +419,10 @@ export function buildPlanir(b: BuildInput): Built {
       arguments: capArgs(args, cfg.inputCapBytes),
       batch: { siblings },
     },
-    grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {})),
+    grants: relevantGrants(b.grants ?? cfg.grants, JSON.stringify(event.params ?? {}), {
+      identity: provider.identity,
+      home: homedir(),
+    }),
     options: { packs: cfg.packs, redaction: redactor.level },
   };
 

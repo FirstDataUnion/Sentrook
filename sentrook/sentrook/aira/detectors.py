@@ -1108,10 +1108,71 @@ def _program_name(token: str) -> str:
     return name[:at] if at > 0 else name
 
 
+_QUOTED_PART = re.compile(r"""'([^']*)'|"([^"]*)"|\\(.)""", re.DOTALL)
+
+
+def _shell_word(word: str) -> str:
+    """The word after the shell's quote removal: `sent""rook`, `'sent'rook` and `sent\\rook` all
+    read as `sentrook`. An unbalanced quote is left as it is."""
+    if not any(c in word for c in "'\"\\"):
+        return word
+    return _QUOTED_PART.sub(lambda m: next(g for g in m.groups() if g is not None), word)
+
+
+def _shell_script(words: list[str], shells: set[str]) -> str | None:
+    """The script of `<shell> [options] -c <script> …`: the first word that is not an option after
+    a short-option cluster holding `c` (`-c`, `-lc`, `-ec`). A script file before any `-c` ends
+    the shell's options (`bash run.sh -c x` passes `-c` to the script)."""
+    if not words or _program_name(words[0]) not in shells:
+        return None
+    seen_c = False
+    takes_value = False
+    for tok in words[1:]:
+        if tok.startswith(("-", "+")) and len(tok) > 1:
+            seen_c = seen_c or (not tok.startswith("--") and "c" in tok[1:])
+            takes_value = tok in {"-o", "+o", "-O", "+O"}
+        elif seen_c:
+            return tok
+        elif takes_value:
+            takes_value = False
+        else:
+            return None
+    return None
+
+
+def _cli_segments(a: CallAnalysis, lists: Lists) -> list[tuple[list[str], str]]:
+    """`(words, line)` per simple command, words after quote removal, plus the commands of any
+    shell `-c` script (nested up to three deep)."""
+    shells = set(lists.strings("installers", "shell_heads"))
+    out: list[tuple[list[str], str]] = []
+
+    def walk(words: list[str], line: str, depth: int) -> None:
+        out.append(([_shell_word(w) for w in words], line))
+        script = _shell_script(words, shells)
+        if script is None or depth >= 3:
+            return
+        shape = derive_exec_shape(script, lists.path_groups)
+        if shape.parse_ok and shape.segments:
+            for s in shape.segments:
+                inner = [s.head, *s.argv]
+                walk(inner, " ".join(inner), depth + 1)
+        else:
+            walk(script.split(), script, depth + 1)
+
+    for words, line in zip(a.segment_tokens(), a.segment_texts(), strict=True):
+        walk(words, line, 0)
+    return out
+
+
+# Runtime options after which the rest is inline code, not a script path (`node -e '…'`); a
+# short-option cluster holding `e` or `p` (`-pe`) counts too.
+_INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print"})
+
+
 def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
-    """The words of one simple command from the CLI head on, launchers (`uv run`, `npx`,
-    `python -m <module>`, …) and their options peeled off. Unchanged, bar the head's name, when the
-    command is not a known CLI behind launchers."""
+    """The words of one simple command from the CLI head on, launchers (`uv run`, `npx`, `exec`,
+    `python -m <module>`, `node <entry script>`, …) and their options peeled off. Unchanged, bar
+    the head's name, when the command is not a known CLI behind launchers."""
     if not tokens:
         return tokens
     launchers = [
@@ -1123,11 +1184,17 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
         str(k).lower(): str(v).lower()
         for k, v in (lists.get("guardrail", "cli_modules", default={}) or {}).items()
     }
+    script_runners = lists.patterns("guardrail", "cli_script_runner_patterns")
+    scripts = {
+        str(head).lower(): lists.patterns("guardrail", "cli_scripts", str(head), "path_patterns")
+        for head in lists.get("guardrail", "cli_scripts", default={}) or {}
+    }
 
     def launches(name: str) -> bool:
         return (
             name in heads
             or bool(_match_any(runners, name))
+            or bool(_match_any(script_runners, name))
             or any(name == words[0] for words in launchers)
         )
 
@@ -1152,6 +1219,17 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
                     if module == prefix or module.startswith(prefix + "."):
                         following = [head, *rest]
                 break
+        elif _match_any(script_runners, name):
+            for i in _after_options(current, 1):
+                tok = current[i]
+                if tok.split("=", 1)[0] in _INLINE_CODE_FLAGS or (
+                    tok.startswith("-") and not tok.startswith("--") and set(tok[1:]) & {"e", "p"}
+                ):
+                    break
+                head = next((h for h, p in scripts.items() if _match_any(p, tok)), None)
+                if head is not None and not tok.startswith("-"):
+                    following = [head, *current[i + 1 :]]
+                    break
         else:
             for words in launchers:
                 n = len(words)
@@ -1254,8 +1332,8 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     break
 
     # 3. CLI forms: plugin disable/remove, the plugin's own commands, config entry, gateway stop,
-    #    host approvals, process kill. `<head> [options] <subcommand> <verb> …`, launchers peeled
-    #    off (`cli_launchers`).
+    #    host approvals, process kill. `<head> [options] <subcommand> [options] <verb> …`,
+    #    launchers peeled off (`cli_launchers`), shell `-c` scripts read as commands.
     plugin_cli = lists.get("guardrail", "plugin_cli", default=[]) or []
     command_cli = lists.get("guardrail", "plugin_command_cli", default=[]) or []
     config_cli = lists.get("guardrail", "config_cli", default=[]) or []
@@ -1263,34 +1341,37 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     cli_heads = {
         str(e.get("head")).lower() for e in (*plugin_cli, *command_cli, *config_cli, *gateway_cli)
     }
-    for words, line in zip(a.segment_tokens(), a.segment_texts(), strict=True):
+    for words, line in _cli_segments(a, lists):
         tokens = _cli_tokens(words, cli_heads, lists)
         if not tokens:
             continue
         head = tokens[0]
         for at in _after_options(tokens, 1):
             sub = tokens[at].lower()
-            verb = tokens[at + 1].lower() if len(tokens) > at + 1 else ""
-            rest = " ".join(tokens[at + 2 :])
+            # The verb is found like the subcommand: each word that can follow the options, with
+            # the words after it.
+            verbs = [
+                (tokens[v].lower(), " ".join(tokens[v + 1 :]))
+                for v in _after_options(tokens, at + 1)
+            ]
             for entry in plugin_cli:
                 if head == entry.get("head") and sub == entry.get("subcommand"):
-                    if verb in {v.lower() for v in entry.get("blocked_verbs", [])} and names_plugin(
-                        rest
-                    ):
+                    blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
+                    if any(verb in blocked and names_plugin(rest) for verb, rest in verbs):
                         emit("guardrail.plugin_disable", None, {"match": line[:120]})
             for entry in command_cli:
                 if head == entry.get("head") and sub == entry.get("subcommand"):
-                    # The verb is the first word that is not an option; none is the help text.
-                    command = next(
-                        (t.lower() for t in tokens[at + 1 :] if not t.startswith("-")), ""
-                    )
-                    if command and command not in {
-                        v.lower() for v in entry.get("allowed_verbs", [])
-                    }:
+                    # Any word that could be the verb and is not an allowed one; no verb at all is
+                    # the help text.
+                    allowed = {v.lower() for v in entry.get("allowed_verbs", [])}
+                    if any(not verb.startswith("-") and verb not in allowed for verb, _ in verbs):
                         emit("guardrail.plugin_command", None, {"match": line[:120]})
             for entry in config_cli:
                 if head == entry.get("head") and sub == entry.get("subcommand"):
-                    if verb in {v.lower() for v in entry.get("mutating_verbs", [])}:
+                    mutating = {v.lower() for v in entry.get("mutating_verbs", [])}
+                    for verb, rest in verbs:
+                        if verb not in mutating:
+                            continue
                         if _match_any(
                             lists.patterns("guardrail", "host_approvals", "config_set_patterns"),
                             rest,
@@ -1300,7 +1381,8 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                             emit("guardrail.config_entry", None, {"match": line[:120]})
             for entry in gateway_cli:
                 if head == entry.get("head") and sub == entry.get("subcommand"):
-                    if verb in {v.lower() for v in entry.get("blocked_verbs", [])}:
+                    blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
+                    if any(verb in blocked for verb, _ in verbs):
                         emit("guardrail.gateway_stop", None, {"match": line[:120]})
         if _match_any(lists.patterns("guardrail", "process_kill_patterns"), line):
             emit("guardrail.gateway_stop", None, {"match": line[:120], "mechanism": "process_kill"})

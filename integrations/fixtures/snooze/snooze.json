@@ -27,6 +27,8 @@
     {"scope": "session", "session_ref": "s_000000000004", "expires_at": "tomorrow"},
     {"scope": "session", "session_ref": "s_000000000005", "expires_at": "2026-10-29T24:00Z"},
     {"scope": "session", "session_ref": "s_000000000006", "expires_at": "2026-10-29T12:60Z"},
+    {"scope": "session", "session_ref": "s_000000000007", "expires_at": "2026-02-30T00:00Z"},
+    {"scope": "session", "session_ref": "s_000000000008", "expires_at": "2026-10-29T12:30:60Z"},
     {"scope": "everything", "expires_at": "2026-10-29T13:00:00Z"},
     "not an entry"
   ]
