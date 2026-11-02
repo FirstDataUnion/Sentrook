@@ -20,6 +20,7 @@ from .auth import (
 )
 from .commands import COMMANDS, OwnerGate, dispatch
 from .config import resolve_config
+from .grants import unsent_summary
 
 
 def run_verify(
@@ -72,6 +73,15 @@ def run_verify(
     )
     checks.append(
         ("traffic log", True, str(cfg.traffic_log_path) if cfg.traffic_log_enabled else "off")
+    )
+    # Reported, not failed: a config grant that is never sent only makes Sentrook stricter.
+    unsent = unsent_summary(cfg)
+    checks.append(
+        (
+            "config grants",
+            True,
+            f"{len(cfg.grants)} in config" + (f"; never sent: {unsent}" if unsent else ""),
+        )
     )
     return checks
 

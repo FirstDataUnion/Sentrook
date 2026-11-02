@@ -1,6 +1,5 @@
 [
   { "kind": "destination", "pattern": "*.mycorp.example", "scope": "persistent" },
-  { "kind": "file", "pattern": "~/notes/*", "scope": "session", "allows": ["read", "write"] },
   { "kind": "destination", "pattern": "#daily-brief", "scope": "persistent" },
   { "kind": "destination", "pattern": "#ops", "scope": "session", "granted_at": "2026-10-29T09:00:00Z", "session_ref": "s_3696ad59777e" },
   { "kind": "file", "pattern": "/srv/reports/*", "scope": "persistent", "allows": ["write"], "granted_at": "2026-10-29T09:00:00Z", "expires_at": "2026-11-05T09:00:00Z" },

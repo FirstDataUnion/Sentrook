@@ -13,11 +13,12 @@
  * names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan of
  * the session sends, and is sent only on scans of that session: not in cron jobs, subagents or other
  * chats. A session grant with no session (the command line without `--session`) is refused, and one
- * stored without a session is never sent. Persistent grants and the plugin config's grants are sent on
- * every scan. A scan sends a session grant with its `session_ref` and a grant with an expiry with its
- * `expires_at`, and Sentrook checks both; a config grant with scope session has no session, so Sentrook
- * gives it no weight. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed
- * on as typed: Sentrook itself refuses patterns too broad to relieve on.
+ * stored without a session is never sent. Persistent grants are sent on every scan. A config grant has
+ * no session to be bound to, so one with scope session, or with an unknown scope (read as session), is
+ * never sent either; the listing, status, verify and the startup log name it. A scan sends a session
+ * grant with its `session_ref` and a grant with an expiry with its `expires_at`, and Sentrook checks
+ * both. An expired grant is not sent, and is dropped from the file on the next change. Patterns are
+ * passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
  *
  * Every change is written to the traffic log as a `grants` record (none when the owner has turned the
  * traffic log off). The Hermes plugin keeps the same file format and prints the same text.
@@ -105,7 +106,7 @@ function bound(raw: Entry): string | null {
  * file entries (a session grant only in its own session).
  */
 export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date, sessionRef: string): GrantConfig[] {
-  const out: GrantConfig[] = cfg.grants.map((g) => ({ ...g }));
+  const out: GrantConfig[] = cfg.grants.filter((g) => g.scope === "persistent").map((g) => ({ ...g }));
   for (const pattern of cfg.channelBindings) out.push({ kind: "destination", pattern, scope: "persistent" });
   for (const [raw, g] of fileGrants(data)) {
     if (expired(raw, now) || (g.scope === "session" && bound(raw) !== sessionRef)) continue;
@@ -151,7 +152,11 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
     g.kind,
     g.scope ?? "persistent",
     g.pattern,
-    [...(g.allows?.length ? [`allows ${g.allows.join(",")}`] : []), "config, read-only"].join("; "),
+    [
+      ...(g.allows?.length ? [`allows ${g.allows.join(",")}`] : []),
+      "config, read-only",
+      ...(i in cfg.unsentGrants ? [`${cfg.unsentGrants[i]}, never sent`] : []),
+    ].join("; "),
   ]);
   const file = fileGrants(data);
   for (const [raw, g] of file) {
@@ -184,9 +189,17 @@ export function formatBindings(cfg: PluginConfig, data: GrantsFile | null): stri
 }
 
 /** The `grants:` and `channel bindings:` lines of status. */
+/** The config grants that are never sent and why, e.g. `cfg-2 (no session)`; "" when none. */
+export function unsentSummary(cfg: PluginConfig): string {
+  return Object.entries(cfg.unsentGrants)
+    .map(([i, why]) => `cfg-${Number(i) + 1} (${clean(why, 60)})`)
+    .join(", ");
+}
+
 export function counts(cfg: PluginConfig, data: GrantsFile | null): [string, string] {
+  const unsent = Object.keys(cfg.unsentGrants).length;
   return [
-    `${cfg.grants.length} in config, ${fileGrants(data).length} by command`,
+    `${cfg.grants.length} in config${unsent ? ` (${unsent} never sent)` : ""}, ${fileGrants(data).length} by command`,
     `${cfg.channelBindings.length} in config, ${fileBindings(data).length} by command`,
   ];
 }

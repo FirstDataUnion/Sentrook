@@ -69,6 +69,8 @@ export interface PluginConfig {
   trustedRoles: string[];
   /** Grants from the plugin config; a scan also sends the bindings and the grants set by command. */
   grants: GrantConfig[];
+  /** Config grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`). */
+  unsentGrants: Record<number, string>;
   channelBindings: string[];
 }
 
@@ -187,6 +189,30 @@ function grantScope(raw: unknown): "session" | "persistent" {
   return raw === "persistent" ? "persistent" : "session";
 }
 
+/**
+ * Why a config grant with this scope is never sent: a config grant names no session to bind a session
+ * grant to, and an unknown scope reads as session.
+ */
+function unsentScope(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || raw === "persistent") return undefined;
+  if (raw === "session") return "no session";
+  return `unknown scope ${JSON.stringify(raw) ?? String(raw)}`;
+}
+
+/** The config's grants, and why each one that is never sent is not (see `PluginConfig`). */
+export function parseConfigGrants(raw: unknown): { grants: GrantConfig[]; unsentGrants: Record<number, string> } {
+  const grants: GrantConfig[] = [];
+  const unsentGrants: Record<number, string> = {};
+  for (const g of Array.isArray(raw) ? raw : []) {
+    const [parsed] = parseGrants([g]);
+    if (!parsed) continue;
+    const why = unsentScope((g as Record<string, unknown>).scope);
+    if (why) unsentGrants[grants.length] = why;
+    grants.push(parsed);
+  }
+  return { grants, unsentGrants };
+}
+
 export function parseGrants(raw: unknown): GrantConfig[] {
   if (!Array.isArray(raw)) return [];
   const out: GrantConfig[] = [];
@@ -237,7 +263,7 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     packs: list(cfg.packs).length ? list(cfg.packs) : ["tier1"],
     trustedSenders: list(cfg.trustedSenders ?? env.SENTROOK_TRUSTED_SENDERS),
     trustedRoles: list(cfg.trustedRoles ?? env.SENTROOK_TRUSTED_ROLES),
-    grants: parseGrants(cfg.grants),
+    ...parseConfigGrants(cfg.grants),
     // Where a scheduled job or route is expected to deliver; sent as destination grants, so a cron
     // delivery to its usual channel is sanctioned even though the channel is not in the prompt.
     channelBindings: list(cfg.channelBindings),

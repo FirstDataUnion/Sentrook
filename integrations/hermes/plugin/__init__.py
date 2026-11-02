@@ -520,6 +520,12 @@ def register(ctx: Any) -> None:
         logger.error(
             "sentrook endpoint configuration is invalid; every tool call will fail closed until fixed"
         )
+    if unsent := grants.unsent_summary(cfg):
+        logger.warning(
+            "sentrook config grants never sent: %s. A config grant has no session: drop its scope to "
+            "apply it in every session, or use /sentrook grant for one session; see /sentrook grants",
+            unsent,
+        )
 
 
 def settings_from_ctx(ctx: Any) -> dict[str, Any]:

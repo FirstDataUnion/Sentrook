@@ -12,11 +12,12 @@ A session grant is bound to one session: the one the command was sent from, or t
 names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan
 of the session sends, and is sent only on scans of that session: not in cron jobs, subagents or
 other chats. A session grant with no session (the command line without `--session`) is refused, and
-one stored without a session is never sent. Persistent grants and the plugin settings' grants are
-sent on every scan. A scan sends a session grant with its `session_ref` and a grant with an expiry
-with its `expires_at`, and Sentrook checks both; a settings grant with scope session has no session,
-so Sentrook gives it no weight. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed on as typed:
-Sentrook itself refuses patterns too broad to relieve on.
+one stored without a session is never sent. Persistent grants are sent on every scan. A settings
+grant has no session to be bound to, so one with scope session, or with an unknown scope (read as
+session), is never sent either; the listing, status, verify and the startup log name it. A scan sends a
+session grant with its `session_ref` and a grant with an expiry with its `expires_at`, and Sentrook
+checks both. An expired grant is not sent, and is dropped from the file on the next change. Patterns
+are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
 
 Every change is written to the traffic log as a `grants` record (none when the owner has turned the
 traffic log off).
@@ -102,9 +103,9 @@ def _bound(raw: dict[str, Any]) -> str | None:
 def effective(
     cfg: PluginConfig, data: dict[str, Any] | None, now: datetime, session_ref: str
 ) -> list[dict[str, Any]]:
-    """Every grant a scan of the session `session_ref` may send: config grants, config bindings,
-    then live file entries (a session grant only in its own session)."""
-    out = [dict(g) for g in cfg.grants]
+    """Every grant a scan of the session `session_ref` may send: persistent config grants, config
+    bindings, then live file entries (a session grant only in its own session)."""
+    out = [dict(g) for g in cfg.grants if g["scope"] == "persistent"]
     out += [
         {"kind": "destination", "pattern": p, "scope": "persistent"} for p in cfg.channel_bindings
     ]
@@ -156,17 +157,12 @@ def format_grants(
 ) -> str:
     """The grants in force, as seen from the session `ref` (None: no current session)."""
     rows = []
-    for i, g in enumerate(cfg.grants, 1):
+    for i, g in enumerate(cfg.grants):
         details = [f"allows {','.join(g['allows'])}"] if g.get("allows") else []
-        rows.append(
-            (
-                f"cfg-{i}",
-                g["kind"],
-                g["scope"],
-                g["pattern"],
-                "; ".join([*details, "config, read-only"]),
-            )
-        )
+        details.append("config, read-only")
+        if i in cfg.unsent_grants:
+            details.append(f"{cfg.unsent_grants[i]}, never sent")
+        rows.append((f"cfg-{i + 1}", g["kind"], g["scope"], g["pattern"], "; ".join(details)))
     file_rows = _file_grants(data)
     for raw, g in file_rows:
         details = [_session_of(raw, ref)] if g["scope"] == "session" else []
@@ -213,10 +209,16 @@ def format_bindings(cfg: PluginConfig, data: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def unsent_summary(cfg: PluginConfig) -> str:
+    """The config grants that are never sent and why, e.g. `cfg-2 (no session)`; "" when none."""
+    return ", ".join(f"cfg-{i + 1} ({_clean(why, 60)})" for i, why in cfg.unsent_grants.items())
+
+
 def counts(cfg: PluginConfig, data: dict[str, Any] | None) -> tuple[str, str]:
     """The `grants:` and `channel bindings:` lines of status."""
+    unsent = f" ({len(cfg.unsent_grants)} never sent)" if cfg.unsent_grants else ""
     return (
-        f"{len(cfg.grants)} in config, {len(_file_grants(data))} by command",
+        f"{len(cfg.grants)} in config{unsent}, {len(_file_grants(data))} by command",
         f"{len(cfg.channel_bindings)} in config, {len(_file_bindings(data))} by command",
     )
 

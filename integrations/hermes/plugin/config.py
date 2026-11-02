@@ -11,6 +11,7 @@ fails these checks is a configuration error and scans fail closed.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +68,8 @@ class PluginConfig:
     attended_platforms: frozenset[str] = frozenset()
     #: Grants from the settings; a scan also sends the bindings and the grants set by command.
     grants: list[dict[str, Any]] = field(default_factory=list)
+    #: Settings grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`).
+    unsent_grants: dict[int, str] = field(default_factory=dict)
     channel_bindings: list[str] = field(default_factory=list)
 
 
@@ -181,6 +184,17 @@ def _scope(raw: Any) -> str:
     return raw if raw in ("session", "persistent") else "session"
 
 
+def _unsent(raw: Any) -> str | None:
+    """Why a settings grant with this scope is never sent: a settings grant names no session to bind a
+    session grant to, and an unknown scope reads as session."""
+    if raw is None or raw == "persistent":
+        return None
+    if raw == "session":
+        return "no session"
+    typed = json.dumps(raw, ensure_ascii=False, separators=(",", ":"), default=str)
+    return f"unknown scope {typed}"
+
+
 def parse_grants(raw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for g in raw if isinstance(raw, list) else []:
@@ -199,6 +213,20 @@ def parse_grants(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def parse_config_grants(raw: Any) -> tuple[list[dict[str, Any]], dict[int, str]]:
+    """The settings' grants, and why each one that is never sent is not (see `PluginConfig`)."""
+    grants: list[dict[str, Any]] = []
+    unsent: dict[int, str] = {}
+    for g in raw if isinstance(raw, list) else []:
+        parsed = parse_grants([g])
+        if not parsed:
+            continue
+        if why := _unsent(g.get("scope")):
+            unsent[len(grants)] = why
+        grants.append(parsed[0])
+    return grants, unsent
+
+
 def resolve_config(
     settings: dict[str, Any] | None, env: dict[str, str] | None = None
 ) -> PluginConfig:
@@ -215,6 +243,7 @@ def resolve_config(
     ).lower()
     traffic = cfg.get("traffic_log") if isinstance(cfg.get("traffic_log"), dict) else {}
     traffic_path = _str(traffic.get("path")) or _str(env.get("SENTROOK_TRAFFIC_LOG"))
+    grants, unsent = parse_config_grants(cfg.get("grants"))
     return PluginConfig(
         endpoints=resolve_endpoints(cfg, env),
         mode="observe" if mode == "observe" else "enforce",
@@ -246,6 +275,7 @@ def resolve_config(
             p.lower()
             for p in _list(cfg.get("attended_platforms") or env.get("SENTROOK_ATTENDED_PLATFORMS"))
         ),
-        grants=parse_grants(cfg.get("grants")),
+        grants=grants,
+        unsent_grants=unsent,
         channel_bindings=_list(cfg.get("channel_bindings")),
     )
