@@ -11,7 +11,7 @@ import pytest
 import plugin
 from plugin import grants, owner
 from plugin.config import resolve_config
-from plugin.planir import relevant_grants, session_ref
+from plugin.planir import call_cwd, relevant_grants, session_ref
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
@@ -519,6 +519,8 @@ def test_a_grant_is_sent_when_the_call_could_be_covered_by_it(c):
         json.dumps(c["arguments"], ensure_ascii=False),
         identity=c["identity"],
         home=c.get("home", RELEVANCE["home"]),
+        workspace=c.get("workspace", RELEVANCE["workspace"]),
+        cwd=call_cwd(c["arguments"]),
     )
     assert bool(sent) is c["sent"]
 
@@ -539,3 +541,17 @@ def test_provider_and_home_grants_reach_the_scan(term, monkeypatch):
     scan = term.scans[-1]
     assert scan["pending_call"]["provider"]["identity"] == "npm:@acme/notes-mcp"
     assert [g["pattern"] for g in scan["grants"]] == ["npm:@acme/notes-mcp", "~/notes/*"]
+
+
+def test_dot_paths_reach_the_scan_from_the_call_cwd_and_the_workspace(term, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    term.ctx.settings["grants"] = [
+        {"kind": "file", "pattern": "~/notes/*", "allows": ["read"]},
+        {"kind": "file", "pattern": f"{tmp_path}/src/*", "allows": ["read"]},
+    ]
+    hook = term.ctx.hooks["pre_tool_call"]
+    run_from_home = {"command": "cat ./notes/a.md", "workdir": str(Path.home())}
+    hook(tool_name="terminal", args=run_from_home, tool_call_id="c0", session_id="S1")
+    assert [g["pattern"] for g in term.scans[-1]["grants"]] == ["~/notes/*"]
+    hook(tool_name="read_file", args={"path": "./src/a.py"}, tool_call_id="c1", session_id="S1")
+    assert [g["pattern"] for g in term.scans[-1]["grants"]] == [f"{tmp_path}/src/*"]

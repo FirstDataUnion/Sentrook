@@ -11,7 +11,7 @@ import { resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
-import { relevantGrants, sessionRef } from "./planir.ts";
+import { callCwd, relevantGrants, sessionRef } from "./planir.ts";
 
 /**
  * Shared with the Hermes plugin's tests: both hosts print the same text for the same state. Times are
@@ -118,7 +118,7 @@ async function registered(pluginConfig: Record<string, unknown> = {}, hostConfig
   /** The grants sent with one scan of `command` in session `sid`. */
   const scan = async (command: string, sid = "S1", extra: Record<string, unknown> = {}) =>
     (await call("exec", { command }, sid, extra)).grants;
-  return { commands, cliActions, call, scan, unknownOptions };
+  return { commands, cliActions, call, scan, on, unknownOptions };
 }
 
 /** What the host passes an admitted owner on a Control UI connection, sent from session `S1`. */
@@ -611,7 +611,12 @@ const RELEVANCE = JSON.parse(readFileSync(path.join(FIXTURES, "relevance.json"),
 /** Shared with the Hermes plugin's tests: both hosts send the same grants for the same call. */
 for (const c of RELEVANCE.cases) {
   test(`relevance: ${c.case}`, () => {
-    const sent = relevantGrants([c.grant], JSON.stringify(c.arguments), { identity: c.identity, home: c.home ?? RELEVANCE.home });
+    const sent = relevantGrants([c.grant], JSON.stringify(c.arguments), {
+      identity: c.identity,
+      home: c.home ?? RELEVANCE.home,
+      workspace: c.workspace ?? RELEVANCE.workspace,
+      cwd: callCwd(c.arguments),
+    });
     assert.equal(sent.length > 0, c.sent);
   });
 }
@@ -630,4 +635,17 @@ test("provider and home grants reach the scan", async () => {
   const scan = await r.call("notes__read", { path: path.join(homedir(), "notes", "a.md") });
   assert.equal(scan.pending_call.provider.identity, "npm:@acme/notes-mcp");
   assert.deepEqual(patterns(scan.grants), ["npm:@acme/notes-mcp", "~/notes/*"]);
+});
+
+test("./ paths reach the scan from the call's cwd and the workspace", async () => {
+  const r = await registered({
+    grants: [
+      { kind: "file", pattern: "~/notes/*", allows: ["read"] },
+      { kind: "file", pattern: "/srv/ws/src/*", allows: ["read"] },
+    ],
+  });
+  for (const h of r.on.before_agent_run ?? []) h({ runId: "r1" }, { runId: "r1", workspaceDir: "/srv/ws" });
+  const fromHome = await r.call("exec", { command: "cat ./notes/a.md", workdir: homedir() });
+  assert.deepEqual(patterns(fromHome.grants), ["~/notes/*"]);
+  assert.deepEqual(patterns((await r.call("read", { path: "./src/a.py" })).grants), ["/srv/ws/src/*"]);
 });
