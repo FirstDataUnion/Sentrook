@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, grants, owner, snooze
+from . import cli, commands, grants, owner, skill_review, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -55,6 +55,7 @@ SETTINGS_KEYS = (
     "input_cap_bytes",
     "history_args_cap_bytes",
     "packs",
+    "skill_review",
 )
 
 _ctx: Any = None
@@ -220,6 +221,7 @@ def _scan_one(
     turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
     facts = session_facts()
     host_cfg = hermes_config()
+    loop_save = skill_review.is_loop_save(str(kw.get("tool_name") or ""))
     redactor = Redactor("standard", store.salt())
     built = build_planir(
         kw=kw,
@@ -232,6 +234,7 @@ def _scan_one(
         env=env,
         host_cfg=host_cfg,
         grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid)),
+        loop_save=loop_save,
     )
     planir = built["planir"]
     unattended = is_unattended(
@@ -275,6 +278,7 @@ def _scan_one(
     directive: dict[str, Any] | None = None
     verdict: str | None = None
     snoozed = False
+    relieved = False
     if isinstance(result, ScanOk):
         resp = result.response
         verdict = decide(resp, cfg.review_at, cfg.block_at)
@@ -285,6 +289,16 @@ def _scan_one(
         entry["tiers"] = tiers_of(resp)
         if cfg.mode == "observe" or verdict == "allow":
             entry["decision"] = "allowed"
+        elif (
+            loop_save
+            and cfg.skill_review == "allow"
+            and verdict == "review"
+            and skill_review.relieves(resp)
+        ):
+            # Hermes's own loop saving a skill or memory, with no reason beyond the save and the loop's
+            # own context: allowed, attended or not (before an unattended review becomes a block).
+            entry["decision"] = "allowed"
+            relieved = True
         elif verdict == "block" or unattended:
             # A review nobody can answer (or Hermes would auto-approve) is a block.
             entry["decision"] = "blocked"
@@ -339,6 +353,7 @@ def _scan_one(
             "verdict": verdict,
             "decision": entry["decision"],
             **({"snoozed": True} if snoozed else {}),
+            **({"skill_review": True} if loop_save else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
             "response": result.response if isinstance(result, ScanOk) else None,
@@ -349,7 +364,7 @@ def _scan_one(
     )
     if isinstance(result, ScanOk):
         logger.info(
-            "scan step=%s tool=%s risk=%s enforced=%s status=%s verdict=%s decision=%s%s ms=%s",
+            "scan step=%s tool=%s risk=%s enforced=%s status=%s verdict=%s decision=%s%s%s ms=%s",
             built["step"],
             built["tool"],
             result.response.get("risk"),
@@ -358,6 +373,7 @@ def _scan_one(
             verdict,
             entry["decision"],
             " (snoozed)" if snoozed else "",
+            " (skill review)" if relieved else " (loop save)" if loop_save else "",
             result.latency_ms,
         )
     return directive
@@ -505,7 +521,8 @@ def register(ctx: Any) -> None:
         return e.url if e.ok else f"INVALID ({e.reason})"
 
     logger.info(
-        "sentrook %s registered: scan=%s issuer=%s%s mode=%s review>=%s block>=%s on_scan_error=%s traffic=%s",
+        "sentrook %s registered: scan=%s issuer=%s%s mode=%s review>=%s block>=%s on_scan_error=%s "
+        "skill_review=%s traffic=%s",
         PLUGIN_VERSION,
         show(ep.scan),
         show(ep.issuer),
@@ -514,6 +531,7 @@ def register(ctx: Any) -> None:
         cfg.review_at,
         cfg.block_at,
         cfg.on_scan_error,
+        cfg.skill_review,
         cfg.traffic_log_path if cfg.traffic_log_enabled else "off",
     )
     if not ep.scan.ok or not ep.issuer.ok:

@@ -51,6 +51,14 @@ config_schema:
     description: >
       Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
       Hermes approval prompts). Elsewhere outside chat platforms, reviews block. Env SENTROOK_ATTENDED_PLATFORMS.
+  skill_review:
+    type: str
+    default: allow
+    description: >
+      allow | review. allow lets Hermes's own background skill and memory saves (the self-improvement
+      review and the curator) through when Sentrook finds nothing beyond the save itself; anything else
+      Sentrook finds, a block or an enforced floor still applies. review decides them like any
+      other call. Any other value reads as review. Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
     type: int
     default: 30000
