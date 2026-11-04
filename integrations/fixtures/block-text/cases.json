@@ -793,6 +793,192 @@
       },
       "category": "privileges",
       "text": "Sentrook security block: this tool call did not run because it changes privileges on this machine. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
+    },
+    {
+      "name": "a send with no sensitive source is not called sensitive",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 100,
+        "enforced": "block",
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "cl0ud-sync.io"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.aws/credentials"
+          }
+        },
+        "reasons": [
+          {
+            "code": "floor.known_bad_entity"
+          },
+          {
+            "code": "reputation.known_bad_host"
+          },
+          {
+            "code": "send.off_host"
+          }
+        ]
+      },
+      "category": "sends_data",
+      "text": "Sentrook security block: this tool call did not run because it sends data to a destination outside this machine. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
+    },
+    {
+      "name": "remote delete is destructive",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "cl0ud-sync.io"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.aws/credentials"
+          }
+        },
+        "reasons": [
+          {
+            "code": "remote.delete"
+          }
+        ]
+      },
+      "category": "destructive",
+      "text": "Sentrook security block: this tool call did not run because it deletes or overwrites data in a way that is hard to undo. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
+    },
+    {
+      "name": "listing marks irreplaceable",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "cl0ud-sync.io"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.aws/credentials"
+          }
+        },
+        "reasons": [
+          {
+            "code": "lineage.listing_marks_irreplaceable"
+          }
+        ]
+      },
+      "category": "destructive",
+      "text": "Sentrook security block: this tool call did not run because it deletes or overwrites data in a way that is hard to undo. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
+    },
+    {
+      "name": "listing marks a live table",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "cl0ud-sync.io"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.aws/credentials"
+          }
+        },
+        "reasons": [
+          {
+            "code": "lineage.listing_marks_live_table"
+          }
+        ]
+      },
+      "category": "destructive",
+      "text": "Sentrook security block: this tool call did not run because it deletes or overwrites data in a way that is hard to undo. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
+    },
+    {
+      "name": "model judge: sensitivity",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "cl0ud-sync.io"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.aws/credentials"
+          }
+        },
+        "reasons": [
+          {
+            "code": "jev.sensitivity"
+          }
+        ]
+      },
+      "category": "sensitive_data",
+      "text": "Sentrook security block: this tool call did not run because it reads or sends sensitive data, such as credentials or personal data. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
+    },
+    {
+      "name": "model judge: concealment",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "cl0ud-sync.io"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.aws/credentials"
+          }
+        },
+        "reasons": [
+          {
+            "code": "jev.concealment"
+          }
+        ]
+      },
+      "category": "concealment",
+      "text": "Sentrook security block: this tool call did not run because it hides what it does, or hides information from the user. Do not retry it, rephrase it or try to reach the same result another way unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed."
     }
   ]
 }

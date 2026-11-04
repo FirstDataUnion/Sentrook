@@ -141,8 +141,12 @@ def test_unattended_review_blocks(harness):
     r = call(harness, "c1", "rm REVIEW")
     assert r["action"] == "block"
     # A review nobody can answer gets the same agent text as any block: no codes, no risk.
-    assert r["message"].startswith("Sentrook security block: this tool call did not run because")
-    assert "exfil" not in r["message"] and "55" not in r["message"]
+    assert r["message"] == (
+        "Sentrook security block: this tool call did not run because it reads or sends sensitive "
+        "data, such as credentials or personal data. Do not retry it, rephrase it or try to reach the "
+        "same result another way unless the user explicitly tells you to. Tell the user what was "
+        "blocked and why, and ask how they want to proceed."
+    )
     assert harness.scans[0]["trigger"]["kind"] == "scheduled"
     assert harness.scans[0]["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
 

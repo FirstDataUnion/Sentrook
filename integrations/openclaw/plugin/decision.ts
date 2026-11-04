@@ -86,6 +86,7 @@ export function reviewCopy(resp: ScanResponse, toolName: string): { title: strin
  */
 const BLOCK_CATEGORIES = {
   sensitive_data: "it reads or sends sensitive data, such as credentials or personal data",
+  sends_data: "it sends data to a destination outside this machine",
   untrusted_code: "it runs or installs code from a source that is not trusted",
   concealment: "it hides what it does, or hides information from the user",
   agent_setup:
@@ -124,7 +125,7 @@ const CATEGORY_BY_CODE: Record<string, BlockCategory> = {
 const CATEGORY_BY_DOMAIN: Record<string, BlockCategory> = {
   path: "sensitive_data",
   exfil: "sensitive_data",
-  send: "sensitive_data",
+  send: "sends_data",
   artefact: "sensitive_data",
   code: "untrusted_code",
   conceal: "concealment",
