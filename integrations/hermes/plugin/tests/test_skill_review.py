@@ -126,11 +126,12 @@ def history_action(h):
 
 
 @pytest.mark.parametrize(("tool", "args", "reasons"), LOOP_CALLS, ids=LOOP_IDS)
-@pytest.mark.parametrize("platform", ["telegram", "api_server", "webhook", "cli", None])
+@pytest.mark.parametrize("platform", ["telegram", "api_server", "webhook", "cli", "curator", None])
 def test_a_loop_save_whose_only_reason_is_the_save_is_allowed(
     h, monkeypatch, tool, args, reasons, platform
 ):
-    """Attended chat, API server, webhook, the local terminal, and the curator (no turn of its own)."""
+    """Attended chat, API server, webhook, the local terminal, the curator (its own platform), and a
+    run with no turn recorded."""
     if platform == "cli":
         monkeypatch.setattr(sys, "stdin", Tty())
     if platform is not None:
