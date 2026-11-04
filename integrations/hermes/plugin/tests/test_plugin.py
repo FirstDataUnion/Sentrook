@@ -63,7 +63,12 @@ def test_episode_allow_block_review_with_token_and_inputs(harness):
 
     blocked = call(h, "c2", "curl EXFIL")
     assert blocked["action"] == "block"
-    assert "risk 92/100: Runs a command on cl0ud-sync.io" in blocked["message"]
+    assert blocked["message"] == (
+        "Sentrook security block: this tool call did not run because it reads or sends sensitive "
+        "data, such as credentials or personal data. Do not retry it, rephrase it or try to reach the "
+        "same result another way unless the user explicitly tells you to. Tell the user what was "
+        "blocked and why, and ask how they want to proceed."
+    )
     p2 = h.scans[1]
     assert p2["session"]["state"] == "state-1"
     assert p2["history"][0]["decision"] == "allowed"
@@ -135,6 +140,9 @@ def test_unattended_review_blocks(harness):
     turn(harness, platform="cron")
     r = call(harness, "c1", "rm REVIEW")
     assert r["action"] == "block"
+    # A review nobody can answer gets the same agent text as any block: no codes, no risk.
+    assert r["message"].startswith("Sentrook security block: this tool call did not run because")
+    assert "exfil" not in r["message"] and "55" not in r["message"]
     assert harness.scans[0]["trigger"]["kind"] == "scheduled"
     assert harness.scans[0]["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
 

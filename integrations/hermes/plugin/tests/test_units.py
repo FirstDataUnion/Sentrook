@@ -1,11 +1,19 @@
 import json
 import re
 import time
+from pathlib import Path
 
 import pytest
 
 from plugin.config import parse_endpoint, resolve_config
-from plugin.decision import REVIEW_MESSAGE_MAX, decide, review_message
+from plugin.decision import (
+    REVIEW_MESSAGE_MAX,
+    block_category,
+    block_reason,
+    decide,
+    describe,
+    review_message,
+)
 from plugin.intent import sender_of
 from plugin.planir import tool_kind
 from plugin.redact import Redactor, cap_args, cap_head_tail
@@ -528,3 +536,37 @@ def test_caps():
     assert truncated and size == 10_008 and text.startswith("HEAD") and text.endswith("TAIL")
     capped = cap_args({"command": "a" * 10_000, "cwd": "/w"}, 4096)
     assert capped["cwd"] == "/w" and len(str(capped)) < 6000
+
+
+BLOCK_TEXT = json.loads(
+    (Path(__file__).resolve().parents[3] / "fixtures" / "block-text" / "cases.json").read_text()
+)["cases"]
+
+
+@pytest.mark.parametrize("case", BLOCK_TEXT, ids=[c["name"] for c in BLOCK_TEXT])
+def test_block_text_is_the_agreed_agent_text(case):
+    assert block_category(case["response"]) == case["category"]
+    assert block_reason(case["response"]) == case["text"]
+
+
+@pytest.mark.parametrize("case", BLOCK_TEXT, ids=[c["name"] for c in BLOCK_TEXT])
+def test_block_text_names_no_code_risk_entity_or_description(case):
+    resp = case["response"]
+    text = block_reason(resp)
+    for r in resp.get("reasons") or []:
+        code = r.get("code") if isinstance(r, dict) else None
+        if isinstance(code, str) and code:
+            assert code not in text
+    for e in (resp.get("entities") or {}).values():
+        assert e["display"] not in text
+    assert not re.search(r"\d", text)
+    assert describe(resp, "exec") not in text
+    assert "enforced" not in text
+
+
+def test_the_review_prompt_still_shows_the_reasons_the_block_text_leaves_out():
+    resp = BLOCK_TEXT[1]["response"]
+    assert review_message(resp, "exec") == (
+        "Sentrook (risk 90): Sends ~/.aws/credentials to cl0ud-sync.io. "
+        "Why: exfil.exec_egress, path.credential_store."
+    )

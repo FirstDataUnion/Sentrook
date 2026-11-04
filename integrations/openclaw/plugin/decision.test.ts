@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { blockReason, decide, describe, reviewCopy } from "./decision.ts";
+import { blockCategory, blockReason, decide, describe, reviewCopy } from "./decision.ts";
 import type { ScanResponse } from "./scanClient.ts";
 
 const resp = (risk: number, enforced: ScanResponse["enforced"] = null, extra: Partial<ScanResponse> = {}): ScanResponse => ({
@@ -37,7 +39,40 @@ test("tool description fills entity placeholders", () => {
   const card = reviewCopy(r, "exec");
   assert.equal(card.title, "Sentrook: review exec (risk 90)");
   assert.equal(card.description, "Sends ~/.aws/credentials to cl0ud-sync.io. Why: exfil.exec_egress, path.cloud_credentials.");
-  assert.match(blockReason(r, "exec"), /^Sentrook blocked this tool call, risk 90\/100: Sends/);
+  assert.match(blockReason(r), /^Sentrook security block: this tool call did not run because it reads or sends/);
+});
+
+const BLOCK_TEXT = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../fixtures/block-text/cases.json", import.meta.url)), "utf8"),
+) as { cases: { name: string; response: ScanResponse; category: string; text: string }[] };
+
+test("block text: the agreed agent text and coarse category for each case", () => {
+  for (const c of BLOCK_TEXT.cases) {
+    assert.equal(blockCategory(c.response), c.category, c.name);
+    assert.equal(blockReason(c.response), c.text, c.name);
+  }
+});
+
+test("block text never names a reason code, the risk, an entity or the tool description", () => {
+  for (const c of BLOCK_TEXT.cases) {
+    const text = blockReason(c.response);
+    for (const r of c.response.reasons ?? []) {
+      const code = (r as { code?: unknown } | null)?.code;
+      if (typeof code === "string" && code) assert.ok(!text.includes(code), `${c.name}: ${code}`);
+    }
+    for (const e of Object.values(c.response.entities ?? {})) if (e.display) assert.ok(!text.includes(e.display), c.name);
+    assert.ok(!/\d/.test(text), `${c.name}: no risk or score`);
+    assert.ok(!text.includes(describe(c.response, "exec")), c.name);
+    assert.ok(!text.includes("enforced"), c.name);
+  }
+});
+
+test("the review card still shows the reasons the block text leaves out", () => {
+  const blocked = BLOCK_TEXT.cases[1].response;
+  assert.equal(
+    reviewCopy(blocked, "exec").description,
+    "Sends ~/.aws/credentials to cl0ud-sync.io. Why: exfil.exec_egress, path.credential_store.",
+  );
 });
 
 const scored = (extra: Partial<ScanResponse> = {}): ScanResponse =>

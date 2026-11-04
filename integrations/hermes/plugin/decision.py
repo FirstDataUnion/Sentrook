@@ -59,10 +59,6 @@ def _reason_codes(resp: dict[str, Any]) -> list[str]:
     return seen
 
 
-def _reasons(resp: dict[str, Any], limit: int) -> str:
-    return ", ".join(_reason_codes(resp)[:limit])
-
-
 def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[: max(0, n - 1)] + "…"
 
@@ -98,13 +94,83 @@ def review_message(resp: dict[str, Any], tool: str) -> str:
     )
 
 
-def block_reason(resp: dict[str, Any], tool: str) -> str:
-    risk = round(float(resp.get("risk") or 0))
-    why = _reasons(resp, 5)
-    floor = " (enforced)" if resp.get("enforced") == "block" else ""
-    return _clip(
-        f"Sentrook blocked this tool call{floor}, risk {risk}/100: {describe(resp, tool)}."
-        + (f" Reasons: {why}." if why else "")
-        + " Do not retry it in another form; ask the user if it is needed.",
-        500,
+# What the agent is told about a block. It names a coarse category only, never the reason codes, the
+# risk score, the entities or the tool description: those would tell a steered agent which detector to
+# rephrase around. The human sees the detail in the review prompt, `why` and the traffic log.
+BLOCK_CATEGORIES: dict[str, str] = {
+    "sensitive_data": "it reads or sends sensitive data, such as credentials or personal data",
+    "untrusted_code": "it runs or installs code from a source that is not trusted",
+    "concealment": "it hides what it does, or hides information from the user",
+    "agent_setup": (
+        "it changes the agent's own setup, such as its configuration, memory, plugins, skills or "
+        "scheduled jobs"
+    ),
+    "safety_controls": (
+        "it changes Sentrook's or the host's safety settings, which only the user may change"
+    ),
+    "destructive": "it deletes or overwrites data in a way that is hard to undo",
+    "privileges": "it changes privileges on this machine",
+    "remote_account": (
+        "it makes a lasting change to an account, a payment or access rights on a remote service"
+    ),
+    "general": "it does not look safe in the context of this session",
+}
+
+# Reason codes whose category differs from their domain's, or whose domain has none.
+_CATEGORY_BY_CODE: dict[str, str] = {
+    "floor.untrusted_code_execution": "untrusted_code",
+    "floor.guardrail_tampering": "safety_controls",
+    "selfmod.host_approvals": "safety_controls",
+    "remote.delete": "destructive",
+    "remote.force_push": "destructive",
+    "sensitivity.session_holds_sensitive": "sensitive_data",
+    "jev.sensitivity": "sensitive_data",
+    "jev.self_modification": "agent_setup",
+    "jev.concealment": "concealment",
+    "lineage.secret_carried_to_send": "sensitive_data",
+    "lineage.moved_into_destroyed_tree": "destructive",
+    "lineage.listing_marks_irreplaceable": "destructive",
+    "lineage.listing_marks_live_table": "destructive",
+    "lineage.filter_silences_security_notices": "concealment",
+}
+
+# Domains that say what kind of harm a call does. Domains that say why a call is suspect (exposure,
+# origin, reputation, retry, trigger) or how sure the scan is (coverage, agreement) have no category.
+_CATEGORY_BY_DOMAIN: dict[str, str] = {
+    "path": "sensitive_data",
+    "exfil": "sensitive_data",
+    "send": "sensitive_data",
+    "artefact": "sensitive_data",
+    "code": "untrusted_code",
+    "conceal": "concealment",
+    "selfmod": "agent_setup",
+    "guardrail": "safety_controls",
+    "destroy": "destructive",
+    "priv": "privileges",
+    "remote": "remote_account",
+}
+
+
+def block_category(resp: dict[str, Any]) -> str:
+    """The category of the first reason, in contribution order, that has one; `general` when none
+    does."""
+    reasons = resp.get("reasons")
+    if not isinstance(reasons, list):
+        return "general"
+    for r in reasons:
+        code = r.get("code") if isinstance(r, dict) else None
+        if not isinstance(code, str) or not code:
+            continue
+        category = _CATEGORY_BY_CODE.get(code) or _CATEGORY_BY_DOMAIN.get(code.split(".", 1)[0])
+        if category:
+            return category
+    return "general"
+
+
+def block_reason(resp: dict[str, Any]) -> str:
+    return (
+        "Sentrook security block: this tool call did not run because "
+        f"{BLOCK_CATEGORIES[block_category(resp)]}. Do not retry it, rephrase it or try to reach the "
+        "same result another way unless the user explicitly tells you to. Tell the user what was "
+        "blocked and why, and ask how they want to proceed."
     )
