@@ -68,6 +68,7 @@ from .grants import (
 )
 from .host_text import owner_words
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
+from .skill_steps import skill_step_calls
 from .trust import Trust, classify
 
 __all__ = [
@@ -775,6 +776,16 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
+    # A self-edit that writes a skill: the skill's commands run later with nobody asked, so they are judged now as
+    # exec calls of their own.
+    # Their entities are not added with roles: an unknown package in an ordinary skill would then read as an
+    # unvetted code source on its own; the risky-step suspicion and the self-edit questions judge them instead.
+    if planir.is_self_edit:
+        try:
+            steps = skill_step_calls(platform, pending)
+            resolved = [*resolved, *steps]
+        except Exception as exc:  # noqa: BLE001
+            coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)

@@ -435,7 +435,11 @@ def test_question_set_env_round_trip_and_health():
         jev = httpx.get(srv.url + "/healthz").json()["jev"]
     finally:
         srv.stop()
-    assert jev["question_sets"] == {"exposure": "exposure-v2", "call": "call-v2"}
+    assert jev["question_sets"] == {
+        "exposure": "exposure-v2",
+        "call": "call-v2",
+        "self_edit": "selfedit-v1",
+    }
     assert jev["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
 
 
