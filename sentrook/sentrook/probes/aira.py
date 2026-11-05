@@ -46,6 +46,26 @@ from ..probes.base import Contribution, Envelope, Floor
 __all__ = ["AiraProbe", "AIRA_VERSION"]
 
 
+#: Suspicion a rule finding on a command in a saved skill carries (the finding's reason code -> value). A skill is a
+#: procedure the agent follows later with nobody asked, so a risky step in it is suspect in itself, not only
+#: consequential; the commands come from `prepare.skill_steps` as calls with ids `skill_step:<n>`.
+SKILL_STEP_SUSPICION: dict[str, float] = {
+    "code.fetch_to_shell": 0.8,
+    "code.decode_to_shell": 0.8,
+    "code.unvetted_source": 0.6,
+    "code.install_from_url": 0.6,
+    "exfil.exec_egress": 0.85,
+    "exfil.web_post": 0.85,
+    "exfil.placeholder_in_argv": 0.85,
+    "send.off_host": 0.5,
+    "path.credential_store": 0.6,
+    "path.credential_bearing_config": 0.5,
+    "priv.sudo": 0.5,
+    "conceal.encoded_payload": 0.8,
+    "conceal.output_suppressed": 0.4,
+}
+
+
 class AiraProbe:
     """`Probe` implementation for `ProbeStep.AIRA`.
 
@@ -129,6 +149,24 @@ class AiraProbe:
             feeds = is_sibling and bool(
                 fed_paths([p.value for p in a.paths if p.is_destination], pending_paths)
             )
+            if (call.call_id or "").startswith("skill_step:"):
+                # A saved skill's command runs later with nobody asked: a risky finding on it is suspicion too.
+                for f in findings:
+                    for c in f.contributions:
+                        weight = SKILL_STEP_SUSPICION.get(c.reason or "")
+                        key = ("suspicion.overreach", weight, c.subject, "selfedit.risky_step")
+                        if weight and key not in seen_contributions:
+                            seen_contributions.add(key)
+                            contributions.append(
+                                Contribution(
+                                    signal="suspicion.overreach",
+                                    value=weight,
+                                    subject=c.subject,
+                                    reason="selfedit.risky_step",
+                                )
+                            )
+                            if "selfedit.risky_step" not in reasons:
+                                reasons.append("selfedit.risky_step")
             for f in findings:
                 classes.add(f.cls)
                 if f.rule not in rules:

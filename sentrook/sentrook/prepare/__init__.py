@@ -68,6 +68,7 @@ from .grants import (
 )
 from .host_text import owner_words
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
+from .skill_steps import skill_step_calls
 from .trust import Trust, classify
 
 __all__ = [
@@ -775,6 +776,13 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
+    # A self-edit that writes a skill: the skill's commands run later with nobody asked, so they are judged now as
+    # exec calls of their own.
+    if planir.is_self_edit:
+        try:
+            resolved = [*resolved, *skill_step_calls(platform, pending)]
+        except Exception as exc:  # noqa: BLE001
+            coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)

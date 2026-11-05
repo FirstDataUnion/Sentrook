@@ -77,6 +77,31 @@ def _usage_summary(results: list[DecisionResult]) -> dict[str, Any]:
     }
 
 
+def mapped_contributions(qs: QuestionSet, answers: dict[str, Any]) -> list[Contribution]:
+    """Contributions for a question set that defines its own `mapping` (the self-edit sets). A yes/no answer gives
+    the probability that counts against the call (`against_when`), with doubt below `knee` counted as none and the
+    rest rescaled to 0-1; a score answer gives its level on 0-1."""
+    out: list[Contribution] = []
+    mapping = qs.mapping or {}
+    for q, m in (mapping.get("noul") or {}).items():
+        if q not in answers:
+            continue
+        v = _noul(answers[q])
+        v = v if m.get("against_when", True) else 1.0 - v
+        knee = float(m.get("knee", 0.0))
+        if knee:
+            v = max(0.0, (v - knee) / (1.0 - knee))
+        out.append(Contribution(signal=m["signal"], value=v, reason=m["reason"]))
+    for q, m in (mapping.get("score") or {}).items():
+        if q in answers:
+            out.append(
+                Contribution(
+                    signal=m["signal"], value=_score(answers[q], qs.levels(q)), reason=m["reason"]
+                )
+            )
+    return out
+
+
 class _JevProbe:
     step: ProbeStep
 
@@ -280,6 +305,8 @@ class JevCallProbe(_JevProbe):
             return env
 
         contributions: list[Contribution] = []
+        if self.qs.mapping:
+            contributions += mapped_contributions(self.qs, answers)
         if "supported_by_request" in answers:
             contributions.append(
                 Contribution(
@@ -289,7 +316,7 @@ class JevCallProbe(_JevProbe):
                 )
             )
         for q, signal in CALL_SIGNALS.items():
-            if q not in answers:
+            if q not in answers or self.qs.mapping:
                 continue
             a = answers[q]
             value = _noul(a) if a.get("type") == "noul" else _score(a, self.qs.levels(q))

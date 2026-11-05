@@ -173,7 +173,8 @@ def converge(
 ) -> ConvergeResult:
     claims = collect(envelopes)
     merged = merge(claims)
-    tiers = compute(merged, envelopes, params)
+    self_edit = prepared.planir.is_self_edit
+    tiers = compute(merged, envelopes, params, self_edit=self_edit)
 
     known_good = [
         eid
@@ -186,7 +187,7 @@ def converge(
     if relief:
         excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
-        tiers = compute(merged, envelopes, params)
+        tiers = compute(merged, envelopes, params, self_edit=self_edit)
 
     floors: list[FloorApplied] = []
     risk = tiers.risk

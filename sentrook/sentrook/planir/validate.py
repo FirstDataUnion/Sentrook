@@ -18,6 +18,7 @@ MAX_INPUT_CONTENT_CHARS = 1_048_576
 MAX_HISTORY_ARG_CHARS = 65_536
 MAX_HISTORY_STEPS = 200
 MAX_NEW_INPUTS = 200
+MAX_SELF_EDIT_ENTRIES = 200
 
 
 class InvalidPlanIR(ValueError):
@@ -56,6 +57,13 @@ def check(planir: PlanIR, raw_scan_kind: str | None = None) -> None:
     if len(planir.new_inputs) > MAX_NEW_INPUTS:
         raise InvalidPlanIR(
             "oversize", f"{len(planir.new_inputs)} new_inputs (max {MAX_NEW_INPUTS})"
+        )
+
+    if planir.self_edit is not None and len(planir.self_edit.conversation) > MAX_SELF_EDIT_ENTRIES:
+        raise InvalidPlanIR(
+            "oversize",
+            f"self_edit.conversation has {len(planir.self_edit.conversation)} entries "
+            f"(max {MAX_SELF_EDIT_ENTRIES})",
         )
 
     steps = [h.step for h in history]

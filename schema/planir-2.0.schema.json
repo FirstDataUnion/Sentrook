@@ -59,6 +59,123 @@
       "title": "ContentType",
       "type": "string"
     },
+    "ConversationEntry": {
+      "additionalProperties": true,
+      "description": "One entry of the conversation a self-edit was made from, as the plugin captured it (redacted, capped).",
+      "properties": {
+        "arguments": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "tool entries",
+          "title": "Arguments"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "tool entries: the result, or an excerpt of it",
+          "title": "Content"
+        },
+        "excerpt_of_chars": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "tool entries: the full result length when `content` is an excerpt",
+          "title": "Excerpt Of Chars"
+        },
+        "role": {
+          "$ref": "#/$defs/ConversationRole",
+          "default": "other"
+        },
+        "sender": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sender"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "user entries: who wrote it, mapped as for the trigger"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "user and assistant entries",
+          "title": "Text"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "tool entries",
+          "title": "Tool"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn"
+        }
+      },
+      "title": "ConversationEntry",
+      "type": "object"
+    },
+    "ConversationRole": {
+      "enum": [
+        "user",
+        "assistant",
+        "tool",
+        "other"
+      ],
+      "title": "ConversationRole",
+      "type": "string"
+    },
     "Decision": {
       "description": "What happened to an earlier step. `review_timed_out`, `denied_by_user` and `blocked` feed\n`retry_after_denial`; the `*_on_error` values mark steps with no usable scan.",
       "enum": [
@@ -757,6 +874,48 @@
       "title": "ScanKind",
       "type": "string"
     },
+    "SelfEdit": {
+      "additionalProperties": true,
+      "description": "A self-edit: the host's own background process (not a person) saving to the agent's memory or skills. The\nplugin declares it, with trigger `system`, and sends the conversation the process reviewed, so the save can be\njudged against what was actually said and done. Ignored unless the trigger is `system`.",
+      "properties": {
+        "conversation": {
+          "items": {
+            "$ref": "#/$defs/ConversationEntry"
+          },
+          "title": "Conversation",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/SelfEditKind",
+          "default": "other"
+        },
+        "store": {
+          "$ref": "#/$defs/SelfEditStore",
+          "default": "other"
+        }
+      },
+      "title": "SelfEdit",
+      "type": "object"
+    },
+    "SelfEditKind": {
+      "description": "Which host process made a self-edit.",
+      "enum": [
+        "background_review",
+        "curator",
+        "other"
+      ],
+      "title": "SelfEditKind",
+      "type": "string"
+    },
+    "SelfEditStore": {
+      "enum": [
+        "memory",
+        "skills",
+        "other"
+      ],
+      "title": "SelfEditStore",
+      "type": "string"
+    },
     "Sender": {
       "additionalProperties": true,
       "properties": {
@@ -1096,6 +1255,18 @@
     "scan_kind": {
       "$ref": "#/$defs/ScanKind",
       "default": "pending_call"
+    },
+    "self_edit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SelfEdit"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Set only on the host's own background saves to memory or skills, with trigger system"
     },
     "sent_at": {
       "format": "date-time",
