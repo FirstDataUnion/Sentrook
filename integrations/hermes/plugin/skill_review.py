@@ -16,7 +16,8 @@ outside `LOOP_REASONS` (the change, the system trigger, and content the agent ch
 enforced review or block, and a review with any other reason (an exposure or tainted session,
 exfiltration, untrusted origin, any call-judge reason, missing coverage, anything else) are left as
 they are.
-The plugin never answers an approval itself. `skill_review: review` turns the relief off.
+The plugin never answers an approval itself. `skill_review: review` turns the relief off; any other
+value reads as allow, and status and the startup log name it.
 
 Every loop save is sent with trigger `system` (the fork otherwise inherits the owner's chat) and its
 traffic record says `skill_review: true`; `/sentrook history` shows a relieved one as
@@ -92,8 +93,17 @@ def counts(path: Path) -> dict[str, int]:
     return out
 
 
+def setting_text(setting: str, unknown: str | None) -> str:
+    """The setting as status shows it, naming a value that was not understood."""
+    if unknown is None:
+        return setting
+    shown = "".join(c if c.isprintable() else "?" for c in unknown)
+    return f'{setting} (unknown value "{shown}" read as allow)'
+
+
 def status_line(setting: str, path: Path | None) -> str:
-    """The `skill review:` line of status; `path` is None when the traffic log is off."""
+    """The `skill review:` line of status (`setting` as from `setting_text`); `path` is None when the
+    traffic log is off."""
     if path is None:
         return f"{setting} (loop saves not counted: the traffic log is off)"
     c = counts(path)

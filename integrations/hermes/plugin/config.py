@@ -70,6 +70,8 @@ class PluginConfig:
     #: Hermes's self-improvement loop: `allow` lets its skill and memory saves through when the scanner
     #: found nothing beyond the save itself (see `skill_review.py`); `review` decides them like any other call.
     skill_review: str = "allow"
+    #: The `skill_review` value as typed when it was neither allow nor review (it reads as allow).
+    skill_review_unknown: str | None = None
     #: Grants from the settings; a scan also sends the bindings and the grants set by command.
     grants: list[dict[str, Any]] = field(default_factory=list)
     #: Settings grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`).
@@ -248,11 +250,12 @@ def resolve_config(
     traffic = cfg.get("traffic_log") if isinstance(cfg.get("traffic_log"), dict) else {}
     traffic_path = _str(traffic.get("path")) or _str(env.get("SENTROOK_TRAFFIC_LOG"))
     grants, unsent = parse_config_grants(cfg.get("grants"))
-    # Unset means allow; any value other than exactly allow or review reads as review, so a typo never
-    # widens relief.
-    skill_review = (
+    # Unset means allow. Any value other than allow or review also reads as allow, so a typo never stops
+    # Hermes's self-improvement loop; status and the startup log name the value.
+    skill_review_raw = (
         _str(cfg.get("skill_review")) or _str(env.get("SENTROOK_SKILL_REVIEW")) or "allow"
-    ).lower()
+    )
+    skill_review = skill_review_raw.lower()
     return PluginConfig(
         endpoints=resolve_endpoints(cfg, env),
         mode="observe" if mode == "observe" else "enforce",
@@ -284,7 +287,8 @@ def resolve_config(
             p.lower()
             for p in _list(cfg.get("attended_platforms") or env.get("SENTROOK_ATTENDED_PLATFORMS"))
         ),
-        skill_review=skill_review if skill_review in SKILL_REVIEW else "review",
+        skill_review=skill_review if skill_review in SKILL_REVIEW else "allow",
+        skill_review_unknown=None if skill_review in SKILL_REVIEW else skill_review_raw[:40],
         grants=grants,
         unsent_grants=unsent,
         channel_bindings=_list(cfg.get("channel_bindings")),

@@ -307,11 +307,12 @@ def test_skill_review_review_restores_the_normal_decision(h):
         ({"skill_review": "ALLOW"}, {}, "allow"),
         ({}, {"SENTROOK_SKILL_REVIEW": "review"}, "review"),
         ({"skill_review": "allow"}, {"SENTROOK_SKILL_REVIEW": "review"}, "allow"),
-        ({"skill_review": "alow"}, {}, "review"),
-        ({"skill_review": "off"}, {}, "review"),
+        ({"skill_review": "alow"}, {}, "allow"),
+        ({"skill_review": "reveiw"}, {}, "allow"),
+        ({"skill_review": "off"}, {}, "allow"),
     ],
 )
-def test_the_setting_resolves_and_a_typo_never_widens_relief(settings, env, want):
+def test_the_setting_resolves_and_a_typo_never_stops_the_loop(settings, env, want):
     assert config.resolve_config(settings, env).skill_review == want
 
 
@@ -342,6 +343,16 @@ def test_status_counts_allowed_and_blocked_loop_saves(h):
     turn(h, "telegram")
     call(h, *LOOP_CALLS[3][:2])
     assert status(h).endswith("2 allowed, 1 blocked, 1 asked")
+
+
+def test_an_unknown_value_is_allowed_and_named(h):
+    h.ctx.settings["skill_review"] = "reveiw"
+    cfg = config.resolve_config(dict(h.ctx.settings), {})
+    assert (cfg.skill_review, cfg.skill_review_unknown) == ("allow", "reveiw")
+    assert status(h).startswith('skill review: allow (unknown value "reveiw" read as allow); ')
+    turn(h, "api_server")
+    out, rec = call(h, *LOOP_CALLS[0][:2])
+    assert out is None and rec["decision"] == "allowed"
 
 
 def test_status_with_the_traffic_log_off(h):

@@ -285,7 +285,7 @@ from a `SENTROOK_*` environment variable; the setting wins.
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
-| `skill_review` | `allow` | `allow` lets Hermes's own background skill and memory saves through when the save is all Sentrook found; `review` decides them like any other call. Any other value reads as `review` |
+| `skill_review` | `allow` | `allow` lets Hermes's own background skill and memory saves through when the save is all Sentrook found; `review` decides them like any other call. Any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
 | `channel_bindings` | | Channels this deployment normally delivers to |

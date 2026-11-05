@@ -538,6 +538,11 @@ def register(ctx: Any) -> None:
         logger.error(
             "sentrook endpoint configuration is invalid; every tool call will fail closed until fixed"
         )
+    if cfg.skill_review_unknown is not None:
+        logger.warning(
+            "sentrook skill_review %r is not allow or review; reading it as allow",
+            cfg.skill_review_unknown,
+        )
     if unsent := grants.unsent_summary(cfg):
         logger.warning(
             "sentrook config grants never sent: %s. A config grant has no session: drop its scope to "

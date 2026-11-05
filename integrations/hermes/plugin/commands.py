@@ -79,7 +79,8 @@ def run_status(
             f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
             "skill review: "
             + skill_review.status_line(
-                cfg.skill_review, cfg.traffic_log_path if cfg.traffic_log_enabled else None
+                skill_review.setting_text(cfg.skill_review, cfg.skill_review_unknown),
+                cfg.traffic_log_path if cfg.traffic_log_enabled else None,
             ),
         )
     )

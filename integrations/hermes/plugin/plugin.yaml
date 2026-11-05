@@ -58,7 +58,7 @@ config_schema:
       allow | review. allow lets Hermes's own background skill and memory saves (the self-improvement
       review and the curator) through when Sentrook finds nothing beyond the save itself; anything else
       Sentrook finds, a block or an enforced floor still applies. review decides them like any
-      other call. Any other value reads as review. Env SENTROOK_SKILL_REVIEW.
+      other call. Any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
     type: int
     default: 30000
