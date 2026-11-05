@@ -22,6 +22,10 @@ entity library's `known_good` and `known_bad` verdicts for the call's own hosts,
 packages. The block is filled by the call probe from the oracle probe's result (the scan runs the
 oracle first when the call view asks for it), and is absent when nothing is known.
 
+`selfedit-v1` is the view for a declared self-edit (the host's own background save to memory or skills): the call-v5
+view without `request` (a self-edit has no owner request of its own) and with the `self_edit` block, which carries the
+conversation the host's process reviewed. Built only when the request has the block.
+
 `trim-v4` adds `call-v5`: the call-v3 view whose `reputation` block also lists the call's unknown
 entities that are near misses of a `known_good` one (`verdict: unknown`, `near_miss`: the entry). The
 prepared state is call-v3's; only what the oracle fills in differs.
@@ -40,6 +44,7 @@ VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
 VIEWS_VERSION_V4 = "trim-v4"
+VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
@@ -53,6 +58,8 @@ EXPOSURE_V2 = "exposure-v2"
 CALL_V2 = "call-v2"
 CALL_V3 = "call-v3"
 CALL_V5 = "call-v5"
+SELFEDIT_V1 = "selfedit-v1"
+SELF_EDIT = "self_edit"
 #: The call-v3 block of entity-library verdicts, added by the call probe once the oracle has run.
 REPUTATION = "reputation"
 VIEW_KEYS: dict[str, tuple[str, ...]] = {
@@ -93,8 +100,20 @@ VIEW_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 VIEW_KEYS[CALL_V5] = VIEW_KEYS[CALL_V3]
+VIEW_KEYS[SELFEDIT_V1] = (
+    "planir_version",
+    "host",
+    "session",
+    "trigger",
+    SELF_EDIT,
+    "history",
+    "new_inputs",
+    "pending_call",
+    "grants",
+    REPUTATION,
+)
 #: Views whose `reputation` block lists near misses as well as known verdicts.
-NEAR_MISS_VIEWS = frozenset({CALL_V5})
+NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -103,6 +122,7 @@ VIEW_VERSIONS: dict[str, str] = {
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
     CALL_V5: VIEWS_VERSION_V4,
+    SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
 }
 #: Which probe a view serves.
 VIEW_KIND: dict[str, str] = {
@@ -112,6 +132,7 @@ VIEW_KIND: dict[str, str] = {
     CALL_V2: CALL,
     CALL_V3: CALL,
     CALL_V5: CALL,
+    SELFEDIT_V1: CALL,
 }
 
 #: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
@@ -267,17 +288,77 @@ def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> di
     return out
 
 
+#: Self-edit view caps: characters per conversation entry (the plugin sends less; this is the scanner's own bound), and
+#: the room left for the self-edit questions, which repeat a longer preamble than the call questions.
+SELF_EDIT_ENTRY_CAP_CHARS = 4000
+SELFEDIT_QUESTIONS_RESERVE_TOKENS = 14_000
+SELFEDIT_STATE_BUDGET_TOKENS = BUDGET_TOKENS - SELFEDIT_QUESTIONS_RESERVE_TOKENS
+
+
+def cap_self_edit_entries(v: dict[str, Any]) -> bool:
+    """Cap each self-edit conversation entry's text or content at `SELF_EDIT_ENTRY_CAP_CHARS`. Mutates `v`."""
+    block = v.get(SELF_EDIT)
+    if not isinstance(block, dict) or not isinstance(block.get("conversation"), list):
+        return False
+    conv = [e for e in block["conversation"] if isinstance(e, dict)]
+    cut = len(conv) != len(block["conversation"])
+    for e in conv:
+        for key in ("text", "content"):
+            if isinstance(e.get(key), str) and len(e[key]) > SELF_EDIT_ENTRY_CAP_CHARS:
+                e[key] = e[key][:SELF_EDIT_ENTRY_CAP_CHARS]
+                e["scanner_truncated"] = True
+                cut = True
+    block["conversation"] = conv
+    return cut
+
+
+def fit_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
+    """While the view is over the budget, drop the oldest history step (the conversation carries the calls that
+    matter, with their results), then the oldest tool entry, then the oldest assistant entry, and the owner's and
+    other people's messages last; what was dropped is counted in `self_edit.scanner_dropped`. Mutates `v`."""
+    block = v.get(SELF_EDIT)
+    if not isinstance(block, dict) or not isinstance(block.get("conversation"), list):
+        return False
+    conv = block["conversation"]
+    dropped: dict[str, int] = {}
+    history = v.get("history")
+    while isinstance(history, list) and history and est_tokens(v) > budget_tokens:
+        history.pop(0)
+        dropped["history"] = dropped.get("history", 0) + 1
+    for role in ("tool", "assistant", "user"):
+        while est_tokens(v) > budget_tokens:
+            idx = next((i for i, e in enumerate(conv) if e.get("role") == role), None)
+            if idx is None:
+                break
+            del conv[idx]
+            dropped[role] = dropped.get(role, 0) + 1
+    if dropped:
+        block["scanner_dropped"] = dropped
+    return bool(dropped)
+
+
+def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
+    """Both bounds: entries capped, then the conversation fitted to the budget."""
+    capped = cap_self_edit_entries(v)
+    return fit_self_edit(v, budget_tokens) or capped
+
+
 def _call_view_with_inputs(
     raw: dict[str, Any], name: str, *, budget_tokens: int = CALL_STATE_BUDGET_TOKENS
 ) -> BuiltView:
     v = view(trim(raw), name)
     inputs = v.get("new_inputs")
     truncated = stripped = False
+    if name == SELFEDIT_V1:
+        budget_tokens = min(budget_tokens, SELFEDIT_STATE_BUDGET_TOKENS)
+        truncated = cap_self_edit_entries(v)
     if isinstance(inputs, list):
         truncated = cap_inputs(inputs)
         if est_tokens(v) > budget_tokens:
             strip_inputs(inputs)
             truncated = stripped = True
+    if name == SELFEDIT_V1 and fit_self_edit(v, budget_tokens):
+        truncated = True
     state, count = second_pass(v)
     return BuiltView(
         state=state, redactions=count, inputs_truncated=truncated, inputs_stripped=stripped
@@ -290,7 +371,7 @@ def build_views(
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
     call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs."""
     v3 = call_view_v3(raw)
-    return {
+    out = {
         EXPOSURE: BuiltView(state=exposure_view(raw, only_input_seqs=exposure_input_seqs)),
         CALL: BuiltView(state=call_view(raw)),
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
@@ -298,3 +379,6 @@ def build_views(
         CALL_V3: v3,
         CALL_V5: v3,
     }
+    if isinstance(raw.get(SELF_EDIT), dict):
+        out[SELFEDIT_V1] = _call_view_with_inputs(raw, SELFEDIT_V1)
+    return out

@@ -42,6 +42,7 @@ class ServeRuntime:
             timeout_s=config.jev_timeout_s,
             exposure_question_set=config.jev_exposure_question_set,
             call_question_set=config.jev_call_question_set,
+            selfedit_question_set=config.jev_selfedit_question_set or None,
         )
         if decider is None:
             decider = DecisionsClient(jev)
@@ -91,6 +92,9 @@ class ServeRuntime:
                 "question_sets": {
                     "exposure": self.scanner.jev_question_sets["exposure"].name,
                     "call": self.scanner.jev_question_sets["call"].name,
+                    "self_edit": self.scanner.selfedit_question_set.name
+                    if self.scanner.selfedit_question_set
+                    else None,
                 },
                 "views": dict(self.scanner.jev_views),
             },

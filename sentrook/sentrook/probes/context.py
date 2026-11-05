@@ -31,6 +31,11 @@ the call, with no model and no raw text.
   above the session's last consequence tier. The step moves a borderline call up about one band; a
   call already scored higher keeps its own values, and nothing is added on the suspicion side, so the
   trend never decides intent on its own.
+- A declared self-edit (the host's own background save to memory or skills, `self_edit` with trigger
+  `system`): the request origin is the `self_edit` base (0), since who said what is judged per message
+  from the conversation the save carries; escalation does not apply, since the save is not the next step
+  of the session's work; and the "agent chose it" origin is left out, since the agent writes every
+  self-edit. Origins in untrusted content still count.
 """
 
 from __future__ import annotations
@@ -88,6 +93,9 @@ class ContextParams:
             "trusted": 0.3,
             "channel_unknown_sender": 0.5,
             "other": 0.8,
+            # A declared self-edit: the host's own background save. Who said what is judged per message from the
+            # conversation it carries, so the trigger adds only this base.
+            "self_edit": 0.0,
         }
     )
     coverage_unknown_sender: float = 0.9
@@ -566,6 +574,16 @@ class ContextProbe:
             "channel": trig.channel.value if trig.channel else None,
         }
         out: list[Contribution] = []
+        if prepared.planir.is_self_edit:
+            evidence["trigger"]["self_edit"] = True
+            out.append(
+                Contribution(
+                    signal="suspicion.request_origin",
+                    value=p.request_origin.get("self_edit", 0.0),
+                    reason="trigger.self_edit",
+                )
+            )
+            return out
         if rel is SenderRelation.OWNER or SenderBasis.HOST_ALLOWLIST_DM in basis:
             out.append(
                 Contribution(
@@ -787,6 +805,10 @@ class ContextProbe:
         step = self.params.escalation_consequence_step
         if not escalating or step <= 0:
             return []
+        if prepared.planir.is_self_edit:
+            # A self-edit is the host's background save, not the next step of the session's work.
+            evidence["escalation"] = {"skipped": "self_edit"}
+            return []
         tiers = self._consequence_tiers(prepared)
         record: dict[str, Any] = {
             "last_tier": tiers[-1] if tiers else None,
@@ -823,7 +845,12 @@ class ContextProbe:
                 lookalikes = self._lookalikes(prepared)
             except Exception as e:  # noqa: BLE001 (a lineage failure contributes nothing)
                 evidence["lineage_error"] = repr(e)
-            contributions += self._untrusted_origin(prepared, prior_flags, evidence, lookalikes)
+            origin = self._untrusted_origin(prepared, prior_flags, evidence, lookalikes)
+            if prepared.planir.is_self_edit:
+                # The agent writes every self-edit, so "the agent chose this" says nothing about it; origins in
+                # untrusted content still count.
+                origin = [c for c in origin if c.reason != "origin.agent_generated"]
+            contributions += origin
             contributions += self._request_origin(prepared, evidence)
             contributions += self._retry(prepared, evidence)
             try:

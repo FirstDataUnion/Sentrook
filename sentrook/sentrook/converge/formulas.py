@@ -48,8 +48,11 @@ def _noisy_or(values: list[float]) -> float:
 
 
 def agreement(
-    merged: Merged, params: ConvergenceParams
+    merged: Merged, params: ConvergenceParams, *, self_edit: bool = False
 ) -> tuple[float, list[tuple[str, float, float]]]:
+    """For a self-edit, the context probe's sticky session-taint claim is left out: it covers the whole session,
+    while the exposure probe reads only this scan's new inputs, so the two do not measure the same thing (the
+    self-edit's own taint still reaches suspicion through `taint_link`)."""
     shared = 0
     disagreements: list[tuple[str, float, float]] = []
     for signal, claims in merged.claims.items():
@@ -58,6 +61,8 @@ def agreement(
             continue
         by_step: dict[str, float] = {}
         for c in claims:
+            if self_edit and c.reason == "exposure.session_tainted":
+                continue
             by_step[c.step] = max(by_step.get(c.step, 0.0), c.value)
         if len(by_step) < 2:
             continue
@@ -82,7 +87,9 @@ def probe_status_penalty(envelopes: list[Envelope], params: ConvergenceParams) -
     return penalty
 
 
-def compute(merged: Merged, envelopes: list[Envelope], params: ConvergenceParams) -> Tiers:
+def compute(
+    merged: Merged, envelopes: list[Envelope], params: ConvergenceParams, *, self_edit: bool = False
+) -> Tiers:
     g = merged.value_or
     taint_link = g("suspicion.untrusted_origin", 0.0) * max(
         g("suspicion.exposure", 0.0), params.taint_floor
@@ -109,7 +116,7 @@ def compute(merged: Merged, envelopes: list[Envelope], params: ConvergenceParams
     else:
         consequence = max(sens * reach, irr * reach, selfmod)
 
-    agree, disagreements = agreement(merged, params)
+    agree, disagreements = agreement(merged, params, self_edit=self_edit)
     coverage = min(g("confidence.coverage", 1.0), probe_status_penalty(envelopes, params))
     certainty = merged.get("confidence.model_certainty")
     confidence = min([agree, coverage] + ([certainty] if certainty is not None else []))

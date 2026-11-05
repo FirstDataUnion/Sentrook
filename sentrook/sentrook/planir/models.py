@@ -390,6 +390,61 @@ class Options(_Model):
     redaction: Redaction = Redaction.STANDARD
 
 
+class SelfEditKind(TolerantStrEnum):
+    """Which host process made a self-edit."""
+
+    __fallback__ = "other"
+    BACKGROUND_REVIEW = "background_review"
+    CURATOR = "curator"
+    OTHER = "other"
+
+
+class SelfEditStore(TolerantStrEnum):
+    __fallback__ = "other"
+    MEMORY = "memory"
+    SKILLS = "skills"
+    OTHER = "other"
+
+
+class ConversationRole(TolerantStrEnum):
+    __fallback__ = "other"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+    OTHER = "other"
+
+
+class ConversationEntry(_Model):
+    """One entry of the conversation a self-edit was made from, as the plugin captured it (redacted, capped)."""
+
+    role: ConversationRole = ConversationRole.OTHER
+    turn: int | None = None
+    sender: Sender | None = Field(
+        default=None, description="user entries: who wrote it, mapped as for the trigger"
+    )
+    text: str | None = Field(default=None, description="user and assistant entries")
+    tool: str | None = Field(default=None, description="tool entries")
+    arguments: dict[str, Any] | None = Field(default=None, description="tool entries")
+    content: str | None = Field(
+        default=None, description="tool entries: the result, or an excerpt of it"
+    )
+    truncated: bool = False
+    excerpt_of_chars: int | None = Field(
+        default=None,
+        description="tool entries: the full result length when `content` is an excerpt",
+    )
+
+
+class SelfEdit(_Model):
+    """A self-edit: the host's own background process (not a person) saving to the agent's memory or skills. The
+    plugin declares it, with trigger `system`, and sends the conversation the process reviewed, so the save can be
+    judged against what was actually said and done. Ignored unless the trigger is `system`."""
+
+    kind: SelfEditKind = SelfEditKind.OTHER
+    store: SelfEditStore = SelfEditStore.OTHER
+    conversation: list[ConversationEntry] = Field(default_factory=list)
+
+
 class PlanIR(_Model):
     """The scan request. Auth lives in request headers, never in the body."""
 
@@ -412,3 +467,12 @@ class PlanIR(_Model):
     pending_call: PendingCall
     grants: list[Grant] = Field(default_factory=list)
     options: Options = Field(default_factory=Options)
+    self_edit: SelfEdit | None = Field(
+        default=None,
+        description="Set only on the host's own background saves to memory or skills, with trigger system",
+    )
+
+    @property
+    def is_self_edit(self) -> bool:
+        """A declared self-edit: a `self_edit` block and trigger `system`."""
+        return self.self_edit is not None and self.trigger.kind is TriggerKind.SYSTEM
