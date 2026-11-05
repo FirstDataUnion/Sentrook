@@ -63,10 +63,12 @@ plugin-planir-check:
 	rm -f tmp/openclaw-planirs.json
 	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
 		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned" index.test.ts
-	SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/hermes-planirs.json uv run python -m pytest -q \
+	rm -rf tmp/hermes-planirs tmp/hermes-planirs.json
+	SENTROOK_PLANIR_DUMP_DIR=$(CURDIR)/tmp/hermes-planirs uv run python -m pytest -q \
 		integrations/hermes/plugin/tests/test_plugin.py -k episode
-	uv run python -c "import json; from sentrook.planir.models import PlanIR; \
+	uv run python -c "import glob, json; from sentrook.planir.models import PlanIR; \
 	from sentrook.planir.validate import check; \
-	raws = [r for h in ('openclaw', 'hermes') for r in json.load(open(f'tmp/{h}-planirs.json'))]; \
+	hermes = sorted(glob.glob('tmp/hermes-planirs/*.json')); assert hermes, 'no Hermes PlanIR dumps'; \
+	raws = [r for f in ['tmp/openclaw-planirs.json', *hermes] for r in json.load(open(f))]; \
 	[check(PlanIR.model_validate(r), r.get('scan_kind')) for r in raws]; \
-	print(f'{len(raws)} plugin PlanIRs valid')"
+	print(f'{len(raws)} plugin PlanIRs valid ({len(hermes)} Hermes dumps)')"

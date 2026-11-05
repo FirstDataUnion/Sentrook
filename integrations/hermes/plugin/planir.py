@@ -7,6 +7,7 @@ both joined by `turn_id`.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -20,8 +21,9 @@ from typing import Any
 from .config import PluginConfig
 from .intent import channel_of, resolve_platform, sender_of, trigger_kind
 from .redact import Redactor, cap_args
+from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.5"
+PLUGIN_VERSION = "2.0.0-beta.6"
 
 TOOL_KIND = {
     "terminal": "exec",
@@ -207,11 +209,15 @@ def build_planir(
     env: dict[str, str],
     host_cfg: dict[str, Any],
     grants: list[dict[str, Any]] | None = None,
+    self_edit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
 
     `grants`: every grant in force (`grants.effective`); the persistent config grants alone when not
-    given (a config grant has no session, so a session one is never sent)."""
+    given (a config grant has no session, so a session one is never sent).
+    `self_edit`: the call is a save by Hermes's own self-improvement loop, declared as a self-edit: sent
+    with trigger `system` (instead of the chat the loop's fork inherited) and this top-level block, the
+    conversation the review read (`conversation.block`)."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -294,7 +300,9 @@ def build_planir(
             "step": step,
             "state": sess["token"],
         },
-        "trigger": {
+        "trigger": copy.deepcopy(LOOP_TRIGGER)
+        if self_edit is not None
+        else {
             "kind": trigger_kind(platform),
             "channel": channel_of(platform),
             "sender": sender_of(platform, facts, turn.get("sender_id"), env),
@@ -324,6 +332,7 @@ def build_planir(
             workspace=os.getcwd(),
             cwd=call_cwd(raw_args) if tk == "exec" else None,
         ),
+        **({"self_edit": self_edit} if self_edit is not None else {}),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }
     return {

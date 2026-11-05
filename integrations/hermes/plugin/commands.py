@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, snooze
+from . import grants, history, skill_review, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
@@ -56,7 +56,8 @@ class Subcommand:
 def run_status(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
-    """Config-derived facts only: no network calls, and credentials as present or missing, never values."""
+    """Config-derived facts and counts from the local traffic log only: no network calls, and
+    credentials as present or missing, never values."""
     env = env_with_hermes_dotenv(env)
     cfg = resolve_config(settings, env)
     ep = cfg.endpoints
@@ -76,6 +77,11 @@ def run_status(
             f"grants: {grant_count}",
             f"channel bindings: {binding_count}",
             f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
+            "skill review: "
+            + skill_review.status_line(
+                skill_review.setting_text(cfg.skill_review, cfg.skill_review_unknown),
+                cfg.traffic_log_path if cfg.traffic_log_enabled else None,
+            ),
         )
     )
 
@@ -204,7 +210,8 @@ def run_help(
 
 COMMANDS: dict[str, Subcommand] = {
     "status": Subcommand(
-        "plugin version, mode, thresholds, scan host, credentials present, traffic log, grants",
+        "plugin version, mode, thresholds, scan host, credentials present, traffic log, grants, "
+        "snooze, skill review",
         run_status,
     ),
     "history": Subcommand(

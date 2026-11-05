@@ -181,7 +181,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
-| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants |
+| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, and how many of Hermes's own skill and memory saves were allowed or blocked |
 | `history [n]` | The last n scans (default 10) |
 | `why [request_id\|last]` | One scan in detail |
 | `grants` | Grants in force: from config (read-only) and set by command |
@@ -219,6 +219,24 @@ Reviews use Hermes's approval prompt, which needs a person on the other end. Cha
 count as attended. Elsewhere, including the API server, cron and webhooks, a review blocks instead. If a UI in front of
 the API server shows Hermes's approval prompts, add it with `attended_platforms` (see [Settings](#settings)).
 
+### Hermes's own skill and memory saves
+
+After a turn, Hermes reviews what it learned and saves skills (`skill_manage`) and memory (`memory`) in the
+background; when idle, its curator tidies those skills. This background review has no request of its own, so a
+save would otherwise look like a write nobody asked for. By default (`skill_review: allow`) the plugin tells
+Sentrook that the call is one of these background saves and sends the part of the conversation the review read,
+and Sentrook judges the save against that conversation. A save that follows from what you said and did goes
+through. A save is reviewed or blocked when it carries instructions that came from content the agent read or from
+other people, weakens one of your rules, claims approvals you never gave, or stores secrets you did not ask it to
+keep. As for any call, on unattended runs (the API server, webhooks, cron) a review is a block, because nobody is
+there to answer it; in a chat or the local terminal you are asked.
+
+Every background save is scanned and logged, and `status` counts them: allowed, blocked and asked. Only Hermes's
+automatic review and curator count: a skill or memory change you ask for in a turn, or a `/refine` you run, is
+scanned like any other call, and so is every other tool those background runs call. Set `skill_review` to `review`
+to send the background saves like any other call, without the conversation; with nothing to judge them against,
+expect more of them to be reviewed or blocked.
+
 When the scan service gives no usable answer the plugin asks you whether to run the call without a scan
 (`on_scan_error`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let
 through silently: even with `on_scan_error` set to `allow`, the call is blocked, or you are asked.
@@ -243,8 +261,8 @@ would have done, such as `observed (would review)`.
 
 Each scan sends one request to `sentrook.firstdataunion.org`:
 
-- the request you gave the agent in this turn, and whether it came from you, a scheduled job, a subagent or another
-  sender, with the kind of channel it arrived on (chat, API, cron and so on);
+- the request you gave the agent in this turn, and whether it came from you, a scheduled job, a subagent, another
+  sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on);
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
@@ -252,7 +270,14 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   approvals and secret redaction are on;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
   server it calls;
-- references to the session and agent. Session ids are sent as hashes, not as the ids themselves.
+- references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
+- for Hermes's own background skill and memory saves only (see
+  [Hermes's own skill and memory saves](#hermess-own-skill-and-memory-saves)): your recent messages with who sent
+  them, the agent's replies, and excerpts of the tool results the save draws on, all redacted the same way. To
+  have them at hand, the plugin keeps the last 200 or so messages and tool results of each session, redacted, in
+  `~/.hermes/sentrook/conversations/`. When it writes one of these logs, at most once an hour, it deletes logs not
+  changed in 7 days and keeps only the 100 most recently changed. With `skill_review` set to `review` it deletes them
+  all (at startup, or on its next hook after you change the setting) and keeps nothing.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are kept,
@@ -276,6 +301,7 @@ from a `SENTROOK_*` environment variable; the setting wins.
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
+| `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
 | `channel_bindings` | | Channels this deployment normally delivers to |

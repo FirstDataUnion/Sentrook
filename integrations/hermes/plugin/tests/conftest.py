@@ -109,3 +109,67 @@ def harness(tmp_path, monkeypatch):
         json.loads(x) for x in (tmp_path / "sentrook" / "traffic.jsonl").read_text().splitlines()
     ]
     return fake
+
+
+@pytest.fixture
+def provenance(monkeypatch):
+    """Hermes's write origin (`tools.skill_provenance`) under test control; an owner's turn by default."""
+    import types
+
+    prov = {"origin": "assistant_tool", "attended": False}
+    mod = types.ModuleType("tools.skill_provenance")
+    mod.get_current_write_origin = lambda: prov["origin"]
+    mod.is_unattended_review = lambda: (
+        prov["origin"] == "background_review" and not prov["attended"]
+    )
+    pkg = types.ModuleType("tools")
+    pkg.__path__ = []
+    pkg.skill_provenance = mod
+    monkeypatch.setitem(sys.modules, "tools", pkg)
+    monkeypatch.setitem(sys.modules, "tools.skill_provenance", mod)
+    return prov
+
+
+@pytest.fixture
+def loop_h(harness, provenance, monkeypatch):
+    """The harness with a scanner whose reply each test sets (`.reply`), Hermes's write origin under test
+    control (`.prov`, the background review by default), no terminal, and no gateway session facts
+    unless a test sets `.facts`."""
+    import io
+
+    fake = harness
+    reply = {"risk": 5, "enforced": None, "reasons": [{"code": "selfmod.plugin"}]}
+
+    def http(url, *, data=None, headers=None, timeout):
+        if url != "http://scan.test/scan":
+            return fake(url, data=data, headers=headers, timeout=timeout)
+        p = json.loads(data)
+        fake.scans.append(p)
+        return (
+            200,
+            {
+                "response_version": "2.0",
+                "request_id": p["request_id"],
+                "status": "ok",
+                "entities": {},
+                "tool_description": {"template": "Saves a skill"},
+                "action_fingerprint": f"afp1:x|step:{p['session']['step']}",
+                "state": "tok",
+                **reply,
+            },
+            {},
+        )
+
+    monkeypatch.setattr(auth, "http_json", http)
+    monkeypatch.setattr(scan_client, "http_json", http)
+    provenance["origin"] = "background_review"
+    # Not a terminal: platforms outside the chat list are unattended unless a test says otherwise.
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    for k in ("HERMES_SESSION_PLATFORM", "HERMES_PLATFORM", "SENTROOK_SKILL_REVIEW"):
+        monkeypatch.delenv(k, raising=False)
+    fake.facts = {}
+    monkeypatch.setattr(plugin, "session_facts", lambda: dict(fake.facts))
+
+    fake.reply = reply
+    fake.prov = provenance
+    return fake

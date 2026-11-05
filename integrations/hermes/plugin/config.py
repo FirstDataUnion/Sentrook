@@ -32,6 +32,7 @@ DEFAULT_HISTORY_ARGS_CAP_BYTES = 4 * 1024
 DEFAULT_TRAFFIC_LOG_MAX_BYTES = 50 * 1024 * 1024
 
 ON_SCAN_ERROR = ("allow", "deny", "review")
+SKILL_REVIEW = ("allow", "review")
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,12 @@ class PluginConfig:
     history_args_cap_bytes: int
     packs: list[str]
     attended_platforms: frozenset[str] = frozenset()
+    #: Hermes's self-improvement loop: `allow` declares its background skill and memory saves as self-edits,
+    #: judged against the conversation the review read (see `skill_review.py`); `review` sends them like any
+    #: other call.
+    skill_review: str = "allow"
+    #: The `skill_review` value as typed when it was neither allow nor review (it reads as allow).
+    skill_review_unknown: str | None = None
     #: Grants from the settings; a scan also sends the bindings and the grants set by command.
     grants: list[dict[str, Any]] = field(default_factory=list)
     #: Settings grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`).
@@ -91,6 +98,25 @@ def resolve_state_dir(env: dict[str, str], override: Any = None) -> Path:
 
 def _str(raw: Any) -> str | None:
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def resolve_skill_review(setting: Any, env_value: Any) -> tuple[str, str | None]:
+    """`skill_review` as (allow | review, the value as given when it was not understood).
+
+    Unset (or a blank string) falls back to the environment, then to allow. YAML reads `off`, `no` and
+    `false` as False, which is review, and `on`, `yes` and `true` as True, which is allow. Any other value,
+    string or not, reads as allow, so a typo never stops Hermes's self-improvement loop; status and the
+    startup log name it. A setting of any type wins over the environment.
+    """
+    raw: Any = setting
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = _str(env_value) or "allow"
+    if isinstance(raw, bool):
+        return ("allow" if raw else "review"), None
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        return (value, None) if value in SKILL_REVIEW else ("allow", raw.strip()[:40])
+    return "allow", str(raw)[:40]
 
 
 def _bool(raw: Any, fallback: bool) -> bool:
@@ -244,6 +270,9 @@ def resolve_config(
     traffic = cfg.get("traffic_log") if isinstance(cfg.get("traffic_log"), dict) else {}
     traffic_path = _str(traffic.get("path")) or _str(env.get("SENTROOK_TRAFFIC_LOG"))
     grants, unsent = parse_config_grants(cfg.get("grants"))
+    skill_review, skill_review_unknown = resolve_skill_review(
+        cfg.get("skill_review"), env.get("SENTROOK_SKILL_REVIEW")
+    )
     return PluginConfig(
         endpoints=resolve_endpoints(cfg, env),
         mode="observe" if mode == "observe" else "enforce",
@@ -275,6 +304,8 @@ def resolve_config(
             p.lower()
             for p in _list(cfg.get("attended_platforms") or env.get("SENTROOK_ATTENDED_PLATFORMS"))
         ),
+        skill_review=skill_review,
+        skill_review_unknown=skill_review_unknown,
         grants=grants,
         unsent_grants=unsent,
         channel_bindings=_list(cfg.get("channel_bindings")),

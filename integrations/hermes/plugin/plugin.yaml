@@ -1,5 +1,5 @@
 name: sentrook
-version: 2.0.0-beta.5
+version: 2.0.0-beta.6
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
@@ -51,6 +51,15 @@ config_schema:
     description: >
       Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
       Hermes approval prompts). Elsewhere outside chat platforms, reviews block. Env SENTROOK_ATTENDED_PLATFORMS.
+  skill_review:
+    type: str
+    default: allow
+    description: >
+      allow | review. allow declares Hermes's own background skill and memory saves (the self-improvement
+      review and the curator) to Sentrook and sends the recent conversation, redacted, so the save is judged
+      against what was said; Sentrook's verdict applies as for any call. review sends them like any other
+      call, without the conversation, and deletes the kept conversations. false (off, no) reads as review and
+      true as allow; any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
     type: int
     default: 30000
