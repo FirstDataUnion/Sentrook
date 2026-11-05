@@ -1,5 +1,5 @@
 name: sentrook
-version: 2.0.0-beta.5
+version: 2.0.0-beta.6
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
@@ -55,10 +55,11 @@ config_schema:
     type: str
     default: allow
     description: >
-      allow | review. allow lets Hermes's own background skill and memory saves (the self-improvement
-      review and the curator) through when Sentrook finds nothing beyond the save itself; anything else
-      Sentrook finds, a block or an enforced floor still applies. review decides them like any
-      other call. Any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
+      allow | review. allow declares Hermes's own background skill and memory saves (the self-improvement
+      review and the curator) to Sentrook and sends the recent conversation, redacted, so the save is judged
+      against what was said; Sentrook's verdict applies as for any call. review sends them like any other
+      call, without the conversation. Any other value reads as allow (status and the startup log name it).
+      Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
     type: int
     default: 30000

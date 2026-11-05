@@ -15,11 +15,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, grants, owner, skill_review, snooze
+from . import cli, commands, conversation, grants, owner, skill_review, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
-from .intent import is_unattended, session_facts
+from .intent import conversation_sender_of, is_unattended, resolve_platform, session_facts
 from .planir import PLUGIN_VERSION, build_planir, hermes_config, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
@@ -87,6 +87,37 @@ def _sid(kw: dict[str, Any]) -> str:
     return str(kw.get("session_id") or kw.get("task_id") or "default")
 
 
+def _turn_no(sess: dict[str, Any], turn_id: Any) -> int:
+    """The session turn number of `turn_id` (the PlanIR's `session.turn`); the latest when unknown."""
+    turns = sess.get("turns") or []
+    return turns.index(turn_id) + 1 if turn_id in turns else max(1, len(turns))
+
+
+def _capturing(cfg: PluginConfig) -> bool:
+    """The conversation log is kept only while background saves are declared as self-edits."""
+    return cfg.skill_review == "allow"
+
+
+def _record(store: Store, sid: str, entry: dict[str, Any] | None) -> None:
+    """Adds `entry` to the session's conversation log; a failure is logged, never raised."""
+    if entry is None:
+        return
+    try:
+        store.update_conversation(sid, conversation.append(entry))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("conversation log failed: %s", exc)
+
+
+def _self_edit(store: Store, sid: str, tool: str, args: Any, redactor: Redactor) -> dict[str, Any]:
+    """A loop save's `self_edit` block; an empty conversation when the log cannot be read."""
+    kind, where = skill_review.BACKGROUND_REVIEW, skill_review.store_of(tool)
+    try:
+        return conversation.block(kind, where, store.load_conversation(sid), redactor.value(args))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("self_edit conversation failed: %s", exc)
+        return {"kind": kind, "store": where, "conversation": []}
+
+
 def _rule_key(fingerprint: str | None, request_id: str) -> str:
     """Hermes persists Session/Always approvals per rule key. Keyed on the action fingerprint, an approval
     covers the same action (same source and destination) again, not other calls of the same tool."""
@@ -135,7 +166,7 @@ def owner_command(verb: str, fn: Callable[[str, dict[str, Any]], str]) -> Callab
 
 def on_pre_llm_call(**kw: Any) -> None:
     try:
-        cfg, _ = _load()
+        cfg, env = _load()
         store, _t = _state(cfg)
         turn_id = kw.get("turn_id")
         store.merge_turn(
@@ -148,11 +179,27 @@ def on_pre_llm_call(**kw: Any) -> None:
             },
         )
         sid = _sid(kw)
-        if turn_id:
-            with store.session_lock(sid):
-                s = store.load_session(sid)
+        with store.session_lock(sid):
+            s = store.load_session(sid)
+            if turn_id:
                 s["last_turn_id"] = turn_id
+                if turn_id not in s["turns"]:
+                    s["turns"].append(turn_id)
                 store.save_session(sid, s, cfg.history_limit * 2)
+            if _capturing(cfg):
+                facts = session_facts()
+                platform = resolve_platform(kw.get("platform"), facts, env)
+                _record(
+                    store,
+                    sid,
+                    conversation.user_entry(
+                        _turn_no(s, turn_id),
+                        conversation_sender_of(platform, facts, kw.get("sender_id"), env),
+                        kw.get("user_message"),
+                        Redactor("standard", store.salt()),
+                        turn_id,
+                    ),
+                )
     except Exception as exc:  # noqa: BLE001
         logger.warning("pre_llm_call failed: %s", exc)
 
@@ -183,7 +230,20 @@ def on_post_api_request(**kw: Any) -> None:
         content = am.get("content")
         text = content if isinstance(content, str) else ""
         cfg, _ = _load()
-        _state(cfg)[0].merge_turn(kw.get("turn_id"), {"assistant_text": text, "tool_calls": calls})
+        store = _state(cfg)[0]
+        store.merge_turn(kw.get("turn_id"), {"assistant_text": text, "tool_calls": calls})
+        # The review fork's own words are not the conversation it reviews.
+        if _capturing(cfg) and text.strip() and not skill_review.in_background_review():
+            sid = _sid(kw)
+            _record(
+                store,
+                sid,
+                conversation.assistant_entry(
+                    _turn_no(store.load_session(sid), kw.get("turn_id")),
+                    text,
+                    Redactor("standard", store.salt()),
+                ),
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("post_api_request failed: %s", exc)
 
@@ -221,8 +281,16 @@ def _scan_one(
     turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
     facts = session_facts()
     host_cfg = hermes_config()
-    loop_save = skill_review.is_loop_save(str(kw.get("tool_name") or ""))
+    tool_name = str(kw.get("tool_name") or "")
+    loop_save = skill_review.is_loop_save(tool_name)
     redactor = Redactor("standard", store.salt())
+    # With `skill_review: allow` a loop save is declared as a self-edit and carries the conversation the
+    # review read; with `review` it is sent like any other call.
+    self_edit = (
+        _self_edit(store, sid, tool_name, kw.get("args"), redactor)
+        if loop_save and cfg.skill_review == "allow"
+        else None
+    )
     built = build_planir(
         kw=kw,
         cfg=cfg,
@@ -234,7 +302,7 @@ def _scan_one(
         env=env,
         host_cfg=host_cfg,
         grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid)),
-        loop_save=loop_save,
+        self_edit=self_edit,
     )
     planir = built["planir"]
     unattended = is_unattended(
@@ -278,7 +346,6 @@ def _scan_one(
     directive: dict[str, Any] | None = None
     verdict: str | None = None
     snoozed = False
-    relieved = False
     if isinstance(result, ScanOk):
         resp = result.response
         verdict = decide(resp, cfg.review_at, cfg.block_at)
@@ -289,16 +356,6 @@ def _scan_one(
         entry["tiers"] = tiers_of(resp)
         if cfg.mode == "observe" or verdict == "allow":
             entry["decision"] = "allowed"
-        elif (
-            loop_save
-            and cfg.skill_review == "allow"
-            and verdict == "review"
-            and skill_review.relieves(resp)
-        ):
-            # Hermes's own loop saving a skill or memory, with no reason beyond the save and the loop's
-            # own context: allowed, attended or not (before an unattended review becomes a block).
-            entry["decision"] = "allowed"
-            relieved = True
         elif verdict == "block" or unattended:
             # A review nobody can answer (or Hermes would auto-approve) is a block.
             entry["decision"] = "blocked"
@@ -373,7 +430,7 @@ def _scan_one(
             verdict,
             entry["decision"],
             " (snoozed)" if snoozed else "",
-            " (skill review)" if relieved else " (loop save)" if loop_save else "",
+            " (self-edit)" if self_edit is not None else " (loop save)" if loop_save else "",
             result.latency_ms,
         )
     return directive
@@ -439,7 +496,8 @@ def on_post_approval_response(**kw: Any) -> None:
 
 
 def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", **kw: Any) -> None:
-    """Buffer the result (exactly what the model saw) for the next scan; blocked calls add nothing."""
+    """Buffer the result (exactly what the model saw) for the next scan, and add it to the conversation
+    log; blocked calls add nothing."""
     try:
         host_id = kw.get("tool_call_id")
         if not host_id:
@@ -474,9 +532,9 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                 "size_bytes": size if ran else 0,
             }
             if ran:
-                capped, truncated, _ = cap_head_tail(
-                    Redactor("standard", store.salt()).string(text), cfg.input_cap_bytes
-                )
+                redactor = Redactor("standard", store.salt())
+                redacted = redactor.string(text)
+                capped, truncated, _ = cap_head_tail(redacted, cfg.input_cap_bytes)
                 s["input_seq"] += 1
                 s["buffer"].append(
                     {
@@ -493,6 +551,19 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                         "truncated": truncated,
                     }
                 )
+                if _capturing(cfg):
+                    # The review fork's reads count too: they are what its save draws on.
+                    _record(
+                        store,
+                        sid,
+                        conversation.tool_entry(
+                            _turn_no(s, kw.get("turn_id")),
+                            entry["tool"],
+                            args if args else entry.get("arguments"),
+                            redacted,
+                            redactor,
+                        ),
+                    )
             store.save_session(sid, s, cfg.history_limit * 2)
     except Exception as exc:  # noqa: BLE001
         logger.warning("post_tool_call failed: %s", exc)

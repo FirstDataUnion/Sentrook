@@ -67,8 +67,9 @@ class PluginConfig:
     history_args_cap_bytes: int
     packs: list[str]
     attended_platforms: frozenset[str] = frozenset()
-    #: Hermes's self-improvement loop: `allow` lets its skill and memory saves through when the scanner
-    #: found nothing beyond the save itself (see `skill_review.py`); `review` decides them like any other call.
+    #: Hermes's self-improvement loop: `allow` declares its background skill and memory saves as self-edits,
+    #: judged against the conversation the review read (see `skill_review.py`); `review` sends them like any
+    #: other call.
     skill_review: str = "allow"
     #: The `skill_review` value as typed when it was neither allow nor review (it reads as allow).
     skill_review_unknown: str | None = None

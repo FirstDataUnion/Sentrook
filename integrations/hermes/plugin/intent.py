@@ -6,6 +6,9 @@ Hermes has no owner flag; its gateway allowlist is a yes/no admission gate. The 
 - other (basis `group_chat`): any group, channel or thread message, even from a listed user;
 - other (basis `host_open_access`): a DM admitted only by allow-all (or a grant the plugin cannot see);
 - unknown (basis `none`): cron, subagent, API-server and webhook runs.
+
+The conversation sent with a background save (`conversation_sender_of`) differs in one place: a group
+message from a sender individually on the allowlist is the owner (basis `group_chat`).
 """
 
 from __future__ import annotations
@@ -138,6 +141,15 @@ def _truthy(env: dict[str, str], name: str) -> bool:
     return env.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
+def _allowlisted(platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]) -> bool:
+    """The sender is individually on `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`."""
+    up = platform.upper()
+    uid = facts.get("user_id") or (str(sender_id) if sender_id else "")
+    return bool(uid) and uid in (
+        _env_set(env, f"{up}_ALLOWED_USERS") | _env_set(env, "GATEWAY_ALLOWED_USERS")
+    )
+
+
 def sender_of(
     platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
 ) -> dict[str, Any]:
@@ -150,13 +162,21 @@ def sender_of(
         return {"relation": "other", "basis": ["group_chat"]}
     if not chat_type:
         return {"relation": "unknown", "basis": ["none"]}
-    up = platform.upper()
-    uid = facts.get("user_id") or (str(sender_id) if sender_id else "")
-    if uid and uid in (
-        _env_set(env, f"{up}_ALLOWED_USERS") | _env_set(env, "GATEWAY_ALLOWED_USERS")
-    ):
+    if _allowlisted(platform, facts, sender_id, env):
         return {"relation": "owner", "basis": ["host_allowlist_dm"]}
     return {"relation": "other", "basis": ["host_open_access"]}
+
+
+def conversation_sender_of(
+    platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
+) -> dict[str, Any]:
+    """Who wrote a message in the conversation a background save is judged against: `sender_of`, except
+    that in a group chat a sender individually on the allowlist is the owner (basis `group_chat`). The
+    trigger keeps calling every group message `other`; this only says who wrote each message."""
+    sender = sender_of(platform, facts, sender_id, env)
+    if sender["basis"] == ["group_chat"] and _allowlisted(platform, facts, sender_id, env):
+        return {"relation": "owner", "basis": ["group_chat"]}
+    return sender
 
 
 def environ() -> dict[str, str]:

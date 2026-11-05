@@ -97,6 +97,32 @@ def test_episode_allow_block_review_with_token_and_inputs(harness):
     assert secret not in (h.dir / "sentrook" / "traffic.jsonl").read_text()
 
 
+def test_episode_loop_save_declares_a_self_edit(harness, provenance):
+    """A turn, then Hermes's background review saving memory: the save carries trigger system and the
+    conversation. Added to the dump after the first episode (`make plugin-planir-check`)."""
+    h = harness
+    turn(h, calls=[("c1", "ls")])
+    call(h, "c1", "ls")
+    result(h, "c1", "notes.txt")
+    provenance["origin"] = "background_review"
+    args = {"action": "add", "target": "memory", "content": "Workspace notes live in notes.txt"}
+    assert (
+        h.ctx.hooks["pre_tool_call"](
+            tool_name="memory", args=args, tool_call_id="c2", turn_id="t-review", **SID
+        )
+        is None
+    )
+    save = h.scans[-1]
+    assert save["trigger"]["kind"] == "system"
+    assert save["self_edit"]["store"] == "memory"
+    assert [e["role"] for e in save["self_edit"]["conversation"]] == ["user", "assistant", "tool"]
+
+    if os.environ.get("SENTROOK_PLANIR_DUMP"):
+        dump = Path(os.environ["SENTROOK_PLANIR_DUMP"])
+        before = json.loads(dump.read_text()) if dump.exists() else []
+        dump.write_text(json.dumps([*before, *h.scans]))
+
+
 def test_process_manage_kind_follows_the_action(harness):
     h = harness
     h.ctx.hooks["pre_llm_call"](turn_id="t1", user_message="stop the server", platform="cli", **SID)

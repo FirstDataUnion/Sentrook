@@ -3,6 +3,8 @@ the separate `hermes cron run` process.
 
 - `sessions/<sid>.json`: step counter, input sequence, state token, history, input buffer
 - `turns/<turn_id>.json`: turn context from `pre_llm_call` and `post_api_request`
+- `conversations/<sid>.json`: the session's recent messages and tool results, redacted, for a background
+  save's `self_edit` block (see `conversation`)
 - `reviews.json`: rule_key → (session, request id) for joining approval answers
 - `grants.json`: grants and channel bindings set by command (see `grants`)
 - `snooze.json`: snoozes set by command (see `snooze`)
@@ -20,7 +22,7 @@ import os
 import re
 import secrets
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -157,6 +159,23 @@ class Store:
         with self.lock:
             t = self._read(self.dir / "turns" / f"{_fkey(turn_id)}.json", {})
             return t if isinstance(t, dict) else {}
+
+    def load_conversation(self, sid: str) -> list[dict[str, Any]]:
+        with self.lock:
+            data = self._read(self.dir / "conversations" / f"{_fkey(sid)}.json", None)
+        entries = data.get("entries") if isinstance(data, dict) else None
+        return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+    def update_conversation(
+        self, sid: str, change: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+    ) -> None:
+        """Read-modify-write of a session's conversation log under the store lock."""
+        with self.lock:
+            entries = change(self.load_conversation(sid))
+            self._write(
+                self.dir / "conversations" / f"{_fkey(sid)}.json",
+                {"version": 1, "entries": entries},
+            )
 
     def put_review(self, rule_key: str, value: dict[str, Any]) -> None:
         path = self.dir / "reviews.json"

@@ -1,46 +1,39 @@
-"""Hermes's self-improvement loop: its skill and memory saves go through when the save is all the scanner found.
+"""Hermes's self-improvement loop: its skill and memory saves are declared to the scanner as self-edits.
 
 A loop save is `skill_manage` or `memory` called while Hermes's write origin is `background_review` and the
-review is unattended (the automatic review and the curator, not an owner's `/refine`). Its review becomes an
-allow when there is no enforced floor and every reason is selfmod.plugin or selfmod.memory, attended or not.
-Everything else keeps today's decision.
+review is unattended (the automatic review and the curator, not an owner's `/refine`). With `skill_review:
+allow` (the default) it is sent with trigger system and a `self_edit` block; the scanner's verdict is then
+applied like any other. With `skill_review: review` it is sent like any other call. Nothing else changes.
 """
 
 import io
 import sys
-import types
 
 import pytest
 
 import plugin
-from plugin import auth, commands, config, history, scan_client, skill_review
+from plugin import commands, config, history, skill_review
 
 SID = {"session_id": "S1", "task_id": "S1"}
-# What the scanner gives a bare loop save (trigger system): the change and the loop's own context.
-SELFMOD_SKILL = [{"code": "selfmod.plugin"}, {"code": "trigger.system"}]
-SELFMOD_MEMORY = [
-    {"code": "origin.agent_generated"},
-    {"code": "selfmod.memory"},
-    {"code": "trigger.system"},
-]
+SYSTEM_TRIGGER = {
+    "kind": "system",
+    "channel": None,
+    "sender": {"relation": "unknown", "basis": ["none"]},
+}
 
 LOOP_CALLS = [
+    ("skill_manage", {"action": "create", "name": "tidy", "content": "# Tidy\nSteps."}, "skills"),
     (
         "skill_manage",
-        {"action": "create", "name": "tidy", "content": "# Tidy\nSteps."},
-        SELFMOD_SKILL,
+        {"action": "patch", "name": "tidy", "old_string": "Steps.", "new_string": "Two steps."},
+        "skills",
     ),
-    (
-        "skill_manage",
-        {"action": "patch", "name": "tidy", "old": "Steps.", "new": "Two steps."},
-        SELFMOD_SKILL,
-    ),
-    ("skill_manage", {"action": "edit", "name": "tidy", "content": "# Tidy\nNew."}, SELFMOD_SKILL),
-    ("skill_manage", {"action": "delete", "name": "tidy"}, SELFMOD_SKILL),
+    ("skill_manage", {"action": "edit", "name": "tidy", "content": "# Tidy\nNew."}, "skills"),
+    ("skill_manage", {"action": "delete", "name": "tidy"}, "skills"),
     (
         "memory",
         {"action": "add", "target": "memory", "content": "Prefers short replies."},
-        SELFMOD_MEMORY,
+        "memory",
     ),
 ]
 LOOP_IDS = ["create", "patch", "edit", "delete", "memory-add"]
@@ -52,61 +45,13 @@ class Tty(io.StringIO):
 
 
 @pytest.fixture
-def h(harness, monkeypatch):
-    """The harness with a scanner whose reply each test sets, and Hermes's write origin under test control."""
-    fake = harness
-    reply = {"risk": 55, "enforced": None, "reasons": SELFMOD_SKILL}
-
-    def http(url, *, data=None, headers=None, timeout):
-        if url != "http://scan.test/scan":
-            return fake(url, data=data, headers=headers, timeout=timeout)
-        import json
-
-        p = json.loads(data)
-        fake.scans.append(p)
-        return (
-            200,
-            {
-                "response_version": "2.0",
-                "request_id": p["request_id"],
-                "status": "ok",
-                "entities": {},
-                "tool_description": {"template": "Saves a skill"},
-                "action_fingerprint": f"afp1:x|step:{p['session']['step']}",
-                "state": "tok",
-                **reply,
-            },
-            {},
-        )
-
-    monkeypatch.setattr(auth, "http_json", http)
-    monkeypatch.setattr(scan_client, "http_json", http)
-
-    prov = {"origin": "background_review", "attended": False}
-    mod = types.ModuleType("tools.skill_provenance")
-    mod.get_current_write_origin = lambda: prov["origin"]
-    mod.is_unattended_review = lambda: (
-        prov["origin"] == "background_review" and not prov["attended"]
-    )
-    pkg = types.ModuleType("tools")
-    pkg.__path__ = []
-    pkg.skill_provenance = mod
-    monkeypatch.setitem(sys.modules, "tools", pkg)
-    monkeypatch.setitem(sys.modules, "tools.skill_provenance", mod)
-    # Not a terminal: platforms outside the chat list are unattended unless a test says otherwise.
-    monkeypatch.setattr(sys, "stdin", io.StringIO())
-    for k in ("HERMES_SESSION_PLATFORM", "HERMES_PLATFORM", "SENTROOK_SKILL_REVIEW"):
-        monkeypatch.delenv(k, raising=False)
-    monkeypatch.setattr(plugin, "session_facts", lambda: {})
-
-    fake.reply = reply
-    fake.prov = prov
-    return fake
+def h(loop_h):
+    return loop_h
 
 
-def turn(h, platform):
+def turn(h, platform, text="", turn_id="t1"):
     h.ctx.hooks["pre_llm_call"](
-        turn_id="t1", user_message="", platform=platform, sender_id="u1", **SID
+        turn_id=turn_id, user_message=text, platform=platform, sender_id="u1", **SID
     )
 
 
@@ -122,89 +67,65 @@ def history_action(h):
     return history.action_of(*scans[0])
 
 
-# ---- must allow ------------------------------------------------------------------------------------------
+# ---- must declare ------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("tool", "args", "reasons"), LOOP_CALLS, ids=LOOP_IDS)
+@pytest.mark.parametrize(("tool", "args", "store"), LOOP_CALLS, ids=LOOP_IDS)
 @pytest.mark.parametrize("platform", ["telegram", "api_server", "webhook", "cli", "curator", None])
-def test_a_loop_save_whose_only_reason_is_the_save_is_allowed(
-    h, monkeypatch, tool, args, reasons, platform
-):
+def test_a_loop_save_is_declared_as_a_self_edit(h, monkeypatch, tool, args, store, platform):
     """Attended chat, API server, webhook, the local terminal, the curator (its own platform), and a
-    run with no turn recorded."""
+    run with no turn recorded: trigger system, the block with the save's store, and the scanner's
+    allow applied."""
     if platform == "cli":
         monkeypatch.setattr(sys, "stdin", Tty())
     if platform is not None:
-        turn(h, platform)
-    h.reply["reasons"] = reasons
+        turn(h, platform, "keep replies short")
     out, rec = call(h, tool, args)
     assert out is None
-    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "allowed", True)
-    assert history_action(h) == "allowed (skill review)"
-    assert h.scans[-1]["trigger"] == {
-        "kind": "system",
-        "channel": None,
-        "sender": {"relation": "unknown", "basis": ["none"]},
-    }
+    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("allow", "allowed", True)
+    sent = h.scans[-1]
+    assert sent["trigger"] == SYSTEM_TRIGGER
+    assert sent["self_edit"]["kind"] == "background_review"
+    assert sent["self_edit"]["store"] == store
+    assert isinstance(sent["self_edit"]["conversation"], list)
+    assert rec["planir"]["self_edit"] == sent["self_edit"]
 
 
-def test_both_save_reasons_together_are_still_only_the_save(h):
-    turn(h, "api_server")
-    h.reply["reasons"] = [*SELFMOD_SKILL, *SELFMOD_MEMORY, {"code": "selfmod.plugin", "detail": {}}]
-    out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out is None and rec["decision"] == "allowed"
+# ---- the verdict decides -------------------------------------------------------------------------------
 
 
-# ---- must stay as it is -------------------------------------------------------------------------------
+@pytest.mark.parametrize(("tool", "args", "store"), LOOP_CALLS, ids=LOOP_IDS)
+@pytest.mark.parametrize("platform", ["api_server", "webhook", "curator", None])
+def test_an_unattended_review_of_a_loop_save_is_a_block(h, tool, args, store, platform):
+    if platform is not None:
+        turn(h, platform)
+    h.reply.update(risk=55)
+    out, rec = call(h, tool, args)
+    assert out["action"] == "block"
+    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "blocked", True)
+    assert history_action(h) == "blocked (no reviewer)"
+    assert "self_edit" in h.scans[-1]
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        "exposure.instructions",
-        "exposure.session_tainted",
-        "exfil.exec_egress",
-        "origin.only_in_untrusted",
-        "origin.agent_created_dirty_lineage",
-        "trigger.sender_other",
-        "trigger.unknown_sender",
-        "call.not_supported_by_request",
-        "jev.self_modification",
-        "coverage.unknown_sender",
-        "selfmod.config",
-        "selfmod.workspace_skill",
-    ],
-)
-def test_any_other_reason_keeps_the_review(h, extra):
-    turn(h, "telegram")
-    h.reply["reasons"] = [*SELFMOD_SKILL, {"code": extra}]
+@pytest.mark.parametrize("platform", ["telegram", "cli"])
+def test_an_attended_review_of_a_loop_save_asks(h, monkeypatch, platform):
+    if platform == "cli":
+        monkeypatch.setattr(sys, "stdin", Tty())
+    turn(h, platform)
+    h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
     assert out["action"] == "approve"
     assert rec["decision"] == "review_timed_out" and rec["skill_review"] is True
     assert history_action(h) == "review"
 
-    turn(h, "api_server")
-    out, rec = call(h, *LOOP_CALLS[3][:2])
-    assert out["action"] == "block" and rec["decision"] == "blocked"
-    assert history_action(h) == "blocked (no reviewer)"
 
-
-@pytest.mark.parametrize(
-    "reasons",
-    [
-        [],
-        None,
-        [{"code": None}],
-        ["selfmod.plugin"],
-        [{"code": "trigger.system"}],
-        [{"code": "trigger.system"}, {"code": "origin.agent_generated"}],
-    ],
-)
-def test_a_review_without_a_readable_save_reason_is_not_relieved(h, reasons):
-    turn(h, "api_server")
-    h.reply["reasons"] = reasons
-    out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out["action"] == "block" and rec["decision"] == "blocked"
+def test_the_plugin_no_longer_relieves_a_review():
+    assert not hasattr(skill_review, "relieves")
+    review = {"response": {"risk": 55}, "mode": "enforce", "verdict": "review"}
+    assert (
+        history.action_of({**review, "decision": "allowed", "skill_review": True}, None)
+        != "allowed (skill review)"
+    )
 
 
 def test_a_block_is_still_a_block(h):
@@ -215,7 +136,7 @@ def test_a_block_is_still_a_block(h):
 
 
 @pytest.mark.parametrize("floor", ["review", "block"])
-def test_an_enforced_floor_is_untouched(h, floor):
+def test_an_enforced_floor_applies(h, floor):
     turn(h, "telegram")
     h.reply.update(risk=20, enforced=floor)
     out, rec = call(h, *LOOP_CALLS[0][:2])
@@ -225,25 +146,40 @@ def test_an_enforced_floor_is_untouched(h, floor):
     assert out["action"] == "block" and rec["decision"] == "blocked"
 
 
-def test_an_owner_turn_save_is_reviewed_as_before(h):
-    """Origin assistant_tool: the owner asked for it in a turn. Normal trigger, normal review."""
-    h.prov["origin"] = "assistant_tool"
-    turn(h, "telegram")
+def test_observe_mode_is_unchanged(h):
+    h.ctx.settings["mode"] = "observe"
+    turn(h, "api_server")
+    h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
+    assert out is None and history_action(h) == "observed (would review)"
+    assert "self_edit" in h.scans[-1]
+
+
+# ---- must not declare -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("tool", "args", "store"), LOOP_CALLS, ids=LOOP_IDS)
+def test_an_owner_turn_save_is_sent_as_before(h, tool, args, store):
+    """Origin assistant_tool: the owner asked for it in a turn. Normal trigger, no block."""
+    h.prov["origin"] = "assistant_tool"
+    turn(h, "telegram", "remember that I like short replies")
+    h.reply.update(risk=55)
+    out, rec = call(h, tool, args)
     assert out["action"] == "approve"
     assert "skill_review" not in rec
-    assert h.scans[-1]["trigger"]["kind"] == "message"
+    assert h.scans[-1]["trigger"]["kind"] == "message" and "self_edit" not in h.scans[-1]
     turn(h, "api_server")
-    out, rec = call(h, *LOOP_CALLS[4][:2])
-    assert out["action"] == "block"
+    out, rec = call(h, tool, args)
+    assert out["action"] == "block" and "self_edit" not in h.scans[-1]
 
 
-def test_an_attended_refine_keeps_the_prompt(h):
+def test_an_attended_refine_is_sent_as_before(h):
     h.prov["attended"] = True
     turn(h, "telegram")
+    h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[1][:2])
     assert out["action"] == "approve" and "skill_review" not in rec
-    assert h.scans[-1]["trigger"]["kind"] == "message"
+    assert h.scans[-1]["trigger"]["kind"] == "message" and "self_edit" not in h.scans[-1]
 
 
 @pytest.mark.parametrize(
@@ -253,18 +189,20 @@ def test_an_attended_refine_keeps_the_prompt(h):
         ("write_file", {"path": "skills/tidy/SKILL.md", "content": "x"}),
         ("patch", {"path": "skills/tidy/SKILL.md", "old": "a", "new": "b"}),
         ("read_file", {"path": "skills/tidy/SKILL.md"}),
+        ("skills_list", {}),
     ],
 )
-def test_other_tools_in_a_loop_run_are_scored_normally(h, tool, args):
+def test_other_tools_in_a_loop_run_are_sent_normally(h, tool, args):
     turn(h, "api_server")
+    h.reply.update(risk=55)
     out, rec = call(h, tool, args)
     assert out["action"] == "block" and rec["decision"] == "blocked"
     assert "skill_review" not in rec
-    assert h.scans[-1]["trigger"]["kind"] == "hook"
+    assert h.scans[-1]["trigger"]["kind"] == "hook" and "self_edit" not in h.scans[-1]
 
 
 @pytest.mark.parametrize("broken", ["missing", "raises", "no_unattended"])
-def test_without_the_write_origin_there_is_no_relief_and_no_error(h, monkeypatch, broken):
+def test_without_the_write_origin_nothing_is_declared_and_no_error(h, monkeypatch, broken):
     if broken == "missing":
         monkeypatch.setitem(sys.modules, "tools.skill_provenance", None)
     elif broken == "raises":
@@ -272,31 +210,31 @@ def test_without_the_write_origin_there_is_no_relief_and_no_error(h, monkeypatch
     else:
         del sys.modules["tools.skill_provenance"].is_unattended_review
     turn(h, "api_server")
+    h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
     assert out["action"] == "block" and rec["decision"] == "blocked"
     assert "skill_review" not in rec
-    assert h.scans[-1]["trigger"]["kind"] == "hook"
-
-
-def test_observe_mode_is_unchanged(h):
-    h.ctx.settings["mode"] = "observe"
-    turn(h, "api_server")
-    out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out is None and history_action(h) == "observed (would review)"
+    assert h.scans[-1]["trigger"]["kind"] == "hook" and "self_edit" not in h.scans[-1]
 
 
 # ---- the setting ----------------------------------------------------------------------------------------
 
 
-def test_skill_review_review_restores_the_normal_decision(h):
+def test_skill_review_review_sends_a_loop_save_like_any_other_call(h):
     h.ctx.settings["skill_review"] = "review"
-    turn(h, "api_server")
+    turn(h, "api_server", "tidy my notes")
+    h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
     assert out["action"] == "block" and rec["decision"] == "blocked"
     assert rec["skill_review"] is True  # still counted
+    sent = h.scans[-1]
+    assert sent["trigger"]["kind"] == "hook" and "self_edit" not in sent
     turn(h, "telegram")
     out, rec = call(h, *LOOP_CALLS[4][:2])
     assert out["action"] == "approve"
+    assert h.scans[-1]["trigger"]["kind"] == "message" and "self_edit" not in h.scans[-1]
+    # No conversation is kept either.
+    assert not (h.dir / "sentrook" / "conversations").exists()
 
 
 @pytest.mark.parametrize(
@@ -328,12 +266,12 @@ def status(h):
     return next(line for line in out.splitlines() if line.startswith("skill review:"))
 
 
-def test_status_counts_allowed_and_blocked_loop_saves(h):
+def test_status_counts_allowed_blocked_and_asked_loop_saves(h):
     assert status(h) == "skill review: allow; loop saves in the traffic log: 0 allowed, 0 blocked"
     turn(h, "api_server")
     call(h, *LOOP_CALLS[0][:2])
     call(h, *LOOP_CALLS[4][:2])
-    h.reply["reasons"] = [*SELFMOD_SKILL, {"code": "exposure.injection"}]
+    h.reply.update(risk=55)
     call(h, *LOOP_CALLS[3][:2])
     h.prov["origin"] = "assistant_tool"
     call(h, *LOOP_CALLS[3][:2])  # an owner turn: not a loop save, not counted
@@ -345,7 +283,7 @@ def test_status_counts_allowed_and_blocked_loop_saves(h):
     assert status(h).endswith("2 allowed, 1 blocked, 1 asked")
 
 
-def test_an_unknown_value_is_allowed_and_named(h):
+def test_an_unknown_value_reads_as_allow_and_is_named(h):
     h.ctx.settings["skill_review"] = "reveiw"
     cfg = config.resolve_config(dict(h.ctx.settings), {})
     assert (cfg.skill_review, cfg.skill_review_unknown) == ("allow", "reveiw")
@@ -353,32 +291,10 @@ def test_an_unknown_value_is_allowed_and_named(h):
     turn(h, "api_server")
     out, rec = call(h, *LOOP_CALLS[0][:2])
     assert out is None and rec["decision"] == "allowed"
+    assert h.scans[-1]["trigger"] == SYSTEM_TRIGGER and "self_edit" in h.scans[-1]
 
 
 def test_status_with_the_traffic_log_off(h):
     h.ctx.settings["traffic_log"] = {"enabled": False}
     h.ctx.settings["skill_review"] = "review"
     assert status(h) == "skill review: review (loop saves not counted: the traffic log is off)"
-
-
-def test_history_labels_only_a_relieved_review():
-    base = {"response": {"risk": 55}, "mode": "enforce"}
-    assert (
-        history.action_of(
-            {**base, "verdict": "review", "decision": "allowed", "skill_review": True}, None
-        )
-        == "allowed (skill review)"
-    )
-    assert (
-        history.action_of(
-            {**base, "verdict": "allow", "decision": "allowed", "skill_review": True}, None
-        )
-        == "allowed"
-    )
-    assert (
-        history.action_of(
-            {**base, "verdict": "review", "decision": "blocked", "skill_review": True}, None
-        )
-        == "blocked (no reviewer)"
-    )
-    assert skill_review.relieves({"reasons": SELFMOD_MEMORY, "enforced": "allow"})
