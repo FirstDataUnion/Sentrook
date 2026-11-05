@@ -12,7 +12,7 @@ import sys
 import pytest
 
 import plugin
-from plugin import commands, config, history, skill_review
+from plugin import commands, config, history
 
 SID = {"session_id": "S1", "task_id": "S1"}
 SYSTEM_TRIGGER = {
@@ -119,13 +119,19 @@ def test_an_attended_review_of_a_loop_save_asks(h, monkeypatch, platform):
     assert history_action(h) == "review"
 
 
-def test_the_plugin_no_longer_relieves_a_review():
-    assert not hasattr(skill_review, "relieves")
-    review = {"response": {"risk": 55}, "mode": "enforce", "verdict": "review"}
-    assert (
-        history.action_of({**review, "decision": "allowed", "skill_review": True}, None)
-        != "allowed (skill review)"
-    )
+@pytest.mark.parametrize("platform", ["api_server", "webhook", None])
+def test_a_reviewed_bare_save_is_blocked_unattended_and_still_declared(h, platform):
+    """The scanner reviews a loop save whose only reasons are the save itself and the system trigger: the
+    plugin applies that review as it is (no allow of its own), and the save still carries its block."""
+    if platform is not None:
+        turn(h, platform, "keep replies short")
+    h.reply.update(risk=55, reasons=[{"code": "selfmod.memory"}, {"code": "trigger.system"}])
+    out, rec = call(h, *LOOP_CALLS[4][:2])
+    assert out is not None and out["action"] == "block"
+    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "blocked", True)
+    assert history_action(h) == "blocked (no reviewer)"
+    sent = h.scans[-1]
+    assert sent["trigger"] == SYSTEM_TRIGGER and sent["self_edit"]["store"] == "memory"
 
 
 def test_a_block_is_still_a_block(h):
@@ -248,10 +254,38 @@ def test_skill_review_review_sends_a_loop_save_like_any_other_call(h):
         ({"skill_review": "alow"}, {}, "allow"),
         ({"skill_review": "reveiw"}, {}, "allow"),
         ({"skill_review": "off"}, {}, "allow"),
+        # YAML reads `off`, `no` and `false` as False, and `on`, `yes`, `true` as True.
+        ({"skill_review": False}, {}, "review"),
+        ({"skill_review": True}, {}, "allow"),
+        ({"skill_review": False}, {"SENTROOK_SKILL_REVIEW": "allow"}, "review"),
+        ({"skill_review": True}, {"SENTROOK_SKILL_REVIEW": "review"}, "allow"),
+        ({"skill_review": 0}, {}, "allow"),
+        ({"skill_review": 0}, {"SENTROOK_SKILL_REVIEW": "review"}, "allow"),
+        ({"skill_review": ["review"]}, {}, "allow"),
     ],
 )
 def test_the_setting_resolves_and_a_typo_never_stops_the_loop(settings, env, want):
     assert config.resolve_config(settings, env).skill_review == want
+
+
+@pytest.mark.parametrize(
+    ("value", "named"),
+    [(False, None), (True, None), ("off", "off"), (0, "0"), (["review"], "['review']")],
+)
+def test_a_value_that_is_not_allow_or_review_is_named(h, caplog, value, named):
+    h.ctx.settings["skill_review"] = value
+    cfg = config.resolve_config(dict(h.ctx.settings), {})
+    assert cfg.skill_review_unknown == named
+    line = status(h)
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        plugin.register(h.ctx)
+    warnings = [r.getMessage() for r in caplog.records if "skill_review" in r.getMessage()]
+    if named is None:
+        assert "unknown value" not in line and warnings == []
+        assert line.startswith("skill review: " + ("review" if value is False else "allow") + ";")
+    else:
+        assert line.startswith(f'skill review: allow (unknown value "{named}" read as allow); ')
+        assert len(warnings) == 1 and repr(named) in warnings[0]
 
 
 def test_the_setting_is_read_from_hermes(h):

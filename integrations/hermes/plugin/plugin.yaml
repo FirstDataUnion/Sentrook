@@ -58,8 +58,8 @@ config_schema:
       allow | review. allow declares Hermes's own background skill and memory saves (the self-improvement
       review and the curator) to Sentrook and sends the recent conversation, redacted, so the save is judged
       against what was said; Sentrook's verdict applies as for any call. review sends them like any other
-      call, without the conversation. Any other value reads as allow (status and the startup log name it).
-      Env SENTROOK_SKILL_REVIEW.
+      call, without the conversation, and deletes the kept conversations. false (off, no) reads as review and
+      true as allow; any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
     type: int
     default: 30000

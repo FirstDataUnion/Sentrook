@@ -100,6 +100,25 @@ def _str(raw: Any) -> str | None:
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
 
 
+def resolve_skill_review(setting: Any, env_value: Any) -> tuple[str, str | None]:
+    """`skill_review` as (allow | review, the value as given when it was not understood).
+
+    Unset (or a blank string) falls back to the environment, then to allow. YAML reads `off`, `no` and
+    `false` as False, which is review, and `on`, `yes` and `true` as True, which is allow. Any other value,
+    string or not, reads as allow, so a typo never stops Hermes's self-improvement loop; status and the
+    startup log name it. A setting of any type wins over the environment.
+    """
+    raw: Any = setting
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = _str(env_value) or "allow"
+    if isinstance(raw, bool):
+        return ("allow" if raw else "review"), None
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        return (value, None) if value in SKILL_REVIEW else ("allow", raw.strip()[:40])
+    return "allow", str(raw)[:40]
+
+
 def _bool(raw: Any, fallback: bool) -> bool:
     if isinstance(raw, bool):
         return raw
@@ -251,12 +270,9 @@ def resolve_config(
     traffic = cfg.get("traffic_log") if isinstance(cfg.get("traffic_log"), dict) else {}
     traffic_path = _str(traffic.get("path")) or _str(env.get("SENTROOK_TRAFFIC_LOG"))
     grants, unsent = parse_config_grants(cfg.get("grants"))
-    # Unset means allow. Any value other than allow or review also reads as allow, so a typo never stops
-    # Hermes's self-improvement loop; status and the startup log name the value.
-    skill_review_raw = (
-        _str(cfg.get("skill_review")) or _str(env.get("SENTROOK_SKILL_REVIEW")) or "allow"
+    skill_review, skill_review_unknown = resolve_skill_review(
+        cfg.get("skill_review"), env.get("SENTROOK_SKILL_REVIEW")
     )
-    skill_review = skill_review_raw.lower()
     return PluginConfig(
         endpoints=resolve_endpoints(cfg, env),
         mode="observe" if mode == "observe" else "enforce",
@@ -288,8 +304,8 @@ def resolve_config(
             p.lower()
             for p in _list(cfg.get("attended_platforms") or env.get("SENTROOK_ATTENDED_PLATFORMS"))
         ),
-        skill_review=skill_review if skill_review in SKILL_REVIEW else "allow",
-        skill_review_unknown=None if skill_review in SKILL_REVIEW else skill_review_raw[:40],
+        skill_review=skill_review,
+        skill_review_unknown=skill_review_unknown,
         grants=grants,
         unsent_grants=unsent,
         channel_bindings=_list(cfg.get("channel_bindings")),

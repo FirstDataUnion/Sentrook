@@ -4,7 +4,9 @@ the separate `hermes cron run` process.
 - `sessions/<sid>.json`: step counter, input sequence, state token, history, input buffer
 - `turns/<turn_id>.json`: turn context from `pre_llm_call` and `post_api_request`
 - `conversations/<sid>.json`: the session's recent messages and tool results, redacted, for a background
-  save's `self_edit` block (see `conversation`)
+  save's `self_edit` block (see `conversation`). When one is written, at most once an hour per process,
+  logs not modified in `CONVERSATION_MAX_AGE_S` are deleted and only the `CONVERSATION_KEEP` most recently
+  modified are kept
 - `reviews.json`: rule_key → (session, request id) for joining approval answers
 - `grants.json`: grants and channel bindings set by command (see `grants`)
 - `snooze.json`: snoozes set by command (see `snooze`)
@@ -22,6 +24,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -65,6 +68,13 @@ def read_time(raw: Any) -> datetime | None:
     except (ValueError, OverflowError):
         return None
 
+
+#: Conversation logs: deleted when not modified for 7 days; at most 100 kept; pruned at most hourly.
+CONVERSATION_MAX_AGE_S = 7 * 86_400
+CONVERSATION_KEEP = 100
+CONVERSATION_PRUNE_EVERY_S = 3_600
+#: When this process last pruned each state directory's conversation logs.
+_PRUNED_AT: dict[str, float] = {}
 
 _FKEY_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
 
@@ -176,6 +186,37 @@ class Store:
                 self.dir / "conversations" / f"{_fkey(sid)}.json",
                 {"version": 1, "entries": entries},
             )
+            self._prune_conversations()
+
+    def _prune_conversations(self) -> None:
+        """At most once an hour per process: delete logs not modified in `CONVERSATION_MAX_AGE_S`, then
+        all but the `CONVERSATION_KEEP` most recently modified."""
+        now = time.time()
+        key = str(self.dir)
+        if now - _PRUNED_AT.get(key, float("-inf")) < CONVERSATION_PRUNE_EVERY_S:
+            return
+        _PRUNED_AT[key] = now
+        logs = []
+        for path in (self.dir / "conversations").glob("*.json"):
+            try:
+                logs.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        logs.sort(reverse=True)
+        for i, (mtime, path) in enumerate(logs):
+            if i >= CONVERSATION_KEEP or now - mtime > CONVERSATION_MAX_AGE_S:
+                path.unlink(missing_ok=True)
+
+    def delete_conversations(self) -> bool:
+        """Deletes every conversation log; True when there were any."""
+        d = self.dir / "conversations"
+        with self.lock:
+            if not d.exists():
+                return False
+            for path in d.iterdir():
+                path.unlink(missing_ok=True)
+            d.rmdir()
+            return True
 
     def put_review(self, rule_key: str, value: dict[str, Any]) -> None:
         path = self.dir / "reviews.json"

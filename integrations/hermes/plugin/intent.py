@@ -172,7 +172,14 @@ def conversation_sender_of(
 ) -> dict[str, Any]:
     """Who wrote a message in the conversation a background save is judged against: `sender_of`, except
     that in a group chat a sender individually on the allowlist is the owner (basis `group_chat`). The
-    trigger keeps calling every group message `other`; this only says who wrote each message."""
+    trigger keeps calling every group message `other`; this only says who wrote each message.
+
+    While Hermes's write origin is its background review (the review fork or the curator, which may run in
+    a context that still holds the owner's chat), nobody is the owner: the sender is unknown."""
+    from .skill_review import in_background_review
+
+    if in_background_review():
+        return {"relation": "unknown", "basis": ["none"]}
     sender = sender_of(platform, facts, sender_id, env)
     if sender["basis"] == ["group_chat"] and _allowlisted(platform, facts, sender_id, env):
         return {"relation": "owner", "basis": ["group_chat"]}

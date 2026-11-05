@@ -93,9 +93,17 @@ def _turn_no(sess: dict[str, Any], turn_id: Any) -> int:
     return turns.index(turn_id) + 1 if turn_id in turns else max(1, len(turns))
 
 
-def _capturing(cfg: PluginConfig) -> bool:
-    """The conversation log is kept only while background saves are declared as self-edits."""
-    return cfg.skill_review == "allow"
+def _capturing(cfg: PluginConfig, store: Store) -> bool:
+    """The conversation log is kept only while background saves are declared as self-edits; once the
+    setting reads as review, the logs are deleted (by the first hook that sees it) and nothing is kept."""
+    if cfg.skill_review == "allow":
+        return True
+    try:
+        if store.delete_conversations():
+            logger.info("sentrook skill_review is review: conversation logs deleted")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("deleting conversation logs failed: %s", exc)
+    return False
 
 
 def _record(store: Store, sid: str, entry: dict[str, Any] | None) -> None:
@@ -186,7 +194,8 @@ def on_pre_llm_call(**kw: Any) -> None:
                 if turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
                 store.save_session(sid, s, cfg.history_limit * 2)
-            if _capturing(cfg):
+            # The curator's own prompt (a fresh agent under the background-review origin) is not a message.
+            if _capturing(cfg, store) and not skill_review.in_background_review():
                 facts = session_facts()
                 platform = resolve_platform(kw.get("platform"), facts, env)
                 _record(
@@ -233,7 +242,7 @@ def on_post_api_request(**kw: Any) -> None:
         store = _state(cfg)[0]
         store.merge_turn(kw.get("turn_id"), {"assistant_text": text, "tool_calls": calls})
         # The review fork's own words are not the conversation it reviews.
-        if _capturing(cfg) and text.strip() and not skill_review.in_background_review():
+        if _capturing(cfg, store) and text.strip() and not skill_review.in_background_review():
             sid = _sid(kw)
             _record(
                 store,
@@ -255,6 +264,7 @@ def on_pre_tool_call(tool_name: str = "", args: Any = None, **kw: Any) -> dict[s
     try:
         cfg, env = _load()
         store, traffic = _state(cfg)
+        _capturing(cfg, store)
         sid = _sid(kw)
         with store.session_lock(sid):
             return _scan_one(
@@ -499,11 +509,12 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
     """Buffer the result (exactly what the model saw) for the next scan, and add it to the conversation
     log; blocked calls add nothing."""
     try:
+        cfg, _ = _load()
+        store, _t = _state(cfg)
+        capturing = _capturing(cfg, store)
         host_id = kw.get("tool_call_id")
         if not host_id:
             return
-        cfg, _ = _load()
-        store, _t = _state(cfg)
         sid = _sid(kw)
         with store.session_lock(sid):
             s = store.load_session(sid)
@@ -551,7 +562,7 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
                         "truncated": truncated,
                     }
                 )
-                if _capturing(cfg):
+                if capturing:
                     # The review fork's reads count too: they are what its save draws on.
                     _record(
                         store,
@@ -587,6 +598,10 @@ def register(ctx: Any) -> None:
         logger.info("/sentrook not registered: %s", exc)
     cfg, _ = _load()
     ep = cfg.endpoints
+    try:
+        _capturing(cfg, _state(cfg)[0])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook state not readable at startup: %s", exc)
 
     def show(e: Any) -> str:
         return e.url if e.ok else f"INVALID ({e.reason})"

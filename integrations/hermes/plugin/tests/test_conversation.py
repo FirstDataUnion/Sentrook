@@ -461,3 +461,132 @@ def test_a_broken_log_never_breaks_the_scan_or_the_buffer(h, monkeypatch):
     sent = save(h)
     assert sent["self_edit"] == {"kind": "background_review", "store": "memory", "conversation": []}
     assert sent["trigger"]["kind"] == "system"
+
+
+# ---- the curator --------------------------------------------------------------------------------------
+
+
+def test_the_curators_own_prompt_is_not_a_user_message(h):
+    """The curator is a fresh agent whose pre_llm_call fires with its curation prompt, in a context that
+    can still hold the owner's chat: it is not recorded, and never as the owner."""
+    dm(h)
+    user(h, "t1", "keep replies short")
+    h.prov["origin"] = "background_review"
+    user(h, "t-curator", "Review the skill library and consolidate overlapping skills.")
+    assert [e["text"] for e in log(h) if e["role"] == "user"] == ["keep replies short"]
+    sent = save(h, "skill_manage", {"action": "edit", "name": "tidy", "content": "# Tidy"})
+    texts = [e.get("text") for e in sent["self_edit"]["conversation"]]
+    assert "Review the skill library" not in json.dumps(texts)
+    owner = [e for e in sent["self_edit"]["conversation"] if e.get("sender") == OWNER_DM]
+    assert [e["text"] for e in owner] == ["keep replies short"]
+
+
+def test_no_sender_is_the_owner_during_the_background_review(h, monkeypatch):
+    env = {"TELEGRAM_ALLOWED_USERS": "u1"}
+    facts = {"chat_type": "dm", "user_id": "u1"}
+    assert conversation_sender_of("telegram", facts, "u1", env) == OWNER_DM
+    h.prov["origin"] = "background_review"
+    assert conversation_sender_of("telegram", facts, "u1", env) == NO_SENDER
+    assert conversation_sender_of("cli", {}, None, {}) == NO_SENDER
+    group = {"chat_type": "group", "user_id": "u1"}
+    assert conversation_sender_of("telegram", group, "u1", env)["relation"] != "owner"
+
+
+# ---- retention ------------------------------------------------------------------------------------------
+
+DAY = 86_400
+
+
+def conv_dir(h):
+    return h.dir / "sentrook" / "conversations"
+
+
+def old_logs(h, n, age_days, prefix="old"):
+    import os
+    import time
+
+    d = conv_dir(h)
+    d.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    paths = []
+    for i in range(n):
+        p = d / f"{prefix}{i}.json"
+        p.write_text('{"version": 1, "entries": []}')
+        t = now - age_days * DAY - i
+        os.utime(p, (t, t))
+        paths.append(p)
+    return paths
+
+
+def test_logs_older_than_7_days_are_deleted_when_a_log_is_written(h):
+    stale = old_logs(h, 3, 8, "stale")
+    fresh = old_logs(h, 3, 6, "fresh")
+    dm(h)
+    user(h, "t1", "hi")
+    assert not any(p.exists() for p in stale)
+    assert all(p.exists() for p in fresh) and (conv_dir(h) / "S1.json").exists()
+
+
+def test_at_most_100_logs_are_kept_the_most_recent(h):
+    many = old_logs(h, 120, 1)  # many[0] is the newest
+    dm(h)
+    user(h, "t1", "hi")
+    left = sorted(p.name for p in conv_dir(h).iterdir() if p.suffix == ".json")
+    assert len(left) == 100 and "S1.json" in left
+    assert all(p.exists() for p in many[:99]) and not any(p.exists() for p in many[99:])
+
+
+def test_pruning_runs_at_most_once_an_hour_per_process(h, monkeypatch):
+    import time
+
+    from plugin import store as store_mod
+
+    dm(h)
+    user(h, "t1", "hi")
+    stale = old_logs(h, 2, 8, "late")
+    user(h, "t2", "again")
+    assert all(p.exists() for p in stale)  # within the hour: not pruned again
+    real = time.time
+    monkeypatch.setattr(store_mod.time, "time", lambda: real() + 3601)
+    user(h, "t3", "later")
+    assert not any(p.exists() for p in stale)
+
+
+def test_skill_review_review_deletes_the_logs_and_records_nothing(h):
+    dm(h)
+    user(h, "t1", "hi")
+    old_logs(h, 2, 1, "other")
+    assert conv_dir(h).exists()
+    h.ctx.settings["skill_review"] = "review"  # changed at runtime: the next hook deletes them
+    api(h, "t1", "Hello.")
+    assert not conv_dir(h).exists()
+    user(h, "t2", "more")
+    tool(h, "t2", "c1", "terminal", {"command": "ls"}, "a")
+    assert not conv_dir(h).exists()
+
+
+@pytest.mark.parametrize(
+    "hook", ["pre_llm_call", "post_api_request", "pre_tool_call", "post_tool_call"]
+)
+def test_every_hook_deletes_the_logs_once_the_setting_is_review(h, hook):
+    old_logs(h, 1, 1)
+    h.ctx.settings["skill_review"] = "review"
+    kw = {"turn_id": "t1", **SID}
+    if hook == "pre_llm_call":
+        h.ctx.hooks[hook](user_message="x", platform="telegram", **kw)
+    elif hook == "post_api_request":
+        h.ctx.hooks[hook](response={"assistant_message": {"content": "x"}}, **kw)
+    elif hook == "pre_tool_call":
+        h.ctx.hooks[hook](tool_name="terminal", args={"command": "ls"}, tool_call_id="c1", **kw)
+    else:
+        h.ctx.hooks[hook](tool_name="terminal", args={}, result="x", tool_call_id="c9", **kw)
+    assert not conv_dir(h).exists()
+
+
+def test_register_with_review_deletes_the_logs(h):
+    import plugin
+
+    old_logs(h, 2, 1)
+    h.ctx.settings["skill_review"] = False
+    plugin.register(h.ctx)
+    assert not conv_dir(h).exists()
