@@ -424,7 +424,7 @@ const plugin = {
           entry.decision = "allowed";
         } else if (verdict === "block") {
           entry.decision = "blocked";
-          hook = { block: true, blockReason: blockReason(resp, event.toolName) };
+          hook = { block: true, blockReason: blockReason(resp) };
         } else if (
           // Only a human's message: a run whose trigger is unknown or not a message is never snoozed,
           // whatever the approval timeout policy calls attended.

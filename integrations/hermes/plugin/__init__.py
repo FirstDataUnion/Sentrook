@@ -369,7 +369,7 @@ def _scan_one(
         elif verdict == "block" or unattended:
             # A review nobody can answer (or Hermes would auto-approve) is a block.
             entry["decision"] = "blocked"
-            directive = {"action": "block", "message": block_reason(resp, built["tool"])}
+            directive = {"action": "block", "message": block_reason(resp)}
         elif snooze.applies(resp) and snooze.active(
             store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):

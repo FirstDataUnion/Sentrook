@@ -159,7 +159,12 @@ test("allow, block and review over one episode, with the state token and inputs 
 
   const blocked = await h.fire("before_tool_call", call("c2", "curl EXFIL"));
   assert.equal(blocked.block, true);
-  assert.match(blocked.blockReason, /risk 92\/100: Runs a command on cl0ud-sync.io/);
+  assert.equal(
+    blocked.blockReason,
+    "Sentrook security block: this tool call did not run because it reads or sends sensitive data, such as " +
+      "credentials or personal data. Do not retry it, rephrase it or try to reach the same result another way " +
+      "unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed.",
+  );
   const p2 = h.scans[1];
   assert.equal(p2.session.step, 2);
   assert.equal(p2.session.state, "state-1");
@@ -214,7 +219,8 @@ test("an enforced floor blocks below the risk line", async () => {
   const h = setup();
   const r = await h.fire("before_tool_call", call("c1", "FLOOR"));
   assert.equal(r.block, true);
-  assert.match(r.blockReason, /\(enforced\)/);
+  assert.match(r.blockReason, /^Sentrook security block: this tool call did not run because it does not look safe/);
+  assert.ok(!/\d|enforced/.test(r.blockReason), "no risk score and no floor marker for the agent");
 });
 
 test("scan errors: review when attended, token and buffer kept", async () => {
