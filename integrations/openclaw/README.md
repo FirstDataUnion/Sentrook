@@ -241,6 +241,10 @@ bot first: `@yourbot /sentrook status`.
 Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`reviewAt`, `blockAt`). Some findings,
 such as reading credentials and sending them off the machine, are floors that apply whatever the score.
 
+When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
+sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It
+is not told which checks fired or the risk score; you can see those with `openclaw sentrook why last`.
+
 A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your answer
 (`approval.interactiveTimeoutMs`) and then denies the call. Cron jobs and subagents wait 30 minutes
 (`approval.scheduledTimeoutMs`) and then deny it too, unless you set `approval.scheduledTimeoutBehavior` to `allow`.
