@@ -288,14 +288,15 @@ def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> di
     return out
 
 
-#: Self-edit view caps: characters per conversation entry; the plugin sends less, this is the scanner's own bound.
+#: Self-edit view caps: characters per conversation entry (the plugin sends less; this is the scanner's own bound), and
+#: the room left for the self-edit questions, which repeat a longer preamble than the call questions.
 SELF_EDIT_ENTRY_CAP_CHARS = 4000
+SELFEDIT_QUESTIONS_RESERVE_TOKENS = 14_000
+SELFEDIT_STATE_BUDGET_TOKENS = BUDGET_TOKENS - SELFEDIT_QUESTIONS_RESERVE_TOKENS
 
 
-def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
-    """Bound the self-edit conversation: each entry's text or content at `SELF_EDIT_ENTRY_CAP_CHARS`, then, while the
-    view is over the budget, drop the oldest tool entry, then the oldest assistant entry, then the oldest user entry.
-    Mutates `v`; returns whether anything was cut."""
+def cap_self_edit_entries(v: dict[str, Any]) -> bool:
+    """Cap each self-edit conversation entry's text or content at `SELF_EDIT_ENTRY_CAP_CHARS`. Mutates `v`."""
     block = v.get(SELF_EDIT)
     if not isinstance(block, dict) or not isinstance(block.get("conversation"), list):
         return False
@@ -308,14 +309,33 @@ def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
                 e["scanner_truncated"] = True
                 cut = True
     block["conversation"] = conv
+    return cut
+
+
+def fit_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
+    """While the view is over the budget, drop the oldest tool entry, then the oldest assistant entry, then the oldest
+    user entry; what was dropped is counted in `self_edit.scanner_dropped`. Mutates `v`."""
+    block = v.get(SELF_EDIT)
+    if not isinstance(block, dict) or not isinstance(block.get("conversation"), list):
+        return False
+    conv = block["conversation"]
+    dropped: dict[str, int] = {}
     for role in ("tool", "assistant", "user"):
         while est_tokens(v) > budget_tokens:
             idx = next((i for i, e in enumerate(conv) if e.get("role") == role), None)
             if idx is None:
                 break
             del conv[idx]
-            cut = True
-    return cut
+            dropped[role] = dropped.get(role, 0) + 1
+    if dropped:
+        block["scanner_dropped"] = dropped
+    return bool(dropped)
+
+
+def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
+    """Both bounds: entries capped, then the conversation fitted to the budget."""
+    capped = cap_self_edit_entries(v)
+    return fit_self_edit(v, budget_tokens) or capped
 
 
 def _call_view_with_inputs(
@@ -324,12 +344,15 @@ def _call_view_with_inputs(
     v = view(trim(raw), name)
     inputs = v.get("new_inputs")
     truncated = stripped = False
+    if name == SELFEDIT_V1:
+        budget_tokens = min(budget_tokens, SELFEDIT_STATE_BUDGET_TOKENS)
+        truncated = cap_self_edit_entries(v)
     if isinstance(inputs, list):
         truncated = cap_inputs(inputs)
         if est_tokens(v) > budget_tokens:
             strip_inputs(inputs)
             truncated = stripped = True
-    if name == SELFEDIT_V1 and cap_self_edit(v, budget_tokens):
+    if name == SELFEDIT_V1 and fit_self_edit(v, budget_tokens):
         truncated = True
     state, count = second_pass(v)
     return BuiltView(

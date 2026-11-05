@@ -778,9 +778,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
     # A self-edit that writes a skill: the skill's commands run later with nobody asked, so they are judged now as
     # exec calls of their own.
+    # Their entities are not added with roles: an unknown package in an ordinary skill would then read as an
+    # unvetted code source on its own; the risky-step suspicion and the self-edit questions judge them instead.
     if planir.is_self_edit:
         try:
-            resolved = [*resolved, *skill_step_calls(platform, pending)]
+            steps = skill_step_calls(platform, pending)
+            resolved = [*resolved, *steps]
         except Exception as exc:  # noqa: BLE001
             coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)

@@ -59,7 +59,7 @@ def check(planir: PlanIR, raw_scan_kind: str | None = None) -> None:
             "oversize", f"{len(planir.new_inputs)} new_inputs (max {MAX_NEW_INPUTS})"
         )
 
-    if planir.self_edit is not None and len(planir.self_edit.conversation) > MAX_SELF_EDIT_ENTRIES:
+    if planir.is_self_edit and len(planir.self_edit.conversation) > MAX_SELF_EDIT_ENTRIES:
         raise InvalidPlanIR(
             "oversize",
             f"self_edit.conversation has {len(planir.self_edit.conversation)} entries "
