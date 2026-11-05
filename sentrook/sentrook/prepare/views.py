@@ -313,13 +313,18 @@ def cap_self_edit_entries(v: dict[str, Any]) -> bool:
 
 
 def fit_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
-    """While the view is over the budget, drop the oldest tool entry, then the oldest assistant entry, then the oldest
-    user entry; what was dropped is counted in `self_edit.scanner_dropped`. Mutates `v`."""
+    """While the view is over the budget, drop the oldest history step (the conversation carries the calls that
+    matter, with their results), then the oldest tool entry, then the oldest assistant entry, and the owner's and
+    other people's messages last; what was dropped is counted in `self_edit.scanner_dropped`. Mutates `v`."""
     block = v.get(SELF_EDIT)
     if not isinstance(block, dict) or not isinstance(block.get("conversation"), list):
         return False
     conv = block["conversation"]
     dropped: dict[str, int] = {}
+    history = v.get("history")
+    while isinstance(history, list) and history and est_tokens(v) > budget_tokens:
+        history.pop(0)
+        dropped["history"] = dropped.get("history", 0) + 1
     for role in ("tool", "assistant", "user"):
         while est_tokens(v) > budget_tokens:
             idx = next((i for i, e in enumerate(conv) if e.get("role") == role), None)

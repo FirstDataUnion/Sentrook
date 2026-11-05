@@ -295,6 +295,23 @@ def test_the_view_caps_entries_then_drops_oldest_tools_first():
     assert v["self_edit"]["scanner_dropped"]["tool"] >= 1
 
 
+def test_history_goes_before_any_message():
+    raw = planir()
+    step = raw["history"][0]
+    raw["history"] = [
+        {**step, "step": i, "call_id": f"h{i}", "arguments": {"command": "echo " + "q" * 3000}}
+        for i in range(1, 21)
+    ]
+    raw["session"]["step"] = 21
+    raw["new_inputs"][0]["call_id"] = "h20"
+    raw["pending_call"]["call_id"] = "c21"
+    raw["self_edit"]["conversation"] += [{"role": "user", "sender": OWNER, "text": "u" * 3000}] * 10
+    state = build_views(raw, exposure_input_seqs=None)[SELFEDIT_V1].state
+    assert state["self_edit"]["scanner_dropped"].get("history")
+    assert "user" not in state["self_edit"]["scanner_dropped"]
+    assert sum(1 for e in state["self_edit"]["conversation"] if e["role"] == "user") == 11
+
+
 def test_one_long_entry_is_capped_before_the_inputs_are_judged_too_big():
     raw = planir()
     raw["self_edit"]["conversation"].append({"role": "tool", "tool": "x", "content": "w " * 60_000})
