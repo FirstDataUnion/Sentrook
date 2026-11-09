@@ -396,6 +396,8 @@ class SelfEditKind(TolerantStrEnum):
     __fallback__ = "other"
     BACKGROUND_REVIEW = "background_review"
     CURATOR = "curator"
+    #: A save of durable notes from the conversation just before its older turns are compacted away.
+    MEMORY_FLUSH = "memory_flush"
     OTHER = "other"
 
 
