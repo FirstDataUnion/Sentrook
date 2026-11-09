@@ -187,15 +187,17 @@ def on_pre_llm_call(**kw: Any) -> None:
             },
         )
         sid = _sid(kw)
+        # The curator's prompt (a fresh agent under the background-review origin) is neither a message, a
+        # request nor a turn of the owner's session: its calls carry the owner's last request (`_scan_one`).
+        background = skill_review.in_background_review()
         with store.session_lock(sid):
             s = store.load_session(sid)
-            if turn_id:
+            if turn_id and not background:
                 s["last_turn_id"] = turn_id
                 if turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
                 store.save_session(sid, s, cfg.history_limit * 2)
-            # The curator's own prompt (a fresh agent under the background-review origin) is not a message.
-            if _capturing(cfg, store) and not skill_review.in_background_review():
+            if _capturing(cfg, store) and not background:
                 facts = session_facts()
                 platform = resolve_platform(kw.get("platform"), facts, env)
                 _record(
@@ -313,6 +315,10 @@ def _scan_one(
         host_cfg=host_cfg,
         grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid)),
         self_edit=self_edit,
+        # The background review's calls serve the owner's last request, not a turn of their own.
+        request_turn=store.load_turn(sess.get("last_turn_id"))
+        if skill_review.in_background_review()
+        else None,
     )
     planir = built["planir"]
     unattended = is_unattended(

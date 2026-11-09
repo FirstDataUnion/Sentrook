@@ -233,7 +233,10 @@ there to answer it; in a chat or the local terminal you are asked.
 
 Every background save is scanned and logged, and `status` counts them: allowed, blocked and asked. Only Hermes's
 automatic review and curator count: a skill or memory change you ask for in a turn, or a `/refine` you run, is
-scanned like any other call, and so is every other tool those background runs call. Set `skill_review` to `review`
+scanned like any other call, and so is every other tool those background runs call. Every call a background run
+makes is sent with your last message as its request and the number of the turn it follows, and does not count as
+a turn of its own; if you have not written anything in the session yet, the request names the background review
+instead. Set `skill_review` to `review`
 to send the background saves like any other call, without the conversation; with nothing to judge them against,
 expect more of them to be reviewed or blocked.
 
