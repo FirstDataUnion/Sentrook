@@ -1636,6 +1636,32 @@ def test_lookalike_provider_against_the_sessions_providers():
         assert "code.lookalike_provider" not in reasons(env), identity
 
 
+def test_lookalike_remote_provider_when_a_plugin_sends_the_port():
+    history = [
+        {
+            **hist_step(1, "mailbox_search", "mcp", {"query": "invoice"}),
+            "provider": {"kind": "mcp", "name": "mailbox", "identity": "remote:mailbox.test:8200"},
+        }
+    ]
+
+    def send(identity: str) -> dict:
+        return planir(
+            "mailbox_send",
+            "mcp",
+            {"to": "dana@quillco.example", "subject": "notes", "body": "see you at 3"},
+            history=history,
+            provider={"kind": "mcp", "name": "mailbox", "identity": identity},
+            request="email dana the notes",
+        )
+
+    _, env = run(send("remote:mai1box.test:8200"))
+    detail = next(f for f in env.evidence["findings"] if f["reason"] == "code.lookalike_provider")
+    assert detail["mimics"] == "remote:mailbox.test"
+    for identity in ("remote:mailbox.test", "remote:MAILBOX.test:443"):
+        _, env = run(send(identity))
+        assert "code.lookalike_provider" not in reasons(env), identity
+
+
 def test_c2_sibling_staged_placeholder_reaches_the_send():
     def batch(content: str) -> dict:
         sib = {

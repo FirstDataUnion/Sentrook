@@ -27,7 +27,13 @@ from ..oracle.near_miss import edit_distance_le1, registrable
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
+from ..prepare.entities import (
+    EntityKind,
+    Role,
+    normalise_path,
+    normalise_remote_identity,
+    resolve_token,
+)
 from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
@@ -874,7 +880,7 @@ def detect_provider_lookalike(a: CallAnalysis, ctx: Context) -> list[Finding]:
     scored by the other classes; the look-alike is concealment."""
     out: list[Finding] = []
     known = [
-        h.provider.identity
+        normalise_remote_identity(h.provider.identity)
         for h in ctx.prepared.history
         if h.provider.kind is ProviderKind.MCP and h.provider.identity
     ]
