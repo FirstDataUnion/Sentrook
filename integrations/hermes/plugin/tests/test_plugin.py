@@ -347,3 +347,42 @@ def test_every_manifest_setting_is_read():
 
     manifest = yaml.safe_load((Path(plugin.__file__).parent / "plugin.yaml").read_text())
     assert set(manifest["config_schema"]) <= set(plugin.SETTINGS_KEYS)
+
+
+def test_episode_review_loop_auto_deny_on_the_terminal(loop_h, review_fork, monkeypatch):
+    """The review loop's own deny on the local terminal goes out as `blocked` in the next scan's history,
+    and that request is valid PlanIR (`make plugin-planir-check`)."""
+    import io
+    import sys
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    h = loop_h
+    monkeypatch.setattr(sys, "stdin", Tty())
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="keep replies short", platform="cli", sender_id="u1", **SID
+    )
+    h.reply.update(risk=55)
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name="skill_manage",
+        args={"action": "create", "name": "tidy", "content": "# Tidy\nSteps."},
+        tool_call_id="c1",
+        turn_id="t1",
+        **SID,
+    )
+    assert out["action"] == "approve"
+    h.ctx.hooks["post_approval_response"](
+        pattern_key=f"plugin_rule:{out['rule_key']}",
+        choice="deny",
+        surface="cli",
+        session_key="agent:main:cli:S1",
+        **SID,
+    )
+    h.reply.update(risk=5)
+    h.ctx.hooks["pre_tool_call"](
+        tool_name="read_file", args={"path": "notes.md"}, tool_call_id="c2", turn_id="t1", **SID
+    )
+    assert [x["decision"] for x in h.scans[-1]["history"]] == ["blocked"]
+    dump_planirs("review-loop-auto-deny", h.scans)

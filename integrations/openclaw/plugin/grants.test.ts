@@ -12,7 +12,7 @@ import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 import { runVerify } from "./verify.ts";
-import { callCwd, relevantGrants, sessionRef } from "./planir.ts";
+import { callCwd, providerFor, relevantGrants, sessionRef } from "./planir.ts";
 
 /**
  * Shared with the Hermes plugin's tests: both hosts print the same text for the same state. Times are
@@ -687,11 +687,22 @@ test("persistent and config grants are sent in every session", async () => {
 
 const RELEVANCE = JSON.parse(readFileSync(path.join(FIXTURES, "relevance.json"), "utf8"));
 
+/** The identity OpenClaw gives a remote MCP server configured at `url`. */
+const remoteIdentity = (url: string) => providerFor({ mcp: { servers: { srv: { url } } } }, "srv__tool").identity;
+
+/** Shared with the Hermes plugin's tests: both hosts give a remote MCP server the same identity. */
+const REMOTE = JSON.parse(readFileSync(path.join(FIXTURES, "..", "provider", "remote-identity.json"), "utf8"));
+for (const c of REMOTE.cases) {
+  test(`remote identity: ${c.url}`, () => {
+    assert.equal(remoteIdentity(c.url), c.identity);
+  });
+}
+
 /** Shared with the Hermes plugin's tests: both hosts send the same grants for the same call. */
 for (const c of RELEVANCE.cases) {
   test(`relevance: ${c.case}`, () => {
     const sent = relevantGrants([c.grant], JSON.stringify(c.arguments), {
-      identity: c.identity,
+      identity: c.url ? remoteIdentity(c.url) : c.identity,
       home: c.home ?? RELEVANCE.home,
       workspace: c.workspace ?? RELEVANCE.workspace,
       cwd: callCwd(c.arguments),

@@ -21,6 +21,7 @@ Matching, by kind:
   and everything under it. Letter case follows the host filesystem's default: it counts on Linux
   (and when the host OS is unknown), not on macOS or Windows.
 - `provider`: an MCP server or plugin identity against a glob; a pattern ending in `/` covers the scope.
+  A `remote:` pattern is read without its port or IPv6 brackets, as the identity is.
 - `tool`: the whole call, when every command in it is covered: a pattern without spaces against the
   command name (directory stripped), one with spaces against the whole command.
 """
@@ -44,6 +45,7 @@ from .entities import (
     EntityKind,
     Role,
     is_under,
+    normalise_remote_identity,
     resolve_token,
     shell_segments,
 )
@@ -240,8 +242,8 @@ def _file(pat: str, entity: Entity, host_os: OS) -> bool:
 
 
 def _provider(pat: str, entity: Entity, host_os: OS) -> bool:
-    pat = pat.lower()
-    value = entity.value.lower()
+    pat = normalise_remote_identity(pat.lower())
+    value = normalise_remote_identity(entity.value.lower())
     if pat.endswith("/"):
         return value.startswith(pat)
     return fnmatch.fnmatch(value, pat)

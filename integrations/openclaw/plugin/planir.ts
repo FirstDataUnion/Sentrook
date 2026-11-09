@@ -97,6 +97,36 @@ function normaliseTransport(t: unknown): string | null {
   return null;
 }
 
+/**
+ * A remote MCP server's identity: `remote:<hostname>`, the lowercase hostname without the port, the scheme or
+ * the brackets around an IPv6 literal (http and https on one host are one server). Same rule on every host.
+ */
+export function remoteIdentity(url: string): string | null {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  host = host.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
+  return host ? `remote:${host}` : null;
+}
+
+/**
+ * A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6 brackets. One with
+ * no host written (`remote:*:8200`) is left as it is, so it never widens to every server.
+ */
+export function providerPattern(pattern: string): string {
+  if (pattern.slice(0, 7).toLowerCase() !== "remote:") return pattern;
+  const raw = pattern.trim().toLowerCase();
+  let host = raw.slice(7);
+  const bracketed = /^\[([^\]]*)\]/.exec(host);
+  if (bracketed) host = bracketed[1]!;
+  else if (/^[^:]*:(?:[0-9]*|\*)$/.test(host)) host = host.slice(0, host.lastIndexOf(":"));
+  host = host.replace(/\.+$/, "");
+  return /[^*?[\]]/.test(host) ? `remote:${host}` : raw;
+}
+
 /** MCP tools are named `<server>__<tool>`; identity comes from the server's config entry. */
 export function providerFor(config: any, name: string): Provider {
   if (!name.includes("__")) return { kind: "host", name: null, identity: null, transport: null };
@@ -106,11 +136,7 @@ export function providerFor(config: any, name: string): Provider {
   let identity: string | null = null;
   const transport = normaliseTransport(cfg.transport) ?? (cfg.url ? "http" : cfg.command ? "stdio" : null);
   if (typeof cfg.url === "string") {
-    try {
-      identity = `remote:${new URL(cfg.url).host}`;
-    } catch {
-      identity = null;
-    }
+    identity = remoteIdentity(cfg.url);
   } else if (typeof cfg.command === "string") {
     const args: string[] = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
     const pkg = args.find((a) => !a.startsWith("-"));
@@ -273,7 +299,7 @@ export function callCwd(args: unknown): string | null {
 /**
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
- * call's provider identity. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
+ * call's provider identity (a `remote:` pattern without its port, as the identity is). Paths are read the way the scanner resolves them: under home in any form (`~/…`,
  * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
  */
 export function relevantGrants(
@@ -285,7 +311,7 @@ export function relevantGrants(
   let texts = [text];
   const base = opts.cwd || opts.workspace;
   if (base) texts.push(text.replace(DOT_PATH, () => `${base.replace(/\/+$/, "").toLowerCase()}/`));
-  let pats = grants.map((g) => g.pattern.toLowerCase());
+  let pats = grants.map((g) => (g.kind === "provider" ? providerPattern(g.pattern) : g.pattern).toLowerCase());
   if (opts.home) {
     const root = opts.home.replace(/\/+$/, "").toLowerCase();
     texts = texts.map((t) => t.replaceAll("~/", `${root}/`).replaceAll("$home/", `${root}/`));

@@ -1,0 +1,14 @@
+{
+  "about": "A remote MCP server's identity is remote:<hostname>: lowercase, no port, no scheme, no brackets around an IPv6 literal. Shared by both plugins.",
+  "cases": [
+    { "url": "http://x.test:8200/mcp", "identity": "remote:x.test" },
+    { "url": "https://x.test/mcp", "identity": "remote:x.test" },
+    { "url": "https://X.TEST:443/mcp", "identity": "remote:x.test" },
+    { "url": "http://[::1]:8200/mcp", "identity": "remote:::1" },
+    { "url": "http://127.0.0.1:8200/mcp", "identity": "remote:127.0.0.1" },
+    { "url": "https://user:pw@x.test/mcp", "identity": "remote:x.test" },
+    { "url": "https://x.test./mcp", "identity": "remote:x.test" },
+    { "url": "https://Bücher.example/mcp", "identity": "remote:xn--bcher-kva.example" },
+    { "url": "not a url", "identity": null }
+  ]
+}
