@@ -404,6 +404,8 @@ def test_context_sticky_flags_and_escalation(attack_case):
     seed = {
         "tainted": True,
         "holds_sensitive": True,
+        # The sensitive read could not be tied to a file, so the flag keeps its weight on any send.
+        "sensitive_unbound": True,
         "escalating": False,
         "untrusted_entities": [],
         "max_input_seq": 0,

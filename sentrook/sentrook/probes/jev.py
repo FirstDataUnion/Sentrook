@@ -30,7 +30,7 @@ from ..jev.client import ApiError, Decider, DecisionResult, JevConfig
 from ..jev.questions import QuestionSet, build_body, load_question_set
 from ..prepare import Prepared
 from ..prepare.views import REPUTATION, VIEW_KEYS, with_reputation
-from .base import Contribution, Envelope
+from .base import Contribution, Envelope, SessionMark
 
 PROBE_VERSION = "jev/2.0.0a1"
 
@@ -235,6 +235,23 @@ class JevExposureProbe(_JevProbe):
         exposure = max(checks.values())
         reason = max(checks, key=checks.get)
         flags = [SessionFlag.TAINTED] if exposure >= self.config.taint_threshold else []
+        # The inputs of each chunk judged injected. Only a chunk that holds one input says which input
+        # was injected; its call's files and tables join the tainted set.
+        judged: dict[int, bool] = {}
+        for chunk, answers in zip(chunks, per_chunk, strict=True):
+            if not answers or max(answers.values()) < self.config.taint_threshold:
+                continue
+            seqs = {
+                n["input_seq"]
+                for n in chunk.get("new_inputs") or []
+                if isinstance(n.get("input_seq"), int)
+            }
+            for seq in seqs:
+                judged[seq] = judged.get(seq, False) or len(seqs) == 1
+        marks = [
+            SessionMark(judgement="tainted", input_seq=seq, attributed=one)
+            for seq, one in sorted(judged.items())
+        ]
         return Envelope(
             step=self.step,
             versions=self._versions_with_model(results),
@@ -248,6 +265,7 @@ class JevExposureProbe(_JevProbe):
                 )
             ],
             flags_set=flags,
+            marks=marks,
             evidence={
                 **self._view_evidence(prepared),
                 "state": state,
