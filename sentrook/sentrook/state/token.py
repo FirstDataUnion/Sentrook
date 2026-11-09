@@ -1,7 +1,9 @@
 """The signed state token.
 
 Sentrook stays stateless: it returns a signed token holding the session flags, a bounded set of hashed
-untrusted entities, the hashing salt and the highest `input_seq` scanned so far. The token is an HS256
+untrusted entities, a smaller bounded set of hashed steered hosts (named in content that tried to steer the
+agent, `prepare.steering`), the hashing salt and the highest `input_seq` scanned so far. A token without the
+steered set (issued before it existed) reads as an empty one. The token is an HS256
 JWT bound to its `session_ref` and the step it was issued at; it is accepted only when presented with
 the same `session_ref` at `session.step − 1`, so an older token cannot be replayed to shed a flag.
 
@@ -25,6 +27,7 @@ from ..oracle.client import fold_pypi_name
 TOKEN_VERSION = 1
 ALGORITHM = "HS256"
 UNTRUSTED_CAP = 64
+STEERED_CAP = 32
 HASH_HEX = 12
 
 
@@ -43,6 +46,8 @@ class SessionState:
     salt: str
     flags: set[SessionFlag] = field(default_factory=set)
     untrusted: list[str] = field(default_factory=list)  # ordered hashes, oldest first
+    #: Hosts named in steering content, ordered hashes, oldest first.
+    steered: list[str] = field(default_factory=list)
     max_input_seq: int | None = None
     deployment: str | None = None
     issued_step: int | None = None
@@ -68,6 +73,14 @@ class SessionState:
             self.untrusted.append(h)
         if len(self.untrusted) > UNTRUSTED_CAP:
             del self.untrusted[: len(self.untrusted) - UNTRUSTED_CAP]
+
+    def add_steered(self, hashes: list[str]) -> None:
+        for h in hashes:
+            if h in self.steered:
+                continue
+            self.steered.append(h)
+        if len(self.steered) > STEERED_CAP:
+            del self.steered[: len(self.steered) - STEERED_CAP]
 
 
 def new_salt(deterministic: str | None = None) -> str:
@@ -121,6 +134,7 @@ def decode_state(
         salt=str(claims.get("salt") or salt),
         flags=flags,
         untrusted=[str(h) for h in claims.get("unt", [])][-UNTRUSTED_CAP:],
+        steered=[str(h) for h in claims.get("str", [])][-STEERED_CAP:],
         max_input_seq=claims.get("seq"),
         deployment=claims.get("dep") or deployment,
         issued_step=claims["step"],
@@ -144,6 +158,7 @@ def encode_state(
         "seq": state.max_input_seq,
         "salt": state.salt,
         "unt": list(state.untrusted[-UNTRUSTED_CAP:]),
+        "str": list(state.steered[-STEERED_CAP:]),
     }
     return jwt.encode(claims, key, algorithm=ALGORITHM)
 
@@ -158,12 +173,17 @@ def seed_state(seed: dict, *, salt: str, deployment: str | None = None) -> Sessi
         deployment=deployment,
         status=TokenStatus.SEEDED,
     )
+    state.add_untrusted(_seed_hashes(seed.get("untrusted_entities"), salt))
+    state.add_steered(_seed_hashes(seed.get("steered_entities"), salt))
+    return state
+
+
+def _seed_hashes(values: list | None, salt: str) -> list[str]:
     hashes: list[str] = []
-    for value in seed.get("untrusted_entities") or []:
+    for value in values or []:
         kind = _guess_kind(str(value))
         hashes.append(entity_hash(salt, kind, _normalise_seed_value(kind, str(value))))
-    state.add_untrusted(hashes)
-    return state
+    return hashes
 
 
 def _guess_kind(value: str) -> str:

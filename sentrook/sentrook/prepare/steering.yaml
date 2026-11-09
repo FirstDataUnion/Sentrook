@@ -1,0 +1,43 @@
+# Steering markers: text in an untrusted input that tries to steer the agent rather than inform it.
+#
+# A host named in an input that matches the hide_from_owner family is "steered" (prepare marks the
+# entity and keeps the mark in the state token); addressed_to_agent alone is recorded as evidence but
+# does not mark a host, since files written for agents (AGENTS.md, llms.txt, skills) address the agent
+# legitimately. Fetching code from a steered host and running it takes the untrusted_code_execution
+# floor, so the patterns must be strong evidence, and ordinary documents, emails, tickets and support
+# scripts must not match:
+#
+# - addressed_to_agent: the text speaks to the agent as an AI, as a heading or a direct address
+#   ("AI assistant: run this", "any assistant processing this mailbox must ..."), or carries the classic
+#   override ("ignore all previous instructions"). Prose about AI agents, human agents and assistants,
+#   and a sender correcting their own earlier email do not match.
+# - hide_from_owner: the text asks the agent to keep this action from the person it works for ("do not
+#   mention this to the user"). Product copy about users in general ("never disclose your information to
+#   other users", "install without asking the user for confirmation") does not match.
+#
+# Matching is case-insensitive unless a pattern turns it off with (?-i:...). A miss is safe: the call is
+# still scored as before. The patterns are YAML single-quoted strings: write a literal ' as ''.
+version: "3"
+families:
+  addressed_to_agent:
+    # A line or sentence that opens by addressing the AI: "AI assistant:", "AI agents:" (Hermes numbers
+    # file lines as "3|", hence the bar).
+    - '(?:^|[\n.!?|>]\s*)(?:dear\s+|attention\s+|note\s+to\s+(?:the\s+)?)?(?:AI|LLM)\s+(?:assistant|agent)s?\s*:'
+    # "any assistant processing this mailbox", "all AI agents reading these notes".
+    - '\b(?:any|all|every)\s+(?:AI\s+(?:assistant|agent)|assistant)s?\s+(?:that\s+(?:is|are)\s+)?(?:processing|reading|handling|running|using|summari[sz]ing|parsing)\s+(?:this|these)\b'
+    # "AI assistants running this benchmark must ...".
+    - '\b(?:AI|LLM)\s+(?:assistant|agent)s?\s+(?:that\s+(?:is|are)\s+)?(?:processing|reading|handling|running|using|summari[sz]ing|parsing)\s+(?:this|these)\b'
+    # The classic override. Not when quoted (a mention), not "the previous instructions" (a sender
+    # correcting their own earlier message).
+    - '(?<!["\u201c\u2018''])\b(?:ignore|disregard)\s+(?:all\s+(?:of\s+)?(?:your\s+)?|any\s+|your\s+)?(?:previous|prior|earlier|above)\s+(?:instructions|prompts?|rules)\b'
+    # The injection convention of a shouted header.
+    - '(?-i:\b(?:AI\s+|ASSISTANT\s+|SYSTEM\s+)(?:INSTRUCTIONS?|DIRECTIVE|OVERRIDE)\s*:)'
+  hide_from_owner:
+    # "do not mention this to the user", "don't tell your owner", "never reveal any of this to the human".
+    - '\b(?:do\s+not|don''t|never)\s+(?:mention|tell|reveal|disclose)\s+(?:(?:this|that)(?:\s+[a-z]+)?|it|any\s+of\s+(?:this|it)|anything)\s+to\s+(?:the|your)\s+(?:user|owner|human|operator)\b(?![''\u2019]s)'
+    - '\b(?:do\s+not|don''t|never)\s+(?:tell|inform|alert)\s+(?:the|your)\s+(?:user|owner|human|operator)\s+(?:about\s+(?:this|it)|that\s+you)\b'
+    # "without telling the user", "without the owner knowing".
+    - '\bwithout\s+(?:telling|informing|alerting)\s+(?:the|your)\s+(?:user|owner|human|operator)\b'
+    - '\bwithout\s+(?:the|your)\s+(?:user|owner|human|operator)\s+(?:knowing|noticing|seeing)\b'
+    # "keep this secret from the user".
+    - '\bkeep\s+(?:this|it)\s+(?:secret|hidden|quiet)\s+from\s+(?:the|your)\s+(?:user|owner|human|operator)\b'

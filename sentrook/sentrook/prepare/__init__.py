@@ -15,6 +15,9 @@ before any probe.
    destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
    introduced first is not promoted by a later echo).
+   Mark the hosts named in an untrusted input that tries to steer the agent (it asks the agent to
+   keep the action from the owner, `steering`) as steered, and keep them in the
+   token's steered set; a host already in that set is steered on this step too.
 7. Compute the pending call's action fingerprint.
 8. Build the Jev state views: the v1 views byte-identical to the runner's `trim-v1`, and the v1.1 question-set pass's
    `trim-v2` views (`call-v2` with the turn's inputs, `exposure-v2`) after the second redaction pass
@@ -69,6 +72,7 @@ from .grants import (
 from .host_text import owner_words
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
 from .skill_steps import skill_step_calls
+from .steering import steering_marks, steers
 from .trust import Trust, classify
 
 __all__ = [
@@ -210,6 +214,11 @@ class Prepared:
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
     prior_untrusted: frozenset[str] = frozenset()
+    #: Untrusted inputs that try to steer the agent: input_seq → the marker families they match.
+    steered_inputs: dict[int, list[str]] = field(default_factory=dict)
+    #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
+    #: the oracle runs before the other probes. Empty when it did not run or failed.
+    oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
     #: What the pending call does to each path a file grant pattern matched: entity id → actions.
@@ -708,6 +717,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 )
             )
     prior_untrusted = frozenset(state.untrusted)
+    prior_steered = frozenset(state.steered)
 
     # 3. canonicalise
     platform = planir.host.platform
@@ -922,6 +932,38 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if not agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
+    # The step each steering input arrived at: its history step, or now for a message or reply.
+    steered_at: dict[str, int] = {}
+    steered_inputs: dict[int, list[str]] = {}
+    for pi in inputs:
+        if pi.trust is not Trust.UNTRUSTED:
+            continue
+        marks = steering_marks(pi.input.content or "")
+        if steers(marks):
+            steered_inputs[pi.input.input_seq] = marks
+            steered_at[f"input:{pi.input.input_seq}"] = (
+                pi.step if pi.step is not None else planir.session.step
+            )
+    steered_additions: list[str] = []
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or ent.hash is None:
+            continue
+        if ent.hash in prior_steered:
+            ent.steered = True
+            continue
+        arrived = [
+            steered_at[ref]
+            for ref in ent.origins.get(Origin.UNTRUSTED_INPUT) or ()
+            if ref in steered_at
+        ]
+        if not arrived:
+            continue
+        # The agent used the host itself before the steering content named it: not steered by it.
+        if ent.first_history_step is not None and ent.first_history_step < min(arrived):
+            continue
+        ent.steered = True
+        steered_additions.append(ent.hash)
+    state.add_steered(steered_additions)
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])
     _inherit_recipient_domain(table)
@@ -967,6 +1009,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,
+        steered_inputs=steered_inputs,
         grant_hits=grant_hits,
         grant_actions=grant_actions,
         call_grants=call_grants,

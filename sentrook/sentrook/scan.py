@@ -240,22 +240,28 @@ class Scanner:
         enabled = tuple(options.probes_enabled or self.config.probes_enabled)
         probes = self._probes(prepared, options)
         envelopes: dict[ProbeStep, Envelope] = {}
-        # A call view that carries the entity library's verdicts needs the oracle's answer first;
-        # the oracle is deterministic and local or one short HTTP round trip, the Jev call is the
-        # long one, so it runs alone before the pool. Without the oracle (disabled or not
-        # configured) the view simply has no `reputation` block.
+        # A call view that carries the entity library's verdicts, and AIRA's look-alike and
+        # steered-host checks, need the oracle's answer first; the oracle is deterministic and local
+        # or one short HTTP round trip, the Jev call is the long one, so it runs alone before the
+        # pool. Without the oracle (disabled or not configured) the view simply has no `reputation`
+        # block and AIRA judges hosts by its own lists.
         oracle = probes.get(ProbeStep.ENTITY_ORACLE)
         views = self.views_for(prepared)
+        wants_reputation = REPUTATION in VIEW_KEYS.get(views[CALL], ())
+        aira_on = ProbeStep.AIRA.value in enabled and probes.get(ProbeStep.AIRA) is not None
         if (
-            REPUTATION in VIEW_KEYS.get(views[CALL], ())
+            (wants_reputation or aira_on)
             and oracle is not None
             and ProbeStep.ENTITY_ORACLE.value in enabled
         ):
             env = self._run_probe(ProbeStep.ENTITY_ORACLE, oracle, prepared, options)
             envelopes[ProbeStep.ENTITY_ORACLE] = env
-            prepared.oracle_verdicts = verdicts_for_view(
-                env, near_miss=views[CALL] in NEAR_MISS_VIEWS
-            )
+            if env.status is ProbeStatus.OK:
+                prepared.oracle_entities = dict(env.evidence.get("entities") or {})
+            if wants_reputation:
+                prepared.oracle_verdicts = verdicts_for_view(
+                    env, near_miss=views[CALL] in NEAR_MISS_VIEWS
+                )
         with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
             futures = {}
             for step in ALL_PROBES:
