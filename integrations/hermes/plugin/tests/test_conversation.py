@@ -124,7 +124,8 @@ def test_the_review_forks_words_are_not_recorded_but_its_reads_are(h):
     entries = log(h)
     assert [e["role"] for e in entries] == ["user", "assistant", "tool"]
     assert "Let me look" not in json.dumps(entries)
-    assert entries[-1]["content"] == "# French replies" and entries[-1]["turn"] == 2
+    # The fork's turn is not a turn of the owner's session: its reads sit under the owner's last turn.
+    assert entries[-1]["content"] == "# French replies" and entries[-1]["turn"] == 1
 
 
 def test_a_user_message_is_recorded_once_per_turn(h):

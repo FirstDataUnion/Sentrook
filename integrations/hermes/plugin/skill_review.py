@@ -16,6 +16,10 @@ With `skill_review: allow` (the default) a loop save is declared as a self-edit:
 `skill_review: review` sends a loop save like any other call (the turn's own trigger, no block). Any
 other value reads as allow, and status and the startup log name it.
 
+Every call the fork or the curator makes (a loop save or not) carries the session's last owner request
+and that turn's number, and is not counted as a new turn: the fork fires no `pre_llm_call`, and the
+curator's carries its own prompt, not a request. With no owner request stored it carries `REQUEST_TEXT`.
+
 Every loop save's traffic record says `skill_review: true`, and `/sentrook status` counts allowed,
 blocked and asked loop saves.
 """
@@ -33,6 +37,11 @@ BACKGROUND_REVIEW = "background_review"
 SETTINGS = ("allow", "review")
 #: The PlanIR trigger a loop save is sent with.
 TRIGGER = {"kind": "system", "channel": None, "sender": {"relation": "unknown", "basis": ["none"]}}
+#: The request text a background-review call carries when the session has no owner request stored.
+REQUEST_TEXT = (
+    "No owner request: Hermes's background self-improvement review, "
+    "saving what it learned in this session as skills or memory."
+)
 
 
 def in_background_review() -> bool:

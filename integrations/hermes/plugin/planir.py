@@ -21,6 +21,7 @@ from typing import Any
 from .config import PluginConfig
 from .intent import channel_of, resolve_platform, sender_of, trigger_kind
 from .redact import Redactor, cap_args
+from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
 from .skill_review import TRIGGER as LOOP_TRIGGER
 
 PLUGIN_VERSION = "2.0.0-beta.6"
@@ -210,6 +211,7 @@ def build_planir(
     host_cfg: dict[str, Any],
     grants: list[dict[str, Any]] | None = None,
     self_edit: dict[str, Any] | None = None,
+    request_turn: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
 
@@ -217,7 +219,11 @@ def build_planir(
     given (a config grant has no session, so a session one is never sent).
     `self_edit`: the call is a save by Hermes's own self-improvement loop, declared as a self-edit: sent
     with trigger `system` (instead of the chat the loop's fork inherited) and this top-level block, the
-    conversation the review read (`conversation.block`)."""
+    conversation the review read (`conversation.block`).
+    `request_turn`: the call is made by Hermes's background review, after the owner's turn: the request
+    text comes from this turn (the session's last owner turn, `{}` when none is stored; an empty request
+    sends `skill_review.REQUEST_TEXT`) and the call's own turn is not counted as a new one. Narration and
+    batch siblings still come from `turn`, the fork's own."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -229,8 +235,11 @@ def build_planir(
         call_id = f"{turn_id}:{host_id}"
     if host_id:
         sess["seen_call_ids"].append(host_id)
-    if turn_id and turn_id not in sess["turns"]:
+    if turn_id and turn_id not in sess["turns"] and request_turn is None:
         sess["turns"].append(turn_id)
+    request_text = _text((turn if request_turn is None else request_turn).get("user_message"))
+    if request_turn is not None and not request_text.strip():
+        request_text = LOOP_REQUEST_TEXT
 
     platform = resolve_platform(turn.get("platform"), facts, env)
     parent = turn.get("parent_session_id") or None
@@ -308,7 +317,7 @@ def build_planir(
             "sender": sender_of(platform, facts, turn.get("sender_id"), env),
         },
         "request": {
-            "text": redactor.string(_text(turn.get("user_message"))),
+            "text": redactor.string(request_text),
             "carried_from_turn": None,
         },
         "new_inputs": sent_inputs,
