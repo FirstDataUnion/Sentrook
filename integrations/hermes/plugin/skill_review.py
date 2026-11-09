@@ -40,7 +40,7 @@ TRIGGER = {"kind": "system", "channel": None, "sender": {"relation": "unknown", 
 #: The request text a background-review call carries when the session has no owner request stored.
 REQUEST_TEXT = (
     "No owner request: Hermes's background self-improvement review, "
-    "saving what it learned in this session as skills or memory."
+    "saving or tidying its skills and memory."
 )
 
 

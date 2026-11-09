@@ -240,6 +240,13 @@ def build_planir(
     request_text = _text((turn if request_turn is None else request_turn).get("user_message"))
     if request_turn is not None and not request_text.strip():
         request_text = LOOP_REQUEST_TEXT
+    # A background call's turn is the number of the owner turn its request came from.
+    last = sess.get("last_turn_id")
+    request_turn_no = (
+        sess["turns"].index(last) + 1
+        if request_turn is not None and last in sess["turns"]
+        else None
+    )
 
     platform = resolve_platform(turn.get("platform"), facts, env)
     parent = turn.get("parent_session_id") or None
@@ -305,7 +312,7 @@ def build_planir(
             "agent_ref": "a_main",
             "agent_role": "subagent" if is_sub else "main",
             "parent_session_ref": f"s_{_h(parent)}" if parent else None,
-            "turn": max(1, len(sess["turns"])),
+            "turn": request_turn_no if request_turn_no is not None else max(1, len(sess["turns"])),
             "step": step,
             "state": sess["token"],
         },

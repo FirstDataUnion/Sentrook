@@ -197,3 +197,13 @@ def test_an_ordinary_call_without_its_turn_context_is_sent_as_before(h):
     sent = call(h, "t-unseen", "c1", "terminal", {"command": "ls"})
     assert sent["request"]["text"] == ""
     assert sent["session"]["turn"] == 2
+
+
+def test_a_fork_after_a_call_without_turn_context_keeps_text_and_turn_together(h):
+    """A call whose turn fired no pre_llm_call adds a turn but not a request; the fork after it carries
+    the owner's last request with that request's own turn number."""
+    owner(h, "t1", "first")
+    call(h, "t-unseen", "c1", "terminal", {"command": "ls"})
+    sent = fork(h)
+    assert sent["request"]["text"] == "first"
+    assert sent["session"]["turn"] == 1
