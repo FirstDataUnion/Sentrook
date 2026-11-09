@@ -35,6 +35,8 @@ _APPROVED = frozenset(
     {"once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"}
 )
 _REVIEW = {"deny": "denied", "timeout": "timed out", "cancelled": "cancelled"}
+#: A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked.
+REVIEW_LOOP = "review_loop"
 _ID = re.compile(r"[0-9a-fA-F-]{4,36}")
 _SPACE = re.compile(r"\s+")
 _COUNT = re.compile(r"[0-9]{1,6}")
@@ -176,6 +178,8 @@ def review_of(action: str, resolution: dict[str, Any] | None) -> str:
     if resolution is None:
         return "no answer" if action.startswith("review") else "-"
     choice = str(resolution.get("resolution") or "").strip().lower()
+    if choice == "deny" and resolution.get("decided_by") == REVIEW_LOOP:
+        return "auto-denied by the review loop"
     return "approved" if choice in _APPROVED else _REVIEW.get(choice, "not approved")
 
 

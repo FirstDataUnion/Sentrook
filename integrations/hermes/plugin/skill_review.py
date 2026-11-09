@@ -22,11 +22,16 @@ curator's carries its own prompt, not a request. With no owner request stored it
 
 Every loop save's traffic record says `skill_review: true`, and `/sentrook status` counts allowed,
 blocked and asked loop saves.
+
+On the local terminal the review fork answers its own approval prompts: Hermes's callback on its thread
+denies them unseen (see `auto_denied`). That denial is recorded as `blocked` (a review nobody could answer), never `denied_by_user`,
+its resolution says `decided_by: review_loop`, and history shows "auto-denied by the review loop".
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 #: The tools the loop saves through.
 LOOP_TOOLS = frozenset({"skill_manage", "memory"})
@@ -51,6 +56,34 @@ def in_background_review() -> bool:
 
         return get_current_write_origin() == BACKGROUND_REVIEW
     except Exception:  # noqa: BLE001 - an older or different host
+        return False
+
+
+def auto_denied(kw: dict[str, Any], choice: str) -> bool:
+    """The review loop denied an approval prompt itself, with nobody asked.
+
+    The review fork (the automatic review and an owner's `/refine`) cannot reach the terminal, so Hermes
+    gives its thread an approval callback that always says deny. The answer hook fires on that thread.
+    A deny is that callback's when it came from the `cli` surface under the background-review origin,
+    the thread's callback is Hermes's review auto-deny, and no gateway notifier is registered for the
+    session. A gateway route (Hermes's managed local runtime) also reports `cli` but takes the prompt
+    to a person, and a run with no callback (`hermes curator run` in the foreground) asks on the
+    terminal; in both a person answered, so the denial stays theirs. Any failure to read Hermes means
+    no."""
+    if choice != "deny" or kw.get("surface") != "cli" or not in_background_review():
+        return False
+    try:
+        from agent.background_review import _bg_review_auto_deny
+        from tools.approval import _gateway_notify_cb
+        from tools.terminal_tool import _get_approval_callback
+
+        session_key = kw.get("session_key")
+        return (
+            _get_approval_callback() is _bg_review_auto_deny
+            and isinstance(session_key, str)
+            and _gateway_notify_cb(session_key) is None
+        )
+    except Exception:  # noqa: BLE001 - an older or different host: the denial stays the user's
         return False
 
 
