@@ -14,7 +14,11 @@ before any probe.
    agent-written files it reads or sends, items the agent moved or copied into a tree the call
    destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
-   introduced first is not promoted by a later echo).
+   introduced first is not promoted by a later echo). Entities from a scanned read of the agent's own
+   config or instruction files (one the agent did not write in this session, and not tainted) are the
+   owner's: they join the token's trusted set instead. Bind the pending call to the token's sensitive
+   and tainted sets (`session_sets`): the files and tables it reads, runs or applies that the sets hold,
+   and what an injected result in this request came from.
    Mark the hosts named in an untrusted input that tries to steer the agent (it asks the agent to
    keep the action from the owner, `steering`) as steered, and keep them in the
    token's steered set; a host already in that set is steered on this step too.
@@ -70,6 +74,14 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
+from .session_sets import (
+    SessionBinding,
+    acts,
+    bind,
+    call_artefacts,
+    owner_config_path,
+    producer_artefacts,
+)
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
 from .skill_steps import skill_step_calls
 from .steering import steering_marks, steers
@@ -216,6 +228,14 @@ class Prepared:
     prior_untrusted: frozenset[str] = frozenset()
     #: Untrusted inputs that try to steer the agent: input_seq → the marker families they match.
     steered_inputs: dict[int, list[str]] = field(default_factory=dict)
+    #: The pending call against the token's sensitive and tainted sets as they stood before this request.
+    session_binding: SessionBinding = field(default_factory=SessionBinding)
+    #: Per new tool result: hashes of the files and tables its call named. If the result is judged
+    #: injected, they join the tainted set.
+    producer_artefacts: dict[int, list[str]] = field(default_factory=dict)
+    #: Per input read from the owner's config: hashes it added to the trusted set (withdrawn if the
+    #: same scan judges that input injected).
+    trusted_by_input: dict[int, list[str]] = field(default_factory=dict)
     #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
     #: the oracle runs before the other probes. Empty when it did not run or failed.
     oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -686,6 +706,35 @@ def _lineage(
     return lineage
 
 
+def _session_binding(
+    pending: CanonicalCall,
+    table: EntityTable,
+    state: SessionState,
+    lineage: Lineage,
+    *,
+    home: str,
+    workspace_root: str,
+) -> SessionBinding:
+    """The pending call against the token's sensitive and tainted sets as they stood before this request."""
+    ids = {e.value: e.id for e in table if e.kind is EntityKind.PATH}
+    arts = call_artefacts(
+        pending, state.salt, home=home, workspace_root=workspace_root, entity_ids=ids
+    )
+    sensitive, tainted = bind(
+        arts, sensitive=frozenset(state.sensitive), tainted=frozenset(state.tainted)
+    )
+    off_host = sends_off_host(pending, table.pending())
+    destroys = bool(lineage.destructive_targets or lineage.sql_targets)
+    return SessionBinding(
+        sensitive=sensitive,
+        tainted=tainted,
+        off_host=off_host,
+        acts=acts(pending, off_host, destroys, home=home, workspace_root=workspace_root),
+        takes=[a.hash for a in arts if a.takes],
+        writes=[a.hash for a in arts if a.writes and a.kind == "path"],
+    )
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -845,11 +894,32 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             ent.add_origin(Origin.GRANT, grant.grant_ref)
             grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
 
+    # The owner's own configuration: a scanned read of an agent config or instruction file that the
+    # agent did not write in this session and that is not tainted.
+    created = _created_paths(history, home, ws)
+    hist_by_step = {c.step: c for c in history if c.step is not None}
+    prior_tainted = frozenset(state.tainted)
+    owner_config: set[int] = set()
+    for pi in inputs:
+        call = hist_by_step.get(pi.step) if pi.input.kind is InputKind.TOOL_RESULT else None
+        if call is None:
+            continue
+        cfg = owner_config_path(call, home=home, workspace_root=ws)
+        if (
+            cfg is not None
+            and cfg not in created
+            and entity_hash(state.salt, "path", cfg) not in prior_tainted
+        ):
+            owner_config.add(pi.input.input_seq)
+
     for pi in inputs:
         content = pi.input.content or ""
         if not content:
             continue
-        origin = Origin.UNTRUSTED_INPUT if pi.trust is Trust.UNTRUSTED else Origin.TRUSTED_INPUT
+        if pi.input.input_seq in owner_config:
+            origin = Origin.OWNER_CONFIG
+        else:
+            origin = Origin.UNTRUSTED_INPUT if pi.trust is Trust.UNTRUSTED else Origin.TRUSTED_INPUT
         for f in extract_mentions(content, home=home, workspace_root=ws, role=None):
             ent = table.add(
                 f.kind, f.value, display=f.display, origin=origin, ref=f"input:{pi.input.input_seq}"
@@ -879,8 +949,6 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     if ent.first_history_step is None
                     else min(ent.first_history_step, call.step)
                 )
-
-    created = _created_paths(history, home, ws)
 
     written: WrittenFile | None = None
     for exe in _executed_paths(pending, table):
@@ -917,9 +985,11 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
 
     # 6. untrusted set
+    prior_trusted = frozenset(state.trusted)
     for ent in table:
         ent.hash = entity_hash(state.salt, ent.kind.value, ent.value)
         ent.in_session_untrusted = ent.hash in prior_untrusted
+        ent.in_session_trusted = ent.hash in prior_trusted or Origin.OWNER_CONFIG in ent.origins
     additions: list[str] = []
     for ent in table:
         if Origin.UNTRUSTED_INPUT not in ent.origins or ent.hash is None:
@@ -932,6 +1002,20 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if not agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
+    trusted_by_input: dict[int, list[str]] = {}
+    for ent in table:
+        for ref in ent.origins.get(Origin.OWNER_CONFIG) or ():
+            if ent.hash is not None:
+                trusted_by_input.setdefault(int(ref.removeprefix("input:")), []).append(ent.hash)
+    state.add_trusted([h for hashes in trusted_by_input.values() for h in hashes])
+    binding = _session_binding(pending, table, state, lineage, home=home, workspace_root=ws)
+    produced = {
+        pi.input.input_seq: producer_artefacts(
+            hist_by_step[pi.step], state.salt, home=home, workspace_root=ws
+        )
+        for pi in inputs
+        if pi.new and pi.input.kind is InputKind.TOOL_RESULT and pi.step in hist_by_step
+    }
     # The step each steering input arrived at: its history step, or now for a message or reply.
     steered_at: dict[str, int] = {}
     steered_inputs: dict[int, list[str]] = {}
@@ -1010,6 +1094,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         warnings=warns,
         prior_untrusted=prior_untrusted,
         steered_inputs=steered_inputs,
+        session_binding=binding,
+        producer_artefacts={k: v for k, v in produced.items() if v},
+        trusted_by_input=trusted_by_input,
         grant_hits=grant_hits,
         grant_actions=grant_actions,
         call_grants=call_grants,

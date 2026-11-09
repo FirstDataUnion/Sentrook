@@ -12,6 +12,7 @@ from datetime import datetime
 
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..prepare import Prepared
+from ..prepare.entities import EntityKind
 from ..probes.base import Envelope
 from ..response.models import (
     ConfidenceTier,
@@ -85,6 +86,42 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
             model_certainty=tiers.model_certainty,
         ),
     )
+
+
+def _mint_session_sets(prepared: Prepared, envelopes: list[Envelope]) -> None:
+    """Add what this scan's judgements are about to the token's sets: the files a sensitive judgement
+    names (or the unbound marker when it names none), the files and tables an injected result's call
+    produced (when the judgement was about that input alone), moving anything an injected input added to
+    the trusted set into the untrusted set, and the local files the call writes from a file already in a
+    set."""
+    state = prepared.state
+    for env in envelopes:
+        if env.status is not ProbeStatus.OK:
+            continue
+        for m in env.marks:
+            if m.judgement == "sensitive":
+                ent = prepared.entities.by_id(m.subject) if m.subject else None
+                if m.subject is None:
+                    state.sensitive_unbound = True
+                elif ent is not None and ent.hash and ent.kind is EntityKind.PATH:
+                    state.add_sensitive([ent.hash])
+            elif m.input_seq is not None:
+                if m.attributed:
+                    state.add_tainted(prepared.producer_artefacts.get(m.input_seq, []))
+                # Config content judged injected is not the owner's: what it supplied is untrusted.
+                withdrawn = prepared.trusted_by_input.get(m.input_seq, [])
+                state.drop_trusted(withdrawn)
+                state.add_untrusted(withdrawn)
+            elif m.subject is not None:
+                ent = prepared.entities.by_id(m.subject)
+                if ent is not None and ent.hash and ent.kind is EntityKind.PATH:
+                    state.add_tainted([ent.hash])
+    binding = prepared.session_binding
+    if binding.writes:
+        if any(h in state.sensitive for h in binding.takes):
+            state.add_sensitive(binding.writes)
+        if any(h in state.tainted for h in binding.takes):
+            state.add_tainted(binding.writes)
 
 
 def _reasons(
@@ -233,6 +270,7 @@ def converge(
     state = prepared.state
     state.flags = flags
     state.max_input_seq = prepared.scanned_max_seq
+    _mint_session_sets(prepared, envelopes)
     token = encode_state(
         state,
         key=token_key,

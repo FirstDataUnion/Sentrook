@@ -255,12 +255,36 @@ export function senderOf(
   return { relation: "unknown", basis: ["none"] };
 }
 
+/**
+ * How OpenClaw's config says host exec runs: `exec_mode` is `allowlist` when only allowlisted commands run unasked,
+ * `full` when any command may; `approval_gating` is whether the host stops or asks before some commands.
+ *
+ * This is the global config only, not the effective gate. OpenClaw also applies its own approvals store (the stricter
+ * of the two wins), which a plugin cannot read, and per-agent overrides, which are not applied here; nothing at
+ * `before_tool_call` says whether the host will ask about this call. So `host_approval` is always sent as `unknown`.
+ */
 export function execPolicy(config: any): { exec_mode: string; approval_gating: boolean } {
   const exec = config?.tools?.exec ?? {};
-  const mode = exec.mode ?? exec.security;
-  if (mode === "full" || mode === "auto") return { exec_mode: "full", approval_gating: false };
-  if (mode === "allowlist") return { exec_mode: "allowlist", approval_gating: true };
-  if (mode === "ask") return { exec_mode: "unknown", approval_gating: true };
+  if (exec.mode !== undefined) {
+    switch (exec.mode) {
+      case "deny": // host exec is blocked
+        return { exec_mode: "unknown", approval_gating: true };
+      case "allowlist": // allowlisted commands only
+      case "ask": // allowlisted commands; ask on a miss
+      case "auto": // allowlisted commands; review a miss (allow, deny or ask)
+        return { exec_mode: "allowlist", approval_gating: true };
+      case "full":
+        return { exec_mode: "full", approval_gating: false };
+      default:
+        return { exec_mode: "unknown", approval_gating: false };
+    }
+  }
+  // Older configs: a `security` / `ask` pair instead of `mode`. `security` defaults to `full` when only `ask` is set.
+  // Under `full` the host asks for sure only with `ask: always`; `on-miss` is not taken as a gate.
+  const security = exec.security ?? (exec.ask !== undefined ? "full" : undefined);
+  if (security === "deny") return { exec_mode: "unknown", approval_gating: true };
+  if (security === "allowlist") return { exec_mode: "allowlist", approval_gating: true };
+  if (security === "full") return { exec_mode: "full", approval_gating: exec.ask === "always" };
   return { exec_mode: "unknown", approval_gating: false };
 }
 

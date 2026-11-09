@@ -62,6 +62,8 @@ class Origin(StrEnum):
     SIBLING = "sibling"
     UNTRUSTED_INPUT = "untrusted_input"
     TRUSTED_INPUT = "trusted_input"
+    #: A scanned read of the agent's own config or instruction files (`session_sets.owner_config_path`).
+    OWNER_CONFIG = "owner_config"
     HISTORY = "history"
     WRITTEN_FILE = "written_file"
     PROVIDER = "provider"
@@ -86,6 +88,8 @@ class Entity:
     #: A host named in an untrusted input that tries to steer the agent (`prepare.steering`), in this
     #: request or, through the state token, on an earlier step.
     steered: bool = False
+    #: The owner's own configuration supplied it, in this request or (through the token's trusted set) earlier.
+    in_session_trusted: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])

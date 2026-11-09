@@ -147,6 +147,57 @@
       ],
       "title": "SessionFlag",
       "type": "string"
+    },
+    "SessionMark": {
+      "additionalProperties": false,
+      "description": "What a session judgement is about, kept in the state token so later calls can be bound to it.",
+      "properties": {
+        "attributed": {
+          "default": true,
+          "description": "For `tainted`: the judgement was about this input alone. A chunk of several inputs judged together cannot say which one was injected: its inputs leave the trusted set but add nothing to the tainted set",
+          "title": "Attributed",
+          "type": "boolean"
+        },
+        "input_seq": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For `tainted`: the injected tool result; the files and tables its call produced join the set",
+          "title": "Input Seq"
+        },
+        "judgement": {
+          "enum": [
+            "sensitive",
+            "tainted"
+          ],
+          "title": "Judgement",
+          "type": "string"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Entity ID of the file the judgement is about; for `sensitive`, null means the sensitive data could not be tied to a file",
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "judgement"
+      ],
+      "title": "SessionMark",
+      "type": "object"
     }
   },
   "$id": "https://sentrook.firstdataunion.org/schema/envelope.schema.json",
@@ -192,6 +243,13 @@
       ],
       "default": null,
       "title": "Latency Ms"
+    },
+    "marks": {
+      "items": {
+        "$ref": "#/$defs/SessionMark"
+      },
+      "title": "Marks",
+      "type": "array"
     },
     "status": {
       "$ref": "#/$defs/ProbeStatus",
