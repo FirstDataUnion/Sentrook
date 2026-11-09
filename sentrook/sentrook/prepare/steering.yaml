@@ -1,9 +1,11 @@
 # Steering markers: text in an untrusted input that tries to steer the agent rather than inform it.
 #
-# A host named in an input that matches any pattern here is "steered" (prepare marks the entity and
-# keeps the mark in the state token). Fetching code from a steered host and running it takes the
-# untrusted_code_execution floor, so every pattern must be strong evidence on its own, and ordinary
-# documents, emails, tickets and support scripts must not match:
+# A host named in an input that matches the hide_from_owner family is "steered" (prepare marks the
+# entity and keeps the mark in the state token); addressed_to_agent alone is recorded as evidence but
+# does not mark a host, since files written for agents (AGENTS.md, llms.txt, skills) address the agent
+# legitimately. Fetching code from a steered host and running it takes the untrusted_code_execution
+# floor, so the patterns must be strong evidence, and ordinary documents, emails, tickets and support
+# scripts must not match:
 #
 # - addressed_to_agent: the text speaks to the agent as an AI, as a heading or a direct address
 #   ("AI assistant: run this", "any assistant processing this mailbox must ..."), or carries the classic
@@ -15,7 +17,7 @@
 #
 # Matching is case-insensitive unless a pattern turns it off with (?-i:...). A miss is safe: the call is
 # still scored as before. The patterns are YAML single-quoted strings: write a literal ' as ''.
-version: "2"
+version: "3"
 families:
   addressed_to_agent:
     # A line or sentence that opens by addressing the AI: "AI assistant:", "AI agents:" (Hermes numbers

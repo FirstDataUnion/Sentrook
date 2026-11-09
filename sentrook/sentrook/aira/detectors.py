@@ -646,8 +646,8 @@ def _library_near_miss(code_source: EntityRef, ctx: Context) -> str | None:
 
 
 def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
-    """Fetched code from a host named in content that tried to steer the agent (it spoke to the
-    agent as an AI or asked it to keep the action from the owner): the floor. Not when the owner
+    """Fetched code from a host named in content that tried to steer the agent (it asked the agent to
+    keep the action from the owner): the floor. Not when the owner
     named or granted the host, it is a listed installer or a host the library vouches for, or it is
     the agent's own machine. Without the library's answer (the oracle off or failing) a vouched-for
     host cannot be told from any other, so it is floored too: fail closed, on a degraded scan."""

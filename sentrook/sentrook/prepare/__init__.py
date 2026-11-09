@@ -15,8 +15,8 @@ before any probe.
    destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
    introduced first is not promoted by a later echo).
-   Mark the hosts named in an untrusted input that tries to steer the agent (it speaks to the agent
-   as an AI or asks it to keep something from the owner, `steering`) as steered, and keep them in the
+   Mark the hosts named in an untrusted input that tries to steer the agent (it asks the agent to
+   keep the action from the owner, `steering`) as steered, and keep them in the
    token's steered set; a host already in that set is steered on this step too.
 7. Compute the pending call's action fingerprint.
 8. Build the Jev state views: the v1 views byte-identical to the runner's `trim-v1`, and the v1.1 question-set pass's
@@ -72,7 +72,7 @@ from .grants import (
 from .host_text import owner_words
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
 from .skill_steps import skill_step_calls
-from .steering import steering_marks
+from .steering import steering_marks, steers
 from .trust import Trust, classify
 
 __all__ = [
@@ -939,7 +939,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if pi.trust is not Trust.UNTRUSTED:
             continue
         marks = steering_marks(pi.input.content or "")
-        if marks:
+        if steers(marks):
             steered_inputs[pi.input.input_seq] = marks
             steered_at[f"input:{pi.input.input_seq}"] = (
                 pi.step if pi.step is not None else planir.session.step
