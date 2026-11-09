@@ -83,6 +83,9 @@ class Entity:
     first_history_step: int | None = None
     #: Earliest history step whose *result* (an untrusted input in this request) mentions it.
     first_untrusted_step: int | None = None
+    #: A host named in an untrusted input that tries to steer the agent (`prepare.steering`), in this
+    #: request or, through the state token, on an earlier step.
+    steered: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])

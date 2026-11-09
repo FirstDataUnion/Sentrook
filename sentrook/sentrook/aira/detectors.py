@@ -23,11 +23,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..enums import Enforce, SessionFlag
+from ..oracle.client import is_local_host
 from ..oracle.near_miss import edit_distance_le1, registrable
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
+from ..prepare.entities import EntityKind, Origin, Role, normalise_path, resolve_token
 from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
@@ -632,6 +633,59 @@ def _add_unvetted_sensitivity(
         f.add(SENSITIVITY, weight, subject, "code.unvetted_source")
 
 
+def _library_near_miss(code_source: EntityRef, ctx: Context) -> str | None:
+    """The `known_good` library entry the code source is a near miss of, when the oracle answered
+    before AIRA ran; None otherwise."""
+    info = ctx.prepared.oracle_entities.get(code_source.entity_id or "")
+    if not isinstance(info, dict) or info.get("verdict") != "unknown":
+        return None
+    near = info.get("near_miss")
+    if not isinstance(near, dict) or near.get("verdict") != "known_good" or not near.get("value"):
+        return None
+    return str(near["value"])
+
+
+def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
+    """Fetched code from a host named in content that tried to steer the agent (it spoke to the
+    agent as an AI or asked it to keep the action from the owner): the floor. Not when the owner
+    named or granted the host, it is a listed installer or a host the library vouches for, or it is
+    the agent's own machine."""
+    ent = ctx.prepared.entities.by_id(code_source.entity_id or "")
+    if ent is None or not ent.steered or ent.sanctioned:
+        return None
+    if _is_listed_installer(code_source.value, ctx) or is_local_host(code_source.value):
+        return None
+    info = ctx.prepared.oracle_entities.get(ent.id)
+    if isinstance(info, dict) and info.get("verdict") == "known_good":
+        return None
+    this_step = [
+        seq
+        for seq in sorted(ctx.prepared.steered_inputs)
+        if f"input:{seq}" in (ent.origins.get(Origin.UNTRUSTED_INPUT) or ())
+    ]
+    markers = sorted({m for seq in this_step for m in ctx.prepared.steered_inputs[seq]})
+    g = Finding(
+        rule="C3.steered_source",
+        cls="C3",
+        reason="code.steered_source",
+        detail={
+            "host": code_source.value,
+            "when": "this_step" if this_step else "earlier_step",
+            "markers": markers,
+        },
+    )
+    g.floors.append(
+        Floor(
+            floor="untrusted_code_execution",
+            min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
+            enforce=Enforce.BLOCK,
+            subject=ent.id,
+            reason="code.steered_source",
+        )
+    )
+    return g
+
+
 def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C3: fetch-to-shell, decode-to-shell (floor), install-from-URL, package install, running a
     file written since a fetch."""
@@ -686,16 +740,22 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 CONCEALMENT, ctx.weight("priv", "concealment"), None, "conceal.obfuscated_command"
             )
         out.append(f)
-        # Look-alike installer host: strong evidence, the floor. An unlisted host
-        # that mimics nothing is scored by consequence and the oracle's distrust, never floored.
+        # Look-alike installer host: strong evidence, the floor. The installer list, or the entity
+        # library when the oracle answered first: a near miss of a host the library vouches for (the
+        # library vouches for code sources only). An unlisted host that mimics nothing is scored by
+        # consequence and the oracle's distrust, and floored only when it came from content that tried
+        # to steer the agent (below).
         if code_source is not None:
             mimics = lookalike_of(code_source.value, lists.strings("installers", "installer_hosts"))
+            via = "installer_list"
+            if not mimics:
+                mimics, via = _library_near_miss(code_source, ctx), "library"
             if mimics:
                 g = Finding(
                     rule="C3.lookalike_installer",
                     cls="C3",
                     reason="code.lookalike_installer",
-                    detail={"host": code_source.value, "mimics": mimics},
+                    detail={"host": code_source.value, "mimics": mimics, "via": via},
                 )
                 g.add(
                     CONCEALMENT,
@@ -712,6 +772,10 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     )
                 )
                 out.append(g)
+            else:
+                steered = _steered_source(code_source, ctx)
+                if steered is not None:
+                    out.append(steered)
 
     if decode_mech:
         f = Finding(

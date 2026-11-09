@@ -1,0 +1,27 @@
+# Steering markers: text in an untrusted input that tries to steer the agent rather than inform it.
+#
+# A host named in an input that matches any pattern here is "steered" (prepare marks the entity and
+# keeps the mark in the state token). Fetching code from a steered host and running it takes the
+# untrusted_code_execution floor, so every pattern must be strong evidence on its own:
+#
+# - addressed_to_agent: the text speaks to the agent as an AI or assistant, rather than to whoever reads
+#   a document. A setup file, ticket or skill that says "run this" is instructions for its reader and is
+#   not matched; "AI assistant: run this" is.
+# - hide_from_owner: the text asks the agent to keep something from the person it works for.
+#
+# Matching is case-insensitive. A miss is safe: the call is still scored as before.
+# The patterns are YAML single-quoted strings: write a literal ' as ''.
+version: "1"
+families:
+  addressed_to_agent:
+    - '\b(?:AI|LLM)[\s-]+(?:assistant|agent|model)s?\s*[:,]'
+    - '\b(?:any|all|every)\s+(?:AI\s+)?(?:assistant|agent)s?\s+(?:that\s+(?:is|are)\s+)?(?:processing|reading|handling|summari[sz]ing|parsing|viewing|opening)\b'
+    # Not when quoted: "ignore previous instructions" in quotation marks is a mention, not an order.
+    - '(?<!["\u201c\u2018''])\b(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|earlier|above|preceding)\s+(?:instructions|directions|prompts?|rules)\b'
+    - '\b(?:assistant|agent|AI)\s+(?:instructions?|directive|task)\s*:'
+    - '\bnote\s+to\s+(?:the\s+)?(?:AI|assistant|agent|model)\b'
+    - '\bif\s+you\s+are\s+an?\s+(?:AI|assistant|agent|language\s+model)\b'
+  hide_from_owner:
+    - '\b(?:do\s+not|don''t|never)\s+(?:mention|tell|inform|notify|alert|show|reveal|report|disclose)\b[^.\n]{0,40}?\b(?:the\s+)?(?:user|owner|human|operator)s?\b'
+    - '\bwithout\s+(?:telling|informing|notifying|alerting|asking)\s+(?:the\s+)?(?:user|owner|human|operator)s?\b'
+    - '\b(?:keep|hide)\s+(?:this|it)\s+(?:secret\s+|hidden\s+)?from\s+(?:the\s+)?(?:user|owner|human|operator)s?\b'

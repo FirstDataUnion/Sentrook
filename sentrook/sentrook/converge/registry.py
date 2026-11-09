@@ -271,6 +271,7 @@ REASONS: dict[str, str] = {
     "conceal.command_in_url": "The request hides a shell command inside a URL parameter.",
     "code.param_injection": "The request sends a shell command to a local service through a URL parameter.",
     "code.registry_redirect": "The call points the package manager at {subject}; later installs would come from there.",
+    "code.steered_source": "{subject} was named in content that tried to steer the agent, and the call runs code fetched from it.",
     "code.lookalike_installer": "{subject} mimics a well-known installer host; the code being run comes from a look-alike.",
     "code.lookalike_provider": "The tool provider {subject} is one character away from a provider this session already used.",
     "selfmod.host_approvals": "The call changes the host's own approval or allowlist settings.",
