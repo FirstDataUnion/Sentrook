@@ -30,6 +30,8 @@ export type ScanWithResolution = [scan: Rec, resolution: Rec | null];
 
 const APPROVED = new Set(["once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"]);
 const REVIEW: Record<string, string> = { deny: "denied", timeout: "timed out", cancelled: "cancelled" };
+/** A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked. */
+const REVIEW_LOOP = "review_loop";
 const ID = /^[0-9a-fA-F-]{4,36}$/;
 
 function* linesBackward(file: string, budget: { left: number }): Generator<Buffer> {
@@ -173,6 +175,7 @@ export function actionOf(scan: Rec, resolution: Rec | null): string {
 export function reviewOf(action: string, resolution: Rec | null): string {
   if (resolution === null) return action.startsWith("review") ? "no answer" : "-";
   const choice = String(resolution.resolution ?? "").trim().toLowerCase();
+  if (choice === "deny" && resolution.decided_by === REVIEW_LOOP) return "auto-denied by the review loop";
   return APPROVED.has(choice) ? "approved" : (REVIEW[choice] ?? "not approved");
 }
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { helpText, OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { recentScans, recordsBackward } from "./history.ts";
+import { actionOf, recentScans, recordsBackward, reviewOf } from "./history.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 
@@ -311,4 +311,12 @@ test("a count in other digits is a usage error", async () => {
   for (const bad of ["²", "١٢", "1234567"]) {
     assert.ok((await run("sentrook-history", bad)).startsWith("usage: /sentrook-history [n]"), bad);
   }
+});
+
+test("a deny the Hermes review loop gave itself reads as such, as on Hermes", () => {
+  const scan = { verdict: "review", decision: "review_timed_out", response: {}, mode: "enforce" };
+  const auto = { resolution: "deny", decided_by: "review_loop" };
+  assert.equal(reviewOf(actionOf(scan, auto), auto), "auto-denied by the review loop");
+  const other = { resolution: "deny", decided_by: "someone_else" };
+  assert.equal(reviewOf(actionOf(scan, other), other), "denied");
 });
