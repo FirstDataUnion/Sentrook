@@ -15,6 +15,11 @@ expiry) that cover what the call does (`allows`):
 - **Known-good destination relief**: a destination or recipient the entity oracle marks `known_good`
   is treated the same way, for sends only, unless it reached the agent through untrusted content
   (a destination dictated by something the agent read keeps its origin, however reputable).
+- **Known-good provider relief**: an MCP server or plugin the call's tool comes from, whose identity
+  the entity oracle marks `known_good`, is relieved as a matched provider grant would leave it
+  (`distrust` and `untrusted_origin`), unless that identity reached the agent through untrusted
+  content: the provider entity itself, or the host of a remote server or the package of a local one
+  as content names it, in the session's untrusted set or in this request's untrusted inputs.
 - Grants sanction access, never what happens to the data afterwards: relief never clears session flags
   and never lowers a floor (floors are applied after relief).
 """
@@ -26,8 +31,9 @@ from dataclasses import dataclass
 
 from ..planir.models import SenderRelation
 from ..prepare import Prepared
-from ..prepare.entities import Origin, Role
+from ..prepare.entities import Entity, Origin, Role, provider_counterpart
 from ..prepare.grants import GRANT_KINDS, sends_off_host
+from ..state.token import entity_hash
 from .merge import ANY_SUBJECT
 from .params import ConvergenceParams
 
@@ -40,6 +46,25 @@ class Relief:
     effect: str
     reason: str
     excluded: tuple[tuple[str, str | None], ...]
+
+
+def _provider_from_untrusted(prepared: Prepared, ent: Entity) -> bool:
+    """The provider's identity reached the agent through content it read: the provider entity, or the
+    host or package its identity names, is in the session's untrusted set from earlier steps or came
+    in through this request's untrusted inputs. The earlier set is read as it was before this request
+    added to it, so a request full of untrusted entities cannot push the counterpart out of it."""
+    if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
+        return True
+    counterpart = provider_counterpart(ent.value)
+    if counterpart is None:
+        return False
+    kind, value = counterpart
+    other = prepared.entities.get(kind, value)
+    if other is not None and (
+        other.in_session_untrusted or Origin.UNTRUSTED_INPUT in other.origins
+    ):
+        return True
+    return entity_hash(prepared.state.salt, kind.value, value) in prepared.prior_untrusted
 
 
 def compute_relief(
@@ -121,10 +146,22 @@ def compute_relief(
             if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
                 continue
             roles = {r.value for r in ent.roles}
-            if not roles & set(params.request_named_roles):
-                continue
             if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
                 continue  # reputation sanctions sending to a host, never running code from it
+            if Role.TOOL_PROVIDER.value in roles:
+                if not _provider_from_untrusted(prepared, ent):
+                    out.append(
+                        Relief(
+                            None,
+                            eid,
+                            "distrust+untrusted_origin",
+                            "relief.known_good_provider",
+                            (("suspicion.distrust", eid), ("suspicion.untrusted_origin", eid)),
+                        )
+                    )
+                continue
+            if not roles & set(params.request_named_roles):
+                continue
             if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
                 continue  # a destination taken from content the agent read keeps its origin
             out.append(

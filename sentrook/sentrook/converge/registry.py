@@ -214,6 +214,7 @@ REASONS: dict[str, str] = {
     "relief.tool_grant": "A grant covers running {tool}.",
     "relief.request_named_destination": "You named {subject} as the destination in your request.",
     "relief.known_good_destination": "{subject} is a known good destination.",
+    "relief.known_good_provider": "{subject} is a known good tool provider.",
     # AIRA: consequence classes (C1 to C10) and extent
     "path.credential_store": "{subject} is a credential store.",
     "path.credential_bearing_config": "{subject} is configuration that carries credentials.",
