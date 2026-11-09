@@ -902,6 +902,7 @@
       "enum": [
         "background_review",
         "curator",
+        "memory_flush",
         "other"
       ],
       "title": "SelfEditKind",

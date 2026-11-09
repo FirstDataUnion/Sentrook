@@ -782,7 +782,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     # unvetted code source on its own; the risky-step suspicion and the self-edit questions judge them instead.
     if planir.is_self_edit:
         try:
-            steps = skill_step_calls(platform, pending)
+            steps = skill_step_calls(platform, pending, planir.self_edit.store.value)
             resolved = [*resolved, *steps]
         except Exception as exc:  # noqa: BLE001
             coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
