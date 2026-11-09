@@ -2,7 +2,8 @@
 
 Every probe returns the same envelope. Its native output stays bespoke in `evidence` (logs, debugging,
 TestNest; never used in maths); its claims about signals go in `contributions`; hard signals that must
-never be lowered go in `floors`; session flags to set at the end of convergence go in `flags_set`.
+never be lowered go in `floors`; session flags to set at the end of convergence go in `flags_set`; what a
+sensitive or tainted judgement is about (a file, a table, the call behind an injected result) goes in `marks`.
 
 Explicit versus absent: a probe emits a contribution only for a signal it
 actually evaluated. Absent means no opinion. For suspicion and consequence signals an explicit 0 means
@@ -11,7 +12,7 @@ actually evaluated. Absent means no opinion. For suspicion and consequence signa
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,6 +46,30 @@ class Floor(BaseModel):
     reason: str | None = None
 
 
+class SessionMark(BaseModel):
+    """What a session judgement is about, kept in the state token so later calls can be bound to it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    judgement: Literal["sensitive", "tainted"]
+    subject: str | None = Field(
+        default=None,
+        description="Entity ID of the file the judgement is about; for `sensitive`, null means the "
+        "sensitive data could not be tied to a file",
+    )
+    input_seq: int | None = Field(
+        default=None,
+        description="For `tainted`: the injected tool result; the files and tables its call produced "
+        "join the set",
+    )
+    attributed: bool = Field(
+        default=True,
+        description="For `tainted`: the judgement was about this input alone. A chunk of several "
+        "inputs judged together cannot say which one was injected: its inputs leave the trusted set "
+        "but add nothing to the tainted set",
+    )
+
+
 class Envelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +83,7 @@ class Envelope(BaseModel):
     contributions: list[Contribution] = Field(default_factory=list)
     floors: list[Floor] = Field(default_factory=list)
     flags_set: list[SessionFlag] = Field(default_factory=list)
+    marks: list[SessionMark] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod

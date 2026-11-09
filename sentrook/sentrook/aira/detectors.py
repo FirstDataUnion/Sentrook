@@ -37,7 +37,7 @@ from ..prepare.entities import (
     resolve_token,
 )
 from ..prepare.sibling_join import sibling_writes
-from ..probes.base import Contribution, Floor
+from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
 from .lists import Lists, Rule
@@ -108,7 +108,17 @@ class Finding:
     contributions: list[Contribution] = field(default_factory=list)
     floors: list[Floor] = field(default_factory=list)
     flags: list[SessionFlag] = field(default_factory=list)
+    marks: list[SessionMark] = field(default_factory=list)
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def holds_sensitive(self, subject: str | None) -> Finding:
+        """The session now holds sensitive data, in `subject` (an entity id); None when it cannot be tied to
+        a file, which keeps the session flag's weight on every later send."""
+        if SessionFlag.HOLDS_SENSITIVE not in self.flags:
+            self.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        if not any(m.subject == subject for m in self.marks):
+            self.marks.append(SessionMark(judgement="sensitive", subject=subject))
+        return self
 
     def add(self, signal: str, value: float, subject: str | None = None, reason: str | None = None):
         self.contributions.append(
@@ -301,7 +311,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
             continue
         f = Finding(rule=f"C1.{g}", cls="C1", reason=f"path.{g}", detail={"path": p.display})
         f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
-        f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        f.holds_sensitive(p.entity_id)
         out.append(f)
         seen.add(g)
     # A bare basename after a `cd`, or a reference tokenisation lost: scored without a subject.
@@ -314,7 +324,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 detail={"mechanism": "text_match"},
             )
             f.add(SENSITIVITY, ctx.weight("sensitivity", g))
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+            f.holds_sensitive(None)
             out.append(f)
             seen.add(g)
     return out
@@ -461,16 +471,32 @@ def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
                 "placeholder",
             )
         )
-    if SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
-        sources.append(
-            Source(
-                "exfil.session_holds_sensitive",
-                ctx.weight("sensitivity", "session_holds_sensitive"),
-                None,
-                "session flag",
-            )
-        )
+    session = _session_sensitive_source(ctx)
+    if session is not None:
+        sources.append(session)
     return sources
+
+
+def _session_sensitive_source(ctx: Context) -> Source | None:
+    """The session's sensitive data as a source of this send, bound to what it is about: the file or table
+    the session judged sensitive when the call takes content from it; the bare session flag when the
+    call has nothing to match (a raw body, a pipe) or the session holds sensitive data it could not tie to
+    a file; nothing when the call takes content only from other files and tables."""
+    prepared = ctx.prepared
+    binding = prepared.session_binding.sensitive
+    weight = ctx.weight("sensitivity", "session_holds_sensitive")
+    if binding.bound:
+        return Source(
+            "exfil.session_holds_sensitive",
+            weight,
+            binding.subject(),
+            "session: " + ", ".join(binding.names()),
+        )
+    if SessionFlag.HOLDS_SENSITIVE not in prepared.state.flags:
+        return None
+    if binding.identifiable and not prepared.state.sensitive_unbound:
+        return None
+    return Source("exfil.session_holds_sensitive", weight, None, "session flag")
 
 
 def _placeholder(ctx: Context) -> str:
@@ -502,7 +528,10 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 f.add(IRREVERSIBILITY, ctx.weight("exfil", "irreversibility"), subject)
             for src in sources:
                 f.add(SENSITIVITY, src.weight, src.subject, src.reason)
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                if src.reason != "exfil.session_holds_sensitive":
+                    f.holds_sensitive(src.subject)
+            if SessionFlag.HOLDS_SENSITIVE not in f.flags:
+                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
             out.append(f)
         return out
     for sink in sinks:
@@ -1747,7 +1776,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"path": p.display, "mechanism": mechanism},
                 )
                 f.add(SENSITIVITY, weight, p.entity_id)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(p.entity_id)
                 out.append(f)
 
     if a.kind is not ToolKind.EXEC or a.shape is None:
@@ -1775,7 +1804,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"verb": verb, "group": hit},
                 )
                 f.add(SENSITIVITY, weight, subject)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(subject)
                 out.append(f)
         elif verb == "push" and SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
             if _placeholder_paths(ctx):
