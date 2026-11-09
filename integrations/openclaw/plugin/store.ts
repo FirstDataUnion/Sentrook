@@ -7,6 +7,8 @@
  * - `subagents.json`: child session key → parent session key
  * - `grants.json`: grants and channel bindings set by command (see `grants.ts`)
  * - `snooze.json`: snoozes set by command (see `snooze.ts`)
+ * - `selfedit/<runId>.json`: the conversation a self-editing run read (see `conversation.ts`), kept for at most
+ *   `SELF_EDIT_KEEP_DAYS` days and the latest `SELF_EDIT_KEEP_RUNS` runs
  * - `salt`: per-install key for placeholder refs and hashed ids
  *
  * Writes are atomic (temp file then rename). Read-modify-write of a session goes through
@@ -14,7 +16,17 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 export interface Provider {
@@ -116,6 +128,10 @@ export function readTime(raw: unknown): Date | null {
   const year = at.getUTCFullYear();
   return Number.isNaN(year) || year < 1 || year > 9999 ? null : at;
 }
+
+/** Retention of the self-edit conversation logs. */
+export const SELF_EDIT_KEEP_DAYS = 7;
+export const SELF_EDIT_KEEP_RUNS = 100;
 
 const fileKey = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
 
@@ -253,6 +269,49 @@ export class Store {
 
   saveSnooze(value: SnoozeFile): void {
     this.writeJson(path.join(this.dir, "snooze.json"), value);
+  }
+
+  private selfEditFile(runId: string) {
+    return path.join(this.dir, "selfedit", `${fileKey(runId)}.json`);
+  }
+
+  /** The conversation a self-editing run read; empty when none was kept. */
+  loadConversation(runId: string | undefined): any[] {
+    if (!runId) return [];
+    const v = this.readJson<unknown>(this.selfEditFile(runId), []);
+    return Array.isArray(v) ? v : [];
+  }
+
+  /** Replaces the run's conversation with `change(current)`, then drops logs past the retention limits. */
+  updateConversation(runId: string, change: (entries: any[]) => any[], now = Date.now()): void {
+    this.writeJson(this.selfEditFile(runId), change(this.loadConversation(runId)));
+    this.pruneConversations(now);
+  }
+
+  /** Drops conversation logs past the retention limits (on every write, and at startup). */
+  pruneConversations(now = Date.now()): void {
+    const dir = path.join(this.dir, "selfedit");
+    let files: Array<{ file: string; mtime: number }>;
+    try {
+      files = readdirSync(dir)
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => ({ file: path.join(dir, f), mtime: statSync(path.join(dir, f)).mtimeMs }));
+    } catch {
+      return;
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    const cutoff = now - SELF_EDIT_KEEP_DAYS * 86_400_000;
+    files.forEach((f, i) => {
+      if (i >= SELF_EDIT_KEEP_RUNS || f.mtime < cutoff) rmSync(f.file, { force: true });
+    });
+  }
+
+  /** Deletes every kept conversation; true when there were any. */
+  deleteConversations(): boolean {
+    const dir = path.join(this.dir, "selfedit");
+    if (!existsSync(dir)) return false;
+    rmSync(dir, { recursive: true, force: true });
+    return true;
   }
 
   setParent(child: string, parent: string): void {

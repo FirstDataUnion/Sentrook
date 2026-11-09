@@ -62,7 +62,7 @@ plugin-planir-check:
 	mkdir -p tmp
 	rm -f tmp/openclaw-planirs.json
 	cd $(OPENCLAW_PLUGIN) && SENTROOK_PLANIR_DUMP=$(CURDIR)/tmp/openclaw-planirs.json \
-		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned" index.test.ts
+		node --experimental-strip-types --test --test-name-pattern="allow, block|tool_call wrapper is not scanned|must declare" index.test.ts
 	rm -rf tmp/hermes-planirs tmp/hermes-planirs.json
 	SENTROOK_PLANIR_DUMP_DIR=$(CURDIR)/tmp/hermes-planirs uv run python -m pytest -q \
 		integrations/hermes/plugin/tests/test_plugin.py -k episode

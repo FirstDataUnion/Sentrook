@@ -13,6 +13,7 @@
 import path from "node:path";
 
 import { type ApprovalPolicyConfig, resolveApprovalPolicyConfig } from "./approvalPolicy.ts";
+import { resolveSetting, type SkillReviewSetting } from "./selfEdit.ts";
 import { type OnScanError, resolveOnScanError } from "./scanErrorPolicy.ts";
 
 export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
@@ -72,6 +73,10 @@ export interface PluginConfig {
   /** Config grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`). */
   unsentGrants: Record<number, string>;
   channelBindings: string[];
+  /** How OpenClaw's own background saves to skills and memory are sent (see `selfEdit.ts`). */
+  skillReview: SkillReviewSetting;
+  /** The configured value when it was not `allow` or `review` (read as allow). */
+  skillReviewUnknown: string | null;
 }
 
 type Env = NodeJS.ProcessEnv;
@@ -267,5 +272,11 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     // Where a scheduled job or route is expected to deliver; sent as destination grants, so a cron
     // delivery to its usual channel is sanctioned even though the channel is not in the prompt.
     channelBindings: list(cfg.channelBindings),
+    ...skillReviewOf(cfg.skillReview ?? env.SENTROOK_SKILL_REVIEW),
   };
+}
+
+function skillReviewOf(raw: unknown): { skillReview: SkillReviewSetting; skillReviewUnknown: string | null } {
+  const { setting, unknown } = resolveSetting(raw);
+  return { skillReview: setting, skillReviewUnknown: unknown };
 }

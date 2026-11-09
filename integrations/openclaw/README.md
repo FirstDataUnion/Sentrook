@@ -249,6 +249,35 @@ A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your a
 (`approval.interactiveTimeoutMs`) and then denies the call. Cron jobs and subagents wait 30 minutes
 (`approval.scheduledTimeoutMs`) and then deny it too, unless you set `approval.scheduledTimeoutBehavior` to `allow`.
 
+### Skills and memory the agent saves on its own
+
+OpenClaw saves to the agent's skills and memory on its own, with nobody asking:
+
+- after a long turn, the Skill Workshop review reads the conversation and saves skills (file writes in the agent's
+  `workshop-skills` folder, or `skill_workshop` proposals);
+- before older turns are compacted away, the memory flush saves durable notes to the day's file, `memory/YYYY-MM-DD.md`;
+- once a week, the skill collection review tidies the Workshop's skills.
+
+These runs carry your context but are not your messages, and a save has no request of its own, so it would otherwise
+look like a write nobody asked for. By default (`skillReview: allow`) the plugin sends every call these runs make as
+the host's own (never as your message, and never snoozed), with your last message in the conversation they read as
+the request, tells Sentrook which calls are their saves (skill files written inside the Workshop folder, or the
+memory flush's write to the day's note; a write anywhere else is scanned like any other call), and sends the
+part of the conversation the run read, so Sentrook can judge the save against it. A save that follows from what you
+said and did goes through. A save is reviewed or blocked when it carries instructions that came from content the
+agent read or from other people, weakens one of your rules, claims approvals you never gave, or stores secrets you
+did not ask it to keep. The other calls these runs make (commands, reads) are scanned like any other call. A skill or
+memory change you ask for in a turn is scanned like any other call, too.
+
+Each message in that conversation is marked as yours, someone else's or unknown from OpenClaw's own sender flag, never
+from what the message says. Set `skillReview` to `review` to send these runs' calls as before, without the
+conversation; with nothing to judge them against, expect more saves to be reviewed or blocked. `status` counts the
+saves (allowed, blocked, asked) and the history marks them `(self-edit)`.
+
+Two of OpenClaw's own writers never make a tool call, so no plugin can see them: dreaming (the nightly promotion of
+notes into `MEMORY.md` and `DREAMS.md`) and the session-memory hook (which writes recent messages into `memory/` on
+`/new` and `/reset`). Sentrook does not scan them.
+
 When the scan service gives no usable answer the plugin asks you whether to run the call without a scan
 (`onScanError`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let
 through silently: even with `onScanError` set to `allow`, the call is blocked, or you are asked.
@@ -281,7 +310,12 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   configured to run commands and approvals;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
   server it calls;
-- references to the session and agent. Session ids are sent as hashes, not as the ids themselves.
+- references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
+- for a skill or memory save that OpenClaw makes on its own (see above): the conversation that run read, as its
+  messages, the agent's replies and the tool results (each cut short, the results to the part that overlaps the save
+  most, about 48 KB in all). To have it at hand, the plugin keeps each run's conversation, redacted, in
+  `~/.openclaw/sentrook/selfedit/`; it deletes files not changed in 7 days and keeps only the 100 most recent. With `skillReview` set to `review` it deletes them all (at startup, or on its next hook after you
+  change the setting) and keeps nothing.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are
@@ -308,6 +342,7 @@ also come from a `SENTROOK_*` environment variable; the config value wins.
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
 | `approval.scheduledTimeoutMs` | `1800000` | How long a review in a cron job or subagent waits |
 | `approval.scheduledTimeoutBehavior` | `deny` | What a cron or subagent review does when nobody answers: `allow` or `deny` |
+| `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |
 | `grants` | | Standing grants, as `{kind, pattern, allows?, scope?}` objects |
@@ -326,7 +361,7 @@ openclaw plugins uninstall sentrook --force && openclaw gateway restart
 ```
 
 This removes the plugin and its settings, including grants and bindings kept in `openclaw.json`. It leaves the
-traffic log, the grants and bindings set by command, and the snooze state in `~/.openclaw/sentrook/`, and the
+traffic log, the grants and bindings set by command, the snooze state and any kept conversations in `~/.openclaw/sentrook/`, and the
 credentials in `~/.openclaw/.env`. To remove those too, delete the folder, delete the two `SENTROOK_SCAN_CLIENT_*`
 lines from `.env`, and delete the credentials on the identity service's **Sentrook** tab. To install again later,
 start from step 3.
