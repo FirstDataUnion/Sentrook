@@ -5,8 +5,9 @@ a declared self-edit that writes a skill, the commands in the written text becom
 `resolved`, so the rule-based probe judges them as it would judge the agent running them now: fetching code into a
 shell, sending local data off the host, reading credential stores, and so on.
 
-- It applies to a skill tool (`skill_manage`, `skill_workshop`) and to any self-edit whose store is `skills` (a file
-  `write`, `edit` or `apply_patch` into the agent's skill directory).
+- It applies to any self-edit whose store is `skills` (a skill tool, or a file `write`, `edit` or `apply_patch` into
+  the agent's skill directory), and to a skill tool (`skill_manage`, `skill_workshop`) with no known store; never to
+  a memory save.
 - Only text the save writes is read (`content`, `file_content`, `new_string`, `new_text`, `newText`, also inside
   `operations` and `edits`, and the lines a patch in `input` adds), never the text it replaces.
 - Commands come from fenced blocks (``` or ~~~; a line ending in `\\` continues on the next) and from inline code that
@@ -146,8 +147,9 @@ def commands_in(text: str) -> list[str]:
 def skill_step_calls(
     platform: str, pending: CanonicalCall, store: str | None = None
 ) -> list[CanonicalCall]:
-    """The commands a self-edit writes into a skill, as exec calls; `store` is the self-edit's `store`."""
-    if pending.tool not in SKILL_TOOLS and store != "skills":
+    """The commands a self-edit writes into a skill, as exec calls; `store` is the self-edit's `store`. A save to
+    another store (memory) is never read, whatever its tool; an unknown store is read only for a skill tool."""
+    if store != "skills" and (store not in (None, "other") or pending.tool not in SKILL_TOOLS):
         return []
     steps: dict[str, bool] = {}
     for text in written_texts(pending.raw):

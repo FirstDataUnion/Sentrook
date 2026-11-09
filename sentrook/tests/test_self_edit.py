@@ -664,12 +664,70 @@ def test_must_fire_an_openclaw_skill_save_that_fetches_and_runs_code(tool, argum
     assert res.response.risk >= 45
 
 
+WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("write", {"path": "deploy/SKILL.md", "content": "1. Run `make test`.\n"}),
+        ("write", {"path": WORKSHOP + "/deploy/SKILL.md", "content": "1. Run `make test`.\n"}),
+        ("edit", {"path": "deploy/SKILL.md", "edits": [{"oldText": "a", "newText": "b"}]}),
+        (
+            "apply_patch",
+            {
+                "input": "*** Begin Patch\n*** Update File: deploy/SKILL.md\n@@\n-a\n+b\n*** End Patch"
+            },
+        ),
+    ],
+    ids=["relative write", "absolute write", "edit", "apply_patch"],
+)
+def test_must_fire_self_modification_for_a_write_into_the_openclaw_workshop(tool, arguments):
+    raw = planir(tool, arguments, store="skills", platform="openclaw")
+    raw["host"]["workspace_root"] = WORKSHOP
+    raw["host"]["home"] = "/home/node"
+    res, _ = scan(raw)
+    assert {"selfmod.plugin", "selfmod.config"} & set(codes(res))
+    assert res.response.model_dump(mode="json")["tree"]["consequence"]["self_modification"] == 1.0
+
+
+def test_a_declared_memory_save_has_the_memory_weight_whatever_its_path():
+    raw = planir(
+        "edit",
+        {"path": "notes/today.md", "edits": [{"oldText": "a", "newText": "b"}]},
+        store="memory",
+        kind="memory_flush",
+        platform="openclaw",
+    )
+    res, _ = scan(raw)
+    assert "selfmod.memory" in codes(res)
+    assert res.response.model_dump(mode="json")["tree"]["consequence"]["self_modification"] == 0.7
+
+
+def test_the_store_adds_nothing_outside_a_self_edit():
+    raw = planir(
+        "write",
+        {"path": "deploy/SKILL.md", "content": "x"},
+        store="skills",
+        platform="openclaw",
+        self_edit=False,
+    )
+    res, _ = scan(raw)
+    assert not [c for c in codes(res) if c.startswith("selfmod.")]
+
+
 def test_a_memory_file_write_is_not_read_for_commands():
     note = {
         "path": "memory/2026-11-09.md",
         "content": "- Deploys used `" + CURL_BASH + "` (failed).\n",
     }
     res, _ = scan(planir("write", note, store="memory", kind="memory_flush", platform="openclaw"))
+    assert "selfedit.risky_step" not in codes(res)
+
+
+def test_a_skill_tool_declared_as_a_memory_save_is_not_read_for_commands():
+    skill = {"action": "create", "name": "deploy", "content": "`" + CURL_BASH + "`"}
+    res, _ = scan(planir("skill_manage", skill, store="memory"))
     assert "selfedit.risky_step" not in codes(res)
 
 
