@@ -7,6 +7,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { clearScanTokenCache } from "./auth.ts";
 import { runSentrookCommand } from "./commands.ts";
 import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
+import { execPolicy } from "./planir.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -655,4 +656,80 @@ test("status after real self-edit scans counts them", async () => {
   await h.fire("before_tool_call", { toolName: "write", toolCallId: "w2", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "EXFIL" } }, REVIEW_CTX);
   const text = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
   assert.match(text, /skill review: allow; self-edits in the traffic log: 1 allowed, 1 blocked/);
+});
+
+test("must fire: a change to the exec mode after load reaches the next scan", async () => {
+  const live: any = { tools: { exec: { mode: "full" } } };
+  const h = setup({}, {}, { runtime: { version: "2026.10.3", config: { current: () => live } } });
+  await h.fire("before_tool_call", call("c1", "ls"));
+  live.tools.exec.mode = "deny";
+  await h.fire("before_tool_call", call("c2", "ls"));
+  assert.deepEqual(h.scans[0].host.policy, { exec_mode: "full", approval_gating: false, result_masking: true });
+  assert.deepEqual(h.scans[1].host.policy, { exec_mode: "unknown", approval_gating: true, result_masking: true });
+});
+
+test("must fire: the MCP servers are read from the live config too", async () => {
+  const live: any = { tools: { exec: { mode: "full" } }, mcp: { servers: {} } };
+  const h = setup({}, {}, { runtime: { config: { current: () => live } } });
+  live.mcp.servers.docs = { url: "https://Docs.Example.com:8443/mcp" };
+  await h.fire("before_tool_call", { toolName: "docs__search", toolCallId: "m1", runId: "r1", params: { q: "x" } });
+  assert.equal(h.scans[0].pending_call.provider.identity, "remote:docs.example.com");
+});
+
+test("must stay silent: without runtime.config.current the load-time config is used", async () => {
+  const h = setup({}, {}, { config: { tools: { exec: { mode: "allowlist" } } }, runtime: { version: "2026.9.5" } });
+  await h.fire("before_tool_call", call("c1", "ls"));
+  assert.deepEqual(h.scans[0].host.policy, { exec_mode: "allowlist", approval_gating: true, result_masking: true });
+});
+
+test("must stay silent: a runtime that throws, or returns no config, falls back to the load-time config", async () => {
+  const throwing = new Proxy({}, { get: () => { throw new Error("runtime not available"); } });
+  const h1 = setup({}, {}, { config: { tools: { exec: { mode: "ask" } } }, runtime: throwing });
+  await h1.fire("before_tool_call", call("c1", "ls"));
+  assert.equal(h1.scans[0].host.policy.exec_mode, "allowlist");
+  const h2 = setup({}, {}, { config: { tools: { exec: { mode: "ask" } } }, runtime: { config: { current: () => undefined } } });
+  await h2.fire("before_tool_call", call("c1", "ls"));
+  assert.equal(h2.scans[0].host.policy.exec_mode, "allowlist");
+});
+
+test("each exec mode maps to what it lets run unasked", () => {
+  const p = (exec: unknown) => execPolicy({ tools: { exec } });
+  // deny blocks host exec; allowlist runs only allowlisted commands; ask and auto run allowlisted commands and
+  // ask (auto: review) on a miss; full runs everything without ordinary prompts.
+  assert.deepEqual(p({ mode: "deny" }), { exec_mode: "unknown", approval_gating: true });
+  assert.deepEqual(p({ mode: "allowlist" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ mode: "ask" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ mode: "auto" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ mode: "full" }), { exec_mode: "full", approval_gating: false });
+});
+
+test("older security/ask pairs map the same way; nothing configured is unknown", () => {
+  const p = (exec: unknown) => execPolicy({ tools: { exec } });
+  assert.deepEqual(p({ security: "deny" }), { exec_mode: "unknown", approval_gating: true });
+  assert.deepEqual(p({ security: "allowlist", ask: "off" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ security: "allowlist", ask: "on-miss" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ security: "full", ask: "off" }), { exec_mode: "full", approval_gating: false });
+  assert.deepEqual(p({ security: "full" }), { exec_mode: "full", approval_gating: false });
+  assert.deepEqual(p({ security: "full", ask: "always" }), { exec_mode: "full", approval_gating: true });
+  // Not known to ask under full, so not claimed as a gate.
+  assert.deepEqual(p({ security: "full", ask: "on-miss" }), { exec_mode: "full", approval_gating: false });
+  // `security` defaults to full when only `ask` is set.
+  assert.deepEqual(p({ ask: "always" }), { exec_mode: "full", approval_gating: true });
+  assert.deepEqual(p({ ask: "off" }), { exec_mode: "full", approval_gating: false });
+  // The mode wins over a leftover legacy field.
+  assert.deepEqual(p({ mode: "full", security: "deny" }), { exec_mode: "full", approval_gating: false });
+  assert.deepEqual(p({ mode: "something-new" }), { exec_mode: "unknown", approval_gating: false });
+  assert.deepEqual(p({}), { exec_mode: "unknown", approval_gating: false });
+  assert.deepEqual(execPolicy(undefined), { exec_mode: "unknown", approval_gating: false });
+});
+
+test("must stay silent: the host's approval is never claimed, whatever the exec mode", async () => {
+  const live: any = { tools: { exec: { mode: "full" } } };
+  const h = setup({}, {}, { runtime: { config: { current: () => live } } });
+  const modes = ["deny", "allowlist", "ask", "auto", "full"];
+  for (const [i, mode] of modes.entries()) {
+    live.tools.exec.mode = mode;
+    await h.fire("before_tool_call", call(`c${i}`, "ls"));
+  }
+  assert.deepEqual(h.scans.map((s) => s.pending_call.host_approval), modes.map(() => "unknown"));
 });
