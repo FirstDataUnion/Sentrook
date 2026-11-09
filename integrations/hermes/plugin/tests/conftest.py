@@ -173,3 +173,36 @@ def loop_h(harness, provenance, monkeypatch):
     fake.reply = reply
     fake.prov = provenance
     return fake
+
+
+@pytest.fixture
+def review_fork(provenance, monkeypatch):
+    """Hermes's approval plumbing as the review fork's thread sees it on the local terminal: its approval
+    callback is the review's auto-deny and no gateway notifier is registered. Tests change `.callback`
+    ("auto", None or "other") and `.notifiers` (session keys with a gateway notifier)."""
+    import types
+
+    def _bg_review_auto_deny(command, description, **kwargs):
+        return "deny"
+
+    state = types.SimpleNamespace(callback="auto", notifiers=set())
+    callbacks = {"auto": _bg_review_auto_deny, None: None, "other": lambda *a, **k: "deny"}
+    review = types.ModuleType("agent.background_review")
+    review._bg_review_auto_deny = _bg_review_auto_deny
+    agent = types.ModuleType("agent")
+    agent.__path__ = []
+    agent.background_review = review
+    approval = types.ModuleType("tools.approval")
+    approval._gateway_notify_cb = lambda key: (lambda *_a: None) if key in state.notifiers else None
+    terminal = types.ModuleType("tools.terminal_tool")
+    terminal._get_approval_callback = lambda: callbacks[state.callback]
+    tools = sys.modules["tools"]
+    tools.approval, tools.terminal_tool = approval, terminal
+    for name, mod in {
+        "agent": agent,
+        "agent.background_review": review,
+        "tools.approval": approval,
+        "tools.terminal_tool": terminal,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    return state
