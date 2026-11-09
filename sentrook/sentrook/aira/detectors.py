@@ -28,7 +28,14 @@ from ..oracle.near_miss import edit_distance_le1, registrable
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Origin, Role, normalise_path, resolve_token
+from ..prepare.entities import (
+    EntityKind,
+    Origin,
+    Role,
+    normalise_path,
+    normalise_remote_identity,
+    resolve_token,
+)
 from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor
 from .analysis import CallAnalysis, EntityRef, PathRef
@@ -65,6 +72,9 @@ SELFMOD_GROUPS: dict[str, tuple[str, str]] = {
     "startup": ("selfmod.startup", "startup"),
     "host_scheduler": ("selfmod.scheduler", "host_scheduler"),
 }
+
+#: A declared self-edit's store, as the C4 finding it implies when no path or tool rule found one.
+SELF_EDIT_STORES = {"skills": ("selfmod.plugin", "plugin"), "memory": ("selfmod.memory", "memory")}
 
 _WRITE_KINDS = frozenset({ToolKind.FILE_WRITE, ToolKind.FILE_EDIT, ToolKind.MEMORY_WRITE})
 _DEVNULL_RE = re.compile(r"2>\s*/dev/null|&>\s*/dev/null|>\s*/dev/null\s+2>&1", re.IGNORECASE)
@@ -941,7 +951,7 @@ def detect_provider_lookalike(a: CallAnalysis, ctx: Context) -> list[Finding]:
     scored by the other classes; the look-alike is concealment."""
     out: list[Finding] = []
     known = [
-        h.provider.identity
+        normalise_remote_identity(h.provider.identity)
         for h in ctx.prepared.history
         if h.provider.kind is ProviderKind.MCP and h.provider.identity
     ]
@@ -1105,6 +1115,15 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if rule is not None:
             reason = str(rule.get("reason"))
             emit(reason, reason.split(".")[-1], None, {"mechanism": "tool_name", "tool": a.tool})
+    # A declared self-edit modifies the agent's own store by definition, whatever the tool or path form says (a
+    # host's file write may name its skill file relative to a skill folder no path rule knows). The declared store
+    # supplies the finding only when no rule above found one, so a declaration can never lower a score.
+    planir = ctx.prepared.planir
+    if not out and a.source == "pending" and planir.is_self_edit and planir.self_edit is not None:
+        store = planir.self_edit.store.value
+        if store in SELF_EDIT_STORES:
+            reason, wkey = SELF_EDIT_STORES[store]
+            emit(reason, wkey, None, {"mechanism": "self_edit_store", "store": store})
     return out
 
 

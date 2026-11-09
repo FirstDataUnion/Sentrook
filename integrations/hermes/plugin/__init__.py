@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, conversation, grants, owner, skill_review, snooze
+from . import cli, commands, conversation, grants, history, owner, skill_review, snooze
 from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -467,7 +467,8 @@ _APPROVED = {
 
 
 def on_post_approval_response(**kw: Any) -> None:
-    """Write the user's answer into history, joined by the rule key we issued."""
+    """Write the user's answer into history, joined by the rule key we issued. A deny the review loop
+    gave itself (`skill_review.auto_denied`) is recorded as a block, not as the user's."""
     try:
         pattern = str(kw.get("pattern_key") or kw.get("rule_key") or "")
         key = pattern.removeprefix("plugin_rule:")
@@ -480,6 +481,8 @@ def on_post_approval_response(**kw: Any) -> None:
             return
         choice = str(kw.get("choice") or kw.get("decision") or "").strip().lower()
         approved = choice in _APPROVED
+        # The review loop's own deny on the terminal: nobody was asked, so it is not the owner's denial.
+        auto = skill_review.auto_denied(kw, choice)
         if review.get("on_error"):
             final = "allowed_on_error" if approved else "blocked_on_error"
         else:
@@ -487,7 +490,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 "approved_by_user"
                 if approved
                 else "denied_by_user"
-                if choice == "deny"
+                if choice == "deny" and not auto
                 else "review_timed_out"
                 if choice == "timeout"
                 else "blocked"
@@ -505,6 +508,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 "request_id": review["request_id"],
                 "resolution": choice,
                 "decision": final,
+                **({"decided_by": history.REVIEW_LOOP} if auto else {}),
             }
         )
     except Exception as exc:  # noqa: BLE001

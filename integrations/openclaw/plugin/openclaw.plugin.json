@@ -61,7 +61,8 @@
           }
         }
       },
-      "channelBindings": { "type": "array", "items": { "type": "string" }, "description": "Channels this deployment normally delivers to; sent as destination grants. /sentrook-bind adds more without editing config." }
+      "channelBindings": { "type": "array", "items": { "type": "string" }, "description": "Channels this deployment normally delivers to; sent as destination grants. /sentrook-bind adds more without editing config." },
+      "skillReview": { "type": "string", "description": "allow (default): OpenClaw's own background saves (the Skill Workshop review, the memory flush, the skill collection review) are sent as the host's, not the owner's, and their saves as self-edits judged against the conversation they came from. review: sent like any other call, as before. Any other value reads as allow." }
     }
   }
 }

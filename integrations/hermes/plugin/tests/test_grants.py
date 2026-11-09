@@ -11,7 +11,7 @@ import pytest
 import plugin
 from plugin import grants, owner
 from plugin.config import resolve_config
-from plugin.planir import call_cwd, relevant_grants, session_ref
+from plugin.planir import call_cwd, provider_for, relevant_grants, session_ref
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
@@ -578,6 +578,18 @@ def test_persistent_and_config_grants_are_sent_in_every_session(term):
 
 
 RELEVANCE = json.loads((FIXTURES / "relevance.json").read_text())
+REMOTE = json.loads((FIXTURES.parent / "provider" / "remote-identity.json").read_text())
+
+
+def remote_identity(url):
+    """The identity Hermes gives a remote MCP server configured at `url`."""
+    return provider_for("mcp__srv__tool", {"mcp_servers": {"srv": {"url": url}}})["identity"]
+
+
+@pytest.mark.parametrize("c", REMOTE["cases"], ids=lambda c: c["url"])
+def test_a_remote_server_gets_the_same_identity_on_both_hosts(c):
+    """Shared with the OpenClaw plugin's tests."""
+    assert remote_identity(c["url"]) == c["identity"]
 
 
 @pytest.mark.parametrize("c", RELEVANCE["cases"], ids=lambda c: c["case"])
@@ -586,7 +598,7 @@ def test_a_grant_is_sent_when_the_call_could_be_covered_by_it(c):
     sent = relevant_grants(
         [c["grant"]],
         json.dumps(c["arguments"], ensure_ascii=False),
-        identity=c["identity"],
+        identity=remote_identity(c["url"]) if "url" in c else c["identity"],
         home=c.get("home", RELEVANCE["home"]),
         workspace=c.get("workspace", RELEVANCE["workspace"]),
         cwd=call_cwd(c["arguments"]),

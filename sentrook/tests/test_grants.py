@@ -388,6 +388,57 @@ def test_provider_grants_match_the_identity(twin_case, pattern, covers):
     assert [(r.subject, r.effect, r.reason) for r in relief] == expect
 
 
+REMOTE = {"kind": "mcp", "name": "notes", "identity": "remote:x.test", "transport": "http"}
+
+
+@pytest.mark.parametrize(
+    ("pattern", "covers"),
+    [
+        ("remote:x.test", True),
+        ("remote:X.TEST:8200", True),
+        ("remote:x.test:*", True),
+        ("remote:*.test", True),
+        ("remote:x.test:", True),
+        ("remote:y.test:8200", False),
+        # a port is only dropped beside a written host: an all-hosts pattern scoped by port never
+        # widens to every server
+        ("remote:*:8200", False),
+        ("remote:[*]:443", False),
+    ],
+)
+def test_remote_provider_grants_match_the_hostname_whatever_the_port(pattern, covers):
+    srv = Entity(id="E1", kind=EntityKind.MCP_SERVER, value="remote:x.test", display="notes")
+    assert grant_matches("provider", pattern, srv, host_os="linux") is covers
+
+
+def test_ipv6_remote_provider_grants_match_without_brackets():
+    srv = Entity(id="E1", kind=EntityKind.MCP_SERVER, value="remote:::1", display="notes")
+    assert grant_matches("provider", "remote:[::1]:8200", srv, host_os="linux")
+    assert grant_matches("provider", "remote:::1", srv, host_os="linux")
+
+
+@pytest.mark.parametrize(
+    ("identity", "entity"),
+    [
+        ("remote:x.test", "remote:x.test"),
+        ("remote:X.Test:8200", "remote:x.test"),
+        ("remote:[::1]:8200", "remote:::1"),
+        ("remote:::1", "remote:::1"),
+    ],
+)
+def test_a_remote_identity_sent_with_a_port_is_read_as_the_hostname(twin_case, identity, entity):
+    p, relief = run(
+        twin_case,
+        [{"kind": "provider", "pattern": "remote:x.test:8200", "scope": "persistent"}],
+        tool_kind="mcp",
+        arguments={"query": "groceries"},
+        provider={**REMOTE, "identity": identity},
+    )
+    srv = p.entities.get(EntityKind.MCP_SERVER, entity)
+    assert srv is not None
+    assert (Origin.GRANT in srv.origins) is (entity == "remote:x.test")
+
+
 # --------------------------------------------------------------------------- tool grants
 
 BINDER = "ember-binder allow-exec /home/me/workspace/policy/exec-allow.json"

@@ -30,6 +30,8 @@ export type ScanWithResolution = [scan: Rec, resolution: Rec | null];
 
 const APPROVED = new Set(["once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"]);
 const REVIEW: Record<string, string> = { deny: "denied", timeout: "timed out", cancelled: "cancelled" };
+/** A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked. */
+const REVIEW_LOOP = "review_loop";
 const ID = /^[0-9a-fA-F-]{4,36}$/;
 
 function* linesBackward(file: string, budget: { left: number }): Generator<Buffer> {
@@ -152,8 +154,14 @@ function time(ts: unknown): string {
   return typeof ts === "string" && ts.length >= 19 ? `${ts.slice(0, 10)} ${ts.slice(11, 19)}` : "?";
 }
 
-/** What the plugin did with the call. */
+/** What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`. */
 export function actionOf(scan: Rec, resolution: Rec | null): string {
+  const action = baseAction(scan, resolution);
+  if (scan.skill_review !== true || responseOf(scan) === null) return action;
+  return action.endsWith(")") ? `${action.slice(0, -1)}, self-edit)` : `${action} (self-edit)`;
+}
+
+function baseAction(scan: Rec, resolution: Rec | null): string {
   const { verdict, decision } = scan;
   if (responseOf(scan) === null) {
     if (resolution !== null) return "review (scan error)";
@@ -173,6 +181,7 @@ export function actionOf(scan: Rec, resolution: Rec | null): string {
 export function reviewOf(action: string, resolution: Rec | null): string {
   if (resolution === null) return action.startsWith("review") ? "no answer" : "-";
   const choice = String(resolution.resolution ?? "").trim().toLowerCase();
+  if (choice === "deny" && resolution.decided_by === REVIEW_LOOP) return "auto-denied by the review loop";
   return APPROVED.has(choice) ? "approved" : (REVIEW[choice] ?? "not approved");
 }
 
