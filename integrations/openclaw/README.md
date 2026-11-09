@@ -308,8 +308,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
 - host facts: platform and plugin version, operating system, home and workspace paths, and how OpenClaw is
   configured to run commands (`tools.exec.mode`, read at each scan). This is what the config says, not whether
-  OpenClaw will ask about this call: its own approvals store and per-agent overrides can be stricter, and the plugin
-  cannot see them;
+  OpenClaw will ask about this call: its own approvals store (which the plugin cannot see) and per-agent overrides
+  can be stricter;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
   server it calls;
 - references to the session and agent. Session ids are sent as hashes, not as the ids themselves;

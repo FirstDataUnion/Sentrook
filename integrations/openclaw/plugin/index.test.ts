@@ -711,7 +711,11 @@ test("older security/ask pairs map the same way; nothing configured is unknown",
   assert.deepEqual(p({ security: "full", ask: "off" }), { exec_mode: "full", approval_gating: false });
   assert.deepEqual(p({ security: "full" }), { exec_mode: "full", approval_gating: false });
   assert.deepEqual(p({ security: "full", ask: "always" }), { exec_mode: "full", approval_gating: true });
-  assert.deepEqual(p({ security: "full", ask: "on-miss" }), { exec_mode: "full", approval_gating: true });
+  // Not known to ask under full, so not claimed as a gate.
+  assert.deepEqual(p({ security: "full", ask: "on-miss" }), { exec_mode: "full", approval_gating: false });
+  // `security` defaults to full when only `ask` is set.
+  assert.deepEqual(p({ ask: "always" }), { exec_mode: "full", approval_gating: true });
+  assert.deepEqual(p({ ask: "off" }), { exec_mode: "full", approval_gating: false });
   // The mode wins over a leftover legacy field.
   assert.deepEqual(p({ mode: "full", security: "deny" }), { exec_mode: "full", approval_gating: false });
   assert.deepEqual(p({ mode: "something-new" }), { exec_mode: "unknown", approval_gating: false });
