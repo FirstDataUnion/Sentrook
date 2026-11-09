@@ -152,18 +152,20 @@ function time(ts: unknown): string {
   return typeof ts === "string" && ts.length >= 19 ? `${ts.slice(0, 10)} ${ts.slice(11, 19)}` : "?";
 }
 
-/** What the plugin did with the call. */
+/** What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`. */
 export function actionOf(scan: Rec, resolution: Rec | null): string {
+  const action = baseAction(scan, resolution);
+  if (scan.skill_review !== true || responseOf(scan) === null) return action;
+  return action.endsWith(")") ? `${action.slice(0, -1)}, self-edit)` : `${action} (self-edit)`;
+}
+
+function baseAction(scan: Rec, resolution: Rec | null): string {
   const { verdict, decision } = scan;
   if (responseOf(scan) === null) {
     if (resolution !== null) return "review (scan error)";
     return decision === "blocked_on_error" ? "blocked (scan error)" : "allowed (scan error)";
   }
   if (scan.mode === "observe") return verdict === "review" || verdict === "block" ? `observed (would ${verdict})` : "allowed";
-  // OpenClaw's own background save, judged as a self-edit.
-  if (scan.skill_review === true && (verdict === "allow" || verdict === "block")) {
-    return `${verdict === "allow" ? "allowed" : "blocked"} (self-edit)`;
-  }
   if (verdict === "block") return "blocked";
   if (verdict === "review") {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";

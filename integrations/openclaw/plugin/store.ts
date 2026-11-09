@@ -288,7 +288,8 @@ export class Store {
     this.pruneConversations(now);
   }
 
-  private pruneConversations(now: number): void {
+  /** Drops conversation logs past the retention limits (on every write, and at startup). */
+  pruneConversations(now = Date.now()): void {
     const dir = path.join(this.dir, "selfedit");
     let files: Array<{ file: string; mtime: number }>;
     try {

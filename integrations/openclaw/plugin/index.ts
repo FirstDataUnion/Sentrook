@@ -234,7 +234,9 @@ const plugin = {
       }
       return false;
     };
-    safely("startup", () => void capturing(boot));
+    safely("startup", () => {
+      if (capturing(boot)) store.pruneConversations();
+    });
 
     // ---- context joins -------------------------------------------------------------------------
     api.on("before_prompt_build", (event: any, ctx: any) =>
@@ -243,7 +245,13 @@ const plugin = {
         const patch: Json = { currentUserMessage: event?.currentUserMessage, prompt: event?.prompt };
         // OpenClaw's own background process (selfEdit.ts): recognised here, where raw model runs never arrive.
         const kind = selfEdit.runKindOf(runId, ctx, event?.prompt);
-        if (kind) Object.assign(patch, { selfEdit: kind, selfEditSessionKey: ctx.sessionKey });
+        if (kind) {
+          Object.assign(patch, {
+            selfEdit: kind,
+            selfEditSessionKey: ctx.sessionKey,
+            ownerRequest: selfEdit.lastOwnerMessage(event?.messages),
+          });
+        }
         remember(runId, ctx, patch);
         if (!kind || !runId || !capturing(loadConfig().cfg)) return;
         // What the process reads: its copy of the conversation, then (after_tool_call) its own tool results.

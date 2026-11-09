@@ -260,7 +260,9 @@ OpenClaw saves to the agent's skills and memory on its own, with nobody asking:
 
 These runs carry your context but are not your messages, and a save has no request of its own, so it would otherwise
 look like a write nobody asked for. By default (`skillReview: allow`) the plugin sends every call these runs make as
-the host's own (never as your message, and never snoozed), tells Sentrook which calls are their saves, and sends the
+the host's own (never as your message, and never snoozed), with your last message in the conversation they read as
+the request, tells Sentrook which calls are their saves (skill files written inside the Workshop folder, or the
+memory flush's write to the day's note; a write anywhere else is scanned like any other call), and sends the
 part of the conversation the run read, so Sentrook can judge the save against it. A save that follows from what you
 said and did goes through. A save is reviewed or blocked when it carries instructions that came from content the
 agent read or from other people, weakens one of your rules, claims approvals you never gave, or stores secrets you

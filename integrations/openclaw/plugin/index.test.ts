@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
+import { runSentrookCommand } from "./commands.ts";
 import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
 
 type Handler = (event: any, ctx: any) => any;
@@ -491,6 +492,7 @@ const WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills";
 const REVIEW_CTX = { sessionKey: REVIEW_KEY, sessionId: "R1", agentId: "main", runId: REVIEW_RUN, trigger: "user", workspaceDir: WORKSHOP, requester: { senderIsOwner: true, channel: "webchat" } };
 const FLUSH_RUN = "0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b";
 const FLUSH_KEY = "agent:main:internal-session-effects:0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b-3f9c2d1e0a7b6c5d";
+const TODAY_NOTE = `memory/${new Date().toISOString().slice(0, 10)}.md`;
 const FLUSH_CTX = { sessionKey: FLUSH_KEY, sessionId: "F1", agentId: "main", runId: FLUSH_RUN, trigger: "memory", workspaceDir: "/home/node/.openclaw/workspace" };
 const TRANSCRIPT = [
   { role: "user", content: "Deploy rookery to staging; I like short answers.", __openclaw: { senderIsOwner: true } },
@@ -520,6 +522,7 @@ test("must declare a skill write by the recognised review as a self-edit, sent a
   );
   assert.equal(p.self_edit.conversation[0].sender.relation, "owner");
   assert.ok(!JSON.stringify(p.self_edit).includes("Skill review. Distill"), "the review prompt is not conversation");
+  assert.equal(p.request.text, "Deploy rookery to staging; I like short answers.", "the owner's last message, not the review prompt");
   const t = h.traffic()[0];
   assert.equal(t.skill_review, true);
   assert.deepEqual(t.self_edit, { kind: "background_review", store: "skills" });
@@ -548,6 +551,7 @@ test("the review's exec is scored as an ordinary call, sent as the host's, never
   assert.equal(h.scans[0].trigger.kind, "system");
   assert.equal(h.scans[0].self_edit, undefined);
   assert.equal(h.traffic()[0].host_process, "background_review");
+  assert.equal(h.scans[0].request.text, "Deploy rookery to staging; I like short answers.");
   assert.equal(h.traffic()[0].skill_review, undefined);
 });
 
@@ -591,8 +595,8 @@ test("a self-edit's block and review verdicts are applied, and are never snoozed
 test("must declare the memory flush's write to the day's note as a self-edit; its reads are the host's", async () => {
   const h = setup();
   await h.fire("before_prompt_build", { runId: FLUSH_RUN, prompt: "Pre-compaction memory flush.", messages: TRANSCRIPT }, FLUSH_CTX);
-  await h.fire("before_tool_call", { toolName: "read", toolCallId: "f0", runId: FLUSH_RUN, params: { path: "memory/2026-11-09.md" } }, FLUSH_CTX);
-  await h.fire("before_tool_call", { toolName: "write", toolCallId: "f1", runId: FLUSH_RUN, params: { path: "memory/2026-11-09.md", content: "- Prefers short answers." } }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "read", toolCallId: "f0", runId: FLUSH_RUN, params: { path: TODAY_NOTE } }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "f1", runId: FLUSH_RUN, params: { path: TODAY_NOTE, content: "- Prefers short answers." } }, FLUSH_CTX);
   assert.equal(h.scans[0].self_edit, undefined);
   assert.equal(h.scans[0].trigger.kind, "system");
   assert.equal(h.scans[1].self_edit.kind, "memory_flush");
@@ -611,7 +615,11 @@ test("skillReview review restores the old sending and deletes the kept conversat
   await h2.fire("before_prompt_build", { runId: REVIEW_RUN, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, REVIEW_CTX);
   await h2.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
   assert.equal(h2.scans[0].trigger.kind, "message");
+  assert.equal(h2.scans[0].trigger.sender.relation, "owner");
+  assert.equal(h2.scans[0].request.text, REVIEW_PROMPT);
   assert.equal(h2.scans[0].self_edit, undefined);
+  const t = h.traffic().at(-1);
+  assert.ok(!("skill_review" in t) && !("host_process" in t) && !("self_edit" in t));
   assert.ok(!existsSync(kept));
 });
 
@@ -622,4 +630,29 @@ test("an unknown skillReview value reads as allow and the startup log names it",
   await startReview(h);
   await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
   assert.equal(h.scans[0].self_edit.kind, "background_review");
+});
+
+test("must stay silent on a review's write outside the Workshop: sent as the host's ordinary call, no self-edit", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "/home/node/.openclaw/openclaw.json", content: "{}" } }, REVIEW_CTX);
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.traffic()[0].skill_review, undefined);
+});
+
+test("with no owner message in what it read, a recognised run's request is the fixed text", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: REVIEW_RUN, prompt: REVIEW_PROMPT, messages: [] }, REVIEW_CTX);
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: "ls" } }, REVIEW_CTX);
+  assert.match(h.scans[0].request.text, /^No owner request/);
+});
+
+test("status after real self-edit scans counts them", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w2", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "EXFIL" } }, REVIEW_CTX);
+  const text = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+  assert.match(text, /skill review: allow; self-edits in the traffic log: 1 allowed, 1 blocked/);
 });

@@ -5,7 +5,17 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { actionOf } from "./history.ts";
-import { kindAtCall, resolveSetting, runKindOf, saveStoreOf, settingText, statusLine } from "./selfEdit.ts";
+import {
+  hostRequestText,
+  kindAtCall,
+  lastOwnerMessage,
+  NO_OWNER_REQUEST,
+  resolveSetting,
+  runKindOf,
+  saveStoreOf,
+  settingText,
+  statusLine,
+} from "./selfEdit.ts";
 
 const REVIEW_ID = "skill-workshop-review:61d38354-3521-487d-8018-82ea16a0fed1";
 const REVIEW_KEY = "agent:main:internal-session-effects:skill-workshop-review_61d38354-3521-487d-8018-82-710cf2955ab718fb";
@@ -56,22 +66,63 @@ test("a run's kind holds at a call only in the session it was recognised in", ()
 
 // ---- which calls are saves ----------------------------------------------------------------------------------------
 
-test("a review's file writes in the Workshop and its skill_workshop changes are skill saves; its exec and reads are not", () => {
+const NOW = new Date("2026-11-09T10:00:00Z");
+const WS = "/home/node/.openclaw/workspace";
+
+test("a review's file writes inside the Workshop and its skill_workshop changes are skill saves; its exec and reads are not", () => {
   const run = { workspaceDir: WORKSHOP };
-  for (const tool of ["write", "edit", "apply_patch"]) assert.equal(saveStoreOf("background_review", tool, { path: "deploy/SKILL.md" }, run), "skills");
-  assert.equal(saveStoreOf("background_review", "skill_workshop", { action: "create", name: "x" }, { workspaceDir: "/w" }), "skills");
+  assert.equal(saveStoreOf("background_review", "write", { path: "deploy/SKILL.md", content: "x" }, run), "skills");
+  assert.equal(saveStoreOf("background_review", "write", { path: `${WORKSHOP}/deploy/SKILL.md` }, run), "skills");
+  assert.equal(saveStoreOf("background_review", "edit", { path: "./deploy/SKILL.md", edits: [] }, run), "skills");
+  const patch = "*** Begin Patch\n*** Update File: deploy/SKILL.md\n@@\n-a\n+b\n*** Add File: notes/SKILL.md\n+c\n*** End Patch";
+  assert.equal(saveStoreOf("background_review", "apply_patch", { input: patch }, run), "skills");
+  assert.equal(saveStoreOf("background_review", "skill_workshop", { action: "create", name: "x" }, { workspaceDir: WS }), "skills");
   assert.equal(saveStoreOf("background_review", "skill_workshop", { action: "list" }, run), null);
-  for (const tool of ["exec", "process", "read", "ls"]) assert.equal(saveStoreOf("background_review", tool, { command: "ls" }, run), null);
-  // a file tool outside the Workshop root is not a skill save
-  assert.equal(saveStoreOf("background_review", "write", { path: "x.md" }, { workspaceDir: "/home/node/.openclaw/workspace" }), null);
+  for (const tool of ["exec", "process", "read", "ls"]) assert.equal(saveStoreOf("background_review", tool, { command: "ls", path: "a" }, run), null);
   assert.equal(saveStoreOf("curator", "edit", { path: "a/SKILL.md" }, run), "skills");
 });
 
-test("the flush's save is its write to the day's note, nothing else", () => {
-  assert.equal(saveStoreOf("memory_flush", "write", { path: "memory/2026-11-09.md", content: "x" }, {}), "memory");
-  assert.equal(saveStoreOf("memory_flush", "write", { path: "/home/node/.openclaw/workspace/memory/2026-11-09.md" }, {}), "memory");
-  assert.equal(saveStoreOf("memory_flush", "write", { path: "MEMORY.md" }, {}), null);
-  assert.equal(saveStoreOf("memory_flush", "read", { path: "memory/2026-11-09.md" }, {}), null);
+test("must stay silent on a review's write outside the Workshop: an ordinary call, not a skill save", () => {
+  const run = { workspaceDir: WORKSHOP };
+  for (const p of ["/home/node/.openclaw/openclaw.json", "../../workspace/AGENTS.md", "~/.openclaw/openclaw.json", "", WORKSHOP]) {
+    assert.equal(saveStoreOf("background_review", "write", { path: p, content: "x" }, run), null, p);
+  }
+  const escape = "*** Begin Patch\n*** Update File: deploy/SKILL.md\n+ok\n*** Update File: ../../workspace/AGENTS.md\n+bad\n*** End Patch";
+  assert.equal(saveStoreOf("background_review", "apply_patch", { input: escape }, run), null);
+  const moved = "*** Begin Patch\n*** Update File: deploy/SKILL.md\n*** Move to: /etc/cron.d/x\n*** End Patch";
+  assert.equal(saveStoreOf("background_review", "apply_patch", { input: moved }, run), null);
+  assert.equal(saveStoreOf("background_review", "apply_patch", { input: "no files named" }, run), null);
+  // a review not rooted in the Workshop (propose mode) saves only through skill_workshop
+  assert.equal(saveStoreOf("background_review", "write", { path: "x/SKILL.md" }, { workspaceDir: WS }), null);
+});
+
+test("the flush's save is its write to the day's note at the workspace root, nothing else", () => {
+  const run = { workspaceDir: WS };
+  assert.equal(saveStoreOf("memory_flush", "write", { path: "memory/2026-11-09.md", content: "x" }, run, NOW), "memory");
+  assert.equal(saveStoreOf("memory_flush", "write", { path: `${WS}/memory/2026-11-08.md` }, run, NOW), "memory");
+  for (const p of [
+    "MEMORY.md",
+    "memory/2020-01-01.md",
+    "notes/memory/2026-11-09.md",
+    "../../agents/main/agent/workshop-skills/memory/2026-11-09.md",
+    "/etc/memory/2026-11-09.md",
+  ]) {
+    assert.equal(saveStoreOf("memory_flush", "write", { path: p }, run, NOW), null, p);
+  }
+  assert.equal(saveStoreOf("memory_flush", "read", { path: "memory/2026-11-09.md" }, run, NOW), null);
+  assert.equal(saveStoreOf("memory_flush", "edit", { path: "memory/2026-11-09.md" }, run, NOW), null);
+});
+
+test("a recognised run's request is the owner's last message it read, or a fixed text", () => {
+  const msgs = [
+    { role: "user", content: "first", __openclaw: { senderIsOwner: true } },
+    { role: "user", content: [{ type: "text", text: "from someone else" }], __openclaw: { senderIsOwner: false } },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+  ];
+  assert.equal(lastOwnerMessage(msgs), "first");
+  assert.equal(lastOwnerMessage([{ role: "user", content: "no flag" }]), undefined);
+  assert.equal(hostRequestText({ ownerRequest: "first" }), "first");
+  assert.equal(hostRequestText({}), NO_OWNER_REQUEST);
 });
 
 // ---- the setting --------------------------------------------------------------------------------------------------
@@ -100,6 +151,8 @@ const scan = (id: string, verdict: string, decision: string, extra: Record<strin
 test("history labels self-edits; status counts them by outcome, and says when the log is off", () => {
   assert.equal(actionOf(scan("a", "allow", "allowed", { skill_review: true }), null), "allowed (self-edit)");
   assert.equal(actionOf(scan("b", "block", "blocked", { skill_review: true }), null), "blocked (self-edit)");
+  assert.equal(actionOf(scan("r", "review", "review_timed_out", { skill_review: true }), null), "review (self-edit)");
+  assert.equal(actionOf(scan("n", "review", "blocked", { skill_review: true }), null), "blocked (no reviewer, self-edit)");
   assert.equal(actionOf(scan("c", "allow", "allowed"), null), "allowed");
   const file = path.join(mkdtempSync(path.join(tmpdir(), "sentrook-se-")), "traffic.jsonl");
   const rows = [

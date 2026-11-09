@@ -11,7 +11,7 @@ import { homedir, platform as osPlatform } from "node:os";
 
 import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
-import { TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
+import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
 export const PLUGIN_VERSION = "2.0.0-beta.7";
@@ -401,7 +401,7 @@ export function buildPlanir(b: BuildInput): Built {
   const sentInputs = sess.buffer.filter((i) => windowIds.has(i.call_id));
   const history = window.map(({ _host_call_id: _drop, ...h }) => h as Omit<HistoryEntry, "_host_call_id">);
 
-  const requestText = requestTextOf(run);
+  const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
