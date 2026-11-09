@@ -5,8 +5,10 @@ a declared self-edit that writes a skill, the commands in the written text becom
 `resolved`, so the rule-based probe judges them as it would judge the agent running them now: fetching code into a
 shell, sending local data off the host, reading credential stores, and so on.
 
-- Only text the save writes is read (`content`, `file_content`, `new_string`, also inside `operations`), never the text
-  it replaces.
+- It applies to a skill tool (`skill_manage`, `skill_workshop`) and to any self-edit whose store is `skills` (a file
+  `write`, `edit` or `apply_patch` into the agent's skill directory).
+- Only text the save writes is read (`content`, `file_content`, `new_string`, `new_text`, `newText`, also inside
+  `operations` and `edits`, and the lines a patch in `input` adds), never the text it replaces.
 - Commands come from fenced blocks (``` or ~~~; a line ending in `\\` continues on the next) and from inline code that
   reads as a command.
 - A command the text warns against ("never run `…`", "don't use `…`", a fence right after "do not run this:") is
@@ -23,8 +25,12 @@ from typing import Any
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
 
-SKILL_TOOLS = frozenset({"skill_manage"})
-WRITTEN_KEYS = ("content", "file_content", "new_string")
+SKILL_TOOLS = frozenset({"skill_manage", "skill_workshop"})
+WRITTEN_KEYS = ("content", "file_content", "new_string", "new_text", "newText")
+#: Lists of edits whose entries carry written text of their own.
+NESTED_KEYS = ("operations", "edits")
+#: The argument a patch tool takes its patch text in.
+PATCH_KEY = "input"
 MAX_COMMANDS = 60
 MAX_COMMAND_CHARS = 2000
 #: The call id of a synthetic skill-step call; a negated one ends in `NEGATED_SUFFIX`.
@@ -48,6 +54,15 @@ _RISKY = re.compile(
 )
 
 
+def patch_added_text(patch: str) -> str:
+    """The lines a patch (`*** Begin Patch` format, or a unified diff) adds, without their `+`: what it writes."""
+    out: list[str] = []
+    for line in patch.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            out.append(line[1:])
+    return "\n".join(out)
+
+
 def written_texts(arguments: Any) -> list[str]:
     """The text a skill save writes."""
     out: list[str] = []
@@ -57,10 +72,15 @@ def written_texts(arguments: Any) -> list[str]:
             for k in WRITTEN_KEYS:
                 if isinstance(obj.get(k), str):
                     out.append(obj[k])
-            ops = obj.get("operations")
-            if isinstance(ops, list):
-                for op in ops:
-                    take(op)
+            if isinstance(obj.get(PATCH_KEY), str) and "\n+" in obj[PATCH_KEY]:
+                added = patch_added_text(obj[PATCH_KEY])
+                if added:
+                    out.append(added)
+            for key in NESTED_KEYS:
+                ops = obj.get(key)
+                if isinstance(ops, list):
+                    for op in ops:
+                        take(op)
 
     take(arguments)
     return out
@@ -123,8 +143,11 @@ def commands_in(text: str) -> list[str]:
     return [cmd for cmd, _ in steps_in(text)]
 
 
-def skill_step_calls(platform: str, pending: CanonicalCall) -> list[CanonicalCall]:
-    if pending.tool not in SKILL_TOOLS:
+def skill_step_calls(
+    platform: str, pending: CanonicalCall, store: str | None = None
+) -> list[CanonicalCall]:
+    """The commands a self-edit writes into a skill, as exec calls; `store` is the self-edit's `store`."""
+    if pending.tool not in SKILL_TOOLS and store != "skills":
         return []
     steps: dict[str, bool] = {}
     for text in written_texts(pending.raw):

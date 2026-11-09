@@ -75,12 +75,12 @@ def _question_set(env: Mapping[str, str], key: str, default: str, kind: str) -> 
 
 
 def _selfedit_set(env: Mapping[str, str]) -> str:
-    """`SENTROOK_JEV_SELFEDIT_QUESTIONS`: a shipped call-kind set for declared self-edits (default selfedit-v1);
+    """`SENTROOK_JEV_SELFEDIT_QUESTIONS`: a shipped call-kind set for declared self-edits (default selfedit-v2);
     `none` or `off` sends self-edits to the call set like any other call."""
     raw = (env.get("SENTROOK_JEV_SELFEDIT_QUESTIONS") or "").strip()
     if raw.lower() in ("none", "off"):
         return ""
-    return _question_set(env, "SENTROOK_JEV_SELFEDIT_QUESTIONS", "selfedit-v1", "call")
+    return _question_set(env, "SENTROOK_JEV_SELFEDIT_QUESTIONS", "selfedit-v2", "call")
 
 
 @dataclass(frozen=True)
@@ -116,7 +116,7 @@ class ServeConfig:
     jev_exposure_question_set: str = "exposure-v2"
     jev_call_question_set: str = "call-v5"
     #: Declared self-edits (the host's own background saves to memory or skills); "" sends them to the call set.
-    jev_selfedit_question_set: str = "selfedit-v1"
+    jev_selfedit_question_set: str = "selfedit-v2"
     oracle_url: str | None = None
     oracle_api_key: str | None = None
     probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
