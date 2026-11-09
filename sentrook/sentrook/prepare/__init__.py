@@ -932,12 +932,18 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if not agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
-    steered_inputs = {
-        pi.input.input_seq: marks
-        for pi in inputs
-        if pi.trust is Trust.UNTRUSTED and (marks := steering_marks(pi.input.content or ""))
-    }
-    steered_refs = {f"input:{seq}" for seq in steered_inputs}
+    # The step each steering input arrived at: its history step, or now for a message or reply.
+    steered_at: dict[str, int] = {}
+    steered_inputs: dict[int, list[str]] = {}
+    for pi in inputs:
+        if pi.trust is not Trust.UNTRUSTED:
+            continue
+        marks = steering_marks(pi.input.content or "")
+        if marks:
+            steered_inputs[pi.input.input_seq] = marks
+            steered_at[f"input:{pi.input.input_seq}"] = (
+                pi.step if pi.step is not None else planir.session.step
+            )
     steered_additions: list[str] = []
     for ent in table:
         if ent.kind is not EntityKind.HOST or ent.hash is None:
@@ -945,15 +951,18 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if ent.hash in prior_steered:
             ent.steered = True
             continue
-        refs = set(ent.origins.get(Origin.UNTRUSTED_INPUT) or ())
-        agent_first = (
-            ent.first_history_step is not None
-            and ent.first_untrusted_step is not None
-            and ent.first_history_step < ent.first_untrusted_step
-        )
-        if refs & steered_refs and not agent_first:
-            ent.steered = True
-            steered_additions.append(ent.hash)
+        arrived = [
+            steered_at[ref]
+            for ref in ent.origins.get(Origin.UNTRUSTED_INPUT) or ()
+            if ref in steered_at
+        ]
+        if not arrived:
+            continue
+        # The agent used the host itself before the steering content named it: not steered by it.
+        if ent.first_history_step is not None and ent.first_history_step < min(arrived):
+            continue
+        ent.steered = True
+        steered_additions.append(ent.hash)
     state.add_steered(steered_additions)
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])

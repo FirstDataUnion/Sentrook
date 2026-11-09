@@ -649,7 +649,8 @@ def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
     """Fetched code from a host named in content that tried to steer the agent (it spoke to the
     agent as an AI or asked it to keep the action from the owner): the floor. Not when the owner
     named or granted the host, it is a listed installer or a host the library vouches for, or it is
-    the agent's own machine."""
+    the agent's own machine. Without the library's answer (the oracle off or failing) a vouched-for
+    host cannot be told from any other, so it is floored too: fail closed, on a degraded scan."""
     ent = ctx.prepared.entities.by_id(code_source.entity_id or "")
     if ent is None or not ent.steered or ent.sanctioned:
         return None
@@ -744,36 +745,41 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
         # library when the oracle answered first: a near miss of a host the library vouches for (the
         # library vouches for code sources only). An unlisted host that mimics nothing is scored by
         # consequence and the oracle's distrust, and floored only when it came from content that tried
-        # to steer the agent (below).
-        if code_source is not None:
-            mimics = lookalike_of(code_source.value, lists.strings("installers", "installer_hosts"))
+        # to steer the agent (below). Every host the command takes code from is checked, so a listed
+        # installer fetched first does not cover a second fetch from another host.
+        sources = [h for h in a.hosts if Role.CODE_SOURCE in h.roles] or (
+            [code_source] if code_source is not None else []
+        )
+        for source in sources:
+            subject = source.entity_id
+            mimics = lookalike_of(source.value, lists.strings("installers", "installer_hosts"))
             via = "installer_list"
             if not mimics:
-                mimics, via = _library_near_miss(code_source, ctx), "library"
+                mimics, via = _library_near_miss(source, ctx), "library"
             if mimics:
                 g = Finding(
                     rule="C3.lookalike_installer",
                     cls="C3",
                     reason="code.lookalike_installer",
-                    detail={"host": code_source.value, "mimics": mimics, "via": via},
+                    detail={"host": source.value, "mimics": mimics, "via": via},
                 )
                 g.add(
                     CONCEALMENT,
                     ctx.weight("code", "lookalike_concealment", default=0.8),
-                    host_subject,
+                    subject,
                 )
                 g.floors.append(
                     Floor(
                         floor="untrusted_code_execution",
                         min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
                         enforce=Enforce.BLOCK,
-                        subject=host_subject,
+                        subject=subject,
                         reason="code.lookalike_installer",
                     )
                 )
                 out.append(g)
             else:
-                steered = _steered_source(code_source, ctx)
+                steered = _steered_source(source, ctx)
                 if steered is not None:
                     out.append(steered)
 
