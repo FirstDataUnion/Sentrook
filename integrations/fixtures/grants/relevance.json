@@ -31,6 +31,34 @@
       "sent": false
     },
     {
+      "case": "remote provider grant on a call to that server, whose URL has a port",
+      "grant": { "kind": "provider", "pattern": "remote:x.test", "scope": "persistent" },
+      "url": "http://x.test:8200/mcp",
+      "arguments": { "query": "groceries" },
+      "sent": true
+    },
+    {
+      "case": "remote provider grant written with the server's port",
+      "grant": { "kind": "provider", "pattern": "remote:x.test:8200", "scope": "persistent" },
+      "url": "http://x.test:8200/mcp",
+      "arguments": { "query": "groceries" },
+      "sent": true
+    },
+    {
+      "case": "remote provider grant written with brackets and a port for an IPv6 server",
+      "grant": { "kind": "provider", "pattern": "remote:[::1]:8200", "scope": "persistent" },
+      "url": "http://[::1]:8200/mcp",
+      "arguments": { "query": "groceries" },
+      "sent": true
+    },
+    {
+      "case": "remote provider grant on a call to another server",
+      "grant": { "kind": "provider", "pattern": "remote:x.test:8200", "scope": "persistent" },
+      "url": "http://y.test:8200/mcp",
+      "arguments": { "query": "groceries" },
+      "sent": false
+    },
+    {
       "case": "~ file grant on a read of an absolute path under home",
       "grant": { "kind": "file", "pattern": "~/notes/*", "scope": "persistent", "allows": ["read"] },
       "identity": null,

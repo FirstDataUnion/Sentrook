@@ -387,6 +387,24 @@ def normalise_host(host: str) -> str:
     return h
 
 
+_REMOTE_PORT_RE = re.compile(r"[^:]*:(?:\d+|\*)")
+
+
+def normalise_remote_identity(identity: str) -> str:
+    """A remote MCP server is `remote:<hostname>`: the lowercase hostname, without the port, the scheme or
+    the brackets around an IPv6 literal (http and https on one host are one server). An identity or a
+    provider grant pattern written with a port (`remote:x.test:8200`, `remote:[::1]:8200`) reads as that
+    form; any other identity is returned as it is."""
+    if identity[:7].lower() != "remote:":
+        return identity
+    host = identity[7:].strip().lower()
+    if host.startswith("[") and "]" in host:
+        host = host[1 : host.index("]")]
+    elif _REMOTE_PORT_RE.fullmatch(host):
+        host = host.rsplit(":", 1)[0]
+    return "remote:" + host.rstrip(".")
+
+
 def host_of_url(url: str) -> str | None:
     try:
         parts = urlsplit(url.strip())
@@ -1521,9 +1539,8 @@ def extract_call(
             if call.provider.kind is ProviderKind.PLUGIN
             else EntityKind.MCP_SERVER
         )
-        found.append(
-            Found(ekind, call.provider.identity, call.provider.identity, Role.TOOL_PROVIDER)
-        )
+        identity = normalise_remote_identity(call.provider.identity)
+        found.append(Found(ekind, identity, identity, Role.TOOL_PROVIDER))
     return found
 
 

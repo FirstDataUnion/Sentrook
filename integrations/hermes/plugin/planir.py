@@ -90,6 +90,36 @@ def hermes_version() -> str:
         return "unknown"
 
 
+def remote_identity(url: str) -> str | None:
+    """A remote MCP server's identity: `remote:<hostname>`, the lowercase hostname without the port, the
+    scheme or the brackets around an IPv6 literal (http and https on one host are one server). Same rule
+    on every host."""
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return None
+    host = (host or "").rstrip(".")
+    return f"remote:{host}" if host else None
+
+
+_REMOTE_PORT = re.compile(r"[^:]*:(?:\d+|\*)")
+
+
+def provider_pattern(pattern: str) -> str:
+    """A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6
+    brackets."""
+    if pattern[:7].lower() != "remote:":
+        return pattern
+    host = pattern[7:].strip().lower()
+    if host.startswith("[") and "]" in host:
+        host = host[1 : host.index("]")]
+    elif _REMOTE_PORT.fullmatch(host):
+        host = host.rsplit(":", 1)[0]
+    return "remote:" + host.rstrip(".")
+
+
 def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
     host = {"kind": "host", "name": None, "identity": None, "transport": None}
     toolset = None
@@ -110,9 +140,7 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "mcp", "name": server, "identity": None, "transport": None}
     identity, transport = None, None
     if cfg.get("url"):
-        from urllib.parse import urlsplit
-
-        identity, transport = f"remote:{urlsplit(str(cfg['url'])).hostname}", "http"
+        identity, transport = remote_identity(str(cfg["url"])), "http"
     elif cfg.get("command"):
         cmd = str(cfg["command"])
         args = [str(a) for a in cfg.get("args") or []]
@@ -169,13 +197,17 @@ def relevant_grants(
 ) -> list[dict[str, Any]]:
     """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
     the owner's other grants out of the request, so it errs towards sending. A provider grant is also
-    matched against the call's provider identity. Paths are read the way the scanner resolves them: under
+    matched against the call's provider identity (a `remote:` pattern without its port, as the identity
+    is). Paths are read the way the scanner resolves them: under
     home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace."""
     text = args_text.lower()
     texts = [text]
     if base := cwd or workspace:
         texts.append(_DOT_PATH.sub(lambda _: base.rstrip("/").lower() + "/", text))
-    pats = [g["pattern"].lower() for g in grants]
+    pats = [
+        (provider_pattern(g["pattern"]) if g["kind"] == "provider" else g["pattern"]).lower()
+        for g in grants
+    ]
     if home:
         root = home.rstrip("/").lower()
         texts = [t.replace("~/", root + "/").replace("$home/", root + "/") for t in texts]
