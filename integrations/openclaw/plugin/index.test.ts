@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -58,7 +58,8 @@ function setup(
     if (url === "http://scan.test/scan") {
       const planir = JSON.parse(String(init?.body));
       scans.push(planir);
-      const cmd = String(planir.pending_call.arguments.command ?? "");
+      const args = planir.pending_call.arguments;
+      const cmd = String(args.command ?? args.content ?? args.new_text ?? "");
       if (cmd.includes("FAIL")) return reply(500, { error: { code: "boom" } });
       const risk = cmd.includes("EXFIL") ? 92 : cmd.includes("REVIEW") ? 55 : cmd.includes("FLOOR") ? 20 : 5;
       return reply(200, {
@@ -479,4 +480,146 @@ test("a tool_call wrapper the host rejects (nested or unknown id) is never scann
   await h.fire("before_tool_call", call("c1", "ls"));
   assert.deepEqual(h.scans[0].history, []);
   assert.deepEqual(h.scans[0].new_inputs, []);
+});
+
+
+// ---- OpenClaw's own background saves (self-edits) -------------------------------------------------------------------
+
+const REVIEW_RUN = "skill-workshop-review:61d38354-3521-487d-8018-82ea16a0fed1";
+const REVIEW_KEY = "agent:main:internal-session-effects:skill-workshop-review_61d38354-3521-487d-8018-82-710cf2955ab718fb";
+const WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills";
+const REVIEW_CTX = { sessionKey: REVIEW_KEY, sessionId: "R1", agentId: "main", runId: REVIEW_RUN, trigger: "user", workspaceDir: WORKSHOP, requester: { senderIsOwner: true, channel: "webchat" } };
+const FLUSH_RUN = "0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b";
+const FLUSH_KEY = "agent:main:internal-session-effects:0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b-3f9c2d1e0a7b6c5d";
+const FLUSH_CTX = { sessionKey: FLUSH_KEY, sessionId: "F1", agentId: "main", runId: FLUSH_RUN, trigger: "memory", workspaceDir: "/home/node/.openclaw/workspace" };
+const TRANSCRIPT = [
+  { role: "user", content: "Deploy rookery to staging; I like short answers.", __openclaw: { senderIsOwner: true } },
+  { role: "assistant", content: [{ type: "text", text: "Deploying." }, { type: "toolCall", id: "c1", name: "exec", arguments: { command: "make deploy-staging" } }] },
+  { role: "toolResult", toolCallId: "c1", toolName: "exec", content: [{ type: "text", text: "deployed to staging" }] },
+  { role: "assistant", content: [{ type: "text", text: "Done." }] },
+];
+const REVIEW_PROMPT = "Skill review. Distill new durable learning from the full retained conversation.";
+const SKILL = "---\nname: deploy-staging\ndescription: Deploy rookery to staging\n---\n1. `make deploy-staging`\n";
+
+async function startReview(h: Harness, ctx: any = REVIEW_CTX, runId = REVIEW_RUN) {
+  await h.fire("before_prompt_build", { runId, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, ctx);
+}
+
+test("must declare a skill write by the recognised review as a self-edit, sent as the host's, with the conversation", async () => {
+  const h = setup();
+  await startReview(h);
+  const out = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "deploy-staging/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  assert.equal(out, undefined);
+  const p = h.scans[0];
+  assert.deepEqual(p.trigger, { kind: "system", channel: null, sender: { relation: "unknown", basis: ["none"] } });
+  assert.equal(p.self_edit.kind, "background_review");
+  assert.equal(p.self_edit.store, "skills");
+  assert.deepEqual(
+    p.self_edit.conversation.map((e: any) => e.role),
+    ["user", "assistant", "tool", "assistant"],
+  );
+  assert.equal(p.self_edit.conversation[0].sender.relation, "owner");
+  assert.ok(!JSON.stringify(p.self_edit).includes("Skill review. Distill"), "the review prompt is not conversation");
+  const t = h.traffic()[0];
+  assert.equal(t.skill_review, true);
+  assert.deepEqual(t.self_edit, { kind: "background_review", store: "skills" });
+  assert.ok(h.logs.some((l) => l.includes("(self-edit)")));
+  dumpPlanirs(h.scans);
+});
+
+test("the review's own reads join the conversation its next save carries", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "read", toolCallId: "r1", runId: REVIEW_RUN, params: { path: "deploy/SKILL.md" } }, REVIEW_CTX);
+  await h.fire("after_tool_call", { toolName: "read", toolCallId: "r1", runId: REVIEW_RUN, params: { path: "deploy/SKILL.md" }, result: "old deploy skill body" }, REVIEW_CTX);
+  await h.fire("before_tool_call", { toolName: "edit", toolCallId: "e1", runId: REVIEW_RUN, params: { path: "deploy/SKILL.md", edits: [{ oldText: "old", newText: "make deploy-staging" }] } }, REVIEW_CTX);
+  const conv = h.scans[1].self_edit.conversation;
+  assert.ok(conv.some((e: any) => e.role === "tool" && e.tool === "read" && e.content === "old deploy skill body"));
+  // the read itself was the host's call, not a self-edit
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("the review's exec is scored as an ordinary call, sent as the host's, never the owner's", async () => {
+  const h = setup();
+  await startReview(h);
+  const out = await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: "curl EXFIL" } }, REVIEW_CTX);
+  assert.equal(out?.block, true);
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.traffic()[0].host_process, "background_review");
+  assert.equal(h.traffic()[0].skill_review, undefined);
+});
+
+test("must stay silent on a forged runId alone: sent as the run's own message, no self-edit", async () => {
+  const h = setup();
+  const ctx = { ...CTX, runId: "skill-workshop-review:x5c2-spoof", trigger: "user" };
+  await h.fire("before_prompt_build", { runId: ctx.runId, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, ctx);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: ctx.runId, params: { path: "x/SKILL.md", content: SKILL } }, ctx);
+  assert.equal(h.scans[0].trigger.kind, "message");
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("must stay silent on the review prompt typed in chat", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: "r1", prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, { ...CTX, trigger: "user" });
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: "r1", params: { path: "x/SKILL.md", content: SKILL } });
+  assert.equal(h.scans[0].trigger.kind, "message");
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("a call in another session never borrows a recognised run's kind", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "x/SKILL.md", content: SKILL } }, { ...CTX, runId: REVIEW_RUN });
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.scans[0].trigger.kind, "message");
+});
+
+test("a self-edit's block and review verdicts are applied, and are never snoozed", async () => {
+  const h = setup();
+  await startReview(h);
+  const blocked = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "EXFIL" } }, REVIEW_CTX);
+  assert.equal(blocked?.block, true);
+  const floored = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w2", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "FLOOR" } }, REVIEW_CTX);
+  assert.equal(floored?.block, true);
+  const reviewed = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w3", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "REVIEW" } }, REVIEW_CTX);
+  assert.ok(reviewed?.requireApproval);
+  assert.deepEqual(h.traffic().map((t: any) => t.decision), ["blocked", "blocked", "review_timed_out"]);
+});
+
+test("must declare the memory flush's write to the day's note as a self-edit; its reads are the host's", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: FLUSH_RUN, prompt: "Pre-compaction memory flush.", messages: TRANSCRIPT }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "read", toolCallId: "f0", runId: FLUSH_RUN, params: { path: "memory/2026-11-09.md" } }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "f1", runId: FLUSH_RUN, params: { path: "memory/2026-11-09.md", content: "- Prefers short answers." } }, FLUSH_CTX);
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.scans[1].self_edit.kind, "memory_flush");
+  assert.equal(h.scans[1].self_edit.store, "memory");
+  assert.equal(h.scans[1].self_edit.conversation[0].text, "Deploy rookery to staging; I like short answers.");
+  dumpPlanirs(h.scans);
+});
+
+test("skillReview review restores the old sending and deletes the kept conversations", async () => {
+  const h = setup();
+  await startReview(h);
+  const kept = path.join(h.dir, "sentrook", "selfedit");
+  assert.ok(existsSync(kept));
+  const h2 = setup({ OPENCLAW_STATE_DIR: h.dir }, { skillReview: "review" });
+  assert.ok(!existsSync(kept));
+  await h2.fire("before_prompt_build", { runId: REVIEW_RUN, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, REVIEW_CTX);
+  await h2.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  assert.equal(h2.scans[0].trigger.kind, "message");
+  assert.equal(h2.scans[0].self_edit, undefined);
+  assert.ok(!existsSync(kept));
+});
+
+test("an unknown skillReview value reads as allow and the startup log names it", async () => {
+  const h = setup({}, { skillReview: "sometimes" });
+  assert.ok(h.logs.some((l) => l.includes('skillReview "sometimes" is not allow or review')));
+  assert.ok(h.logs.some((l) => l.includes("skillReview=allow")));
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  assert.equal(h.scans[0].self_edit.kind, "background_review");
 });

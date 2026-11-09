@@ -10,6 +10,7 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
+import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
@@ -17,6 +18,7 @@ import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
+import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
 import { type HistoryEntry, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
@@ -219,14 +221,36 @@ const plugin = {
       }
     };
 
+    /**
+     * The conversation logs are kept only while self-edits are declared; once the setting reads as review, they are
+     * deleted (by the first hook that sees it) and nothing is kept.
+     */
+    const capturing = (cfg: PluginConfig): boolean => {
+      if (cfg.skillReview === "allow") return true;
+      try {
+        if (store.deleteConversations()) api.logger.info(`${LOG} skillReview is review: self-edit conversation logs deleted`);
+      } catch (err) {
+        api.logger.warn(`${LOG} deleting self-edit conversation logs failed: ${String(err)}`);
+      }
+      return false;
+    };
+    safely("startup", () => void capturing(boot));
+
     // ---- context joins -------------------------------------------------------------------------
     api.on("before_prompt_build", (event: any, ctx: any) =>
-      safely("before_prompt_build", () =>
-        remember(event?.runId ?? ctx?.runId, ctx, {
-          currentUserMessage: event?.currentUserMessage,
-          prompt: event?.prompt,
-        }),
-      ),
+      safely("before_prompt_build", () => {
+        const runId = event?.runId ?? ctx?.runId;
+        const patch: Json = { currentUserMessage: event?.currentUserMessage, prompt: event?.prompt };
+        // OpenClaw's own background process (selfEdit.ts): recognised here, where raw model runs never arrive.
+        const kind = selfEdit.runKindOf(runId, ctx, event?.prompt);
+        if (kind) Object.assign(patch, { selfEdit: kind, selfEditSessionKey: ctx.sessionKey });
+        remember(runId, ctx, patch);
+        if (!kind || !runId || !capturing(loadConfig().cfg)) return;
+        // What the process reads: its copy of the conversation, then (after_tool_call) its own tool results.
+        const redactor = createRedactor("standard", store.salt());
+        const read = conversation.fromMessages(event?.messages, redactor);
+        store.updateConversation(runId, (prior) => conversation.trim([...read, ...prior.filter((e) => e._own)]));
+      }),
     );
     api.on("before_agent_run", (event: any, ctx: any) =>
       safely("before_agent_run", () => {
@@ -309,7 +333,19 @@ const plugin = {
           entry.result = { status: event?.error || !ran ? "error" : "ok", size_bytes: ran ? sizeBytes : 0 };
           if (ran) {
             const redactor = createRedactor("standard", store.salt());
-            const capped = capHeadTail(redactor.string(text), cfg.inputCapBytes);
+            const redacted = redactor.string(text);
+            const runId = event?.runId ?? ctx?.runId;
+            if (runId && selfEdit.kindAtCall(store.loadRun(runId), ctx) && capturing(cfg)) {
+              // A review's or curator's own reads are what its save draws on.
+              safely("self-edit conversation", () =>
+                store.updateConversation(runId, (prior) => {
+                  const turn = Math.max(1, ...prior.map((e) => Number(e.turn) || 1));
+                  const own = conversation.toolEntry(turn, entry.tool, event?.params ?? entry.arguments, redacted, redactor);
+                  return conversation.trim([...prior, { ...own, _own: true }]);
+                }),
+              );
+            }
+            const capped = capHeadTail(redacted, cfg.inputCapBytes);
             sess.inputSeq += 1;
             sess.buffer.push({
               input_seq: sess.inputSeq,
@@ -358,8 +394,21 @@ const plugin = {
       ctx: any,
     ): Promise<BeforeToolCallResult | undefined> {
       const sess = store.loadSession(sid);
-      const run = store.loadRun(event?.runId ?? ctx?.runId);
+      const runId = event?.runId ?? ctx?.runId;
+      const run = store.loadRun(runId);
       const redactor = createRedactor("standard", store.salt());
+      // OpenClaw's own background process: sent as the host's, and its saves as self-edits (selfEdit.ts).
+      const hostKind = cfg.skillReview === "allow" ? selfEdit.kindAtCall(run, ctx) : null;
+      const saveStore = hostKind ? selfEdit.saveStoreOf(hostKind, event.toolName, event?.params, run) : null;
+      let selfEditBlock: Json | null = null;
+      if (hostKind && saveStore) {
+        try {
+          selfEditBlock = conversation.block(hostKind, saveStore, store.loadConversation(runId), redactor.value(event?.params ?? {}));
+        } catch (err) {
+          api.logger.warn(`${LOG} self-edit conversation failed: ${String(err)}`);
+          selfEditBlock = { kind: hostKind, store: saveStore, conversation: [] };
+        }
+      }
       const built = buildPlanir({
         hostConfig: api.config,
         cfg,
@@ -373,6 +422,8 @@ const plugin = {
         parents: store.parents(),
         grants: grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
         hostVersion,
+        hostProcess: hostKind !== null,
+        selfEdit: selfEditBlock,
       });
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
@@ -478,6 +529,8 @@ const plugin = {
         verdict,
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
+        ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
+        ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
         host_labels: hostLabels(run, ctx),
         planir: built.planir,
@@ -487,7 +540,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );
@@ -528,8 +581,12 @@ const plugin = {
     api.logger.info(
       `${LOG} ${PLUGIN_VERSION} registered: scan=${show(ep.scan)} issuer=${show(ep.issuer)}` +
         `${ep.dev ? " (dev endpoints)" : ""} mode=${boot.mode} review>=${boot.reviewAt} block>=${boot.blockAt} ` +
-        `onScanError=${boot.onScanError} traffic=${boot.trafficLog.enabled ? boot.trafficLog.path : "off"}`,
+        `onScanError=${boot.onScanError} skillReview=${boot.skillReview} ` +
+        `traffic=${boot.trafficLog.enabled ? boot.trafficLog.path : "off"}`,
     );
+    if (boot.skillReviewUnknown !== null) {
+      api.logger.warn(`${LOG} skillReview ${JSON.stringify(boot.skillReviewUnknown)} is not allow or review; reading it as allow`);
+    }
     if (!ep.scan.ok || !ep.issuer.ok) {
       api.logger.error(`${LOG} endpoint configuration is invalid; every tool call will fail closed until fixed`);
     }

@@ -1,6 +1,6 @@
 {
   "name": "@firstdataunion/sentrook-openclaw",
-  "version": "2.0.0-beta.6",
+  "version": "2.0.0-beta.7",
   "description": "OpenClaw plugin: scans agent tool calls with Sentrook.",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,6 +14,7 @@
     "cli.ts",
     "commands.ts",
     "config.ts",
+    "conversation.ts",
     "decision.ts",
     "grants.ts",
     "history.ts",
@@ -22,6 +23,7 @@
     "redact.ts",
     "scanClient.ts",
     "scanErrorPolicy.ts",
+    "selfEdit.ts",
     "snooze.ts",
     "store.ts",
     "traffic.ts",

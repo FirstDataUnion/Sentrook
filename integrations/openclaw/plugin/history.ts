@@ -160,6 +160,10 @@ export function actionOf(scan: Rec, resolution: Rec | null): string {
     return decision === "blocked_on_error" ? "blocked (scan error)" : "allowed (scan error)";
   }
   if (scan.mode === "observe") return verdict === "review" || verdict === "block" ? `observed (would ${verdict})` : "allowed";
+  // OpenClaw's own background save, judged as a self-edit.
+  if (scan.skill_review === true && (verdict === "allow" || verdict === "block")) {
+    return `${verdict === "allow" ? "allowed" : "blocked"} (self-edit)`;
+  }
   if (verdict === "block") return "blocked";
   if (verdict === "review") {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";

@@ -11,9 +11,10 @@ import { homedir, platform as osPlatform } from "node:os";
 
 import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
+import { TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.6";
+export const PLUGIN_VERSION = "2.0.0-beta.7";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
@@ -327,6 +328,10 @@ export interface BuildInput {
    * config grant has no session, so a session one is never sent).
    */
   grants?: GrantConfig[];
+  /** A call of OpenClaw's own background process (`selfEdit.ts`): sent with trigger `system`, not the run's own. */
+  hostProcess?: boolean;
+  /** A self-edit's `self_edit` block (`conversation.block`); sent only with `hostProcess`. */
+  selfEdit?: Record<string, unknown> | null;
 }
 
 export interface Built {
@@ -426,13 +431,15 @@ export function buildPlanir(b: BuildInput): Built {
       step,
       state: sess.token,
     },
-    trigger: {
-      kind: triggerKind(run),
-      channel: isSystemAgentTurn(run)
-        ? "chat"
-        : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider)),
-      sender: senderOf(ctx.requester, run, cfg),
-    },
+    trigger: b.hostProcess
+      ? structuredClone(SELF_EDIT_TRIGGER)
+      : {
+          kind: triggerKind(run),
+          channel: isSystemAgentTurn(run)
+            ? "chat"
+            : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider)),
+          sender: senderOf(ctx.requester, run, cfg),
+        },
     request: { text: redactor.string(String(requestText)), carried_from_turn: null },
     new_inputs: sentInputs,
     history,
@@ -454,6 +461,7 @@ export function buildPlanir(b: BuildInput): Built {
       cwd: tk === "exec" ? callCwd(event.params) : null,
     }),
     options: { packs: cfg.packs, redaction: redactor.level },
+    ...(b.hostProcess && b.selfEdit ? { self_edit: b.selfEdit } : {}),
   };
 
   return {

@@ -1,0 +1,115 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+
+import { actionOf } from "./history.ts";
+import { kindAtCall, resolveSetting, runKindOf, saveStoreOf, settingText, statusLine } from "./selfEdit.ts";
+
+const REVIEW_ID = "skill-workshop-review:61d38354-3521-487d-8018-82ea16a0fed1";
+const REVIEW_KEY = "agent:main:internal-session-effects:skill-workshop-review_61d38354-3521-487d-8018-82-710cf2955ab718fb";
+const FLUSH_KEY = "agent:main:internal-session-effects:0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b-3f9c2d1e0a7b6c5d";
+const WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills";
+const CRON_KEY = "agent:main:cron:6f1205d4-ee20-48f0-8159-79550aef2f58:run:81986d2e-7a26-4a61-be11-5269cfd18e97";
+const CURATOR_PROMPT =
+  "[cron:6f1205d4-ee20-48f0-8159-79550aef2f58 skill-collection-review-main] Review this agent's Skill Workshop as a collection.";
+const REVIEW_PROMPT = "Skill review. Distill new durable learning from the full retained conversation.";
+
+// ---- recognition --------------------------------------------------------------------------------------------------
+
+test("must recognise the Skill Workshop review by its runId and its internal session key together", () => {
+  assert.equal(runKindOf(REVIEW_ID, { sessionKey: REVIEW_KEY, trigger: "user", workspaceDir: WORKSHOP }, REVIEW_PROMPT), "background_review");
+  // propose mode runs in the ordinary workspace
+  assert.equal(runKindOf(REVIEW_ID, { sessionKey: REVIEW_KEY, trigger: "user", workspaceDir: "/w" }, REVIEW_PROMPT), "background_review");
+});
+
+test("must stay silent on a forged runId alone (a gateway request chooses the runId, not the session key)", () => {
+  assert.equal(runKindOf("skill-workshop-review:x5c2-spoof", { sessionKey: "agent:main:probe-x5c2-rpc", trigger: "user" }, "b"), null);
+  assert.equal(runKindOf("skill-workshop-review:x", { sessionKey: "agent:main:main", trigger: "user", workspaceDir: WORKSHOP }, REVIEW_PROMPT), null);
+});
+
+test("must stay silent on the review prompt typed in chat", () => {
+  assert.equal(runKindOf("4c1f7e0a-1b2c-4d3e-8f90-123456789abc", { sessionKey: "agent:main:main", trigger: "user" }, REVIEW_PROMPT), null);
+  assert.equal(runKindOf("4c1f7e0a", { sessionKey: "agent:main:main", trigger: "user" }, CURATOR_PROMPT), null);
+});
+
+test("must recognise the memory flush by its trigger and an internal session key together", () => {
+  assert.equal(runKindOf("0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b", { sessionKey: FLUSH_KEY, trigger: "memory" }, "Pre-compaction memory flush."), "memory_flush");
+  assert.equal(runKindOf("0b6f1e9a", { sessionKey: "agent:main:main", trigger: "memory" }, "x"), null);
+  assert.equal(runKindOf("0b6f1e9a", { sessionKey: FLUSH_KEY, trigger: "user" }, "x"), null);
+});
+
+test("must recognise the skill collection review only as the rooted cron job with its tag", () => {
+  assert.equal(runKindOf("f965ecc0", { sessionKey: CRON_KEY, trigger: "cron", workspaceDir: WORKSHOP }, CURATOR_PROMPT), "curator");
+  assert.equal(runKindOf("f965ecc0", { sessionKey: CRON_KEY, trigger: "cron", workspaceDir: "/home/node/.openclaw/workspace" }, CURATOR_PROMPT), null);
+  assert.equal(runKindOf("f965ecc0", { sessionKey: CRON_KEY, trigger: "cron", workspaceDir: WORKSHOP }, "[cron:abc daily-digest] Summarise."), null);
+  assert.equal(runKindOf("f965ecc0", { sessionKey: "agent:main:main", trigger: "cron", workspaceDir: WORKSHOP }, CURATOR_PROMPT), null);
+});
+
+test("a run's kind holds at a call only in the session it was recognised in", () => {
+  const run = { selfEdit: "background_review", selfEditSessionKey: REVIEW_KEY };
+  assert.equal(kindAtCall(run, { sessionKey: REVIEW_KEY }), "background_review");
+  assert.equal(kindAtCall(run, { sessionKey: "agent:main:main" }), null);
+  assert.equal(kindAtCall({}, { sessionKey: REVIEW_KEY }), null);
+});
+
+// ---- which calls are saves ----------------------------------------------------------------------------------------
+
+test("a review's file writes in the Workshop and its skill_workshop changes are skill saves; its exec and reads are not", () => {
+  const run = { workspaceDir: WORKSHOP };
+  for (const tool of ["write", "edit", "apply_patch"]) assert.equal(saveStoreOf("background_review", tool, { path: "deploy/SKILL.md" }, run), "skills");
+  assert.equal(saveStoreOf("background_review", "skill_workshop", { action: "create", name: "x" }, { workspaceDir: "/w" }), "skills");
+  assert.equal(saveStoreOf("background_review", "skill_workshop", { action: "list" }, run), null);
+  for (const tool of ["exec", "process", "read", "ls"]) assert.equal(saveStoreOf("background_review", tool, { command: "ls" }, run), null);
+  // a file tool outside the Workshop root is not a skill save
+  assert.equal(saveStoreOf("background_review", "write", { path: "x.md" }, { workspaceDir: "/home/node/.openclaw/workspace" }), null);
+  assert.equal(saveStoreOf("curator", "edit", { path: "a/SKILL.md" }, run), "skills");
+});
+
+test("the flush's save is its write to the day's note, nothing else", () => {
+  assert.equal(saveStoreOf("memory_flush", "write", { path: "memory/2026-11-09.md", content: "x" }, {}), "memory");
+  assert.equal(saveStoreOf("memory_flush", "write", { path: "/home/node/.openclaw/workspace/memory/2026-11-09.md" }, {}), "memory");
+  assert.equal(saveStoreOf("memory_flush", "write", { path: "MEMORY.md" }, {}), null);
+  assert.equal(saveStoreOf("memory_flush", "read", { path: "memory/2026-11-09.md" }, {}), null);
+});
+
+// ---- the setting --------------------------------------------------------------------------------------------------
+
+test("skillReview: allow by default, review restores the old sending, anything else reads as allow and is named", () => {
+  assert.deepEqual(resolveSetting(undefined), { setting: "allow", unknown: null });
+  assert.deepEqual(resolveSetting(" Review "), { setting: "review", unknown: null });
+  assert.deepEqual(resolveSetting("never"), { setting: "allow", unknown: "never" });
+  assert.equal(settingText("allow", "nev\u0007er"), 'allow (unknown value "nev?er" read as allow)');
+});
+
+// ---- visibility ---------------------------------------------------------------------------------------------------
+
+const scan = (id: string, verdict: string, decision: string, extra: Record<string, unknown> = {}) => ({
+  kind: "scan",
+  ts: "2026-11-09T10:00:00Z",
+  request_id: id,
+  tool: "write",
+  mode: "enforce",
+  verdict,
+  decision,
+  response: { risk: 10, reasons: [] },
+  ...extra,
+});
+
+test("history labels self-edits; status counts them by outcome, and says when the log is off", () => {
+  assert.equal(actionOf(scan("a", "allow", "allowed", { skill_review: true }), null), "allowed (self-edit)");
+  assert.equal(actionOf(scan("b", "block", "blocked", { skill_review: true }), null), "blocked (self-edit)");
+  assert.equal(actionOf(scan("c", "allow", "allowed"), null), "allowed");
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "sentrook-se-")), "traffic.jsonl");
+  const rows = [
+    scan("a", "allow", "allowed", { skill_review: true }),
+    scan("b", "block", "blocked", { skill_review: true }),
+    scan("c", "review", "review_timed_out", { skill_review: true }),
+    scan("d", "allow", "allowed"),
+    scan("e", "allow", "allowed", { host_process: "background_review" }),
+  ];
+  writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  assert.equal(statusLine("allow", file), "allow; self-edits in the traffic log: 1 allowed, 1 blocked, 1 asked");
+  assert.equal(statusLine("review", null), "review (self-edits not counted: the traffic log is off)");
+});

@@ -29,6 +29,7 @@ import {
 } from "./history.ts";
 import { OWNER_SCOPES, refusal } from "./owner.ts";
 import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
+import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
@@ -240,5 +241,9 @@ function statusText(ctx: CommandContext): string {
     `grants: ${grantCount}`,
     `channel bindings: ${bindingCount}`,
     `snooze: ${snooze.statusLine(snooze.load(cfg.stateDir), new Date())}`,
+    `skill review: ${selfEdit.statusLine(
+      selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
+      cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
+    )}`,
   ].join("\n");
 }
