@@ -112,14 +112,19 @@ export function remoteIdentity(url: string): string | null {
   return host ? `remote:${host}` : null;
 }
 
-/** A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6 brackets. */
+/**
+ * A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6 brackets. One with
+ * no host written (`remote:*:8200`) is left as it is, so it never widens to every server.
+ */
 export function providerPattern(pattern: string): string {
   if (pattern.slice(0, 7).toLowerCase() !== "remote:") return pattern;
-  let host = pattern.slice(7).trim().toLowerCase();
+  const raw = pattern.trim().toLowerCase();
+  let host = raw.slice(7);
   const bracketed = /^\[([^\]]*)\]/.exec(host);
   if (bracketed) host = bracketed[1]!;
-  else if (/^[^:]*:(?:\d+|\*)$/.test(host)) host = host.slice(0, host.lastIndexOf(":"));
-  return `remote:${host.replace(/\.+$/, "")}`;
+  else if (/^[^:]*:(?:[0-9]*|\*)$/.test(host)) host = host.slice(0, host.lastIndexOf(":"));
+  host = host.replace(/\.+$/, "");
+  return /[^*?[\]]/.test(host) ? `remote:${host}` : raw;
 }
 
 /** MCP tools are named `<server>__<tool>`; identity comes from the server's config entry. */

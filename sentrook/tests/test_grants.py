@@ -398,7 +398,12 @@ REMOTE = {"kind": "mcp", "name": "notes", "identity": "remote:x.test", "transpor
         ("remote:X.TEST:8200", True),
         ("remote:x.test:*", True),
         ("remote:*.test", True),
+        ("remote:x.test:", True),
         ("remote:y.test:8200", False),
+        # a port is only dropped beside a written host: an all-hosts pattern scoped by port never
+        # widens to every server
+        ("remote:*:8200", False),
+        ("remote:[*]:443", False),
     ],
 )
 def test_remote_provider_grants_match_the_hostname_whatever_the_port(pattern, covers):

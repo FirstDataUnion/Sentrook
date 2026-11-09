@@ -387,22 +387,25 @@ def normalise_host(host: str) -> str:
     return h
 
 
-_REMOTE_PORT_RE = re.compile(r"[^:]*:(?:\d+|\*)")
+_REMOTE_PORT_RE = re.compile(r"[^:]*:(?:[0-9]*|\*)")
 
 
 def normalise_remote_identity(identity: str) -> str:
     """A remote MCP server is `remote:<hostname>`: the lowercase hostname, without the port, the scheme or
     the brackets around an IPv6 literal (http and https on one host are one server). An identity or a
     provider grant pattern written with a port (`remote:x.test:8200`, `remote:[::1]:8200`) reads as that
-    form; any other identity is returned as it is."""
+    form. A pattern with no host written (`remote:*:8200`) is left as it is, so dropping its port never
+    widens it to every server; any other identity is returned as it is."""
     if identity[:7].lower() != "remote:":
         return identity
-    host = identity[7:].strip().lower()
+    raw = identity.strip().lower()
+    host = raw[7:]
     if host.startswith("[") and "]" in host:
         host = host[1 : host.index("]")]
     elif _REMOTE_PORT_RE.fullmatch(host):
         host = host.rsplit(":", 1)[0]
-    return "remote:" + host.rstrip(".")
+    host = host.rstrip(".")
+    return "remote:" + host if host.strip("*?[]") else raw
 
 
 def host_of_url(url: str) -> str | None:

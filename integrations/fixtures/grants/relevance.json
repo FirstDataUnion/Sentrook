@@ -52,6 +52,13 @@
       "sent": true
     },
     {
+      "case": "all-hosts remote provider grant scoped by port is not widened to every server",
+      "grant": { "kind": "provider", "pattern": "remote:*:8200", "scope": "persistent" },
+      "url": "https://evil.example/mcp",
+      "arguments": { "query": "groceries" },
+      "sent": false
+    },
+    {
       "case": "remote provider grant on a call to another server",
       "grant": { "kind": "provider", "pattern": "remote:x.test:8200", "scope": "persistent" },
       "url": "http://y.test:8200/mcp",

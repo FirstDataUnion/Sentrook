@@ -101,23 +101,32 @@ def remote_identity(url: str) -> str | None:
     except ValueError:
         return None
     host = (host or "").rstrip(".")
+    if not host.isascii():
+        # Punycode, as a URL parser gives it (`bücher.example` → `xn--bcher-kva.example`).
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
     return f"remote:{host}" if host else None
 
 
-_REMOTE_PORT = re.compile(r"[^:]*:(?:\d+|\*)")
+_REMOTE_PORT = re.compile(r"[^:]*:(?:[0-9]*|\*)")
 
 
 def provider_pattern(pattern: str) -> str:
     """A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6
-    brackets."""
+    brackets. One with no host written (`remote:*:8200`) is left as it is, so it never widens to
+    every server."""
     if pattern[:7].lower() != "remote:":
         return pattern
-    host = pattern[7:].strip().lower()
+    raw = pattern.strip().lower()
+    host = raw[7:]
     if host.startswith("[") and "]" in host:
         host = host[1 : host.index("]")]
     elif _REMOTE_PORT.fullmatch(host):
         host = host.rsplit(":", 1)[0]
-    return "remote:" + host.rstrip(".")
+    host = host.rstrip(".")
+    return "remote:" + host if host.strip("*?[]") else raw
 
 
 def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
