@@ -11,7 +11,14 @@ import { PLUGIN_VERSION } from "./planir.ts";
 const ID = "client-id-value-7f3a";
 const SECRET = "client-secret-value-9c1e";
 
-const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_SCAN_CLIENT_ID", "SENTROOK_SCAN_CLIENT_SECRET", "SENTROOK_MODE"];
+const ENV_KEYS = [
+  "OPENCLAW_STATE_DIR",
+  "SENTROOK_SCAN_CLIENT_ID",
+  "SENTROOK_SCAN_CLIENT_SECRET",
+  "SENTROOK_MODE",
+  "OPENCLAW_VERSION",
+  "SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR",
+];
 const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -118,7 +125,7 @@ test("help, no input and unknown input all return the help text", async () => {
 });
 
 /** Registers the plugin with fake host registrars and returns the slash handler and CLI actions. */
-async function registered(pluginConfig: Record<string, unknown>, registrationMode = "full") {
+async function registered(pluginConfig: Record<string, unknown>, registrationMode = "full", runtime?: unknown) {
   const commands: any[] = [];
   const cliActions: Record<string, () => Promise<void> | void> = {};
   const node = (prefix: string): any => {
@@ -137,6 +144,7 @@ async function registered(pluginConfig: Record<string, unknown>, registrationMod
   plugin.register({
     pluginConfig,
     registrationMode,
+    runtime,
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     on: () => undefined,
     registerCli: (r: any) => {
@@ -193,4 +201,60 @@ test("openclaw sentrook status prints exactly what /sentrook status returns", as
   assert.match(cli, /^mode: observe$/m);
   assert.match(cli, /^credentials: yes$/m);
   assert.ok(!cli.includes(SECRET) && !cli.includes(ID));
+});
+
+/** OpenClaw's runtime outside full registration: every property read throws. */
+const unavailableRuntime = new Proxy(
+  {},
+  {
+    get() {
+      throw new Error("runtime is intentionally unavailable during cli-metadata registration");
+    },
+  },
+);
+
+// An invalid scan URL and no credentials keep verify off the network.
+const OFFLINE = { scanUrl: "http://scan.invalid" };
+const ALLOW = { ...OFFLINE, approval: { scheduledTimeoutBehavior: "allow" } };
+const NOTE = /^approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*denied/m;
+
+test("status and verify say scheduledTimeoutBehavior allow is not honoured on a 2026.10.3 host", async () => {
+  const { commands, cliActions } = await registered(ALLOW, "full", { version: "2026.10.3" });
+  const slash = (await commands[0].handler({ args: "status" })).text;
+  assert.match(slash, NOTE);
+  assert.equal(slash.match(/not honoured/g)?.length, 1);
+  const cli = await captureLog(() => cliActions["sentrook status"]!());
+  assert.equal(cli, slash);
+  const verify = await captureLog(() => cliActions["sentrook verify"]!());
+  process.exitCode = 0;
+  assert.match(verify, /^ok   approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*denied/m);
+});
+
+test("the CLI finds the host version when the runtime is unavailable", async () => {
+  process.env.OPENCLAW_VERSION = "2026.10.3";
+  const { cliActions } = await registered(ALLOW, "cli-metadata", unavailableRuntime);
+  assert.match(await captureLog(() => cliActions["sentrook status"]!()), NOTE);
+  const verify = await captureLog(() => cliActions["sentrook verify"]!());
+  process.exitCode = 0;
+  assert.match(verify, /approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3/);
+});
+
+test("status and verify stay silent with deny, on an unknown host version and on a newer host", async () => {
+  const cases: [string, Record<string, unknown>, unknown][] = [
+    ["deny", { ...OFFLINE, approval: { scheduledTimeoutBehavior: "deny" } }, { version: "2026.10.3" }],
+    ["default", OFFLINE, { version: "2026.10.3" }],
+    ["no runtime", ALLOW, undefined],
+    ["empty version", ALLOW, { version: "" }],
+    ["runtime unavailable", ALLOW, unavailableRuntime],
+    ["newer host", ALLOW, { version: "2027.1.1" }],
+  ];
+  for (const [label, cfg, runtime] of cases) {
+    const { commands, cliActions } = await registered(cfg, "full", runtime);
+    const slash = (await commands[0].handler({ args: "status" })).text;
+    assert.doesNotMatch(slash, /not honoured/, label);
+    assert.doesNotMatch(await captureLog(() => cliActions["sentrook status"]!()), /not honoured/, label);
+    const verify = await captureLog(() => cliActions["sentrook verify"]!());
+    process.exitCode = 0;
+    assert.doesNotMatch(verify, /approval:/, label);
+  }
 });

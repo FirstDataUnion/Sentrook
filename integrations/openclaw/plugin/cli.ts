@@ -7,6 +7,9 @@
  * `command` record with basis `local_terminal`.
  */
 
+import { readFileSync, realpathSync } from "node:fs";
+import path from "node:path";
+
 import { envWithOpenclawDotenv } from "./auth.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand, SUBCOMMANDS } from "./commands.ts";
 import { resolveConfig } from "./config.ts";
@@ -24,13 +27,50 @@ interface CliCommand {
   allowUnknownOption?: () => CliCommand;
 }
 
-export function registerSentrookCli(program: { command: (name: string) => CliCommand }, pluginConfig: () => Record<string, unknown>): void {
+/**
+ * The OpenClaw version from `OPENCLAW_VERSION`, else from the `openclaw` package.json at or above `entry` (the
+ * script the CLI was started from). Undefined when neither says.
+ */
+export function openclawVersionFrom(entry: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  const fromEnv = env.OPENCLAW_VERSION?.trim();
+  if (fromEnv) return fromEnv;
+  if (!entry) return undefined;
+  let dir: string;
+  try {
+    dir = path.dirname(realpathSync(entry));
+  } catch {
+    return undefined;
+  }
+  for (let i = 0; i < 6; i++) {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
+      if (pkg?.name === "openclaw" && typeof pkg.version === "string" && pkg.version) return pkg.version;
+    } catch {
+      // No package.json here, or not one we can read.
+    }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  return undefined;
+}
+
+/**
+ * `runtimeVersion` reads the host runtime's version; on the command line the plugin may be loaded for CLI metadata
+ * only, where the runtime throws, so the version then comes from `openclawVersionFrom`.
+ */
+export function registerSentrookCli(
+  program: { command: (name: string) => CliCommand },
+  pluginConfig: () => Record<string, unknown>,
+  runtimeVersion: () => string | undefined = () => undefined,
+): void {
+  const hostVersion = () => runtimeVersion() ?? openclawVersionFrom(process.argv[1], process.env);
   const root = program.command("sentrook").description("Sentrook plugin helpers");
   root
     .command("verify")
     .description("Check endpoints, credentials, scanner health and token mint")
     .action(async () => {
-      const checks = await runVerify(pluginConfig());
+      const checks = await runVerify(pluginConfig(), { hostVersion: hostVersion() });
       console.log(formatVerifyReport(checks));
       if (checks.some((c) => !c.ok)) process.exitCode = 1;
     });
@@ -38,7 +78,9 @@ export function registerSentrookCli(program: { command: (name: string) => CliCom
     .command("status")
     .description(SUBCOMMANDS.status!.description)
     .action(async () => {
-      console.log(await runSentrookCommand("status", { pluginConfig: pluginConfig(), env: process.env }));
+      console.log(
+        await runSentrookCommand("status", { pluginConfig: pluginConfig(), env: process.env, hostVersion: hostVersion() }),
+      );
     });
   for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
     const command = root.command(sub.cliRest ? `${verb} [args...]` : `${verb} ${sub.args.replace("|last", "")}`.trimEnd());
