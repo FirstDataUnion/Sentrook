@@ -127,6 +127,14 @@ then check it:
 
 Bindings stay until you remove them (`/sentrook bind remove discord:#daily-brief`).
 
+A binding can also name a channel the way you know it. `#daily-brief` covers that channel on any platform, however a
+send writes it (`#daily-brief`, `channel:daily-brief` or `discord:#daily-brief`). `discord:#daily-brief` covers it on
+Discord only, including a send that names Discord in its own argument (`{channel: discord, target: "#daily-brief"}`).
+`discord:*` covers every Discord channel. A `#name` binding, with or without a platform, never covers a direct
+message (`user:` or `dm:`). `/sentrook bind list` and `hermes sentrook verify` say when a binding can never apply:
+one that matches every channel (`*`, `#*`), or one with fewer than three characters besides `*`, which is never sent
+with a scan.
+
 ### Typical grants
 
 A grant set by command covers only the session you set it in unless you add `--persistent`. It does not reach
@@ -272,7 +280,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 - host facts: platform and plugin version, operating system, home and workspace paths, and whether Hermes's
   approvals and secret redaction are on;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
-  server it calls;
+  server it calls (a `#name` also fits `channel:name`, and a `<platform>:` prefix fits a send that names that
+  platform);
 - references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
 - for Hermes's own background skill and memory saves only (see
   [Hermes's own skill and memory saves](#hermess-own-skill-and-memory-saves)): your recent messages with who sent

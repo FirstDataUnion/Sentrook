@@ -164,14 +164,25 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "mcp", "name": server, "identity": identity, "transport": transport}
 
 
-def _pieces_in(pattern: str, text: str) -> bool:
-    """The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex,
-    a trailing `/` the folder or scope itself)."""
+def _pieces(pattern: str) -> list[str]:
+    """The pattern's literal pieces between `*`s (a leading `*.` also matches the apex, a trailing `/`
+    the folder or scope itself)."""
     pattern = pattern.rstrip("/")
-    pieces = [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
-    if sum(map(len, pieces)) < 3:
+    return [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
+
+
+def _long_enough(pattern: str) -> bool:
+    """Shorter patterns are not worth sending: they would fit almost any call."""
+    return sum(map(len, _pieces(pattern))) >= 3
+
+
+def _pieces_in(pattern: str, text: str, *, short_ok: bool = False) -> bool:
+    """The pattern's pieces appear in `text`, in order. `short_ok`: a pattern whose literal part was
+    already found (a platform the call names) needs no minimum length."""
+    if not short_ok and not _long_enough(pattern):
         return False
     at = 0
+    pieces = _pieces(pattern)
     for p in pieces:
         at = text.find(p, at)
         if at < 0:
@@ -184,6 +195,55 @@ def _pieces_in(pattern: str, text: str) -> bool:
 _CWD_KEYS = ("cwd", "dir", "working_directory", "workdir")
 #: A path that starts with `./`, where the scanner finds one (also after a JSON-escaped newline or tab).
 _DOT_PATH = re.compile(r"(?:(?<![\w.:-])|(?<=\\[ntr]))\./")
+
+
+#: The arguments the scanner reads a send's chat platform from, in its order.
+_PLATFORM_KEYS = ("channel", "platform", "service")
+#: The channel targets a `#name` destination names (`user:` and `dm:` are people, never a channel).
+_CHANNEL_PREFIXES = ("channel:", "group:", "thread:")
+
+
+def call_platform(args: Any, kind: str) -> str | None:
+    """The chat platform a message send names in its own argument (`discord` for `{channel: discord,
+    target: "#x"}`), lower-cased; None for any other call."""
+    if kind != "message_send" or not isinstance(args, dict):
+        return None
+    for k in _PLATFORM_KEYS:
+        v = args.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip().lower()
+    return None
+
+
+def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bool]]:
+    """The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner
+    reads them, each with whether it needs no minimum length: as written; without a `<platform>:` prefix
+    when the send names that platform in its own argument; and a `#name` as the channel target
+    `channel:name` (or `group:`, `thread:`)."""
+    forms = [(pattern, False)]
+    head, sep, rest = pattern.partition(":")
+    if platform and sep and rest and head == platform:
+        forms.append((rest, True))
+    for form, short_ok in list(forms):
+        if form.startswith("#"):
+            forms += [(prefix + form[1:], short_ok) for prefix in _CHANNEL_PREFIXES]
+    return forms
+
+
+#: What is left of a pattern once glob characters and separators are removed; nothing left means it
+#: matches everything, and the scanner ignores it.
+_NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
+
+
+def binding_problem(pattern: str) -> str | None:
+    """Why a channel binding can never relieve a send, as the listing and verify say it; None when it
+    can."""
+    pattern = pattern.strip()
+    if not _NOT_LITERAL.sub("", pattern):
+        return "matches every channel, ignored"
+    if not any(_long_enough(f) for f, _ in _destination_forms(pattern.lower(), None)):
+        return "too short, never sent"
+    return None
 
 
 def call_cwd(args: Any) -> str | None:
@@ -203,12 +263,15 @@ def relevant_grants(
     home: str | None = None,
     workspace: str | None = None,
     cwd: str | None = None,
+    platform: str | None = None,
 ) -> list[dict[str, Any]]:
     """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
     the owner's other grants out of the request, so it errs towards sending. A provider grant is also
     matched against the call's provider identity (a `remote:` pattern without its port, as the identity
     is). Paths are read the way the scanner resolves them: under
-    home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace."""
+    home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
+    A destination is read the way the scanner reads a channel: a `#name` as `channel:name`, and a
+    `<platform>:` prefix as met when the send names `platform` (`call_platform`)."""
     text = args_text.lower()
     texts = [text]
     if base := cwd or workspace:
@@ -226,7 +289,8 @@ def relevant_grants(
         hay = list(texts)
         if g["kind"] == "provider" and identity:
             hay.append(identity.lower())
-        if any(_pieces_in(pat, h) for h in hay):
+        forms = _destination_forms(pat, platform) if g["kind"] == "destination" else [(pat, False)]
+        if any(_pieces_in(f, h, short_ok=ok) for f, ok in forms for h in hay):
             out.append({"grant_ref": f"g_{i + 1}", **g})
     return out
 
@@ -388,6 +452,7 @@ def build_planir(
             home=str(Path.home()),
             workspace=os.getcwd(),
             cwd=call_cwd(raw_args) if tk == "exec" else None,
+            platform=call_platform(raw_args, tk),
         ),
         **({"self_edit": self_edit} if self_edit is not None else {}),
         "options": {"packs": cfg.packs, "redaction": redactor.level},

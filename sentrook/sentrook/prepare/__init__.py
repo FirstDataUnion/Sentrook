@@ -62,6 +62,7 @@ from .entities import (
     normalise_recipient,
     paths_in,
     resolve_token,
+    send_platform,
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
@@ -856,6 +857,13 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     grants_lapsed: dict[str, str] = {}
     grant_reach: dict[str, frozenset[str]] = {}
     off_host = sends_off_host(pending, table.pending())
+    # The chat platform the batch's sends name in their own argument: a pattern naming it covers their
+    # targets. Only when every send in the batch names the same one, so a target on one platform is
+    # never covered by a pattern naming the platform of another send.
+    platforms = {
+        send_platform(c) for c in (pending, *siblings) if c.tool_kind is ToolKind.MESSAGE_SEND
+    }
+    platform = next(iter(platforms)) if len(platforms) == 1 else None
     for grant in planir.grants:
         spec = GRANT_KINDS.get(grant.kind)
         if spec is None or (spec.local_only and off_host):
@@ -872,7 +880,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for ent in list(table):
             if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
-            ) or not grant_matches(grant.kind, grant.pattern, ent, host_os=planir.host.os):
+            ) or not grant_matches(
+                grant.kind, grant.pattern, ent, host_os=planir.host.os, platform=platform
+            ):
                 continue
             if spec.actions:
                 if ent.id not in grant_actions:

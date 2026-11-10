@@ -53,6 +53,16 @@ CASES = [
         "telegram:-1001234567891",
         id="telegram-bare-id",
     ),
+    pytest.param(
+        "discord",
+        "#daily-brief",
+        "discord:#daily-brief",
+        "#daily-briefs",
+        id="discord-platform-named",
+    ),
+    pytest.param(
+        "discord", "channel:ops-yard", "#ops-yard", "channel:ops-yards", id="discord-hash-name"
+    ),
 ]
 
 
@@ -126,6 +136,45 @@ def test_a_session_grant_from_the_owners_chat_does_not_reach_the_scheduled_run()
     grant = binding("C0B0QV5434G", scope="session", session_ref="s_owner_chat")
     unbound = scan(cron_send("slack", "C0B0QV5434G", []))
     resp = scan(cron_send("slack", "C0B0QV5434G", [grant]))
+
+    assert "relief.destination_grant" not in codes(resp)
+    assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_platform_named_binding_does_not_cover_the_same_name_on_another_platform():
+    """Must stay silent: `discord:#daily-brief` names Discord, so a delivery to Slack's `#daily-brief`
+    scores as if there were no binding."""
+    unbound = scan(cron_send("slack", "#daily-brief", []))
+    resp = scan(cron_send("slack", "#daily-brief", [binding("discord:#daily-brief")]))
+
+    assert "relief.destination_grant" not in codes(resp)
+    assert resp.risk == pytest.approx(unbound.risk)
+
+
+@pytest.mark.parametrize("target", ["user:ops", "dm:ops"])
+def test_a_channel_name_binding_does_not_cover_a_direct_message(target):
+    """Must stay silent: `#ops` names a channel; a direct message to someone called ops is a person."""
+    unbound = scan(cron_send("discord", target, []))
+    for pattern in ("#ops", "discord:#ops"):
+        resp = scan(cron_send("discord", target, [binding(pattern)]))
+        assert "relief.destination_grant" not in codes(resp)
+        assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_platform_named_binding_does_not_cover_a_batch_that_also_sends_on_another_platform():
+    """Must stay silent: when a batch sends to `#daily-brief` on Discord and on Slack, the Discord
+    binding cannot tell the two apart, so neither is relieved."""
+
+    def batch(grants: list[dict]) -> dict:
+        p = cron_send("discord", "#daily-brief", grants)
+        slack = {**p["pending_call"]["arguments"], "channel": "slack"}
+        p["pending_call"]["batch"]["siblings"] = [
+            {"call_id": "sib_1", "tool": "message", "tool_kind": "message_send", "arguments": slack}
+        ]
+        return p
+
+    unbound = scan(batch([]))
+    resp = scan(batch([binding("discord:#daily-brief")]))
 
     assert "relief.destination_grant" not in codes(resp)
     assert resp.risk == pytest.approx(unbound.risk)

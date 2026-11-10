@@ -824,6 +824,14 @@ def _chat_send(call: CanonicalCall) -> tuple[bool, str | None]:
     return not mail, platform
 
 
+def send_platform(call: CanonicalCall) -> str | None:
+    """The chat platform a message send names in its own argument (`discord` for OpenClaw's
+    `{channel: discord, target: "#x"}`), lower-cased; None for any other call."""
+    if call.tool_kind is not ToolKind.MESSAGE_SEND:
+        return None
+    return _chat_send(call)[1] or None
+
+
 def _recipients_in(
     values: list[str], *, chat: bool = False, platform: str | None = None
 ) -> list[Found]:
