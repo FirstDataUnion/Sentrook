@@ -2,6 +2,7 @@
  * `openclaw sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works.
  */
 
+import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
 import { unsentSummary } from "./grants.ts";
@@ -14,7 +15,7 @@ export interface VerifyCheck {
 
 export async function runVerify(
   pluginConfig: Record<string, unknown>,
-  opts: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; timeoutMs?: number; hostVersion?: string } = {},
 ): Promise<VerifyCheck[]> {
   const env = envWithOpenclawDotenv(opts.env ?? process.env);
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -72,6 +73,9 @@ export async function runVerify(
     ok: true,
     detail: `${cfg.grants.length} in config${unsent ? `; never sent: ${unsent}` : ""}`,
   });
+  // Reported, not failed: on a host that ignores it, the setting only leaves unattended reviews denied.
+  const note = timeoutBehaviorNote(cfg.approval, opts.hostVersion);
+  if (note) checks.push({ name: "approval", ok: true, detail: note });
   return checks;
 }
 

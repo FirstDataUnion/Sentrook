@@ -26,7 +26,7 @@
         "properties": {
           "interactiveTimeoutMs": { "type": "number", "minimum": 1 },
           "scheduledTimeoutMs": { "type": "number", "minimum": 1 },
-          "scheduledTimeoutBehavior": { "type": "string", "enum": ["allow", "deny"] },
+          "scheduledTimeoutBehavior": { "type": "string", "enum": ["allow", "deny"], "description": "What a cron or subagent review does when nobody answers (default deny). allow takes effect only on an OpenClaw release that honours a plugin approval's timeout behaviour; 2026.11.2 and older do not, and deny it anyway." },
           "scheduledIntentKinds": { "type": "array", "items": { "type": "string", "enum": ["user", "cron", "subagent", "system"] } }
         }
       },

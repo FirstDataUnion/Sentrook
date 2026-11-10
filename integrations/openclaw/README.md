@@ -247,7 +247,13 @@ is not told which checks fired or the risk score; you can see those with `opencl
 
 A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your answer
 (`approval.interactiveTimeoutMs`) and then denies the call. Cron jobs and subagents wait 30 minutes
-(`approval.scheduledTimeoutMs`) and then deny it too, unless you set `approval.scheduledTimeoutBehavior` to `allow`.
+(`approval.scheduledTimeoutMs`) and then deny it too.
+
+`approval.scheduledTimeoutBehavior: allow` asks OpenClaw to let an unanswered cron or subagent review go through
+instead. It works only on an OpenClaw release that reads the approval's timeout behaviour, and no release up to
+and including 2026.11.2 does (nor the 2026.11.5-beta.1 pre-release): on those, a plugin approval nobody answers is always denied, whatever this is set to.
+With `allow` on such a release, `openclaw sentrook status` and `openclaw sentrook verify` say the setting is not
+honoured.
 
 ### Skills and memory the agent saves on its own
 
@@ -343,7 +349,7 @@ also come from a `SENTROOK_*` environment variable; the config value wins.
 | `timeoutMs` | `30000` | How long to wait for a scan |
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
 | `approval.scheduledTimeoutMs` | `1800000` | How long a review in a cron job or subagent waits |
-| `approval.scheduledTimeoutBehavior` | `deny` | What a cron or subagent review does when nobody answers: `allow` or `deny` |
+| `approval.scheduledTimeoutBehavior` | `deny` | What a cron or subagent review does when nobody answers: `allow` or `deny`. OpenClaw 2026.11.2 and older ignore `allow` and deny it |
 | `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |

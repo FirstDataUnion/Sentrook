@@ -118,11 +118,20 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const mode = api.registrationMode ?? "full";
+    // The runtime is a proxy that throws outside full registration, so read its version only when needed.
+    const runtimeVersion = (): string | undefined => {
+      try {
+        const v = api.runtime?.version;
+        return typeof v === "string" && v ? v : undefined;
+      } catch {
+        return undefined;
+      }
+    };
     if (api.registerCli && (mode === "cli-metadata" || mode === "discovery" || mode === "full")) {
       api.registerCli(
         async ({ program }) => {
           const { registerSentrookCli } = await import("./cli.ts");
-          registerSentrookCli(program, () => api.pluginConfig ?? {});
+          registerSentrookCli(program, () => api.pluginConfig ?? {}, runtimeVersion);
         },
         { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
@@ -136,7 +145,11 @@ const plugin = {
         description: "Sentrook plugin status and help",
         acceptsArgs: true,
         handler: async (ctx) => ({
-          text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
+          text: await runSentrookCommand(ctx?.args, {
+            pluginConfig: api.pluginConfig ?? {},
+            env: process.env,
+            hostVersion: runtimeVersion(),
+          }),
         }),
       });
     } catch (err) {
@@ -148,14 +161,7 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
-    // The runtime is a proxy that throws outside full registration.
-    let hostVersion: string | undefined;
-    try {
-      const v = api.runtime?.version;
-      if (typeof v === "string" && v) hostVersion = v;
-    } catch {
-      hostVersion = undefined;
-    }
+    const hostVersion = runtimeVersion();
     // OpenClaw's config as it is now. `api.config` is a snapshot taken at load, so a later `config set` (an exec
     // mode, an MCP server) would not reach the scan; `runtime.config.current()` is the live one where the host has it.
     const hostConfig = (): any => {
@@ -515,6 +521,7 @@ const plugin = {
               ...copy,
               severity: severity(resp),
               timeoutMs: timing.timeoutMs,
+              // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
               timeoutBehavior: timing.timeoutBehavior,
               allowedDecisions: ["allow-once", "deny"],
             },

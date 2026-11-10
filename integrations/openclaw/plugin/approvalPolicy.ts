@@ -3,8 +3,9 @@
  *
  * Interactive sessions keep a short timeout with deny-on-timeout (always fail-closed;
  * not configurable). Cron and subagent runs use a longer window but also default to
- * deny-on-timeout — opt into allow via scheduledTimeoutBehavior if unattended jobs
- * must proceed without a human.
+ * deny-on-timeout. scheduledTimeoutBehavior allow asks the host to let an unanswered
+ * unattended review through, but it only takes effect on a host that reads the
+ * approval's timeoutBehavior; see TIMEOUT_BEHAVIOR_IGNORED_THROUGH.
  */
 
 export type IntentKind = "user" | "cron" | "subagent" | "system";
@@ -124,4 +125,45 @@ export function resolveApprovalTiming(
     timeoutBehavior: "deny",
     unattended: false,
   };
+}
+
+/**
+ * The newest OpenClaw release checked for `timeoutBehavior` on a plugin approval. No release up to and including
+ * it reads the field: a plugin approval takes only `timeoutMs` and `timeoutReason`, and one nobody answers is
+ * denied. Raise this when a newer release is checked and still ignores it; when one honours it, set this to the
+ * release before it.
+ */
+export const TIMEOUT_BEHAVIOR_IGNORED_THROUGH = "2026.11.2";
+
+/** Pre-releases newer than TIMEOUT_BEHAVIOR_IGNORED_THROUGH that were checked and also ignore the field. */
+export const TIMEOUT_BEHAVIOR_IGNORED_PRERELEASES: readonly string[] = ["2026.11.5-beta.1"];
+
+/** `2026.10.3` (or `2026.10.3-beta.1`) as numbers; null for anything else. */
+function releaseNumbers(version: string): number[] | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+.].*)?$/.exec(version.trim());
+  return m ? m.slice(1, 4).map(Number) : null;
+}
+
+/** True when this host version is known to ignore a plugin approval's timeoutBehavior; false when unknown or newer. */
+export function hostIgnoresTimeoutBehavior(hostVersion: string | undefined): boolean {
+  if (hostVersion && TIMEOUT_BEHAVIOR_IGNORED_PRERELEASES.includes(hostVersion.trim().replace(/^v/, ""))) return true;
+  const host = hostVersion ? releaseNumbers(hostVersion) : null;
+  const last = releaseNumbers(TIMEOUT_BEHAVIOR_IGNORED_THROUGH)!;
+  if (!host) return false;
+  for (let i = 0; i < 3; i++) {
+    if (host[i]! !== last[i]!) return host[i]! < last[i]!;
+  }
+  return true;
+}
+
+/**
+ * One line for `status` and `verify` when scheduledTimeoutBehavior is allow but this host cannot honour it;
+ * null otherwise (deny, or a host version that is unknown or newer than the last one checked).
+ */
+export function timeoutBehaviorNote(policy: ApprovalPolicyConfig, hostVersion: string | undefined): string | null {
+  if (policy.scheduledTimeoutBehavior !== "allow" || !hostIgnoresTimeoutBehavior(hostVersion)) return null;
+  return (
+    `scheduledTimeoutBehavior allow is not honoured on OpenClaw ${hostVersion!.trim()}: ` +
+    "an unattended review nobody answers is still denied"
+  );
 }
