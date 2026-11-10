@@ -19,6 +19,7 @@ from ..enums import Enforce, ProbeStatus, ScanStatus
 
 SUSPICION_SIGNALS: tuple[str, ...] = (
     "exposure",
+    "session_exposure",
     "untrusted_origin",
     "misalignment",
     "concealment",
@@ -49,7 +50,18 @@ class _Tier(_Model):
 class SuspicionTier(_Tier):
     """How much the call looks like it serves a goal the owner did not set. Higher is worse."""
 
-    exposure: Unit = Field(default=None, ge=0, le=1)
+    exposure: Unit = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="This scan's new untrusted inputs carried agent-directed instructions",
+    )
+    session_exposure: Unit = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Earlier in this session the agent read content carrying instructions aimed at it",
+    )
     untrusted_origin: Unit = Field(default=None, ge=0, le=1)
     misalignment: Unit = Field(default=None, ge=0, le=1)
     concealment: Unit = Field(default=None, ge=0, le=1)

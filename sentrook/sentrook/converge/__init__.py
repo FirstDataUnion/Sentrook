@@ -64,6 +64,7 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
         suspicion=SuspicionTier(
             score=tiers.suspicion,
             exposure=g("suspicion.exposure"),
+            session_exposure=g("suspicion.session_exposure"),
             untrusted_origin=g("suspicion.untrusted_origin"),
             misalignment=g("suspicion.misalignment"),
             concealment=g("suspicion.concealment"),
@@ -210,8 +211,7 @@ def converge(
 ) -> ConvergeResult:
     claims = collect(envelopes)
     merged = merge(claims)
-    self_edit = prepared.planir.is_self_edit
-    tiers = compute(merged, envelopes, params, self_edit=self_edit)
+    tiers = compute(merged, envelopes, params)
 
     known_good = [
         eid
@@ -224,7 +224,7 @@ def converge(
     if relief:
         excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
-        tiers = compute(merged, envelopes, params, self_edit=self_edit)
+        tiers = compute(merged, envelopes, params)
 
     floors: list[FloorApplied] = []
     risk = tiers.risk
