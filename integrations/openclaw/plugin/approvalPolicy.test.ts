@@ -12,7 +12,7 @@ const deny = resolveApprovalPolicyConfig({ pluginApproval: { scheduledTimeoutBeh
 const unset = resolveApprovalPolicyConfig({});
 
 test("allow on a host that ignores timeoutBehavior gets one line naming the version and what happens", () => {
-  for (const v of ["2026.10.3", "2026.9.5", "2026.5.27", TIMEOUT_BEHAVIOR_IGNORED_THROUGH, "2026.11.2-beta.1"]) {
+  for (const v of ["2026.10.3", "2026.9.5", "2026.5.27", TIMEOUT_BEHAVIOR_IGNORED_THROUGH, "2026.11.2-beta.1", "2026.11.5-beta.1"]) {
     const note = timeoutBehaviorNote(allow, v);
     assert.ok(note, v);
     assert.ok(note.includes(`OpenClaw ${v}`), note);
@@ -30,7 +30,7 @@ test("allow set through the env var counts too", () => {
 test("no line with deny, the default, an unknown host version or a newer host", () => {
   assert.equal(timeoutBehaviorNote(deny, "2026.10.3"), null);
   assert.equal(timeoutBehaviorNote(unset, "2026.10.3"), null);
-  for (const v of [undefined, "", "unknown", "dev", "2026.11.3", "2026.12.1", "2027.1.1", "2026.11.5-beta.1"]) {
+  for (const v of [undefined, "", "unknown", "dev", "2026.11.3", "2026.12.1", "2027.1.1", "2026.11.5", "2026.11.5-beta.2"]) {
     assert.equal(timeoutBehaviorNote(allow, v), null, String(v));
   }
 });

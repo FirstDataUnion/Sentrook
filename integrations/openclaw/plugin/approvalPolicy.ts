@@ -135,6 +135,9 @@ export function resolveApprovalTiming(
  */
 export const TIMEOUT_BEHAVIOR_IGNORED_THROUGH = "2026.11.2";
 
+/** Pre-releases newer than TIMEOUT_BEHAVIOR_IGNORED_THROUGH that were checked and also ignore the field. */
+export const TIMEOUT_BEHAVIOR_IGNORED_PRERELEASES: readonly string[] = ["2026.11.5-beta.1"];
+
 /** `2026.10.3` (or `2026.10.3-beta.1`) as numbers; null for anything else. */
 function releaseNumbers(version: string): number[] | null {
   const m = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+.].*)?$/.exec(version.trim());
@@ -143,6 +146,7 @@ function releaseNumbers(version: string): number[] | null {
 
 /** True when this host version is known to ignore a plugin approval's timeoutBehavior; false when unknown or newer. */
 export function hostIgnoresTimeoutBehavior(hostVersion: string | undefined): boolean {
+  if (hostVersion && TIMEOUT_BEHAVIOR_IGNORED_PRERELEASES.includes(hostVersion.trim().replace(/^v/, ""))) return true;
   const host = hostVersion ? releaseNumbers(hostVersion) : null;
   const last = releaseNumbers(TIMEOUT_BEHAVIOR_IGNORED_THROUGH)!;
   if (!host) return false;

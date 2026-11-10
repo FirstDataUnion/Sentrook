@@ -251,7 +251,7 @@ A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your a
 
 `approval.scheduledTimeoutBehavior: allow` asks OpenClaw to let an unanswered cron or subagent review go through
 instead. It works only on an OpenClaw release that reads the approval's timeout behaviour, and no release up to
-and including 2026.11.2 does: on those, a plugin approval nobody answers is always denied, whatever this is set to.
+and including 2026.11.2 does (nor the 2026.11.5-beta.1 pre-release): on those, a plugin approval nobody answers is always denied, whatever this is set to.
 With `allow` on such a release, `openclaw sentrook status` and `openclaw sentrook verify` say the setting is not
 honoured.
 
