@@ -832,6 +832,10 @@ def send_platform(call: CanonicalCall) -> str | None:
     return _chat_send(call)[1] or None
 
 
+#: A direct-message target, in any letter case and with an id of any length.
+_PERSON_PREFIX = re.compile(r"(?i)\s*(?:user|dm):")
+
+
 def platform_targets(call: CanonicalCall) -> set[tuple[EntityKind, str]]:
     """The targets of a message send that a pattern naming the send's platform may cover: its channels and
     chat names, as (kind, value). Never a direct message (`user:`, `dm:`), an address (an email, a phone
@@ -843,11 +847,8 @@ def platform_targets(call: CanonicalCall) -> set[tuple[EntityKind, str]]:
         return set()
     out: set[tuple[EntityKind, str]] = set()
     for f in _recipients_in(call.recipients, chat=chat, platform=platform):
-        m = _CHANNEL_RE.fullmatch(f.value)
         named = _PLATFORM_TARGET_RE.fullmatch(f.value)
-        if (m and m.group(1).lower() in ("user", "dm")) or (
-            named and named.group(1).lower() in _CHAT_PLATFORMS
-        ):
+        if _PERSON_PREFIX.match(f.value) or (named and named.group(1).lower() in _CHAT_PLATFORMS):
             continue
         if f.kind is EntityKind.CHANNEL or (
             f.kind is EntityKind.RECIPIENT

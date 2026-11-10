@@ -199,6 +199,10 @@ def _with(p: dict, **arguments) -> dict:
 PLATFORM_FORM_LEAKS = [
     pytest.param(lambda g: cron_send("discord", "user:123456789012", g), id="direct-message"),
     pytest.param(lambda g: cron_send("discord", "@alice", g), id="handle"),
+    *(
+        pytest.param(lambda g, t=t: cron_send("discord", t, g), id=f"direct-message-{t}")
+        for t in ("USER:123456789012", "User:ops", "DM:ops", "user:ab", "dm:x")
+    ),
     pytest.param(lambda g: cron_send("discord", "bob@evil-exfil.com", g), id="email"),
     pytest.param(
         lambda g: cron_send("discord", "slack:#daily-brief", g), id="other-platform-target"
