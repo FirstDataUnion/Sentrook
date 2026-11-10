@@ -374,6 +374,11 @@ def test_destination_and_provider_matching_still_ignores_case():
         ("slack:C0B0QV5434GX", "C0B0QV5434G", False),
         ("slack:general", "general", False),
         ("discord:#bot-home-2", "#bot-home", False),
+        # A direct message is a person, not the bound channel, whatever its id or name.
+        ("user:ops", "#ops", False),
+        ("dm:ops", "ops", False),
+        ("user:1498333845953712258", "1498333845953712258", False),
+        ("user:1498333845953712258", "user:1498333845953712258", True),
         # A Matrix room's part after the colon is its homeserver, not a name.
         ("!kXbQwP:example.test", "example.test", False),
     ],
