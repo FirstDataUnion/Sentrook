@@ -481,6 +481,23 @@ def normalise_package(ecosystem: str, name: str) -> str | None:
     return f"{ecosystem}:{n}" if n else None
 
 
+def provider_counterpart(identity: str) -> tuple[EntityKind, str] | None:
+    """The entity a tool provider's identity is extracted as when a command or content names it: the
+    host of a remote server (`remote:mcp.x.test` is the host `mcp.x.test`) or the package a local
+    server runs (`npm:@acme/x-mcp@1.2.0` is the package `npm:@acme/x-mcp`). None for any other
+    identity, and for a remote identity with no host written."""
+    ident = normalise_remote_identity(identity.strip())
+    if ident[:7].lower() == "remote:":
+        host = ident[7:]
+        return (EntityKind.HOST, host) if host and host.strip("*?[]") == host else None
+    eco, sep, name = ident.partition(":")
+    eco = eco.lower()
+    if not sep or eco not in set(_ECOSYSTEM.values()):
+        return None
+    norm = normalise_package(eco, name)
+    return (EntityKind.PACKAGE, norm) if norm else None
+
+
 def normalise_recipient(value: str) -> str:
     v = value.strip().strip("<>\"'")
     if _EMAIL_RE.fullmatch(v):

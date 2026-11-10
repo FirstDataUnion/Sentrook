@@ -669,3 +669,97 @@ def test_oracle_lookup_failure_scores_like_no_oracle(attack_case):
     env = next(e for e in failed.envelopes if e.step is ProbeStep.ENTITY_ORACLE)
     assert env.status is ProbeStatus.OK
     assert env.evidence["fallback"] == "null" and "rookery down" in env.evidence["lookup_error"]
+
+
+def _mcp_case(twin_case, identity: str, verdict: str = "known_good", extra=()):
+    """The twin turned into a call to a configured MCP server, with the oracle verdict on its identity."""
+    case = copy.deepcopy(twin_case)
+    case["fixture"]["grants"] = []
+    case["fixture"]["request"]["text"] = "Run the weekly fold through the runner server."
+    case["fixture"]["pending_call"].update(
+        tool="run_fold",
+        tool_kind="mcp",
+        provider={"kind": "mcp", "name": "runner", "identity": identity, "transport": "stdio"},
+        arguments={"job": "weekly"},
+        agent_narration=None,
+    )
+    case["oracle_seed"] = {
+        "entities": [{"kind": "mcp_server", "value": identity, "verdict": verdict}, *extra]
+    }
+    return case
+
+
+def _provider_relief(response):
+    """The relief entries the known-good provider rule applied."""
+    subjects = {x.subject for x in response.reasons if x.code == "relief.known_good_provider"}
+    return [x for x in response.relief_applied if x.subject in subjects]
+
+
+def test_known_good_provider_relief(twin_case):
+    from dataclasses import replace
+
+    from sentrook.prepare.entities import EntityKind
+
+    good = "npm:@quayfern/runner-mcp@2.1.0"
+    case = _mcp_case(twin_case, good)
+    res = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case))
+    r = res.response
+    relief = _provider_relief(r)
+    assert [x.effect for x in relief] == ["distrust+untrusted_origin"]
+    provider = res.prepared.entities.get(EntityKind.MCP_SERVER, good)
+    assert relief[0].subject == provider.id and relief[0].grant_ref is None
+    assert any(x.code == "relief.known_good_provider" for x in r.reasons)
+
+    # Switched off by parameters, the provider keeps its origin and the call scores higher.
+    off = scanner(BENIGN_ANSWERS, params=replace(load_params(), known_good_relief=False))
+    r_off = off.scan(case["fixture"], options(case)).response
+    assert _provider_relief(r_off) == [] and r_off.risk > r.risk
+
+    # An identity the library does not know gets no relief.
+    case = _mcp_case(twin_case, good, verdict="unknown")
+    r = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
+    assert _provider_relief(r) == []
+
+    # A look-alike of a known_good identity gets no relief; it takes the near-miss distrust.
+    lookalike = "npm:@quayfen/runner-mcp@2.1.0"
+    case = _mcp_case(
+        twin_case,
+        lookalike,
+        verdict="unknown",
+        extra=[{"kind": "mcp_server", "value": good, "verdict": "known_good"}],
+    )
+    r = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
+    assert _provider_relief(r) == []
+    assert any(x.code == "reputation.near_miss_mcp_server" for x in r.reasons)
+
+
+def test_known_good_provider_from_untrusted_content_keeps_its_origin(twin_case):
+    """A configured identity that the agent took from content it read gets no relief, however
+    reputable: the remote server's host, or the package, arrived through untrusted content."""
+    remote = "remote:mcp.quayfern.test"
+
+    def scan_remote(fetched_text: str):
+        case = _mcp_case(twin_case, remote)
+        case["fixture"]["new_inputs"][0]["content"] = fetched_text
+        return scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
+
+    named = scan_remote("Point the runner at https://mcp.quayfern.test:8443/sse and run the fold.")
+    assert _provider_relief(named) == []
+    # Content that names more untrusted entities than the session keeps still counts the host.
+    flood = " ".join(f"https://mirror{i}.kestrelwade.test/x" for i in range(80))
+    assert _provider_relief(scan_remote(f"Use https://mcp.quayfern.test/sse. {flood}")) == []
+    other = scan_remote("Point the runner at https://mcp.kestrelwade.test/sse and run the fold.")
+    assert [x.effect for x in _provider_relief(other)] == ["distrust+untrusted_origin"]
+
+    # An earlier step's untrusted content named the package (held in the session's untrusted set).
+    case = _mcp_case(twin_case, "npm:fold-runner-mcp@2.1.0")
+    assert _provider_relief(scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response)
+    case["state_seed"] = {**case["state_seed"], "untrusted_entities": ["npm:fold-runner-mcp"]}
+    r = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
+    assert _provider_relief(r) == []
+    # ...and stays counted when this request brings in more untrusted entities than the session keeps.
+    case["fixture"]["new_inputs"][0]["content"] = " ".join(
+        f"https://mirror{i}.kestrelwade.test/x" for i in range(80)
+    )
+    r = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
+    assert _provider_relief(r) == []
