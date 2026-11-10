@@ -16,7 +16,11 @@ Every grant passes the same gates before its kind is consulted:
 Matching, by kind:
 
 - `destination`: a host, recipient or channel against a glob; `*.example.com` also covers
-  `example.com`, and a recipient is matched by its domain when the pattern has no `@`.
+  `example.com`, and a recipient is matched by its domain when the pattern has no `@`. A channel is
+  also matched by the shorter names an owner writes for it: the id or `#name` after a platform prefix
+  (`C0B0QV5434G` covers `slack:C0B0QV5434G`, `#bot-home` covers `discord:#bot-home`) and the name in
+  `channel:ops-yard`, never a direct message (`user:ops`, `dm:ops`). A pattern that names the platform
+  covers a target that carries that platform only.
 - `file`: a path against a glob (`*` matches `/` too); a pattern ending in `/` covers that directory
   and everything under it. Letter case follows the host filesystem's default: it counts on Linux
   (and when the host OS is unknown), not on macOS or Windows.
@@ -44,6 +48,7 @@ from .entities import (
     Entity,
     EntityKind,
     Role,
+    channel_names,
     is_under,
     normalise_remote_identity,
     resolve_token,
@@ -221,12 +226,22 @@ def _command_sends(command: str, depth: int) -> bool:
 _CASE_FOLDING_OS = frozenset({OS.MACOS, OS.WINDOWS})
 
 
+#: A direct-message target: a person, so a channel binding's short name never covers it.
+_PERSON_TARGET = re.compile(r"(?:user|dm):")
+
+
 def _destination(pat: str, entity: Entity, host_os: OS) -> bool:
     pat = pat.lower()
     value = entity.value.lower()
     if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
         value = value.split("@", 1)[1]
     if fnmatch.fnmatch(value, pat):
+        return True
+    if (
+        entity.kind is EntityKind.CHANNEL
+        and not _PERSON_TARGET.match(value)
+        and any(fnmatch.fnmatch(name, pat) for name in channel_names(entity.value))
+    ):
         return True
     return pat.startswith("*.") and value == pat[2:]
 
