@@ -147,8 +147,12 @@ def test_two_probes_reading_the_same_new_input_still_disagree(attack_case):
 # ---- unchanged -------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("new_input", [0.05, 0.5])  # below the sticky 0.7, so the session's value decides
-@pytest.mark.parametrize("origin", [0.4, 1.0])  # with no untrusted origin taint_link is 0 either way
+@pytest.mark.parametrize(
+    "new_input", [0.05, 0.5]
+)  # below the sticky 0.7, so the session's value decides
+@pytest.mark.parametrize(
+    "origin", [0.4, 1.0]
+)  # with no untrusted origin taint_link is 0 either way
 def test_taint_link_and_suspicion_match_the_shared_signal(attack_case, new_input, origin):
     """The session's taint reaches suspicion exactly as it did when it shared `suspicion.exposure` with the
     exposure probe: `taint_link` takes the larger of the two."""
