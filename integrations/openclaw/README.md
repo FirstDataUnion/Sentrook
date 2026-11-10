@@ -149,11 +149,11 @@ Bindings stay until you remove them (`/sentrook-bind remove channel:1234567890`)
 
 A binding can also name a channel the way you know it. `#daily-brief` covers that channel however a send writes it
 (`#daily-brief`, `channel:daily-brief` or `discord:#daily-brief`). `discord:#daily-brief` covers it on Discord only,
-including a send that names Discord in its own argument, as the `message` tool does
-(`{channel: discord, target: "#daily-brief"}`). `discord:*` covers every Discord channel. A `#name` binding, with or
-without a platform, never covers a direct message (`user:` or `dm:`). `/sentrook-bind list` and
-`openclaw sentrook verify` say when a binding can never apply: one that matches every channel (`*`, `#*`), or one
-with fewer than three characters besides `*`, which is never sent with a scan.
+including a send that names Discord in its own argument, as the `message` tool does (`{channel: discord, target:
+"#daily-brief"}`). `discord:*` covers every Discord channel a send delivers to. Neither form covers a direct message
+(`user:`, `dm:`, an `@handle`), an email address or anything else the call reaches. `/sentrook-bind add` and
+`/sentrook-bind list` say when a binding can never apply, and `openclaw sentrook verify` does for the bindings in
+`openclaw.json`: one that matches every channel (`*`, `#*`), or one too short to be sent with a scan (such as `ab`).
 
 ### Typical grants
 

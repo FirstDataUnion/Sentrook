@@ -61,6 +61,7 @@ from .entities import (
     normalise_path,
     normalise_recipient,
     paths_in,
+    platform_targets,
     resolve_token,
     send_platform,
     shell_segments,
@@ -858,12 +859,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     grant_reach: dict[str, frozenset[str]] = {}
     off_host = sends_off_host(pending, table.pending())
     # The chat platform the batch's sends name in their own argument: a pattern naming it covers their
-    # targets. Only when every send in the batch names the same one, so a target on one platform is
-    # never covered by a pattern naming the platform of another send.
-    platforms = {
-        send_platform(c) for c in (pending, *siblings) if c.tool_kind is ToolKind.MESSAGE_SEND
-    }
+    # channel targets (`platform_targets`), nothing else. Only when every send in the batch names the
+    # same one, so a target on one platform is never covered by a pattern naming another send's.
+    sends = [c for c in (pending, *siblings) if c.tool_kind is ToolKind.MESSAGE_SEND]
+    platforms = {send_platform(c) for c in sends}
     platform = next(iter(platforms)) if len(platforms) == 1 else None
+    targets = {t for c in sends for t in platform_targets(c)} if platform else set()
     for grant in planir.grants:
         spec = GRANT_KINDS.get(grant.kind)
         if spec is None or (spec.local_only and off_host):
@@ -881,7 +882,11 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
             ) or not grant_matches(
-                grant.kind, grant.pattern, ent, host_os=planir.host.os, platform=platform
+                grant.kind,
+                grant.pattern,
+                ent,
+                host_os=planir.host.os,
+                platform=platform if (ent.kind, ent.value) in targets else None,
             ):
                 continue
             if spec.actions:

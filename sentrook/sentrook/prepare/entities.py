@@ -832,6 +832,32 @@ def send_platform(call: CanonicalCall) -> str | None:
     return _chat_send(call)[1] or None
 
 
+def platform_targets(call: CanonicalCall) -> set[tuple[EntityKind, str]]:
+    """The targets of a message send that a pattern naming the send's platform may cover: its channels and
+    chat names, as (kind, value). Never a direct message (`user:`, `dm:`), an address (an email, a phone
+    number, an `@handle`) or a target that names a platform of its own."""
+    if call.tool_kind is not ToolKind.MESSAGE_SEND:
+        return set()
+    chat, platform = _chat_send(call)
+    if not chat or not platform:
+        return set()
+    out: set[tuple[EntityKind, str]] = set()
+    for f in _recipients_in(call.recipients, chat=chat, platform=platform):
+        m = _CHANNEL_RE.fullmatch(f.value)
+        named = _PLATFORM_TARGET_RE.fullmatch(f.value)
+        if (m and m.group(1).lower() in ("user", "dm")) or (
+            named and named.group(1).lower() in _CHAT_PLATFORMS
+        ):
+            continue
+        if f.kind is EntityKind.CHANNEL or (
+            f.kind is EntityKind.RECIPIENT
+            and "@" not in f.value
+            and not _is_address(f.display, platform)
+        ):
+            out.add((f.kind, f.value))
+    return out
+
+
 def _recipients_in(
     values: list[str], *, chat: bool = False, platform: str | None = None
 ) -> list[Found]:
