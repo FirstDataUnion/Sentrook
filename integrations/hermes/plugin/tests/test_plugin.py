@@ -181,6 +181,34 @@ def test_unattended_review_blocks(harness):
     assert harness.scans[0]["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
 
 
+def test_cron_delivery_goes_out_as_scheduled_with_its_channel_binding(harness):
+    """Must fire: the binding reaches the scan of the delivery to its channel, on a scheduled trigger.
+    Must stay silent: a delivery to another channel carries no binding."""
+    harness.ctx.settings["channel_bindings"] = ["C0B0QV5434G"]
+    turn(harness, platform="cron", text="Post the daily brief to the ops channel.")
+
+    # Hermes gives the agent no send tool of its own; a job posts through the owner's script.
+    def send(cid, target):
+        harness.ctx.hooks["pre_tool_call"](
+            tool_name="terminal",
+            args={"command": f"python3 ~/bin/post_brief.py --channel {target} brief.md"},
+            tool_call_id=cid,
+            turn_id="t1",
+            **SID,
+        )
+
+    send("c1", "C0B0QV5434G")
+    send("c2", "C0B0QV5434H")
+    bound, other = harness.scans
+    for p in (bound, other):
+        assert p["trigger"]["kind"] == "scheduled"
+        assert p["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
+    assert [(g["kind"], g["pattern"], g["scope"]) for g in bound["grants"]] == [
+        ("destination", "C0B0QV5434G", "persistent")
+    ]
+    assert other["grants"] == []
+
+
 def test_scan_error_keeps_token_and_buffer(harness):
     h = harness
     turn(h)
