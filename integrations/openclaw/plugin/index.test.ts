@@ -268,6 +268,35 @@ test("unattended runs block on scan errors", async () => {
   assert.equal(h.scans[0].trigger.kind, "scheduled");
 });
 
+test("a cron run's delivery goes out as a scheduled trigger with its channel binding", async () => {
+  // Must fire: the binding reaches the scan of the delivery to its channel, on a scheduled trigger.
+  // Must stay silent: a delivery to another channel carries no binding.
+  // The binding is the bare channel id; the agent's message tool targets `channel:<id>`.
+  const h = setup({}, { channelBindings: ["1498333845953712258"] });
+  await h.fire(
+    "before_prompt_build",
+    { runId: "r9", prompt: "[cron:9f1c2a daily-brief] Post the daily brief to the ops channel." },
+    { ...CTX, runId: "r9", trigger: "cron", requester: undefined },
+  );
+  const send = (id: string, target: string) => ({
+    toolName: "message",
+    toolCallId: id,
+    runId: "r9",
+    params: { action: "send", channel: "discord", target, message: "Daily brief: 3 incidents closed." },
+  });
+  await h.fire("before_tool_call", send("c1", "channel:1498333845953712258"), { ...CTX, runId: "r9", requester: undefined });
+  await h.fire("before_tool_call", send("c2", "channel:1498333845953712259"), { ...CTX, runId: "r9", requester: undefined });
+  const [bound, other] = h.scans;
+  for (const p of [bound, other]) {
+    assert.deepEqual(p.trigger, { kind: "scheduled", channel: null, sender: { relation: "unknown", basis: ["none"] } });
+  }
+  assert.deepEqual(
+    bound.grants.map((g: any) => [g.kind, g.pattern, g.scope]),
+    [["destination", "1498333845953712258", "persistent"]],
+  );
+  assert.deepEqual(other.grants, []);
+});
+
 test("an OpenClaw system agent turn is the operator's message, without the host's markers", async () => {
   const h = setup({}, {}, { runtime: { version: "2026.10.3" } });
   const ctx = { ...CTX, runId: "r5", agentId: "openclaw", requester: { channel: "openclaw" } };

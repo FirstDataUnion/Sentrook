@@ -354,6 +354,43 @@ def test_destination_and_provider_matching_still_ignores_case():
     assert grant_matches("provider", "npm:@acme/gmail-*", mcp, host_os="linux")
 
 
+@pytest.mark.parametrize(
+    ("value", "pattern", "covers"),
+    [
+        # The id or #name after a platform prefix, as an owner writes a binding.
+        ("slack:C0B0QV5434G", "C0B0QV5434G", True),
+        ("slack:C0B0QV5434G", "c0b0qv5434g", True),
+        ("Slack:C0B0QV5434G", "C0B0QV5434G", True),
+        ("discord:#bot-home", "#bot-home", True),
+        ("telegram:-1001234567890", "-1001234567890", True),
+        ("channel:ops-yard", "#ops-yard", True),
+        ("channel:ops-yard", "ops-yard", True),
+        ("channel:1498333845953712258", "1498333845953712258", True),
+        # A pattern that names the platform covers that platform only.
+        ("slack:C0B0QV5434G", "slack:C0B0QV5434G", True),
+        ("discord:C0B0QV5434G", "slack:C0B0QV5434G", False),
+        # Must stay silent: another id, a longer id, or a plain word after the platform.
+        ("slack:C0B0QV5434H", "C0B0QV5434G", False),
+        ("slack:C0B0QV5434GX", "C0B0QV5434G", False),
+        ("slack:general", "general", False),
+        ("discord:#bot-home-2", "#bot-home", False),
+        # A Matrix room's part after the colon is its homeserver, not a name.
+        ("!kXbQwP:example.test", "example.test", False),
+    ],
+)
+def test_destination_grants_match_a_channel_by_the_names_an_owner_writes(value, pattern, covers):
+    ch = Entity(id="E1", kind=EntityKind.CHANNEL, value=value, display=value)
+    assert grant_matches("destination", pattern, ch, host_os="linux") is covers
+
+
+def test_short_channel_names_apply_to_channels_only():
+    """A recipient with a platform prefix is an address; its part after the prefix is not a name."""
+    rec = Entity(
+        id="E1", kind=EntityKind.RECIPIENT, value="sms:5550142777", display="sms:5550142777"
+    )
+    assert not grant_matches("destination", "5550142777", rec, host_os="linux")
+
+
 # --------------------------------------------------------------------------- provider grants
 
 GMAIL = {
