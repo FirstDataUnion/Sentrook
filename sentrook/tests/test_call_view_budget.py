@@ -147,7 +147,7 @@ def _scan(case, sc: Scanner):
     )
 
 
-@pytest.mark.parametrize("name", ["call-v4", "call-v5"])
+@pytest.mark.parametrize("name", ["call-v4", "call-v5", "call-v6"])
 def test_a_request_at_the_budget_is_fitted_within_the_context(attack_case, name):
     case = _big_inputs(attack_case)
     qs_tokens = _questions_tokens(name)
