@@ -54,7 +54,7 @@ SELFEDIT_SETS = _shipped("selfedit")
 
 
 def test_the_shipped_sets_are_found():
-    assert {"call-v2", "call-v5"} <= set(CALL_SETS)
+    assert {"call-v2", "call-v5", "call-v6"} <= set(CALL_SETS)
     assert {"selfedit-v1", "selfedit-v2"} <= set(SELFEDIT_SETS)
 
 
