@@ -439,8 +439,7 @@ def test_call_v5_is_call_v4_with_the_near_miss_sentences():
         }, name
 
 
-def test_call_v5_is_the_shipped_default():
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v5"
+def test_call_v5_stays_selectable():
     for name in ("call-v3", "call-v4", "call-v5"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set
