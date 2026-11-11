@@ -22,7 +22,7 @@ the call, with no model and no raw text.
   so it carries reach and irreversibility too). Each arm is off when its value is 0, and
   `lineage_enabled` turns them all off. A failure in the lineage arms contributes nothing and
   leaves the rest of the probe's output intact.
-- Sticky `suspicion.exposure` from `tainted`; the `escalating` flag from the history tier scores; coverage
+- Sticky `suspicion.session_exposure` from `tainted`; the `escalating` flag from the history tier scores; coverage
   from a stale carried request, a fresh session and truncated or dropped content.
 - Session judgements bound to what they are about (the token's sensitive and tainted sets,
   `prepare.session_sets`). `consequence.sensitivity` from `holds_sensitive`, when the call has a data
@@ -993,7 +993,7 @@ class ContextProbe:
             if SessionFlag.TAINTED in prior_flags:
                 contributions.append(
                     Contribution(
-                        signal="suspicion.exposure",
+                        signal="suspicion.session_exposure",
                         value=p.sticky_exposure,
                         reason="exposure.session_tainted",
                     )

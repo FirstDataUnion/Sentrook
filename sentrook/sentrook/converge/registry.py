@@ -37,6 +37,13 @@ SIGNALS: dict[str, Signal] = {
             "Recent untrusted input contained agent-directed instructions",
         ),
         Signal(
+            "suspicion.session_exposure",
+            "suspicion",
+            Merge.MAX,
+            True,
+            "Earlier in this session the agent read content carrying instructions aimed at it",
+        ),
+        Signal(
             "suspicion.untrusted_origin",
             "suspicion",
             Merge.MAX_OVER_SUBJECTS,

@@ -480,7 +480,7 @@ def test_a_tainted_session_acting_on_another_file_keeps_only_its_sticky_exposure
         seed(tainted=True, tainted_entities=[POLICY]),
     )
     assert env.floors == []
-    assert [c.reason for c in env.contributions if c.signal == "suspicion.exposure"] == [
+    assert [c.reason for c in env.contributions if c.signal == "suspicion.session_exposure"] == [
         "exposure.session_tainted"
     ]
 
