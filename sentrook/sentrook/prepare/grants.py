@@ -230,8 +230,15 @@ _CASE_FOLDING_OS = frozenset({OS.MACOS, OS.WINDOWS})
 _PERSON_TARGET = re.compile(r"(?:user|dm):")
 
 
-def _destination(pat: str, entity: Entity, host_os: OS) -> bool:
+def _destination(pat: str, entity: Entity, host_os: OS, platform: str | None = None) -> bool:
+    """A destination pattern covers the entity as written, or by a shorter name for a channel. On a send
+    that names its chat platform in its own argument (`{channel: discord, target: "#x"}`), a pattern
+    naming that platform (`discord:#x`) covers the target as if the target were written with it."""
     pat = pat.lower()
+    head, sep, rest = pat.partition(":")
+    if platform and sep and rest and head == platform.strip().lower():
+        if _destination(rest, entity, host_os):
+            return True
     value = entity.value.lower()
     if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
         value = value.split("@", 1)[1]
@@ -271,15 +278,25 @@ _ENTITY_MATCHERS: dict[str, Callable[[str, Entity, OS], bool]] = {
 }
 
 
-def grant_matches(kind: str, pattern: str, entity: Entity, *, host_os: OS = OS.UNKNOWN) -> bool:
+def grant_matches(
+    kind: str,
+    pattern: str,
+    entity: Entity,
+    *,
+    host_os: OS = OS.UNKNOWN,
+    platform: str | None = None,
+) -> bool:
     """Does a grant of `kind` with `pattern` cover `entity` on a `host_os` host, before scope, expiry
-    and `allows`? Over-broad patterns never match."""
+    and `allows`? `platform` is the chat platform the send names in its own argument, if any. Over-broad
+    patterns never match."""
     spec = GRANT_KINDS.get(kind)
     matcher = _ENTITY_MATCHERS.get(kind)
     if spec is None or matcher is None or entity.kind not in spec.entity_kinds:
         return False
     if over_broad(pattern):
         return False
+    if matcher is _destination:
+        return _destination(pattern.strip(), entity, OS(host_os), platform)
     return matcher(pattern.strip(), entity, OS(host_os))
 
 

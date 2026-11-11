@@ -1,0 +1,15 @@
+{
+  "about": "Why a channel binding can never relieve a send, as `bind list` and `verify` say it; null when it can.",
+  "cases": [
+    { "pattern": "#daily-brief", "problem": null },
+    { "pattern": "discord:#daily-brief", "problem": null },
+    { "pattern": "channel:1234567890", "problem": null },
+    { "pattern": "discord:*", "problem": null },
+    { "pattern": "#ab", "problem": null },
+    { "pattern": "ab", "problem": "too short, never sent" },
+    { "pattern": "a*b", "problem": "too short, never sent" },
+    { "pattern": "*", "problem": "matches every channel, ignored" },
+    { "pattern": "#*", "problem": "matches every channel, ignored" },
+    { "pattern": "*:*", "problem": "matches every channel, ignored" }
+  ]
+}
