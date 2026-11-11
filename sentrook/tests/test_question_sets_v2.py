@@ -180,6 +180,8 @@ def test_small_inputs_are_not_cut(harm_case):
         "redactions": 1,
         "inputs_truncated": False,
         "inputs_stripped": False,
+        "history_cut": 0,
+        "history_dropped": 0,
     }
 
 

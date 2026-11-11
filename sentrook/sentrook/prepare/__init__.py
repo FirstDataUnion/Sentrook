@@ -262,7 +262,7 @@ class Prepared:
     #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
     #: is sent. Empty until then, and for views without the block.
     oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
-    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
+    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`, `history_cut`, `history_dropped`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
     #: matchers read. Jev's views carry the full text.
@@ -1093,6 +1093,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             "redactions": b.redactions,
             "inputs_truncated": b.inputs_truncated,
             "inputs_stripped": b.inputs_stripped,
+            "history_cut": b.history_cut,
+            "history_dropped": b.history_dropped,
         }
         for name, b in built.items()
     }
