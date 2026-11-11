@@ -148,7 +148,7 @@ def _scan(case, sc: Scanner):
 
 
 @pytest.mark.parametrize("name", ["call-v4", "call-v5"])
-def test_a_request_at_the_budget_is_sent_stripped_and_within_the_context(attack_case, name):
+def test_a_request_at_the_budget_is_fitted_within_the_context(attack_case, name):
     case = _big_inputs(attack_case)
     qs_tokens = _questions_tokens(name)
     view = load_question_set(name).state_view
@@ -165,16 +165,16 @@ def test_a_request_at_the_budget_is_sent_stripped_and_within_the_context(attack_
         b for b in dec.bodies if b["questions"].keys() == load_question_set(name).questions.keys()
     ]
     assert est_tokens(body["state"]) + est_tokens(body["questions"]) <= BUDGET_TOKENS
-    assert [i["content"] for i in body["state"]["new_inputs"]] == [""] * 7
-    assert all(
-        i["scanner_truncated"]["of_chars"] == CALL_INPUT_CAP_CHARS
-        for i in body["state"]["new_inputs"]
-    )
+    # filled to the budget: the latest input keeps its content, the earliest lose theirs first
+    sent = body["state"]["new_inputs"]
+    assert sent[-1]["content"] == case["fixture"]["new_inputs"][-1]["content"]
+    assert len(sent[0]["content"]) < CALL_INPUT_CAP_CHARS
+    assert sent[0]["scanner_truncated"]["of_chars"] == CALL_INPUT_CAP_CHARS
     env = next(e for e in res.envelopes if e.step is ProbeStep.JEV_CALL)
-    assert env.evidence["inputs_stripped"] is True
+    assert env.evidence["inputs_stripped"] is False and env.evidence["inputs_truncated"] is True
 
 
-def test_a_smaller_set_keeps_contents_a_larger_set_strips(attack_case):
+def test_a_smaller_set_keeps_contents_a_larger_set_cuts_them(attack_case):
     """Between the two budgets: call-v2's questions leave room for the inputs, call-v5's do not."""
     case = _big_inputs(attack_case, n=6)
     small = _scanner("call-v2").call_budget_tokens
@@ -184,10 +184,12 @@ def test_a_smaller_set_keeps_contents_a_larger_set_strips(attack_case):
     assert large < size <= small
     assert not build_views(case["fixture"], exposure_input_seqs=None, call_budget_tokens=small)[
         CALL_V3
-    ].inputs_stripped
-    assert build_views(case["fixture"], exposure_input_seqs=None, call_budget_tokens=large)[
+    ].inputs_truncated
+    fitted = build_views(case["fixture"], exposure_input_seqs=None, call_budget_tokens=large)[
         CALL_V5
-    ].inputs_stripped
+    ]
+    assert fitted.inputs_truncated and not fitted.inputs_stripped
+    assert est_tokens(fitted.state) <= large
 
 
 # ---- small requests are unchanged ------------------------------------------------------------------------------
