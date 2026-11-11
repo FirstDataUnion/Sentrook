@@ -292,17 +292,75 @@ export function execPolicy(config: any): { exec_mode: string; approval_gating: b
  * The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex, a trailing `/`
  * the folder or scope itself).
  */
-function piecesIn(pattern: string, text: string): boolean {
+function pieces(pattern: string): string[] {
   pattern = pattern.replace(/\/+$/, "");
-  const pieces = (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
-  if (pieces.reduce((n, p) => n + p.length, 0) < 3) return false;
+  return (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
+}
+
+/** Shorter patterns are not worth sending: they would fit almost any call. */
+function longEnough(pattern: string): boolean {
+  return pieces(pattern).reduce((n, p) => n + p.length, 0) >= 3;
+}
+
+/**
+ * The pattern's pieces appear in `text`, in order. `shortOk`: a pattern whose literal part was already found (a
+ * platform the call names) needs no minimum length.
+ */
+function piecesIn(pattern: string, text: string, shortOk = false): boolean {
+  if (!shortOk && !longEnough(pattern)) return false;
   let at = 0;
-  for (const p of pieces) {
+  for (const p of pieces(pattern)) {
     at = text.indexOf(p, at);
     if (at < 0) return false;
     at += p.length;
   }
   return true;
+}
+
+/** The arguments the scanner reads a send's chat platform from, in its order. */
+const PLATFORM_KEYS = ["channel", "platform", "service"];
+/** The channel targets a `#name` destination names (`user:` and `dm:` are people, never a channel). */
+const CHANNEL_PREFIXES = ["channel:", "group:", "thread:"];
+
+/**
+ * The chat platform a message send names in its own argument (`discord` for `{channel: discord, target: "#x"}`),
+ * lower-cased; null for any other call.
+ */
+export function callPlatform(args: unknown, kind: string): string | null {
+  if (kind !== "message_send" || !args || typeof args !== "object") return null;
+  for (const k of PLATFORM_KEYS) {
+    const v = (args as Record<string, unknown>)[k];
+    if (typeof v === "string" && v.trim()) return v.trim().toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner reads them, each
+ * with whether it needs no minimum length: as written; without a `<platform>:` prefix when the send names that
+ * platform in its own argument; and a `#name` as the channel target `channel:name` (or `group:`, `thread:`).
+ */
+function destinationForms(pattern: string, platform: string | null): Array<[string, boolean]> {
+  const forms: Array<[string, boolean]> = [[pattern, false]];
+  const colon = pattern.indexOf(":");
+  if (platform && colon > 0 && colon < pattern.length - 1 && pattern.slice(0, colon) === platform) {
+    forms.push([pattern.slice(colon + 1), true]);
+  }
+  for (const [form, shortOk] of [...forms]) {
+    if (form.startsWith("#")) forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + form.slice(1), shortOk]));
+  }
+  return forms;
+}
+
+/** What is left of a pattern once glob characters and separators are removed; nothing left means it matches everything, and the scanner ignores it. */
+const NOT_LITERAL = /\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]/g;
+
+/** Why a channel binding can never relieve a send, as the listing and verify say it; null when it can. */
+export function bindingProblem(pattern: string): string | null {
+  pattern = pattern.trim();
+  if (!pattern.replace(NOT_LITERAL, "")) return "matches every channel, ignored";
+  if (!destinationForms(pattern.toLowerCase(), null).some(([f]) => longEnough(f))) return "too short, never sent";
+  return null;
 }
 
 /** The arguments the scanner reads a command's working directory from, in its order. */
@@ -324,12 +382,20 @@ export function callCwd(args: unknown): string | null {
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
  * call's provider identity (a `remote:` pattern without its port, as the identity is). Paths are read the way the scanner resolves them: under home in any form (`~/…`,
- * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
+ * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace. A destination is read the way the
+ * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send names
+ * `platform` (`callPlatform`).
  */
 export function relevantGrants(
   grants: GrantConfig[],
   argsText: string,
-  opts: { identity?: string | null; home?: string; workspace?: string | null; cwd?: string | null } = {},
+  opts: {
+    identity?: string | null;
+    home?: string;
+    workspace?: string | null;
+    cwd?: string | null;
+    platform?: string | null;
+  } = {},
 ): Array<Record<string, unknown>> {
   const text = argsText.toLowerCase();
   let texts = [text];
@@ -345,7 +411,9 @@ export function relevantGrants(
   grants.forEach((g, i) => {
     const hay = [...texts];
     if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
-    if (!hay.some((h) => piecesIn(pats[i]!, h))) return;
+    const forms: Array<[string, boolean]> =
+      g.kind === "destination" ? destinationForms(pats[i]!, opts.platform ?? null) : [[pats[i]!, false]];
+    if (!forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
     out.push({
       grant_ref: `g_${i + 1}`,
       kind: g.kind,
@@ -509,6 +577,7 @@ export function buildPlanir(b: BuildInput): Built {
       home: homedir(),
       workspace: run.workspaceDir,
       cwd: tk === "exec" ? callCwd(event.params) : null,
+      platform: callPlatform(event.params, tk),
     }),
     options: { packs: cfg.packs, redaction: redactor.level },
     ...(b.hostProcess && b.selfEdit ? { self_edit: b.selfEdit } : {}),

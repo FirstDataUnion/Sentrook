@@ -20,7 +20,7 @@ from .auth import (
 )
 from .commands import COMMANDS, OwnerGate, dispatch
 from .config import resolve_config
-from .grants import unsent_summary
+from .grants import binding_problems_summary, unsent_summary
 
 
 def run_verify(
@@ -81,6 +81,15 @@ def run_verify(
             "config grants",
             True,
             f"{len(cfg.grants)} in config" + (f"; never sent: {unsent}" if unsent else ""),
+        )
+    )
+    problems = binding_problems_summary(cfg)
+    checks.append(
+        (
+            "channel bindings",
+            True,
+            f"{len(cfg.channel_bindings)} in config"
+            + (f"; cannot apply: {problems}" if problems else ""),
         )
     )
     return checks

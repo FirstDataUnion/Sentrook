@@ -30,7 +30,16 @@ from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
-from .prepare.views import CALL, EXPOSURE, NEAR_MISS_VIEWS, REPUTATION, VIEW_KEYS, VIEW_VERSIONS
+from .prepare.views import (
+    CALL,
+    EXPOSURE,
+    NEAR_MISS_VIEWS,
+    REPUTATION,
+    SELFEDIT_V1,
+    VIEW_KEYS,
+    VIEW_VERSIONS,
+    state_budget_tokens,
+)
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
 from .probes.jev import JevCallProbe, JevExposureProbe
@@ -125,6 +134,27 @@ def views_label(jev_views: dict[str, str]) -> str:
     return ",".join(f"{k}:{v}" for k, v in versions.items())
 
 
+def view_budgets(question_sets: Iterable[QuestionSet | None]) -> tuple[int | None, int | None]:
+    """The call-view and self-edit-view token budgets for the call question sets a scanner sends: each view is
+    built to the room its tightest set leaves in the context (`None` for a view no set sends: the default
+    reserve). A set that leaves no room at all stops startup."""
+    call: int | None = None
+    selfedit: int | None = None
+    for qs in question_sets:
+        if qs is None:
+            continue
+        budget = state_budget_tokens(qs.built_questions())
+        if budget <= 0:
+            raise ValueError(
+                f"question set {qs.name!r} leaves no room for the request in the context"
+            )
+        if qs.state_view == SELFEDIT_V1:
+            selfedit = budget if selfedit is None else min(selfedit, budget)
+        else:
+            call = budget if call is None else min(call, budget)
+    return call, selfedit
+
+
 class Scanner:
     def __init__(self, config: ScannerConfig):
         self.config = config
@@ -142,6 +172,9 @@ class Scanner:
             load_question_set(config.jev.selfedit_question_set)
             if config.jev.selfedit_question_set
             else None
+        )
+        self.call_budget_tokens, self.selfedit_budget_tokens = view_budgets(
+            [self.jev_question_sets[CALL], self.selfedit_question_set]
         )
 
     @property
@@ -217,6 +250,8 @@ class Scanner:
                     clock=clock,
                     deterministic_salt=salt,
                     state_seed=options.state_seed,
+                    call_budget_tokens=self.call_budget_tokens,
+                    selfedit_budget_tokens=self.selfedit_budget_tokens,
                 ),
             )
         except InvalidPlanIR as e:
