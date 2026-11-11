@@ -61,7 +61,9 @@ from .entities import (
     normalise_path,
     normalise_recipient,
     paths_in,
+    platform_targets,
     resolve_token,
+    send_platform,
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
@@ -121,6 +123,10 @@ class PrepareOptions:
     deterministic_salt: str | None = None
     #: Test mode: a TestNest `state_seed` replaces the token.
     state_seed: dict[str, Any] | None = None
+    #: Token budgets for the call views and the self-edit view: the room the question sets that send them leave in
+    #: the model's context. None uses the default reserves in `views`.
+    call_budget_tokens: int | None = None
+    selfedit_budget_tokens: int | None = None
 
 
 @dataclass
@@ -256,7 +262,7 @@ class Prepared:
     #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
     #: is sent. Empty until then, and for views without the block.
     oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
-    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
+    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`, `history_cut`, `history_dropped`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
     #: matchers read. Jev's views carry the full text.
@@ -856,6 +862,13 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     grants_lapsed: dict[str, str] = {}
     grant_reach: dict[str, frozenset[str]] = {}
     off_host = sends_off_host(pending, table.pending())
+    # The chat platform the batch's sends name in their own argument: a pattern naming it covers their
+    # channel targets (`platform_targets`), nothing else. Only when every send in the batch names the
+    # same one, so a target on one platform is never covered by a pattern naming another send's.
+    sends = [c for c in (pending, *siblings) if c.tool_kind is ToolKind.MESSAGE_SEND]
+    platforms = {send_platform(c) for c in sends}
+    platform = next(iter(platforms)) if len(platforms) == 1 else None
+    targets = {t for c in sends for t in platform_targets(c)} if platform else set()
     for grant in planir.grants:
         spec = GRANT_KINDS.get(grant.kind)
         if spec is None or (spec.local_only and off_host):
@@ -872,7 +885,13 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for ent in list(table):
             if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
-            ) or not grant_matches(grant.kind, grant.pattern, ent, host_os=planir.host.os):
+            ) or not grant_matches(
+                grant.kind,
+                grant.pattern,
+                ent,
+                host_os=planir.host.os,
+                platform=platform if (ent.kind, ent.value) in targets else None,
+            ):
                 continue
             if spec.actions:
                 if ent.id not in grant_actions:
@@ -1062,13 +1081,20 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for i in inputs
         if i.trust is Trust.UNTRUSTED and i.new and i.input.content
     }
-    built = views.build_views(raw, exposure_input_seqs=untrusted_seqs)
+    built = views.build_views(
+        raw,
+        exposure_input_seqs=untrusted_seqs,
+        call_budget_tokens=options.call_budget_tokens,
+        selfedit_budget_tokens=options.selfedit_budget_tokens,
+    )
     jev_views = {name: b.state for name, b in built.items()}
     view_meta = {
         name: {
             "redactions": b.redactions,
             "inputs_truncated": b.inputs_truncated,
             "inputs_stripped": b.inputs_stripped,
+            "history_cut": b.history_cut,
+            "history_dropped": b.history_dropped,
         }
         for name, b in built.items()
     }

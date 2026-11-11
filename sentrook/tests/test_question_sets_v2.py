@@ -31,6 +31,7 @@ from sentrook.prepare.views import (
     call_view_v2,
     cap_inputs,
     exposure_view,
+    state_budget_tokens,
 )
 from sentrook.probes.base import Contribution, Envelope
 from sentrook.probes.jev import JevCallProbe, JevExposureProbe
@@ -134,7 +135,9 @@ def _inputs_raw(attack_case, sizes: list[int]) -> dict:
 
 def test_call_v2_caps_each_input_and_the_total(attack_case):
     sizes = [100, 6000, 6000, 6000, 6000, 6000, 6000, 6000, 7000, 50]
-    built = call_view_v2(_inputs_raw(attack_case, sizes))
+    # the room call-v2's own questions leave: the capped inputs fit it, so nothing is stripped
+    room = state_budget_tokens(load_question_set("call-v2").built_questions())
+    built = call_view_v2(_inputs_raw(attack_case, sizes), budget_tokens=room)
     inputs = built.state["new_inputs"]
     assert built.inputs_truncated and not built.inputs_stripped
     assert inputs[8]["scanner_truncated"] == {"kept_chars": CALL_INPUT_CAP_CHARS, "of_chars": 7000}
@@ -177,6 +180,8 @@ def test_small_inputs_are_not_cut(harm_case):
         "redactions": 1,
         "inputs_truncated": False,
         "inputs_stripped": False,
+        "history_cut": 0,
+        "history_dropped": 0,
     }
 
 

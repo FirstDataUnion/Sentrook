@@ -139,10 +139,16 @@ VIEW_KIND: dict[str, str] = {
 #: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
 CALL_INPUT_CAP_CHARS = 6000
 CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
-#: Room left in the chunking budget for the call questions, which repeat the preamble per question
-#: (`est_tokens` of the built call-v2 questions is about 7.2k).
-CALL_QUESTIONS_RESERVE_TOKENS = 7500
+#: Room left in the chunking budget for the call questions, which repeat the preamble per question, when the
+#: caller does not say which set it sends. It covers every shipped call set (a test pins it); the scanner sizes the
+#: budget from the set it is configured with instead (`state_budget_tokens`).
+CALL_QUESTIONS_RESERVE_TOKENS = 12_000
 CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
+
+
+def state_budget_tokens(built_questions: dict[str, Any]) -> int:
+    """The budget for a state sent with these built questions: what they leave of the chunking budget."""
+    return BUDGET_TOKENS - est_tokens(built_questions)
 
 
 def trim(raw: dict[str, Any]) -> dict[str, Any]:
@@ -196,8 +202,15 @@ class BuiltView:
     redactions: int = 0
     #: At least one `new_inputs` content was cut by a cap.
     inputs_truncated: bool = False
-    #: The view was still over the budget after the caps, so every content was emptied.
+    #: The view was still over the budget without any input content, so every content was emptied.
     inputs_stripped: bool = False
+    #: History steps whose long arguments were cut, and oldest steps dropped, to fit the budget.
+    history_cut: int = 0
+    history_dropped: int = 0
+
+    @property
+    def history_trimmed(self) -> bool:
+        return bool(self.history_cut or self.history_dropped)
 
 
 def _cut(entry: dict[str, Any], kept: int, of: int) -> None:
@@ -231,11 +244,12 @@ def cap_inputs(
     cut = False
     remaining = total
     for _, entry in sorted(entries, key=recency, reverse=True):
-        of = len(entry["content"])
-        kept = min(of, per_input, remaining)
+        current = len(entry["content"])
+        kept = min(current, per_input, remaining)
         remaining -= kept
-        if kept < of:
-            _cut(entry, kept, of)
+        if kept < current:
+            # an entry cut before keeps the size it arrived with
+            _cut(entry, kept, _prior_cut(entry).get("of_chars", current))
             cut = True
     return cut
 
@@ -244,8 +258,7 @@ def strip_inputs(inputs: list[Any]) -> None:
     for entry in inputs:
         if not isinstance(entry, dict) or not isinstance(entry.get("content"), str):
             continue
-        prior = entry.get("scanner_truncated") or {}
-        of = prior.get("of_chars", len(entry["content"]))
+        of = _prior_cut(entry).get("of_chars", len(entry["content"]))
         _cut(entry, 0, of)
 
 
@@ -343,42 +356,203 @@ def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
     return fit_self_edit(v, budget_tokens) or capped
 
 
-def _call_view_with_inputs(
-    raw: dict[str, Any], name: str, *, budget_tokens: int = CALL_STATE_BUDGET_TOKENS
-) -> BuiltView:
+#: Fitting an over-budget call view: a history step's argument strings longer than this keep only their head, and this
+#: many of the most recent steps are kept (cut, not dropped) until the inputs have been fitted.
+HISTORY_ARG_KEEP_CHARS = 400
+HISTORY_KEEP_STEPS = 3
+
+
+def _prior_cut(entry: dict[str, Any]) -> dict[str, Any]:
+    prior = entry.get("scanner_truncated")
+    return prior if isinstance(prior, dict) else {}
+
+
+def _shorten(value: Any) -> tuple[Any, int, int]:
+    """`value` with every string longer than `HISTORY_ARG_KEEP_CHARS` cut to its head, and the characters kept and
+    the original length summed over the strings that were cut."""
+    if isinstance(value, str):
+        if len(value) > HISTORY_ARG_KEEP_CHARS:
+            return value[:HISTORY_ARG_KEEP_CHARS], HISTORY_ARG_KEEP_CHARS, len(value)
+        return value, 0, 0
+    kept = of = 0
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, x in value.items():
+            out[k], k_kept, k_of = _shorten(x)
+            kept, of = kept + k_kept, of + k_of
+        return out, kept, of
+    if isinstance(value, list):
+        items = []
+        for x in value:
+            y, k_kept, k_of = _shorten(x)
+            items.append(y)
+            kept, of = kept + k_kept, of + k_of
+        return items, kept, of
+    return value, 0, 0
+
+
+def cut_history_arguments(v: dict[str, Any], budget_tokens: int) -> int:
+    """While the view is over the budget, cut the long argument strings of its history steps, oldest step first (the
+    step stays: tool, kind, decision and the strings' heads). A cut step carries `scanner_truncated`: the characters
+    kept and the original length, over the strings cut. Mutates `v`; returns how many steps were cut."""
+    history = v.get("history")
+    if not isinstance(history, list):
+        return 0
+    cut = 0
+    for step in history:
+        if est_tokens(v) <= budget_tokens:
+            break
+        if not isinstance(step, dict) or "arguments" not in step:
+            continue
+        args, kept, of = _shorten(step["arguments"])
+        if of:
+            step["arguments"] = args
+            step["scanner_truncated"] = {"kept_chars": kept, "of_chars": of}
+            cut += 1
+    return cut
+
+
+def drop_history(v: dict[str, Any], budget_tokens: int, *, keep: int) -> int:
+    """While the view is over the budget, drop its oldest history step, keeping at least the last `keep`. The earliest
+    step left carries `scanner_dropped_earlier`, how many steps before it the scanner dropped (the plugin's own
+    window may have left out more). Mutates `v`; returns how many steps were dropped."""
+    history = v.get("history")
+    if not isinstance(history, list):
+        return 0
+    dropped = 0
+    while len(history) > keep and est_tokens(v) > budget_tokens:
+        step = history.pop(0)
+        dropped += 1
+        # the dropped step's own marker counts the steps dropped before it
+        earlier = step.get("scanner_dropped_earlier") if isinstance(step, dict) else None
+        carried = 1 + (earlier if isinstance(earlier, int) else 0)
+        # marked before the next size check, so the marker itself is inside the budget
+        if history and isinstance(history[0], dict):
+            history[0]["scanner_dropped_earlier"] = carried
+    return dropped
+
+
+def fill_inputs(v: dict[str, Any], capped: list[Any], budget_tokens: int) -> tuple[bool, bool]:
+    """Set `v["new_inputs"]` to `capped` with the largest contents' total that fits the budget: the most recent inputs
+    keep their content and the earliest lose theirs first, as with the total cap. Returns whether anything was cut
+    and whether every content was emptied (the view does not fit even without them)."""
+    total = sum(
+        len(e["content"])
+        for e in capped
+        if isinstance(e, dict) and isinstance(e.get("content"), str)
+    )
+
+    def build(target: int) -> tuple[bool, bool]:
+        inputs = copy.deepcopy(capped)
+        cut = cap_inputs(inputs, total=target)
+        v["new_inputs"] = inputs
+        return cut, est_tokens(v) <= budget_tokens
+
+    cut, fits = build(total)
+    if fits:
+        return cut, False
+    cut, fits = build(0)
+    if not fits:
+        return cut, total > 0
+    # the view's size grows with the total, so bisect for the largest total that fits
+    lo, hi = 0, total
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        _, fits = build(mid)
+        lo, hi = (mid, hi) if fits else (lo, mid)
+    cut, _ = build(lo)
+    return cut, lo == 0 and total > 0
+
+
+@dataclass(frozen=True)
+class _Fitted:
+    inputs_cut: bool = False
+    inputs_stripped: bool = False
+    history_cut: int = 0
+    history_dropped: int = 0
+
+
+def _fit_call_view(v: dict[str, Any], budget_tokens: int) -> _Fitted:
+    """Fit an over-budget call view, least useful first: the history steps' long arguments (oldest first), then the
+    oldest steps (keeping the last `HISTORY_KEEP_STEPS`), then the inputs' content (the most recent kept longest),
+    then the remaining steps, with the inputs refilled into any room that leaves. A view still over the budget with
+    no input content and no history is sent as it is."""
+    inputs = v.get("new_inputs")
+    capped = copy.deepcopy(inputs) if isinstance(inputs, list) else None
+    cut = stripped = False
+    history_cut = cut_history_arguments(v, budget_tokens)
+    dropped = drop_history(v, budget_tokens, keep=HISTORY_KEEP_STEPS)
+    if capped is not None and est_tokens(v) > budget_tokens:
+        cut, stripped = fill_inputs(v, capped, budget_tokens)
+    if est_tokens(v) > budget_tokens:
+        dropped += drop_history(v, budget_tokens, keep=0)
+        if capped is not None:
+            cut, stripped = fill_inputs(v, capped, budget_tokens)
+    return _Fitted(cut, stripped, history_cut, dropped)
+
+
+def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int) -> BuiltView:
+    """A call view (or the self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
+    self-edit view keeps its own fitting: its conversation goes after the inputs."""
     v = view(trim(raw), name)
     inputs = v.get("new_inputs")
     truncated = stripped = False
-    if name == SELFEDIT_V1:
-        budget_tokens = min(budget_tokens, SELFEDIT_STATE_BUDGET_TOKENS)
-        truncated = cap_self_edit_entries(v)
-    if isinstance(inputs, list):
-        truncated = cap_inputs(inputs)
+    fitted = _Fitted()
+    if name != SELFEDIT_V1:
+        if isinstance(inputs, list):
+            truncated = cap_inputs(inputs)
         if est_tokens(v) > budget_tokens:
-            strip_inputs(inputs)
-            truncated = stripped = True
-    if name == SELFEDIT_V1 and fit_self_edit(v, budget_tokens):
-        truncated = True
+            fitted = _fit_call_view(v, budget_tokens)
+            truncated = truncated or fitted.inputs_cut
+            stripped = fitted.inputs_stripped
+    else:
+        truncated = cap_self_edit_entries(v)
+        if isinstance(inputs, list):
+            truncated = cap_inputs(inputs)
+            if est_tokens(v) > budget_tokens:
+                strip_inputs(inputs)
+                truncated = stripped = True
+        if fit_self_edit(v, budget_tokens):
+            truncated = True
     state, count = second_pass(v)
     return BuiltView(
-        state=state, redactions=count, inputs_truncated=truncated, inputs_stripped=stripped
+        state=state,
+        redactions=count,
+        inputs_truncated=truncated,
+        inputs_stripped=stripped,
+        history_cut=fitted.history_cut,
+        history_dropped=fitted.history_dropped,
     )
 
 
 def build_views(
-    raw: dict[str, Any], *, exposure_input_seqs: set[int] | None
+    raw: dict[str, Any],
+    *,
+    exposure_input_seqs: set[int] | None,
+    call_budget_tokens: int | None = None,
+    selfedit_budget_tokens: int | None = None,
 ) -> dict[str, BuiltView]:
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
-    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs."""
-    v3 = call_view_v3(raw)
+    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs. The call
+    views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit view to
+    `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
+    reserves when not given."""
+    call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
+    v3 = call_view_v3(raw, budget_tokens=call_budget)
     out = {
         EXPOSURE: BuiltView(state=exposure_view(raw, only_input_seqs=exposure_input_seqs)),
         CALL: BuiltView(state=call_view(raw)),
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
-        CALL_V2: call_view_v2(raw),
+        CALL_V2: call_view_v2(raw, budget_tokens=call_budget),
         CALL_V3: v3,
         CALL_V5: v3,
     }
     if isinstance(raw.get(SELF_EDIT), dict):
-        out[SELFEDIT_V1] = _call_view_with_inputs(raw, SELFEDIT_V1)
+        out[SELFEDIT_V1] = _call_view_with_inputs(
+            raw,
+            SELFEDIT_V1,
+            budget_tokens=SELFEDIT_STATE_BUDGET_TOKENS
+            if selfedit_budget_tokens is None
+            else selfedit_budget_tokens,
+        )
     return out

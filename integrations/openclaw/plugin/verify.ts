@@ -5,7 +5,7 @@
 import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
-import { unsentSummary } from "./grants.ts";
+import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
 
 export interface VerifyCheck {
   name: string;
@@ -72,6 +72,13 @@ export async function runVerify(
     name: "config grants",
     ok: true,
     detail: `${cfg.grants.length} in config${unsent ? `; never sent: ${unsent}` : ""}`,
+  });
+  // Reported, not failed: a binding that never applies only makes Sentrook stricter.
+  const problems = bindingProblemsSummary(cfg);
+  checks.push({
+    name: "channel bindings",
+    ok: true,
+    detail: `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}`,
   });
   // Reported, not failed: on a host that ignores it, the setting only leaves unattended reviews denied.
   const note = timeoutBehaviorNote(cfg.approval, opts.hostVersion);

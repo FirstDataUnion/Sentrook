@@ -388,6 +388,35 @@ def test_destination_grants_match_a_channel_by_the_names_an_owner_writes(value, 
     assert grant_matches("destination", pattern, ch, host_os="linux") is covers
 
 
+@pytest.mark.parametrize(
+    ("kind", "value", "pattern", "platform", "covers"),
+    [
+        # A pattern naming the platform the send names covers the target the send gives.
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-brief", "discord", True),
+        (EntityKind.CHANNEL, "#daily-brief", "Discord:#Daily-Brief", "discord", True),
+        (EntityKind.CHANNEL, "channel:ops-yard", "discord:#ops-yard", "discord", True),
+        (EntityKind.CHANNEL, "1498333845953712258", "discord:1498333845953712258", "discord", True),
+        (EntityKind.RECIPIENT, "general", "slack:general", "slack", True),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-*", "discord", True),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:*", "discord", True),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:*", "slack", False),
+        # Must stay silent: another platform, no platform, another channel, or a direct message.
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-brief", "slack", False),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-brief", None, False),
+        (EntityKind.CHANNEL, "#daily-briefs", "discord:#daily-brief", "discord", False),
+        (EntityKind.CHANNEL, "user:ops", "discord:#ops", "discord", False),
+        (EntityKind.CHANNEL, "dm:ops", "discord:ops", "discord", False),
+        # The platform is not a glob.
+        (EntityKind.CHANNEL, "#daily-brief", "*:#daily-brief", "discord", False),
+    ],
+)
+def test_a_platform_named_pattern_covers_a_send_on_that_platform(
+    kind, value, pattern, platform, covers
+):
+    e = Entity(id="E1", kind=kind, value=value, display=value)
+    assert grant_matches("destination", pattern, e, host_os="linux", platform=platform) is covers
+
+
 def test_short_channel_names_apply_to_channels_only():
     """A recipient with a platform prefix is an address; its part after the prefix is not a name."""
     rec = Entity(

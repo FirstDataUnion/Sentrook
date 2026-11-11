@@ -11,7 +11,14 @@ import pytest
 import plugin
 from plugin import grants, owner
 from plugin.config import resolve_config
-from plugin.planir import call_cwd, provider_for, relevant_grants, session_ref
+from plugin.planir import (
+    binding_problem,
+    call_cwd,
+    call_platform,
+    provider_for,
+    relevant_grants,
+    session_ref,
+)
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
@@ -602,8 +609,38 @@ def test_a_grant_is_sent_when_the_call_could_be_covered_by_it(c):
         home=c.get("home", RELEVANCE["home"]),
         workspace=c.get("workspace", RELEVANCE["workspace"]),
         cwd=call_cwd(c["arguments"]),
+        platform=call_platform(c["arguments"], c.get("tool_kind", "other")),
     )
     assert bool(sent) is c["sent"]
+
+
+BINDING_PROBLEMS = json.loads((FIXTURES / "binding-problems.json").read_text())
+
+
+@pytest.mark.parametrize("c", BINDING_PROBLEMS["cases"], ids=lambda c: c["pattern"])
+def test_a_binding_that_can_never_apply_says_why(c):
+    """Shared with the OpenClaw plugin's tests."""
+    assert binding_problem(c["pattern"]) == c["problem"]
+
+
+def test_bind_list_add_and_verify_flag_bindings_that_can_never_apply(term, monkeypatch):
+    term.ctx.settings["channel_bindings"] = ["#daily-brief", "*"]
+    assert slash(term, "bind add ab") == "Channel binding added: ab (too short, never sent)."
+    rows = {line.split()[0]: line for line in slash(term, "bind list").splitlines()[2:]}
+    assert rows["#daily-brief"].endswith("config, read-only")
+    assert rows["*"].endswith("config, read-only; matches every channel, ignored")
+    assert rows["ab"].endswith("(local_terminal); too short, never sent")
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    monkeypatch.setattr(plugin.cli, "get_scan_access_token", lambda *a, **k: "tok")
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    # Reported, not failed: a binding that never applies only makes Sentrook stricter.
+    assert report["channel bindings"] == (
+        True,
+        "2 in config; cannot apply: * (matches every channel, ignored)",
+    )
+    term.ctx.settings["channel_bindings"] = ["discord:#daily-brief"]
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    assert report["channel bindings"] == (True, "1 in config")
 
 
 def test_provider_and_home_grants_reach_the_scan(term, monkeypatch):

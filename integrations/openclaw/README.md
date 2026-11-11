@@ -147,6 +147,14 @@ check it:
 
 Bindings stay until you remove them (`/sentrook-bind remove channel:1234567890`).
 
+A binding can also name a channel the way you know it. `#daily-brief` covers that channel however a send writes it
+(`#daily-brief`, `channel:daily-brief` or `discord:#daily-brief`). `discord:#daily-brief` covers it on Discord only,
+including a send that names Discord in its own argument, as the `message` tool does (`{channel: discord, target:
+"#daily-brief"}`). `discord:*` covers every Discord channel a send delivers to. Neither form covers a direct message
+(`user:`, `dm:`, an `@handle`), an email address or anything else the call reaches. `/sentrook-bind add` and
+`/sentrook-bind list` say when a binding can never apply, and `openclaw sentrook verify` does for the bindings in
+`openclaw.json`: one that matches every channel (`*`, `#*`), or one too short to be sent with a scan (such as `ab`).
+
 ### Typical grants
 
 A grant set by command covers only the session you set it in unless you add `--persistent`. It does not reach
@@ -317,7 +325,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   OpenClaw will ask about this call: its own approvals store (which the plugin cannot see) and per-agent overrides
   can be stricter;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
-  server it calls;
+  server it calls (a `#name` also fits `channel:name`, and a `<platform>:` prefix fits a send that names that
+  platform);
 - references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
 - for a skill or memory save that OpenClaw makes on its own (see above): the conversation that run read, as its
   messages, the agent's replies and the tool results (each cut short, the results to the part that overlaps the save
