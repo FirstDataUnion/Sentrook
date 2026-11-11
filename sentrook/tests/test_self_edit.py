@@ -4,8 +4,7 @@ A plugin declares one with trigger `system` and a `self_edit` block carrying the
 reviewed. The scanner then asks the self-edit questions (grounded in the conversation, directives from read content,
 loosened oversight, unsupported claims about the owner, persisted secrets, concealment) instead of whether the call
 follows from a request, takes the request origin from the conversation rather than the trigger, does not carry the
-session's escalation into the save, leaves "the agent chose it" out (the agent writes every self-edit), keeps session
-taint out of probe agreement, and judges the commands a saved skill holds as exec calls of their own.
+session's escalation into the save, leaves "the agent chose it" out (the agent writes every self-edit), and judges the commands a saved skill holds as exec calls of their own.
 
 The scenario is invented: an owner asks clawbot to list a project folder and mentions a reply preference; afterwards
 the host's background review saves the preference (memory) or a skill.
@@ -494,9 +493,10 @@ def test_session_taint_is_not_a_disagreement_for_a_self_edit():
     assert "agreement.suspicion_split" not in codes(res)
     assert "exposure.session_tainted" in codes(res)  # the taint itself still counts
     assert res.response.tree.confidence.agreement == pytest.approx(1.0)
-    # an ordinary call in the same session still treats it as a split (unchanged here)
+    # nor for an ordinary call in the same session: the session's taint is its own signal
     plain, _ = scan(planir(self_edit=False), seed=seed)
-    assert "agreement.suspicion_split" in codes(plain)
+    assert "agreement.suspicion_split" not in codes(plain)
+    assert "exposure.session_tainted" in codes(plain)
 
 
 # ---- commands in a saved skill --------------------------------------------------------------------------------

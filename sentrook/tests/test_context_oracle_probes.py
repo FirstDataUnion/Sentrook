@@ -136,7 +136,9 @@ def test_context_attack_origin_untrusted_and_owner_trigger(attack_case):
     assert ro.value == 0.0 and ro.reason == "trigger.owner"
     [retry] = [c for c in env.contributions if c.signal == "suspicion.retry_after_denial"]
     assert retry.value == 0.0
-    assert not any(c.signal == "suspicion.exposure" for c in env.contributions)
+    assert not any(
+        c.signal in ("suspicion.exposure", "suspicion.session_exposure") for c in env.contributions
+    )
 
 
 def test_context_twin_grant_sanctions(twin_case):
@@ -420,8 +422,8 @@ def test_context_sticky_flags_and_escalation(attack_case):
     env = ContextProbe().run(p)
     sig = {c.signal: c for c in env.contributions if c.subject is None}
     assert (
-        sig["suspicion.exposure"].value == 0.7
-        and sig["suspicion.exposure"].reason == "exposure.session_tainted"
+        sig["suspicion.session_exposure"].value == 0.7
+        and sig["suspicion.session_exposure"].reason == "exposure.session_tainted"
     )
     assert (
         sig["consequence.sensitivity"].value == 0.8

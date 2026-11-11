@@ -280,6 +280,7 @@ def _envelopes(
 
 BASE = {
     "suspicion.exposure": 0.3,
+    "suspicion.session_exposure": 0.2,
     "suspicion.untrusted_origin": 0.4,
     "suspicion.misalignment": 0.3,
     "suspicion.concealment": 0.1,
