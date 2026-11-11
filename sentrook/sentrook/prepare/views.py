@@ -139,10 +139,16 @@ VIEW_KIND: dict[str, str] = {
 #: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
 CALL_INPUT_CAP_CHARS = 6000
 CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
-#: Room left in the chunking budget for the call questions, which repeat the preamble per question
-#: (`est_tokens` of the built call-v2 questions is about 7.2k).
-CALL_QUESTIONS_RESERVE_TOKENS = 7500
+#: Room left in the chunking budget for the call questions, which repeat the preamble per question, when the
+#: caller does not say which set it sends. It covers every shipped call set (a test pins it); the scanner sizes the
+#: budget from the set it is configured with instead (`state_budget_tokens`).
+CALL_QUESTIONS_RESERVE_TOKENS = 12_000
 CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
+
+
+def state_budget_tokens(built_questions: dict[str, Any]) -> int:
+    """The budget for a state sent with these built questions: what they leave of the chunking budget."""
+    return BUDGET_TOKENS - est_tokens(built_questions)
 
 
 def trim(raw: dict[str, Any]) -> dict[str, Any]:
@@ -343,14 +349,11 @@ def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
     return fit_self_edit(v, budget_tokens) or capped
 
 
-def _call_view_with_inputs(
-    raw: dict[str, Any], name: str, *, budget_tokens: int = CALL_STATE_BUDGET_TOKENS
-) -> BuiltView:
+def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int) -> BuiltView:
     v = view(trim(raw), name)
     inputs = v.get("new_inputs")
     truncated = stripped = False
     if name == SELFEDIT_V1:
-        budget_tokens = min(budget_tokens, SELFEDIT_STATE_BUDGET_TOKENS)
         truncated = cap_self_edit_entries(v)
     if isinstance(inputs, list):
         truncated = cap_inputs(inputs)
@@ -366,19 +369,33 @@ def _call_view_with_inputs(
 
 
 def build_views(
-    raw: dict[str, Any], *, exposure_input_seqs: set[int] | None
+    raw: dict[str, Any],
+    *,
+    exposure_input_seqs: set[int] | None,
+    call_budget_tokens: int | None = None,
+    selfedit_budget_tokens: int | None = None,
 ) -> dict[str, BuiltView]:
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
-    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs."""
-    v3 = call_view_v3(raw)
+    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs. The call
+    views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit view to
+    `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
+    reserves when not given."""
+    call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
+    v3 = call_view_v3(raw, budget_tokens=call_budget)
     out = {
         EXPOSURE: BuiltView(state=exposure_view(raw, only_input_seqs=exposure_input_seqs)),
         CALL: BuiltView(state=call_view(raw)),
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
-        CALL_V2: call_view_v2(raw),
+        CALL_V2: call_view_v2(raw, budget_tokens=call_budget),
         CALL_V3: v3,
         CALL_V5: v3,
     }
     if isinstance(raw.get(SELF_EDIT), dict):
-        out[SELFEDIT_V1] = _call_view_with_inputs(raw, SELFEDIT_V1)
+        out[SELFEDIT_V1] = _call_view_with_inputs(
+            raw,
+            SELFEDIT_V1,
+            budget_tokens=SELFEDIT_STATE_BUDGET_TOKENS
+            if selfedit_budget_tokens is None
+            else selfedit_budget_tokens,
+        )
     return out

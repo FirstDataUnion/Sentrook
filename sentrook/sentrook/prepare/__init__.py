@@ -123,6 +123,10 @@ class PrepareOptions:
     deterministic_salt: str | None = None
     #: Test mode: a TestNest `state_seed` replaces the token.
     state_seed: dict[str, Any] | None = None
+    #: Token budgets for the call views and the self-edit view: the room the question sets that send them leave in
+    #: the model's context. None uses the default reserves in `views`.
+    call_budget_tokens: int | None = None
+    selfedit_budget_tokens: int | None = None
 
 
 @dataclass
@@ -1077,7 +1081,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for i in inputs
         if i.trust is Trust.UNTRUSTED and i.new and i.input.content
     }
-    built = views.build_views(raw, exposure_input_seqs=untrusted_seqs)
+    built = views.build_views(
+        raw,
+        exposure_input_seqs=untrusted_seqs,
+        call_budget_tokens=options.call_budget_tokens,
+        selfedit_budget_tokens=options.selfedit_budget_tokens,
+    )
     jev_views = {name: b.state for name, b in built.items()}
     view_meta = {
         name: {
