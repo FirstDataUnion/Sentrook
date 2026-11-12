@@ -15,6 +15,7 @@ run them: both forms go through the owner check (`owner_command`), which audits 
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -292,8 +293,13 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
     def handler(raw_args: str = "", **context: Any) -> str:
         try:
             sid = context.get("session_id")
+            platform = context.get("platform")
+            if isinstance(platform, str) and platform.strip():
+                gate_here: OwnerGate = functools.partial(gate, platform=platform.strip())
+            else:
+                gate_here = gate
             return dispatch(
-                raw_args, settings(), gate=gate, session_id=sid if isinstance(sid, str) else ""
+                raw_args, settings(), gate=gate_here, session_id=sid if isinstance(sid, str) else ""
             )
         except Exception as exc:  # noqa: BLE001 - a reply beats a stack trace in the chat
             logger.warning("/sentrook failed: %s", exc)

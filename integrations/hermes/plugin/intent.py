@@ -79,16 +79,35 @@ def resolve_platform(turn_platform: Any, facts: dict[str, str], env: dict[str, s
     return ""
 
 
-def _approval_bypass(env: dict[str, str]) -> bool:
-    """True when Hermes would auto-approve an `approve` directive (YOLO, approvals.mode off)."""
+def hermes_config() -> dict[str, Any]:
+    """Effective config via Hermes's own loader (the plugin interpreter has no PyYAML)."""
     try:
-        from tools.approval import is_approval_bypass_active
+        from hermes_cli.config import load_config_readonly
 
-        if is_approval_bypass_active():
-            return True
+        cfg = load_config_readonly()
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:  # noqa: BLE001
-        pass
-    return env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        return {}
+
+
+def approvals_off(cfg: dict[str, Any]) -> bool:
+    """`approvals.mode` reads as off, the way Hermes reads it: YAML turns a bare `off` into False."""
+    approvals = cfg.get("approvals")
+    mode = approvals.get("mode") if isinstance(approvals, dict) else None
+    if isinstance(mode, bool):
+        return mode is False
+    return isinstance(mode, str) and mode.strip().lower() == "off"
+
+
+def _approval_bypass(env: dict[str, str]) -> bool:
+    """True when Hermes would auto-approve an `approve` directive: approvals are off in the config, or
+    the process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it). YOLO the
+    owner switches on for a session (`/yolo` in a chat, `hermes chat --yolo`, which the gateway
+    applies per session) is not visible through Hermes's public API, so there the owner's YOLO
+    choice also covers Sentrook's approval prompts."""
+    if env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return approvals_off(hermes_config())
 
 
 def is_unattended(
