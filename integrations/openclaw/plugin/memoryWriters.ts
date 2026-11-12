@@ -98,7 +98,7 @@ export function memoryWriterChecks(hostConfig: unknown): WriterCheck[] {
       name: "session-memory hook",
       ok: true,
       detail:
-        "on, and not scanned: it saves recent messages to memory/ on /new and /reset. " +
+        "on, and not scanned: it saves recent messages to memory/ on /new, /reset and automatic resets. " +
         "To turn it off: openclaw hooks disable session-memory",
     });
   }

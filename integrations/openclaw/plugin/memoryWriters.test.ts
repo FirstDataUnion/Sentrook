@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { dreamingState, memoryWriterChecks, sessionMemoryHookState } from "./memoryWriters.ts";
@@ -109,5 +110,15 @@ test("the memory writer lines never fail verify", async () => {
     const { checks } = await report(cfg);
     assert.deepEqual(failing(checks), base);
     for (const c of checks.filter((c) => c.name === "dreaming" || c.name === "session-memory hook")) assert.equal(c.ok, true);
+  }
+});
+
+test("the README gives the same commands verify prints", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const checks = memoryWriterChecks(HOOK_ON);
+  assert.equal(checks.length, 2);
+  for (const c of checks) {
+    const command = c.detail.slice(c.detail.lastIndexOf("openclaw "));
+    assert.ok(readme.includes("```bash\n" + command + "\n```"), `README has a block with: ${command}`);
   }
 });
