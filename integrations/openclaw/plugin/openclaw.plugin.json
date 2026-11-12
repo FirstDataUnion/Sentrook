@@ -2,6 +2,7 @@
   "id": "sentrook",
   "name": "Sentrook",
   "description": "Scans agent tool calls with Sentrook and allows, asks for approval, or blocks them.",
+  "categories": ["security"],
   "activation": { "onCapabilities": ["hook"] },
   "contracts": { "agentToolResultMiddleware": ["openclaw"] },
   "configSchema": {
@@ -11,8 +12,8 @@
       "scanUrl": { "type": "string", "description": "Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1." },
       "rookeryUrl": { "type": "string", "description": "Rookery base URL (same host rule as scanUrl)." },
       "oidcIssuer": { "type": "string", "description": "Identity service issuer URL (same host rule as scanUrl)." },
-      "clientId": { "description": "Scan client id, or an env SecretRef. Prefer SENTROOK_SCAN_CLIENT_ID in the state-dir .env." },
-      "clientSecret": { "description": "Env SecretRef only in practice; prefer SENTROOK_SCAN_CLIENT_SECRET in the state-dir .env." },
+      "clientId": { "description": "Scan client id. Recommended: an env SecretRef to SENTROOK_SCAN_CLIENT_ID, with the value in the state-dir .env. Without it the plugin reads SENTROOK_SCAN_CLIENT_ID from the environment, then from the state-dir .env." },
+      "clientSecret": { "description": "Scan client secret: an env SecretRef to SENTROOK_SCAN_CLIENT_SECRET, with the value in the state-dir .env, never the value itself. Without it the plugin reads SENTROOK_SCAN_CLIENT_SECRET from the environment, then from the state-dir .env." },
       "oidcAudience": { "type": "string" },
       "oidcScope": { "type": "string" },
       "mode": { "type": "string", "enum": ["enforce", "observe"], "description": "observe scores and logs every call but never blocks or asks." },

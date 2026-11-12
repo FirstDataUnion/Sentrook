@@ -11,7 +11,8 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.10.3.
+- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5, 2026.10.3 and 2026.11.3; older releases
+  refuse to install the plugin.
 - A shell on the machine that runs the OpenClaw gateway, as the user that runs it.
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
 
@@ -44,7 +45,16 @@ Save the file, and make sure only your user can read it:
 chmod 600 ~/.openclaw/.env
 ```
 
-Keep the credentials in `.env`, not in `openclaw.json`, which the agent can read. To replace them later, edit the same
+Then point the plugin at them. These two commands store references to the two variables in `openclaw.json`, not the
+values: OpenClaw loads `.env` into its environment, and the plugin reads the variables the references name.
+
+```bash
+openclaw config set plugins.entries.sentrook.config.clientId --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_ID
+openclaw config set plugins.entries.sentrook.config.clientSecret --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_SECRET
+```
+
+Keep the values in `.env`, not in `openclaw.json`, which the agent can read. Without the references the plugin still
+finds the two lines, because it reads `.env` itself too; that works in this release. To replace the credentials later, edit the same
 two lines and restart the gateway.
 
 ## 3. Let Sentrook see your requests
@@ -86,7 +96,7 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 | Failing line | Fix |
 | --- | --- |
-| `credentials` | Check the two lines in `.env` (step 2), then restart the gateway. |
+| `credentials` | Check the two lines in `.env` and the two references (step 2), then restart the gateway. |
 | `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and replace them in `.env`. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
@@ -382,6 +392,30 @@ A local copy of each scan (the redacted request and the response) is kept in `~/
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with
 `openclaw config set plugins.entries.sentrook.config.trafficLog.enabled false`; the history and why commands then
 have nothing to show.
+
+## What the plugin does on your machine
+
+In short, for anyone deciding whether to install it:
+
+- **Network:** it calls two services run by First Data Union: the scan service (`sentrook.firstdataunion.org`), once
+  per tool call, with the redacted request described in [What is sent](#what-is-sent), and the identity service
+  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token. Nothing else, and no
+  telemetry beyond the scans themselves.
+- **OpenClaw's own saves:** with `skillReview: allow` (the default), the redacted part of the conversation goes with
+  each skill and memory save OpenClaw makes on its own, and a redacted copy is kept on disk for up to 7 days to send
+  with them. Set it to `review` to stop both.
+- **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never approves
+  a call on your behalf. Where nobody can answer (cron jobs, subagents) an unanswered review is denied.
+- **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
+  command, snooze state and the conversations above), or to the paths you set for them (`stateDir`,
+  `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
+  no shell commands and starts no background processes.
+- **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
+  The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it
+  uses only its own `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already
+  set them (the credentials, and settings such as `SENTROOK_MODE`). It reads no other credential file.
+- **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
+  `openclaw plugins disable sentrook` stops it sending anything.
 
 ## Settings
 
