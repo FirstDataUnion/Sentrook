@@ -45,6 +45,11 @@ const CREDENTIAL_KEY =
 
 /** Words that introduce a secret in prose: "the database password is X", "gateway token X". */
 const PROSE_CUES = "password|passwd|passphrase|token|secret|api[ _-]?key|bearer";
+/**
+ * The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
+ * `(token=X)`), so one secret gets one placeholder however the sentence around it goes on.
+ */
+const VALUE_END = `[^\\s"'&,;<>\`\\\\.:!?)\\]]`;
 /** A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it. */
 const PROSE_VALUE = "[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s\"'`⟦⟧$<>\\\\]{5,199}[^\\s\"'`⟦⟧$<>\\\\.,;:!?)\\]])";
 /**
@@ -105,6 +110,16 @@ const proseStated = (cues: string) =>
   new RegExp(
     `(?<![A-Za-z0-9_/.⟦-])(?:${cues})(?![A-Za-z0-9_])[^\\n:.;=\"'\`⟦]{0,40}?` +
       `(?:\\s(?:is|was)(?:\\s+(?:now|still|currently|set\\s+to|changed\\s+to))?\\s+|:[ \\t]*)${PROSE_VALUE}`,
+    "gi",
+  );
+/**
+ * "the password changed, it's now X", "the token was rotated and it is now X": a second clause of the sentence
+ * states the value. The words before it stay inside the sentence, as in "password is X".
+ */
+const proseRestated = (cues: string) =>
+  new RegExp(
+    `(?<![A-Za-z0-9_/.⟦-])(?:${cues})(?![A-Za-z0-9_])[^\\n:.;=\"'\`⟦]{0,40}?` +
+      `(?:,|\\s+and)\\s+it(?:(?:['’]|\\\\{1,8}u2019)s|\\s+(?:is|was))(?:\\s+(?:now|still|currently|set\\s+to|changed\\s+to))?\\s+${PROSE_VALUE}`,
     "gi",
   );
 /** "gateway token X", "secret X". */
@@ -192,11 +207,23 @@ const SHAPES: Shape[] = [
   {
     // `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     // Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
-    // escaped and a plain copy of one value get the same placeholder.
+    // escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside.
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
-        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'&,;<>\`\\\\]{7,})`,
+        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:[^\\s"'&,;<>\`\\\\]{6,}${VALUE_END}|[^\\s"'&,;<>\`\\\\]{5}${VALUE_END}(?=[.:!?)\\]])))`,
+      "gi",
+    ),
+    group: "v",
+    check: keyValue,
+  },
+  {
+    // `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included,
+    // as in a JSON pair or under an object key.
+    kind: "credential",
+    re: new RegExp(
+      `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
+        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'&,;<>\`\\\\]{7,})(?=\\\\?["'])`,
       "gi",
     ),
     group: "v",
@@ -215,13 +242,14 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
-        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{7,})`,
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
       "g",
     ),
     group: "v",
     check: innerKeyValue,
   },
   { kind: "credential", re: proseStated(PROSE_CUES), group: "v", check: statedValue },
+  { kind: "credential", re: proseRestated(PROSE_CUES), group: "v", check: statedValue },
   { kind: "credential", re: proseBare(`${PROSE_CUES}|key`), group: "v", check: bareValue },
 ];
 
