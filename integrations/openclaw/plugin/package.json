@@ -1,7 +1,7 @@
 {
   "name": "@firstdataunion/sentrook-openclaw",
-  "version": "2.0.0-beta.7",
-  "description": "OpenClaw plugin: scans agent tool calls with Sentrook.",
+  "version": "2.0.0-beta.8",
+  "description": "Security plugin for OpenClaw: sends each tool call, redacted, to the hosted Sentrook scanner and allows it, asks the owner, or blocks it.",
   "type": "module",
   "main": "./dist/index.js",
   "license": "MIT",
@@ -29,7 +29,8 @@
     "store.ts",
     "traffic.ts",
     "verify.ts",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "README.md"
   ],
   "repository": {
     "type": "git",
@@ -57,7 +58,13 @@
     ],
     "runtimeExtensions": [
       "./dist/index.js"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.9.5"
+    },
+    "build": {
+      "openclawVersion": "2026.9.5"
+    }
   },
   "devDependencies": {
     "esbuild": "0.28.2",

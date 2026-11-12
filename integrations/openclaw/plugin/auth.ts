@@ -1,12 +1,15 @@
 /**
  * Scan auth: OIDC client_credentials against the identity service.
  *
- * Credentials come from plugin config or env and, when missing, from the OpenClaw state-dir `.env`
- * (SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET). Secrets never go into openclaw.json:
- * unresolved SecretRefs on an enabled plugin fail-close the gateway.
+ * Credentials come from plugin config (the documented path: env SecretRefs naming
+ * SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET, whose values OpenClaw loads from the state-dir
+ * `.env`) or env and, when missing, from the OpenClaw state-dir `.env` read here. Secret values never go
+ * into openclaw.json. An env SecretRef whose variable is missing does not stop the gateway (checked on
+ * OpenClaw 2026.9.5 and 2026.11.3): the credentials read as unset and scans fail closed.
  *
  * Reading the state-dir dotenv ourselves matters on Docker: `docker compose exec … printenv` only
- * shows Compose-injected env, not vars OpenClaw loaded into the gateway process.
+ * shows Compose-injected env, not vars OpenClaw loaded into the gateway process. The listing and the
+ * guide disclose this read; only SENTROOK_* entries are used.
  */
 
 import { existsSync, readFileSync } from "node:fs";
