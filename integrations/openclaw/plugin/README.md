@@ -34,9 +34,10 @@ In short, for anyone deciding whether to install it:
   you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.
 - **Credentials:** the scan credentials (`SENTROOK_SCAN_CLIENT_ID`, `SENTROOK_SCAN_CLIENT_SECRET`) belong in
-  OpenClaw's `~/.openclaw/.env`, referenced from the plugin's config as env SecretRefs, so OpenClaw hands them over. If
-  they are not in its config or OpenClaw's environment, the plugin reads `~/.openclaw/.env` itself and uses only its
-  own `SENTROOK_*` entries from it. It reads no other credential file.
+  OpenClaw's `~/.openclaw/.env`, referenced from the plugin's config as env SecretRefs. The plugin also reads
+  `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it uses only its own
+  `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already set them (the
+  credentials, and settings such as `SENTROOK_MODE`). It reads no other credential file.
 - **Turning it down or off:** observe mode (`openclaw config set plugins.entries.sentrook.config.mode observe`) scores
   and logs every call without ever blocking or asking, and `openclaw plugins disable sentrook` stops it sending
   anything.

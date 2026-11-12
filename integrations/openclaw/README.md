@@ -53,8 +53,8 @@ openclaw config set plugins.entries.sentrook.config.clientId --ref-provider defa
 openclaw config set plugins.entries.sentrook.config.clientSecret --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_SECRET
 ```
 
-Keep the values in `.env`, not in `openclaw.json`, which the agent can read. Without the references the plugin reads
-the two lines from `.env` itself; that still works in this release. To replace the credentials later, edit the same
+Keep the values in `.env`, not in `openclaw.json`, which the agent can read. Without the references the plugin still
+finds the two lines, because it reads `.env` itself too; that works in this release. To replace the credentials later, edit the same
 two lines and restart the gateway.
 
 ## 3. Let Sentrook see your requests
@@ -411,8 +411,9 @@ In short, for anyone deciding whether to install it:
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
-  Without those references it reads `~/.openclaw/.env` itself and uses only its own `SENTROOK_*` entries from it. It
-  reads no other credential file.
+  The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it
+  uses only its own `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already
+  set them (the credentials, and settings such as `SENTROOK_MODE`). It reads no other credential file.
 - **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
   `openclaw plugins disable sentrook` stops it sending anything.
 
