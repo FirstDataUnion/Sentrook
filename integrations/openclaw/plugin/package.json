@@ -18,6 +18,7 @@
     "decision.ts",
     "grants.ts",
     "history.ts",
+    "memoryWriters.ts",
     "owner.ts",
     "planir.ts",
     "redact.ts",

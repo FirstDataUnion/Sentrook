@@ -288,9 +288,48 @@ from what the message says. Set `skillReview` to `review` to send these runs' ca
 conversation; with nothing to judge them against, expect more saves to be reviewed or blocked. `status` counts the
 saves (allowed, blocked, asked) and the history marks them `(self-edit)`.
 
-Two of OpenClaw's own writers never make a tool call, so no plugin can see them: dreaming (the nightly promotion of
-notes into `MEMORY.md` and `DREAMS.md`) and the session-memory hook (which writes recent messages into `memory/` on
-`/new` and `/reset`). Sentrook does not scan them.
+### Memory Sentrook does not see
+
+Some of OpenClaw's memory writers work inside OpenClaw itself and never make a tool call, so no plugin, Sentrook
+included, can scan what they write. This is a known limit of this release. What they write is read back into later
+sessions as trusted context, so text that reaches it stays there unscanned. Two of them run on their own:
+
+- **Dreaming** (on by default) runs nightly. It promotes short-term notes into `MEMORY.md`, which is part of the system
+  prompt of every later session, and writes `DREAMS.md` and `memory/dreaming/`. OpenClaw counts some fetched text
+  as trusted for this promotion (the output of `curl` in a command, for example), so text from a web page can end up
+  in `MEMORY.md`.
+- **The session-memory hook** (off in a bare config; onboarding turns it on) saves the last messages of a session,
+  yours and the agent's, into `memory/YYYY-MM-DD-HHMM.md` on `/new`, `/reset` and the automatic daily or idle reset.
+
+`openclaw sentrook verify` names each one that is on, with the setting that turns it off. It never fails because of
+them.
+
+If your agent fetches content you don't trust (web pages, files from other people, output of commands that download
+things), turn dreaming off:
+
+```bash
+openclaw config set plugins.entries.memory-core.config.dreaming.enabled false
+```
+
+It takes effect at once (or send `/dreaming off` in the owner's chat). You lose the automatic nightly consolidation
+into `MEMORY.md` and the dream diary; an existing `MEMORY.md` is still read into every session, so check it for
+anything you didn't put there.
+
+To close the gap fully, also turn off the session-memory hook:
+
+```bash
+openclaw hooks disable session-memory
+```
+
+(the setting is `hooks.internal.entries.session-memory.enabled: false`; `hooks.internal.enabled: false` turns off all
+of OpenClaw's internal hooks). You lose the session notes saved on `/new` and resets, so later sessions and dreaming
+can no longer recall them.
+
+Neither setting can be set per agent. Other memory writers that no plugin sees are run by you rather than the agent:
+importing or migrating memory, the `openclaw memory` operator commands (`forget`, `promote --apply`, backfills) and
+the memory-wiki vault.
+
+### When the scan service fails
 
 When the scan service gives no usable answer the plugin asks you whether to run the call without a scan
 (`onScanError`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let

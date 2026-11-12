@@ -57,12 +57,14 @@ export function openclawVersionFrom(entry: string | undefined, env: NodeJS.Proce
 
 /**
  * `runtimeVersion` reads the host runtime's version; on the command line the plugin may be loaded for CLI metadata
- * only, where the runtime throws, so the version then comes from `openclawVersionFrom`.
+ * only, where the runtime throws, so the version then comes from `openclawVersionFrom`. `hostConfig` reads
+ * OpenClaw's own config for verify.
  */
 export function registerSentrookCli(
   program: { command: (name: string) => CliCommand },
   pluginConfig: () => Record<string, unknown>,
   runtimeVersion: () => string | undefined = () => undefined,
+  hostConfig: () => unknown = () => undefined,
 ): void {
   const hostVersion = () => runtimeVersion() ?? openclawVersionFrom(process.argv[1], process.env);
   const root = program.command("sentrook").description("Sentrook plugin helpers");
@@ -70,7 +72,7 @@ export function registerSentrookCli(
     .command("verify")
     .description("Check endpoints, credentials, scanner health and token mint")
     .action(async () => {
-      const checks = await runVerify(pluginConfig(), { hostVersion: hostVersion() });
+      const checks = await runVerify(pluginConfig(), { hostVersion: hostVersion(), hostConfig: hostConfig() });
       console.log(formatVerifyReport(checks));
       if (checks.some((c) => !c.ok)) process.exitCode = 1;
     });
