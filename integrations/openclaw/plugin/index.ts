@@ -127,11 +127,22 @@ const plugin = {
         return undefined;
       }
     };
+    // OpenClaw's config as it is now. `api.config` is a snapshot taken at load, so a later `config set` (an exec
+    // mode, an MCP server) would not reach the scan; `runtime.config.current()` is the live one where the host has it.
+    const hostConfig = (): any => {
+      try {
+        const live = api.runtime?.config?.current?.();
+        if (live && typeof live === "object") return live;
+      } catch {
+        // The runtime throws outside full registration.
+      }
+      return api.config;
+    };
     if (api.registerCli && (mode === "cli-metadata" || mode === "discovery" || mode === "full")) {
       api.registerCli(
         async ({ program }) => {
           const { registerSentrookCli } = await import("./cli.ts");
-          registerSentrookCli(program, () => api.pluginConfig ?? {}, runtimeVersion);
+          registerSentrookCli(program, () => api.pluginConfig ?? {}, runtimeVersion, hostConfig);
         },
         { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
@@ -162,17 +173,6 @@ const plugin = {
     };
     const boot = loadConfig().cfg;
     const hostVersion = runtimeVersion();
-    // OpenClaw's config as it is now. `api.config` is a snapshot taken at load, so a later `config set` (an exec
-    // mode, an MCP server) would not reach the scan; `runtime.config.current()` is the live one where the host has it.
-    const hostConfig = (): any => {
-      try {
-        const live = api.runtime?.config?.current?.();
-        if (live && typeof live === "object") return live;
-      } catch {
-        // The runtime throws outside full registration.
-      }
-      return api.config;
-    };
     const store = new Store(boot.stateDir);
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
