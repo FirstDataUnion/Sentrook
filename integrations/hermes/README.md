@@ -228,9 +228,11 @@ Reviews use Hermes's approval prompt, which needs a person on the other end. Cha
 count as attended. Elsewhere, including the API server, cron and webhooks, a review blocks instead. If a UI in front of
 the API server shows Hermes's approval prompts, add it with `attended_platforms` (see [Settings](#settings)).
 
-With approvals switched off (`approvals.mode: off`) or Hermes started with `--yolo`, Hermes would approve every prompt
-itself, so a review blocks instead. A `/yolo` switched on in one chat is the exception: Sentrook cannot see it, so in
-that chat Hermes approves Sentrook's reviews the way it approves everything else there. Blocks still apply.
+With approvals switched off (`approvals.mode: off`), Hermes would approve every prompt itself, so a review blocks
+instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment. YOLO you switch on for a
+session (`/yolo` in a chat, or `hermes --yolo` / `hermes chat --yolo`, which Hermes applies to that session) is not
+visible to Sentrook, so in that session Hermes approves Sentrook's reviews the way it approves everything else there.
+Blocks still apply.
 
 ### Hermes's own skill and memory saves
 

@@ -153,10 +153,16 @@ def session_surface() -> str:
 
 
 def owner_command(
-    verb: str, fn: Callable[[str, dict[str, Any]], str], *, local_cli: bool = False
+    verb: str,
+    fn: Callable[[str, dict[str, Any]], str],
+    *,
+    local_cli: bool = False,
+    platform: str = "",
 ) -> Callable[..., str]:
     """A command handler that runs `fn` only for the owner and audits every attempt. `local_cli` is
     for the `hermes sentrook` command line, which only someone at the machine's shell can run.
+    `platform` is the one Hermes passes a slash-command handler, used when Hermes reports no session
+    surface (the interactive CLI runs a slash command in its own process when it has no gateway).
 
     Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
     through this. Any failure while checking the sender refuses the command. `fn` gets the raw
@@ -177,7 +183,7 @@ def owner_command(
                 store.salt(),
                 facts=session_facts(),
                 env=env,
-                surface=session_surface(),
+                surface=session_surface() or platform,
                 local_cli=local_cli,
             )
         except Exception as exc:  # noqa: BLE001

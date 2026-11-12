@@ -1,13 +1,12 @@
 """The plugin reads Hermes through its public plugin API where one exists: the owner check uses
 `ctx.session_surface()` and the approval-bypass check reads the config and the process env."""
 
-import ast
 from pathlib import Path
 
 import pytest
 
 import plugin
-from plugin import intent, planir
+from plugin import intent
 
 from .test_grants import cli, slash
 
@@ -38,6 +37,18 @@ def test_the_cli_is_the_owner_without_a_session_surface(no_session, capsys):
 def test_a_slash_command_without_a_session_surface_is_refused(no_session):
     assert slash(no_session, "grant destination #ops --persistent").startswith("Only the owner")
     assert not no_session.file.exists()
+
+
+@pytest.mark.parametrize(("platform", "owner"), [("cli", True), ("tui", True), ("telegram", False)])
+def test_the_platform_hermes_passes_the_handler_stands_in_for_the_surface(
+    no_session, platform, owner
+):
+    """The interactive CLI without a gateway runs a slash command in its own process: no session
+    surface, but Hermes passes the handler `platform="cli"`."""
+    handler = no_session.ctx.commands["sentrook"]["handler"]
+    reply = handler("grant destination #ops --persistent", session_id="S1", platform=platform)
+    assert reply.startswith("Only the owner") is not owner
+    assert no_session.file.exists() is owner
 
 
 def test_the_interactive_terminal_is_the_owner(term, monkeypatch):
@@ -77,22 +88,24 @@ def test_a_review_under_approvals_off_blocks(harness, monkeypatch):
     assert call(harness, "c1", "rm REVIEW")["action"] == "block"
 
 
-def test_approval_gating_is_off_for_yaml_off():
-    assert planir.approvals_off({"approvals": {"mode": False}})
-    assert not planir.approvals_off({"approvals": {"mode": "smart"}})
-
-
 #: Hermes internals the plugin used to read and now reads through the public API.
-REPLACED = {
-    "gateway.session_context.session_context_engaged",
-    "tools.approval.is_approval_bypass_active",
-}
+REPLACED = ("session_context_engaged", "is_approval_bypass_active")
 
 
-def test_replaced_internals_are_not_imported():
-    found = set()
+def test_replaced_internals_are_not_used():
     for f in Path(plugin.__file__).parent.glob("*.py"):
-        for node in ast.walk(ast.parse(f.read_text())):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                found |= {f"{node.module}.{a.name}" for a in node.names}
-    assert not found & REPLACED
+        text = f.read_text()
+        for name in REPLACED:
+            assert name not in text, f"{f.name} uses {name}"
+
+
+def test_the_scan_reports_approval_gating_from_the_config(harness, monkeypatch):
+    from .test_plugin import call, turn
+
+    monkeypatch.setattr(plugin, "hermes_config", lambda: {"approvals": {"mode": False}})
+    turn(harness)
+    call(harness, "c1", "ls")
+    assert harness.scans[-1]["host"]["policy"]["approval_gating"] is False
+    monkeypatch.setattr(plugin, "hermes_config", lambda: {"approvals": {"mode": "smart"}})
+    call(harness, "c2", "pwd")
+    assert harness.scans[-1]["host"]["policy"]["approval_gating"] is True

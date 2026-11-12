@@ -100,10 +100,11 @@ def approvals_off(cfg: dict[str, Any]) -> bool:
 
 
 def _approval_bypass(env: dict[str, str]) -> bool:
-    """True when Hermes would auto-approve an `approve` directive: the process runs with YOLO
-    (`--yolo` / HERMES_YOLO_MODE) or approvals are off in the config. A per-chat `/yolo` in a gateway
-    session is not visible through Hermes's public API, so there the owner's YOLO choice also covers
-    Sentrook's approval prompts."""
+    """True when Hermes would auto-approve an `approve` directive: approvals are off in the config, or
+    the process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it). YOLO the
+    owner switches on for a session (`/yolo` in a chat, `hermes chat --yolo`, which the gateway
+    applies per session) is not visible through Hermes's public API, so there the owner's YOLO
+    choice also covers Sentrook's approval prompts."""
     if env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
         return True
     return approvals_off(hermes_config())
