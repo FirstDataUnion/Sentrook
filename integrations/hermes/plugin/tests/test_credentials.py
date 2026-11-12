@@ -152,12 +152,30 @@ def test_both_missing_are_both_named(hermes_secrets):
     assert verify(h)["credentials"][1].startswith(f"{ID} and {SECRET} not set in Hermes")
 
 
-def test_an_unscoped_read_is_a_missing_credential(hermes_secrets):
+@pytest.mark.parametrize("hermes", ["unscoped", "empty"])
+def test_the_process_env_never_stands_in_for_hermes(hermes_secrets, monkeypatch, hermes):
+    """On a multiplexed gateway the process env holds the launch profile's values: when Hermes raises
+    (an unscoped read) or has nothing for this profile, the scan has no credentials."""
     h = hermes_secrets
-    h.secrets.unscoped = True
+    monkeypatch.setenv(ID, "launch-profile-client")
+    monkeypatch.setenv(SECRET, "launch-profile-secret")
+    if hermes == "unscoped":
+        h.secrets.unscoped = True
+    else:
+        h.secrets.store.clear()
     turn(h)
     assert call(h, "c1", "ls")["action"] == "approve"
     assert h.scans == []
+    assert auth.missing_credentials() == [ID, SECRET]
+
+
+def test_verify_with_an_invalid_issuer_does_not_blame_the_credentials(hermes_secrets, monkeypatch):
+    monkeypatch.delenv("SENTROOK_DEV_ENDPOINTS")
+    monkeypatch.setenv("SENTROOK_OIDC_ISSUER", "http://evil.example")
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    report = verify(hermes_secrets)
+    assert report["OIDC issuer"][0] is False
+    assert report["credentials"] == (True, "set in Hermes; not used until the OIDC issuer is valid")
 
 
 def test_outside_hermes_the_process_env_is_read(monkeypatch):

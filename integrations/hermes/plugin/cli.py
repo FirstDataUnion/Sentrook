@@ -36,16 +36,14 @@ def run_verify(
             (name, e.ok, (e.url + (" (dev endpoints)" if ep.dev else "")) if e.ok else e.reason)
         )
     oidc = resolve_oidc_credentials(settings, env, ep.issuer.url) if ep.issuer.ok else None
-    checks.append(
-        (
-            "credentials",
-            oidc is not None,
-            f"client {oidc.client_id}, audience {oidc.audience}"
-            if oidc
-            else f"{' and '.join(missing_credentials())} not set in Hermes "
-            "(hermes config set <NAME> <value>, then restart Hermes)",
-        )
-    )
+    missing = missing_credentials()
+    if missing:
+        creds = f"{' and '.join(missing)} not set in Hermes (hermes config set <NAME> <value>, then restart Hermes)"
+    elif oidc:
+        creds = f"client {oidc.client_id}, audience {oidc.audience}"
+    else:
+        creds = "set in Hermes; not used until the OIDC issuer is valid"
+    checks.append(("credentials", not missing, creds))
     if ep.scan.ok:
         try:
             status, body, _ = http_json(f"{ep.scan.url}/healthz", timeout=timeout)

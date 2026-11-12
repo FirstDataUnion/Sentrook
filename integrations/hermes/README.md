@@ -11,8 +11,8 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- Hermes Agent **v0.21.7 or newer** (`hermes --version`); older versions skip the plugin. Tested on v0.21.7, v0.22.4
-  and v0.23.1.
+- Hermes Agent **v0.21.7 or newer** (`hermes --version`), the oldest version the plugin declares. Tested on v0.21.7,
+  v0.22.4 and v0.23.1.
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
@@ -316,8 +316,10 @@ In short, for anyone deciding whether to install it:
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
   call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review blocks instead of
   waiting.
-- **Files:** it reads and writes only its own folder, `~/.hermes/sentrook/` (the traffic log, grants, snooze state and
-  the conversation logs above). It runs no shell commands and starts no background processes.
+- **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
+  the traffic log, grants, snooze state and the conversation logs above), or to the paths you set for them
+  (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
+  secret redaction are on. It runs no shell commands and starts no background processes.
 - **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
   `auth.json` or any other credential file.
 - **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
