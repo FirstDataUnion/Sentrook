@@ -1,8 +1,10 @@
 name: sentrook
-version: 2.0.0-beta.6
+version: 2.0.0-beta.7
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
+# Oldest Hermes the plugin is tested on. Also declared in the catalog entry; older Hermes skips the plugin.
+requires_hermes: ">=0.21.7"
 description: >
   Scans agent tool calls with Sentrook and allows, escalates to Hermes's native approval, or blocks them.
 author: First Data Union
@@ -17,8 +19,24 @@ provides_hooks:
   - pre_tool_call
   - post_tool_call
   - post_approval_response
-# Credentials live in ~/.hermes/.env (SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET), never here.
+# The scan credentials. `hermes plugins install` asks for them; Hermes stores them, never config.yaml,
+# and the plugin reads them only through Hermes (agent.secret_scope.get_secret).
+requires_env:
+  - name: SENTROOK_SCAN_CLIENT_ID
+    description: Sentrook scan client ID (identity service, Sentrook tab)
+    url: https://identity.firstdataunion.org
+  - name: SENTROOK_SCAN_CLIENT_SECRET
+    description: Sentrook scan client secret
+    secret: true
 config_schema:
+  client_id:
+    type: secret
+    env: SENTROOK_SCAN_CLIENT_ID
+    description: Scan client ID from the identity service. Kept by Hermes, never in config.yaml.
+  client_secret:
+    type: secret
+    env: SENTROOK_SCAN_CLIENT_SECRET
+    description: Scan client secret from the identity service. Kept by Hermes, never in config.yaml.
   scan_url:
     type: str
     description: Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1. Env SENTROOK_SCAN_URL.

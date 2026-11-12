@@ -11,7 +11,8 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- Hermes Agent **v0.21 or newer** (`hermes --version`). Tested on v0.21.7.
+- Hermes Agent **v0.21.7 or newer** (`hermes --version`); older versions skip the plugin. Tested on v0.21.7, v0.22.4
+  and v0.23.1.
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
@@ -31,21 +32,21 @@ The secret is a password: never paste it into a chat with your agent.
 
 Add them before installing: in enforce mode, a plugin without credentials stops every tool call.
 
-`hermes config env-path` prints Hermes's `.env` file, usually `~/.hermes/.env`. Open it in a text editor and add these
-two lines at the end, with your own values:
-
-```
-SENTROOK_SCAN_CLIENT_ID=your-client-id
-SENTROOK_SCAN_CLIENT_SECRET=your-client-secret
-```
-
-Save the file, and make sure only your user can read it:
+Hermes keeps the credentials, not the plugin: it stores them in its own `.env` file and hands them to the plugin when
+asked. Paste this into the shell; it asks for the Client ID and then the Client Secret (the secret is not shown as you
+paste it) and keeps both out of your shell history:
 
 ```bash
-chmod 600 ~/.hermes/.env
+{ printf 'Client ID: '; read -r id; printf 'Client secret: '; stty -echo; read -r secret; stty echo; echo
+  hermes config set SENTROOK_SCAN_CLIENT_ID "$id" && hermes config set SENTROOK_SCAN_CLIENT_SECRET "$secret"
+  unset id secret; }
 ```
 
-Keep the credentials in `.env`, not in `config.yaml`. To replace them later, edit the same two lines and restart.
+Both lines should end `Set ... in .../.hermes/.env`. Never put the credentials in `config.yaml`: the plugin does not
+read them from there. If you install without setting them first, `hermes plugins install` asks for them itself.
+
+To replace them later, run the same block again and restart Hermes: the plugin sees new credentials after Hermes
+restarts, not before.
 
 ## 3. Install
 
@@ -65,8 +66,8 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 | Failing line | Fix |
 | --- | --- |
-| `credentials` | Check the two lines in `.env` (step 2), then restart. |
-| `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and replace them in `.env`. |
+| `credentials` | It names the missing one. Set it (step 2), then restart. |
+| `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and set them again (step 2). |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
 
@@ -301,10 +302,32 @@ readable only by your user and rotated at 50 MB. The plugin never uploads it. Tu
 `hermes config set plugins.entries.sentrook.settings.traffic_log.enabled false`; the history and why commands then
 have nothing to show.
 
+## What the plugin does on your machine
+
+In short, for anyone deciding whether to install it:
+
+- **Network:** it calls two services run by First Data Union: the scan service (`sentrook.firstdataunion.org`), once
+  per tool call, with the redacted request described in [What is sent](#what-is-sent), and the identity service
+  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token. Nothing else, and no
+  telemetry beyond the scans themselves.
+- **Hermes's own saves:** with `skill_review: allow` (the default), the redacted recent conversation goes with each of
+  Hermes's background skill and memory saves, and a redacted copy of recent messages is kept on disk to send with
+  them. Set it to `review` to stop both.
+- **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
+  call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review blocks instead of
+  waiting.
+- **Files:** it reads and writes only its own folder, `~/.hermes/sentrook/` (the traffic log, grants, snooze state and
+  the conversation logs above). It runs no shell commands and starts no background processes.
+- **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
+  `auth.json` or any other credential file.
+- **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
+  `hermes plugins disable sentrook` stops it sending anything.
+
 ## Settings
 
 Set with `hermes config set plugins.entries.sentrook.settings.<key> <value>` and restart. Most keys can also come
-from a `SENTROOK_*` environment variable; the setting wins.
+from a `SENTROOK_*` variable in the environment Hermes starts with; the setting wins. The scan credentials are not
+settings (see [step 2](#2-add-the-credentials-to-hermes)).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -336,6 +359,7 @@ hermes plugins remove sentrook && hermes gateway restart
 
 This removes the plugin and its settings, including grants and bindings kept in `config.yaml`. It leaves the
 traffic log, the grants and bindings set by command, and the snooze state in `~/.hermes/sentrook/`, and the
-credentials in `.env`. To remove those too, delete the folder, delete the two `SENTROOK_SCAN_CLIENT_*` lines from
-`.env`, and delete the credentials on the identity service's **Sentrook** tab. To install again later, start from
+credentials Hermes keeps in its `.env`. To remove those too, delete the folder, delete the two
+`SENTROOK_SCAN_CLIENT_*` lines from the file `hermes config env-path` prints, and delete the credentials on the identity
+service's **Sentrook** tab. To install again later, start from
 step 3.

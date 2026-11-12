@@ -8,14 +8,15 @@ as the owner.
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Callable
 from typing import Any
 
 from .auth import (
     clear_scan_token_cache,
-    env_with_hermes_dotenv,
     get_scan_access_token,
     http_json,
+    missing_credentials,
     resolve_oidc_credentials,
 )
 from .commands import COMMANDS, OwnerGate, dispatch
@@ -26,7 +27,7 @@ from .grants import binding_problems_summary, unsent_summary
 def run_verify(
     settings: dict[str, Any], env: dict[str, str] | None = None, timeout: float = 8.0
 ) -> list[tuple[str, bool, str]]:
-    env = env_with_hermes_dotenv(env)
+    env = dict(os.environ) if env is None else env
     cfg = resolve_config(settings, env)
     ep = cfg.endpoints
     checks: list[tuple[str, bool, str]] = []
@@ -41,7 +42,8 @@ def run_verify(
             oidc is not None,
             f"client {oidc.client_id}, audience {oidc.audience}"
             if oidc
-            else "SENTROOK_SCAN_CLIENT_ID / _SECRET not set",
+            else f"{' and '.join(missing_credentials())} not set in Hermes "
+            "(hermes config set <NAME> <value>, then restart Hermes)",
         )
     )
     if ep.scan.ok:
