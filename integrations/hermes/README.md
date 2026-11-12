@@ -11,8 +11,8 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- Hermes Agent **v0.21.7 or newer** (`hermes --version`), the oldest version the plugin declares. Tested on v0.21.7,
-  v0.22.4 and v0.23.1.
+- Hermes Agent **v0.23.0 or newer** (`hermes --version`), the oldest version the plugin declares. Tested on v0.23.0
+  and v0.23.1. On an older Hermes, update Hermes first (`hermes update`).
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
@@ -227,6 +227,10 @@ is not told which checks fired or the risk score; you can see those with `hermes
 Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms and the local terminal
 count as attended. Elsewhere, including the API server, cron and webhooks, a review blocks instead. If a UI in front of
 the API server shows Hermes's approval prompts, add it with `attended_platforms` (see [Settings](#settings)).
+
+With approvals switched off (`approvals.mode: off`) or Hermes started with `--yolo`, Hermes would approve every prompt
+itself, so a review blocks instead. A `/yolo` switched on in one chat is the exception: Sentrook cannot see it, so in
+that chat Hermes approves Sentrook's reviews the way it approves everything else there. Blocks still apply.
 
 ### Hermes's own skill and memory saves
 

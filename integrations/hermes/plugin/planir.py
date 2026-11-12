@@ -19,12 +19,18 @@ from pathlib import Path
 from typing import Any
 
 from .config import PluginConfig
-from .intent import channel_of, resolve_platform, sender_of, trigger_kind
+from .intent import (
+    approvals_off,
+    channel_of,
+    resolve_platform,
+    sender_of,
+    trigger_kind,
+)
 from .redact import Redactor, cap_args
 from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
 from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.7"
+PLUGIN_VERSION = "2.0.0-beta.8"
 
 TOOL_KIND = {
     "terminal": "exec",
@@ -68,17 +74,6 @@ def tool_kind(name: str, args: Any = None) -> str:
     if name.startswith("mcp__") or name.startswith("mcp_"):
         return "mcp"
     return "other"
-
-
-def hermes_config() -> dict[str, Any]:
-    """Effective config via Hermes's own loader (the plugin interpreter has no PyYAML)."""
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        cfg = load_config_readonly()
-        return cfg if isinstance(cfg, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
 
 
 def hermes_version() -> str:
@@ -386,7 +381,6 @@ def build_planir(
     sent_inputs = [i for i in sess["buffer"] if i["call_id"] in window_ids]
     history = [{k: v for k, v in h.items() if not k.startswith("_")} for h in window]
 
-    approvals = host_cfg.get("approvals") or {}
     security = host_cfg.get("security") or {}
     narration = (turn.get("assistant_text") or "").strip()
     routing = facts.get("key") or None
@@ -407,7 +401,7 @@ def build_planir(
             "os": {"Darwin": "macos", "Windows": "windows"}.get(_platform.system(), "linux"),
             "policy": {
                 "exec_mode": "unknown",
-                "approval_gating": approvals.get("mode") not in ("off", None),
+                "approval_gating": not approvals_off(host_cfg),
                 "result_masking": bool(security.get("redact_secrets", True)),
             },
         },

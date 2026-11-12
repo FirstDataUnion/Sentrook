@@ -16,39 +16,55 @@ def dm(user):
 
 
 def test_owner_is_an_allowlisted_dm_or_the_local_terminal():
-    assert owner.owner_of(dm("u1"), ALLOWLIST, engaged=True) == {
+    assert owner.owner_of(dm("u1"), ALLOWLIST, surface="mattermost") == {
         "owner": True,
         "basis": ["host_allowlist_dm"],
         "platform": "mattermost",
     }
-    assert owner.owner_of(dm("u1"), {"GATEWAY_ALLOWED_USERS": "u1"}, engaged=True)["owner"]
-    # Inside a command handler an empty platform can only be the local CLI or TUI.
-    assert owner.owner_of({}, {}, engaged=False) == {
-        "owner": True,
-        "basis": ["local_terminal"],
-        "platform": "",
-    }
+    assert owner.owner_of(dm("u1"), {"GATEWAY_ALLOWED_USERS": "u1"})["owner"]
+    # A slash command whose session Hermes reports as a local client, or the `hermes sentrook` CLI.
+    for check in (
+        owner.owner_of({}, {}, surface="cli"),
+        owner.owner_of({}, {}, surface="TUI "),
+        owner.owner_of({}, {}, surface="desktop"),
+        owner.owner_of({}, {}, local_cli=True),
+    ):
+        assert check == {"owner": True, "basis": ["local_terminal"], "platform": ""}
     for platform in ("cli", "tui", "local"):
-        assert owner.owner_of({"platform": platform}, {}, engaged=None) == {
+        assert owner.owner_of({"platform": platform}, {}) == {
             "owner": True,
             "basis": ["local_terminal"],
             "platform": platform,
         }
 
 
-@pytest.mark.parametrize("engaged", [True, None])
-def test_empty_platform_is_refused_unless_the_gateway_is_known_idle(engaged):
+@pytest.mark.parametrize("surface", ["", "mattermost", "api_server", "cron"])
+def test_an_empty_platform_without_a_local_session_is_refused(surface):
     """An empty platform is also what an unreadable session context looks like."""
-    assert owner.owner_of({}, {}, engaged=engaged) == {
+    assert owner.owner_of({}, {}, surface=surface) == {
         "owner": False,
         "basis": ["none"],
         "platform": "",
     }
 
 
-def test_gateway_engagement_unknown_without_the_host():
-    # The tests run without Hermes installed, so the gateway's session context cannot be imported.
-    assert owner.gateway_engaged() is None
+def test_the_local_flag_never_overrides_a_chat_platform():
+    """A CLI process that carries a chat's session facts (the agent running `hermes sentrook` from a
+    chat turn) is judged by that chat's sender, not as the local terminal."""
+    check = owner.owner_of({}, {"HERMES_SESSION_PLATFORM": "mattermost"}, local_cli=True)
+    assert check["owner"] is False
+
+
+def test_session_surface_is_empty_without_the_host(monkeypatch):
+    monkeypatch.setattr(plugin, "_ctx", object())
+    assert plugin.session_surface() == ""
+
+    class Broken:
+        def session_surface(self):
+            raise RuntimeError("no session")
+
+    monkeypatch.setattr(plugin, "_ctx", Broken())
+    assert plugin.session_surface() == ""
 
 
 @pytest.mark.parametrize(
@@ -68,7 +84,7 @@ def test_gateway_engagement_unknown_without_the_host():
     ],
 )
 def test_everyone_else_is_refused(facts, env, basis):
-    check = owner.owner_of(facts, env, engaged=False)
+    check = owner.owner_of(facts, env, surface="cli", local_cli=True)
     assert check["owner"] is False
     assert check["basis"] == basis
 
@@ -81,7 +97,7 @@ def gated(harness, monkeypatch):
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
     # A chat turn runs in the gateway; no platform at all models the local terminal.
-    monkeypatch.setattr(owner, "gateway_engaged", lambda: bool(facts.get("platform")))
+    monkeypatch.setattr(plugin, "session_surface", lambda: "" if facts.get("platform") else "cli")
     ran = []
     handler = plugin.owner_command(
         "grant", lambda raw_args, _who: ran.append(raw_args) or "granted"
@@ -145,7 +161,7 @@ def test_non_owner_is_refused_and_audited(gated, facts):
 
 def test_unreadable_session_context_in_the_gateway_is_refused(gated, monkeypatch):
     _facts, handler, ran, commands = gated
-    monkeypatch.setattr(owner, "gateway_engaged", lambda: True)
+    monkeypatch.setattr(plugin, "session_surface", lambda: "")
     assert handler("").startswith("Only the owner")
     assert ran == []
     [rec] = commands()

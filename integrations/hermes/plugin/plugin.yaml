@@ -1,10 +1,10 @@
 name: sentrook
-version: 2.0.0-beta.7
+version: 2.0.0-beta.8
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
 # Oldest Hermes the plugin is tested on. Also declared in the catalog entry; older Hermes skips the plugin.
-requires_hermes: ">=0.21.7"
+requires_hermes: ">=0.23.0"
 description: >
   Scans agent tool calls with Sentrook and allows, escalates to Hermes's native approval, or blocks them.
 author: First Data Union
