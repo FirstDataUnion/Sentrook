@@ -1,4 +1,5 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v5`; `redact-v4` took the plugins'
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v6`; `redact-v5` kept a key's trailing
+punctuation in its value and missed a value restated in a second clause, `redact-v4` took the plugins'
 command-line flag rule but not their object-key rule, `redact-v3` took the plugins' text rules but their
 command-line flag rule, `redact-v2` moved the vendor shapes to data,
 `redact-v1` came with the v1.1 question-set pass).
@@ -28,7 +29,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v5"
+REDACTION_VERSION = "redact-v6"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -64,6 +65,9 @@ _CREDENTIAL_KEY = (
 
 #: Words that introduce a secret in prose: "the database password is X", "gateway token X".
 _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
+#: The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
+#: `(token=X)`).
+_VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
 #: A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -228,11 +232,21 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
     ),
     # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash; a port
-    # after a host (`x.token:8443/`) is not a value.
+    # after a host (`x.token:8443/`) is not a value. Trailing punctuation stays outside.
     (
         re.compile(
             r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
+        ),
+        _key_value,
+    ),
+    # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included.
+    (
+        re.compile(
+            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
         ),
         _key_value,
     ),
@@ -251,7 +265,9 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{7,})"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
         ),
         _inner_key_value,
     ),
@@ -264,6 +280,18 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
             + _PROSE_CUES
             + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
             r"(?:\s(?:is|was)(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+|:[ \t]*)"
+            + _PROSE_VALUE
+        ),
+        _stated_value,
+    ),
+    # "the password changed, it's now X", "the token was rotated and it is now X": a second clause of the
+    # sentence states the value.
+    (
+        re.compile(
+            r"(?i)(?<![A-Za-z0-9_/.⟦-])(?:"
+            + _PROSE_CUES
+            + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
+            r"(?:,|\s+and)\s+it(?:['’]s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
             + _PROSE_VALUE
         ),
         _stated_value,

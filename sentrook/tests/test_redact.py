@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v5): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v6): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
@@ -101,7 +101,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v5"
+    assert REDACTION_VERSION == "redact-v6"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -129,6 +129,11 @@ def test_two_shapes_on_one_value_count_once():
         ('mysql -p\\"' + "a" * 100) * 10_000,
         "sshpass -e " * 100_000,
         "--password " * 100_000,
+        "token=" + "a" * 8 + "." * 1_000_000,
+        'token="' + "-token=" * 140_000,
+        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
+        "the password changed, it's now " * 30_000,
+        "the token was rotated and" * 40_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
@@ -207,6 +212,14 @@ MUST_REPLACE = [
     (f"tool --password {PW[:4]}\\!{PW[4:]}", PW[4:]),
     (f"sudo mysql -p{PW} db", PW),
     (f"docker exec -it db mysql -uroot -p{PW} db", PW),
+    (f"the NAS admin password changed, it's now {PW}. Remember it", PW),
+    (f"the token was rotated, it's now {PW}", PW),
+    (f"the password changed and it’s now {PW}", PW),
+    (f"the api key changed, it was set to {PW} yesterday", PW),
+    (f"password: {PW}. Give it", PW),
+    (f"GITHUB_TOKEN={PW}.", PW),
+    (f'DB_PASSWORD="{PW}!"', PW),
+    (f"SENTROOK_SECRET_MARKERS={PW}?", PW),
 ]
 
 MUST_STAY = [
@@ -270,7 +283,31 @@ MUST_STAY = [
     "tool --token-ttl 3600 --auth-type basic --secret-name prod-db",
     "tool --password-file secrets/db_password",
     "tool --secret-file C:\\secrets\\x.txt",
+    "the password changed, it's now in the vault",
+    "it's now 4096 tokens",
+    "the token limit changed, it's now 4096 tokens",
+    "the token expired, it's now useless",
+    "the password was rotated, it's now stored in the vault",
+    "the secret changed, it's now at ~/.config/app/secret.txt",
+    "the token moved, it's now in vault-prod-secrets",
+    "password: see ~/.pgpass.",
 ]
+
+
+@pytest.mark.parametrize(
+    ("text", "out"),
+    [
+        (f"password: {PW}. Give it", f"password: {P}. Give it"),
+        (f"(password: {PW})", f"(password: {P})"),
+        (f"GITHUB_TOKEN={PW}.", f"GITHUB_TOKEN={P}."),
+        (f"token={PW}!", f"token={P}!"),
+        (f"SENTROOK_SECRET_MARKERS={PW}?", f"SENTROOK_SECRET_MARKERS={P}?"),
+        (f'DB_PASSWORD="{PW}!"', f'DB_PASSWORD="{P}"'),
+    ],
+)
+def test_trailing_punctuation_stays_outside_an_unquoted_value(text, out):
+    assert redact_text(text) == (out, 1)
+    assert redact_text(_as_result(text)) == (_as_result(out), 1)
 
 
 @pytest.mark.parametrize(("text", "raw"), MUST_REPLACE)

@@ -383,6 +383,61 @@ def test_one_value_gets_one_tag_whichever_rule_or_encoding_found_it():
     )
 
 
+def test_a_value_restated_in_a_second_clause_is_redacted():
+    r = Redactor("standard", "test-salt")
+    for text in (
+        f"the NAS admin password changed, it's now {PW}. Remember it",
+        f"the token was rotated, it's now {PW}",
+        f"the password changed and it’s now {PW}",
+        f"the secret was reset, it is now {PW}",
+        f"the api key changed, it was set to {PW} yesterday",
+    ):
+        for out in (r.string(text), r.string(_as_result(text))):
+            assert PW not in out and len(_tags(out)) == 1, out
+    _one_tag(r, [f"the token was rotated, it's now {PW}", f"the token is {PW}", f"TOKEN={PW}"])
+    for text in (
+        "the password changed, it's now in the vault",
+        "it's now 4096 tokens",
+        "the token limit changed, it's now 4096 tokens",
+        "the token expired, it's now useless",
+        "the password was rotated, it's now stored in the vault",
+        "the secret changed, it's now at ~/.config/app/secret.txt",
+        "the token moved, it's now in vault-prod-secrets",
+        "password: see ~/.pgpass.",
+    ):
+        assert r.string(text) == text
+        assert r.string(_as_result(text)) == _as_result(text)
+
+
+def test_trailing_punctuation_is_not_part_of_a_value():
+    r = Redactor("standard", "test-salt")
+    tag = r.string(f"password: {PW} (give it")[len("password: ") :].split(" ")[0]
+    assert re.fullmatch(r"⟦secret:credential:[0-9a-f]{4}⟧", tag)
+    for text, rest in (
+        (f"password: {PW}. Give it", ". Give it"),
+        (f"password: {PW}.", "."),
+        (f"password is now {PW}. Remember", ". Remember"),
+        (f"(password: {PW})", ")"),
+        (f"GITHUB_TOKEN={PW}.", "."),
+        (f"token={PW}!", "!"),
+        (f"SENTROOK_SECRET_MARKERS={PW}?", "?"),
+    ):
+        out = r.string(text)
+        assert out.endswith(tag + rest), out
+        assert r.string(_as_result(text)) == _as_result(out)
+    _one_tag(
+        r, [f"password: {PW}.", f"password: {PW} (", f"password is now {PW}.", f"DB_PASSWORD={PW}."]
+    )
+    assert r.value({"password": PW})["password"] == tag
+    # A quoted value is all of what is between its quotes, as in a JSON pair or an object.
+    quoted = PW + "!"
+    _one_tag(r, [f'DB_PASSWORD="{quoted}"', f"DB_PASSWORD='{quoted}'", f'"password": "{quoted}"'])
+    assert (
+        r.string(f'DB_PASSWORD="{quoted}"')
+        == f'DB_PASSWORD="{r.value({"password": quoted})["password"]}"'
+    )
+
+
 def test_password_flags_keep_the_flag_and_json_stays_json():
     r = Redactor("standard", "test-salt")
     tag = r"⟦secret:credential:[0-9a-f]{4}⟧"
@@ -522,6 +577,11 @@ def test_camel_case_credential_keys_in_objects_are_replaced_whole():
         "sshpass -e " * 100_000,
         "--password " * 100_000,
         "--token-x " * 100_000,
+        "token=" + "a" * 8 + "." * 1_000_000,
+        'token="' + "-token=" * 140_000,
+        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
+        "the password changed, it's now " * 30_000,
+        "the token was rotated and" * 40_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )

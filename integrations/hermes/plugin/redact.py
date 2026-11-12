@@ -33,6 +33,9 @@ _CREDENTIAL_KEY = (
 
 # Words that introduce a secret in prose: "the database password is X", "gateway token X".
 _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
+# The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
+# `(token=X)`), so one secret gets one placeholder however the sentence around it goes on.
+_VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
 # A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -132,6 +135,16 @@ def _prose_stated(cues: str) -> re.Pattern[str]:
     return re.compile(
         r"(?i)(?<![A-Za-z0-9_/.⟦-])(?:" + cues + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
         r"(?:\s(?:is|was)(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+|:[ \t]*)"
+        + _PROSE_VALUE
+    )
+
+
+def _prose_restated(cues: str) -> re.Pattern[str]:
+    """ "the password changed, it's now X", "the token was rotated and it is now X": a second clause of the
+    sentence states the value. The words before it stay inside the sentence, as in "password is X"."""
+    return re.compile(
+        r"(?i)(?<![A-Za-z0-9_/.⟦-])(?:" + cues + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
+        r"(?:,|\s+and)\s+it(?:['’]s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
         + _PROSE_VALUE
     )
 
@@ -288,11 +301,24 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     (
         # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
         # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash, so an
-        # escaped and a plain copy of one value get the same placeholder.
+        # escaped and a plain copy of one value get the same placeholder. Trailing punctuation stays outside.
         "credential",
         re.compile(
             r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
+        ),
+        "v",
+        _key_value,
+    ),
+    (
+        # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation
+        # included, as in a JSON pair or under an object key.
+        "credential",
+        re.compile(
+            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
         ),
         "v",
         _key_value,
@@ -315,12 +341,15 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{7,})"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
         ),
         "v",
         _inner_key_value,
     ),
     ("credential", _prose_stated(_PROSE_CUES), "v", _stated_value),
+    ("credential", _prose_restated(_PROSE_CUES), "v", _stated_value),
     ("credential", _prose_bare(_PROSE_CUES + "|key"), "v", _bare_value),
 ]
 
