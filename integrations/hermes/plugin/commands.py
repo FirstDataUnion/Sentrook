@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import grants, history, skill_review, snooze
-from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
+from .auth import missing_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
 from .planir import PLUGIN_VERSION, session_ref
@@ -58,11 +58,10 @@ def run_status(
 ) -> str:
     """Config-derived facts and counts from the local traffic log only: no network calls, and
     credentials as present or missing, never values."""
-    env = env_with_hermes_dotenv(env)
     cfg = resolve_config(settings, env)
     ep = cfg.endpoints
     scan = ep.scan.url + (" (dev endpoints)" if ep.dev else "") if ep.scan.ok else ""
-    creds = resolve_oidc_credentials(settings, env, ep.issuer.url) is not None
+    missing = missing_credentials()
     grant_count, binding_count = grants.counts(cfg, grants.load(cfg.state_dir))
     return "\n".join(
         (
@@ -72,7 +71,7 @@ def run_status(
             f"on scan error: {cfg.on_scan_error}",
             f"scan host: {scan or f'invalid ({ep.scan.reason})'}",
             "credentials: "
-            + ("present" if creds else "missing (SENTROOK_SCAN_CLIENT_ID / _SECRET)"),
+            + (f"missing {' and '.join(missing)} (set in Hermes)" if missing else "present"),
             "traffic log: " + (f"on, {cfg.traffic_log_path}" if cfg.traffic_log_enabled else "off"),
             f"grants: {grant_count}",
             f"channel bindings: {binding_count}",
@@ -89,7 +88,7 @@ def run_status(
 def run_history(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
     n = history.parse_count(rest)
@@ -101,7 +100,7 @@ def run_history(
 def run_why(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
     match = history.parse_ref(rest)
@@ -134,7 +133,7 @@ def run_grants(
     who: Who | None = None,
     session_id: str = "",
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     ref = session_ref(session_id) if session_id else None
     return grants.format_grants(cfg, grants.load(cfg.state_dir), datetime.now(UTC), CMD, ref)
 
@@ -146,7 +145,7 @@ def run_grant(
     who: Who | None = None,
     session_id: str = "",
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     if who is None:
         return refusal("grant")
     ref = session_ref(session_id) if session_id else None
@@ -157,7 +156,7 @@ def run_grant(
 def run_revoke(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     if who is None:
         return refusal("revoke")
     now = datetime.now(UTC)
@@ -167,7 +166,7 @@ def run_revoke(
 def run_bind(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     if who is None:
         return refusal("bind")
     now = datetime.now(UTC)
@@ -181,7 +180,7 @@ def run_snooze(
     who: Who | None = None,
     session_id: str = "",
 ) -> str:
-    cfg = resolve_config(settings, env_with_hermes_dotenv(env))
+    cfg = resolve_config(settings, env)
     if who is None:
         return refusal("snooze")
     ref = session_ref(session_id) if session_id else None

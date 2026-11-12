@@ -11,12 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from . import cli, commands, conversation, grants, history, owner, skill_review, snooze
-from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
+from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
 from .intent import conversation_sender_of, is_unattended, resolve_platform, session_facts
@@ -37,8 +38,6 @@ SETTINGS_KEYS = (
     "scan_url",
     "rookery_url",
     "oidc_issuer",
-    "client_id",
-    "client_secret",
     "oidc_audience",
     "oidc_scope",
     "mode",
@@ -68,7 +67,7 @@ def _settings() -> dict[str, Any]:
 
 
 def _load() -> tuple[PluginConfig, dict[str, str]]:
-    env = env_with_hermes_dotenv()
+    env = dict(os.environ)
     return resolve_config(_settings(), env), env
 
 
