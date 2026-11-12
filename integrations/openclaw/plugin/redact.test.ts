@@ -165,7 +165,9 @@ test("a value restated in a second clause is redacted", () => {
     `the secret was reset, it is now ${pw}`,
     `the api key changed, it was set to ${pw} yesterday`,
   ]) {
-    for (const out of [r.string(text), r.string(asResult(text))]) {
+    // ASCII-escaped, as Python's json.dumps writes it: `’` arrives as `\u2019`.
+    const escaped = asResult(text).replace(/’/g, "\\u2019");
+    for (const out of [r.string(text), r.string(asResult(text)), r.string(escaped)]) {
       assert.ok(!out.includes(pw) && tags(out).length === 1, out);
     }
   }
@@ -203,6 +205,12 @@ test("trailing punctuation is not part of a value", () => {
   }
   oneTag([`password: ${pw}.`, `password: ${pw} (`, `password is now ${pw}.`, `DB_PASSWORD=${pw}.`]);
   assert.equal((r.value({ password: pw }) as any).password, tag);
+  // Seven characters before the punctuation still count, as when the punctuation was part of the value.
+  for (const text of [`DB_PASSWORD=${pw.slice(0, 7)}!`, `token=${pw.slice(0, 7)}.`]) {
+    const out = r.string(text);
+    assert.ok(!out.includes(pw.slice(0, 7)) && out.endsWith(`⟧${text.slice(-1)}`), out);
+  }
+  assert.equal(r.string("token=refresh"), "token=refresh");
   // A quoted value is all of what is between its quotes, as in a JSON pair or an object.
   const quoted = `${pw}!`;
   oneTag([`DB_PASSWORD="${quoted}"`, `DB_PASSWORD='${quoted}'`, `"password": "${quoted}"`]);

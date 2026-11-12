@@ -392,7 +392,8 @@ def test_a_value_restated_in_a_second_clause_is_redacted():
         f"the secret was reset, it is now {PW}",
         f"the api key changed, it was set to {PW} yesterday",
     ):
-        for out in (r.string(text), r.string(_as_result(text))):
+        escaped = json.dumps({"output": text})  # ASCII-escaped: `’` arrives as `\u2019`
+        for out in (r.string(text), r.string(_as_result(text)), r.string(escaped)):
             assert PW not in out and len(_tags(out)) == 1, out
     _one_tag(r, [f"the token was rotated, it's now {PW}", f"the token is {PW}", f"TOKEN={PW}"])
     for text in (
@@ -429,6 +430,11 @@ def test_trailing_punctuation_is_not_part_of_a_value():
         r, [f"password: {PW}.", f"password: {PW} (", f"password is now {PW}.", f"DB_PASSWORD={PW}."]
     )
     assert r.value({"password": PW})["password"] == tag
+    # Seven characters before the punctuation still count, as when the punctuation was part of the value.
+    for text in (f"DB_PASSWORD={PW[:7]}!", f"token={PW[:7]}."):
+        out = r.string(text)
+        assert PW[:7] not in out and out.endswith("⟧" + text[-1]), out
+    assert r.string("token=refresh") == "token=refresh"
     # A quoted value is all of what is between its quotes, as in a JSON pair or an object.
     quoted = PW + "!"
     _one_tag(r, [f'DB_PASSWORD="{quoted}"', f"DB_PASSWORD='{quoted}'", f'"password": "{quoted}"'])

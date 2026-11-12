@@ -119,7 +119,7 @@ const proseStated = (cues: string) =>
 const proseRestated = (cues: string) =>
   new RegExp(
     `(?<![A-Za-z0-9_/.⟦-])(?:${cues})(?![A-Za-z0-9_])[^\\n:.;=\"'\`⟦]{0,40}?` +
-      `(?:,|\\s+and)\\s+it(?:['’]s|\\s+(?:is|was))(?:\\s+(?:now|still|currently|set\\s+to|changed\\s+to))?\\s+${PROSE_VALUE}`,
+      `(?:,|\\s+and)\\s+it(?:(?:['’]|\\\\{1,8}u2019)s|\\s+(?:is|was))(?:\\s+(?:now|still|currently|set\\s+to|changed\\s+to))?\\s+${PROSE_VALUE}`,
     "gi",
   );
 /** "gateway token X", "secret X". */
@@ -211,7 +211,7 @@ const SHAPES: Shape[] = [
     kind: "credential",
     re: new RegExp(
       `${CREDENTIAL_KEY}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
-        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+        `(?![0-9]{1,5}(?![0-9A-Za-z]))(?<v>[^\\s"'⟦$*{[<%&,;\`\\\\](?:[^\\s"'&,;<>\`\\\\]{6,}${VALUE_END}|[^\\s"'&,;<>\`\\\\]{5}${VALUE_END}(?=[.:!?)\\]])))`,
       "gi",
     ),
     group: "v",

@@ -144,7 +144,7 @@ def _prose_restated(cues: str) -> re.Pattern[str]:
     sentence states the value. The words before it stay inside the sentence, as in "password is X"."""
     return re.compile(
         r"(?i)(?<![A-Za-z0-9_/.⟦-])(?:" + cues + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
-        r"(?:,|\s+and)\s+it(?:['’]s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
+        r"(?:,|\s+and)\s+it(?:(?:['’]|\\{1,8}u2019)s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
         + _PROSE_VALUE
     )
 
@@ -305,9 +305,11 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
         "credential",
         re.compile(
             r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:[^\s\"'&,;<>`\\]{6,}"
             + _VALUE_END
-            + r")"
+            + r"|[^\s\"'&,;<>`\\]{5}"
+            + _VALUE_END
+            + r"(?=[.:!?)\]])))"
         ),
         "v",
         _key_value,

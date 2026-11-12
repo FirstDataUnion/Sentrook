@@ -215,6 +215,7 @@ MUST_REPLACE = [
     (f"the NAS admin password changed, it's now {PW}. Remember it", PW),
     (f"the token was rotated, it's now {PW}", PW),
     (f"the password changed and it’s now {PW}", PW),
+    (json.dumps({"output": f"the password changed and it’s now {PW}"}), PW),
     (f"the api key changed, it was set to {PW} yesterday", PW),
     (f"password: {PW}. Give it", PW),
     (f"GITHUB_TOKEN={PW}.", PW),
@@ -303,6 +304,8 @@ MUST_STAY = [
         (f"token={PW}!", f"token={P}!"),
         (f"SENTROOK_SECRET_MARKERS={PW}?", f"SENTROOK_SECRET_MARKERS={P}?"),
         (f'DB_PASSWORD="{PW}!"', f'DB_PASSWORD="{P}"'),
+        (f"DB_PASSWORD={PW[:7]}!", f"DB_PASSWORD={P}!"),
+        (f"token={PW[:7]}.", f"token={P}."),
     ],
 )
 def test_trailing_punctuation_stays_outside_an_unquoted_value(text, out):

@@ -236,9 +236,11 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
     (
         re.compile(
             r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{6,}"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:[^\s\"'&,;<>`\\]{6,}"
             + _VALUE_END
-            + r")"
+            + r"|[^\s\"'&,;<>`\\]{5}"
+            + _VALUE_END
+            + r"(?=[.:!?)\]])))"
         ),
         _key_value,
     ),
@@ -291,7 +293,7 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
             r"(?i)(?<![A-Za-z0-9_/.⟦-])(?:"
             + _PROSE_CUES
             + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
-            r"(?:,|\s+and)\s+it(?:['’]s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
+            r"(?:,|\s+and)\s+it(?:(?:['’]|\\{1,8}u2019)s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
             + _PROSE_VALUE
         ),
         _stated_value,
