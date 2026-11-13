@@ -3,7 +3,9 @@
 - `JevExposureProbe` sends the exposure view (request text plus the new untrusted inputs) with the
   `exposure-v1` questions (or `exposure-v2` on the redacted `exposure-v2` view) and contributes
   `suspicion.exposure`; above the taint threshold it sets the `tainted` session flag. It is skipped
-  when there is nothing new and untrusted to read.
+  when there is nothing new and untrusted to read. Reads of the agent's own skills and memory
+  (`prepare.own_store.own_store_read`) are left out: a skill is instructions by design and a memory note is the
+  agent's own standing context.
 - `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger; `call-v2`
   adds the turn's inputs; `call-v3` adds the entity library's verdicts for the call's own entities,
   filled from the oracle probe) with the `call-v1`, `call-v2` or `call-v3` questions and contributes misalignment,
@@ -190,7 +192,9 @@ class JevExposureProbe(_JevProbe):
         """The configured exposure view with only the new untrusted inputs that carry content; None
         when there are none. Raises KeyError when the view was not prepared."""
         seqs = {
-            i.input.input_seq for i in prepared.untrusted_inputs(new_only=True) if i.input.content
+            i.input.input_seq
+            for i in prepared.untrusted_inputs(new_only=True)
+            if i.input.content and i.input.input_seq not in prepared.own_store_inputs
         }
         if not seqs:
             return None
@@ -204,9 +208,17 @@ class JevExposureProbe(_JevProbe):
         except KeyError:
             return self._no_view()
         if state is None:
-            return Envelope.skipped(
-                self.step, "no new untrusted inputs with content", self.versions
+            own = sorted(prepared.own_store_inputs)
+            env = Envelope.skipped(
+                self.step,
+                "only reads of the agent's own skills or memory"
+                if own
+                else "no new untrusted inputs with content",
+                self.versions,
             )
+            if own:
+                env.evidence["own_store_skipped"] = own
+            return env
         questions_tokens = est_tokens(self.qs.built_questions())
         chunks = chunk_exposure_state(state, questions_tokens)
         started = time.perf_counter()
@@ -278,6 +290,11 @@ class JevExposureProbe(_JevProbe):
                 "usage": _usage_summary(results),
                 "input_seqs": sorted(
                     {n["input_seq"] for n in state.get("new_inputs") or [] if "input_seq" in n}
+                ),
+                **(
+                    {"own_store_skipped": sorted(prepared.own_store_inputs)}
+                    if prepared.own_store_inputs
+                    else {}
                 ),
             },
         )

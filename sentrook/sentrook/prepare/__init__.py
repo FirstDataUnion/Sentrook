@@ -41,7 +41,7 @@ from ..planir.canonical import (
     canonical_pending,
     canonical_sibling,
 )
-from ..planir.models import InputKind, NewInput, PlanIR, ToolKind
+from ..planir.models import InputKind, NewInput, PlanIR, ProviderKind, ResultStatus, ToolKind
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
 from . import views
@@ -76,6 +76,7 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
+from .own_store import own_memory_path, own_store_read
 from .session_sets import (
     SessionBinding,
     acts,
@@ -232,6 +233,9 @@ class Prepared:
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
     prior_untrusted: frozenset[str] = frozenset()
+    #: New tool results that read the agent's own skills or memory (`own_store.own_store_read`): left out of the
+    #: exposure probe, untrusted for everything else.
+    own_store_inputs: frozenset[int] = frozenset()
     #: Untrusted inputs that try to steer the agent: input_seq → the marker families they match.
     steered_inputs: dict[int, list[str]] = field(default_factory=dict)
     #: The pending call against the token's sensitive and tainted sets as they stood before this request.
@@ -476,6 +480,36 @@ def _find_written(
                 )  # an edit after a write: both halves are visible
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _own_store_inputs(
+    planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
+) -> frozenset[int]:
+    """The new tool results that read the agent's own skills or memory (`own_store.own_store_read`): a host tool
+    that succeeded, with its call's arguments. A memory file the session's tainted set holds is not one."""
+    args_by_call = {h.call_id: h.arguments or {} for h in planir.history if h.call_id}
+    prior_tainted = frozenset(state.tainted)
+    platform = planir.host.platform
+    out: set[int] = set()
+    for pi in inputs:
+        item = pi.input
+        if (
+            not pi.new
+            or item.kind is not InputKind.TOOL_RESULT
+            or item.status is not ResultStatus.OK
+        ):
+            continue
+        if item.provider is None or item.provider.kind is not ProviderKind.HOST:
+            continue
+        args = args_by_call.get(item.call_id) or {}
+        kind = own_store_read(platform, item.tool, args, home=home, workspace_root=ws)
+        if kind is None:
+            continue
+        path = own_memory_path(platform, item.tool, args, home=home, workspace_root=ws)
+        if path is not None and entity_hash(state.salt, "path", path) in prior_tainted:
+            continue
+        out.add(item.input_seq)
+    return frozenset(out)
 
 
 def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str, int]:
@@ -1075,11 +1109,15 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
 
     # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
-    # sent in the common case; call: the full trimmed call view)
+    # sent in the common case, less reads of the agent's own skills and memory; call: the full trimmed call view)
+    own_store_inputs = _own_store_inputs(planir, inputs, state, home=home, ws=ws)
     untrusted_seqs = {
         i.input.input_seq
         for i in inputs
-        if i.trust is Trust.UNTRUSTED and i.new and i.input.content
+        if i.trust is Trust.UNTRUSTED
+        and i.new
+        and i.input.content
+        and i.input.input_seq not in own_store_inputs
     }
     built = views.build_views(
         raw,
@@ -1135,4 +1173,5 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         ),
         view_meta=view_meta,
         request_words=words,
+        own_store_inputs=own_store_inputs,
     )
