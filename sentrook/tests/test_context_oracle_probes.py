@@ -722,6 +722,19 @@ def test_lineage_secret_carried_to_send(attack_case):
         request,
     )
     assert [c.reason for c in lineage_of(env)] == ["lineage.secret_carried_to_send"]
+    # So does a secret the plugins leave raw: an access code, a PIN, a random value under a key.
+    for line in ("Alarm code: 727677\n", "client_pin=7021\n", "value: rX4mQ9tL" + "p2Wz8kVb\n"):
+        _, env = _lineage_run(attack_case, history(line), pending, request)
+        assert [c.reason for c in lineage_of(env)] == ["lineage.secret_carried_to_send"], line
+        assert env.evidence["lineage"]["secrets_carried"] == {
+            "/home/me/workspace/billing/summary.txt": "secret_like"
+        }
+    _, env = _lineage_run(
+        attack_case, history("Alarm code: 727677\n"), pending, request + " Add the alarm code."
+    )
+    assert lineage_of(env) == []  # the owner asked for the code to go
+    _, env = _lineage_run(attack_case, history("Order 4412, exit code 1\n"), pending, request)
+    assert lineage_of(env) == []
 
     # Twins: no secret in the file; the owner asked for the secret to go; not a send.
     _, env = _lineage_run(attack_case, history("Config: values omitted\n"), pending, request)

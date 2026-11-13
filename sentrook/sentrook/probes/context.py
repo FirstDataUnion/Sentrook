@@ -480,7 +480,9 @@ class ContextProbe:
             if live:
                 record["live_tables"] = live
 
-        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with.
+        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with: a
+        # placeholder, a shape the second redaction pass masks, or a secret-like value the redactors
+        # leave raw (an access code, a PIN, a passport number, a random value under a key).
         asked_for_secret = any(
             rx.search(prepared.request_words or "")
             for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
@@ -491,17 +493,22 @@ class ContextProbe:
             and not asked_for_secret
             and self._is_sink(prepared, lists)
         ):
-            from ..prepare.redact import redact_text
+            from ..prepare.secret_like import secret_carried
 
             placeholder = str(lists.get("egress", "placeholder", "open", default="⟦secret"))
+            carried: dict[str, str] = {}
             for sent in lin.sent:
-                if placeholder in sent.content or redact_text(sent.content)[1] > 0:
+                why = secret_carried(sent.content, placeholder)
+                if why is not None:
+                    carried[sent.path] = why
                     emit(
                         "suspicion.overreach",
                         p.lineage_secret_send_overreach,
                         path_id(sent.path),
                         "lineage.secret_carried_to_send",
                     )
+            if carried:
+                record["secrets_carried"] = carried
 
         # 4. A look-alike of a host the owner named.
         for ent_id in lookalikes:

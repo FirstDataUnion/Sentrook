@@ -16,6 +16,7 @@ Classes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -36,6 +37,7 @@ from ..prepare.entities import (
     normalise_remote_identity,
     resolve_token,
 )
+from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
@@ -421,20 +423,44 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     return []
 
 
-def _placeholder_paths(ctx: Context) -> set[str]:
-    """Paths written with a secret placeholder: by an earlier step, or by a sibling in the
-    pending call's batch (a file staged for the send in the same turn)."""
-    out: set[str] = set()
-    open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+def _owner_asked_for_secret(ctx: Context) -> bool:
+    """The owner's own words ask for a secret value to go with the send ("send the gate code to …",
+    "include the env value I gave you"): the lineage rule's `secret_request_terms`."""
+    words = ctx.prepared.request_words or ""
+    return any(
+        rx.search(words) for rx in ctx.lists.patterns("lineage", "secret_request_terms", "patterns")
+    )
+
+
+def _placeholder_paths(ctx: Context) -> dict[str, str]:
+    """Paths written with a secret, by an earlier step or by a sibling in the pending call's batch (a
+    file staged for the send in the same turn), each with why (`prepare.secret_like.secret_carried`): a
+    placeholder, a shape the second redaction pass masks, or a secret-like value the redactors leave
+    raw. A value only the secret-like detector finds does not count when the owner asked for a secret
+    to go. A later write of the same path that carries no secret does not clear an earlier one."""
+    out: dict[str, str] = {}
+    open_ = _placeholder(ctx)
+    asked = _owner_asked_for_secret(ctx)
     home, ws = ctx.prepared.home, ctx.prepared.workspace_root
+
+    def add(path: str, why: str | None) -> None:
+        if why is not None and (out.get(path) in (None, DETECTED)):
+            out[path] = why
+
     for h in ctx.prepared.history:
-        if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
-            out.add(normalise_path(h.path, home=home, workspace_root=ws))
+        if h.tool_kind in _WRITE_KINDS and h.path:
+            why = secret_carried(str(h.get("content") or ""), open_, owner_asked=asked)
+            add(normalise_path(h.path, home=home, workspace_root=ws), why)
     for s in ctx.prepared.siblings:
         for w in sibling_writes(s, home=home, workspace_root=ws):
-            if w.content is not None and open_ in w.content:
-                out.add(w.path)
+            if w.content is not None:
+                add(w.path, secret_carried(w.content, open_, owner_asked=asked))
     return out
+
+
+def _secret_weight(ctx: Context, why: str) -> float:
+    """A value only the secret-like detector finds is less certain than a redactor's placeholder."""
+    return ctx.weight("sensitivity", "secret_like" if why == DETECTED else "placeholder")
 
 
 def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
@@ -450,27 +476,22 @@ def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
             sources.append(Source(reason, ctx.weight("sensitivity", g), p.entity_id, p.display))
         elif p.value in written_with_placeholder and (p.is_source or p.value in attached):
             reason = "exfil.attachment" if p.value in attached else "exfil.placeholder_in_argv"
+            why = written_with_placeholder[p.value]
             sources.append(
                 Source(
                     reason,
-                    ctx.weight("sensitivity", "placeholder"),
+                    _secret_weight(ctx, why),
                     p.entity_id,
-                    f"{p.display} (written with a placeholder)",
+                    f"{p.display} (written with a secret: {why})",
                 )
             )
     covered = {s.reason.removeprefix("path.") for s in sources}
     for g in SENSITIVE_GROUPS:
         if g in a.text_groups and g not in covered and not any(g in p.groups for p in a.paths):
             sources.append(Source(f"path.{g}", ctx.weight("sensitivity", g), None, "text_match"))
-    if a.placeholder or (a.content and _placeholder(ctx) in a.content):
-        sources.append(
-            Source(
-                "exfil.placeholder_in_argv",
-                ctx.weight("sensitivity", "placeholder"),
-                None,
-                "placeholder",
-            )
-        )
+    why = _secret_in_call(a, ctx)
+    if why is not None:
+        sources.append(Source("exfil.placeholder_in_argv", _secret_weight(ctx, why), None, why))
     session = _session_sensitive_source(ctx)
     if session is not None:
         sources.append(session)
@@ -501,6 +522,20 @@ def _session_sensitive_source(ctx: Context) -> Source | None:
 
 def _placeholder(ctx: Context) -> str:
     return str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+
+
+def _secret_in_call(a: CallAnalysis, ctx: Context) -> str | None:
+    """Why the call's own arguments carry a secret (`prepare.secret_like.secret_carried`), or None. The
+    arguments are read as their joined text and as JSON, so a value under a key (`{"pin": "3253"}`)
+    is seen with its key."""
+    open_ = _placeholder(ctx)
+    if a.placeholder or (a.content and open_ in a.content):
+        return PLACEHOLDER
+    asked = _owner_asked_for_secret(ctx)
+    why = secret_carried(a.text, open_, owner_asked=asked)
+    if why is None and isinstance(a.call.raw, dict) and a.call.raw:
+        why = secret_carried(json.dumps(a.call.raw, ensure_ascii=False), open_, owner_asked=asked)
+    return why
 
 
 def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:

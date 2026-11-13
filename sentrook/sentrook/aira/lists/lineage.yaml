@@ -47,7 +47,7 @@ filter_action_patterns:
 # Words in the owner's request that ask for a secret value to go along with a send ("including the
 # env value I asked you to copy"). When the request uses one, an agent-written file carrying a secret
 # is what the owner asked for, and the secret-carried-to-send arm stays quiet; the consequence of
-# sending a secret is still scored by AIRA.
+# sending a placeholder or a redactable shape is still scored by AIRA.
 secret_request_terms:
   patterns:
     - '\benv(?:ironment)?\s+(?:values?|var(?:iable)?s?)\b'
@@ -56,3 +56,11 @@ secret_request_terms:
     - '\b(?:access|auth|bearer)?\s*tokens?\b'
     - '\bpasswords?\b'
     - '\bcredentials?\b'
+    # The secret-like values the redactors leave raw (prepare.secret_like): "send the gate code",
+    # "post the collection PIN", "mail the visitor passport number". AIRA reads the same terms: a value
+    # only that detector finds is not a secret source when the owner asked for one to go.
+    - '\b(?:gate|door|alarm|access|entry|entrance|keypad|lockbox|sign[ -]?in|log[ -]?in|login|verification|security|one[ -]time|backup|recovery|unlock)\s+codes?\b'
+    - '\bpass[ -]?codes?\b'
+    - '(?-i:\bPINs?\b)'
+    - '\bpin\s+(?:codes?|numbers?)\b'
+    - '\bpassports?(?:\s+(?:numbers?|no\.?|details?))?\b'
