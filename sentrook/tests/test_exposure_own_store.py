@@ -291,3 +291,62 @@ def test_the_rule_needs_a_workspace_for_memory_files():
     )
     assert own_store_read("hermes", "skill_view", {}, home="/h", workspace_root="/w") == "skill"
     assert own_store_read(None, "skill_view", {}, home="/h", workspace_root="/w") is None
+
+
+# ---- review follow-ups ------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "memory/dreaming/rem/2026-11-12.md",
+        "memory/.dreams/session-corpus/2026-11-12.md",
+        "memory/repo/README.md",
+        "$HOME/.openclaw/workspace/MEMORY.md",
+        "MEM'ORY.md",
+        "memory/2026-11-12.txt",
+    ],
+)
+def test_deeper_or_odd_memory_paths_are_still_sent(path):
+    """Dreaming reports and the session corpus are written from conversations; `$` and quotes are read literally by
+    the host."""
+    for tool in ("read", "memory_get"):
+        p, env, sent = run_exposure(planir("openclaw", [(tool, {"path": path}, INJECTED)]))
+        assert p.own_store_inputs == frozenset() and sent == [1], (tool, path)
+
+
+@pytest.mark.parametrize("spelling", ["MEMORY.md", "/home/node/.openclaw/workspace/MEMORY.md"])
+def test_a_tainted_memory_file_is_caught_under_any_spelling(spelling):
+    """Lineage keeps a bare relative path as the agent wrote it, so the guard checks every spelling."""
+    from sentrook.planir.models import PlanIR
+    from sentrook.prepare import _own_store_inputs
+    from sentrook.state.token import entity_hash
+
+    raw = planir("openclaw", [("read", {"path": "MEMORY.md"}, NOTE)])
+    p = prep(raw)
+    assert p.own_store_inputs == {1}
+    p.state.tainted = [entity_hash(p.state.salt, "path", spelling)]
+    got = _own_store_inputs(
+        PlanIR.model_validate(raw), p.inputs, p.state, home=HOME["openclaw"], ws=WS["openclaw"]
+    )
+    assert got == frozenset()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"provider": MCP}, {"result": {"status": "error", "size_bytes": 0}}],
+    ids=["history step from an MCP server", "history step failed"],
+)
+def test_the_history_step_must_agree(change):
+    raw = planir("hermes", [("skill_view", {"name": "pg-backup"}, SKILL)])
+    raw["history"][0].update(change)
+    assert prep(raw).own_store_inputs == frozenset()
+
+
+def test_the_v1_exposure_view_and_the_skip_record_agree():
+    raw = planir("openclaw", [("skill_workshop", {"action": "view", "name": "pg-backup"}, SKILL)])
+    p, env, _ = run_exposure(raw)
+    assert not p.views["exposure"].get("new_inputs")
+    assert env.evidence["own_store_skipped"] == [1]
+    assert env.status is ProbeStatus.SKIPPED
+    assert env.evidence["skipped"] == "only reads of the agent's own skills or memory"

@@ -31,10 +31,12 @@ everything else. A read counts only as a host tool that succeeded:
 - Hermes: `skill_view` and `skills_list` (installed skills, as for the self-edit mark).
 - OpenClaw: `skill_workshop` `view` (and `read` on hosts before the proposal flow was retired), which read a skill
   the agent has; `list` and `inspect` can show proposals nobody approved and keep exposure.
-- OpenClaw: a `read` or `memory_get` of `MEMORY.md` or a file under `memory/` at the top of the workspace (a relative
-  path resolves against the workspace, as the host resolves it). `memory_search` and `memory_get` with another corpus
-  can return other sessions' transcripts or wiki pages, and `DREAMS.md` is written from conversations: they keep
-  exposure. A memory file the session's tainted set holds is excluded by the caller.
+- OpenClaw: a `read` or `memory_get` of `MEMORY.md` or a `.md` file directly under `memory/` at the top of the
+  workspace (a relative path resolves against the workspace, as the host resolves it; a path with `$` or quotes,
+  which the host reads literally, never counts). `memory_search` and `memory_get` with another corpus can return
+  other sessions' transcripts or wiki pages, and `DREAMS.md` and the dreaming files under `memory/` are written from
+  conversations: they keep exposure. A memory file the session's tainted set holds, under any spelling lineage may
+  have recorded, is excluded by the caller.
 """
 
 from __future__ import annotations
@@ -70,26 +72,45 @@ SKILL = "skill"
 MEMORY = "memory"
 
 
+#: Characters the host reads literally in a path but the scanner's normaliser would rewrite: `$HOME` and quotes.
+_LITERAL = frozenset("$'\"`")
+
+
+def memory_path_spellings(
+    platform: Any, tool: Any, args: dict[str, Any], *, home: str | None, workspace_root: str | None
+) -> list[str]:
+    """Every spelling under which lineage may have recorded the memory file a call reads: the resolved path and the
+    argument as given (lineage keeps a bare relative path unresolved). Empty when the call reads no own memory file."""
+    path = own_memory_path(platform, tool, args, home=home, workspace_root=workspace_root)
+    if path is None:
+        return []
+    raw = str(args.get("path") or args.get("file_path") or "").strip()
+    given = normalise_path(raw, home=home, workspace_root=workspace_root)
+    return sorted({path, given})
+
+
 def own_memory_path(
     platform: Any, tool: Any, args: dict[str, Any], *, home: str | None, workspace_root: str | None
 ) -> str | None:
-    """The workspace memory file an OpenClaw `read` or `memory_get` reads (normalised), or None."""
+    """The workspace memory file an OpenClaw `read` or `memory_get` reads (normalised), or None: `MEMORY.md` or a
+    `.md` file directly under `memory/` at the top of the workspace. Deeper files (dreaming reports under
+    `memory/dreaming/`, the session corpus under `memory/.dreams/`, anything cloned into `memory/`) are not."""
     if platform != "openclaw" or tool not in ("read", "memory_get") or not workspace_root:
         return None
     if tool == "memory_get" and str(args.get("corpus") or "").strip().lower() not in MEMORY_CORPORA:
         return None
     raw = args.get("path") or args.get("file_path")
-    if not isinstance(raw, str) or not raw.strip():
+    if not isinstance(raw, str) or not raw.strip() or _LITERAL & set(raw):
         return None
     ws = normalise_path(workspace_root, home=home, workspace_root=None)
     path = raw.strip()
-    if not path.startswith(("/", "~", "$HOME")):
+    if not path.startswith(("/", "~")):
         path = f"{ws}/{path}"
     norm = normalise_path(path, home=home, workspace_root=ws)
     if norm == f"{ws}/MEMORY.md":
         return norm
     rest = norm.removeprefix(f"{ws}/memory/")
-    return norm if rest != norm and rest.endswith(".md") else None
+    return norm if rest != norm and "/" not in rest and rest.endswith(".md") else None
 
 
 def own_store_read(

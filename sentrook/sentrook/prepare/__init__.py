@@ -76,7 +76,7 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
-from .own_store import own_memory_path, own_store_read
+from .own_store import memory_path_spellings, own_store_read
 from .session_sets import (
     SessionBinding,
     acts,
@@ -486,8 +486,9 @@ def _own_store_inputs(
     planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
 ) -> frozenset[int]:
     """The new tool results that read the agent's own skills or memory (`own_store.own_store_read`): a host tool
-    that succeeded, with its call's arguments. A memory file the session's tainted set holds is not one."""
-    args_by_call = {h.call_id: h.arguments or {} for h in planir.history if h.call_id}
+    that succeeded, by both the input and its history step, with that step's arguments. A memory file the session's
+    tainted set holds, under any spelling lineage may have recorded, is not one."""
+    steps = {h.call_id: h for h in planir.history if h.call_id}
     prior_tainted = frozenset(state.tainted)
     platform = planir.host.platform
     out: set[int] = set()
@@ -501,12 +502,19 @@ def _own_store_inputs(
             continue
         if item.provider is None or item.provider.kind is not ProviderKind.HOST:
             continue
-        args = args_by_call.get(item.call_id) or {}
+        step = steps.get(item.call_id)
+        if (
+            step is None
+            or step.provider.kind is not ProviderKind.HOST
+            or (step.result is not None and step.result.status is not ResultStatus.OK)
+        ):
+            continue
+        args = step.arguments or {}
         kind = own_store_read(platform, item.tool, args, home=home, workspace_root=ws)
         if kind is None:
             continue
-        path = own_memory_path(platform, item.tool, args, home=home, workspace_root=ws)
-        if path is not None and entity_hash(state.salt, "path", path) in prior_tainted:
+        spellings = memory_path_spellings(platform, item.tool, args, home=home, workspace_root=ws)
+        if any(entity_hash(state.salt, "path", p) in prior_tainted for p in spellings):
             continue
         out.add(item.input_seq)
     return frozenset(out)
