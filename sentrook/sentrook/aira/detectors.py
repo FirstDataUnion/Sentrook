@@ -425,10 +425,13 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
 
 def _owner_asked_for_secret(ctx: Context) -> bool:
     """The owner's own words ask for a secret value to go with the send ("send the gate code to …",
-    "include the env value I gave you"): the lineage rule's `secret_request_terms`."""
+    "include the env value I gave you"): the lineage rule's `secret_request_terms` and
+    `secret_like_request_terms`."""
     words = ctx.prepared.request_words or ""
     return any(
-        rx.search(words) for rx in ctx.lists.patterns("lineage", "secret_request_terms", "patterns")
+        rx.search(words)
+        for name in ("secret_request_terms", "secret_like_request_terms")
+        for rx in ctx.lists.patterns("lineage", name, "patterns")
     )
 
 

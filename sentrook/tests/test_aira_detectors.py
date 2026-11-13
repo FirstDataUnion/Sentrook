@@ -366,6 +366,22 @@ def test_c2_file_written_with_a_raw_secret_is_a_source():
     assert of(env, SENS) == []
     _, env = run(case("Sum: 2400\nyard_code=090373\n", "Upload the digest with the gate code."))
     assert of(env, SENS) == []
+    # A placeholder keeps its full weight when the owner asked.
+    _, env = run(case(f"key={PLACEHOLDER}\n", "Upload the digest with the gate code."))
+    assert [(s.reason, s.value) for s in of(env, SENS)] == [("exfil.placeholder_in_argv", 1.0)]
+    # A push after a raw secret was written into the repo counts like one after a placeholder.
+    history = [
+        hist_step(
+            1,
+            "write",
+            "file_write",
+            {"path": "~/workspace/notes.md", "content": "gate code 4471\n"},
+        )
+    ]
+    _, env = run(
+        ex("git push origin main", history=history), {"holds_sensitive": True, "max_input_seq": 0}
+    )
+    assert "artefact.push_with_secret" in reasons(env)
 
 
 def test_c2_web_post_raw_socket_and_mcp_upload():

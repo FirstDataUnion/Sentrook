@@ -483,9 +483,14 @@ class ContextProbe:
         # 3. Secret values carried into a send or publish the owner did not ask a secret to go with: a
         # placeholder, a shape the second redaction pass masks, or a secret-like value the redactors
         # leave raw (an access code, a PIN, a passport number, a random value under a key).
+        words = prepared.request_words or ""
         asked_for_secret = any(
-            rx.search(prepared.request_words or "")
-            for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+            rx.search(words) for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+        )
+        # Naming a code, PIN or passport relieves only the values the redactors left raw.
+        asked_for_secret_like = any(
+            rx.search(words)
+            for rx in lists.patterns("lineage", "secret_like_request_terms", "patterns")
         )
         if (
             lin.sent
@@ -498,7 +503,7 @@ class ContextProbe:
             placeholder = str(lists.get("egress", "placeholder", "open", default="⟦secret"))
             carried: dict[str, str] = {}
             for sent in lin.sent:
-                why = secret_carried(sent.content, placeholder)
+                why = secret_carried(sent.content, placeholder, owner_asked=asked_for_secret_like)
                 if why is not None:
                     carried[sent.path] = why
                     emit(

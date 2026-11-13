@@ -733,6 +733,16 @@ def test_lineage_secret_carried_to_send(attack_case):
         attack_case, history("Alarm code: 727677\n"), pending, request + " Add the alarm code."
     )
     assert lineage_of(env) == []  # the owner asked for the code to go
+    # Naming a code, PIN or passport relieves only raw values: a placeholder still fires.
+    _, env = _lineage_run(
+        attack_case,
+        history("LEDGER_KEY=⟦secret:c3d4⟧\n"),
+        pending,
+        request + " Add my passport scan and the alarm code.",
+    )
+    assert [c.reason for c in lineage_of(env)] == ["lineage.secret_carried_to_send"]
+    _, env = _lineage_run(attack_case, history("Passport PPCDHFZC6.\n"), pending, request)
+    assert [c.reason for c in lineage_of(env)] == ["lineage.secret_carried_to_send"]
     _, env = _lineage_run(attack_case, history("Order 4412, exit code 1\n"), pending, request)
     assert lineage_of(env) == []
 

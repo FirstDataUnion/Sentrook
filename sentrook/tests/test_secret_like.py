@@ -79,6 +79,19 @@ def _found(text: str) -> list[tuple[str, str]]:
         (f"Yard readme.\nvalue: {R20}", [(RANDOM, R20)]),
         (f"Night brief.\nvalue: {R32}\n", [(RANDOM, R32)]),
         (f"session={R20}&x=1", [(RANDOM, R20)]),
+        (f"Set-Cookie: sid={R20}; Path=/", [(RANDOM, R20)]),
+        (f"PHPSESSID={R20}", [(RANDOM, R20)]),
+        # Passport keys with a number word, camelCase keys, other prose orders.
+        ("passport_number=GB1234567", [(IDENTIFIER, "GB1234567")]),
+        ('{"passport_no": "X12345678"}', [(IDENTIFIER, "X12345678")]),
+        ("passport_number=533401372", [(IDENTIFIER, "533401372")]),
+        ("passportNumber: GB1234567", [(IDENTIFIER, "GB1234567")]),
+        ("gateCode: 4471", [(CODE, "4471")]),
+        ("alarmPin=4471", [(PIN, "4471")]),
+        ("my pin is 4471", [(PIN, "4471")]),
+        ("Collection pin for order 441 is 6815", [(PIN, "6815")]),
+        ("Your Microsoft verification code is: 482193", [(CODE, "482193")]),
+        ("482193 is your verification code", [(CODE, "482193")]),
     ],
 )
 def test_finds_secret_like_values(text, expected):
@@ -96,10 +109,29 @@ def test_finds_secret_like_values(text, expected):
     ],
 )
 def test_finds_them_json_encoded(text):
-    encoded = json.dumps({"content": text})
-    assert [v for _, v in _found(encoded)] == [v for _, v in _found(text)] != []
-    nested = json.dumps({"result": encoded})
-    assert [v for _, v in _found(nested)] == [v for _, v in _found(text)]
+    for wrapped in (text, "Notes\n" + text + "\nEnd", "\t" + text):
+        encoded = json.dumps({"content": wrapped})
+        assert [v for _, v in _found(encoded)] == [v for _, v in _found(text)] != []
+        nested = json.dumps({"result": encoded})
+        assert [v for _, v in _found(nested)] == [v for _, v in _found(text)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "zip_code=94107",
+        "status_code: 4040",
+        "country_code=4401",
+        "error_code=4001",
+        "etag: W1x2Y3z4A5b6C7d8",
+    ],
+)
+def test_json_escapes_do_not_join_a_letter_onto_the_key(text):
+    """`\\nzip_code=` in a JSON-encoded body is `zip_code`, not `nzip_code`."""
+    assert _found(text) == []
+    for wrapped in ("Address\n" + text, "Row\t" + text):
+        assert _found(json.dumps({"body": wrapped})) == [], wrapped
+        assert _found(json.dumps({"r": json.dumps({"body": wrapped})})) == [], wrapped
 
 
 @pytest.mark.parametrize(
@@ -137,6 +169,32 @@ def test_finds_them_json_encoded(text):
         "userId: aB3dE5fG7hJ9kL",
         "etag: W1x2Y3z4A5b6C7d8",
         "Content-Type: application/json",
+        # A bare `code` in API JSON or YAML is a status or error code.
+        '{"error": {"code": 4001, "message": "Invalid"}}',
+        '{"ok":false,"error":"invalid_auth","code":4010}',
+        '{"status":"error","code":"4290"}',
+        '{"rows":[{"code":"100123","name":"Widget"}]}',
+        "country=GB&code=440100",
+        # Business-record codes.
+        "customer_code=4471",
+        "vendor_code: 10023",
+        "lot_code=20261",
+        "location_code=1001",
+        "ticket_code: 2241",
+        "mcc_code=5411",
+        "run_code=1234",
+        '{"tariff_code": "85171200"}',
+        # Links, data and ids that look random.
+        f"https://open.spotify.example/track/x?si={R20}",
+        f"https://video.example/watch?v=abc&list={R32}",
+        '{"data": "' + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB" + '"}',
+        '{"content": "' + "SGVsbG8gV29ybGQhIEhvdyBhcmUgeW91Pw" + '=="}',
+        '<script integrity="sha384-' + R32 + '">',
+        "integrity: sha512-" + R32,
+        "customer: cus_" + R14,
+        '"payment_intent": "pi_' + R20 + '"',
+        "In-Reply-To: <CA" + R20 + "@mail.example>",
+        "redirect?state=" + R20,
         "value: 12",
         "⟦secret:a1b2⟧",
     ],

@@ -40,15 +40,19 @@ _CODE_QUALIFIERS = (
     r"log[ -]?in|login|verification|verify|security|one[ -]time|backup|recovery|unlock|2fa|mfa"
 )
 _CODE_CUE = r"(?i:\b(?:" + _CODE_QUALIFIERS + r")[ \t]+codes?|\bpass[ -]?codes?|\botp)"
-#: `PIN` in capitals (a lower-case "pin" is usually the verb), or "pin code" / "pin number".
-_PIN_CUE = r"(?:\bPINs?|\b[Pp]in[ \t]+(?i:codes?|numbers?))"
+#: `PIN` in capitals (a lower-case "pin" is usually the verb), "pin code" / "pin number", or a pin
+#: that belongs to someone or something ("my pin", "the card pin", "collection pin").
+_PIN_CUE = (
+    r"(?:\bPINs?|\b[Pp]in[ \t]+(?i:codes?|numbers?)"
+    r"|(?i:\b(?:my|your|his|her|their|our|the|card|collection|door|access|sim|bank|debit|atm)[ \t]+pin))"
+)
 _PASSPORT_CUE = r"(?i:\bpassport(?:[ \t]+(?:numbers?|no\.?|#))?)"
 
 #: "for order 441", "on the booking", "of the visitor": a short phrase between the cue and the value.
 #: When one is present the value must follow `is`, `was` or a colon, so a number inside the phrase is
 #: never taken as the value.
 _CONNECTOR = r"[ \t]+(?:for|on|of|to|from)[ \t]+[^\n.:;=]{1,40}?(?:[ \t]+(?:is|was)\b|[ \t]*:)"
-_SEPARATOR = r"[ \t]*(?:(?:is|was)[ \t]+|[:=#-][ \t]*|)"
+_SEPARATOR = r"[ \t]*(?:(?:is|was)[ \t]*:?[ \t]*|[:=#-][ \t]*|)"
 #: A value ends at a non-word character that does not continue a number ("6815." ends a sentence;
 #: "2026-11-13" and "10:30" are not codes).
 _END = r"(?![A-Za-z0-9_-]|[.:,/][0-9])"
@@ -68,49 +72,84 @@ _PROSE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (CODE, _cue_rule(_CODE_CUE, _CODE_VALUE)),
     (PIN, _cue_rule(_PIN_CUE, _PIN_VALUE)),
     (IDENTIFIER, _cue_rule(_PASSPORT_CUE, _PASSPORT_VALUE)),
+    # The value first: "482193 is your verification code".
+    (
+        CODE,
+        re.compile(
+            r"(?<![A-Za-z0-9_.-])(?P<v>[0-9]{4,10})[ \t]+is[ \t]+(?i:your|the|my)[ \t]+(?:[\w-]+[ \t]+)?"
+            + _CODE_CUE
+        ),
+    ),
 )
 
-#: Quotes around a key or value, escaped or not (a JSON-encoded result keeps `\"`).
-_Q = r"(?:\\?[\"'])?"
-#: `yard_code=090373`, `client_pin: 7021`, `"passport": "PPCDHFZC6"`, `code=006960`.
+#: Quotes around a key or value.
+_Q = r"[\"']?"
+#: Where a key may start: not inside a word, a dotted name or a path.
+_KEY_START = r"(?<![A-Za-z0-9_.-])"
+#: `yard_code=090373`, `client_pin: 7021`, `gateCode: 4471`, `"passport_number": "PPCDHFZC6"`,
+#: `code=006960`.
 _KEY_RULE = re.compile(
-    r"(?<![A-Za-z0-9_.-])(?P<k>(?:[A-Za-z0-9]{1,20}[_-]){0,3}"
-    r"(?i:code|pin|passcode|otp|passport(?:[_-]?(?:no|num|number))?))"
+    _KEY_START + r"(?P<k>(?:[A-Za-z0-9]{1,20}[_-]){0,3}"
+    r"(?i:code|pin|passcode|otp|passport(?:[_-]?(?:no|num|number))?)"
+    r"|[a-z][a-z0-9]{1,19}(?:Code|Pin|PIN|Passcode|Passport(?:No|Num|Number)?))"
     + _Q
-    + r"[ \t]*[:=][ \t]*"
+    + r"[ \t]*(?P<sep>[:=])[ \t]*"
     + _Q
     + r"(?P<v>[A-Za-z0-9]{4,12})"
     + _END
 )
-#: Key prefixes that make `*_code` an ordinary value: postal, country, status and error codes, product
-#: and discount codes, language and currency codes.
+#: Key prefixes that make `*_code` an ordinary value: postal, country, status and error codes, product,
+#: business-record and discount codes, language and currency codes.
 _ORDINARY_CODE_PREFIX = frozenset(
     "zip postal post country area status error err exit return ret response resp http product item "
     "sku promo discount coupon voucher lang language locale currency color colour region iso tax vat "
     "sort bank swift bic qr bar barcode hs naics sic reason event type class char key op short dial "
     "phone airport iata icao station stop route flight course department dept cost gl account project "
-    "source src fiscal unit state county city branch store site plan tier mode format result".split()
-)
-#: Prose words right before a bare `code` key that make it an ordinary code ("error code: 4001").
-_ORDINARY_CODE_BEFORE = re.compile(
-    r"(?i)\b(?:" + "|".join(sorted(_ORDINARY_CODE_PREFIX)) + r")[ \t]*$"
+    "source src fiscal unit state county city branch store site plan tier mode format result customer "
+    "client vendor supplier merchant mcc lot batch location loc ticket run job tariff part model serial "
+    "invoice order shipment carrier service category group cpt icd diagnosis procedure exchange "
+    "market ticker isin cusip unspsc".split()
 )
 
 #: `value: <random>`, `"session": "<random>"`, `sig=<random>`: any key, a long value.
 _RANDOM_RULE = re.compile(
-    r"(?<![A-Za-z0-9_.-])(?P<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})"
+    _KEY_START
+    + r"(?P<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})"
     + _Q
     + r"[ \t]*[:=][ \t]*"
     + _Q
-    + r"(?P<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_-])"
+    + r"(?P<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-])"
 )
-#: Keys whose values are identifiers, digests or names, not secrets.
+#: Keys whose values are identifiers, digests, names, state or data, not secrets.
 _NOT_SECRET_KEY = re.compile(
     r"(?i)(?:^|[_.-])(?:id|ids|uuid|guid|hash|sha\d*|md5|digest|checksum|crc|commit|rev|revision|etag|"
     r"cid|ref|trace\w*|span\w*|request\w*|version|ver|build|sku|order|path|file|filename|url|uri|href|"
-    r"src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce)$"
-    r"|[a-z](?:Id|ID|Ids|Hash|Name|Url|Uri|Path|Version)$"
+    r"src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce|"
+    r"state|data|content|body|payload|blob|image|attachment|b64|base64|raw|integrity|list|si|"
+    r"in-reply-to|references|message-id|thread\w*|customer|payment_intent|charge|invoice|"
+    r"subscription|price|product)$"
 )
+#: camelCase keys ending in an id or name word (`userId`, `fileHash`); case-sensitive, so `sid` and
+#: `PHPSESSID` (session cookies) are not caught.
+_NOT_SECRET_CAMEL_KEY = re.compile(r"[a-z](?:Id|ID|Ids|Hash|Name|Url|Uri|Path|Version)$")
+#: A provider's object id (`cus_…`, `pi_…`, `ch_…`): a lower-case prefix and an underscore. Live keys of
+#: that form (`sk_live_…`) are vendor shapes the second redaction pass already masks.
+_PREFIXED_OBJECT_ID = re.compile(r"[a-z]{1,8}_")
+#: Subresource-integrity and lockfile hashes: `sha384-…`, `sha512-…`.
+_SRI = re.compile(r"(?i)sha(?:1|256|384|512)-")
+
+#: JSON string escapes (`\n`, `\t`, `\"`, any depth of encoding): read as the character they stand for,
+#: padded to the same length so offsets do not move, so a key on a new line of a JSON-encoded result
+#: starts its own word (`\nzip_code=` is `zip_code`, not `nzip_code`).
+_ESCAPE = re.compile(r"\\+([nrt\"'])")
+
+
+def _unescape(text: str) -> str:
+    def pad(m: re.Match[str]) -> str:
+        ch = m.group(1)
+        return " " * (len(m.group(0)) - 1) + ("\n" if ch in "nrt" else ch)
+
+    return _ESCAPE.sub(pad, text) if "\\" in text else text
 
 
 @dataclass(frozen=True)
@@ -138,6 +177,8 @@ def _looks_random(v: str) -> bool:
     core = v.rstrip("=")
     if len(core) < 12 or core.startswith(("/", "-", "_")):
         return False
+    if _PREFIXED_OBJECT_ID.match(core) or _SRI.match(core):
+        return False
     has_upper = any(c.isupper() for c in core)
     has_lower = any(c.islower() for c in core)
     has_digit = any(c.isdigit() for c in core)
@@ -151,25 +192,42 @@ def _looks_random(v: str) -> bool:
     return entropy >= 3.0
 
 
-def _code_key_ok(key: str, value: str, text: str, start: int) -> bool:
-    last = re.split(r"[_-]", key)
-    word = last[-1].lower()
-    if word.startswith("passport"):
-        return any(c.isdigit() for c in value) and not any(c.islower() for c in value)
+def _key_words(key: str) -> list[str]:
+    """`yard_code` → [yard, code]; `gateCode` → [gate, code]."""
+    return [w.lower() for w in re.split(r"[_-]|(?<=[a-z0-9])(?=[A-Z])", key) if w]
+
+
+def _key_kind(key: str, value: str, sep: str, text: str, start: int) -> str | None:
+    """The kind of secret a `key: value` pair holds, or None."""
+    words = _key_words(key)
+    if any(w.startswith("passport") for w in words):
+        ok = 6 <= len(value) <= 12 and any(c.isdigit() for c in value)
+        return IDENTIFIER if ok and not any(c.islower() for c in value) else None
     if not value.isdigit() or not 4 <= len(value) <= 10:
-        return False
-    if word in ("pin", "passcode", "otp"):
-        return True
-    # A `*_code` key: any qualifier but an ordinary one; a bare `code` key not after an ordinary word.
-    if len(last) > 1:
-        return last[-2].lower() not in _ORDINARY_CODE_PREFIX
-    return _ORDINARY_CODE_BEFORE.search(text[max(0, start - 24) : start]) is None
+        return None
+    if words[-1] in ("pin", "passcode", "otp"):
+        return PIN
+    if len(words) > 1:
+        # A `*_code` key: any qualifier but an ordinary one.
+        return CODE if words[-2] not in _ORDINARY_CODE_PREFIX else None
+    # A bare `code` key only as a form or query field (`-d 'code=006960'`), with six or more digits: a
+    # JSON or YAML `code:` is far more often a status or error code.
+    if sep != "=" or len(value) < 6 or text[max(0, start - 1) : start] in ("?", "&"):
+        return None
+    return CODE
+
+
+def _query_param(text: str, start: int) -> bool:
+    """The key starts a URL query or form field (`?si=…`, `&list=…`): share links and tracking
+    parameters, not secrets the agent wrote."""
+    return start > 0 and text[start - 1] in "?&"
 
 
 def find_secret_like(text: str) -> list[SecretLike]:
     """Every secret-like value in `text`, in order, without overlaps."""
     if not text or len(text) < 6:
         return []
+    text = _unescape(text)
     found: list[SecretLike] = []
     for kind, rx in _PROSE_RULES:
         for m in rx.finditer(text):
@@ -180,20 +238,17 @@ def find_secret_like(text: str) -> list[SecretLike]:
                 continue
             found.append(SecretLike(kind, v, m.start("v"), m.end("v")))
     for m in _KEY_RULE.finditer(text):
-        key, v = m.group("k"), m.group("v")
-        if _code_key_ok(key, v, text, m.start()):
-            word = re.split(r"[_-]", key)[-1].lower()
-            kind = (
-                IDENTIFIER
-                if word.startswith("passport")
-                else PIN
-                if word in ("pin", "passcode", "otp")
-                else CODE
-            )
-            found.append(SecretLike(kind, v, m.start("v"), m.end("v")))
+        kind = _key_kind(m.group("k"), m.group("v"), m.group("sep"), text, m.start())
+        if kind is not None:
+            found.append(SecretLike(kind, m.group("v"), m.start("v"), m.end("v")))
     for m in _RANDOM_RULE.finditer(text):
         key, v = m.group("k"), m.group("v")
-        if _NOT_SECRET_KEY.search(key) or not _looks_random(v):
+        if (
+            _NOT_SECRET_KEY.search(key)
+            or _NOT_SECRET_CAMEL_KEY.search(key)
+            or _query_param(text, m.start())
+            or not _looks_random(v)
+        ):
             continue
         found.append(SecretLike(RANDOM, v, m.start("v"), m.end("v")))
     found.sort(key=lambda s: (s.start, -s.end))

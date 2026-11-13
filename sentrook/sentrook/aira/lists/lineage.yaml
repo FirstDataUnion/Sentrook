@@ -1,7 +1,7 @@
 # History lineage (context probe): data for the arms that read what the agent did earlier in the
 # session around the pending call. Rules are code in `probes/context.py`; these are the vocabularies.
 
-version: 1
+version: 2
 
 # Where an installed file acts as a mail or notification filter. Regex over the normalised
 # destination path of a copy, move or write outside the workspace.
@@ -47,7 +47,7 @@ filter_action_patterns:
 # Words in the owner's request that ask for a secret value to go along with a send ("including the
 # env value I asked you to copy"). When the request uses one, an agent-written file carrying a secret
 # is what the owner asked for, and the secret-carried-to-send arm stays quiet; the consequence of
-# sending a placeholder or a redactable shape is still scored by AIRA.
+# sending a secret is still scored by AIRA.
 secret_request_terms:
   patterns:
     - '\benv(?:ironment)?\s+(?:values?|var(?:iable)?s?)\b'
@@ -56,9 +56,13 @@ secret_request_terms:
     - '\b(?:access|auth|bearer)?\s*tokens?\b'
     - '\bpasswords?\b'
     - '\bcredentials?\b'
-    # The secret-like values the redactors leave raw (prepare.secret_like): "send the gate code",
-    # "post the collection PIN", "mail the visitor passport number". AIRA reads the same terms: a value
-    # only that detector finds is not a secret source when the owner asked for one to go.
+
+# Words in the owner's request that name one of the secret-like values the redactors leave raw
+# (prepare.secret_like): "send the gate code", "post the collection PIN", "mail the visitor passport
+# number". When the request uses one, a value only that detector finds is not a secret carried to the
+# send, for the lineage rule and for AIRA's secret source; placeholders and redactable shapes still are.
+secret_like_request_terms:
+  patterns:
     - '\b(?:gate|door|alarm|access|entry|entrance|keypad|lockbox|sign[ -]?in|log[ -]?in|login|verification|security|one[ -]time|backup|recovery|unlock)\s+codes?\b'
     - '\bpass[ -]?codes?\b'
     - '(?-i:\bPINs?\b)'
