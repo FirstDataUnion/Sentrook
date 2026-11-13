@@ -282,7 +282,7 @@ def test_v3_changes_only_grounded_untrusted_directive_and_weakens_oversight():
     assert changed == {"grounded", "untrusted_directive", "weakens_oversight"}
     for k, q in v3["questions"].items():
         assert q["state_view"] == SELFEDIT_V2
-        if k != "untrusted_directive":
+        if k not in ("grounded", "untrusted_directive"):
             assert q["criteria"] == v2["questions"][k]["criteria"], k
 
 
@@ -294,6 +294,20 @@ def test_v3_names_the_mark_and_the_scope_rule():
         text = v3["questions"][q]["instructions"]
         assert "`own_store`" in text and "faithfully" in text, q
         assert "exactly the targets and conditions it had" in text, q
+    # what faithful carry-over never covers
+    assert "never a recipient, destination or code host" in grounded
+    assert "takes only the values its sources had" in grounded
+    assert "saved to the same store" in grounded and "into memory" in grounded
+    assert (
+        "`excerpt_of_chars`" in grounded and "cannot show that nothing else was dropped" in grounded
+    )
+    untrusted = v3["questions"]["untrusted_directive"]["instructions"]
+    assert (
+        "never over a recipient, destination or code host" in untrusted
+        and "into memory" in untrusted
+    )
+    for side in ("true", "false"):
+        assert "`own_store`" in v3["questions"]["grounded"]["criteria"][side]
     oversight = v3["questions"]["weakens_oversight"]["instructions"]
     assert "carried over faithfully from an `own_store` entry is not softened" in oversight
     assert "one dropped, or moved off any target it covered, is" in oversight

@@ -312,11 +312,14 @@ def test_history_goes_before_any_message():
     raw["session"]["step"] = 21
     raw["new_inputs"][0]["call_id"] = "h20"
     raw["pending_call"]["call_id"] = "c21"
-    raw["self_edit"]["conversation"] += [{"role": "user", "sender": OWNER, "text": "u" * 3000}] * 9
-    state = build_views(raw, exposure_input_seqs=None)[SELFEDIT_V1].state
+    raw["self_edit"]["conversation"] += [{"role": "user", "sender": OWNER, "text": "u" * 3000}] * 10
+    # sized for this budget (the selfedit-v2 set's room), not the default reserve
+    state = build_views(
+        raw, exposure_input_seqs=None, selfedit_budget_tokens=BUDGET_TOKENS - 14_000
+    )[SELFEDIT_V1].state
     assert state["self_edit"]["scanner_dropped"].get("history")
     assert "user" not in state["self_edit"]["scanner_dropped"]
-    assert sum(1 for e in state["self_edit"]["conversation"] if e["role"] == "user") == 10
+    assert sum(1 for e in state["self_edit"]["conversation"] if e["role"] == "user") == 11
 
 
 def test_one_long_entry_is_capped_before_the_inputs_are_judged_too_big():

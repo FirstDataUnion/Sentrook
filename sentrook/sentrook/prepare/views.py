@@ -314,7 +314,7 @@ def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> di
 #: Self-edit view caps: characters per conversation entry (the plugin sends less; this is the scanner's own bound), and
 #: the room left for the self-edit questions, which repeat a longer preamble than the call questions.
 SELF_EDIT_ENTRY_CAP_CHARS = 4000
-SELFEDIT_QUESTIONS_RESERVE_TOKENS = 14_500
+SELFEDIT_QUESTIONS_RESERVE_TOKENS = 15_000
 SELFEDIT_STATE_BUDGET_TOKENS = BUDGET_TOKENS - SELFEDIT_QUESTIONS_RESERVE_TOKENS
 
 

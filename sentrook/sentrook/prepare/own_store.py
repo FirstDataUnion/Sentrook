@@ -7,13 +7,17 @@ that carries them over unchanged (a curator merging near-duplicates, a review pa
 nothing new. The self-edit questions can only treat the two differently if they can tell them apart, and the content
 cannot be trusted to say which it is, so the scanner marks such entries itself.
 
-A read is marked only from what the host sets: the platform and the bare tool name (and, for a `new_inputs` item, a
-`host` provider and an `ok` status). Any `source` key the request already carries on these entries is dropped first,
-so a plugin or a tool result cannot mark itself.
+A read is marked only from the platform and the bare tool name the plugin reports (and, for a `new_inputs` item, a
+`host` provider and an `ok` status), never from a tool's output. Any `source` key the request already carries on these
+entries is dropped first, so no tool result, and no key a plugin adds, can mark an entry; the plugin's tool name and
+platform remain trusted, as everywhere else in the request. A conversation entry has no status, so a failed read is
+marked too; it carries no skill content to carry over.
 
 Per platform:
 - Hermes: `skill_view` and `skills_list` serve only installed skills (the agent's own directory, the owner's configured
-  external directories, plugin and bundled skills); hub search and install are separate tools. Hermes's `memory` tool
+  external directories, a trusted project's skill directories, plugin and bundled skills); hub search and install are
+  separate tools. A project's skill applies only in that project, so the questions count moving its content into the
+  agent's own library, or any skill into memory, as applying it more widely. Hermes's `memory` tool
   is left out: it writes, and its results only echo entries as a side effect.
 - OpenClaw is not covered: its own-store reads are plain `read` calls whose relative paths cannot be resolved for
   entries from the owner's session, and `skill_workshop` reads include proposals nobody has approved.
