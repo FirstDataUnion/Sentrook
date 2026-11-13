@@ -268,7 +268,7 @@ def _raw(name: str) -> dict:
     return json.loads((QUESTIONS_DIR / f"{name}.json").read_text())
 
 
-def test_v3_changes_only_grounded_and_untrusted_directive():
+def test_v3_changes_only_grounded_untrusted_directive_and_weakens_oversight():
     v2, v3 = _raw("selfedit-v2"), _raw("selfedit-v3")
     assert v3["state_view"] == SELFEDIT_V2 and v3["mapping"] == v2["mapping"]
     assert v3["derived_from"]["question_set"] == "selfedit-v2"
@@ -279,7 +279,7 @@ def test_v3_changes_only_grounded_and_untrusted_directive():
         for k in v2["questions"]
         if v2["questions"][k]["instructions"] != v3["questions"][k]["instructions"]
     }
-    assert changed == {"grounded", "untrusted_directive"}
+    assert changed == {"grounded", "untrusted_directive", "weakens_oversight"}
     for k, q in v3["questions"].items():
         assert q["state_view"] == SELFEDIT_V2
         if k != "untrusted_directive":
@@ -292,7 +292,11 @@ def test_v3_names_the_mark_and_the_scope_rule():
     assert "`source: own_store`" in grounded and "never set by their content" in grounded
     for q in ("grounded", "untrusted_directive"):
         text = v3["questions"][q]["instructions"]
-        assert "`own_store`" in text and "same scope" in text, q
+        assert "`own_store`" in text and "faithfully" in text, q
+        assert "exactly the targets and conditions it had" in text, q
+    oversight = v3["questions"]["weakens_oversight"]["instructions"]
+    assert "carried over faithfully from an `own_store` entry is not softened" in oversight
+    assert "one dropped, or moved off any target it covered, is" in oversight
     # the curator clause no longer depends on the kind the host reports
     assert "whatever `self_edit.kind` is" in grounded
 
