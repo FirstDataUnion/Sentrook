@@ -24,7 +24,9 @@ oracle first when the call view asks for it), and is absent when nothing is know
 
 `selfedit-v1` is the view for a declared self-edit (the host's own background save to memory or skills): the call-v5
 view without `request` (a self-edit has no owner request of its own) and with the `self_edit` block, which carries the
-conversation the host's process reviewed. Built only when the request has the block.
+conversation the host's process reviewed. Built only when the request has the block. `selfedit-v2` is the same view with
+the conversation's and the inputs' reads of the agent's own skill library marked `source: own_store` by the scanner
+(`own_store.py`), so the questions can tell the store as it stands from content the agent read.
 
 `trim-v4` adds `call-v5`: the call-v3 view whose `reputation` block also lists the call's unknown
 entities that are near misses of a `known_good` one (`verdict: unknown`, `near_miss`: the entry). The
@@ -38,6 +40,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..jev.chunking import BUDGET_TOKENS, est_tokens
+from .own_store import mark_own_store
 from .redact import second_pass
 
 VIEWS_VERSION = "trim-v1"
@@ -45,6 +48,7 @@ VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
 VIEWS_VERSION_V4 = "trim-v4"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
+VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
@@ -59,6 +63,9 @@ CALL_V2 = "call-v2"
 CALL_V3 = "call-v3"
 CALL_V5 = "call-v5"
 SELFEDIT_V1 = "selfedit-v1"
+SELFEDIT_V2 = "selfedit-v2"
+#: The views for a declared self-edit; each is built only when the request has the `self_edit` block.
+SELFEDIT_VIEWS = frozenset({SELFEDIT_V1, SELFEDIT_V2})
 SELF_EDIT = "self_edit"
 #: The call-v3 block of entity-library verdicts, added by the call probe once the oracle has run.
 REPUTATION = "reputation"
@@ -112,8 +119,9 @@ VIEW_KEYS[SELFEDIT_V1] = (
     "grants",
     REPUTATION,
 )
+VIEW_KEYS[SELFEDIT_V2] = VIEW_KEYS[SELFEDIT_V1]
 #: Views whose `reputation` block lists near misses as well as known verdicts.
-NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1})
+NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1, SELFEDIT_V2})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -123,6 +131,7 @@ VIEW_VERSIONS: dict[str, str] = {
     CALL_V3: VIEWS_VERSION_V3,
     CALL_V5: VIEWS_VERSION_V4,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
+    SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
 #: Which probe a view serves.
 VIEW_KIND: dict[str, str] = {
@@ -133,6 +142,7 @@ VIEW_KIND: dict[str, str] = {
     CALL_V3: CALL,
     CALL_V5: CALL,
     SELFEDIT_V1: CALL,
+    SELFEDIT_V2: CALL,
 }
 
 #: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
@@ -304,7 +314,7 @@ def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> di
 #: Self-edit view caps: characters per conversation entry (the plugin sends less; this is the scanner's own bound), and
 #: the room left for the self-edit questions, which repeat a longer preamble than the call questions.
 SELF_EDIT_ENTRY_CAP_CHARS = 4000
-SELFEDIT_QUESTIONS_RESERVE_TOKENS = 14_000
+SELFEDIT_QUESTIONS_RESERVE_TOKENS = 15_000
 SELFEDIT_STATE_BUDGET_TOKENS = BUDGET_TOKENS - SELFEDIT_QUESTIONS_RESERVE_TOKENS
 
 
@@ -492,13 +502,15 @@ def _fit_call_view(v: dict[str, Any], budget_tokens: int) -> _Fitted:
 
 
 def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int) -> BuiltView:
-    """A call view (or the self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
-    self-edit view keeps its own fitting: its conversation goes after the inputs."""
+    """A call view (or a self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
+    self-edit views keep their own fitting: their conversation goes after the inputs."""
     v = view(trim(raw), name)
+    if name == SELFEDIT_V2:
+        mark_own_store(v)
     inputs = v.get("new_inputs")
     truncated = stripped = False
     fitted = _Fitted()
-    if name != SELFEDIT_V1:
+    if name not in SELFEDIT_VIEWS:
         if isinstance(inputs, list):
             truncated = cap_inputs(inputs)
         if est_tokens(v) > budget_tokens:
@@ -534,8 +546,8 @@ def build_views(
 ) -> dict[str, BuiltView]:
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
     call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs. The call
-    views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit view to
-    `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
+    views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
+    selfedit-v2) to `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
     reserves when not given."""
     call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
     v3 = call_view_v3(raw, budget_tokens=call_budget)
@@ -548,11 +560,11 @@ def build_views(
         CALL_V5: v3,
     }
     if isinstance(raw.get(SELF_EDIT), dict):
-        out[SELFEDIT_V1] = _call_view_with_inputs(
-            raw,
-            SELFEDIT_V1,
-            budget_tokens=SELFEDIT_STATE_BUDGET_TOKENS
+        selfedit_budget = (
+            SELFEDIT_STATE_BUDGET_TOKENS
             if selfedit_budget_tokens is None
-            else selfedit_budget_tokens,
+            else selfedit_budget_tokens
         )
+        for name in (SELFEDIT_V1, SELFEDIT_V2):
+            out[name] = _call_view_with_inputs(raw, name, budget_tokens=selfedit_budget)
     return out

@@ -313,7 +313,10 @@ def test_history_goes_before_any_message():
     raw["new_inputs"][0]["call_id"] = "h20"
     raw["pending_call"]["call_id"] = "c21"
     raw["self_edit"]["conversation"] += [{"role": "user", "sender": OWNER, "text": "u" * 3000}] * 10
-    state = build_views(raw, exposure_input_seqs=None)[SELFEDIT_V1].state
+    # sized for this budget (the selfedit-v2 set's room), not the default reserve
+    state = build_views(
+        raw, exposure_input_seqs=None, selfedit_budget_tokens=BUDGET_TOKENS - 14_000
+    )[SELFEDIT_V1].state
     assert state["self_edit"]["scanner_dropped"].get("history")
     assert "user" not in state["self_edit"]["scanner_dropped"]
     assert sum(1 for e in state["self_edit"]["conversation"] if e["role"] == "user") == 11
@@ -772,7 +775,7 @@ def test_must_allow_a_grounded_openclaw_skill_write():
 
 
 def test_serve_config_selects_or_disables_the_self_edit_set():
-    assert ServeConfig.from_env({}).jev_selfedit_question_set == "selfedit-v2"
+    assert ServeConfig.from_env({}).jev_selfedit_question_set == "selfedit-v3"
     for off in ("none", "off", "OFF"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_SELFEDIT_QUESTIONS": off}).jev_selfedit_question_set

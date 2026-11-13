@@ -443,7 +443,7 @@ def test_question_set_env_round_trip_and_health():
     assert jev["question_sets"] == {
         "exposure": "exposure-v2",
         "call": "call-v2",
-        "self_edit": "selfedit-v2",
+        "self_edit": "selfedit-v3",
     }
     assert jev["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
 

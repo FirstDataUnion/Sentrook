@@ -27,7 +27,7 @@ from sentrook.prepare.views import (
     CALL_V3,
     CALL_V5,
     SELFEDIT_QUESTIONS_RESERVE_TOKENS,
-    SELFEDIT_V1,
+    SELFEDIT_VIEWS,
     VIEW_KIND,
     build_views,
     state_budget_tokens,
@@ -44,7 +44,7 @@ def _shipped(kind: str) -> list[str]:
         view = json.loads(path.read_text(encoding="utf-8")).get("state_view", "trimmed")
         if VIEW_KIND.get(view) != CALL:
             continue
-        if (view == SELFEDIT_V1) == (kind == "selfedit"):
+        if (view in SELFEDIT_VIEWS) == (kind == "selfedit"):
             names.append(path.stem)
     return names
 
@@ -55,7 +55,7 @@ SELFEDIT_SETS = _shipped("selfedit")
 
 def test_the_shipped_sets_are_found():
     assert {"call-v2", "call-v5", "call-v6"} <= set(CALL_SETS)
-    assert {"selfedit-v1", "selfedit-v2"} <= set(SELFEDIT_SETS)
+    assert {"selfedit-v1", "selfedit-v2", "selfedit-v3"} <= set(SELFEDIT_SETS)
 
 
 def _questions_tokens(name: str) -> int:
