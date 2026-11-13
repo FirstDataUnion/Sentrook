@@ -35,7 +35,7 @@ from .prepare.views import (
     EXPOSURE,
     NEAR_MISS_VIEWS,
     REPUTATION,
-    SELFEDIT_V1,
+    SELFEDIT_VIEWS,
     VIEW_KEYS,
     VIEW_VERSIONS,
     state_budget_tokens,
@@ -148,7 +148,7 @@ def view_budgets(question_sets: Iterable[QuestionSet | None]) -> tuple[int | Non
             raise ValueError(
                 f"question set {qs.name!r} leaves no room for the request in the context"
             )
-        if qs.state_view == SELFEDIT_V1:
+        if qs.state_view in SELFEDIT_VIEWS:
             selfedit = budget if selfedit is None else min(selfedit, budget)
         else:
             call = budget if call is None else min(call, budget)
