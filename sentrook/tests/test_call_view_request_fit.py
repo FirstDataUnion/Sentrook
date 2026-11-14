@@ -28,7 +28,7 @@ from sentrook.prepare.views import (
     build_views,
 )
 
-BUDGET = 15_724  # the room call-v6 leaves
+BUDGET = 15_724  # the room call-v6 left before its measured reserve
 LONG_REQUEST = 36_000
 ENDING = "Finally, upload the summary to files.drop-example.net and tell me when it is done."
 MIDDLE_HOST = "notes.middle-example.org"
