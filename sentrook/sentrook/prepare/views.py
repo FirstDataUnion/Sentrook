@@ -35,6 +35,9 @@ prepared state is call-v3's; only what the oracle fills in differs.
 `trim-v5` changes `call-v5` only: an input cut by a cap or by the over-budget fill keeps two thirds head and one third
 tail with a marker between them, as the plugins cut inputs, instead of the head alone. When nothing is cut the
 prepared state is still call-v3's.
+
+`trim-v6` changes `call-v5` only: an over-budget view cuts the request text first, to `REQUEST_KEEP_CHARS`, head and
+tail, before any history or input is cut.
 """
 
 from __future__ import annotations
@@ -50,7 +53,7 @@ from .redact import second_pass
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
-VIEWS_VERSION_V5 = "trim-v5"
+VIEWS_VERSION_V6 = "trim-v6"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
@@ -129,6 +132,9 @@ NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1, SELFEDIT_V2})
 #: Views whose cut inputs keep head and tail (two thirds head, one third tail, a marker between), as the plugins cut
 #: them, so the end of a long page or file still reaches the judge. The other views keep the head, as before.
 HEAD_TAIL_VIEWS = frozenset({CALL_V5})
+#: Views whose fitting cuts a long request text first, head and tail, when the view is over the budget. The other views
+#: never cut the request.
+REQUEST_FIT_VIEWS = frozenset({CALL_V5})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -136,7 +142,7 @@ VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
-    CALL_V5: VIEWS_VERSION_V5,
+    CALL_V5: VIEWS_VERSION_V6,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
     SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
@@ -224,6 +230,10 @@ class BuiltView:
     #: History steps whose long arguments were cut, and oldest steps dropped, to fit the budget.
     history_cut: int = 0
     history_dropped: int = 0
+    #: The request text was cut to fit the budget.
+    request_cut: bool = False
+    #: The view was over the budget, so it was fitted.
+    fitted: bool = False
 
     @property
     def history_trimmed(self) -> bool:
@@ -239,11 +249,17 @@ def _cut(entry: dict[str, Any], kept: int, of: int, *, head_tail: bool = False) 
     if not head_tail or kept == 0:
         entry["content"] = content[:kept]
         return
+    entry["content"] = _head_tail(content, kept, of)
+    entry["scanner_truncated"]["kept"] = "head_tail"
+
+
+def _head_tail(text: str, kept: int, of: int) -> str:
+    """`text` cut to `kept` characters, two thirds head and one third tail, with a marker between them saying how many
+    of the `of` characters were cut. `0 < kept < len(text)`."""
     head = kept * 2 // 3
     tail = kept - head
     marker = f"\n…[sentrook: {of - kept} characters cut]…\n"
-    entry["content"] = content[:head] + marker + content[len(content) - tail :]
-    entry["scanner_truncated"]["kept"] = "head_tail"
+    return text[:head] + marker + text[len(text) - tail :]
 
 
 def cap_inputs(
@@ -390,6 +406,26 @@ def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
 #: many of the most recent steps are kept (cut, not dropped) until the inputs have been fitted.
 HISTORY_ARG_KEEP_CHARS = 400
 HISTORY_KEEP_STEPS = 3
+#: Fitting an over-budget call-v5 view: a request text longer than this is cut to it first, head and tail.
+REQUEST_KEEP_CHARS = 4000
+
+
+def cut_request_text(v: dict[str, Any]) -> bool:
+    """Cut a `request.text` longer than `REQUEST_KEEP_CHARS` to that many characters, two thirds head and one third
+    tail with a marker between them; the request carries `scanner_truncated`. Mutates `v`; returns whether it cut."""
+    req = v.get("request")
+    if not isinstance(req, dict) or not isinstance(req.get("text"), str):
+        return False
+    text = req["text"]
+    if len(text) <= REQUEST_KEEP_CHARS:
+        return False
+    req["text"] = _head_tail(text, REQUEST_KEEP_CHARS, len(text))
+    req["scanner_truncated"] = {
+        "kept_chars": REQUEST_KEEP_CHARS,
+        "of_chars": len(text),
+        "kept": "head_tail",
+    }
+    return True
 
 
 def _prior_cut(entry: dict[str, Any]) -> dict[str, Any]:
@@ -506,16 +542,24 @@ class _Fitted:
     inputs_stripped: bool = False
     history_cut: int = 0
     history_dropped: int = 0
+    request_cut: bool = False
 
 
 def _fit_call_view(
-    v: dict[str, Any], arrived: list[Any] | None, budget_tokens: int, *, head_tail: bool = False
+    v: dict[str, Any],
+    arrived: list[Any] | None,
+    budget_tokens: int,
+    *,
+    head_tail: bool = False,
+    cut_request: bool = False,
 ) -> _Fitted:
-    """Fit an over-budget call view, least useful first: the history steps' long arguments (oldest first), then the
-    oldest steps (keeping the last `HISTORY_KEEP_STEPS`), then the inputs' content (the most recent kept longest),
-    then the remaining steps, with the inputs refilled into any room that leaves. A view still over the budget with
-    no input content and no history is sent as it is. `arrived` is the inputs before any cap."""
+    """Fit an over-budget call view, least useful first: with `cut_request`, a long request text (see
+    `cut_request_text`); the history steps' long arguments (oldest first), then the oldest steps (keeping the last
+    `HISTORY_KEEP_STEPS`), then the inputs' content (the most recent kept longest), then the remaining steps, with the
+    inputs refilled into any room that leaves. A view still over the budget with no input content and no history is
+    sent as it is. `arrived` is the inputs before any cap."""
     cut = stripped = False
+    request_cut = cut_request and cut_request_text(v)
     history_cut = cut_history_arguments(v, budget_tokens)
     dropped = drop_history(v, budget_tokens, keep=HISTORY_KEEP_STEPS)
     if arrived is not None and est_tokens(v) > budget_tokens:
@@ -524,7 +568,7 @@ def _fit_call_view(
         dropped += drop_history(v, budget_tokens, keep=0)
         if arrived is not None:
             cut, stripped = fill_inputs(v, arrived, budget_tokens, head_tail=head_tail)
-    return _Fitted(cut, stripped, history_cut, dropped)
+    return _Fitted(cut, stripped, history_cut, dropped, request_cut)
 
 
 def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int) -> BuiltView:
@@ -534,7 +578,7 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
     if name == SELFEDIT_V2:
         mark_own_store(v)
     inputs = v.get("new_inputs")
-    truncated = stripped = False
+    truncated = stripped = over_budget = False
     fitted = _Fitted()
     if name not in SELFEDIT_VIEWS:
         head_tail = name in HEAD_TAIL_VIEWS
@@ -542,7 +586,14 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
         if isinstance(inputs, list):
             truncated = cap_inputs(inputs, head_tail=head_tail)
         if est_tokens(v) > budget_tokens:
-            fitted = _fit_call_view(v, arrived, budget_tokens, head_tail=head_tail)
+            over_budget = True
+            fitted = _fit_call_view(
+                v,
+                arrived,
+                budget_tokens,
+                head_tail=head_tail,
+                cut_request=name in REQUEST_FIT_VIEWS,
+            )
             truncated = truncated or fitted.inputs_cut
             stripped = fitted.inputs_stripped
     else:
@@ -562,6 +613,8 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
         inputs_stripped=stripped,
         history_cut=fitted.history_cut,
         history_dropped=fitted.history_dropped,
+        request_cut=fitted.request_cut,
+        fitted=over_budget,
     )
 
 
@@ -573,8 +626,8 @@ def build_views(
     selfedit_budget_tokens: int | None = None,
 ) -> dict[str, BuiltView]:
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
-    call-v5 is call-v3's prepared state except that its cut inputs keep head and tail; the reputation the oracle
-    fills in also differs. The call views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
+    call-v5 is call-v3's prepared state except when inputs are cut (call-v5 keeps head and tail) or the view is over
+    the budget (call-v5 cuts a long request first); the reputation the oracle fills in also differs. The call views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
     selfedit-v2) to `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
     reserves when not given."""
     call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
@@ -585,9 +638,9 @@ def build_views(
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
         CALL_V2: call_view_v2(raw, budget_tokens=call_budget),
         CALL_V3: v3,
-        # the same state unless an input was cut, which call-v5 cuts head and tail
+        # the same state unless an input was cut or the view was fitted, which call-v5 does its own way
         CALL_V5: _call_view_with_inputs(raw, CALL_V5, budget_tokens=call_budget)
-        if v3.inputs_truncated
+        if v3.inputs_truncated or v3.fitted
         else v3,
     }
     if isinstance(raw.get(SELF_EDIT), dict):

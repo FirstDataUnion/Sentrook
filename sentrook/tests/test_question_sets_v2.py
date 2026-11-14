@@ -107,7 +107,7 @@ def test_call_v2_view_adds_the_inputs_between_history_and_pending_call(harm_case
         EXPOSURE_V2: "trim-v2",
         CALL_V2: "trim-v2",
         "call-v3": "trim-v3",
-        "call-v5": "trim-v5",
+        "call-v5": "trim-v6",
     }
 
 
@@ -182,6 +182,7 @@ def test_small_inputs_are_not_cut(harm_case):
         "inputs_stripped": False,
         "history_cut": 0,
         "history_dropped": 0,
+        "request_cut": False,
     }
 
 

@@ -145,6 +145,7 @@ class _JevProbe:
             out["inputs_stripped"] = bool(meta.get("inputs_stripped"))
             out["history_cut"] = int(meta.get("history_cut") or 0)
             out["history_dropped"] = int(meta.get("history_dropped") or 0)
+            out["request_cut"] = bool(meta.get("request_cut"))
         if self.step is ProbeStep.JEV_CALL and REPUTATION in VIEW_KEYS.get(self.view_name, ()):
             out["reputation_entries"] = len(prepared.oracle_verdicts)
         return out
