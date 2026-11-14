@@ -412,19 +412,24 @@ REQUEST_KEEP_CHARS = 4000
 
 def cut_request_text(v: dict[str, Any]) -> bool:
     """Cut a `request.text` longer than `REQUEST_KEEP_CHARS` to that many characters, two thirds head and one third
-    tail with a marker between them; the request carries `scanner_truncated`. Mutates `v`; returns whether it cut."""
+    tail with a marker between them; the request carries `scanner_truncated`. A request just over the keep size is
+    left whole when the marker and the record would make it no smaller. Mutates `v`; returns whether it cut."""
     req = v.get("request")
     if not isinstance(req, dict) or not isinstance(req.get("text"), str):
         return False
     text = req["text"]
     if len(text) <= REQUEST_KEEP_CHARS:
         return False
-    req["text"] = _head_tail(text, REQUEST_KEEP_CHARS, len(text))
-    req["scanner_truncated"] = {
+    cut = dict(req)
+    cut["text"] = _head_tail(text, REQUEST_KEEP_CHARS, len(text))
+    cut["scanner_truncated"] = {
         "kept_chars": REQUEST_KEEP_CHARS,
         "of_chars": len(text),
         "kept": "head_tail",
     }
+    if est_tokens(cut) >= est_tokens(req):
+        return False
+    v["request"] = cut
     return True
 
 

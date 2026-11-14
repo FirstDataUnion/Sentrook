@@ -151,6 +151,24 @@ def test_a_request_no_longer_than_the_keep_size_is_byte_identical_even_over_budg
     assert built.state == views[CALL_V3].state
 
 
+def test_a_request_just_over_the_keep_size_is_cut_only_when_that_saves_room(attack_case):
+    """The marker and the record add about a hundred characters, so a cut just past the keep size would grow the
+    request; it is left whole, and other content is fitted as before."""
+    for size, cut in (
+        (REQUEST_KEEP_CHARS + 1, False),
+        (REQUEST_KEEP_CHARS + 60, False),
+        (REQUEST_KEEP_CHARS + 400, True),
+    ):
+        raw = _raw(attack_case, request=_request(size), steps=40)
+        views = _views(raw)
+        built = views[CALL_V5]
+        assert built.history_trimmed and built.request_cut is cut, size
+        if not cut:
+            assert built.state == views[CALL_V3].state
+        else:
+            assert est_tokens(built.state["request"]) < est_tokens(raw["request"])
+
+
 def test_a_long_request_within_the_budget_is_untouched(attack_case):
     request = _request(LONG_REQUEST)
     raw = _raw(attack_case, request=request, steps=2, newest=500)
