@@ -29,7 +29,13 @@ from sentrook.prepare.views import (
 )
 
 
-def _raw(case: dict, sizes: list[int], *, seqs: list | None = None) -> dict:
+def _raw(
+    case: dict,
+    sizes: list[int],
+    *,
+    seqs: list | None = None,
+    line: str = "row {n} of the listing\n",
+) -> dict:
     """The case with no history and one input per size (`input_seq` 1, 2, … unless `seqs` says otherwise)."""
     raw = copy.deepcopy(case["fixture"])
     raw["history"] = []
@@ -40,7 +46,7 @@ def _raw(case: dict, sizes: list[int], *, seqs: list | None = None) -> dict:
         entry["input_seq"] = (seqs or list(range(1, len(sizes) + 1)))[n]
         if entry["input_seq"] is None:
             del entry["input_seq"]
-        entry["content"] = (f"row {n} of the listing\n" * size)[:size]
+        entry["content"] = (line.format(n=n) * size)[:size]
         raw["new_inputs"].append(entry)
     return raw
 
@@ -88,7 +94,7 @@ def _largest_fitting_total(v: dict, arrived: list, budget: int, total: int) -> i
 )
 def test_the_fill_takes_the_largest_total_that_fits(attack_case, sizes, seqs):
     """Checked against every total from 0 to the capped sum, over budgets across the whole range."""
-    raw = _raw(attack_case, sizes, seqs=seqs)
+    raw = _raw(attack_case, sizes, seqs=seqs, line="row {n}: “quoted”, \\path, é ✓\n")
     v = view(trim(raw), CALL_V5)
     arrived = copy.deepcopy(v["new_inputs"])
     total = sum(min(s, CALL_INPUT_CAP_CHARS) for s in sizes)
@@ -97,14 +103,38 @@ def test_the_fill_takes_the_largest_total_that_fits(attack_case, sizes, seqs):
         inputs = copy.deepcopy(arrived)
         cap_inputs(inputs, total=t, head_tail=True)
         sizes_at.append(est_tokens(dict(v, new_inputs=inputs)))
-    low, high = sizes_at[0], sizes_at[-1]
+    low, high = min(sizes_at) - 5, sizes_at[-1]
     assert sizes_at != sorted(sizes_at), "the view should shrink where an input becomes whole"
     for budget in range(low, high, max(1, (high - low) // 60)):
-        expected = max(t for t, size in enumerate(sizes_at) if size <= budget)
+        fitting = [t for t, size in enumerate(sizes_at) if size <= budget]
         w = copy.deepcopy(v)
-        fill_inputs(w, arrived, budget, head_tail=True)
+        cut, stripped = fill_inputs(w, arrived, budget, head_tail=True)
+        assert cut
+        if not fitting:  # nothing fits: every content is emptied
+            assert stripped and sum(_kept(w["new_inputs"])) == 0, budget
+            continue
         assert est_tokens(w) <= budget
-        assert sum(_kept(w["new_inputs"])) == expected, budget
+        assert sum(_kept(w["new_inputs"])) == max(fitting), budget
+        assert stripped is (max(fitting) == 0), budget
+
+
+def test_a_short_result_is_kept_whole_when_emptying_everything_does_not_fit():
+    """Emptying an input adds its record, which is longer than a short result such as "ok": the view with "ok" whole
+    and the earlier input emptied is smaller than the view with both emptied."""
+    v = {"request": {"text": "list the files"}}
+    arrived = [{"input_seq": 1, "content": "x" * 85}, {"input_seq": 2, "content": "ok"}]
+    emptied, short_whole = copy.deepcopy(arrived), copy.deepcopy(arrived)
+    cap_inputs(emptied, total=0, head_tail=True)
+    cap_inputs(short_whole, total=2, head_tail=True)
+    budget = est_tokens(dict(v, new_inputs=short_whole))
+    assert budget < est_tokens(dict(v, new_inputs=emptied)) and budget < est_tokens(
+        dict(v, new_inputs=arrived)
+    )
+    cut, stripped = fill_inputs(v, arrived, budget, head_tail=True)
+    assert est_tokens(v) <= budget
+    assert cut and not stripped
+    assert [e["content"] for e in v["new_inputs"]] == ["", "ok"]
+    assert "scanner_truncated" not in v["new_inputs"][1]
 
 
 def test_the_fill_still_keeps_the_most_recent_input_longest(attack_case):

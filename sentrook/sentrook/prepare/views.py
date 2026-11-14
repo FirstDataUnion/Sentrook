@@ -539,12 +539,14 @@ def fill_inputs(
     if fits:
         return cut, False
     cut, fits = build(0)
-    if not fits:
+    if not fits and not head_tail:
         return cut, total > 0
     lo, hi = 0, total
     if head_tail:
         # The view shrinks where an input becomes whole (its marker and record drop out) and grows with the total
-        # between those points. Take the largest such point that fits, then search up to the next one.
+        # between those points, so each stretch is smallest at its start. Take the largest such point that fits, then
+        # search up to the next one. Emptying every input is not always smallest (a short result such as "ok" takes
+        # less room whole than emptied with its record), so the inputs are stripped only when no point fits.
         points: list[int] = []
         running = 0
         for entry in _most_recent_first(arrived):
@@ -553,8 +555,11 @@ def fill_inputs(
                 points.append(running)
         for point in reversed(points):
             if build(point)[1]:
-                lo = point
+                lo, fits = point, True
                 break
+        if not fits:
+            cut, _ = build(0)
+            return cut, total > 0
         hi = next((p for p in points if p > lo), total)
     # between lo (fits) and hi (does not), the view's size grows with the total: bisect
     while hi - lo > 1:
