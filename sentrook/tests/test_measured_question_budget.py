@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import math
 
 import pytest
 
-from sentrook.jev.chunking import BUDGET_TOKENS, est_tokens
+from sentrook.jev.chunking import BUDGET_TOKENS, CHARS_PER_TOKEN, est_tokens
 from sentrook.jev.client import CONTEXT_TOKENS
 from sentrook.jev.questions import load_question_set
 from sentrook.prepare.views import (
     CALL_V3,
     CALL_V5,
+    MEASURED_DENSEST_STATE_CHARS_PER_TOKEN,
     MEASURED_OUTPUT_TOKENS,
     MEASURED_QUESTION_TOKENS,
+    MEASURED_STATE_RESIDUAL_TOKENS,
     build_views,
     question_reserve_tokens,
     set_state_budget_tokens,
@@ -48,16 +51,24 @@ def test_the_served_sets_are_measured_at_their_current_sha():
 
 @pytest.mark.parametrize(("name", "sha"), sorted(MEASURED_QUESTION_TOKENS))
 def test_every_measurement_is_sound(name, sha):
-    """A measurement is for a shipped set at that sha, never above its character estimate, and leaves the model room
-    for the state at its budget and the longest answer measured."""
+    """A measurement is for a shipped set at that sha and never above its character estimate."""
     qs = load_question_set(name)
     assert qs.sha[:12] == sha
     cost = MEASURED_QUESTION_TOKENS[(name, sha)]
     assert 0 < cost <= est_tokens(qs.built_questions())
-    budget = set_state_budget_tokens(qs)
-    assert budget == BUDGET_TOKENS - cost
-    # the state at 2.5 characters per token never costs more tokens than its estimate
-    assert cost + budget + MEASURED_OUTPUT_TOKENS <= CONTEXT_TOKENS
+    assert set_state_budget_tokens(qs) == BUDGET_TOKENS - cost
+
+
+@pytest.mark.parametrize(("name", "sha"), sorted(MEASURED_QUESTION_TOKENS))
+def test_a_full_budget_state_fits_the_context_at_the_densest_measured_rate(name, sha):
+    """The state budget is in estimated tokens (2.5 characters each). A state at its full budget, as dense as the
+    densest large state measured, plus the set's measured cost, the largest residual and the longest answer, must
+    still fit the model's context. This fails if the chunking budget, the state estimate or a reserve grows too far."""
+    qs = load_question_set(name)
+    state_chars = set_state_budget_tokens(qs) * CHARS_PER_TOKEN
+    state_tokens = math.ceil(state_chars / MEASURED_DENSEST_STATE_CHARS_PER_TOKEN)
+    body = MEASURED_QUESTION_TOKENS[(name, sha)] + MEASURED_STATE_RESIDUAL_TOKENS + state_tokens
+    assert body + MEASURED_OUTPUT_TOKENS <= CONTEXT_TOKENS
 
 
 def test_an_edited_or_unmeasured_set_keeps_its_estimate():

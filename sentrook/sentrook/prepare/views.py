@@ -190,6 +190,13 @@ MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
 MEASURED_OUTPUT_TOKENS = 255
+#: The densest a large state has measured (characters per token, states over 8,000 characters, rounded down from
+#: 2.45) and the largest residual of the fits above, in tokens. A test checks that a state at its full budget at this
+#: rate still fits the context with its set's measured cost and the longest answer. The margin is smaller than with
+#: estimated reserves: a full-budget call-v6 state reaches the context only if denser than about 2.09 characters per
+#: token (before, about 1.64), which dense base64, hex or non-Latin text can be.
+MEASURED_DENSEST_STATE_CHARS_PER_TOKEN = 2.4
+MEASURED_STATE_RESIDUAL_TOKENS = 750
 
 
 def state_budget_tokens(built_questions: dict[str, Any]) -> int:
