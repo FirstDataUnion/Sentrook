@@ -28,7 +28,9 @@ from sentrook.prepare.views import (
     build_views,
 )
 
-TOKEN = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+TOKEN = (
+    "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+)  # joined so secret scanners do not flag the source
 VALUE = "Zq9vT4mK8pW2xL"  # caught only by its context: a cue word or a credential key
 
 

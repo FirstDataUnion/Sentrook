@@ -3,3 +3,5 @@
 # A made-up SSH key fingerprint in a redaction look-alike test, now built at run time.
 5558eed14f76ca1fb3cb407906beae142917fcda:integrations/openclaw/plugin/redact.test.ts:generic-api-key:162
 5558eed14f76ca1fb3cb407906beae142917fcda:integrations/hermes/plugin/tests/test_units.py:generic-api-key:242
+# A made-up GitHub token in the secret-safe cut tests, now joined in source.
+bf1dfaa9ea2ef598da92505015fc22124d2b973f:sentrook/tests/test_call_view_secret_safe_cuts.py:github-pat:31
