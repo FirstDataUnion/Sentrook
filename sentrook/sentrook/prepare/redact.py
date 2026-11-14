@@ -354,17 +354,23 @@ def protected_spans(text: str) -> list[tuple[int, int]]:
     return merged
 
 
-def redact_text(text: str) -> tuple[str, int]:
-    """Replace every secret in `text`; overlapping matches merge into one placeholder that covers them
-    all, so no part of a secret survives a shorter, earlier match."""
+def secret_spans(text: str) -> list[tuple[int, int]]:
+    """The stretches `redact_text` replaces: every secret's span, overlapping ones merged, sorted."""
     if len(text) < 8:
-        return text, 0
+        return []
     merged: list[list[int]] = []
     for start, end in sorted(_spans(text), key=lambda s: (s[0], -s[1])):
         if merged and start < merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], end)
         else:
             merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def redact_text(text: str) -> tuple[str, int]:
+    """Replace every secret in `text`; overlapping matches merge into one placeholder that covers them
+    all, so no part of a secret survives a shorter, earlier match."""
+    merged = secret_spans(text)
     if not merged:
         return text, 0
     out: list[str] = []

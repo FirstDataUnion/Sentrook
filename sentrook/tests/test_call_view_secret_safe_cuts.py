@@ -103,6 +103,29 @@ def test_a_request_cut_never_sends_part_of_a_secret(attack_case, secret, at, val
     assert f"[sentrook: {REQ_LEN - rec['kept_chars']} characters cut]" in req["text"]
 
 
+@pytest.mark.parametrize(
+    ("secret", "offset"),
+    [(f"/usr/bin/mysql -u root -p{VALUE}", off) for off in range(1, 12)]
+    + [(f"echo hi\\nmysql -u root -p{VALUE}", off) for off in range(1, 14)],
+)
+def test_a_tail_never_drops_the_context_a_secret_needs(attack_case, secret, offset):
+    """The mysql rule reads the characters before `mysql`: a tail starting there kept the password without them."""
+    raw = _with_request(attack_case, _place(REQ_LEN, secret, REQ_TAIL - offset))
+    for target in (raw, _with_input(attack_case, _place(12_000, secret, 12_000 - 2000 - offset))):
+        built = _v5(target, budget=4000 if target is raw else None)[CALL_V5]
+        assert not _leaks(built.state, VALUE), offset
+
+
+def test_a_cut_never_lets_a_new_match_swallow_a_secrets_cue(attack_case):
+    """Whole, `fooXpassword is …` is no cue (a letter before it) and the second `password is now X` is redacted. A tail
+    starting after `fooX` made the first cue live; its match ran over the second cue and the value went out in clear."""
+    phrase = f"fooXpassword is ab-cd-ef,password is now {VALUE}r7 bar"
+    raw = _with_request(attack_case, _place(REQ_LEN, phrase, REQ_TAIL - 4))
+    assert not _leaks(_v5(raw, budget=4000)[CALL_V5].state, VALUE)
+    raw = _with_input(attack_case, _place(12_000, phrase, 12_000 - 2000 - 4))
+    assert not _leaks(_v5(raw)[CALL_V5].state, VALUE)
+
+
 def test_an_input_cut_never_sends_part_of_a_secret(attack_case):
     length = 12_000
     head_end = CALL_INPUT_CAP_CHARS * 2 // 3
@@ -136,8 +159,9 @@ def test_a_history_argument_cut_never_sends_part_of_a_secret(attack_case):
     assert first["arguments"]["content"] == placed[: HISTORY_ARG_KEEP_CHARS - 10]
 
 
-def test_a_secret_inside_the_kept_part_is_still_replaced(attack_case):
-    raw = _with_request(attack_case, _place(REQ_LEN, TOKEN, 100))
+@pytest.mark.parametrize("at", [100, REQ_LEN - 300])
+def test_a_secret_inside_the_kept_part_is_still_replaced(attack_case, at):
+    raw = _with_request(attack_case, _place(REQ_LEN, TOKEN, at))
     built = _v5(raw, budget=4000)[CALL_V5]
     assert PLACEHOLDER in built.state["request"]["text"] and not _leaks(built.state, TOKEN)
     assert built.state["request"]["scanner_truncated"]["kept_chars"] == REQUEST_KEEP_CHARS
@@ -157,9 +181,9 @@ def test_with_no_secret_near_a_cut_point_every_cut_is_as_before(attack_case):
 
 
 def test_the_older_call_views_are_unchanged(attack_case):
-    content = _place(12_000, TOKEN, 3_990)
+    content = _place(12_000, TOKEN, 5_990)  # across the head-only cut at 6,000
     entry = _v5(_with_input(attack_case, content))[CALL_V3].state["new_inputs"][0]
-    assert entry["content"] == content[:CALL_INPUT_CAP_CHARS] or PLACEHOLDER in entry["content"]
+    assert entry["content"] == content[:CALL_INPUT_CAP_CHARS]
     assert entry["scanner_truncated"] == {"kept_chars": CALL_INPUT_CAP_CHARS, "of_chars": 12_000}
 
 

@@ -57,7 +57,7 @@ from typing import Any
 
 from ..jev.chunking import BUDGET_TOKENS, est_tokens
 from .own_store import mark_own_store
-from .redact import protected_spans, second_pass
+from .redact import protected_spans, redact_text, second_pass, secret_spans
 
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
@@ -264,10 +264,16 @@ def _cut(entry: dict[str, Any], kept: int, of: int, *, head_tail: bool = False) 
         entry["scanner_truncated"]["kept"] = "head_tail"
 
 
+# Secret-safe cuts. The spans are found once per string (the over-budget fill cuts the same input many times); the
+# caches are cleared after each build, so no request's text outlives it here.
 @functools.lru_cache(maxsize=32)
 def _protected_spans(text: str) -> tuple[tuple[int, int], ...]:
-    """`redact.protected_spans`, found once per string: the over-budget fill cuts the same input many times."""
     return tuple(protected_spans(text))
+
+
+@functools.lru_cache(maxsize=32)
+def _secret_spans(text: str) -> tuple[tuple[int, int], ...]:
+    return tuple(secret_spans(text))
 
 
 def _safe_end(text: str, end: int) -> int:
@@ -280,18 +286,55 @@ def _safe_start(text: str, start: int) -> int:
     return next((e for s, e in _protected_spans(text) if s < start < e), start)
 
 
+def _marker(cut_chars: int) -> str:
+    return f"\n…[sentrook: {cut_chars} characters cut]…\n"
+
+
+def _secure_cut(text: str, end: int, start: int, of: int) -> tuple[int, int]:
+    """Cut points that keep every kept secret recognisable. Outside a secret's span, the text before it can still
+    decide whether the second pass sees it (a rule that reads the characters before its match, or a cue the cut makes
+    live whose match runs over the next one). So the cut string, `text[:end]`, the marker and `text[start:]`, is
+    redacted, and while a secret the whole text would replace is still there in clear, the cut point on its side
+    moves past it. Each move drops a secret from the kept part, so this ends."""
+    secrets = _secret_spans(text)
+    if not secrets:
+        return end, start
+    while True:
+        kept = end + len(text) - start
+        joined = text[:end] + (_marker(of - kept) if start < len(text) else "") + text[start:]
+        redacted, _ = redact_text(joined)
+        clear = next(
+            ((s, e) for s, e in secrets if (e <= end or s >= start) and text[s:e] in redacted),
+            None,
+        )
+        if clear is None:
+            return end, start
+        s, e = clear
+        spans = _protected_spans(text)
+        if e <= end:
+            end = min(s, next((ps for ps, pe in spans if ps <= s < pe), s))
+        else:
+            start = max(e, next((pe for ps, pe in spans if ps < e <= pe), e))
+
+
+def clear_cut_caches() -> None:
+    _protected_spans.cache_clear()
+    _secret_spans.cache_clear()
+
+
 def _head_tail(text: str, kept: int, of: int) -> tuple[str, int]:
     """`text` cut to at most `kept` characters, two thirds head and one third tail, with a marker between them saying
-    how many of the `of` characters were cut, and the characters really kept. Neither cut point splits a secret (see
-    `_safe_end`), so fewer than `kept` may be kept; none kept gives an empty string. `0 < kept < len(text)`."""
+    how many of the `of` characters were cut, and the characters really kept. No cut leaves a kept secret
+    unrecognisable (see `_safe_end` and `_secure_cut`), so fewer than `kept` may be kept; none kept gives an empty
+    string. `0 < kept < len(text)`."""
     head = kept * 2 // 3
     end = _safe_end(text, head)
     start = _safe_start(text, len(text) - (kept - head))
+    end, start = _secure_cut(text, end, start, of)
     kept = end + len(text) - start
     if kept == 0:
         return "", 0
-    marker = f"\n…[sentrook: {of - kept} characters cut]…\n"
-    return text[:end] + marker + text[start:], kept
+    return text[:end] + _marker(of - kept) + text[start:], kept
 
 
 def cap_inputs(
@@ -480,9 +523,9 @@ def _shorten(value: Any, secret_safe: bool = False) -> tuple[Any, int, int]:
     that were cut."""
     if isinstance(value, str):
         if len(value) > HISTORY_ARG_KEEP_CHARS:
-            end = (
-                _safe_end(value, HISTORY_ARG_KEEP_CHARS) if secret_safe else HISTORY_ARG_KEEP_CHARS
-            )
+            end = HISTORY_ARG_KEEP_CHARS
+            if secret_safe:
+                end, _ = _secure_cut(value, _safe_end(value, end), len(value), len(value))
             return value[:end], end, len(value)
         return value, 0, 0
     kept = of = 0
@@ -697,6 +740,18 @@ def build_views(
     the budget (call-v5 cuts a long request first); the reputation the oracle fills in also differs. The call views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
     selfedit-v2) to `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
     reserves when not given."""
+    try:
+        return _build_views(raw, exposure_input_seqs, call_budget_tokens, selfedit_budget_tokens)
+    finally:
+        clear_cut_caches()
+
+
+def _build_views(
+    raw: dict[str, Any],
+    exposure_input_seqs: set[int] | None,
+    call_budget_tokens: int | None,
+    selfedit_budget_tokens: int | None,
+) -> dict[str, BuiltView]:
     call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
     v3 = call_view_v3(raw, budget_tokens=call_budget)
     out = {
