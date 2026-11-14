@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..jev.chunking import BUDGET_TOKENS, est_tokens
+from ..jev.questions import QuestionSet
 from .own_store import mark_own_store
 from .redact import protected_spans, redact_text, second_pass, secret_spans
 
@@ -173,14 +174,47 @@ CALL_INPUT_CAP_CHARS = 6000
 CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
 #: Room left in the chunking budget for the call questions, which repeat the preamble per question, when the
 #: caller does not say which set it sends. It covers every shipped call set (a test pins it); the scanner sizes the
-#: budget from the set it is configured with instead (`state_budget_tokens`).
+#: budget from the set it is configured with instead (`set_state_budget_tokens`).
 CALL_QUESTIONS_RESERVE_TOKENS = 12_000
 CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 
 
+#: The token cost of a shipped question set as the model counts it: the questions plus Jev's own prompt. Measured on
+#: uncached TestNest bodies as the intercept of `usage.input_tokens` fitted against the state's size (call-v6: 816
+#: bodies, 7,004; selfedit-v3: 24 bodies, 8,770), rounded up to the next 100. The questions are prose and cost far
+#: less than their estimate at 2.5 characters per token (11,476 and 14,812). Keyed by the set's name and the first 12
+#: characters of its sha, so a set edited since it was measured falls back to its estimate until measured again.
+MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
+    ("call-v6", "9d3bd2610d35"): 7_100,
+    ("selfedit-v3", "82c8686c5607"): 8_800,
+}
+#: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
+MEASURED_OUTPUT_TOKENS = 255
+#: The densest a large state has measured (characters per token, states over 8,000 characters, rounded down from
+#: 2.45) and the largest residual of the fits above, in tokens. A test checks that a state at its full budget at this
+#: rate still fits the context with its set's measured cost and the longest answer. The margin is smaller than with
+#: estimated reserves: a full-budget call-v6 state reaches the context only if denser than about 2.09 characters per
+#: token (before, about 1.64), which dense base64, hex or non-Latin text can be.
+MEASURED_DENSEST_STATE_CHARS_PER_TOKEN = 2.4
+MEASURED_STATE_RESIDUAL_TOKENS = 750
+
+
 def state_budget_tokens(built_questions: dict[str, Any]) -> int:
-    """The budget for a state sent with these built questions: what they leave of the chunking budget."""
+    """The budget for a state sent with these built questions, estimated from their characters: what they leave of
+    the chunking budget."""
     return BUDGET_TOKENS - est_tokens(built_questions)
+
+
+def question_reserve_tokens(qs: QuestionSet) -> int:
+    """The room a set's questions take: its measured cost when it has one at its current sha, otherwise the estimate
+    from its characters. The state is still estimated at 2.5 characters per token."""
+    measured = MEASURED_QUESTION_TOKENS.get((qs.name, qs.sha[:12]))
+    return measured if measured is not None else est_tokens(qs.built_questions())
+
+
+def set_state_budget_tokens(qs: QuestionSet) -> int:
+    """The budget for a state sent with this set: what its questions leave of the chunking budget."""
+    return BUDGET_TOKENS - question_reserve_tokens(qs)
 
 
 def trim(raw: dict[str, Any]) -> dict[str, Any]:

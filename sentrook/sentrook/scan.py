@@ -38,7 +38,7 @@ from .prepare.views import (
     SELFEDIT_VIEWS,
     VIEW_KEYS,
     VIEW_VERSIONS,
-    state_budget_tokens,
+    set_state_budget_tokens,
 )
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
@@ -136,14 +136,15 @@ def views_label(jev_views: dict[str, str]) -> str:
 
 def view_budgets(question_sets: Iterable[QuestionSet | None]) -> tuple[int | None, int | None]:
     """The call-view and self-edit-view token budgets for the call question sets a scanner sends: each view is
-    built to the room its tightest set leaves in the context (`None` for a view no set sends: the default
-    reserve). A set that leaves no room at all stops startup."""
+    built to the room its tightest set leaves in the context, from the set's measured cost where it has one
+    (`set_state_budget_tokens`; `None` for a view no set sends: the default reserve). A set that leaves no room at
+    all stops startup."""
     call: int | None = None
     selfedit: int | None = None
     for qs in question_sets:
         if qs is None:
             continue
-        budget = state_budget_tokens(qs.built_questions())
+        budget = set_state_budget_tokens(qs)
         if budget <= 0:
             raise ValueError(
                 f"question set {qs.name!r} leaves no room for the request in the context"

@@ -30,7 +30,8 @@ from sentrook.prepare.views import (
     SELFEDIT_VIEWS,
     VIEW_KIND,
     build_views,
-    state_budget_tokens,
+    question_reserve_tokens,
+    set_state_budget_tokens,
 )
 from sentrook.scan import Scanner, ScannerConfig, ScanOptions, view_budgets
 
@@ -60,6 +61,11 @@ def test_the_shipped_sets_are_found():
 
 def _questions_tokens(name: str) -> int:
     return est_tokens(load_question_set(name).built_questions())
+
+
+def _reserve(name: str) -> int:
+    """The room the scanner reserves for a set: its measured cost where it has one, else its estimate."""
+    return question_reserve_tokens(load_question_set(name))
 
 
 def _scanner(call_set: str, selfedit_set: str | None = None, decider=None) -> Scanner:
@@ -93,16 +99,16 @@ def test_every_shipped_self_edit_set_fits_its_reserve(name):
 @pytest.mark.parametrize("name", CALL_SETS)
 def test_the_scanner_sizes_the_call_view_from_its_call_set(name):
     sc = _scanner(name)
-    assert sc.call_budget_tokens + _questions_tokens(name) <= BUDGET_TOKENS
-    assert sc.call_budget_tokens == state_budget_tokens(load_question_set(name).built_questions())
+    assert sc.call_budget_tokens + _reserve(name) <= BUDGET_TOKENS
+    assert sc.call_budget_tokens == set_state_budget_tokens(load_question_set(name))
     assert sc.selfedit_budget_tokens is None
 
 
 @pytest.mark.parametrize("name", SELFEDIT_SETS)
 def test_the_scanner_sizes_the_self_edit_view_from_its_self_edit_set(name):
     sc = _scanner("call-v5", name)
-    assert sc.selfedit_budget_tokens + _questions_tokens(name) <= BUDGET_TOKENS
-    assert sc.call_budget_tokens + _questions_tokens("call-v5") <= BUDGET_TOKENS
+    assert sc.selfedit_budget_tokens + _reserve(name) <= BUDGET_TOKENS
+    assert sc.call_budget_tokens + _reserve("call-v5") <= BUDGET_TOKENS
 
 
 def test_a_set_that_leaves_no_room_stops_startup():
@@ -150,12 +156,22 @@ def _scan(case, sc: Scanner):
 @pytest.mark.parametrize("name", ["call-v4", "call-v5", "call-v6"])
 def test_a_request_at_the_budget_is_fitted_within_the_context(attack_case, name):
     case = _big_inputs(attack_case)
-    qs_tokens = _questions_tokens(name)
+    qs_tokens = _reserve(name)
     view = load_question_set(name).state_view
+
+    def unfitted():
+        return build_views(
+            case["fixture"], exposure_input_seqs=None, call_budget_tokens=BUDGET_TOKENS
+        )[view]
+
+    # the capped inputs fill about 17.9k tokens; a set with measured room fits them all, so a long command pushes
+    # its view over
+    room = BUDGET_TOKENS - qs_tokens
+    if est_tokens(unfitted().state) <= room:
+        pad = int((room - est_tokens(unfitted().state) + 2000) * 2.5)
+        case["fixture"]["pending_call"]["arguments"]["command"] = "echo " + "p" * pad
     # the capped view alone, unstripped, plus the questions would not fit
-    unstripped = build_views(
-        case["fixture"], exposure_input_seqs=None, call_budget_tokens=BUDGET_TOKENS
-    )[view]
+    unstripped = unfitted()
     assert not unstripped.inputs_stripped
     assert est_tokens(unstripped.state) + qs_tokens > BUDGET_TOKENS
 
@@ -164,7 +180,7 @@ def test_a_request_at_the_budget_is_fitted_within_the_context(attack_case, name)
     [body] = [
         b for b in dec.bodies if b["questions"].keys() == load_question_set(name).questions.keys()
     ]
-    assert est_tokens(body["state"]) + est_tokens(body["questions"]) <= BUDGET_TOKENS
+    assert est_tokens(body["state"]) + qs_tokens <= BUDGET_TOKENS
     # filled to the budget: the latest input keeps its content, the earliest lose theirs first
     sent = body["state"]["new_inputs"]
     assert sent[-1]["content"] == case["fixture"]["new_inputs"][-1]["content"]
