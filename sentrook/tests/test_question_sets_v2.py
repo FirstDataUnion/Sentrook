@@ -107,7 +107,7 @@ def test_call_v2_view_adds_the_inputs_between_history_and_pending_call(harm_case
         EXPOSURE_V2: "trim-v2",
         CALL_V2: "trim-v2",
         "call-v3": "trim-v3",
-        "call-v5": "trim-v6",
+        "call-v5": "trim-v7",
     }
 
 

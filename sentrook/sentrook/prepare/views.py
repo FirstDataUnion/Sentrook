@@ -38,6 +38,10 @@ prepared state is still call-v3's.
 
 `trim-v6` changes `call-v5` only: an over-budget view cuts the request text first, to `REQUEST_KEEP_CHARS`, head and
 tail, before any history or input is cut.
+
+`trim-v7` changes `call-v5` only: the over-budget fill sends an input whole whenever the room allows it whole, instead
+of settling on a slightly smaller total that cuts it (a whole input carries no marker and no record, so it can take
+less room than the same input cut by a few characters).
 """
 
 from __future__ import annotations
@@ -53,7 +57,7 @@ from .redact import second_pass
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
-VIEWS_VERSION_V6 = "trim-v6"
+VIEWS_VERSION_V7 = "trim-v7"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
@@ -142,7 +146,7 @@ VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
-    CALL_V5: VIEWS_VERSION_V6,
+    CALL_V5: VIEWS_VERSION_V7,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
     SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
@@ -275,6 +279,22 @@ def cap_inputs(
     keep their content and the earliest lose theirs first; metadata always stays. Entries without an
     integer `input_seq` count as earliest; ties keep list order. Mutates the entries; returns whether
     anything was cut."""
+    cut = False
+    remaining = total
+    for entry in _most_recent_first(inputs):
+        current = len(entry["content"])
+        kept = min(current, per_input, remaining)
+        remaining -= kept
+        if kept < current:
+            # an entry cut before keeps the size it arrived with
+            _cut(entry, kept, _prior_cut(entry).get("of_chars", current), head_tail=head_tail)
+            cut = True
+    return cut
+
+
+def _most_recent_first(inputs: list[Any]) -> list[dict[str, Any]]:
+    """The entries with string content, most recent first: highest integer `input_seq` first, entries without one last,
+    ties in reverse list order (the order the caps fill)."""
     entries = [
         (i, e)
         for i, e in enumerate(inputs)
@@ -287,17 +307,7 @@ def cap_inputs(
         has_seq = isinstance(seq, int) and not isinstance(seq, bool)
         return (has_seq, seq if has_seq else 0, i)
 
-    cut = False
-    remaining = total
-    for _, entry in sorted(entries, key=recency, reverse=True):
-        current = len(entry["content"])
-        kept = min(current, per_input, remaining)
-        remaining -= kept
-        if kept < current:
-            # an entry cut before keeps the size it arrived with
-            _cut(entry, kept, _prior_cut(entry).get("of_chars", current), head_tail=head_tail)
-            cut = True
-    return cut
+    return [e for _, e in sorted(entries, key=recency, reverse=True)]
 
 
 def strip_inputs(inputs: list[Any]) -> None:
@@ -531,8 +541,22 @@ def fill_inputs(
     cut, fits = build(0)
     if not fits:
         return cut, total > 0
-    # the view's size grows with the total, so bisect for the largest total that fits
     lo, hi = 0, total
+    if head_tail:
+        # The view shrinks where an input becomes whole (its marker and record drop out) and grows with the total
+        # between those points. Take the largest such point that fits, then search up to the next one.
+        points: list[int] = []
+        running = 0
+        for entry in _most_recent_first(arrived):
+            running += min(len(entry["content"]), CALL_INPUT_CAP_CHARS)
+            if 0 < running < total and (not points or running > points[-1]):
+                points.append(running)
+        for point in reversed(points):
+            if build(point)[1]:
+                lo = point
+                break
+        hi = next((p for p in points if p > lo), total)
+    # between lo (fits) and hi (does not), the view's size grows with the total: bisect
     while hi - lo > 1:
         mid = (lo + hi) // 2
         _, fits = build(mid)
