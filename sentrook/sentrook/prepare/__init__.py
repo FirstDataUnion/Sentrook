@@ -380,13 +380,16 @@ def _inherit_recipient_domain(table: EntityTable) -> None:
     """The mail domain of a request-named recipient is that recipient's own component, not a
     destination the agent chose: `priya.nair@brightlane.io` named by the owner sanctions
     `brightlane.io` as the destination host of that send, even when the domain also turns up in
-    content the agent read (the owner's own organisation usually does)."""
+    content the agent read (the owner's own organisation usually does). Not when a call names the
+    host in its own right (a URL, a command target): that use is the agent's, not the owner's."""
     for ent in list(table):
         if ent.kind is not EntityKind.RECIPIENT or "@" not in ent.value:
             continue
         if Origin.REQUEST not in ent.origins:
             continue
         host = table.get(EntityKind.HOST, normalise_host(ent.value.split("@", 1)[1]))
+        if host is not None and host.named_in_own_right:
+            continue  # a call also sends to or names the host itself: naming the address is not naming it
         if host is not None and Origin.REQUEST not in host.origins:
             host.add_origin(Origin.REQUEST, "recipient_domain")
 
@@ -849,17 +852,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     # 5. entities
     table = EntityTable()
     for f in extract_call(pending, home=home, workspace_root=ws):
-        table.add(f.kind, f.value, display=f.display, role=f.role, origin=Origin.PENDING_CALL)
+        table.add_found(f, Origin.PENDING_CALL)
     for sib in siblings:
         for f in extract_call(sib, home=home, workspace_root=ws):
-            table.add(
-                f.kind,
-                f.value,
-                display=f.display,
-                role=f.role,
-                origin=Origin.SIBLING,
-                ref=sib.call_id,
-            )
+            table.add_found(f, Origin.SIBLING, sib.call_id)
     # What the siblings write, and the pending command read through it: the resolved command's
     # entities take the pending call's roles and the sibling's origin. A failure here leaves the
     # scan without the join rather than failing it.
@@ -875,14 +871,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             )
         for call in resolved:
             for f in extract_call(call, home=home, workspace_root=ws):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.SIBLING,
-                    ref=call.call_id,
-                )
+                table.add_found(f, Origin.SIBLING, call.call_id)
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
@@ -1021,22 +1010,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
             ):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             for f in extract_mentions(written.content, home=home, workspace_root=ws, role=None):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             if written.truncated:
                 coverage.append(
                     CoverageNote(

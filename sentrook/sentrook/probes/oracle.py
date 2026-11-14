@@ -6,7 +6,10 @@ role. A `known_bad` entity also raises the `known_bad_entity` floor (1.0, block)
 is a near miss of a `known_good` one (another TLD, a hyphen, a confusable character or one edit away)
 gets the near-miss distrust instead of the unknown one when it takes data, code or tools: it looks like
 a party the library vouches for and is not it. Unknown entities in a risky role lower
-`confidence.coverage`; so does an unavailable oracle. Paths are not reputation
+`confidence.coverage`; so does an unavailable oracle. A host that is only the mail domain of an
+email recipient in the call is part of that recipient: when the library has nothing on the host itself
+(unknown, not a near miss, no distrust of its own), it adds no distrust and no coverage loss beyond
+the recipient's, so relief on the address leaves nothing behind on its domain. Paths are not reputation
 questions (their sensitivity comes from AIRA's path classes) and loopback hosts are the agent's own
 machine, so neither is looked up.
 """
@@ -148,6 +151,23 @@ class EntityOracleProbe:
             out.append(ent)
         return out
 
+    @staticmethod
+    def _entity_info(ent: Entity, v: Verdict, roles: list[str], near: dict | None) -> dict:
+        info = {
+            "kind": ent.kind.value,
+            "value": ent.display,
+            "roles": roles,
+            "verdict": v.verdict.value,
+            "tier": v.tier,
+            "source": v.source,
+            "observations": v.observations or None,
+            "match": v.match.value if v.match else None,
+            "near_miss": near,
+        }
+        if ent.recipient_domain_of:
+            info["mail_domain_of"] = list(ent.recipient_domain_of)
+        return info
+
     def run(self, prepared: Prepared) -> Envelope:
         started = time.perf_counter()
         candidates = self._candidates(prepared)
@@ -224,6 +244,10 @@ class EntityOracleProbe:
                 if near is not None and risky_role in NEAR_MISS_ROLES:
                     distrust = max(distrust, self.params.near_miss_distrust)
                     reason = f"reputation.near_miss_{ent.kind.value}"
+                elif v.distrust is None and ent.recipient_domain_of:
+                    # only a recipient's mail domain: the recipient's own claim speaks for it
+                    per_entity[ent.id] = self._entity_info(ent, v, roles, near)
+                    continue
                 if risky_role in (
                     Role.DATA_DESTINATION.value,
                     Role.RECIPIENT.value,
@@ -239,17 +263,7 @@ class EntityOracleProbe:
                     reason=reason,
                 )
             )
-            per_entity[ent.id] = {
-                "kind": ent.kind.value,
-                "value": ent.display,
-                "roles": roles,
-                "verdict": v.verdict.value,
-                "tier": v.tier,
-                "source": v.source,
-                "observations": v.observations or None,
-                "match": v.match.value if v.match else None,
-                "near_miss": near,
-            }
+            per_entity[ent.id] = self._entity_info(ent, v, roles, near)
         if not result.available:
             coverage = min(coverage, self.params.coverage_unavailable)
         if coverage < 1.0 or remote:
