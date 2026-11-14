@@ -31,6 +31,10 @@ the conversation's and the inputs' reads of the agent's own skill library marked
 `trim-v4` adds `call-v5`: the call-v3 view whose `reputation` block also lists the call's unknown
 entities that are near misses of a `known_good` one (`verdict: unknown`, `near_miss`: the entry). The
 prepared state is call-v3's; only what the oracle fills in differs.
+
+`trim-v5` changes `call-v5` only: an input cut by a cap or by the over-budget fill keeps two thirds head and one third
+tail with a marker between them, as the plugins cut inputs, instead of the head alone. When nothing is cut the
+prepared state is still call-v3's.
 """
 
 from __future__ import annotations
@@ -46,7 +50,7 @@ from .redact import second_pass
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
-VIEWS_VERSION_V4 = "trim-v4"
+VIEWS_VERSION_V5 = "trim-v5"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
@@ -122,6 +126,9 @@ VIEW_KEYS[SELFEDIT_V1] = (
 VIEW_KEYS[SELFEDIT_V2] = VIEW_KEYS[SELFEDIT_V1]
 #: Views whose `reputation` block lists near misses as well as known verdicts.
 NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1, SELFEDIT_V2})
+#: Views whose cut inputs keep head and tail (two thirds head, one third tail, a marker between), as the plugins cut
+#: them, so the end of a long page or file still reaches the judge. The other views keep the head, as before.
+HEAD_TAIL_VIEWS = frozenset({CALL_V5})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -129,7 +136,7 @@ VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
-    CALL_V5: VIEWS_VERSION_V4,
+    CALL_V5: VIEWS_VERSION_V5,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
     SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
@@ -223,9 +230,20 @@ class BuiltView:
         return bool(self.history_cut or self.history_dropped)
 
 
-def _cut(entry: dict[str, Any], kept: int, of: int) -> None:
-    entry["content"] = entry["content"][:kept]
+def _cut(entry: dict[str, Any], kept: int, of: int, *, head_tail: bool = False) -> None:
+    """Cut `entry["content"]` to `kept` characters: its head, or with `head_tail` two thirds head and one third tail
+    with a marker between them (the marker is not counted in `kept`). The content must be the one that arrived, not
+    one already cut, so a head-and-tail cut never nests."""
+    content = entry["content"]
     entry["scanner_truncated"] = {"kept_chars": kept, "of_chars": of}
+    if not head_tail or kept == 0:
+        entry["content"] = content[:kept]
+        return
+    head = kept * 2 // 3
+    tail = kept - head
+    marker = f"\n…[sentrook: {of - kept} characters cut]…\n"
+    entry["content"] = content[:head] + marker + content[len(content) - tail :]
+    entry["scanner_truncated"]["kept"] = "head_tail"
 
 
 def cap_inputs(
@@ -233,8 +251,10 @@ def cap_inputs(
     *,
     per_input: int = CALL_INPUT_CAP_CHARS,
     total: int = CALL_INPUTS_TOTAL_CAP_CHARS,
+    head_tail: bool = False,
 ) -> bool:
-    """Cap each string `content` at `per_input` characters (head kept), then the sum at `total`:
+    """Cap each string `content` at `per_input` characters (head kept, or head and tail with `head_tail`; see
+    `_cut`), then the sum at `total` (counting the characters kept, not the markers):
     the most recent inputs (highest `input_seq`, such as the listing right before the pending call)
     keep their content and the earliest lose theirs first; metadata always stays. Entries without an
     integer `input_seq` count as earliest; ties keep list order. Mutates the entries; returns whether
@@ -259,7 +279,7 @@ def cap_inputs(
         remaining -= kept
         if kept < current:
             # an entry cut before keeps the size it arrived with
-            _cut(entry, kept, _prior_cut(entry).get("of_chars", current))
+            _cut(entry, kept, _prior_cut(entry).get("of_chars", current), head_tail=head_tail)
             cut = True
     return cut
 
@@ -442,19 +462,25 @@ def drop_history(v: dict[str, Any], budget_tokens: int, *, keep: int) -> int:
     return dropped
 
 
-def fill_inputs(v: dict[str, Any], capped: list[Any], budget_tokens: int) -> tuple[bool, bool]:
-    """Set `v["new_inputs"]` to `capped` with the largest contents' total that fits the budget: the most recent inputs
-    keep their content and the earliest lose theirs first, as with the total cap. Returns whether anything was cut
-    and whether every content was emptied (the view does not fit even without them)."""
-    total = sum(
-        len(e["content"])
-        for e in capped
-        if isinstance(e, dict) and isinstance(e.get("content"), str)
+def fill_inputs(
+    v: dict[str, Any], arrived: list[Any], budget_tokens: int, *, head_tail: bool = False
+) -> tuple[bool, bool]:
+    """Set `v["new_inputs"]` to the inputs as they `arrived`, capped, with the largest contents' total that fits the
+    budget: the most recent inputs keep their content and the earliest lose theirs first, as with the total cap. Every
+    attempt cuts from what arrived, so a head-and-tail cut never nests. Returns whether anything was cut and whether
+    every content was emptied (the view does not fit even without them)."""
+    total = min(
+        CALL_INPUTS_TOTAL_CAP_CHARS,
+        sum(
+            min(len(e["content"]), CALL_INPUT_CAP_CHARS)
+            for e in arrived
+            if isinstance(e, dict) and isinstance(e.get("content"), str)
+        ),
     )
 
     def build(target: int) -> tuple[bool, bool]:
-        inputs = copy.deepcopy(capped)
-        cut = cap_inputs(inputs, total=target)
+        inputs = copy.deepcopy(arrived)
+        cut = cap_inputs(inputs, total=target, head_tail=head_tail)
         v["new_inputs"] = inputs
         return cut, est_tokens(v) <= budget_tokens
 
@@ -482,22 +508,22 @@ class _Fitted:
     history_dropped: int = 0
 
 
-def _fit_call_view(v: dict[str, Any], budget_tokens: int) -> _Fitted:
+def _fit_call_view(
+    v: dict[str, Any], arrived: list[Any] | None, budget_tokens: int, *, head_tail: bool = False
+) -> _Fitted:
     """Fit an over-budget call view, least useful first: the history steps' long arguments (oldest first), then the
     oldest steps (keeping the last `HISTORY_KEEP_STEPS`), then the inputs' content (the most recent kept longest),
     then the remaining steps, with the inputs refilled into any room that leaves. A view still over the budget with
-    no input content and no history is sent as it is."""
-    inputs = v.get("new_inputs")
-    capped = copy.deepcopy(inputs) if isinstance(inputs, list) else None
+    no input content and no history is sent as it is. `arrived` is the inputs before any cap."""
     cut = stripped = False
     history_cut = cut_history_arguments(v, budget_tokens)
     dropped = drop_history(v, budget_tokens, keep=HISTORY_KEEP_STEPS)
-    if capped is not None and est_tokens(v) > budget_tokens:
-        cut, stripped = fill_inputs(v, capped, budget_tokens)
+    if arrived is not None and est_tokens(v) > budget_tokens:
+        cut, stripped = fill_inputs(v, arrived, budget_tokens, head_tail=head_tail)
     if est_tokens(v) > budget_tokens:
         dropped += drop_history(v, budget_tokens, keep=0)
-        if capped is not None:
-            cut, stripped = fill_inputs(v, capped, budget_tokens)
+        if arrived is not None:
+            cut, stripped = fill_inputs(v, arrived, budget_tokens, head_tail=head_tail)
     return _Fitted(cut, stripped, history_cut, dropped)
 
 
@@ -511,10 +537,12 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
     truncated = stripped = False
     fitted = _Fitted()
     if name not in SELFEDIT_VIEWS:
+        head_tail = name in HEAD_TAIL_VIEWS
+        arrived = copy.deepcopy(inputs) if isinstance(inputs, list) else None
         if isinstance(inputs, list):
-            truncated = cap_inputs(inputs)
+            truncated = cap_inputs(inputs, head_tail=head_tail)
         if est_tokens(v) > budget_tokens:
-            fitted = _fit_call_view(v, budget_tokens)
+            fitted = _fit_call_view(v, arrived, budget_tokens, head_tail=head_tail)
             truncated = truncated or fitted.inputs_cut
             stripped = fitted.inputs_stripped
     else:
@@ -545,8 +573,8 @@ def build_views(
     selfedit_budget_tokens: int | None = None,
 ) -> dict[str, BuiltView]:
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
-    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs. The call
-    views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
+    call-v5 is call-v3's prepared state except that its cut inputs keep head and tail; the reputation the oracle
+    fills in also differs. The call views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
     selfedit-v2) to `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
     reserves when not given."""
     call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
@@ -557,7 +585,10 @@ def build_views(
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
         CALL_V2: call_view_v2(raw, budget_tokens=call_budget),
         CALL_V3: v3,
-        CALL_V5: v3,
+        # the same state unless an input was cut, which call-v5 cuts head and tail
+        CALL_V5: _call_view_with_inputs(raw, CALL_V5, budget_tokens=call_budget)
+        if v3.inputs_truncated
+        else v3,
     }
     if isinstance(raw.get(SELF_EDIT), dict):
         selfedit_budget = (
