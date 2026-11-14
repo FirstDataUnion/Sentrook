@@ -93,6 +93,7 @@ from .trust import Trust, classify
 __all__ = [
     "Lineage",
     "MovedItem",
+    "PLUGIN_CUT_MARKER",
     "Prepared",
     "PrepareOptions",
     "WrittenFile",
@@ -100,9 +101,10 @@ __all__ = [
     "InvalidPlanIR",
 ]
 
-#: History arguments are capped by the plugin at about 4 KB per step. Content at or
-#: beyond this length is treated as possibly truncated when the agent-written file is re-read.
-WRITTEN_FILE_CAP_CHARS = 3900
+#: The plugins cap each history step's arguments at about 4 KB, giving every string a share of it and cutting
+#: a longer string head and tail around this marker. A written file is treated as cut when its content carries
+#: the marker; content that merely fills the cap arrived whole.
+PLUGIN_CUT_MARKER = re.compile(r"…\[sentrook: \d+ bytes cut\]…")
 _CREATING_HEADS = (
     "mkdir",
     "touch",
@@ -472,13 +474,13 @@ def _find_written(
             continue
         content = str(call.get("content") or "")
         if best is None or call.step > best.step:
-            truncated = len(content) >= WRITTEN_FILE_CAP_CHARS or content.rstrip().endswith(
+            truncated = bool(PLUGIN_CUT_MARKER.search(content)) or content.rstrip().endswith(
                 ("…", "[truncated]", "...")
             )
             if best is not None and call.tool_kind is ToolKind.FILE_EDIT:
-                content = (
-                    best.content + "\n" + content
-                )  # an edit after a write: both halves are visible
+                # an edit after a write: both halves are visible, and a cut in the earlier one still applies
+                content = best.content + "\n" + content
+                truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
 
