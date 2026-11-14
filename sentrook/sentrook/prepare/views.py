@@ -42,22 +42,27 @@ tail, before any history or input is cut.
 `trim-v7` changes `call-v5` only: the over-budget fill sends an input whole whenever the room allows it whole, instead
 of settling on a slightly smaller total that cuts it (a whole input carries no marker and no record, so it can take
 less room than the same input cut by a few characters).
+
+`trim-v8` changes `call-v5` only: a cut never splits a secret. Each cut point moves out of anything the second
+redaction pass would replace, with the context that identifies it (`redact.protected_spans`), so a secret is kept
+whole, and replaced, or cut away whole; `kept_chars` reports what was really kept.
 """
 
 from __future__ import annotations
 
 import copy
+import functools
 from dataclasses import dataclass
 from typing import Any
 
 from ..jev.chunking import BUDGET_TOKENS, est_tokens
 from .own_store import mark_own_store
-from .redact import second_pass
+from .redact import protected_spans, second_pass
 
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
-VIEWS_VERSION_V7 = "trim-v7"
+VIEWS_VERSION_V8 = "trim-v8"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
@@ -146,7 +151,7 @@ VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
-    CALL_V5: VIEWS_VERSION_V7,
+    CALL_V5: VIEWS_VERSION_V8,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
     SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
@@ -253,17 +258,40 @@ def _cut(entry: dict[str, Any], kept: int, of: int, *, head_tail: bool = False) 
     if not head_tail or kept == 0:
         entry["content"] = content[:kept]
         return
-    entry["content"] = _head_tail(content, kept, of)
-    entry["scanner_truncated"]["kept"] = "head_tail"
+    entry["content"], kept = _head_tail(content, kept, of)
+    entry["scanner_truncated"]["kept_chars"] = kept
+    if kept:
+        entry["scanner_truncated"]["kept"] = "head_tail"
 
 
-def _head_tail(text: str, kept: int, of: int) -> str:
-    """`text` cut to `kept` characters, two thirds head and one third tail, with a marker between them saying how many
-    of the `of` characters were cut. `0 < kept < len(text)`."""
+@functools.lru_cache(maxsize=32)
+def _protected_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """`redact.protected_spans`, found once per string: the over-budget fill cuts the same input many times."""
+    return tuple(protected_spans(text))
+
+
+def _safe_end(text: str, end: int) -> int:
+    """A head's end moved back out of any protected span it falls inside."""
+    return next((s for s, e in _protected_spans(text) if s < end < e), end)
+
+
+def _safe_start(text: str, start: int) -> int:
+    """A tail's start moved forward out of any protected span it falls inside."""
+    return next((e for s, e in _protected_spans(text) if s < start < e), start)
+
+
+def _head_tail(text: str, kept: int, of: int) -> tuple[str, int]:
+    """`text` cut to at most `kept` characters, two thirds head and one third tail, with a marker between them saying
+    how many of the `of` characters were cut, and the characters really kept. Neither cut point splits a secret (see
+    `_safe_end`), so fewer than `kept` may be kept; none kept gives an empty string. `0 < kept < len(text)`."""
     head = kept * 2 // 3
-    tail = kept - head
+    end = _safe_end(text, head)
+    start = _safe_start(text, len(text) - (kept - head))
+    kept = end + len(text) - start
+    if kept == 0:
+        return "", 0
     marker = f"\n…[sentrook: {of - kept} characters cut]…\n"
-    return text[:head] + marker + text[len(text) - tail :]
+    return text[:end] + marker + text[start:], kept
 
 
 def cap_inputs(
@@ -431,12 +459,10 @@ def cut_request_text(v: dict[str, Any]) -> bool:
     if len(text) <= REQUEST_KEEP_CHARS:
         return False
     cut = dict(req)
-    cut["text"] = _head_tail(text, REQUEST_KEEP_CHARS, len(text))
-    cut["scanner_truncated"] = {
-        "kept_chars": REQUEST_KEEP_CHARS,
-        "of_chars": len(text),
-        "kept": "head_tail",
-    }
+    cut["text"], kept = _head_tail(text, REQUEST_KEEP_CHARS, len(text))
+    cut["scanner_truncated"] = {"kept_chars": kept, "of_chars": len(text)}
+    if kept:
+        cut["scanner_truncated"]["kept"] = "head_tail"
     if est_tokens(cut) >= est_tokens(req):
         return False
     v["request"] = cut
@@ -448,34 +474,41 @@ def _prior_cut(entry: dict[str, Any]) -> dict[str, Any]:
     return prior if isinstance(prior, dict) else {}
 
 
-def _shorten(value: Any) -> tuple[Any, int, int]:
-    """`value` with every string longer than `HISTORY_ARG_KEEP_CHARS` cut to its head, and the characters kept and
-    the original length summed over the strings that were cut."""
+def _shorten(value: Any, secret_safe: bool = False) -> tuple[Any, int, int]:
+    """`value` with every string longer than `HISTORY_ARG_KEEP_CHARS` cut to its head (with `secret_safe`, an end that
+    does not split a secret: see `_safe_end`), and the characters kept and the original length summed over the strings
+    that were cut."""
     if isinstance(value, str):
         if len(value) > HISTORY_ARG_KEEP_CHARS:
-            return value[:HISTORY_ARG_KEEP_CHARS], HISTORY_ARG_KEEP_CHARS, len(value)
+            end = (
+                _safe_end(value, HISTORY_ARG_KEEP_CHARS) if secret_safe else HISTORY_ARG_KEEP_CHARS
+            )
+            return value[:end], end, len(value)
         return value, 0, 0
     kept = of = 0
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, x in value.items():
-            out[k], k_kept, k_of = _shorten(x)
+            out[k], k_kept, k_of = _shorten(x, secret_safe)
             kept, of = kept + k_kept, of + k_of
         return out, kept, of
     if isinstance(value, list):
         items = []
         for x in value:
-            y, k_kept, k_of = _shorten(x)
+            y, k_kept, k_of = _shorten(x, secret_safe)
             items.append(y)
             kept, of = kept + k_kept, of + k_of
         return items, kept, of
     return value, 0, 0
 
 
-def cut_history_arguments(v: dict[str, Any], budget_tokens: int) -> int:
+def cut_history_arguments(
+    v: dict[str, Any], budget_tokens: int, *, secret_safe: bool = False
+) -> int:
     """While the view is over the budget, cut the long argument strings of its history steps, oldest step first (the
-    step stays: tool, kind, decision and the strings' heads). A cut step carries `scanner_truncated`: the characters
-    kept and the original length, over the strings cut. Mutates `v`; returns how many steps were cut."""
+    step stays: tool, kind, decision and the strings' heads; with `secret_safe`, no cut splits a secret). A cut step
+    carries `scanner_truncated`: the characters kept and the original length, over the strings cut. Mutates `v`;
+    returns how many steps were cut."""
     history = v.get("history")
     if not isinstance(history, list):
         return 0
@@ -485,7 +518,7 @@ def cut_history_arguments(v: dict[str, Any], budget_tokens: int) -> int:
             break
         if not isinstance(step, dict) or "arguments" not in step:
             continue
-        args, kept, of = _shorten(step["arguments"])
+        args, kept, of = _shorten(step["arguments"], secret_safe)
         if of:
             step["arguments"] = args
             step["scanner_truncated"] = {"kept_chars": kept, "of_chars": of}
@@ -594,7 +627,7 @@ def _fit_call_view(
     sent as it is. `arrived` is the inputs before any cap."""
     cut = stripped = False
     request_cut = cut_request and cut_request_text(v)
-    history_cut = cut_history_arguments(v, budget_tokens)
+    history_cut = cut_history_arguments(v, budget_tokens, secret_safe=head_tail)
     dropped = drop_history(v, budget_tokens, keep=HISTORY_KEEP_STEPS)
     if arrived is not None and est_tokens(v) > budget_tokens:
         cut, stripped = fill_inputs(v, arrived, budget_tokens, head_tail=head_tail)
