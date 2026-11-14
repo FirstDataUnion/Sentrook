@@ -322,17 +322,55 @@ def _spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def redact_text(text: str) -> tuple[str, int]:
-    """Replace every secret in `text`; overlapping matches merge into one placeholder that covers them
-    all, so no part of a secret survives a shorter, earlier match."""
+#: Characters past a context rule's match that a cut must keep with it: a value's closing quote, optionally escaped,
+#: which some rules require after the value.
+_CONTEXT_TRAIL_CHARS = 2
+
+
+def protected_spans(text: str) -> list[tuple[int, int]]:
+    """The stretches of `text` a cut must not split, merged, sorted and disjoint: every secret `redact_text` would
+    replace, widened by what identifies it. A value found by its context keeps the cue word or key before it and its
+    closing quote after it, so a cut that keeps the value keeps what makes it recognisable."""
     if len(text) < 8:
-        return text, 0
+        return []
+    spans = [m.span() for m in _PRIVATE_KEY.finditer(text)]
+    for m in _JWT_HEAD.finditer(text):
+        tail = _JWT_TAIL.match(text, m.end())
+        if tail is not None:
+            spans.append((m.start(), tail.end()))
+    for shape in load_shapes().shapes:
+        spans.extend(shape_spans(shape.compiled, text))
+    for pattern, check in _CONTEXT:
+        for m in pattern.finditer(text):
+            s, e = m.span("v")
+            if e > s and (check is None or check(text[s:e])):
+                spans.append((m.start(), min(len(text), max(e, m.end()) + _CONTEXT_TRAIL_CHARS)))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def secret_spans(text: str) -> list[tuple[int, int]]:
+    """The stretches `redact_text` replaces: every secret's span, overlapping ones merged, sorted."""
+    if len(text) < 8:
+        return []
     merged: list[list[int]] = []
     for start, end in sorted(_spans(text), key=lambda s: (s[0], -s[1])):
         if merged and start < merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], end)
         else:
             merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def redact_text(text: str) -> tuple[str, int]:
+    """Replace every secret in `text`; overlapping matches merge into one placeholder that covers them
+    all, so no part of a secret survives a shorter, earlier match."""
+    merged = secret_spans(text)
     if not merged:
         return text, 0
     out: list[str] = []
