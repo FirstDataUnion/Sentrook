@@ -5,6 +5,8 @@ the call, with no model and no raw text.
   about 0.1 for a local entity the agent visibly created with clean lineage; about 0.4 when it appears
   nowhere or first in the agent's own arguments (always for off-host kinds); 1.0 when it appeared only
   in untrusted content before the agent used it (the token's untrusted set remembers across steps).
+  A host that is only the mail domain of an email recipient in the call takes that recipient's value
+  (no claim of its own) unless its own origin is untrusted or it imitates a host the owner named.
 - `suspicion.request_origin` from the trigger: owner 0, scheduled or heartbeat about 0.2, trusted by a
   plugin allowlist about 0.3, known channel with an unknown sender about 0.5 (coverage reduced), a
   sender marked `other` about 0.8, nothing known no contribution and coverage reduced.
@@ -306,6 +308,13 @@ class ContextProbe:
                 reason = "origin.written_content_untrusted"
             if ent.id in lookalikes and value < self.params.origin_untrusted:
                 value, reason = self.params.origin_untrusted, "origin.lookalike_of_named_host"
+            if ent.recipient_domain_of and value < self.params.origin_untrusted:
+                # only a recipient's mail domain: the recipient's own origin claim speaks for it
+                evidence.setdefault("origins", {})[ent.id] = {
+                    "reason": "origin.recipient_mail_domain",
+                    "mail_domain_of": list(ent.recipient_domain_of),
+                }
+                continue
             scaled = round(value * weight, 4)
             out.append(
                 Contribution(
