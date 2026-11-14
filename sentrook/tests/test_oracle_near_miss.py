@@ -388,7 +388,7 @@ def test_call_v5_sends_the_near_miss_and_call_v4_does_not(attack_case):
     ]
     call_env = next(e for e in res.envelopes if e.step is ProbeStep.JEV_CALL)
     assert call_env.evidence["view"] == CALL_V5 and call_env.evidence["reputation_entries"] == 1
-    assert res.response.metadata.versions["views"] == "exposure:trim-v2,call:trim-v4"
+    assert res.response.metadata.versions["views"] == "exposure:trim-v2,call:trim-v5"
 
     # call-v4 sends the call-v3 view exactly as before: no block, since nothing is known_good or bad
     v4, [body4] = _scan(case, "call-v4", ATTACK_ANSWERS)
