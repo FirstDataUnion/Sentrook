@@ -394,6 +394,28 @@ def _inherit_recipient_domain(table: EntityTable) -> None:
             host.add_origin(Origin.REQUEST, "recipient_domain")
 
 
+def _named_verbatim(value: str, text: str) -> bool:
+    """`value` appears in `text` as a whole token, not as the part of an email address after its `@`."""
+    return bool(re.search(r"(?<![\w.@-])" + re.escape(value.lower()) + r"(?![\w-])", text.lower()))
+
+
+def _address_only_hosts(request_text: str, table: EntityTable) -> None:
+    """Naming an email address sanctions mail to it, not other traffic to its host. A host the request
+    reaches only through an address on it (`desk@coppicedown.net`), that a call uses in its own right (posts
+    to it, fetches from it, runs code from it), is not request-named: it keeps its own distrust and origin
+    and gets no request-named relief. It is still a host the owner named, for the look-alike check. A host
+    the owner also wrote bare, as a URL or verbatim stays request-named; so does one the call only mails
+    or merely mentions (a signature, a link in the message)."""
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or not ent.own_right_roles - {Role.MENTIONED}:
+            continue
+        refs = ent.origins.get(Origin.REQUEST)
+        if not refs or set(refs) != {"address"} or _named_verbatim(ent.value, request_text):
+            continue
+        del ent.origins[Origin.REQUEST]
+        ent.owner_named_via_address = True
+
+
 def _mark_display_named(request_text: str, table: EntityTable) -> None:
     """An owner names people, not addresses (`Email Priya ...`, `send it to Holger Vetch`).
     A recipient address whose local part carries a name token that appears **capitalised** in the
@@ -887,7 +909,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
-        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
+        ref = None
+        if f.kind is EntityKind.HOST:
+            ref = "address" if f.domain_of is not None else "mention"
+        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST, ref=ref)
     _mark_request_named(words, table)
 
     grant_hits: dict[str, list[str]] = {}
@@ -1091,6 +1116,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])
     _inherit_recipient_domain(table)
+    _address_only_hosts(words, table)
 
     # 7. fingerprint
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
