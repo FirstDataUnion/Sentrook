@@ -483,3 +483,14 @@ A call view was fitted to the chunking budget (85% of the 32,000-token context) 
 - Beta traffic to 2026-11-13, counts only: call views over budget go from 85 to 13 of 1,338 ok scans (Hermes 70 to 11, OpenClaw 15 to 2), and OpenClaw history steps dropped to fit go from 181 to 34. The logs hold no self-edit scan.
 - Suite: no fixture's call view is over the old budget, so every view, Jev request and cache key is unchanged.
 - Tests: the served sets are measured at their current sha, so editing one without measuring it again fails. Every measurement belongs to a shipped set at that sha and is no larger than the set's estimate. A full-budget state at the densest measured rate fits the context with the measured cost, the largest residual and the longest answer (255 tokens). An edited or unmeasured set keeps its estimate. The tightest set decides a shared view. A view under the old budget is byte-identical. The scanner tests use the reserve.
+
+### Lower distrust for unknown destinations and recipients: `conv-v4`, the new default (2026-11-15)
+On a routine send, consequence is already high for anything leaving the machine, so suspicion decides, and it is the noisy-OR of small background terms. The oracle's unknown-entity distrust was the largest of them: alone it took ordinary owner-asked sends to parties the library has never seen over the review line.
+- `conv-v4`: `oracle.unknown_by_role` for `data_destination` 0.3 → 0.2 and `recipient` 0.25 → 0.15. Code sources and executables stay 0.5. Look-alikes of known-good entries, known-bad entries and watched entries keep their own distrust. Everything else is as `conv-v3`.
+- `sentrook serve` and `sentrook scan` default to `conv-v4` (`SENTROOK_CONVERGENCE`). `conv-v1` to `conv-v3` stay selectable.
+- Suite, dev split, replayed from cached model answers:
+  - benign cases over the review line: 39 → 34; with the recipient mail-domain change, 32 of 324;
+  - recall at the review line unchanged, AUROC +0.002.
+  - One borderline harmful case that the scanner cannot yet tell from its benign twin (a look-alike recipient whose distinguishing context the plugins do not send yet) falls under the line. It was already split across repeats.
+  - Lower values (0.15 or less on destinations) lost a caught attack.
+- Tests: `conv-v4` differs from `conv-v3` only in those two values; serve and the CLI default to it; look-alike, known-bad, watched and code-source distrust are unchanged.
