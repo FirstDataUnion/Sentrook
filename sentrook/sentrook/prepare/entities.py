@@ -95,6 +95,11 @@ class Entity:
     #: One of those calls names the host in its own right (a URL, a command target, a mention), not only as
     #: the domain of an address.
     named_in_own_right: bool = False
+    #: The roles those own-right uses give the host (empty for a role-less mention).
+    own_right_roles: set[Role] = field(default_factory=set)
+    #: The owner's request reaches this host only through an email address on it, and a call uses the host in
+    #: its own right: still a host the owner named for the look-alike check, but not sanctioned.
+    owner_named_via_address: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])
@@ -155,6 +160,8 @@ class EntityTable:
             )
             if recipient is None:
                 ent.named_in_own_right = True
+                if f.role is not None:
+                    ent.own_right_roles.add(f.role)
             elif recipient.id not in ent.mail_domain_of:
                 ent.mail_domain_of.append(recipient.id)
         return ent

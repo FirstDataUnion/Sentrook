@@ -351,7 +351,8 @@ class ContextProbe:
         named = [
             e
             for e in prepared.entities
-            if e.kind is EntityKind.HOST and Origin.REQUEST in e.origins
+            if e.kind is EntityKind.HOST
+            and (Origin.REQUEST in e.origins or e.owner_named_via_address)
         ]
         if not named:
             return {}

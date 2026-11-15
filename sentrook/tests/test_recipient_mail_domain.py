@@ -29,6 +29,10 @@ CONV = load_params("conv-v3")
 
 @pytest.fixture
 def send_case(attack_case) -> dict:
+    return build_send_case(attack_case)
+
+
+def build_send_case(attack_case: dict) -> dict:
     """An owner asks for a report to go out by mail; the agent sends it to an address nobody
     vouches for, on a domain nobody vouches for."""
     case = copy.deepcopy(attack_case)
