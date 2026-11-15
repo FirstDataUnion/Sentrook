@@ -110,8 +110,8 @@ class ServeConfig:
     jev_api_key: str | None = None
     jev_model: str = DEFAULT_MODEL
     jev_timeout_s: float = 20.0
-    # Shipped defaults: the call-v6 / exposure-v2 question sets and conv-v3. The frozen v1 sets and
-    # conv-v1 / conv-v2 stay selectable (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the
+    # Shipped defaults: the call-v6 / exposure-v2 question sets and conv-v4. The frozen v1 sets and
+    # conv-v1 / conv-v2 / conv-v3 stay selectable (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the
     # Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
     jev_exposure_question_set: str = "exposure-v2"
     jev_call_question_set: str = "call-v6"
@@ -121,7 +121,7 @@ class ServeConfig:
     oracle_api_key: str | None = None
     probes: tuple[str, ...] = field(default_factory=tuple)  # empty = all; test mode only
     packs_default: tuple[str, ...] = ("tier1",)
-    convergence: str = "conv-v3"
+    convergence: str = "conv-v4"
     lists_dir: str | None = None
 
     # test mode
@@ -204,7 +204,7 @@ class ServeConfig:
             if probes_raw
             else (),
             packs_default=tuple(p.strip() for p in packs_raw.split(",") if p.strip()) or ("tier1",),
-            convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v3").strip(),
+            convergence=(env.get("SENTROOK_CONVERGENCE") or "conv-v4").strip(),
             lists_dir=(env.get("SENTROOK_LISTS_DIR") or "").strip() or None,
             test_mode=test_mode,
         )

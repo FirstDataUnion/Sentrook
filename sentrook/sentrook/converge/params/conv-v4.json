@@ -1,0 +1,44 @@
+{
+  "name": "conv-v4",
+  "notes": "Tuning (2026-11-14): the oracle's unknown-entity distrust for destinations 0.3 -> 0.2 and recipients 0.25 -> 0.15. On a routine send consequence is already high, so the unknown-party term alone took ordinary owner-asked sends over the review line; lower values (0.15 or less on destinations) lost a caught attack on dev. Code sources, executables, look-alikes, known-bad and watched entries are unchanged. Everything else as conv-v3, which stays selectable.",
+  "u": 0.5,
+  "certainty": "mean",
+  "consequence": "mean",
+  "taint_floor": 0.3,
+  "agreement": {
+    "high": 0.6,
+    "low": 0.3
+  },
+  "coverage_penalty": {
+    "error": 0.5,
+    "timeout": 0.6,
+    "skipped": 1.0
+  },
+  "request_named_relief": {
+    "enabled": true,
+    "owner_only": true,
+    "roles": [
+      "data_destination",
+      "recipient"
+    ]
+  },
+  "reason_min_value": 0.2,
+  "oracle": {
+    "unknown_by_role": {
+      "data_destination": 0.2,
+      "recipient": 0.15,
+      "code_source": 0.5,
+      "executable": 0.5,
+      "tool_provider": 0.1,
+      "data_source": 0.15,
+      "mentioned": 0.05
+    },
+    "coverage_unknown_risky": 0.85
+  },
+  "context": {
+    "retry_carry_consequence": 1.0
+  },
+  "jev": {
+    "taint_threshold": 0.5
+  }
+}
