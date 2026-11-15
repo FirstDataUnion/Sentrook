@@ -25,7 +25,7 @@ def test_call_v4_is_call_v3_with_the_host_text_sentence():
 
 
 def test_call_v4_stays_selectable():
-    # call-v6 is the shipped default (call-v5 plus the destination-grant clause)
+    # call-v7 is the shipped default (call-v6 on the view with the batch)
     for name in ("call-v2", "call-v3", "call-v4"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set

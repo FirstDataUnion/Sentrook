@@ -43,6 +43,16 @@ tail, before any history or input is cut.
 of settling on a slightly smaller total that cuts it (a whole input carries no marker and no record, so it can take
 less room than the same input cut by a few characters).
 
+`trim-v9` adds `call-v7`: the call-v5 view whose `pending_call` keeps a `batch` block when the agent issued other
+calls in the same step. `batch.siblings` lists those calls (tool, kind, provider and arguments, redacted, then long
+values cut head and tail, so a cut never splits a secret), and the call probe adds `batch.resolved`: the pending command as it runs once the files those siblings write
+are read into it (`sibling_join`), so the judge sees the value a `$(cat file)` or a config read actually supplies. The
+block has a size: lists, objects and nesting in a sibling's values are bounded, the siblings and the resolved commands
+each fit a character cap, and the trailing ones left out are counted (`siblings_omitted`, `resolved_omitted`); the view
+is fitted leaving room for `resolved`, which the probe adds after the fit. Its
+`reputation` block also lists the call's destinations that the owner's own configuration supplied (`verdict:
+owner_config`). A request with no batch and no such entity gives the call-v5 state unchanged.
+
 `trim-v8` changes `call-v5` only: a cut never splits a secret. Each cut point moves out of anything the second
 redaction pass would replace, with the context that identifies it (`redact.protected_spans`), so a secret is kept
 whole, and replaced, or cut away whole; `kept_chars` reports what was really kept.
@@ -52,11 +62,13 @@ from __future__ import annotations
 
 import copy
 import functools
+import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..jev.chunking import BUDGET_TOKENS, est_tokens
-from ..jev.questions import QuestionSet
+from ..jev.chunking import BUDGET_TOKENS, CHARS_PER_TOKEN, est_tokens
+from ..jev.questions import QuestionSet, canonical_json
 from .own_store import mark_own_store
 from .redact import protected_spans, redact_text, second_pass, secret_spans
 
@@ -64,6 +76,7 @@ VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
 VIEWS_VERSION_V8 = "trim-v8"
+VIEWS_VERSION_V9 = "trim-v9"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
 VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
@@ -79,6 +92,7 @@ EXPOSURE_V2 = "exposure-v2"
 CALL_V2 = "call-v2"
 CALL_V3 = "call-v3"
 CALL_V5 = "call-v5"
+CALL_V7 = "call-v7"
 SELFEDIT_V1 = "selfedit-v1"
 SELFEDIT_V2 = "selfedit-v2"
 #: The views for a declared self-edit; each is built only when the request has the `self_edit` block.
@@ -124,6 +138,7 @@ VIEW_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 VIEW_KEYS[CALL_V5] = VIEW_KEYS[CALL_V3]
+VIEW_KEYS[CALL_V7] = VIEW_KEYS[CALL_V3]
 VIEW_KEYS[SELFEDIT_V1] = (
     "planir_version",
     "host",
@@ -138,13 +153,13 @@ VIEW_KEYS[SELFEDIT_V1] = (
 )
 VIEW_KEYS[SELFEDIT_V2] = VIEW_KEYS[SELFEDIT_V1]
 #: Views whose `reputation` block lists near misses as well as known verdicts.
-NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1, SELFEDIT_V2})
+NEAR_MISS_VIEWS = frozenset({CALL_V5, CALL_V7, SELFEDIT_V1, SELFEDIT_V2})
 #: Views whose cut inputs keep head and tail (two thirds head, one third tail, a marker between), as the plugins cut
 #: them, so the end of a long page or file still reaches the judge. The other views keep the head, as before.
-HEAD_TAIL_VIEWS = frozenset({CALL_V5})
+HEAD_TAIL_VIEWS = frozenset({CALL_V5, CALL_V7})
 #: Views whose fitting cuts a long request text first, head and tail, when the view is over the budget. The other views
 #: never cut the request.
-REQUEST_FIT_VIEWS = frozenset({CALL_V5})
+REQUEST_FIT_VIEWS = frozenset({CALL_V5, CALL_V7})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -153,6 +168,7 @@ VIEW_VERSIONS: dict[str, str] = {
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
     CALL_V5: VIEWS_VERSION_V8,
+    CALL_V7: VIEWS_VERSION_V9,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
     SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
@@ -164,9 +180,34 @@ VIEW_KIND: dict[str, str] = {
     CALL_V2: CALL,
     CALL_V3: CALL,
     CALL_V5: CALL,
+    CALL_V7: CALL,
     SELFEDIT_V1: CALL,
     SELFEDIT_V2: CALL,
 }
+
+#: Views whose `pending_call` keeps the batch: the calls issued in the same step, and (from the call probe) the
+#: pending command resolved through what they write.
+BATCH_VIEWS = frozenset({CALL_V7})
+#: Views whose `reputation` block lists the destinations the owner's own configuration supplied.
+OWNER_CONFIG_VIEWS = frozenset({CALL_V7})
+#: A sibling's argument value longer than this is cut, head and tail; at most this many siblings are listed.
+BATCH_ARG_CAP_CHARS = 1500
+BATCH_MAX_SIBLINGS = 8
+#: Bounds on what one sibling's values can hold: items kept per list, keys per object, and how deep lists and objects
+#: nest before the rest is replaced by a marker.
+BATCH_MAX_ITEMS = 20
+BATCH_MAX_DEPTH = 4
+#: A sibling that does not fit the room left is tried once more with these tighter bounds before it is left out.
+BATCH_ARG_SHORT_CHARS = 200
+BATCH_SHORT_ITEMS = 5
+#: The listed siblings, and the resolved commands, as serialised JSON, stay within these: the trailing ones that do
+#: not fit are left out and counted (`siblings_omitted`, `resolved_omitted`), so the judge knows the batch is partial.
+#: The call view is fitted to its budget less the room `resolved` can take, since the probe adds it afterwards.
+BATCH_SIBLINGS_CAP_CHARS = 6000
+BATCH_RESOLVED_CAP_CHARS = 2000
+BATCH_RESOLVED_RESERVE_TOKENS = math.ceil((BATCH_RESOLVED_CAP_CHARS + 64) / CHARS_PER_TOKEN)
+BATCH = "batch"
+SIBLING_KEEP = ("tool", "tool_kind", "provider", "arguments")
 
 #: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
 #: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
@@ -181,11 +222,14 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 
 #: The token cost of a shipped question set as the model counts it: the questions plus Jev's own prompt. Measured on
 #: uncached TestNest bodies as the intercept of `usage.input_tokens` fitted against the state's size (call-v6: 816
-#: bodies, 7,004; selfedit-v3: 24 bodies, 8,770), rounded up to the next 100. The questions are prose and cost far
-#: less than their estimate at 2.5 characters per token (11,476 and 14,812). Keyed by the set's name and the first 12
-#: characters of its sha, so a set edited since it was measured falls back to its estimate until measured again.
+#: bodies, 7,004; call-v7: 1,172 bodies, 11,125; selfedit-v3: 24 bodies, 8,770), rounded up to the next 100. The
+#: questions are prose and cost far less than their estimate at 2.5 characters per token (11,476, 19,094 and 14,812).
+#: Keyed by the set's name and the first 12 characters of its sha, so a set edited since it was measured falls back to
+#: its estimate until measured again. call-v7's key was moved by hand to its sha after a one-clause preamble edit (the
+#: batch named as content being judged, about 20 tokens), which the rounding up covers.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
+    ("call-v7", "5832e69408d9"): 11_200,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
@@ -235,6 +279,115 @@ def trim(raw: dict[str, Any]) -> dict[str, Any]:
         for k in STRIP_PENDING_CALL:
             pc.pop(k, None)
     return st
+
+
+#: A placeholder the redactors left (`⟦secret:…⟧`): a cut moves out of one rather than split it.
+_PLACEHOLDER_RE = re.compile(r"⟦[^⟦⟧]{0,80}⟧")
+
+
+def _cut_batch_string(value: str, cap: int = BATCH_ARG_CAP_CHARS) -> str:
+    """`value` cut to `cap` characters, two thirds head and one third tail with a marker between them. The value must
+    be redacted already: the cut points move out of any placeholder, so none is split."""
+    if len(value) <= cap:
+        return value
+    end = cap * 2 // 3
+    start = len(value) - (cap - end)
+    for m in _PLACEHOLDER_RE.finditer(value):
+        s, e = m.span()
+        if s < end < e:
+            end = s
+        if s < start < e:
+            start = e
+    cut = start - end
+    return f"{value[:end]} …[{cut} characters cut]… {value[start:]}"
+
+
+def _bound_batch_value(value: Any, *, cap: int, items: int, depth: int = 0) -> Any:
+    """A copy of `value` with lists and objects kept to their first `items` entries and a marker counting the rest,
+    anything nested deeper than `BATCH_MAX_DEPTH` replaced by a marker, and long keys cut. Strings stay whole, so they
+    are redacted before any cut."""
+    if isinstance(value, list | dict) and depth >= BATCH_MAX_DEPTH:
+        return "…[nested value cut]…"
+    if isinstance(value, list):
+        out = [_bound_batch_value(x, cap=cap, items=items, depth=depth + 1) for x in value[:items]]
+        if len(value) > items:
+            out.append(f"…[{len(value) - items} more items cut]…")
+        return out
+    if isinstance(value, dict):
+        obj = {
+            _cut_batch_string(k, cap) if isinstance(k, str) else k: _bound_batch_value(
+                x, cap=cap, items=items, depth=depth + 1
+            )
+            for k, x in list(value.items())[:items]
+        }
+        if len(value) > items:
+            obj["…"] = f"[{len(value) - items} more keys cut]"
+        return obj
+    return value
+
+
+def _cut_batch_strings(value: Any, cap: int) -> Any:
+    if isinstance(value, str):
+        return _cut_batch_string(value, cap)
+    if isinstance(value, list):
+        return [_cut_batch_strings(x, cap) for x in value]
+    if isinstance(value, dict):
+        return {k: _cut_batch_strings(x, cap) for k, x in value.items()}
+    return value
+
+
+def _batch_entry(sib: dict[str, Any], *, cap: int, items: int) -> tuple[dict[str, Any], int]:
+    """One sibling as the batch lists it, and the secrets replaced: bounded, redacted (a credential key's value whole,
+    other strings by the text rules), then its long strings cut, so a cut never splits a secret."""
+    bounded = {
+        k: _bound_batch_value(sib[k], cap=cap, items=items) for k in SIBLING_KEEP if k in sib
+    }
+    redacted, count = second_pass(bounded)
+    return _cut_batch_strings(redacted, cap), count
+
+
+def _json_chars(obj: Any) -> int:
+    return len(canonical_json(obj))
+
+
+def batch_block(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """The `pending_call.batch` block a batch view carries: the other calls of the same step, without ids, redacted,
+    within `BATCH_SIBLINGS_CAP_CHARS`. Siblings past `BATCH_MAX_SIBLINGS`, or past the first that does not fit even
+    with the tighter bounds, are left out and counted in `siblings_omitted`. None when the pending call was issued
+    alone."""
+    return _batch_block(raw)[0]
+
+
+def _batch_block(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
+    """`batch_block` and the number of secrets it replaced."""
+    pc = raw.get("pending_call")
+    batch = pc.get(BATCH) if isinstance(pc, dict) else None
+    siblings = batch.get("siblings") if isinstance(batch, dict) else None
+    if not isinstance(siblings, list):
+        return None, 0
+    calls = [sib for sib in siblings if isinstance(sib, dict)]
+    if not calls:
+        return None, 0
+    out: list[dict[str, Any]] = []
+    redactions = 0
+    for sib in calls[:BATCH_MAX_SIBLINGS]:
+        fitted = None
+        for cap, items in (
+            (BATCH_ARG_CAP_CHARS, BATCH_MAX_ITEMS),
+            (BATCH_ARG_SHORT_CHARS, BATCH_SHORT_ITEMS),
+        ):
+            entry, count = _batch_entry(sib, cap=cap, items=items)
+            if _json_chars([*out, entry]) <= BATCH_SIBLINGS_CAP_CHARS:
+                fitted = entry
+                break
+        if fitted is None:
+            break
+        out.append(fitted)
+        redactions += count
+    block: dict[str, Any] = {"siblings": out}
+    if len(out) < len(calls):
+        block["siblings_omitted"] = len(calls) - len(out)
+    return block, redactions
 
 
 def view(trimmed: dict[str, Any], name: str) -> dict[str, Any]:
@@ -449,6 +602,29 @@ def call_view_v3(
     oracle probe) once that probe has run; see `with_reputation`. The raw request carries no such
     key, so the prepared view has none."""
     return _call_view_with_inputs(raw, CALL_V3, budget_tokens=budget_tokens)
+
+
+def with_resolved(state: dict[str, Any], commands: list[str]) -> dict[str, Any]:
+    """A copy of a batch view's state with `pending_call.batch.resolved`: the pending command as it runs once the
+    files its siblings write are read into it, each redacted whole and then cut (so a cut never splits a secret), within
+    `BATCH_RESOLVED_CAP_CHARS`: the trailing commands that do not fit are left out and counted in `resolved_omitted`.
+    Unchanged when the join resolved nothing or the state has no batch."""
+    pc = state.get("pending_call")
+    if not commands or not isinstance(pc, dict) or not isinstance(pc.get(BATCH), dict):
+        return state
+    resolved: list[str] = []
+    for c in commands:
+        item = _cut_batch_string(redact_text(c)[0])
+        if _json_chars([*resolved, item]) > BATCH_RESOLVED_CAP_CHARS:
+            break
+        resolved.append(item)
+    block = {**pc[BATCH], "resolved": resolved}
+    if len(resolved) < len(commands):
+        block["resolved_omitted"] = len(commands) - len(resolved)
+    out = dict(state)
+    out["pending_call"] = dict(pc)
+    out["pending_call"][BATCH] = block
+    return out
 
 
 def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -719,6 +895,13 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
     """A call view (or a self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
     self-edit views keep their own fitting: their conversation goes after the inputs."""
     v = view(trim(raw), name)
+    batch_redactions = 0
+    if name in BATCH_VIEWS and isinstance(v.get("pending_call"), dict):
+        batch, batch_redactions = _batch_block(raw)
+        if batch is not None:
+            v["pending_call"][BATCH] = batch
+            # the call probe adds `resolved` after the fit: keep its room free
+            budget_tokens -= BATCH_RESOLVED_RESERVE_TOKENS
     if name == SELFEDIT_V2:
         mark_own_store(v)
     inputs = v.get("new_inputs")
@@ -752,7 +935,7 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
     state, count = second_pass(v)
     return BuiltView(
         state=state,
-        redactions=count,
+        redactions=count + batch_redactions,
         inputs_truncated=truncated,
         inputs_stripped=stripped,
         history_cut=fitted.history_cut,
@@ -799,6 +982,12 @@ def _build_views(
         if v3.inputs_truncated or v3.fitted
         else v3,
     }
+    # call-v5's state unless the pending call has batch siblings, which only call-v7 shows
+    out[CALL_V7] = (
+        _call_view_with_inputs(raw, CALL_V7, budget_tokens=call_budget)
+        if batch_block(raw) is not None
+        else out[CALL_V5]
+    )
     if isinstance(raw.get(SELF_EDIT), dict):
         selfedit_budget = (
             SELFEDIT_STATE_BUDGET_TOKENS

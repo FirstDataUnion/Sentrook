@@ -51,8 +51,8 @@ For running the scan service yourself; plugin users don't need this. The scanner
 | `SENTROOK_JEV_MODEL` | `typesafe/jev-1.13` | Jev model |
 | `SENTROOK_JEV_TIMEOUT_MS` | `20000` | Per-request timeout |
 | `SENTROOK_JEV_EXPOSURE_QUESTIONS` | `exposure-v2` | Exposure question set on the redacted view (`exposure-v1`, the frozen set, stays selectable) |
-| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v6` | Call question set: the turn's inputs plus the entity library's verdicts and near misses, a note that hosts may wrap the request in their own text, and a destination grant counting as a destination the owner named (`call-v5` without the grant clause, `call-v4` without the near misses, `call-v3` without the note, `call-v2` without the verdicts and `call-v1`, the frozen set, stay selectable) |
-| `SENTROOK_CONVERGENCE` | `conv-v4` | Convergence parameter set (`conv-v1` to `conv-v3` stay selectable) |
+| `SENTROOK_JEV_CALL_QUESTIONS` | `call-v7` | Call question set: the turn's inputs plus the entity library's verdicts and near misses, a note that hosts may wrap the request in their own text, a destination grant counting as a destination the owner named, and the batch the call was issued in, the command resolved through it and destinations the owner's configuration supplies (`call-v6` without the batch, `call-v5` without the grant clause, `call-v4` without the near misses, `call-v3` without the note, `call-v2` without the verdicts and `call-v1`, the frozen set, stay selectable) |
+| `SENTROOK_CONVERGENCE` | `conv-v5` | Convergence parameter set (`conv-v1` to `conv-v4` stay selectable) |
 
 ## License
 

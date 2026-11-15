@@ -76,15 +76,25 @@ class AiraProbe:
 
     `lists`: the compiled data lists (default: `load_lists()`, honouring `SENTROOK_LISTS_DIR`).
     `enabled_packs`: overrides `planir.options.packs` when given; `tier1` is always included.
+    `unvetted_package_sensitivity`, `unvetted_package_as_root`, `unvetted_package_ecosystems`: the
+    convergence parameter set's `oracle` values of those names (0 and false = off).
     """
 
     step: ProbeStep = ProbeStep.AIRA
 
     def __init__(
-        self, lists: Lists | None = None, enabled_packs: Iterable[str] | None = None
+        self,
+        lists: Lists | None = None,
+        enabled_packs: Iterable[str] | None = None,
+        unvetted_package_sensitivity: float = 0.0,
+        unvetted_package_as_root: bool = False,
+        unvetted_package_ecosystems: tuple[str, ...] = ("npm", "pypi", "git+"),
     ) -> None:
         self._lists = lists
         self._packs = frozenset(enabled_packs) if enabled_packs is not None else None
+        self._unvetted_package_sensitivity = unvetted_package_sensitivity
+        self._unvetted_package_as_root = unvetted_package_as_root
+        self._unvetted_package_ecosystems = tuple(unvetted_package_ecosystems)
 
     @property
     def lists(self) -> Lists:
@@ -117,7 +127,14 @@ class AiraProbe:
             )
 
     def _run(self, prepared: Any, versions: dict[str, str | None], start: float) -> Envelope:
-        ctx = Context(prepared=prepared, lists=self.lists, packs=self.packs_for(prepared))
+        ctx = Context(
+            prepared=prepared,
+            lists=self.lists,
+            packs=self.packs_for(prepared),
+            unvetted_package_sensitivity=self._unvetted_package_sensitivity,
+            unvetted_package_as_root=self._unvetted_package_as_root,
+            unvetted_package_ecosystems=self._unvetted_package_ecosystems,
+        )
         contributions: list[Contribution] = []
         floors: list[Floor] = []
         flags: list[SessionFlag] = []

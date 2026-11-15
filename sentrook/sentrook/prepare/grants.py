@@ -185,7 +185,14 @@ _LONG_UPLOAD = (
 )
 
 
-def _command_sends(command: str, depth: int) -> bool:
+def sends_by_unwritten_route(command: str) -> bool:
+    """The command sends through a tool whose destination need not be written as a host (`nc`, `scp`,
+    `rsync`, `ssh`, `git push`, `aws s3`, `/dev/tcp`, …): its entities may not show every party it
+    reaches. An upload with `curl` or `wget` names its host and is not one of these."""
+    return _command_sends(command, 0, uploads=False)
+
+
+def _command_sends(command: str, depth: int, *, uploads: bool = True) -> bool:
     if re.search(r"/dev/(?:tcp|udp)/", command):
         return True
     for tokens in shell_segments(command):
@@ -199,7 +206,7 @@ def _command_sends(command: str, depth: int) -> bool:
             return True
         if head.startswith("python") and "http.server" in args:
             return True
-        if head in ("curl", "wget"):
+        if uploads and head in ("curl", "wget"):
             for i, tok in enumerate(args):
                 nxt = args[i + 1] if i + 1 < len(args) else ""
                 if tok.startswith(_LONG_UPLOAD) or tok.startswith("--request=P"):
@@ -213,7 +220,7 @@ def _command_sends(command: str, depth: int) -> bool:
         if head in _SHELLS and depth < 3:
             for i, tok in enumerate(args[:-1]):
                 if tok.startswith("-") and not tok.startswith("--") and "c" in tok:
-                    if _command_sends(args[i + 1], depth + 1):
+                    if _command_sends(args[i + 1], depth + 1, uploads=uploads):
                         return True
                     break
     return False

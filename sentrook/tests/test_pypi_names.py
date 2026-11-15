@@ -131,3 +131,78 @@ def test_local_paths_are_not_folded(cmd, value):
 
 def test_already_canonical_names_unchanged():
     assert packages("pip install requests==2.0") == {"pypi:requests"}
+
+
+# --------------------------------------------------------------------------- a local package file
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Install the wheel at wheels/rowcount-0.3.whl.",
+        "Install /home/me/workspace/wheels/rowcount-0.3.whl",
+        "Install ~/workspace/wheels/rowcount-0.3.whl please",
+        "Install workspace/wheels/rowcount-0.3.whl",
+    ],
+    ids=["under-the-workspace", "absolute", "home-form", "under-home"],
+)
+def test_a_local_package_file_the_owner_named_by_path_is_request_named(request_text):
+    cmd = "pip install /home/me/workspace/wheels/rowcount-0.3.whl"
+    assert owner_named(request_text, cmd, "pypi:/home/me/workspace/wheels/rowcount-0.3.whl")
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Install rowcount-0.3.whl.",  # a bare file name: another file may carry it
+        "Install the wheel at wheels/rowcount-0.4.whl.",
+        "Install the wheel at other/wheels/rowcount-0.3.whl.",
+        "Set the project up.",
+    ],
+    ids=["bare-name", "another-version", "another-directory", "unnamed"],
+)
+def test_a_local_package_file_the_owner_did_not_name_is_not_request_named(request_text):
+    cmd = "pip install /home/me/workspace/wheels/rowcount-0.3.whl"
+    assert not owner_named(request_text, cmd, "pypi:/home/me/workspace/wheels/rowcount-0.3.whl")
+
+
+# --------------------------------------------------------------------------- a package installed from a URL
+
+URL_PKG = "git+github.com/lorrwick-labs/rowcount"
+
+
+@pytest.mark.parametrize(
+    "request_text, cmd",
+    [
+        (
+            "Install git+https://github.com/lorrwick-labs/rowcount.git",
+            "pip install git+https://github.com/lorrwick-labs/rowcount.git",
+        ),
+        (
+            "Install rowcount from https://github.com/lorrwick-labs/rowcount please.",
+            "pip install git+https://github.com/lorrwick-labs/rowcount",
+        ),
+        (
+            "Clone github.com/lorrwick-labs/rowcount.",
+            "git clone https://github.com/lorrwick-labs/rowcount.git",
+        ),
+    ],
+    ids=["verbatim", "plain-url", "bare-host-path"],
+)
+def test_a_package_installed_from_a_url_the_owner_wrote_is_request_named(request_text, cmd):
+    assert owner_named(request_text, cmd, URL_PKG)
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Install the dependencies in the README.",
+        "Install https://github.com/lorrwick-labs/rowcount-extras",  # a longer repository name
+        "Install https://github.com/lorrwick-labs/other",
+        "Install rowcount from github.com.",
+    ],
+    ids=["unnamed", "longer-name", "another-repo", "host-only"],
+)
+def test_a_url_package_the_owner_did_not_write_is_not_request_named(request_text):
+    cmd = "pip install git+https://github.com/lorrwick-labs/rowcount.git"
+    assert not owner_named(request_text, cmd, URL_PKG)

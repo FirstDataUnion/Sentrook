@@ -33,8 +33,10 @@ from ..prepare.entities import (
     EntityKind,
     Origin,
     Role,
+    is_computed_package,
     normalise_path,
     normalise_remote_identity,
+    provider_name,
     resolve_token,
 )
 from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
@@ -89,6 +91,13 @@ class Context:
     prepared: Prepared
     lists: Lists
     packs: frozenset[str]
+    #: Sensitivity of installing a package nothing vouches for (the convergence parameter set's
+    #: `oracle.unvetted_package_sensitivity`; 0 = off).
+    unvetted_package_sensitivity: float = 0.0
+    #: Carry it for an owner-named package too when the install runs as root.
+    unvetted_package_as_root: bool = False
+    #: Ecosystems (the entity value's prefix, or `git+` for a URL install) the rule applies to.
+    unvetted_package_ecosystems: tuple[str, ...] = ("npm", "pypi", "git+")
 
     @property
     def groups(self):
@@ -410,6 +419,9 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
         method = str(a.call.get("method") or "GET").upper()
         if method in lists.strings("egress", "web_body_methods") or a.call.get("body"):
             return [Sink("exfil.web_post", a.destination_hosts(), "body")]
+        if a.call is ctx.prepared.pending and ctx.prepared.url_carries:
+            # No body, but the URL reproduces a local read: the query and path reach the server too.
+            return [Sink("exfil.web_query", a.destination_hosts(), "url")]
         return []
     if a.kind in (ToolKind.MCP, ToolKind.OTHER, ToolKind.SUBAGENT_SPAWN):
         if a.kind is ToolKind.SUBAGENT_SPAWN:
@@ -421,6 +433,19 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
         dests = a.destination_hosts() or a.providers
         return [Sink("exfil.web_post", dests, "tool_name")]
     return []
+
+
+def sole_destination_providers(a: CallAnalysis, lists: Lists) -> list[EntityRef]:
+    """The MCP servers or plugins a send tool hands its data to when the call names no recipient, channel
+    or host: the provider is then the only known destination of the send (the same reading `_sinks`
+    makes). Empty for every other call."""
+    if a.kind not in (ToolKind.MCP, ToolKind.OTHER):
+        return []
+    if _tool_matches(a, lists, "egress", "send_tool_name_patterns") is None:
+        return []
+    if a.recipients or a.channels or a.destination_hosts():
+        return []
+    return list(a.providers)
 
 
 def _owner_asked_for_secret(ctx: Context) -> bool:
@@ -710,6 +735,36 @@ def _add_unvetted_sensitivity(
         f.add(SENSITIVITY, weight, subject, "code.unvetted_source")
 
 
+def _add_unvetted_package_sensitivity(
+    f: Finding, pkg: EntityRef, ctx: Context, *, as_root: bool = False
+) -> None:
+    """A package's install scripts run with the agent's own read access. When the entity library
+    does not know the package and neither the owner's request nor a grant names it, nobody vouched
+    for that code: the install carries the unvetted-package sensitivity. A package the library
+    knows, or one the owner named or granted, adds nothing (the owner's word is the vouching);
+    with `unvetted_package_as_root` on, an owner-named package the library does not know carries it
+    all the same when the install runs as root (`as_root`). Only in the ecosystems the library
+    covers with known-good packages, and for installs from a URL: for a system package manager the
+    library has no list of, "unknown" means not covered, not unvetted. An operand computed at run
+    time counts in every ecosystem: no list could know it.
+    Without the library's answer (the oracle off or failing) no package is known: fail closed."""
+    weight = ctx.unvetted_package_sensitivity
+    ent = ctx.prepared.entities.by_id(pkg.entity_id or "")
+    if weight <= 0 or ent is None:
+        return
+    root_named = ent.sanctioned and as_root and ctx.unvetted_package_as_root
+    if ent.sanctioned and not root_named:
+        return
+    ecosystem = "git+" if ent.value.startswith("git+") else ent.value.split(":", 1)[0]
+    covered = ecosystem in ctx.unvetted_package_ecosystems or is_computed_package(ent.value)
+    if not covered and not root_named:
+        return
+    info = ctx.prepared.oracle_entities.get(ent.id)
+    if isinstance(info, dict) and info.get("verdict") != "unknown":
+        return
+    f.add(SENSITIVITY, weight, ent.id, "code.unvetted_package")
+
+
 def _library_near_miss(code_source: EntityRef, ctx: Context) -> str | None:
     """The `known_good` library entry the code source is a near miss of, when the oracle answered
     before AIRA ran; None otherwise."""
@@ -776,6 +831,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     )
     host_subject = code_source.entity_id if code_source else None
     reach, irr = ctx.weight("code", "reach"), ctx.weight("code", "irreversibility")
+    as_root = a.shape is not None and a.shape.privileged
 
     # What the command does as written, and what it does once decoding is undone.
     raw_fetch = _fetch_to_shell(a.shape, ctx)
@@ -894,6 +950,8 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
         )
         f.add(REACH, reach, subject).add(IRREVERSIBILITY, irr, subject)
         _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
+        for pkg in url_packages:
+            _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
         out.append(f)
 
     install_heads = set(lists.strings("installers", "package_install_heads"))
@@ -915,6 +973,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(REACH, reach, pkg.entity_id).add(
                 IRREVERSIBILITY, ctx.weight("code", "package_irreversibility"), pkg.entity_id
             )
+            _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
             out.append(f)
 
     written = ctx.prepared.written_file
@@ -985,29 +1044,18 @@ def lookalike_of(host: str, listed_hosts: Iterable[str]) -> str | None:
     return None
 
 
-_PROVIDER_VERSION_RE = re.compile(r"@[^@/:\s]+$")
-
-
-def _provider_name(identity: str) -> str:
-    """A provider identity without its version: `npm:@acme/gmail-mcp@1.4.2` → `npm:@acme/gmail-mcp`.
-    The scope's `@` is kept because a version never contains `/`."""
-    identity = identity.strip().lower()
-    name = _PROVIDER_VERSION_RE.sub("", identity)
-    return name if name and not name.endswith(":") else identity
-
-
 def provider_lookalike_of(identity: str, known: Iterable[str]) -> str | None:
     """The known provider identity `identity` mimics, or None: its package name is one edit from a
     known one's. The same name under another version (a patch bump) is that provider, not a
     look-alike, and so is any identity whose name is known."""
-    name = _provider_name(identity)
+    name = provider_name(identity)
     known = [k for k in known if k]
-    if any(_provider_name(k) == name for k in known):
+    if any(provider_name(k) == name for k in known):
         return None
     if len(name.rsplit("/", 1)[-1].split(":")[-1]) < 5:
         return None
     for k in known:
-        if _edit_distance_le1(name, _provider_name(k)):
+        if _edit_distance_le1(name, provider_name(k)):
             return k
     return None
 
@@ -1108,7 +1156,9 @@ def detect_registry_redirect(a: CallAnalysis, ctx: Context) -> list[Finding]:
         hit = _match_any(lists.patterns("installers", "registry_cli_patterns"), a.scan_text)
     if hit is None:
         return out
-    host = next((h for h in a.hosts if h.value not in ("registry.npmjs.org", "pypi.org")), None)
+    # The host the call sets as the registry (a code source), else the first host it names.
+    others = [h for h in a.hosts if h.value not in ("registry.npmjs.org", "pypi.org")]
+    host = next((h for h in others if Role.CODE_SOURCE in h.roles), others[0] if others else None)
     subject = host.entity_id if host else None
     f = Finding(
         rule="C3.registry_redirect",
@@ -1118,6 +1168,10 @@ def detect_registry_redirect(a: CallAnalysis, ctx: Context) -> list[Finding]:
     )
     f.add(REACH, ctx.weight("code", "reach"), subject)
     f.add(IRREVERSIBILITY, ctx.weight("code", "registry_irreversibility", default=0.6), subject)
+    # Packages served by a registry that is not a listed installer run with the agent's own access.
+    _add_unvetted_sensitivity(
+        f, host if host and Role.CODE_SOURCE in host.roles else None, subject, ctx
+    )
     out.append(f)
     return out
 
@@ -1663,8 +1717,29 @@ def detect_sql_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
 # =========================================================================== C8
 
 
+def _privileged_group_switches(a: CallAnalysis, lists: Lists) -> list[str]:
+    """The root-equivalent groups the command switches into with `sg` or `newgrp`: the group is the first
+    word after the head that is not `-` or a flag (`sg docker -c cmd`, `newgrp - docker`). A group the
+    command does not write out (a substitution, a variable) is not read here; the command resolved
+    through a sibling's write is analysed as a call of its own."""
+    heads = set(lists.strings("privilege", "group_switch_heads"))
+    privileged = {g.lower() for g in lists.strings("privilege", "root_equivalent_groups")}
+    out: list[str] = []
+    for shape in (a.shape, a.decoded_shape):
+        if shape is None or not shape.parse_ok:
+            continue
+        for seg in shape.segments:
+            if seg.head not in heads:
+                continue
+            group = next((t for t in seg.argv if not t.startswith("-")), None)
+            if group is not None and group.lower() in privileged and group.lower() not in out:
+                out.append(group.lower())
+    return out
+
+
 def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
-    """C8: sudo/doas/su (pack `host_gated`), setuid/setcap, loader preload and PATH shadowing."""
+    """C8: sudo/doas/su (pack `host_gated`), a switch into a root-equivalent group, setuid/setcap,
+    loader preload and PATH shadowing."""
     out: list[Finding] = []
     if a.kind is not ToolKind.EXEC:
         return out
@@ -1684,6 +1759,17 @@ def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(REACH, reach)
         else:
             f.detail["skipped"] = "pack host_gated not enabled"
+        out.append(f)
+    groups = _privileged_group_switches(a, lists)
+    if groups:
+        # A member switches group with no password, so the host does not gate this as it gates sudo.
+        f = Finding(
+            rule="C8.group_switch",
+            cls="C8",
+            reason="priv.group_switch",
+            detail={"groups": groups},
+        )
+        f.add(REACH, reach)
         out.append(f)
     if _match_any(lists.patterns("privilege", "setuid_patterns"), a.scan_text):
         f = Finding(rule="C8.setuid", cls="C8", reason="priv.setuid")

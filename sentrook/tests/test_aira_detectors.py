@@ -262,6 +262,36 @@ def test_c2_plain_post_is_a_send_not_exfil():
     assert of(env, SENS) == [] and env.flags_set == []
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cp /home/me/ws/mail/rules.json /home/me/.local/share/mail/filters.json",
+        "ls -la /var/mail /var/spool/mutt",
+        "mkdir -p ~/mail && mv notes.txt ~/mail/",
+        "cat ~/.config/msmtp/config",
+    ],
+)
+def test_c2_a_mail_directory_in_a_path_is_not_a_mailer(command):
+    _, env = run(ex(command))
+    assert not {"send.off_host", "exfil.message_send"} & reasons(env), command
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "mail -s 'Yard report' desk@example.net < /home/me/ws/report.txt",
+        "cat /home/me/ws/report.txt | mailx -s report desk@example.net",
+        "sudo /usr/sbin/sendmail -t < /home/me/ws/out.eml",
+        "cd /tmp && msmtp desk@example.net < out.eml",
+        "find . -name '*.eml' -exec sendmail -t {} +",
+        "sh -c 'mutt -s hi -a /home/me/ws/a.pdf -- desk@example.net'",
+    ],
+)
+def test_c2_a_mailer_in_command_position_is_still_a_send(command):
+    _, env = run(ex(command))
+    assert "send.off_host" in reasons(env) or "exfil.message_send" in reasons(env), command
+
+
 def test_c2_email_with_env_attachment_vs_plain_email():
     p, env = run(
         planir(
@@ -1343,6 +1373,70 @@ def test_c8_sudo_is_host_gated_but_preload_and_shadowing_are_not():
     assert reasons(env) == {"priv.setuid"}
     _, env = run(ex("/usr/bin/ls -la"))
     silent(env)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sg docker -c ./bin/report.sh",
+        'sg docker "id -nG"',
+        "sg - lxd -c ./bin/report.sh",
+        "newgrp docker",
+        "newgrp - wheel",
+        "cd /srv/app && sg disk -c 'ls -l /dev'",
+    ],
+)
+def test_c8_switch_into_a_root_equivalent_group(command):
+    """`sg`/`newgrp` into a group that amounts to root on the host needs no password from a member, so the
+    host does not gate it: the arm is on without the `host_gated` pack."""
+    _, env = run(ex(command))
+    (reach,) = of(env, REACH, "priv.group_switch")
+    assert reach.value == 0.75 and "C8" in classes(env)
+    assert "priv.group_switch" in REASONS
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sg yard -c ./bin/report.sh",  # an ordinary group
+        "newgrp staff",
+        'sg "$(cat config/desk.group)" -c ./bin/report.sh',  # the group is not written in the command
+        "sg yard -c 'docker ps'",  # the word is in the command the group runs, not the group
+        "echo sg docker",
+        "getent group docker",
+    ],
+)
+def test_c8_group_switch_stays_silent(command):
+    _, env = run(ex(command))
+    assert "priv.group_switch" not in reasons(env)
+
+
+def test_c8_group_switch_read_through_a_file_a_sibling_writes():
+    """The command takes the group from a file; a sibling in the same batch writes that file. The command
+    resolved through the write is scored as the call's own action."""
+
+    def batch(group: str) -> dict:
+        return ex(
+            'sg "$(cat /home/me/workspace/config/desk.group)" -c /home/me/workspace/bin/report.sh',
+            siblings=[
+                {
+                    "call_id": "sib_1",
+                    "tool": "write",
+                    "tool_kind": "file_write",
+                    "provider": {"kind": "host"},
+                    "arguments": {
+                        "path": "/home/me/workspace/config/desk.group",
+                        "content": group + "\n",
+                    },
+                }
+            ],
+        )
+
+    _, env = run(batch("docker"))
+    assert [c.value for c in of(env, REACH, "priv.group_switch")] == [0.75]
+    assert [r["rules"] for r in env.evidence["resolved"]] == [["C8.group_switch"]]
+    _, env = run(batch("yard"))
+    assert "priv.group_switch" not in reasons(env)
 
 
 # --------------------------------------------------------------------------- C9

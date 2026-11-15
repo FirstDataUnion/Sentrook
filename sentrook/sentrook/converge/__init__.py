@@ -198,6 +198,20 @@ def _reasons(
     return [r for _, r in scored]
 
 
+def exposure_unjudged(prepared: Prepared, envelopes: list[Envelope]) -> bool:
+    """The request brings new untrusted content the exposure probe would judge (not only reads of the agent's own
+    skills or memory), and no exposure envelope came back OK: the probe failed, timed out or did not run, so nobody
+    looked at that content. A probe skipped because there was nothing new to read is not this."""
+    if not any(
+        i.input.content and i.input.input_seq not in prepared.own_store_inputs
+        for i in prepared.untrusted_inputs(new_only=True)
+    ):
+        return False
+    return not any(
+        env.step is ProbeStep.JEV_EXPOSURE and env.status is ProbeStatus.OK for env in envelopes
+    )
+
+
 def converge(
     prepared: Prepared,
     envelopes: list[Envelope],
@@ -211,7 +225,8 @@ def converge(
 ) -> ConvergeResult:
     claims = collect(envelopes)
     merged = merge(claims)
-    tiers = compute(merged, envelopes, params)
+    unjudged = exposure_unjudged(prepared, envelopes)
+    tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
     known_good = [
         eid
@@ -220,11 +235,36 @@ def converge(
         for eid, info in (env.evidence.get("entities") or {}).items()
         if isinstance(info, dict) and info.get("verdict") == "known_good"
     ]
-    relief = compute_relief(prepared, params, known_good)
+    # What a config read supplied is not the owner's when this scan judges that read injected.
+    withdrawn_trust = {
+        h
+        for env in envelopes
+        if env.status is ProbeStatus.OK
+        for m in env.marks
+        if m.judgement != "sensitive" and m.input_seq is not None
+        for h in prepared.trusted_by_input.get(m.input_seq, [])
+    }
+    known_good_exact = [
+        eid
+        for env in envelopes
+        if env.step is ProbeStep.ENTITY_ORACLE and env.status is ProbeStatus.OK
+        for eid, info in (env.evidence.get("entities") or {}).items()
+        if isinstance(info, dict)
+        and info.get("verdict") == "known_good"
+        and info.get("match") == "exact"
+    ]
+    relief = compute_relief(
+        prepared,
+        params,
+        known_good,
+        withdrawn_trust,
+        known_good_exact=known_good_exact,
+        exposure=merged.get("suspicion.exposure"),
+    )
     if relief:
         excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
-        tiers = compute(merged, envelopes, params)
+        tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
     floors: list[FloorApplied] = []
     risk = tiers.risk
