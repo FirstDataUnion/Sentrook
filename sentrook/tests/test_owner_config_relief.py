@@ -154,3 +154,61 @@ def test_a_known_bad_destination_keeps_its_block_whatever_the_config_says():
     on, _ = _scan(ex(POST), ON, trusted, oracle=bad)
     assert any(f.floor == "known_bad_entity" for f in on.response.floors_applied)
     assert on.response.risk == 100.0
+
+
+# --------------------------------------------------------------------------- which files are the owner's
+
+
+def _two_scans(path: str, workspace: str):
+    """Step 1 reads `path` (naming INTAKE) and runs `ls`; step 2 posts to INTAKE with the token step 1 issued."""
+    from test_session_sets import _next_step
+
+    from sentrook.probes.jev import owner_config_entries
+
+    step1 = ex("ls", history=[hist_step(1, "read", "file_read", {"path": path})])
+    step1["host"]["workspace_root"] = workspace
+    step1["new_inputs"] = [tool_result(1, "c1", CONFIG_TEXT, "read", "file_read")]
+    first, _ = _scan(step1, ON)
+    second = scanner(BENIGN_ANSWERS, params=ON).scan(
+        _next_step(step1, first.response.state, POST),
+        ScanOptions(
+            deterministic=True,
+            clock=CLOCK,
+            salt="testnest",
+            oracle_seed=UNKNOWN,
+            probes_enabled=PROBES,
+        ),
+    )
+    assert second.prepared.state.status.value == "valid"
+    relieved = {
+        x.subject for x in second.response.reasons if x.code == "relief.owner_config_destination"
+    }
+    host = _host(second)
+    entries = owner_config_entries(second.prepared, [])
+    return host, relieved, entries
+
+
+@pytest.mark.parametrize(
+    "path", [CONFIG, "/home/me/.openclaw/workspace/TOOLS.md", "/home/me/.hermes/SOUL.md"]
+)
+def test_a_destination_from_the_hosts_own_config_directory_keeps_its_relief(path):
+    host, relieved, entries = _two_scans(path, "/home/me/.openclaw/workspace")
+    assert relieved == {host.id}
+    assert entries == [{"kind": "host", "value": INTAKE, "verdict": "owner_config"}]
+
+
+@pytest.mark.parametrize(
+    "path, workspace",
+    [
+        # Hermes works in the directory it was started in: a cloned repository's AGENTS.md.
+        ("/home/me/projects/app/AGENTS.md", "/home/me/projects/app"),
+        # A repository cloned into OpenClaw's own workspace.
+        ("/home/me/.openclaw/workspace/app/AGENTS.md", "/home/me/.openclaw/workspace"),
+        # A config-named file a repository ships.
+        ("/home/me/.openclaw/workspace/app/openclaw.json", "/home/me/.openclaw/workspace"),
+    ],
+)
+def test_a_destination_named_only_in_a_repositorys_instructions_is_not_relieved(path, workspace):
+    host, relieved, entries = _two_scans(path, workspace)
+    assert not host.in_prior_trusted
+    assert relieved == set() and entries == []

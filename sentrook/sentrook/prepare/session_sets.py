@@ -338,25 +338,51 @@ def bind(
     )
 
 
+#: Where the hosts keep their own configuration, relative to the home: OpenClaw's `openclaw.json`, its
+#: `config`/`settings` files and directories, an agent's own state directory (`agents/<id>/agent/`, not
+#: its session transcripts), and Hermes's `config.yaml` and `.env`, at the top or in a profile.
+_HOST_CONFIG = re.compile(
+    r"/\.openclaw/(?:openclaw\.json|(?:config|settings)(?:\.[^/]+|/.+)|agents/[^/]+/agent/[^/]+)"
+    r"|/\.hermes/(?:profiles/[^/]+/)?(?:config\.yaml|\.env)"
+)
+#: Directories, relative to the home, whose top-level instruction files the host itself loads: its own
+#: directory, an OpenClaw agent workspace (`workspace`, `workspace-<agent>`) and a Hermes profile.
+_HOST_TOP_DIR = re.compile(r"/\.openclaw(?:/workspace(?:-[^/]+)?)?|/\.hermes(?:/profiles/[^/]+)?")
+
+
 def owner_config_path(
     call: CanonicalCall, *, home: str | None, workspace_root: str | None
 ) -> str | None:
     """The agent config or instruction file `call` reads, when that is all it does: a file read, or a
     command made only of reading heads over one file in the agent's config list (`agent_config` in the
-    sensitive-path lists), in the agent's own place: under `~/.openclaw/` or `~/.hermes/`, in
-    `/etc/hermes/`, or at the top of the workspace. An AGENTS.md in a cloned repository is not the owner's.
-    None otherwise."""
+    sensitive-path lists), in the host's own directory (`~/.openclaw/`, `~/.hermes/`, `/etc/hermes/`).
+    None otherwise.
+
+    Only the places the host keeps its own files count. A config file counts where the host keeps it
+    (`~/.openclaw/openclaw.json`, `~/.openclaw/config/...`, an agent's `~/.openclaw/agents/<id>/agent/`,
+    `~/.hermes/config.yaml` and `.env`, at the top or in a profile; anything in `/etc/hermes/`). An
+    instruction file (`AGENTS.md`, `SOUL.md`, ...) counts only at the top of `~/.openclaw/`, an OpenClaw
+    agent workspace (`~/.openclaw/workspace*/`), `~/.hermes/`, a Hermes profile or `/etc/hermes/`. A
+    workspace anywhere else (Hermes works in its working directory) holds the files of whatever
+    repository the owner opened, and a deeper file is a repository, a skill or a copy the agent brought
+    in: their instructions are their author's, not the owner's. So is a config-named file among them,
+    and an agent's session transcripts hold what it read."""
     from ..aira.lists import load_lists
 
     group = load_lists().group("agent_config")
+    instruction_names = {b.lower() for b in group.basenames}
+    home_root = home.rstrip("/") if home and home.rstrip("/") else None
 
     def owned(path: str) -> bool:
-        roots = [f"{home.rstrip('/')}/.openclaw/", f"{home.rstrip('/')}/.hermes/"] if home else []
-        if path.startswith((*roots, "/etc/hermes/")):
-            return True
-        return bool(workspace_root) and str(PurePosixPath(path).parent) == workspace_root.rstrip(
-            "/"
-        )
+        if path.startswith("/etc/hermes/"):
+            name = PurePosixPath(path).name.lower()
+            return name not in instruction_names or str(PurePosixPath(path).parent) == "/etc/hermes"
+        if not home_root or not path.startswith(home_root + "/"):
+            return False
+        rel = path[len(home_root) :]
+        if PurePosixPath(rel).name.lower() in instruction_names:
+            return bool(_HOST_TOP_DIR.fullmatch(str(PurePosixPath(rel).parent)))
+        return bool(_HOST_CONFIG.fullmatch(rel))
 
     if call.tool_kind is ToolKind.FILE_READ:
         if not call.path:

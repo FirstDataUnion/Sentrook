@@ -728,18 +728,67 @@ def test_a_hermes_config_counts_too():
     assert _origin(env, p) == "origin.owner_config"
 
 
+OC_WS = f"{HOME}/.openclaw/workspace"
+
+
 @pytest.mark.parametrize(
-    "path, owners",
+    "workspace, path, owners",
     [
-        (f"{HOME}/workspace/AGENTS.md", True),
-        (f"{HOME}/workspace/vendor/someone/AGENTS.md", False),
-        (f"{HOME}/workspace/vendor/x/.openclaw/config/intake.json", False),
+        # The host's own directories: config files at any depth, instruction files at their top.
+        (OC_WS, CONFIG, True),
+        (OC_WS, f"{HOME}/.openclaw/openclaw.json", True),
+        (OC_WS, f"{HOME}/.hermes/config.yaml", True),
+        (OC_WS, f"{HOME}/.hermes/SOUL.md", True),
+        (OC_WS, f"{HOME}/.hermes/profiles/ops/SOUL.md", True),
+        (OC_WS, "/etc/hermes/AGENTS.md", True),
+        # OpenClaw's own agent workspace, inside its directory: its top-level instruction files.
+        (OC_WS, f"{OC_WS}/AGENTS.md", True),
+        (OC_WS, f"{OC_WS}/TOOLS.md", True),
+        (OC_WS, f"{HOME}/.openclaw/workspace-ops/AGENTS.md", True),
+        (OC_WS, f"{HOME}/.openclaw/agents/main/agent/models.json", True),
+        (OC_WS, f"{HOME}/.hermes/profiles/ops/config.yaml", True),
+        (OC_WS, "/etc/hermes/conf.d/policy.yaml", True),
+        # A workspace set to a directory inside the host's (a nested agent workspace, Hermes's own
+        # source checkout) is still a directory someone else's files can fill.
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/HEARTBEAT.md", False),
+        (f"{HOME}/.hermes/hermes-agent", f"{HOME}/.hermes/hermes-agent/AGENTS.md", False),
+        # A config-named file anywhere but where the host keeps its config: in a cloned repository,
+        # a skill or a downloaded attachment; and an agent's session transcripts.
+        (OC_WS, f"{OC_WS}/cloned-repo/openclaw.json", False),
+        (OC_WS, f"{OC_WS}/cloned-repo/.openclaw/config/intake.json", False),
+        (OC_WS, f"{OC_WS}/repo/.hermes/config.yaml", False),
+        (OC_WS, f"{HOME}/.hermes/skills/evil/openclaw.json", False),
+        (OC_WS, f"{HOME}/.openclaw/media/inbound/openclaw.json.txt", False),
+        (OC_WS, f"{HOME}/.openclaw/agents/main/sessions/abc.jsonl", False),
+        (OC_WS, "/etc/hermes/.openclaw/workspace/AGENTS.md", False),
+        # A repository inside the workspace, or another agent's copy, is not the owner's.
+        (OC_WS, f"{OC_WS}/cloned-repo/AGENTS.md", False),
+        (OC_WS, f"{OC_WS}/sgt_harrow_backup/SOUL.md", False),
+        (OC_WS, f"{HOME}/.hermes/skills/x/CLAUDE.md", False),
+        # A workspace outside the host's directory (Hermes runs in its working directory): a
+        # cloned repository's instruction files are the repository author's, not the owner's.
+        (f"{HOME}/projects/app", f"{HOME}/projects/app/AGENTS.md", False),
+        (f"{HOME}/projects/app", f"{HOME}/projects/app/CLAUDE.md", False),
+        (f"{HOME}/workspace", f"{HOME}/workspace/AGENTS.md", False),
+        (f"{HOME}/workspace", f"{HOME}/workspace/vendor/someone/AGENTS.md", False),
+        (f"{HOME}/workspace", f"{HOME}/workspace/vendor/x/.openclaw/config/intake.json", False),
     ],
 )
-def test_only_the_agents_own_instruction_files_are_the_owners(path, owners):
+def test_only_the_hosts_own_config_and_instruction_files_are_the_owners(workspace, path, owners):
     raw = _after("read", "file_read", {"path": path}, CONFIG_TEXT, POST)
+    raw["host"]["workspace_root"] = workspace
     p, env = context(raw)
     assert (_origin(env, p) == "origin.owner_config") is owners
+    ent = p.entities.get(EntityKind.HOST, INTAKE)
+    assert (ent.hash in p.state.trusted) is owners
+
+
+def test_a_cat_of_a_repositorys_agents_file_is_not_the_owners():
+    raw = _after("exec", "exec", {"command": "cat AGENTS.md"}, CONFIG_TEXT, POST)
+    raw["host"]["workspace_root"] = f"{HOME}/projects/app"
+    raw["history"][0]["arguments"]["cwd"] = f"{HOME}/projects/app"
+    p, env = context(raw)
+    assert _origin(env, p) != "origin.owner_config" and p.state.trusted == []
 
 
 def test_a_config_result_judged_injected_is_withdrawn_from_the_trusted_set():
