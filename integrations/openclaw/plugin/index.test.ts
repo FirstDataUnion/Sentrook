@@ -343,6 +343,17 @@ for (const unattended of [false, true]) {
   });
 }
 
+test("a scan failure in a webhook or event run (trigger event) blocks rather than asks", async () => {
+  // Must fire: nobody can answer a prompt in a run OpenClaw starts from a webhook.
+  const h = setup();
+  const ctx = { ...CTX, runId: "r7", trigger: "event", requester: undefined };
+  await h.fire("before_prompt_build", { runId: "r7", prompt: "New order received" }, ctx);
+  const r = await h.fire("before_tool_call", { ...call("c1", "FAIL"), runId: "r7" }, ctx);
+  assert.equal(h.scans[0].trigger.kind, "hook");
+  assert.equal(r.block, true);
+  assert.equal(r.requireApproval, undefined);
+});
+
 test("a cron run's delivery goes out as a scheduled trigger with its channel binding", async () => {
   // Must fire: the binding reaches the scan of the delivery to its channel, on a scheduled trigger.
   // Must stay silent: a delivery to another channel carries no binding.

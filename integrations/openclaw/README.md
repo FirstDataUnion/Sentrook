@@ -280,13 +280,14 @@ A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your a
 
 ### Held calls in cron jobs and subagents
 
-Nobody is there to answer a review in a cron job, a heartbeat, a hook or a subagent (`approval.scheduledIntentKinds`).
-There the call is **held** instead:
+Nobody is there to answer a review in a cron job, a heartbeat, a subagent, or a run OpenClaw starts from an event (a
+webhook or mapped hook, or the agent joining a channel). There the call is **held** instead. Which runs count is set
+by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats and event runs count as `cron`.
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
 - You get one notice as a direct message. It says only that a call was held, which run (a cron job by its id, and
-  its name in quotes), the tool and its target, a broad category, and the commands; read the risk, the reasons and
-  any grant Sentrook suggests with `/sentrook-why <id>`. Run `/sentrook-notify here` once, as a direct message to the
+  its name in quotes, or a heartbeat, subagent, or webhook or event run), the tool and its target, a broad category,
+  and the commands; read the risk, the reasons and any grant Sentrook suggests with `/sentrook-why <id>`. Run `/sentrook-notify here` once, as a direct message to the
   agent on the channel where you want the notices (not in a group or channel; on Discord the notice goes to you as
   a user). Until then nothing is sent, the call is still held, and `status` and `verify` say notices are not sent.
 - Reply `/sentrook-approve <id>` within 24 hours. When Sentrook suggested a grant for the call, approving sets it as a
@@ -373,8 +374,8 @@ A scan gives no usable answer when the scan service returns an error, does not a
 seconds), cannot be reached, or rate-limits the scan. The call is then not scanned, and with the default setting
 (`onScanError`: `review`):
 
-- **In a cron job, a heartbeat or a subagent** (`approval.scheduledIntentKinds`) nobody is there to answer, so the
-  call is blocked. It is not held and no notice is sent. The agent is told that Sentrook did not scan the call, that
+- **In a cron job, a heartbeat, a subagent or a run started from an event** (`approval.scheduledIntentKinds`) nobody
+  is there to answer, so the call is blocked. It is not held and no notice is sent. The agent is told that Sentrook did not scan the call, that
   this is a service problem rather than a security block, and that the call did not run.
 - **Anywhere else**, such as a chat, you are asked whether to run the call without a scan. It runs only if you
   approve; a prompt nobody answers denies the call after 5 minutes (`approval.interactiveTimeoutMs`).
