@@ -21,7 +21,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 4
+version: 5
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -183,6 +183,113 @@ host_approvals:
     - 'command_allowlist\s*:'
     - 'hooks_auto_accept\s*:\s*(?:true|yes|1)'
     - '"(?:allowAll|autoApprove|auto_approve|skipApproval)"\s*:\s*true'
+
+# Loosening the host's approval or allowlist policy (`guardrail.approval_loosening`, the floor).
+# A change that turns approvals off, sets the approval fallback to allow, enables YOLO, or puts a
+# wildcard or a shell in an allowlist removes the human from the loop for every later call. The
+# other host-approval changes above stay scored.
+#
+# Routes: the host's config command (`openclaw config set|patch`, `hermes config set`), OpenClaw's
+# approvals commands (`exec-policy`, `approvals set|allowlist add`), launching Hermes with YOLO,
+# and a write, edit or patch of a file (file tools, `apply_patch`, shell redirects, `sed -i`).
+#
+# A file change counts only when the loosening setting is in the text written and not in the text
+# it replaces, so tightening and moving a setting do not fire. A value the call does not show (a
+# `@file` argument, a patch file) does not fire. Reads never fire.
+approval_loosening:
+  # `key`: regex over a setting's name (the whole name, quoted or not, followed by `:` or `=`).
+  # `value`: regex over the whole value. A config command's `<path> <value>` is read as
+  # `<last path segment>: <value>`, with the whole path as context. `scope: any` settings fire in
+  # any file but documentation; `scope: host` ones only in the host's approvals files
+  # (`host_guardrail_path_patterns`) and approvals commands, and in its config files
+  # (`config_file_patterns`) or config commands when the text also matches `context_patterns`.
+  settings:
+    # OpenClaw approvals: the decision when no one can answer a prompt, or the prompt times out.
+    - key: 'askFallback|ask_fallback'
+      value: 'full|allow|allow[-_]?all|approve'
+      scope: any
+    # OpenClaw plugin approval requests, older hosts: what a timed-out request resolves to.
+    - key: 'timeoutBehavior|timeout_behavior'
+      value: 'allow|approve'
+      scope: any
+    # Hermes YOLO: the environment variable (in `.env`, or a config command that routes to it).
+    - key: 'HERMES_YOLO_MODE|yolo_mode'
+      value: '1|true|yes|on'
+      scope: any
+    # Hermes: approve every dangerous command in cron jobs, `-q` runs or unattended platforms.
+    - key: 'cron_mode|single_query_mode|unattended_mode'
+      value: 'approve|allow|true|yes'
+      scope: any
+    # Hermes `approvals.mode: off` (the same as YOLO).
+    - key: 'mode'
+      value: 'off|false|none|disabled?|yolo'
+      scope: host
+    # OpenClaw `tools.exec.mode` / legacy `tools.exec.security`, and the approvals document's
+    # `security`: run any command without an allowlist match.
+    - key: 'mode|security'
+      value: 'full'
+      scope: host
+    # OpenClaw `ask: off`: never prompt.
+    - key: 'ask'
+      value: 'off|never|false'
+      scope: host
+    # A bare approvals switch turned off.
+    - key: 'approvals?|exec[_-]?approvals|requireApproval|require_approval'
+      value: 'off|false|none|disabled?|never|no|0'
+      scope: host
+  # Allowlists: loosening when an entry is broad (`broad_entry_patterns`, the whole entry).
+  allowlist_keys:
+    any: 'allowlist|allow_list|command_allowlist|commandAllowlist|allowedCommands|allowed_commands'
+    host: 'allow|pattern'
+  broad_entry_patterns:
+    - '\*{1,3}'
+    - '/\*{1,2}'
+    - '\.\*'
+    - '\*\s*:\s*\*'
+    # Any shell, or `sudo`, runs any command.
+    - '(?:[\w.~*/-]*/)?(?:ba|z|da|k|fi|c|tc)?sh(?:\s+(?:-c\s+)?\*{1,2})?'
+    - '(?:[\w.~*/-]*/)?sudo(?:\s+\*{1,2})?'
+  # Words that tie a `scope: host` setting in a config file or config command to approvals.
+  context_patterns:
+    - '\bapprovals?\b'
+    - '\bexec\b'
+    - '\bsmart\b'
+    - '\bmanual\b'
+    - '\ballowlist\b'
+    - '\bon-miss\b'
+  # Files whose text quotes settings rather than holding them: `scope: any` settings skip them.
+  doc_file_patterns:
+    - '\.(?:md|mdx|markdown|txt|rst|adoc|html?)\Z'
+  # OpenClaw approvals commands, matched as `<head> [options] <subcommand> [options] <verb> …`.
+  # `presets`: loosening preset names. `flags`: option -> loosening value. `content`: the
+  # command's text (a heredoc or JSON5 argument) is read as written text. `allowlist_add`: the
+  # entries after the verb (options and their values skipped) are allowlist entries.
+  approvals_cli:
+    - head: openclaw
+      subcommand: exec-policy
+      verb: preset
+      presets: [yolo]
+    - head: openclaw
+      subcommand: exec-policy
+      verb: set
+      flags:
+        --security: 'full'
+        --ask: 'off|never'
+        --ask-fallback: 'full|allow'
+    - head: openclaw
+      subcommand: approvals
+      verb: set
+      content: true
+    - head: openclaw
+      subcommand: approvals
+      verb: allowlist
+      allowlist_add: add
+  # Launching the host with approvals bypassed: a flag on the CLI head, or the environment
+  # variable assigned anywhere in the command.
+  launch_flags:
+    hermes: [--yolo]
+  env_assignment_patterns:
+    - '(?:\A|[\s;&|(])HERMES_YOLO_MODE=["'']?(?:1|true|yes|on)\b'
 
 # Exec heads whose arguments naming a guardrail path count as a write. `sed` only with `-i`.
 writing_heads:

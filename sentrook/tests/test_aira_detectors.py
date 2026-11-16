@@ -1153,14 +1153,15 @@ def test_c4star_config_file_edits_are_content_aware():
             "file_edit",
             {
                 "path": "~/.openclaw/exec-approvals.json",
-                "edits": [{"oldText": '"ask": "always"', "newText": '"ask": "off"'}],
+                "edits": [{"oldText": '"ask": "off"', "newText": '"ask": "on-miss"'}],
             },
         ),
     ],
 )
 def test_host_approval_changes_are_scored_not_floored(raw):
-    """The floor covers Sentrook's state, its plugin entry and the gateway. The
-    host's own approval settings are self-modification with full weight, not a block."""
+    """The floor covers Sentrook's state, its plugin entry, the gateway and changes that loosen
+    the host's approvals (`test_approval_loosening`). Other changes to the host's own approval
+    settings are self-modification with full weight, not a block."""
     _, env = run(raw)
     assert env.floors == []
     assert "selfmod.host_approvals" in reasons(env)
@@ -1611,7 +1612,9 @@ def test_sibling_findings_are_evidence_when_the_sibling_does_not_feed_the_call()
 
 
 def test_sibling_config_change_does_not_lift_an_unrelated_call():
-    _, env = run(ex("openclaw status", siblings=[sib("openclaw config set tools.exec.mode full")]))
+    _, env = run(
+        ex("openclaw status", siblings=[sib("openclaw config set tools.sessions.visibility self")])
+    )
     silent(env)
     assert env.evidence["siblings"]["sib_1"]["rules"] == ["C4.config"]
 

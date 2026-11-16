@@ -33,6 +33,7 @@ from ..prepare.entities import (
     EntityKind,
     Origin,
     Role,
+    display_path,
     is_computed_package,
     normalise_path,
     normalise_remote_identity,
@@ -1504,6 +1505,350 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
     return [_program_name(tokens[0]), *tokens[1:]]
 
 
+# ------------------------------------------------------------------ C4*: approval loosening
+
+
+@dataclass(frozen=True)
+class _LooseningRules:
+    """`guardrail.approval_loosening`, compiled."""
+
+    #: (setting regex finding `key: value` with the value in group `v`, value regex, scope).
+    settings: tuple[tuple[re.Pattern[str], re.Pattern[str], str], ...]
+    allow_any: re.Pattern[str] | None
+    allow_host: re.Pattern[str] | None
+    broad: tuple[re.Pattern[str], ...]
+    context: tuple[re.Pattern[str], ...]
+    docs: tuple[re.Pattern[str], ...]
+    approvals_cli: tuple[dict[str, Any], ...]
+    launch_flags: dict[str, frozenset[str]]
+    env: tuple[re.Pattern[str], ...]
+
+
+_LOOSENING_CACHE: dict[int, tuple[Any, _LooseningRules]] = {}
+_VALUE = r"""[ \t]*[:=][ \t]*["']?(?P<v>[^\s"',;}\]#)/\\]+)"""
+
+
+def _key_regex(keys: str) -> re.Pattern[str]:
+    return re.compile(r"""(?<![\w-])["']?(?P<k>""" + keys + r""")["']?""" + _VALUE, re.IGNORECASE)
+
+
+def _loosening_rules(lists: Lists) -> _LooseningRules:
+    raw = lists.get("guardrail", "approval_loosening", default={}) or {}
+    cached = _LOOSENING_CACHE.get(id(raw))
+    if cached is not None and cached[0] is raw:
+        return cached[1]
+    settings = tuple(
+        (
+            _key_regex(str(s["key"])),
+            re.compile(str(s["value"]), re.IGNORECASE),
+            str(s.get("scope", "host")),
+        )
+        for s in raw.get("settings") or []
+    )
+    keys = raw.get("allowlist_keys") or {}
+
+    def list_key(name: str) -> re.Pattern[str] | None:
+        k = keys.get(name)
+        if not k:
+            return None
+        return re.compile(
+            r"""(?<![\w-])["']?(?:""" + str(k) + r""")["']?[ \t]*[:=][ \t]*""", re.IGNORECASE
+        )
+
+    rules = _LooseningRules(
+        settings=settings,
+        allow_any=list_key("any"),
+        allow_host=list_key("host"),
+        broad=lists.patterns("guardrail", "approval_loosening", "broad_entry_patterns"),
+        context=lists.patterns("guardrail", "approval_loosening", "context_patterns"),
+        docs=lists.patterns("guardrail", "approval_loosening", "doc_file_patterns"),
+        approvals_cli=tuple(raw.get("approvals_cli") or ()),
+        launch_flags={
+            str(head).lower(): frozenset(str(f) for f in flags or ())
+            for head, flags in (raw.get("launch_flags") or {}).items()
+        },
+        env=lists.patterns("guardrail", "approval_loosening", "env_assignment_patterns"),
+    )
+    _LOOSENING_CACHE[id(raw)] = (raw, rules)
+    return rules
+
+
+def _list_value(text: str, start: int) -> str:
+    """The value that starts at `start`: a bracketed list (to its closing bracket), a YAML block
+    list on the following lines, or one scalar."""
+    rest = text[start:]
+    if rest.startswith("["):
+        depth = 0
+        for i, ch in enumerate(rest):
+            depth += ch == "["
+            depth -= ch == "]"
+            if depth == 0:
+                return rest[: i + 1]
+        return rest
+    line, _, after = rest.partition("\n")
+    if line.strip() and not line.strip().startswith("#"):
+        return line
+    items: list[str] = []
+    for item in after.splitlines():
+        if not item.strip():
+            continue
+        if not item.lstrip().startswith("-"):
+            break
+        items.append(item)
+    return "\n".join(items)
+
+
+def _entries(value: str) -> list[str]:
+    """The entries of a list value: quoted strings, comma-separated words and YAML items."""
+    out = [m.group(1) or m.group(2) for m in re.finditer(r'"([^"]*)"|\'([^\']*)\'', value)]
+    for part in re.split(r"[,\n]", value):
+        word = part.strip().lstrip("-").strip().strip("[]{}").strip().strip("\"'").strip()
+        if word:
+            out.append(word)
+    return out
+
+
+def _loosening_hits(text: str, rules: _LooseningRules, host: bool) -> set[tuple[str, str]]:
+    """The loosening settings `text` holds, as (setting, value). With `host`, the settings that
+    only count in the host's own approvals or config are included."""
+    hits: set[tuple[str, str]] = set()
+    if not text:
+        return hits
+    for rx, value, scope in rules.settings:
+        if scope != "any" and not host:
+            continue
+        for m in rx.finditer(text):
+            if value.fullmatch(m.group("v")):
+                hits.add((m.group("k"), m.group("v").lower()))
+    for key_rx in (rules.allow_any, rules.allow_host if host else None):
+        if key_rx is None:
+            continue
+        for m in key_rx.finditer(text):
+            for entry in _entries(_list_value(text, m.end())):
+                if any(b.fullmatch(entry.strip()) for b in rules.broad):
+                    hits.add((m.group(0).strip(" \t:=\"'"), entry.strip()))
+    return hits
+
+
+def _loosened(
+    pairs: list[tuple[str, str]], rules: _LooseningRules, host: bool, context: bool
+) -> set[tuple[str, str]]:
+    """The loosening settings the new text of each (old, new) pair holds and its old text does
+    not. `host` settings need `host` and, when `context` is set, a context word in either text."""
+    out: set[tuple[str, str]] = set()
+    for old, new in pairs:
+        both = old + "\n" + new
+        with_host = host and (not context or _match_any(rules.context, both) is not None)
+        out |= _loosening_hits(new, rules, with_host) - _loosening_hits(old, rules, with_host)
+    return out
+
+
+_PATCH_FILE = re.compile(r"^(?:\*\*\* (?:Update|Add) File:|\+\+\+ (?:b/)?)\s*(\S.*?)\s*$", re.M)
+
+
+def _patch_sections(text: str) -> list[tuple[str, str, str]]:
+    """(path, removed text, added text) per file of a patch (`*** Begin Patch` or unified diff)."""
+    out: list[tuple[str, str, str]] = []
+    heads = list(_PATCH_FILE.finditer(text))
+    for i, m in enumerate(heads):
+        body = text[m.end() : heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        old, new = [], []
+        for line in body.splitlines():
+            if line.startswith(("+++", "---", "***")):
+                continue
+            if line.startswith("+"):
+                new.append(line[1:])
+            elif line.startswith("-"):
+                old.append(line[1:])
+            elif line.startswith(" "):
+                # Context lines tie a setting to its section; they are in both texts.
+                old.append(line[1:])
+                new.append(line[1:])
+        out.append((m.group(1), "\n".join(old), "\n".join(new)))
+    return out
+
+
+# One `{"path": …, "value": …}` item of `config set --batch-json`, quotes optional.
+_BATCH_ITEM = re.compile(
+    r"""["']?path["']?\s*:\s*["']?([\w.\[\]-]+)["']?\s*,\s*["']?value["']?\s*:\s*"""
+    r"""("[^"]*"|'[^']*'|\[[^\]]*\]|\{[^}]*\}|[^,}\s]+)"""
+)
+_SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1).)*)\1""")
+
+
+def _sed_split(command: str) -> tuple[str, str]:
+    """(old, new) text of a shell command that writes a file: a `sed` substitution's search
+    patterns are the old text; the rest of the command is the new text."""
+    old = [m.group(2) for m in _SED_SUBST.finditer(command)]
+    return "\n".join(old), _SED_SUBST.sub(lambda m: "s" + m.group(1), command)
+
+
+def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None, dict[str, Any]]]:
+    """Changes that loosen the host's approval or allowlist policy, as (subject, detail)."""
+    lists = ctx.lists
+    rules = _loosening_rules(lists)
+    if not rules.settings and rules.allow_any is None:
+        return []
+    approvals_files = lists.patterns("guardrail", "host_guardrail_path_patterns")
+    config_files = lists.patterns("guardrail", "config_file_patterns")
+    out: list[tuple[str | None, dict[str, Any]]] = []
+
+    def file_change(
+        value: str, subject: str | None, pairs: list[tuple[str, str]], detail: dict[str, Any]
+    ) -> None:
+        if _match_any(approvals_files, value):
+            hits = _loosened(pairs, rules, host=True, context=False)
+        elif _match_any(config_files, value):
+            hits = _loosened(pairs, rules, host=True, context=True)
+        elif _match_any(rules.docs, value):
+            return
+        else:
+            hits = _loosened(pairs, rules, host=False, context=False)
+        if hits:
+            out.append((subject, {**detail, "settings": sorted(f"{k}={v}" for k, v in hits)[:4]}))
+
+    def resolve(path: str) -> str:
+        return normalise_path(
+            path.strip().strip("'\""),
+            home=ctx.prepared.home,
+            workspace_root=ctx.prepared.workspace_root,
+            cwd=a.cwd,
+        )
+
+    # 1. File tools: write, edit, patch (also MCP and other tools that name the path).
+    if a.kind in _WRITE_KINDS | {ToolKind.MCP, ToolKind.OTHER}:
+        raw = a.call.raw if isinstance(a.call.raw, dict) else {}
+        patch = next(
+            (
+                raw[k]
+                for k in ("input", "patch", "diff")
+                if isinstance(raw.get(k), str) and _PATCH_FILE.search(raw[k])
+            ),
+            None,
+        )
+        if patch is not None:
+            for path, old, new in _patch_sections(patch):
+                value = resolve(path)
+                p = a.path(value)
+                file_change(
+                    value,
+                    p.entity_id if p else None,
+                    [(old, new)],
+                    {"path": display_path(value, ctx.prepared.home), "mechanism": "patch"},
+                )
+        edits = [e for e in a.call.get("edits") or [] if isinstance(e, dict)]
+        if edits:
+            pairs = [(str(e.get("old") or ""), str(e.get("new") or "")) for e in edits]
+        else:
+            pairs = [("", a.content)]
+        for p, mechanism in _written_paths(a, ctx):
+            file_change(p.value, p.entity_id, pairs, {"path": p.display, "mechanism": mechanism})
+        return out
+
+    if a.kind is not ToolKind.EXEC or a.inline_code or not a.command:
+        return out
+    command = a.command
+
+    # 2. Shell writes into a file (redirects, `tee`, `cp`, `sed -i`, heredocs). The words `echo`
+    #    and `printf` print are not files.
+    pair = _sed_split(command) if "sed" in a.heads else ("", command)
+    for p, mechanism in _written_paths(a, ctx):
+        if mechanism not in ("head:echo", "head:printf"):
+            file_change(p.value, p.entity_id, [pair], {"path": p.display, "mechanism": mechanism})
+
+    # 3. Host CLIs: config commands, approvals commands, launching with approvals bypassed.
+    config_cli = lists.get("guardrail", "config_cli", default=[]) or []
+    heads = {str(e.get("head")).lower() for e in config_cli}
+    heads |= {str(e.get("head")).lower() for e in rules.approvals_cli}
+    heads |= set(rules.launch_flags)
+
+    def cli_hit(line: str, mechanism: str, settings: list[str]) -> None:
+        out.append((None, {"match": line[:120], "mechanism": mechanism, "settings": settings[:4]}))
+
+    def set_value(path: str, value: str) -> set[tuple[str, str]]:
+        """`<path> <value>` of a config command, read as `<last segment>: <value>`."""
+        if value.startswith("@"):
+            return set()  # read from a file the call does not show
+        leaf = path.rsplit(".", 1)[-1].strip("'\"")
+        text = f"{leaf}: {value}"
+        host = _match_any(rules.context, path + "\n" + value) is not None
+        return _loosening_hits(text, rules, host)
+
+    for words, line in _cli_segments(a, lists):
+        tokens = _cli_tokens(words, heads, lists)
+        if not tokens or tokens[0] not in heads:
+            continue
+        head = tokens[0]
+        flags = rules.launch_flags.get(head, frozenset())
+        if flags and any(t in flags for t in tokens[1:]):
+            cli_hit(line, "launch_flag", [t for t in tokens[1:] if t in flags])
+        for at in _after_options(tokens, 1):
+            sub = tokens[at].lower()
+            verbs = [(v, tokens[v].lower()) for v in _after_options(tokens, at + 1)]
+            for entry in config_cli:
+                if head != entry.get("head") or sub != entry.get("subcommand"):
+                    continue
+                for v, verb in verbs:
+                    if verb not in {str(x).lower() for x in entry.get("mutating_verbs", [])}:
+                        continue
+                    args = tokens[v + 1 :]
+                    hits: set[tuple[str, str]] = set()
+                    if verb == "patch":
+                        hits = _loosening_hits(command, rules, host=True)
+                    if any(t.split("=", 1)[0] == "--batch-json" for t in args):
+                        for m in _BATCH_ITEM.finditer(command):
+                            hits |= set_value(m.group(1), m.group(2).strip("'\""))
+                    positional = [t for t in args if not t.startswith("-")]
+                    if len(positional) >= 2:
+                        hits |= set_value(positional[0], positional[1])
+                    if hits:
+                        cli_hit(line, f"{head} {sub} {verb}", sorted(f"{k}={v}" for k, v in hits))
+            for entry in rules.approvals_cli:
+                if head != entry.get("head") or sub != entry.get("subcommand"):
+                    continue
+                for v, verb in verbs:
+                    if verb != entry.get("verb"):
+                        continue
+                    args = tokens[v + 1 :]
+                    mech = f"{head} {sub} {verb}"
+                    presets = {str(p).lower() for p in entry.get("presets") or []}
+                    if presets and any(t.lower() in presets for t in args):
+                        cli_hit(line, mech, [t for t in args if t.lower() in presets])
+                    flag_rx = entry.get("flags") or {}
+                    found: list[str] = []
+                    for i, t in enumerate(args):
+                        name, eq, val = t.partition("=")
+                        if name in flag_rx:
+                            val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
+                            if re.fullmatch(str(flag_rx[name]), val, re.IGNORECASE):
+                                found.append(f"{name}={val}")
+                    if found:
+                        cli_hit(line, mech, found)
+                    if entry.get("content"):
+                        hits = _loosening_hits(command, rules, host=True)
+                        if hits:
+                            cli_hit(line, mech, sorted(f"{k}={v}" for k, v in hits))
+                    add = entry.get("allowlist_add")
+                    if add and args and args[0].lower() == str(add):
+                        # Entries: the words after the options; an option's value is skipped.
+                        entries: list[str] = []
+                        skip = False
+                        for t in args[1:]:
+                            if skip:
+                                skip = False
+                            elif t.startswith("-"):
+                                skip = "=" not in t
+                            else:
+                                entries.append(t)
+                        broad = [e for e in entries if any(b.fullmatch(e) for b in rules.broad)]
+                        if broad:
+                            cli_hit(line, mech, broad)
+    env = _match_any(rules.env, command)
+    if env:
+        cli_hit(env.group(0).strip(), "environment", [env.group(0).strip()])
+    return out
+
+
 def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C4*: guardrail tampering per `guardrail.yaml`. Never fires on reads, lists, restart or
     reload."""
@@ -1571,6 +1916,14 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     p.entity_id,
                     {"path": p.display, "mechanism": "edit_text_match"},
                 )
+
+    # Loosening the host's approval or allowlist policy, by any route.
+    # One finding per call, however many routes and settings it takes.
+    loosening = _approval_loosening(a, ctx)
+    if loosening:
+        subject, detail = loosening[0]
+        settings = sorted({s for _, d in loosening for s in d.get("settings", [])})
+        emit("guardrail.approval_loosening", subject, {**detail, "settings": settings[:6]})
 
     if a.kind is not ToolKind.EXEC:
         return out
