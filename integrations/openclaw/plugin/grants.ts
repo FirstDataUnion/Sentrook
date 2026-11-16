@@ -29,7 +29,7 @@ import path from "node:path";
 
 import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
 import { bindingProblem } from "./planir.ts";
-import { type GrantsFile, readTime, Store } from "./store.ts";
+import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
 export const KINDS = ["destination", "file", "provider", "repo"];
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
@@ -316,6 +316,11 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
  * also drops expired grants; `fn` still sees them, so revoking one works.
  */
 function change(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
+  // The gateway (an approved hold) and the command line can change the file at the same time.
+  return withFileLock(path.join(stateDir, "grants.json"), () => changeLocked(stateDir, now, fn, beforeWrite));
+}
+
+function changeLocked(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
   const store = new Store(stateDir);
   const data = store.loadGrants();
   if (data === null) {

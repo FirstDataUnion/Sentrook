@@ -8,8 +8,12 @@ OpenClaw plugin's tests (`integrations/fixtures/hold`).
 
 import contextvars
 import json
+import os
 import re
+import subprocess
+import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -434,3 +438,60 @@ def test_history_columns(case):
     res = {"resolution": case["resolution"]} if case["resolution"] else None
     action = history.action_of(scan, res)
     assert (action, history.review_of(action, res)) == (case["action"], case["review"])
+
+
+# ---- two processes at once ---------------------------------------------------------------------------------
+
+CHILD = """
+import sys, time
+from datetime import UTC, datetime
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from plugin import hold
+state, label, count, start = Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]), float(sys.argv[5])
+while time.time() < start:
+    pass
+for i in range(count):
+    hold.create(state, request_id=f"{label}-{i}", session_ref="s_" + label, tool="t", where=label,
+                hint=None, notice={}, now=datetime.now(UTC), record=lambda r: None)
+"""
+
+
+def test_two_processes_holding_calls_at_the_same_time_keep_every_hold(tmp_path):
+    """The gateway and a `hermes cron run` process are separate processes: the in-process lock alone
+    would let one overwrite the other's hold."""
+    root = str(Path(__file__).resolve().parents[2])
+    start = time.time() + 1.0
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", CHILD, root, str(tmp_path), label, "40", str(start)],
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        for label in ("a", "b")
+    ]
+    assert [p.wait(60) for p in procs] == [0, 0]
+    kept = sorted(
+        h["request_id"] for h in json.loads((tmp_path / "holds.json").read_text())["holds"]
+    )
+    assert kept == sorted(f"{label}-{i}" for label in ("a", "b") for i in range(40))
+    assert not (tmp_path / "holds.json.lock").exists()
+
+
+def test_a_lock_left_by_a_process_that_died_is_taken_over(tmp_path):
+    lock = tmp_path / "holds.json.lock"
+    lock.write_text("99999\n")
+    old = time.time() - 60
+    os.utime(lock, (old, old))
+    hid = hold.create(
+        tmp_path,
+        request_id="r1",
+        session_ref="s_x",
+        tool="t",
+        where="w",
+        hint=None,
+        notice={},
+        now=datetime.now(UTC),
+        record=lambda _r: None,
+    )
+    assert re.fullmatch(r"h-[0-9a-f]{6}", hid)
+    assert not lock.exists()

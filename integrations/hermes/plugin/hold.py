@@ -42,7 +42,7 @@ from typing import Any
 
 from . import grants
 from .decision import BLOCK_CATEGORIES, block_category, review_message
-from .store import Store, read_time
+from .store import Store, file_lock, read_time
 
 logger = logging.getLogger("sentrook")
 
@@ -50,7 +50,7 @@ HOLD_TTL = timedelta(hours=24)
 GRANT_TTL = timedelta(days=30)
 MAX_HOLDS = 200
 _ID = re.compile(r"h-[0-9a-f]{6}")
-#: Serialises read-modify-write of the file within this process; writes are atomic across processes.
+#: Serialises read-modify-write of the file within this process; `file_lock` does across processes.
 _LOCK = threading.Lock()
 
 HELD_TEXT = (
@@ -154,7 +154,7 @@ def _sweep(data: dict[str, Any], now: datetime, record: Record) -> list[dict[str
 def sweep(state_dir: Path, now: datetime, record: Record) -> None:
     """Records and drops every expired hold; a file that cannot be read is left alone."""
     store = Store(state_dir)
-    with _LOCK:
+    with _LOCK, file_lock(state_dir / "holds.json"):
         data = store.load_holds()
         if data is None:
             return
@@ -177,7 +177,7 @@ def create(
     """Stores a new hold and returns its approve id; None when the file cannot be read (the call is
     still held, but cannot be approved)."""
     store = Store(state_dir)
-    with _LOCK:
+    with _LOCK, file_lock(state_dir / "holds.json"):
         data = store.load_holds()
         if data is None:
             return None
@@ -223,7 +223,7 @@ def approve(
     if not _ID.fullmatch(hid):
         return f"usage: {cmd('approve')} <id>, with the id from Sentrook's notice (h- and 6 hex digits)"
     store = Store(state_dir)
-    with _LOCK:
+    with _LOCK, file_lock(state_dir / "holds.json"):
         data = store.load_holds()
         if data is None:
             return f"The holds file {state_dir / 'holds.json'} could not be read; fix or remove it first."

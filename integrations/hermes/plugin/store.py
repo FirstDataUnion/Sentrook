@@ -14,7 +14,9 @@ the separate `hermes cron run` process.
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
-read-modify-write; `session_lock` serialises a whole scan per session.
+read-modify-write; `session_lock` serialises a whole scan per session. `holds.json` and `grants.json`
+are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
+`hermes sentrook`) can change them at the same time.
 """
 
 from __future__ import annotations
@@ -68,6 +70,46 @@ def read_time(raw: Any) -> datetime | None:
         return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     except (ValueError, OverflowError):
         return None
+
+
+#: A lock file older than this is left over from a process that died holding it, and is taken over.
+LOCK_STALE_S = 30.0
+#: How long to wait for another process's lock before giving up.
+LOCK_WAIT_S = 5.0
+
+
+@contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    """Holds `<path>.lock` for a read-modify-write of `path`, so it is safe across processes (the gateway
+    and a separate `hermes cron run` or `hermes sentrook` process), not only across threads. The lock is
+    a file created exclusively; one older than `LOCK_STALE_S` is from a process that died holding it and
+    is removed. Raises `TimeoutError` when another process holds it for longer than `LOCK_WAIT_S`. The
+    write inside stays atomic (temp file, then rename)."""
+    lock = path.with_name(path.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        try:
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except FileNotFoundError:
+                continue  # released between the two calls
+            if age > LOCK_STALE_S:
+                lock.unlink(missing_ok=True)
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"{lock} is held by another process") from None
+            time.sleep(0.01)
+            continue
+        with os.fdopen(fd, "w") as f:
+            f.write(f"{os.getpid()}\n")
+        break
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
 
 
 #: Conversation logs: deleted when not modified for 7 days; at most 100 kept; pruned at most hourly.

@@ -35,7 +35,7 @@ from typing import Any
 
 from .config import PluginConfig, parse_grants
 from .planir import binding_problem
-from .store import Store, read_time
+from .store import Store, file_lock, read_time
 
 KINDS = ("destination", "file", "provider", "repo")
 ALLOWS = ("read", "write", "edit", "delete", "exec")
@@ -342,7 +342,8 @@ def _change(
     """Read the file, apply `fn` (reply, change record or None), and write it back if it changed.
     A write also drops expired grants; `fn` still sees them, so revoking one works."""
     store = Store(state_dir)
-    with _LOCK:
+    # The gateway (an approved hold) and the command line can change the file at the same time.
+    with _LOCK, file_lock(state_dir / "grants.json"):
         data = store.load_grants()
         if data is None:
             return _unreadable(state_dir), None

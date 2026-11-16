@@ -8,10 +8,11 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
@@ -410,4 +411,50 @@ test("history columns for held scans", () => {
     const action = actionOf(scan, res);
     assert.deepEqual([action, reviewOf(action, res)], [c.action, c.review], c.name);
   }
+});
+
+// ---- two processes at once -------------------------------------------------------------------------------
+
+/** Runs `count` holds in a separate node process, starting at `startAt` (ms since the epoch). */
+function holdInChild(dir: string, script: string, label: string, count: number, startAt: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", script, dir, label, String(count), String(startAt)], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let err = "";
+    child.stderr.on("data", (d) => (err += String(d)));
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child ${label} exited ${code}: ${err}`))));
+  });
+}
+
+test("two processes holding calls at the same time keep every hold", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-hold-race-"));
+  const script = path.join(dir, "child.ts");
+  writeFileSync(
+    script,
+    `import * as hold from ${JSON.stringify(pathToFileURL(path.resolve("hold.ts")).href)};
+const [dir, label, count, startAt] = process.argv.slice(2);
+while (Date.now() < Number(startAt)) {}
+for (let i = 0; i < Number(count); i++) {
+  hold.create(dir, { requestId: label + "-" + i, sessionRef: "s_" + label, tool: "message", where: label, hint: null, notice: {} }, new Date(), () => {});
+}
+`,
+  );
+  const startAt = Date.now() + 800;
+  await Promise.all([holdInChild(dir, script, "a", 40, startAt), holdInChild(dir, script, "b", 40, startAt)]);
+  const kept = JSON.parse(readFileSync(path.join(dir, "holds.json"), "utf8")).holds.map((h: any) => h.request_id).sort();
+  const want = ["a", "b"].flatMap((l) => Array.from({ length: 40 }, (_, i) => `${l}-${i}`)).sort();
+  assert.deepEqual(kept, want);
+  assert.equal(existsSync(path.join(dir, "holds.json.lock")), false);
+});
+
+test("a lock left by a process that died is taken over", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-hold-stale-"));
+  const lock = path.join(dir, "holds.json.lock");
+  writeFileSync(lock, "99999\n");
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  const id = hold.create(dir, { requestId: "r1", sessionRef: "s_x", tool: "message", where: "w", hint: null, notice: {} }, new Date(), () => {});
+  assert.match(String(id), /^h-[0-9a-f]{6}$/);
+  assert.equal(existsSync(lock), false);
 });

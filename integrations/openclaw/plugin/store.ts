@@ -18,16 +18,64 @@
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import path from "node:path";
+
+/** A lock file older than this is left over from a process that died holding it, and is taken over. */
+export const LOCK_STALE_MS = 30_000;
+/** How long to wait for another process's lock before giving up. */
+export const LOCK_WAIT_MS = 5_000;
+const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Runs `fn` holding `<file>.lock`, so a read-modify-write of `file` is safe across processes (the gateway and the
+ * `openclaw sentrook` command line) as well as within one. The lock is a file created exclusively; one older than
+ * `LOCK_STALE_MS` is from a process that died holding it and is removed. Throws when another process holds it for
+ * longer than `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
+ */
+export function withFileLock<T>(file: string, fn: () => T): T {
+  const lock = `${file}.lock`;
+  mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx", 0o600);
+      writeSync(fd, `${process.pid}\n`);
+      closeSync(fd);
+      break;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") throw err;
+    }
+    let age: number;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // released between the two calls
+    }
+    if (age > LOCK_STALE_MS) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error(`${lock} is held by another process`);
+    Atomics.wait(LOCK_SLEEP, 0, 0, 10);
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
 
 export interface Provider {
   kind: string;

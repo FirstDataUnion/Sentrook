@@ -29,7 +29,7 @@ import path from "node:path";
 import { BLOCK_CATEGORIES, blockCategory, reviewMessage } from "./decision.ts";
 import * as grants from "./grants.ts";
 import type { ScanResponse } from "./scanClient.ts";
-import { type HoldsFile, type NotifyTarget, readTime, Store } from "./store.ts";
+import { type HoldsFile, type NotifyTarget, readTime, Store, withFileLock } from "./store.ts";
 
 export const HOLD_TTL_MS = 24 * 3600_000;
 export const GRANT_TTL_MS = 30 * 24 * 3600_000;
@@ -40,6 +40,8 @@ export const HELD_TEXT =
   "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run.";
 
 type Entry = Record<string, any>;
+
+const holdsFile = (stateDir: string) => path.join(stateDir, "holds.json");
 /** Writes one record to the traffic log. */
 export type RecordFn = (record: Record<string, unknown>) => void;
 
@@ -119,9 +121,11 @@ function sweepData(data: HoldsFile, now: Date, record: RecordFn): { changed: boo
 /** Records and drops every expired hold; a file that cannot be read is left alone. */
 export function sweep(stateDir: string, now: Date, record: RecordFn): void {
   const store = new Store(stateDir);
-  const data = store.loadHolds();
-  if (data === null) return;
-  if (sweepData(data, now, record).changed) store.saveHolds(data);
+  withFileLock(holdsFile(stateDir), () => {
+    const data = store.loadHolds();
+    if (data === null) return;
+    if (sweepData(data, now, record).changed) store.saveHolds(data);
+  });
 }
 
 export interface NewHold {
@@ -135,6 +139,10 @@ export interface NewHold {
 
 /** Stores a new hold and returns its approve id; null when the file cannot be read (still held, not approvable). */
 export function create(stateDir: string, hold: NewHold, now: Date, record: RecordFn): string | null {
+  return withFileLock(holdsFile(stateDir), () => createLocked(stateDir, hold, now, record));
+}
+
+function createLocked(stateDir: string, hold: NewHold, now: Date, record: RecordFn): string | null {
   const store = new Store(stateDir);
   const data = store.loadHolds();
   if (data === null) return null;
@@ -177,13 +185,18 @@ export function approve(
   const id = rest.trim();
   if (!ID.test(id)) return `usage: ${cmd("approve")} <id>, with the id from Sentrook's notice (h- and 6 hex digits)`;
   const store = new Store(stateDir);
-  const data = store.loadHolds();
-  if (data === null) return `The holds file ${path.join(stateDir, "holds.json")} could not be read; fix or remove it first.`;
-  const found = data.holds.find((h) => live(h, now) && (h as Entry).id === id) as Entry | undefined;
-  beforeWrite();
-  const { changed, gone } = sweepData(data, now, record);
-  if (found) data.holds = data.holds.filter((h) => h !== found);
-  if (changed || found) store.saveHolds(data);
+  const taken = withFileLock(holdsFile(stateDir), () => {
+    const data = store.loadHolds();
+    if (data === null) return null;
+    const found = data.holds.find((h) => live(h, now) && (h as Entry).id === id) as Entry | undefined;
+    beforeWrite();
+    const { changed, gone } = sweepData(data, now, record);
+    if (found) data.holds = data.holds.filter((h) => h !== found);
+    if (changed || found) store.saveHolds(data);
+    return { found, gone };
+  });
+  if (taken === null) return `The holds file ${holdsFile(stateDir)} could not be read; fix or remove it first.`;
+  const { found, gone } = taken;
   if (!found) {
     if (gone.some((h) => h.id === id)) {
       return `Held call ${id} expired: holds last 24 hours. Nothing was approved; the next run is scanned as before.`;
