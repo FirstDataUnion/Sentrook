@@ -44,6 +44,8 @@ test("severity: critical for a floor's review and for a block the ceiling lowere
   assert.equal(severity(resp(55, null, { ceiling: "review" }), lines), "warning");
   assert.equal(severity(resp(95, null, { ceiling: "review" }), lines), "critical");
   assert.equal(severity(resp(10, "review"), lines), "critical");
+  // a block a snooze turned into a review
+  assert.equal(severity(resp(92), lines, true), "critical");
   // custom lines: the block line is the owner's
   assert.equal(severity(resp(90, null, { ceiling: "review" }), { blockAt: 95 }), "warning");
 });

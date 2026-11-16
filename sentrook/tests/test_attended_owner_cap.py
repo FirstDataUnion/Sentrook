@@ -219,6 +219,7 @@ def test_an_owner_asked_change_to_the_agents_setup_is_held_at_review(twin_case, 
         "attended": True,
         "strong": [],
         "withheld": [],
+        "relaxable": True,
         "ceiling": "review",
     }
 
@@ -664,13 +665,15 @@ def test_unattended_runs_are_unchanged(twin_case, kind, relation, role):
         "attended": False,
         "strong": [],
         "withheld": [],
+        "relaxable": False,
         "ceiling": None,
     }
 
 
 def test_conv_v5_has_no_ceiling(twin_case):
     r = _run(twin_case, _high_selfmod(), params=V5).response
-    assert r.risk >= 80 and r.ceiling is None and "attended_owner" not in r.metadata.versions
+    assert r.risk >= 80 and r.ceiling is None
+    assert r.metadata.versions["attended_owner"]["ceiling"] is None
 
 
 # ---- end to end through the scanner --------------------------------------------------------------------------
@@ -747,8 +750,8 @@ def test_conv_v6_is_conv_v5_with_the_ceiling_on():
         d.pop("name")
         d["oracle"].pop("name")
         d["context"].pop("name")
-        for k in ("attended_owner_cap", "attended_owner_lookalike", "attended_owner_retry_min"):
-            d.pop(k)
+        # the strong signals are the same in both sets: the `relaxable` mark is computed alike
+        d.pop("attended_owner_cap")
     assert a == b
 
 

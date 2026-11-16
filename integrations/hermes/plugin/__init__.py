@@ -461,6 +461,7 @@ def _scan_one(
     directive: dict[str, Any] | None = None
     verdict: str | None = None
     snoozed = False
+    relaxed = False
     held: dict[str, Any] | None = None
     failure_notice: dict[str, Any] | None = None
     if isinstance(result, ScanOk):
@@ -470,6 +471,18 @@ def _scan_one(
         verdict = decide(
             {**resp, "ceiling": None} if unattended else resp, cfg.review_at, cfg.block_at
         )
+        if (
+            cfg.mode != "observe"
+            and not unattended
+            and snooze.relaxes(resp, verdict)
+            and snooze.active(
+                store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+            )
+        ):
+            # The owner snoozed this attended session and nothing independent points to an attack: the block
+            # asks instead. It is never allowed silently.
+            verdict = "review"
+            relaxed = True
         sess["token"] = resp.get("state")
         sess["buffer"] = []
         entry["action_fingerprint"] = resp.get("action_fingerprint")
@@ -485,8 +498,12 @@ def _scan_one(
             entry["decision"] = "held"
             directive = {"action": "block", "message": hold.HELD_TEXT}
             held = _hold(cfg, traffic, built, resp)
-        elif snooze.applies(resp, cfg.block_at) and snooze.active(
-            store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+        elif (
+            not relaxed
+            and snooze.applies(resp, cfg.block_at)
+            and snooze.active(
+                store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+            )
         ):
             # The owner snoozed reviews for this session: scanned and logged, not asked.
             entry["decision"] = "allowed"
@@ -537,6 +554,7 @@ def _scan_one(
             "verdict": verdict,
             "decision": entry["decision"],
             **({"snoozed": True} if snoozed else {}),
+            **({"relaxed": True} if relaxed else {}),
             **({"hold": held} if held is not None else {}),
             **({"notice": failure_notice} if failure_notice is not None else {}),
             **({"skill_review": True} if loop_save else {}),
@@ -558,7 +576,7 @@ def _scan_one(
             result.response.get("status"),
             verdict,
             entry["decision"],
-            " (snoozed)" if snoozed else "",
+            " (snoozed)" if snoozed else " (block relaxed to review by snooze)" if relaxed else "",
             " (self-edit)" if self_edit is not None else " (loop save)" if loop_save else "",
             result.latency_ms,
         )

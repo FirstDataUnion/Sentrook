@@ -1,6 +1,6 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
-Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner ceiling (when the parameters turn it on)
+Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
 → floors → reasons → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
@@ -29,7 +29,7 @@ from ..response.models import (
     SuspicionTier,
 )
 from ..state.token import encode_state
-from .attended import DEFAULT_BLOCK_LINE, withheld
+from .attended import DEFAULT_BLOCK_LINE, relaxable, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
@@ -282,17 +282,13 @@ def converge(
         merged = merge(claims, excluded)
         tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
-    cap = (
-        attended_check(
-            prepared,
-            claims,
-            [c for kept in merged.claims.values() for c in kept],
-            [(r.subject, r.reason) for r in relief],
-            [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
-            params,
-        )
-        if params.attended_owner_cap
-        else None
+    cap = attended_check(
+        prepared,
+        claims,
+        [c for kept in merged.claims.values() for c in kept],
+        [(r.subject, r.reason) for r in relief],
+        [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
+        params,
     )
 
     floors: list[FloorApplied] = []
@@ -331,27 +327,26 @@ def converge(
     )
     status = ScanStatus.DEGRADED if degraded else ScanStatus.OK
 
-    attended: dict | None = None
-    ceiling: str | None = None
-    if cap is not None:
-        held_back = (
-            withheld(
-                envelopes,
-                degraded=degraded,
-                state_lost=prepared.state.fresh,
-                exposure_unjudged=unjudged,
-            )
-            if cap.attended
-            else []
+    held_back = (
+        withheld(
+            envelopes,
+            degraded=degraded,
+            state_lost=prepared.state.fresh,
+            exposure_unjudged=unjudged,
         )
-        if cap.applies and not held_back and enforced is None:
-            ceiling = "review"
-        attended = {
-            "attended": cap.attended,
-            "strong": cap.strong,
-            "withheld": held_back,
-            "ceiling": ceiling,
-        }
+        if cap.attended
+        else []
+    )
+    # One check: the mark in every parameter set, the ceiling only where the parameters turn it on.
+    relax = relaxable(cap, held_back, enforced)
+    ceiling: str | None = "review" if relax and params.attended_owner_cap else None
+    attended = {
+        "attended": cap.attended,
+        "strong": cap.strong,
+        "withheld": held_back,
+        "relaxable": relax,
+        "ceiling": ceiling,
+    }
 
     category = None
     for env in envelopes:
@@ -392,6 +387,7 @@ def converge(
         risk=round(tiers.risk * 100.0, 2),
         enforced=enforced,
         ceiling=ceiling,
+        relaxable=True if relax else None,
         tree=_tree(merged, tiers),
         floors_applied=floors,
         relief_applied=[
@@ -422,7 +418,7 @@ def converge(
                 "flags": sorted(f.value for f in flags),
                 "token_status": prepared.state.status.value,
                 "coverage_notes": sorted(coverage_codes),
-                **({"attended_owner": attended} if attended is not None else {}),
+                "attended_owner": attended,
             },
         ),
     )

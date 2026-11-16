@@ -273,6 +273,83 @@ def test_scan_errors_and_observe_mode_are_not_snoozed(term, monkeypatch):
     assert out is None and "snoozed" not in rec
 
 
+# ---- a snooze in a chat the owner attends: a relaxable block asks instead ---------------------------
+
+
+RELAX = json.loads((FIXTURES / "relax.json").read_text())["cases"]
+
+
+@pytest.fixture
+def scripted(term, monkeypatch):
+    """`term` with a scanner whose reply each test sets (`.reply`) on top of the marker scanner's."""
+    fake = term
+    fake.reply = {}
+
+    def http(url, *, data=None, headers=None, timeout):
+        status, body, hdrs = fake(url, data=data, headers=headers, timeout=timeout)
+        if url == "http://scan.test/scan" and status == 200:
+            body = {**body, "ceiling": None, **fake.reply}
+        return status, body, hdrs
+
+    monkeypatch.setattr(plugin.scan_client, "http_json", http)
+    return fake
+
+
+@pytest.mark.parametrize("case", RELAX, ids=[c["name"] for c in RELAX])
+def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
+    """The shared cases: both hosts give the same outcome for the same response, run and snooze."""
+    monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: not case["attended"])
+    if case["snoozed"]:
+        put(scripted, entry())
+    scripted.reply = dict(case["response"])
+    turn(scripted)
+    out, rec = call(scripted, "run it")
+    want = case["outcome"]
+    if want == "allow":
+        assert out is None and rec["decision"] == "allowed" and "snoozed" not in rec
+    elif want == "snoozed":
+        assert out is None and rec["decision"] == "allowed" and rec["snoozed"] is True
+    elif want == "review":
+        assert out["action"] == "approve" and rec["decision"] == "review_timed_out"
+        assert rec["verdict"] == "review" and "snoozed" not in rec
+    elif want == "block":
+        assert out["action"] == "block" and out["message"].startswith("Sentrook security block:")
+        assert rec["decision"] == "blocked" and rec["verdict"] == "block"
+    else:
+        assert out["action"] == "block" and rec["decision"] == "held"
+    lowered = want == "review" and case["response"]["risk"] >= 80
+    assert rec.get("relaxed", False) is (lowered and case["response"].get("ceiling") is None)
+
+
+def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
+    slash(scripted, "snooze")
+    turn(scripted)
+    scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
+    out, rec = call(scripted, "openclaw cron edit nightly --every 6h")
+    assert out["action"] == "approve" and out["message"].startswith("Sentrook (risk 92): ")
+    assert (rec["verdict"], rec["decision"], rec["relaxed"]) == ("review", "review_timed_out", True)
+    assert rec["response"]["risk"] == 92  # the score is unchanged
+    # the same call again is asked again: a relaxed block is never snoozed through
+    out, rec = call(scripted, "openclaw cron edit nightly --every 6h")
+    assert out["action"] == "approve" and "snoozed" not in rec
+
+
+def test_without_a_snooze_a_relaxable_block_still_blocks(scripted):
+    turn(scripted)
+    scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out["action"] == "block" and "relaxed" not in rec
+
+
+def test_observe_mode_relaxes_nothing(scripted, monkeypatch):
+    put(scripted, entry())
+    monkeypatch.setenv("SENTROOK_MODE", "observe")
+    turn(scripted)
+    scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
+    out, rec = call(scripted, "run it")
+    assert out is None and rec["verdict"] == "block" and "relaxed" not in rec
+
+
 # ---- the commands -------------------------------------------------------------------------------------
 
 

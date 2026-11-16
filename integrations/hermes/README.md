@@ -202,7 +202,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
 | `bind add\|remove\|list [channel]` | Manage channel bindings |
-| `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h |
+| `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
 | `approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-on-unattended-runs)) |
 | `help` | Lists the commands |
 
@@ -212,9 +212,15 @@ or the local terminal (`hermes chat` or `hermes sentrook …`). Group and channe
 direct message admitted only because the gateway allows all users. Every attempt, allowed or refused, is recorded in
 the traffic log (unless you turned it off). Hermes's own `allow_admin_from` is not used.
 
-A snooze never relaxes a block (including a block-level score the scanner lowered to a review), a review the
-scanner marks as enforced, or an unattended run (cron jobs, webhooks, the API server): those still stop, and a review
-on an unattended run is held for you instead.
+If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
+instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
+marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
+or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
+granted, no floor, and the scan was complete) becomes an approval prompt. It is never allowed without asking, and the snooze does not skip that
+prompt.
+
+A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
+webhooks, the API server): blocks still stop, and a review on an unattended run is held for you instead.
 
 Where slash commands don't reach the plugin, use `hermes sentrook <command>` on the machine instead:
 
@@ -228,6 +234,9 @@ Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`revie
 such as reading credentials and sending them off the machine, are floors that apply whatever the score. If a scanner marks a call as review at most
 (an option for chats you attend, which the hosted scanner leaves off), the plugin asks you about a block-level score
 instead of blocking it, and a snooze never skips that review.
+
+If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
+instead; blocks with a clear attack signal still stop (see [Commands](#commands)). The score is the same either way.
 
 When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It

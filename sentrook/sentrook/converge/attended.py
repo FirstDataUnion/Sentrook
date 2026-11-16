@@ -1,4 +1,4 @@
-"""The attended-owner ceiling: in a chat the owner is attending, a call is never blocked on its score alone.
+"""The attended-owner check: in a chat the owner is attending, a block on the score alone can become a question.
 
 When the owner is in the conversation and asked for the work, a review reaches them and they can approve or deny
 it; a block leaves them no way to approve a change they asked for. So in an attended owner session the response
@@ -20,10 +20,10 @@ The strong signals:
   a hook, a skill, a job prompt), sends to or runs code from, and that relief left charged
   (`reputation.unknown_in_written_selfmod`): naming it sanctions only sending to it, never running its code.
 
-Three further strong signals are parameters, off unless a parameter set switches them on: a look-alike of a
-vouched-for entry or of a host, package or person the owner named (`lookalike`); a retry of an action the owner
-denied (`retry_min`); and this request's new untrusted content judged to instruct the agent while the call is judged
-not to follow from the owner's request (`fresh_injection`, model judgements only).
+Three further strong signals are parameters: a look-alike of a vouched-for entry or of a host, package or person the
+owner named (`lookalike`, on unless a parameter set turns it off); a retry of an action the owner denied (`retry_min`,
+0.8 unless a set changes it); and this request's new untrusted content judged to instruct the agent while the call is
+judged not to follow from the owner's request (`fresh_injection`, model judgements only, off unless a set turns it on).
 
 Attended is derived from the PlanIR, not from a plugin flag: the turn is a message (not scheduled, heartbeat,
 hook, sub-agent, system or unknown), the sender is the owner outside a group chat or open host (sender basis not
@@ -31,6 +31,11 @@ hook, sub-agent, system or unknown), the sender is the owner outside a group cha
 unknown triggers are unchanged. No ceiling is set on a scan that is not fully
 informed: a probe errored, timed out or fell back, the context or rule-based probe did not answer, the entity oracle
 was unavailable, new content went unjudged, the session state was lost, or the scan is otherwise degraded.
+
+The same check gives the response's `relaxable` mark in every parameter set: attended, fully informed, no strong
+signal and no `enforced` decision. It changes no score and no verdict by itself. A plugin uses it only while the owner
+has snoozed reviews in an attended session, to turn a block into a review rather than stopping work the owner is
+doing. Where a parameter set turns the ceiling on, the ceiling is set exactly where the mark is.
 """
 
 from __future__ import annotations
@@ -177,6 +182,12 @@ class CapCheck:
     def applies(self) -> bool:
         """Attended and no strong signal; `withheld` may still keep the ceiling off."""
         return self.attended and not self.strong
+
+
+def relaxable(cap: CapCheck, held_back: list[str], enforced: object | None) -> bool:
+    """The `relaxable` mark, and where a parameter set turns it on, the ceiling: an attended owner session with no
+    strong signal, a fully informed scan (`withheld` found nothing) and no `enforced` decision."""
+    return cap.applies and not held_back and enforced is None
 
 
 def _send_destinations(claims: list[Claim], prepared: Prepared) -> list[str | None] | None:

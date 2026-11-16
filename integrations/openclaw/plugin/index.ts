@@ -500,12 +500,26 @@ const plugin = {
       let onError = false;
       let snoozed = false;
       let failureNotice: Json | null = null;
+      let relaxed = false;
       let held: Json | null = null;
       if (result.ok) {
         const resp = result.response;
         // The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
         // block to a review with it, so a lowered block is never held.
         verdict = decide(timing.unattended ? { ...resp, ceiling: null } : resp, cfg);
+        if (
+          // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
+          cfg.mode !== "observe" &&
+          triggerKind === "message" &&
+          !timing.unattended &&
+          snooze.relaxes(resp, verdict) &&
+          snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
+        ) {
+          // The owner snoozed this attended session and nothing independent points to an attack: the block asks
+          // instead, at critical severity. It is never allowed silently.
+          verdict = "review";
+          relaxed = true;
+        }
         sess.token = resp.state ?? null;
         sess.buffer = [];
         entry.action_fingerprint = resp.action_fingerprint ?? null;
@@ -519,6 +533,7 @@ const plugin = {
         } else if (
           // Only a human's message: a run whose trigger is unknown or not a message is never snoozed,
           // whatever the approval timeout policy calls attended.
+          !relaxed &&
           triggerKind === "message" &&
           !timing.unattended &&
           snooze.applies(resp, cfg.blockAt) &&
@@ -539,7 +554,7 @@ const plugin = {
           hook = {
             requireApproval: {
               ...copy,
-              severity: severity(resp, cfg),
+              severity: severity(resp, cfg, relaxed),
               timeoutMs: timing.timeoutMs,
               // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
               timeoutBehavior: timing.timeoutBehavior,
@@ -576,6 +591,7 @@ const plugin = {
         verdict,
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
+        ...(relaxed ? { relaxed: true } : {}),
         ...(held ? { hold: held } : {}),
         ...(failureNotice ? { notice: failureNotice } : {}),
         ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
@@ -589,7 +605,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );

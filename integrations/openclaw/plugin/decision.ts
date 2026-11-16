@@ -162,10 +162,10 @@ export function blockReason(resp: ScanResponse): string {
 }
 
 /**
- * A review forced by a scanner floor, or a block-level score the scanner's ceiling lowered to a review, is
- * critical; one from the review line is a warning.
+ * A review forced by a scanner floor, or a block-level score lowered to a review (by the scanner's ceiling, or by
+ * a snooze when `relaxed`), is critical; one from the review line is a warning.
  */
-export function severity(resp: ScanResponse, lines: { blockAt: number }): "warning" | "critical" {
-  if (resp.enforced === "review") return "critical";
+export function severity(resp: ScanResponse, lines: { blockAt: number }, relaxed = false): "warning" | "critical" {
+  if (resp.enforced === "review" || relaxed) return "critical";
   return resp.ceiling === "review" && (resp.risk ?? 0) >= lines.blockAt ? "critical" : "warning";
 }

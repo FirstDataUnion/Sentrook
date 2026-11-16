@@ -1,0 +1,173 @@
+{
+  "_comment": "Snooze in a chat the owner attends. Both plugins must give `outcome` for `response` with review at 45 and block at 80, on an attended or unattended run (`attended`), with or without a snooze covering the session (`snoozed`). `snoozed` as an outcome means allowed without asking and logged with `snoozed: true`; `held` is the unattended hold. While snoozed on an attended run, a block (from the line, not from `enforced`) whose response has `relaxable: true` becomes a review that always asks and is never snoozed through; a review prompt's `severity`, where the host has one, is given. Any other `relaxable` value, or none (an older scanner), relaxes nothing. Unattended runs are never relaxed.",
+  "cases": [
+    {
+      "name": "snoozed: a relaxable block asks instead, at critical severity",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "review",
+      "severity": "critical"
+    },
+    {
+      "name": "snoozed: a relaxable score at the block line asks, at critical severity",
+      "response": {
+        "risk": 80,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "review",
+      "severity": "critical"
+    },
+    {
+      "name": "snoozed: a review passes silently, as before",
+      "response": {
+        "risk": 55,
+        "enforced": null
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "snoozed"
+    },
+    {
+      "name": "snoozed: a relaxable review passes silently, as before",
+      "response": {
+        "risk": 55,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "snoozed"
+    },
+    {
+      "name": "snoozed: an allowed call stays allowed",
+      "response": {
+        "risk": 5,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "allow"
+    },
+    {
+      "name": "snoozed: a block the scanner did not mark relaxable still blocks",
+      "response": {
+        "risk": 92,
+        "enforced": null
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a block marked not relaxable still blocks",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": false
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: only a JSON true relaxes a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": "true"
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: an enforced block still blocks, whatever the mark",
+      "response": {
+        "risk": 100,
+        "enforced": "block",
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a block over an enforced review still blocks, whatever the mark",
+      "response": {
+        "risk": 92,
+        "enforced": "review",
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "block"
+    },
+    {
+      "name": "snoozed: a block the ceiling lowered still asks, at critical severity",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "ceiling": "review",
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": true,
+      "outcome": "review",
+      "severity": "critical"
+    },
+    {
+      "name": "not snoozed: a relaxable block still blocks",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": false,
+      "outcome": "block"
+    },
+    {
+      "name": "not snoozed: a review asks, as before",
+      "response": {
+        "risk": 55,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": true,
+      "snoozed": false,
+      "outcome": "review",
+      "severity": "warning"
+    },
+    {
+      "name": "unattended and snoozed: a relaxable block stays a block",
+      "response": {
+        "risk": 92,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": false,
+      "snoozed": true,
+      "outcome": "block"
+    },
+    {
+      "name": "unattended and snoozed: a review is held",
+      "response": {
+        "risk": 55,
+        "enforced": null,
+        "relaxable": true
+      },
+      "attended": false,
+      "snoozed": true,
+      "outcome": "held"
+    }
+  ]
+}

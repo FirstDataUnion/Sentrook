@@ -272,7 +272,8 @@ COMMANDS: dict[str, Subcommand] = {
     ),
     "snooze": Subcommand(
         "allow review prompts in this session (--all: every session) for a duration, default "
-        "1h, at most 24h; never blocks, enforced reviews or unattended runs; off; status",
+        "1h, at most 24h; blocks with no clear attack signal ask instead; never other blocks, "
+        "enforced reviews or unattended runs; off; status",
         run_snooze,
         args="[duration|off|status] [--all]",
         owner_only=True,

@@ -14,6 +14,11 @@ export interface ScanResponse {
   enforced: "block" | "review" | null;
   /** The highest verdict the risk may reach; only `review` is honoured, anything else is ignored. */
   ceiling?: string | null;
+  /**
+   * The owner attends, nothing independent points to an attack and nothing is enforced: a block here comes from
+   * the score alone. Only `true` counts, and only while the owner has snoozed an attended session.
+   */
+  relaxable?: unknown;
   tree?: {
     suspicion?: { score?: number | null };
     consequence?: { score?: number | null };
