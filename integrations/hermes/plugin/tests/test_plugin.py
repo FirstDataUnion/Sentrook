@@ -132,10 +132,16 @@ def test_episode_loop_save_declares_a_self_edit(harness, provenance):
     dump_planirs("episode-loop-save", h.scans)
 
 
-def test_episode_async_sub_agent_notice_is_a_sub_agent_reply(harness):
+def test_episode_async_sub_agent_notice_is_a_sub_agent_reply(harness, monkeypatch):
     """An owner's turn, then the turn Hermes starts with its notice that an asynchronous sub-agent
     finished: the notice goes as a `subagent_reply` input, the request is the owner's, carried."""
     h = harness
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1")
+    monkeypatch.setattr(
+        plugin,
+        "session_facts",
+        lambda: {"platform": "telegram", "chat_type": "dm", "user_id": "u1"},
+    )
     turn(h, calls=[("c1", "ls")])
     call(h, "c1", "ls")
     result(h, "c1", "notes.txt")

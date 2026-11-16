@@ -17,14 +17,23 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, conversation, grants, history, hold, owner, skill_review, snooze
+from . import (
+    cli,
+    commands,
+    conversation,
+    grants,
+    history,
+    hold,
+    host_turns,
+    owner,
+    skill_review,
+    snooze,
+)
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
 from .intent import (
-    NOTICE_SENDER,
     conversation_sender_of,
-    delegation_notice,
     hermes_config,
     is_unattended,
     resolve_platform,
@@ -217,43 +226,49 @@ def on_pre_llm_call(**kw: Any) -> None:
         # The curator's prompt (a fresh agent under the background-review origin) is neither a message, a
         # request nor a turn of the owner's session: its calls carry the owner's last request (`_scan_one`).
         background = skill_review.in_background_review()
-        # A turn Hermes starts with its notice that an asynchronous sub-agent finished is a turn, but not a
-        # request: its calls carry the session's last request, and the notice goes as a sub-agent reply.
-        notice = not background and delegation_notice(kw.get("user_message"))
-        store.merge_turn(
-            turn_id,
-            {
-                "pre_llm_call": True,
-                "platform": kw.get("platform"),
-                "sender_id": kw.get("sender_id"),
-                "parent_session_id": kw.get("parent_session_id"),
-                "user_message": kw.get("user_message"),
-                "host_notice": "async_delegation" if notice else None,
-            },
-        )
+        # A turn Hermes starts itself with its own text (`host_turns`) is a turn, never an owner message; an
+        # event notice is not a request either, and its text goes as an untrusted input.
+        host = None if background else host_turns.classify(kw.get("user_message"))
+        event = host is not None and host.input_kind is not None
+        try:
+            store.merge_turn(
+                turn_id,
+                {
+                    "pre_llm_call": True,
+                    "platform": kw.get("platform"),
+                    "sender_id": kw.get("sender_id"),
+                    "parent_session_id": kw.get("parent_session_id"),
+                    "user_message": kw.get("user_message"),
+                    "host_turn": host.form if host else None,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - the turn's calls then read as a turn never seen
+            logger.warning("pre_llm_call could not store the turn: %s", exc)
         sid = _sid(kw)
         with store.session_lock(sid):
             s = store.load_session(sid)
-            if turn_id and not background:
-                s["last_turn_id"] = turn_id
-                if not notice:
+            if not background:
+                # Without a turn id, calls that name none must not fall back to the previous turn.
+                s["last_turn_id"] = turn_id or None
+                if turn_id and not event:
                     s["last_request_turn_id"] = turn_id
-                if turn_id not in s["turns"]:
+                if turn_id and turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
-                if notice:
-                    _buffer_notice(cfg, store, s, kw.get("user_message"))
+                if event:
+                    _buffer_host_text(cfg, store, s, kw.get("user_message"), host.input_kind)
                 store.save_session(sid, s, cfg.history_limit * 2)
             if _capturing(cfg, store) and not background:
                 facts = session_facts()
                 platform = resolve_platform(kw.get("platform"), facts, env)
+                sender = conversation_sender_of(platform, facts, kw.get("sender_id"), env)
+                if host is not None and sender["relation"] == "owner":
+                    sender = dict(host_turns.SENDER, basis=list(host_turns.SENDER["basis"]))
                 _record(
                     store,
                     sid,
                     conversation.user_entry(
                         _turn_no(s, turn_id),
-                        dict(NOTICE_SENDER)
-                        if notice
-                        else conversation_sender_of(platform, facts, kw.get("sender_id"), env),
+                        sender,
                         kw.get("user_message"),
                         Redactor("standard", store.salt()),
                         turn_id,
@@ -263,21 +278,19 @@ def on_pre_llm_call(**kw: Any) -> None:
         logger.warning("pre_llm_call failed: %s", exc)
 
 
-def _buffer_notice(cfg: PluginConfig, store: Store, s: dict[str, Any], message: Any) -> None:
-    """The sub-agent's notice as the next scan's new input: a `subagent_reply`, redacted and capped like a
-    tool result. Untrusted, as any sub-agent's reply."""
-    text = (
-        message
-        if isinstance(message, str)
-        else json.dumps(message, ensure_ascii=False, default=str)
-    )
+def _buffer_host_text(
+    cfg: PluginConfig, store: Store, s: dict[str, Any], message: Any, kind: str
+) -> None:
+    """A host turn's text as the next scan's new input (`subagent_reply` or `other`), redacted and capped
+    like a tool result. Untrusted, like any input."""
+    text = host_turns.message_text(message)
     redacted = Redactor("standard", store.salt()).string(text)
     capped, truncated, _ = cap_head_tail(redacted, cfg.input_cap_bytes)
     s["input_seq"] += 1
     s["buffer"].append(
         {
             "input_seq": s["input_seq"],
-            "kind": "subagent_reply",
+            "kind": kind,
             "call_id": None,
             "content_type": "text",
             "content": capped,

@@ -18,12 +18,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from . import host_turns
 from .config import PluginConfig
 from .intent import (
-    NOTICE_REQUEST_TEXT,
     approvals_off,
     channel_of,
-    notice_trigger,
     resolve_platform,
     sender_of,
     trigger_kind,
@@ -320,8 +319,8 @@ _SENT_DECISION = {"held": "review_timed_out"}
 
 def request_turn_id(sess: dict[str, Any]) -> Any:
     """The session's last turn that began with a request (an owner's message, or a run's prompt): not a turn
-    Hermes started with a sub-agent's notice. A session stored before this was kept falls back to its last
-    turn."""
+    Hermes started with an event notice (`host_turns`). A session stored before this was kept falls back to
+    its last turn."""
     if "last_request_turn_id" in sess:
         return sess["last_request_turn_id"]
     return sess.get("last_turn_id")
@@ -367,8 +366,9 @@ def build_planir(
     sends `skill_review.REQUEST_TEXT`) and the call's own turn is not counted as a new one. Narration and
     batch siblings still come from `turn`, the fork's own.
     `last_request`: the session's last request turn (`request_turn_id`). A call on a turn Hermes started with
-    a sub-agent's notice, or on a turn that fired no `pre_llm_call`, carries its request with
-    `carried_from_turn`; a notice turn is never an owner message (`intent.notice_trigger`)."""
+    an event notice, or on a turn that fired no `pre_llm_call`, carries its request with `carried_from_turn`
+    when `host_turns.carries` allows; such a turn, and one Hermes started with a standing instruction, is
+    never an owner message (`host_turns.trigger_for`)."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -384,25 +384,43 @@ def build_planir(
         sess["turns"].append(turn_id)
     req_tid = request_turn_id(sess)
     req_no = sess["turns"].index(req_tid) + 1 if req_tid in sess["turns"] else None
-    notice = request_turn is None and self_edit is None and bool(turn.get("host_notice"))
+    platform = resolve_platform(turn.get("platform"), facts, env)
+    trigger = {
+        "kind": trigger_kind(platform),
+        "channel": channel_of(platform),
+        "sender": sender_of(platform, facts, turn.get("sender_id"), env),
+    }
+    host = (
+        host_turns.FORMS.get(str(turn.get("host_turn")))
+        if request_turn is None and self_edit is None
+        else None
+    )
     carried_from: int | None = None
     if request_turn is not None:
         request_text = _text(request_turn.get("user_message"))
         if not request_text.strip():
             request_text = LOOP_REQUEST_TEXT
-    elif notice or not turn_seen(turn):
-        # The turn's own user message is the host's (or unknown): the request is the session's last one.
-        request_text = _text((last_request or {}).get("user_message")) if req_no else ""
-        if request_text.strip():
-            carried_from = req_no
-        elif notice:
-            request_text = NOTICE_REQUEST_TEXT
+        # The background review runs after the owner's turn, in whatever chat context it inherited.
+        trigger = host_turns.trigger_for(trigger, "system")
+    elif host is not None and host.input_kind is None:
+        # A standing instruction the owner set earlier: the host's text is the run's request.
+        request_text = _text(turn.get("user_message"))
+        trigger = host_turns.trigger_for(trigger, host.trigger)
+    elif host is not None or not turn_seen(turn):
+        # The turn's message is the host's, or its start was never seen: the request is the session's last,
+        # and only for the owner or a run that is not a chat message.
+        request_text = ""
+        if host_turns.carries(trigger) and req_no:
+            request_text = _text((last_request or {}).get("user_message"))
+            carried_from = req_no if request_text.strip() else None
+        if host is not None and not request_text.strip():
+            request_text = host_turns.REQUEST_TEXT
+        trigger = host_turns.trigger_for(trigger, host.trigger if host else "system")
     else:
         request_text = _text(turn.get("user_message"))
     # A background call's turn is the number of the owner turn its request came from.
     request_turn_no = req_no if request_turn is not None else None
 
-    platform = resolve_platform(turn.get("platform"), facts, env)
     parent = turn.get("parent_session_id") or None
     is_sub = platform == "subagent" or bool(parent)
     raw_args = kw.get("args") if isinstance(kw.get("args"), dict) else {"value": kw.get("args")}
@@ -440,14 +458,6 @@ def build_planir(
     security = host_cfg.get("security") or {}
     narration = (turn.get("assistant_text") or "").strip()
     routing = facts.get("key") or None
-
-    trigger = {
-        "kind": trigger_kind(platform),
-        "channel": channel_of(platform),
-        "sender": sender_of(platform, facts, turn.get("sender_id"), env),
-    }
-    if notice:
-        trigger = notice_trigger(trigger)
 
     planir = {
         "planir_version": "2.0",
