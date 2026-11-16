@@ -290,8 +290,9 @@ test("an unattended review is not snoozed", async () => {
   const r = await registered();
   const { out, rec } = await r.scan("rm REVIEW", "C1", "cron");
   assert.equal(scans.at(-1).trigger.kind, "scheduled");
-  assert.ok(out.requireApproval);
-  assert.equal(out.requireApproval.timeoutBehavior, "deny");
+  // Held for the owner (hold.test.ts), never snoozed.
+  assert.equal(out.block, true);
+  assert.equal(rec.decision, "held");
   assert.equal(rec.snoozed, undefined);
 });
 

@@ -78,6 +78,9 @@ class PluginConfig:
     #: Settings grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`).
     unsent_grants: dict[int, str] = field(default_factory=dict)
     channel_bindings: list[str] = field(default_factory=list)
+    #: The platform whose home channel gets the notice of a held call ("" for the only platform with a
+    #: home channel); see `hold`.
+    owner_channel: str = ""
 
 
 def hermes_home(env: dict[str, str]) -> Path:
@@ -309,4 +312,7 @@ def resolve_config(
         grants=grants,
         unsent_grants=unsent,
         channel_bindings=_list(cfg.get("channel_bindings")),
+        owner_channel=(
+            _str(cfg.get("owner_channel")) or _str(env.get("SENTROOK_OWNER_CHANNEL")) or ""
+        ).lower(),
     )

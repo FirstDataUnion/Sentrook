@@ -28,6 +28,41 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+/** How long to wait for another process's lock before giving up. Short: the gateway waits on it. */
+export const LOCK_WAIT_MS = 1_000;
+
+/** Another process held a state file's lock for longer than `LOCK_WAIT_MS`. */
+export class LockTimeoutError extends Error {}
+
+/**
+ * Runs `fn` holding an exclusive lock for `file`, so a read-modify-write of it is safe across processes (the gateway
+ * and the `openclaw sentrook` command line) as well as within one. The lock is an exclusive transaction on a small
+ * SQLite file beside it (`<file>.lockdb`, through Node's own `node:sqlite`, which OpenClaw itself uses): SQLite
+ * takes the operating system's file lock, and the system releases it when its process dies, so a crashed holder
+ * leaves nothing to take over and no two processes ever hold it at once. Throws `LockTimeoutError` when another
+ * process holds it for longer than `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
+ */
+export function withFileLock<T>(file: string, fn: () => T): T {
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(`${file}.lockdb`, { timeout: LOCK_WAIT_MS });
+  try {
+    try {
+      db.exec("BEGIN EXCLUSIVE");
+    } catch (err: any) {
+      if (/locked|busy/i.test(String(err?.message ?? err))) throw new LockTimeoutError(`${file} is locked by another process`);
+      throw err;
+    }
+    try {
+      return fn();
+    } finally {
+      db.exec("ROLLBACK");
+    }
+  } finally {
+    db.close();
+  }
+}
 
 export interface Provider {
   kind: string;
@@ -91,6 +126,22 @@ export interface SnoozeFile {
   version?: number;
   snoozes: unknown[];
   [key: string]: unknown;
+}
+
+export interface HoldsFile {
+  version?: number;
+  holds: unknown[];
+  [key: string]: unknown;
+}
+
+/** Where the owner gets notices: a direct message on one channel, as `/sentrook-notify here` recorded it. */
+export interface NotifyTarget {
+  channel: string;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+  set_at: string;
+  set_by: Record<string, unknown>;
 }
 
 /** The only time form read back from `grants.json` and `snooze.json`; both plugins accept exactly this. */
@@ -269,6 +320,32 @@ export class Store {
 
   saveSnooze(value: SnoozeFile): void {
     this.writeJson(path.join(this.dir, "snooze.json"), value);
+  }
+
+  /** `holds.json`, empty when absent; null when it exists but cannot be read. */
+  loadHolds(): HoldsFile | null {
+    const file = path.join(this.dir, "holds.json");
+    if (!existsSync(file)) return { version: 1, holds: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const h = data as Record<string, unknown>;
+    if (!Object.hasOwn(h, "holds")) h.holds = [];
+    return Array.isArray(h.holds) ? (h as HoldsFile) : null;
+  }
+
+  saveHolds(value: HoldsFile): void {
+    this.writeJson(path.join(this.dir, "holds.json"), value);
+  }
+
+  /** The owner's notice target from `notify.json`; null when none is set or the file cannot be read. */
+  loadNotify(): NotifyTarget | null {
+    const data = this.readJson<any>(path.join(this.dir, "notify.json"), null);
+    const t = data && typeof data === "object" ? data.target : null;
+    return t && typeof t.channel === "string" && t.channel && typeof t.to === "string" && t.to ? (t as NotifyTarget) : null;
+  }
+
+  saveNotify(target: NotifyTarget | null): void {
+    this.writeJson(path.join(this.dir, "notify.json"), { version: 1, target });
   }
 
   private selfEditFile(runId: string) {

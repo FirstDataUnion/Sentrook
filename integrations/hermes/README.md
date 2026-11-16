@@ -195,14 +195,15 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
-| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, and how many of Hermes's own skill and memory saves were allowed or blocked |
+| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls and where their notices go, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
-| `why [request_id\|last]` | One scan in detail |
+| `why [request_id\|last]` | One scan in detail; with the id from a held-call notice, also the hold and the grant Sentrook suggests |
 | `grants` | Grants in force: from config (read-only) and set by command |
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
 | `bind add\|remove\|list [channel]` | Manage channel bindings |
 | `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h |
+| `approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-on-unattended-runs)) |
 | `help` | Lists the commands |
 
 **Owner only.** `status` and `help` are open to anyone the gateway admits. Every other command runs only for the
@@ -212,7 +213,7 @@ direct message admitted only because the gateway allows all users. Every attempt
 the traffic log (unless you turned it off). Hermes's own `allow_admin_from` is not used.
 
 A snooze never relaxes a block, a review the scanner marks as enforced, or an unattended run (cron jobs, webhooks,
-the API server): those still stop.
+the API server): those still stop, and a review on an unattended run is held for you instead.
 
 Where slash commands don't reach the plugin, use `hermes sentrook <command>` on the machine instead:
 
@@ -230,14 +231,35 @@ sends sensitive data"), and asked not to retry it or work around it unless you t
 is not told which checks fired or the risk score; you can see those with `hermes sentrook why last`.
 
 Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms and the local terminal
-count as attended. Elsewhere, including the API server, cron and webhooks, a review blocks instead. If a UI in front of
-the API server shows Hermes's approval prompts, add it with `attended_platforms` (see [Settings](#settings)).
+count as attended. Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
+(see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
+prompts, add it with `attended_platforms` (see [Settings](#settings)).
 
-With approvals switched off (`approvals.mode: off`), Hermes would approve every prompt itself, so a review blocks
-instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment. YOLO you switch on for a
+With approvals switched off (`approvals.mode: off`), Hermes would approve every prompt itself, so a review holds the
+call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment. YOLO you switch on for a
 session (`/yolo` in a chat, or `hermes --yolo` / `hermes chat --yolo`, which Hermes applies to that session) is not
 visible to Sentrook, so in that session Hermes approves Sentrook's reviews the way it approves everything else there.
 Blocks still apply.
+
+### Held calls on unattended runs
+
+Where nobody can answer a review (the runs above), the call is **held**:
+
+- The call does not run. The agent is told it is held for your approval and not to retry it in this run.
+- You get one notice on the home channel (`/sethome`) of the platform you name in `owner_channel`, for example
+  `telegram`. Set it: until you do, nothing is sent, the call is still held, and `status` and `verify` say notices
+  are not sent. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
+  was held, which run (a cron job by its id, and its name in quotes), the tool and its target, a broad category,
+  and the commands. Read the risk, the reasons and any grant Sentrook suggests with `/sentrook why <id>`.
+- Reply `/sentrook approve <id>` within 24 hours (from a direct message or the local terminal, like the other owner
+  commands). When Sentrook suggested a grant for the call, approving sets it as a persistent grant that ends after 30
+  days, so the job's next run is scanned with it. When it suggested none, approving sets nothing and the reply says
+  so; add a grant with `/sentrook grant ... --persistent` if the job should pass. The held call itself is never run
+  again.
+- A hold nobody approves expires after 24 hours, and nothing runs.
+
+A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The traffic log records
+the scan with decision `held`, then the approval or the expiry; `/sentrook history` shows them.
 
 ### Hermes's own skill and memory saves
 
@@ -248,10 +270,10 @@ Sentrook that the call is one of these background saves and sends the part of th
 and Sentrook judges the save against that conversation. A save that follows from what you said and did goes
 through. A save is reviewed or blocked when it carries instructions that came from content the agent read or from
 other people, weakens one of your rules, claims approvals you never gave, or stores secrets you did not ask it to
-keep. As for any call, on unattended runs (the API server, webhooks, cron) a review is a block, because nobody is
-there to answer it; in a chat or the local terminal you are asked.
+keep. As for any call, on unattended runs (the API server, webhooks, cron) a review holds the save for you, because
+nobody is there to answer it; in a chat or the local terminal you are asked.
 
-Every background save is scanned and logged, and `status` counts them: allowed, blocked and asked. Only Hermes's
+Every background save is scanned and logged, and `status` counts them: allowed, blocked, asked and held. Only Hermes's
 automatic review and curator count: a skill or memory change you ask for in a turn, or a `/refine` you run, is
 scanned like any other call, and so is every other tool those background runs call. Every call a background run
 makes is sent with your last message as its request and the number of the turn it follows, and does not count as
@@ -325,10 +347,11 @@ In short, for anyone deciding whether to install it:
   Hermes's background skill and memory saves, and a redacted copy of recent messages is kept on disk to send with
   them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
-  call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review blocks instead of
-  waiting.
+  call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review holds the call and
+  sends you one notice on a home channel, through Hermes's own `send_message`; that notice is the only message it
+  sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
-  the traffic log, grants, snooze state and the conversation logs above), or to the paths you set for them
+  the traffic log, grants, snooze state, held calls and the conversation logs above), or to the paths you set for them
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
   secret redaction are on. It runs no shell commands and starts no background processes.
 - **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
@@ -349,6 +372,7 @@ settings (see [step 2](#2-add-the-credentials-to-hermes)).
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
+| `owner_channel` | | The platform whose home channel gets the notice of a held call, such as `telegram`. No notice is sent until it is set |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |

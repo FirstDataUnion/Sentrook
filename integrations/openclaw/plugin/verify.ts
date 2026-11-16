@@ -7,7 +7,9 @@ import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
+import { NOTIFY_UNSET, targetText } from "./hold.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
+import { Store } from "./store.ts";
 
 export interface VerifyCheck {
   name: string;
@@ -92,6 +94,9 @@ export async function runVerify(
   // Reported, not failed: on a host that ignores it, the setting only leaves unattended reviews denied.
   const note = timeoutBehaviorNote(cfg.approval, opts.hostVersion);
   if (note) checks.push({ name: "approval", ok: true, detail: note });
+  // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
+  const target = new Store(cfg.stateDir).loadNotify();
+  checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
   // Reported, not failed: OpenClaw's own memory writers that no plugin sees, with the setting that turns each off.
   checks.push(...memoryWriterChecks(opts.hostConfig));
   return checks;

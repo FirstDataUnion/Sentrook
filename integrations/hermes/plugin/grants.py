@@ -35,7 +35,7 @@ from typing import Any
 
 from .config import PluginConfig, parse_grants
 from .planir import binding_problem
-from .store import Store, read_time
+from .store import Store, file_lock, read_time
 
 KINDS = ("destination", "file", "provider", "repo")
 ALLOWS = ("read", "write", "edit", "delete", "exec")
@@ -342,7 +342,8 @@ def _change(
     """Read the file, apply `fn` (reply, change record or None), and write it back if it changed.
     A write also drops expired grants; `fn` still sees them, so revoking one works."""
     store = Store(state_dir)
-    with _LOCK:
+    # The gateway (an approved hold) and the command line can change the file at the same time.
+    with _LOCK, file_lock(state_dir / "grants.json"):
         data = store.load_grants()
         if data is None:
             return _unreadable(state_dir), None
@@ -398,6 +399,82 @@ def add_grant(
         if entry["scope"] == "session":
             reply += " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)."
         return reply, {"op": "grant", "entry": entry}
+
+    return _change(state_dir, now, fn)
+
+
+def hint_grant(hint: Any) -> dict[str, Any] | None:
+    """A suggested grant as the owner could have typed it: run through `parse_grant` with the same
+    rules as `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more
+    than the command could. Kind, pattern and allows only; the scope is always persistent and the
+    expiry is the hold's. None when it is not one the command would accept."""
+    if not isinstance(hint, dict):
+        return None
+    kind, pattern, allows = hint.get("kind"), hint.get("pattern"), hint.get("allows")
+    if not isinstance(kind, str) or not isinstance(pattern, str):
+        return None
+    words = [kind, pattern.strip(), "--persistent"]
+    if allows is not None:
+        # Each one known verb, exactly: no spaces, commas or anything the command line would split.
+        if not isinstance(allows, list) or not all(
+            isinstance(a, str) and a in ALLOWS for a in allows
+        ):
+            return None
+        words += ["--allows", ",".join(allows)]
+    # One word each, as typed: a kind or pattern with spaces could not have been typed either.
+    if any(not w or any(c.isspace() for c in w) for w in words[:2]):
+        return None
+    parsed = parse_grant(" ".join(words), lambda sub: sub)
+    if isinstance(parsed, str):
+        return None
+    return {k: v for k, v in parsed.items() if k in ("kind", "pattern", "allows")}
+
+
+def describe_grant(grant: dict[str, Any]) -> str:
+    """`destination discord:#ops`, with `(allows read)` for a file grant that limits them."""
+    allows = f" (allows {','.join(grant['allows'])})" if grant.get("allows") else ""
+    return _clean(f"{grant['kind']} {grant['pattern']}{allows}", 300)
+
+
+def add_suggested(
+    state_dir: Path,
+    grant: dict[str, Any],
+    by: dict[str, Any],
+    now: datetime,
+    span: timedelta,
+    hold_id: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Adds `grant` (from `hint_grant`) as a persistent grant ending `span` from now, for an approved
+    hold. The reply names the new grant's id; None for the record when the file could not be read."""
+
+    def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        # Once per hold: an approval retried after the holds file failed to save finds its grant.
+        for g in data["grants"]:
+            if isinstance(g, dict) and g.get("from_hold") == hold_id and not expired(g, now):
+                at = read_time(g.get("expires_at"))
+                return (
+                    f"Granted {g.get('id')}: {describe_grant(g)} (persistent, expires "
+                    f"{_show(at) if at else '?'}).",
+                    {"op": "grant", "entry": g, "existing": True},
+                )
+        taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)}
+        gid = f"gr-{secrets.token_hex(3)}"
+        while gid in taken:
+            gid = f"gr-{secrets.token_hex(3)}"
+        entry = {
+            "id": gid,
+            **grant,
+            "scope": "persistent",
+            "granted_at": _iso(now),
+            "expires_at": _iso(now + span),
+            "set_by": by,
+            "from_hold": hold_id,
+        }
+        data["grants"].append(entry)
+        return (
+            f"Granted {gid}: {describe_grant(entry)} (persistent, expires {_show(now + span)}).",
+            {"op": "grant", "entry": entry},
+        )
 
     return _change(state_dir, now, fn)
 

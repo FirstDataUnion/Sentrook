@@ -17,7 +17,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, conversation, grants, history, owner, skill_review, snooze
+from . import cli, commands, conversation, grants, history, hold, owner, skill_review, snooze
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -32,13 +32,13 @@ from .planir import PLUGIN_VERSION, build_planir, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import ScanFailure, scan_error_to_directive
-from .store import Store
+from .store import LockTimeout, Store
 from .traffic import TrafficLog
 
 logger = logging.getLogger("sentrook")
 
 #: History decisions after which the tool did not run.
-NOT_RUN = frozenset({"blocked", "denied_by_user", "review_timed_out", "blocked_on_error"})
+NOT_RUN = frozenset({"blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held"})
 
 #: Every key the plugin reads from `plugins.entries.sentrook.settings` in config.yaml.
 SETTINGS_KEYS = (
@@ -62,6 +62,7 @@ SETTINGS_KEYS = (
     "history_args_cap_bytes",
     "packs",
     "skill_review",
+    "owner_channel",
 )
 
 _ctx: Any = None
@@ -396,6 +397,7 @@ def _scan_one(
     directive: dict[str, Any] | None = None
     verdict: str | None = None
     snoozed = False
+    held: dict[str, Any] | None = None
     if isinstance(result, ScanOk):
         resp = result.response
         verdict = decide(resp, cfg.review_at, cfg.block_at)
@@ -406,10 +408,14 @@ def _scan_one(
         entry["tiers"] = tiers_of(resp)
         if cfg.mode == "observe" or verdict == "allow":
             entry["decision"] = "allowed"
-        elif verdict == "block" or unattended:
-            # A review nobody can answer (or Hermes would auto-approve) is a block.
+        elif verdict == "block":
             entry["decision"] = "blocked"
             directive = {"action": "block", "message": block_reason(resp)}
+        elif unattended:
+            # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
+            entry["decision"] = "held"
+            directive = {"action": "block", "message": hold.HELD_TEXT}
+            held = _hold(cfg, traffic, built, resp)
         elif snooze.applies(resp) and snooze.active(
             store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):
@@ -460,6 +466,7 @@ def _scan_one(
             "verdict": verdict,
             "decision": entry["decision"],
             **({"snoozed": True} if snoozed else {}),
+            **({"hold": held} if held is not None else {}),
             **({"skill_review": True} if loop_save else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
@@ -484,6 +491,85 @@ def _scan_one(
             result.latency_ms,
         )
     return directive
+
+
+def _where(built: dict[str, Any]) -> str:
+    """The job or session a held call belongs to, for the owner's notice."""
+    sref = built["planir"]["session"]["session_ref"]
+    run = None
+    try:
+        read = getattr(_ctx, "current_cron_execution", None)
+        run = read() if callable(read) else None
+    except Exception:  # noqa: BLE001 - no cron identity: name the session
+        run = None
+    job_id, job_name = getattr(run, "job_id", None), getattr(run, "job_name", None)
+    if isinstance(job_id, str) and job_id.strip():
+        name = (
+            job_name.strip()
+            if isinstance(job_name, str) and job_name.strip() != job_id.strip()
+            else None
+        )
+        return hold.where_text("cron job", sref, job_id.strip(), name)
+    if built["subagent"] or built["platform"] == "subagent":
+        return hold.where_text("subagent run", sref)
+    if built["platform"] == "cron":
+        return hold.where_text("cron job", sref)
+    return hold.where_text("unattended run", sref)
+
+
+def _hold(
+    cfg: PluginConfig, traffic: TrafficLog, built: dict[str, Any], resp: dict[str, Any]
+) -> dict[str, Any]:
+    """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
+    call is held whatever happens here: a hold that cannot be stored only cannot be approved."""
+    now = datetime.now(UTC)
+    planir = built["planir"]
+    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
+    if target and not callable(getattr(_ctx, "dispatch_tool", None)):
+        target, why = None, "this Hermes cannot dispatch send_message from a plugin"
+    notice: dict[str, Any] = (
+        {"status": "queued", "target": target}
+        if target
+        else {"status": "unsent", "target": None, "reason": why}
+    )
+    hint = hold.grant_hint(resp)
+    where = _where(built)
+    try:
+        hid = hold.create(
+            cfg.state_dir,
+            request_id=planir["request_id"],
+            session_ref=planir["session"]["session_ref"],
+            tool=built["tool"],
+            where=where,
+            hint=hint,
+            notice=notice,
+            now=now,
+            record=traffic.write,
+        )
+        if hid is None:
+            notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
+    except LockTimeout:
+        hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file locked"}
+    except Exception as exc:  # noqa: BLE001 - still held, just not approvable
+        logger.warning("sentrook could not store a hold: %s", exc)
+        hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
+    if hid is not None and target:
+        try:
+            text = hold.notice_text(
+                resp, built["tool"], where, hid, commands.CMD("approve"), commands.CMD("why")
+            )
+            hold.deliver(_ctx, target, text)
+        except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
+            logger.warning("sentrook held a call but could not build its notice: %s", exc)
+            notice = {"status": "unsent", "target": None, "reason": "notice could not be built"}
+    else:
+        logger.warning("sentrook held a call but sent no notice: %s", notice.get("reason"))
+    return {
+        "id": hid,
+        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ") if hid else None,
+        "hint": hint is not None,
+        "notice": notice,
+    }
 
 
 # ---- outcomes -----------------------------------------------------------------------------------------

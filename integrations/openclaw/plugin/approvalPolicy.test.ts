@@ -17,7 +17,7 @@ test("allow on a host that ignores timeoutBehavior gets one line naming the vers
     assert.ok(note, v);
     assert.ok(note.includes(`OpenClaw ${v}`), note);
     assert.match(note, /not honoured/);
-    assert.match(note, /denied/);
+    assert.match(note, /held for the owner/);
     assert.ok(!note.includes("\n"));
   }
 });

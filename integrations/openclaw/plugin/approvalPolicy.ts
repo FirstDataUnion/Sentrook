@@ -2,10 +2,9 @@
  * Human approval timeouts for enforce-mode Sentrook reviews.
  *
  * Interactive sessions keep a short timeout with deny-on-timeout (always fail-closed;
- * not configurable). Cron and subagent runs use a longer window but also default to
- * deny-on-timeout. scheduledTimeoutBehavior allow asks the host to let an unanswered
- * unattended review through, but it only takes effect on a host that reads the
- * approval's timeoutBehavior; see TIMEOUT_BEHAVIOR_IGNORED_THROUGH.
+ * not configurable). `scheduledIntentKinds` says which runs are unattended: a review there
+ * is held for the owner (hold.ts) instead of asked, so the scheduled timeout and its
+ * behaviour no longer reach a review. They are still read, so existing configs load.
  */
 
 export type IntentKind = "user" | "cron" | "subagent" | "system";
@@ -164,6 +163,6 @@ export function timeoutBehaviorNote(policy: ApprovalPolicyConfig, hostVersion: s
   if (policy.scheduledTimeoutBehavior !== "allow" || !hostIgnoresTimeoutBehavior(hostVersion)) return null;
   return (
     `scheduledTimeoutBehavior allow is not honoured on OpenClaw ${hostVersion!.trim()}: ` +
-    "an unattended review nobody answers is still denied"
+    "an unattended review is held for the owner instead (/sentrook-approve)"
   );
 }

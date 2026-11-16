@@ -84,7 +84,7 @@ export function reviewCopy(resp: ScanResponse, toolName: string): { title: strin
  * risk score, the entities or the tool description: those would tell a steered agent which detector to
  * rephrase around. The human sees the detail in the review card, `why` and the traffic log.
  */
-const BLOCK_CATEGORIES = {
+export const BLOCK_CATEGORIES = {
   sensitive_data: "it reads or sends sensitive data, such as credentials or personal data",
   sends_data: "it sends data to a destination outside this machine",
   untrusted_code: "it runs or installs code from a source that is not trusted",

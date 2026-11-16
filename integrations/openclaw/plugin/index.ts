@@ -12,6 +12,7 @@ import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
+import * as hold from "./hold.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
@@ -37,7 +38,7 @@ interface OpenClawPluginApi {
   config?: any;
   logger: PluginLogger;
   registrationMode?: string;
-  runtime?: { version?: unknown; config?: { current?: () => unknown } };
+  runtime?: { version?: unknown; config?: { current?: () => unknown }; channel?: { outbound?: hold.Outbound } };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
   registerCommand?: (def: {
@@ -71,7 +72,7 @@ export interface BeforeToolCallResult {
 const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", TOOL_CALL]);
 
 /** History decisions after which the tool did not run. */
-const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error"]);
+const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held"]);
 
 const LOG = "[sentrook]";
 
@@ -202,6 +203,15 @@ const plugin = {
                       record: (record) => traffic.write(record),
                     },
                     session: commandSessionOf(ctx),
+                    chat: {
+                      channel: ctx.channel,
+                      senderId: ctx.senderId,
+                      from: (ctx as any).from,
+                      to: (ctx as any).to,
+                      sessionKey: ctx.sessionKey,
+                      accountId: (ctx as any).accountId,
+                      messageThreadId: (ctx as any).messageThreadId,
+                    },
                   },
                   (ctx.args ?? "").trim(),
                 ),
@@ -488,6 +498,7 @@ const plugin = {
       let verdict: Verdict | null = null;
       let onError = false;
       let snoozed = false;
+      let held: Json | null = null;
       if (result.ok) {
         const resp = result.response;
         verdict = decide(resp, cfg);
@@ -512,6 +523,11 @@ const plugin = {
           // The owner snoozed reviews for this session: scanned and logged, not asked.
           entry.decision = "allowed";
           snoozed = true;
+        } else if (timing.unattended) {
+          // Nobody can answer a review here: the call waits for the owner (hold.ts).
+          entry.decision = "held";
+          hook = { block: true, blockReason: hold.HELD_TEXT };
+          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -555,6 +571,7 @@ const plugin = {
         verdict,
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
+        ...(held ? { hold: held } : {}),
         ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
         ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
@@ -600,6 +617,63 @@ const plugin = {
         };
       }
       return hook;
+    }
+
+    /**
+     * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
+     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     */
+    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
+      const now = new Date();
+      const sref: string = built.planir.session.session_ref;
+      const label: Record<string, string> = { scheduled: "scheduled run", heartbeat: "heartbeat run", subagent: "subagent run" };
+      const job = triggerKind === "scheduled" ? hold.cronJobOf(run?.prompt) : null;
+      const where = hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name);
+      const target = store.loadNotify();
+      let outbound: hold.Outbound | undefined;
+      try {
+        outbound = api.runtime?.channel?.outbound;
+      } catch {
+        outbound = undefined; // the runtime throws outside full registration
+      }
+      let notice: Json = target
+        ? { status: "queued", target: target.channel }
+        : { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+      if (target && !outbound?.loadAdapter) {
+        notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+      }
+      const hint = hold.grantHint(resp);
+      const record = (r: Record<string, unknown>) => traffic.write(r);
+      let id: string | null = null;
+      try {
+        id = hold.create(cfg.stateDir, { requestId: built.planir.request_id, sessionRef: sref, tool, where, hint, notice }, now, record);
+        if (id === null) notice = { status: "unsent", target: null, reason: "holds file unreadable" };
+      } catch (err) {
+        const locked = err instanceof hold.LockTimeoutError;
+        if (!locked) api.logger.warn(`${LOG} could not store a hold: ${String(err)}`);
+        notice = { status: "unsent", target: null, reason: locked ? "holds file locked" : "holds file not written" };
+      }
+      if (id !== null && target && notice.status === "queued") {
+        try {
+          const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
+          const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+            if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
+          });
+          hold.track(sent);
+        } catch (err) {
+          // A malformed response: still held, not announced.
+          api.logger.warn(`${LOG} held a call but could not build its notice: ${String(err)}`);
+          notice = { status: "unsent", target: null, reason: "notice could not be built" };
+        }
+      } else {
+        api.logger.warn(`${LOG} held a call but sent no notice: ${String(notice.reason)}`);
+      }
+      return {
+        id,
+        expires_at: id ? `${new Date(now.getTime() + hold.HOLD_TTL_MS).toISOString().slice(0, 19)}Z` : null,
+        hint: hint !== null,
+        notice,
+      };
     }
 
     const ep = boot.endpoints;

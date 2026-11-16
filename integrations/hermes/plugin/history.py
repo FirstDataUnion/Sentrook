@@ -34,7 +34,13 @@ NO_SCANS = "No scans in the traffic log yet."
 _APPROVED = frozenset(
     {"once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"}
 )
-_REVIEW = {"deny": "denied", "timeout": "timed out", "cancelled": "cancelled"}
+_REVIEW = {
+    "deny": "denied",
+    "timeout": "timed out",
+    "cancelled": "cancelled",
+    "hold_approved": "approved",
+    "hold_expired": "expired",
+}
 #: A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked.
 REVIEW_LOOP = "review_loop"
 _ID = re.compile(r"[0-9a-fA-F-]{4,36}")
@@ -167,6 +173,8 @@ def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
     if verdict == "review":
         if decision == "allowed" and scan.get("snoozed") is True:
             return "allowed (snoozed)"
+        if decision == "held":
+            return "held"
         return "blocked (no reviewer)" if decision == "blocked" else "review"
     if verdict == "allow":
         return "allowed"
@@ -176,7 +184,7 @@ def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
 def review_of(action: str, resolution: dict[str, Any] | None) -> str:
     """How the review was answered; `-` when there was none."""
     if resolution is None:
-        return "no answer" if action.startswith("review") else "-"
+        return "no answer" if action.startswith(("review", "held")) else "-"
     choice = str(resolution.get("resolution") or "").strip().lower()
     if choice == "deny" and resolution.get("decided_by") == REVIEW_LOOP:
         return "auto-denied by the review loop"

@@ -29,7 +29,7 @@ import path from "node:path";
 
 import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
 import { bindingProblem } from "./planir.ts";
-import { type GrantsFile, readTime, Store } from "./store.ts";
+import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
 export const KINDS = ["destination", "file", "provider", "repo"];
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
@@ -48,6 +48,8 @@ export type Entry = Record<string, any>;
 export interface Change {
   op: "grant" | "revoke" | "bind_add" | "bind_remove";
   entry: Entry;
+  /** Set when an approval found the grant its hold already set, and wrote nothing. */
+  existing?: boolean;
 }
 
 export interface ChangeResult {
@@ -316,6 +318,11 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
  * also drops expired grants; `fn` still sees them, so revoking one works.
  */
 function change(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
+  // The gateway (an approved hold) and the command line can change the file at the same time.
+  return withFileLock(path.join(stateDir, "grants.json"), () => changeLocked(stateDir, now, fn, beforeWrite));
+}
+
+function changeLocked(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
   const store = new Store(stateDir);
   const data = store.loadGrants();
   if (data === null) {
@@ -372,6 +379,86 @@ export function addGrant(
       const note = entry.scope === "session" ? " Cron jobs, subagents and other chats need a --persistent grant (add --expires to end it)." : "";
       return {
         reply: `Granted ${id}: ${entry.kind} ${entry.pattern} (${details.join(", ")}).${note}`,
+        change: { op: "grant", entry },
+      };
+    },
+    beforeWrite,
+  );
+}
+
+/**
+ * A suggested grant as the owner could have typed it: run through `parseGrant` with the same rules as
+ * `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more than the command could.
+ * Kind, pattern and allows only; the scope is always persistent and the expiry is the hold's. Null when it is not
+ * one the command would accept.
+ */
+export function hintGrant(hint: unknown): Entry | null {
+  if (!hint || typeof hint !== "object" || Array.isArray(hint)) return null;
+  const { kind, pattern, allows } = hint as Entry;
+  if (typeof kind !== "string" || typeof pattern !== "string") return null;
+  const words = [kind, pattern.trim(), "--persistent"];
+  if (allows !== undefined && allows !== null) {
+    // Each one known verb, exactly: no spaces, commas or anything the command line would split.
+    if (!Array.isArray(allows) || !allows.every((a) => typeof a === "string" && ALLOWS.includes(a))) return null;
+    words.push("--allows", allows.join(","));
+  }
+  // One word each, as typed: a kind or pattern with spaces could not have been typed either.
+  if (words.slice(0, 2).some((w) => !w || /\s/u.test(w))) return null;
+  const parsed = parseGrant(words.join(" "), (sub) => sub);
+  if (typeof parsed === "string") return null;
+  return { kind: parsed.kind, pattern: parsed.pattern, ...(parsed.allows ? { allows: parsed.allows } : {}) };
+}
+
+/** `destination discord:#ops`, with `(allows read)` for a file grant that limits them. */
+export function describeGrant(grant: Entry): string {
+  const allows = grant.allows ? ` (allows ${grant.allows.join(",")})` : "";
+  return clean(`${grant.kind} ${grant.pattern}${allows}`, 300);
+}
+
+/**
+ * Adds `grant` (from `hintGrant`) as a persistent grant ending `spanMs` from now, for an approved hold. The
+ * reply names the new grant's id; no change when the file could not be read.
+ */
+export function addSuggested(
+  stateDir: string,
+  grant: Entry,
+  by: Entry,
+  now: Date,
+  spanMs: number,
+  holdId: string,
+  beforeWrite: () => void,
+): ChangeResult {
+  return change(
+    stateDir,
+    now,
+    (data) => {
+      // Once per hold: an approval retried after the holds file failed to save finds its grant.
+      const prior = data.grants.find((g) => g && typeof g === "object" && (g as Entry).from_hold === holdId && !expired(g as Entry, now)) as
+        | Entry
+        | undefined;
+      if (prior) {
+        const at = readTime(prior.expires_at);
+        return {
+          reply: `Granted ${prior.id}: ${describeGrant(prior)} (persistent, expires ${at ? show(at) : "?"}).`,
+          change: { op: "grant", entry: prior, existing: true },
+        };
+      }
+      const taken = new Set(data.grants.map((g) => (g as Entry)?.id));
+      let id = `gr-${randomBytes(3).toString("hex")}`;
+      while (taken.has(id)) id = `gr-${randomBytes(3).toString("hex")}`;
+      const expires = new Date(now.getTime() + spanMs);
+      const entry: Entry = {
+        id,
+        ...grant,
+        scope: "persistent",
+        granted_at: iso(now),
+        expires_at: iso(expires),
+        set_by: by,
+        from_hold: holdId,
+      };
+      data.grants.push(entry);
+      return {
+        reply: `Granted ${id}: ${describeGrant(entry)} (persistent, expires ${show(expires)}).`,
         change: { op: "grant", entry },
       };
     },

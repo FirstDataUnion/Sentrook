@@ -224,7 +224,7 @@ def test_an_unattended_review_is_still_a_block(term):
     put(term, entry(ref=snooze.session_ref("cron-1")), entry("all"))
     turn(term, sid="cron-1", platform="cron")
     out, rec = call(term, "rm REVIEW", sid="cron-1")
-    assert out["action"] == "block" and "snoozed" not in rec
+    assert out["action"] == "block" and rec["decision"] == "held" and "snoozed" not in rec
 
 
 def test_a_subagent_review_is_still_a_block(term):

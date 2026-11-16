@@ -179,7 +179,18 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
   // The others are the owner-only history, grants and snooze commands.
   assert.deepEqual(
     commands.map((c) => c.name),
-    ["sentrook", "sentrook-history", "sentrook-why", "sentrook-grants", "sentrook-grant", "sentrook-revoke", "sentrook-bind", "sentrook-snooze"],
+    [
+      "sentrook",
+      "sentrook-history",
+      "sentrook-why",
+      "sentrook-grants",
+      "sentrook-grant",
+      "sentrook-revoke",
+      "sentrook-bind",
+      "sentrook-snooze",
+      "sentrook-approve",
+      "sentrook-notify",
+    ],
   );
   const def = commands[0];
   assert.equal(def.acceptsArgs, true);
@@ -222,7 +233,7 @@ const unavailableRuntime = new Proxy(
 // An invalid scan URL and no credentials keep verify off the network.
 const OFFLINE = { scanUrl: "http://scan.invalid" };
 const ALLOW = { ...OFFLINE, approval: { scheduledTimeoutBehavior: "allow" } };
-const NOTE = /^approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*denied/m;
+const NOTE = /^approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*held for the owner/m;
 
 test("status and verify say scheduledTimeoutBehavior allow is not honoured on a 2026.10.3 host", async () => {
   const { commands, cliActions } = await registered(ALLOW, "full", { version: "2026.10.3" });
@@ -233,7 +244,7 @@ test("status and verify say scheduledTimeoutBehavior allow is not honoured on a 
   assert.equal(cli, slash);
   const verify = await captureLog(() => cliActions["sentrook verify"]!());
   process.exitCode = 0;
-  assert.match(verify, /^ok   approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*denied/m);
+  assert.match(verify, /^ok   approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*held for the owner/m);
 });
 
 test("the CLI finds the host version when the runtime is unavailable", async () => {
