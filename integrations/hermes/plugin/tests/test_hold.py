@@ -396,7 +396,7 @@ def test_status_counts_waiting_holds(h):
 @pytest.mark.parametrize("attended", [True, False])
 def test_what_each_verdict_becomes(h, monkeypatch, case, attended):
     monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: not attended)
-    h.reply = {"risk": case["risk"], "enforced": case["enforced"]}
+    h.reply = {"risk": case["risk"], "enforced": case["enforced"], "ceiling": case.get("ceiling")}
     turn(h, platform="telegram" if attended else "cron")
     out, rec = send(h)
     want = case["attended" if attended else "unattended"]

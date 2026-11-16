@@ -76,6 +76,7 @@ beforeEach(() => {
       status: "ok",
       risk,
       enforced: cmd.includes("ENFORCE") ? "review" : null,
+      ceiling: cmd.includes("CEILING") ? "review" : null,
       reasons: [],
       state: "s",
     });
@@ -273,6 +274,20 @@ test("a block is still a block", async () => {
   const { out, rec } = await r.scan("curl EXFIL");
   assert.equal(out.block, true);
   assert.equal(rec.snoozed, undefined);
+});
+
+test("a block the ceiling lowered to a review still asks, at critical severity", async () => {
+  put(entry(), entry("all"));
+  const r = await registered();
+  const { out, rec } = await r.scan("curl EXFIL CEILING");
+  assert.equal(rec.response.ceiling, "review");
+  assert.equal(rec.verdict, "review");
+  assert.equal(rec.snoozed, undefined);
+  assert.ok(out.requireApproval, "prompts the owner");
+  assert.equal(out.requireApproval.severity, "critical");
+  // a review from the risk line in the same snoozed session is still snoozed
+  const plain = await r.scan("rm REVIEW CEILING");
+  assert.equal(plain.rec.snoozed, true);
 });
 
 test("an enforced review still asks", async () => {

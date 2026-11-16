@@ -501,7 +501,9 @@ const plugin = {
       let held: Json | null = null;
       if (result.ok) {
         const resp = result.response;
-        verdict = decide(resp, cfg);
+        // The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
+        // block to a review with it, so a lowered block is never held.
+        verdict = decide(timing.unattended ? { ...resp, ceiling: null } : resp, cfg);
         sess.token = resp.state ?? null;
         sess.buffer = [];
         entry.action_fingerprint = resp.action_fingerprint ?? null;
@@ -517,7 +519,7 @@ const plugin = {
           // whatever the approval timeout policy calls attended.
           triggerKind === "message" &&
           !timing.unattended &&
-          snooze.applies(resp) &&
+          snooze.applies(resp, cfg.blockAt) &&
           snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
         ) {
           // The owner snoozed reviews for this session: scanned and logged, not asked.
@@ -535,7 +537,7 @@ const plugin = {
           hook = {
             requireApproval: {
               ...copy,
-              severity: severity(resp),
+              severity: severity(resp, cfg),
               timeoutMs: timing.timeoutMs,
               // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
               timeoutBehavior: timing.timeoutBehavior,

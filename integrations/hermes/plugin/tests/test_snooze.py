@@ -212,6 +212,17 @@ def test_a_block_is_still_a_block(term):
     assert out["action"] == "block" and "snoozed" not in rec
 
 
+def test_a_block_the_ceiling_lowered_to_a_review_still_asks(term):
+    put(term, entry(), entry("all"))
+    turn(term)
+    out, rec = call(term, "curl EXFIL CEILING")
+    assert rec["response"]["ceiling"] == "review" and rec["verdict"] == "review"
+    assert out["action"] == "approve" and "snoozed" not in rec
+    # a review from the risk line in the same snoozed session is still snoozed
+    out, rec = call(term, "rm REVIEW CEILING")
+    assert out is None and rec["snoozed"] is True
+
+
 def test_an_enforced_review_still_asks(term):
     put(term, entry(), entry("all"))
     turn(term)

@@ -1,7 +1,7 @@
 """From a scan response to allow / review / block, and the text a human sees.
 
-The plugin decides from `risk` and its local lines (review at `review_at`, block at `block_at`), then
-takes the stricter of that and the scanner's `enforced` floor. In observe mode the decision is recorded
+The plugin decides from `risk` and its local lines (review at `review_at`, block at `block_at`), lowers that to
+the scanner's `ceiling` when it is `review`, then takes the stricter of that and the scanner's `enforced` floor. In observe mode the decision is recorded
 but never applied.
 """
 
@@ -19,6 +19,9 @@ REVIEW_MESSAGE_MAX = 300
 def decide(resp: dict[str, Any], review_at: float, block_at: float) -> str:
     risk = float(resp.get("risk") or 0)
     verdict = "block" if risk >= block_at else "review" if risk >= review_at else "allow"
+    # the scanner's ceiling (the owner attends and nothing independent points to an attack) only lowers
+    if resp.get("ceiling") == "review" and verdict == "block":
+        verdict = "review"
     floor = resp.get("enforced")
     if floor in _RANK and _RANK[floor] > _RANK[verdict]:
         verdict = floor

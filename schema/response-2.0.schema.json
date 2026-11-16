@@ -665,6 +665,20 @@
       "description": "Echoed back by the plugin in history; opaque to it",
       "title": "Action Fingerprint"
     },
+    "ceiling": {
+      "anyOf": [
+        {
+          "const": "review",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Highest outcome the plugin may reach from risk: it decides from risk and its lines, lowers that to the ceiling, then raises it to `enforced`. Set when the owner attends the chat and nothing independent points to an attack; never together with `enforced`. A plugin that ignores it still blocks.",
+      "title": "Ceiling"
+    },
     "enforced": {
       "anyOf": [
         {

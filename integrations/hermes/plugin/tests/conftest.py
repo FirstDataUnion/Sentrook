@@ -32,6 +32,7 @@ class FakeScanner:
                 return 500, {"error": {"code": "boom"}}, {}
             risk = 92 if "EXFIL" in cmd else 55 if "REVIEW" in cmd else 5
             enforced = "review" if "FLOOR" in cmd else None
+            ceiling = "review" if "CEILING" in cmd else None
             step = p["session"]["step"]
             return (
                 200,
@@ -41,6 +42,7 @@ class FakeScanner:
                     "status": "ok",
                     "risk": risk,
                     "enforced": enforced,
+                    "ceiling": ceiling,
                     "tree": {
                         "suspicion": {"score": risk / 100},
                         "consequence": {"score": 0.5},

@@ -1,0 +1,139 @@
+{
+  "_comment": "Verdict ceiling. Both plugins must give `verdict` for `response` under `lines`: the verdict from risk and the lines, lowered to `ceiling` when it is `review`, then raised to `enforced`. The scanner never sets both a ceiling and `enforced`; the order is fixed here anyway. A plugin that ignores the ceiling still blocks, which fails safe.",
+  "cases": [
+    {
+      "name": "custom lines: a score between the owner's review and block lines with ceiling review is reviewed",
+      "lines": {
+        "review_at": 85,
+        "block_at": 95
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "ceiling": "review"
+      },
+      "verdict": "review"
+    },
+    {
+      "name": "custom lines: a score over the owner's block line is lowered to review",
+      "lines": {
+        "review_at": 60,
+        "block_at": 88
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 90,
+        "enforced": null,
+        "ceiling": "review"
+      },
+      "verdict": "review"
+    },
+    {
+      "name": "default lines: a blocking score with ceiling review is reviewed",
+      "lines": {
+        "review_at": 45,
+        "block_at": 80
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 95,
+        "enforced": null,
+        "ceiling": "review"
+      },
+      "verdict": "review"
+    },
+    {
+      "name": "default lines: a reviewing score with ceiling review stays review",
+      "lines": {
+        "review_at": 45,
+        "block_at": 80
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 60,
+        "enforced": null,
+        "ceiling": "review"
+      },
+      "verdict": "review"
+    },
+    {
+      "name": "the ceiling never raises: a low score stays allowed",
+      "lines": {
+        "review_at": 45,
+        "block_at": 80
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 30,
+        "enforced": null,
+        "ceiling": "review"
+      },
+      "verdict": "allow"
+    },
+    {
+      "name": "custom lines: the ceiling never raises a score under the owner's review line",
+      "lines": {
+        "review_at": 85,
+        "block_at": 95
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 80,
+        "enforced": null,
+        "ceiling": "review"
+      },
+      "verdict": "allow"
+    },
+    {
+      "name": "no ceiling: a blocking score blocks",
+      "lines": {
+        "review_at": 45,
+        "block_at": 80
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 95,
+        "enforced": null
+      },
+      "verdict": "block"
+    },
+    {
+      "name": "enforced wins over the ceiling: lowered first, then raised to the floor",
+      "lines": {
+        "review_at": 45,
+        "block_at": 80
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 10,
+        "enforced": "block",
+        "ceiling": "review"
+      },
+      "verdict": "block"
+    },
+    {
+      "name": "an unknown ceiling value is ignored, so the plugin fails safe",
+      "lines": {
+        "review_at": 45,
+        "block_at": 80
+      },
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 95,
+        "enforced": null,
+        "ceiling": "allow"
+      },
+      "verdict": "block"
+    }
+  ]
+}

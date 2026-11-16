@@ -37,7 +37,7 @@ const FIXTURES = JSON.parse(
     text: string;
   }[];
   hints: { hint: unknown; grant: unknown }[];
-  outcomes: { name: string; risk: number; enforced: string | null; attended: string; unattended: string }[];
+  outcomes: { name: string; risk: number; enforced: string | null; ceiling?: string | null; attended: string; unattended: string }[];
   history: { name: string; decision: string; resolution: string | null; action: string; review: string }[];
 };
 const SEND = FIXTURES.notices[0]!;
@@ -377,7 +377,7 @@ for (const c of FIXTURES.outcomes) {
     test(`${c.name}, ${attended ? "attended" : "unattended"}: ${attended ? c.attended : c.unattended}`, async () => {
       const r = registered();
       await r.command("sentrook-notify", "here");
-      reply = { risk: c.risk, enforced: c.enforced };
+      reply = { risk: c.risk, enforced: c.enforced, ceiling: c.ceiling ?? null };
       const { out, rec } = await r.send(attended ? "user" : "cron");
       const want = attended ? c.attended : c.unattended;
       if (want === "allow") {

@@ -173,6 +173,14 @@ class Response(_Model):
     enforced: Enforce | None = Field(
         default=None, description="Strongest enforcement of any applied floor"
     )
+    ceiling: Literal["review"] | None = Field(
+        default=None,
+        description=(
+            "Highest outcome the plugin may reach from risk: it decides from risk and its lines, lowers that to "
+            "the ceiling, then raises it to `enforced`. Set when the owner attends the chat and nothing independent "
+            "points to an attack; never together with `enforced`. A plugin that ignores it still blocks."
+        ),
+    )
     tree: RiskTree = Field(default_factory=RiskTree)
     floors_applied: list[FloorApplied] = Field(default_factory=list)
     relief_applied: list[ReliefApplied] = Field(default_factory=list)
