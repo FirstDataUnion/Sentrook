@@ -15,9 +15,10 @@ risk is held just under the block line unless the call carries an independent st
   into, where some destination is covered by no grant, owner request, owner configuration or library entry (or is
   not written as an entity at all); and a push that publishes a secret or a credential file.
 
-Three further strong signals are off unless the parameters switch them on: a look-alike of a vouched-for entry or of
-a host, package or person the owner named; a retry of an action the owner denied; and this request's new untrusted
-content judged to instruct the agent while the call is judged not to follow from the owner's request.
+Three further strong signals are parameters, off unless a parameter set switches them on: a look-alike of a
+vouched-for entry or of a host, package or person the owner named (`lookalike`); a retry of an action the owner
+denied (`retry_min`); and this request's new untrusted content judged to instruct the agent while the call is judged
+not to follow from the owner's request (`fresh_injection`, model judgements only).
 
 Attended is derived from the PlanIR, not from a plugin flag: the turn is a message (not scheduled, heartbeat,
 hook, sub-agent, system or unknown), the sender is the owner and the agent is the main agent. Unattended runs,

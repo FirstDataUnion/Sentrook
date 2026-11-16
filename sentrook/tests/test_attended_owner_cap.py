@@ -348,7 +348,7 @@ def test_a_credential_in_a_call_that_sends_to_a_granted_host_caps(twin_case):
     assert res.response.risk == CAP
 
 
-# ---- optional strong signals: off in conv-v6, each switched on by its parameter ------------------------------
+# ---- look-alikes and retries of a denied action: strong in conv-v6; fresh injection stays off -------------
 
 
 def _with(**kw):
@@ -363,22 +363,31 @@ def _with(**kw):
         "lineage.lookalike_of_named_host",
     ],
 )
-def test_a_lookalike_is_strong_only_when_switched_on(attack_case, reason):
+def test_a_lookalike_entity_still_blocks(attack_case, reason):
     envs = _high_selfmod()
     envs[1].contributions.append(_c("suspicion.overreach", 0.9, reason, "E1"))
-    assert _run(attack_case, envs).response.risk == CAP
-    res = _run(attack_case, envs, params=_with(attended_owner_lookalike=True))
+    res = _run(attack_case, envs)
     assert res.response.risk >= 80
+    assert "cap.attended_owner" not in _codes(res)
     assert res.response.metadata.versions["attended_owner"]["strong"] == ["lookalike"]
+    # the parameter switches it off
+    assert (
+        _run(attack_case, envs, params=_with(attended_owner_lookalike=False)).response.risk == CAP
+    )
 
 
-def test_a_retry_of_a_denied_action_is_strong_only_when_switched_on(attack_case):
+def test_a_retry_of_a_denied_action_still_blocks(attack_case):
     envs = _high_selfmod()
     envs[1].contributions.append(_c("suspicion.retry_after_denial", 0.9, "retry.same_action"))
+    res = _run(attack_case, envs)
+    assert res.response.risk >= 80
+    assert res.response.metadata.versions["attended_owner"]["strong"] == ["retry_after_denial"]
+    # a weaker retry match (the same data read again) is not strong
+    envs[1].contributions[-1] = _c("suspicion.retry_after_denial", 0.5, "retry.same_source_only")
     assert _run(attack_case, envs).response.risk == CAP
-    assert _run(attack_case, envs, params=_with(attended_owner_retry_min=0.8)).response.risk >= 80
-    # below the set value: still capped
-    assert _run(attack_case, envs, params=_with(attended_owner_retry_min=0.95)).response.risk == CAP
+    # the parameter switches it off
+    envs[1].contributions[-1] = _c("suspicion.retry_after_denial", 0.9, "retry.same_action")
+    assert _run(attack_case, envs, params=_with(attended_owner_retry_min=None)).response.risk == CAP
 
 
 def test_fresh_injection_is_strong_only_when_switched_on(attack_case):
@@ -424,7 +433,7 @@ def test_the_optional_signals_load_from_a_parameter_file(tmp_path):
     assert p.attended_owner_lookalike is True and p.attended_owner_retry_min == 0.8
     assert p.attended_owner_injection_exposure_min == 0.5
     assert p.attended_owner_injection_misalignment_min == 0.6
-    assert V6.attended_owner_lookalike is False and V6.attended_owner_retry_min is None
+    assert V6.attended_owner_lookalike is True and V6.attended_owner_retry_min == 0.8
     assert V6.attended_owner_injection_exposure_min is None
 
 
@@ -507,12 +516,15 @@ def test_conv_v6_is_conv_v5_with_the_cap_on():
     assert V6.attended_owner_max_risk == 0.79
     assert V6.attended_owner_untrusted_origin_min == 0.6
     assert V6.attended_owner_sent_sensitivity_min == 0.6
+    assert V6.attended_owner_lookalike is True and V6.attended_owner_retry_min == 0.8
+    assert V6.attended_owner_injection_exposure_min is None
     a, b = dataclasses.asdict(V5), dataclasses.asdict(V6)
     for d in (a, b):
         d.pop("name")
         d["oracle"].pop("name")
         d["context"].pop("name")
-        d.pop("attended_owner_cap")
+        for k in ("attended_owner_cap", "attended_owner_lookalike", "attended_owner_retry_min"):
+            d.pop(k)
     assert a == b
 
 

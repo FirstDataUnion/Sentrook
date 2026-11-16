@@ -1,6 +1,6 @@
 {
   "name": "conv-v6",
-  "notes": "2026-11-16: conv-v5 with the attended-owner cap. In a chat the owner is attending (a message turn from the owner, on the main agent), a call's computed risk is held at 0.79, just under the plugins' block line, unless the call carries an independent strong signal: a floor (which covers every enforced decision), a key argument that came only from content the agent read on an entity that acts (scaled origin at least 0.6: a destination, recipient, code source, executable or tool provider), a code source named in steering content, a known-bad entity, or a credential or sensitive file (sensitivity at least 0.6) sent to a destination no grant, owner request, owner configuration or library entry covers. The owner can approve a review; a block leaves them no way to approve a change they asked for. Unattended runs, other senders and unknown triggers are unchanged. Everything else as conv-v5, which stays selectable.",
+  "notes": "2026-11-16: conv-v5 with the attended-owner cap. In a chat the owner is attending (a message turn from the owner, on the main agent), a call's computed risk is held at 0.79, just under the plugins' block line, unless the call carries an independent strong signal: a floor (which covers every enforced decision), a key argument that came only from content the agent read on an entity that acts (scaled origin at least 0.6: a destination, recipient, code source, executable or tool provider), a code source named in steering content, a known-bad entity, or a credential or sensitive file (sensitivity at least 0.6) sent to a destination no grant, owner request, owner configuration or library entry covers; a look-alike of a vouched-for entry or of a host, package or person the owner named; or a retry of an action the owner denied (retry_after_denial at least 0.8). A fresh injection judged by the model alone stays off: it is the model's doubt, not an independent signal. The owner can approve a review; a block leaves them no way to approve a change they asked for. Unattended runs, other senders and unknown triggers are unchanged. Everything else as conv-v5, which stays selectable.",
   "u": 0.5,
   "certainty": "mean",
   "consequence": "mean",
@@ -76,6 +76,8 @@
     "enabled": true,
     "max_risk": 0.79,
     "untrusted_origin_min": 0.6,
-    "sent_sensitivity_min": 0.6
+    "sent_sensitivity_min": 0.6,
+    "lookalike": true,
+    "retry_min": 0.8
   }
 }
