@@ -187,13 +187,14 @@ export function settingText(setting: SkillReviewSetting, unknown: string | null)
 }
 
 /** Self-edits in the recent traffic log, by what was done. */
-export function counts(file: string): { allowed: number; blocked: number; asked: number } {
-  const out = { allowed: 0, blocked: 0, asked: 0 };
+export function counts(file: string): { allowed: number; blocked: number; asked: number; held: number } {
+  const out = { allowed: 0, blocked: 0, asked: 0, held: 0 };
   for (const [scan, resolution] of recentScans(file, 10_000)) {
     if (scan.skill_review !== true) continue;
     const action = actionOf(scan, resolution);
     if (action.startsWith("blocked")) out.blocked += 1;
     else if (action.startsWith("review")) out.asked += 1;
+    else if (action.startsWith("held")) out.held += 1;
     else out.allowed += 1;
   }
   return out;
@@ -204,5 +205,6 @@ export function statusLine(setting: string, file: string | null): string {
   if (file === null) return `${setting} (self-edits not counted: the traffic log is off)`;
   const c = counts(file);
   const asked = c.asked ? `, ${c.asked} asked` : "";
-  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${asked}`;
+  const held = c.held ? `, ${c.held} held` : "";
+  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${asked}${held}`;
 }

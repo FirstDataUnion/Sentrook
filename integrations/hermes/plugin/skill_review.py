@@ -106,10 +106,10 @@ def store_of(tool: str) -> str:
 
 
 def counts(path: Path) -> dict[str, int]:
-    """Loop saves in the recent traffic log, by what was done: allowed, blocked, asked."""
+    """Loop saves in the recent traffic log, by what was done: allowed, blocked, asked, held."""
     from .history import action_of, recent_scans
 
-    out = {"allowed": 0, "blocked": 0, "asked": 0}
+    out = {"allowed": 0, "blocked": 0, "asked": 0, "held": 0}
     for scan, resolution in recent_scans(path, 10_000, None):
         if scan.get("skill_review") is not True:
             continue
@@ -119,6 +119,8 @@ def counts(path: Path) -> dict[str, int]:
             if action.startswith("blocked")
             else "asked"
             if action.startswith("review")
+            else "held"
+            if action.startswith("held")
             else "allowed"
         )
         out[key] += 1
@@ -140,4 +142,8 @@ def status_line(setting: str, path: Path | None) -> str:
         return f"{setting} (loop saves not counted: the traffic log is off)"
     c = counts(path)
     asked = f", {c['asked']} asked" if c["asked"] else ""
-    return f"{setting}; loop saves in the traffic log: {c['allowed']} allowed, {c['blocked']} blocked{asked}"
+    held = f", {c['held']} held" if c["held"] else ""
+    return (
+        f"{setting}; loop saves in the traffic log: {c['allowed']} allowed, {c['blocked']} blocked"
+        f"{asked}{held}"
+    )

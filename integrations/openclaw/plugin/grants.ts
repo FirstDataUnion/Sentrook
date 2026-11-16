@@ -379,6 +379,71 @@ export function addGrant(
   );
 }
 
+/**
+ * A suggested grant as a grant this file can hold (kind, pattern, allows for a file grant), or null when it
+ * cannot be read as one. A suggestion never sets a session, a scope or an expiry of its own.
+ */
+export function hintGrant(hint: unknown): Entry | null {
+  if (!hint || typeof hint !== "object" || Array.isArray(hint)) return null;
+  const { kind, pattern: raw, allows } = hint as Entry;
+  if (!KINDS.includes(kind) || typeof raw !== "string") return null;
+  const pattern = raw.trim();
+  if (!pattern || [...pattern].length > MAX_PATTERN || !printable(pattern)) return null;
+  const grant: Entry = { kind, pattern };
+  if (allows !== undefined && allows !== null) {
+    if (kind !== "file" || !Array.isArray(allows) || !allows.length) return null;
+    if (allows.some((a) => !ALLOWS.includes(a))) return null;
+    grant.allows = [...new Set(allows)];
+  }
+  return grant;
+}
+
+/** `destination discord:#ops`, with `(allows read)` for a file grant that limits them. */
+export function describeGrant(grant: Entry): string {
+  const allows = grant.allows ? ` (allows ${grant.allows.join(",")})` : "";
+  return clean(`${grant.kind} ${grant.pattern}${allows}`, 300);
+}
+
+/**
+ * Adds `grant` (from `hintGrant`) as a persistent grant ending `spanMs` from now, for an approved hold. The
+ * reply names the new grant's id; no change when the file could not be read.
+ */
+export function addSuggested(
+  stateDir: string,
+  grant: Entry,
+  by: Entry,
+  now: Date,
+  spanMs: number,
+  holdId: string,
+  beforeWrite: () => void,
+): ChangeResult {
+  return change(
+    stateDir,
+    now,
+    (data) => {
+      const taken = new Set(data.grants.map((g) => (g as Entry)?.id));
+      let id = `gr-${randomBytes(3).toString("hex")}`;
+      while (taken.has(id)) id = `gr-${randomBytes(3).toString("hex")}`;
+      const expires = new Date(now.getTime() + spanMs);
+      const entry: Entry = {
+        id,
+        ...grant,
+        scope: "persistent",
+        granted_at: iso(now),
+        expires_at: iso(expires),
+        set_by: by,
+        from_hold: holdId,
+      };
+      data.grants.push(entry);
+      return {
+        reply: `Granted ${id}: ${describeGrant(entry)} (persistent, expires ${show(expires)}).`,
+        change: { op: "grant", entry },
+      };
+    },
+    beforeWrite,
+  );
+}
+
 export function revoke(stateDir: string, cfg: PluginConfig, rest: string, now: Date, cmd: Cmd, beforeWrite: () => void): ChangeResult {
   const words = rest.split(/\s+/).filter(Boolean);
   if (words.length !== 1) return { reply: `usage: ${cmd("revoke")} <id>, with an id from ${cmd("grants")}`, change: null };

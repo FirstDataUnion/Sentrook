@@ -1,0 +1,234 @@
+{
+  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {approve} replaced by their approve command (/sentrook approve on Hermes, /sentrook-approve on OpenClaw). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans.",
+  "held_text": "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run.",
+  "hold_hours": 24,
+  "grant_days": 30,
+  "notices": [
+    {
+      "name": "a scheduled send at risk 47 with a suggested destination grant",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        }
+      },
+      "tool": "message",
+      "where": "cron job \"daily-brief\", session s_0a1b2c3d4e5f",
+      "id": "h-1a2b3c",
+      "hint": {
+        "kind": "destination",
+        "pattern": "discord:#ops-reports"
+      },
+      "text": "Sentrook held a tool call on an unattended run (cron job \"daily-brief\", session s_0a1b2c3d4e5f); it did not run.\nTool: message. Sentrook (risk 47): Sends a message to discord:#ops-reports. Why: trigger.scheduled, send.unbound_channel. Scores: suspicion 31, consequence 42, confidence 80.\nHeld because it sends data to a destination outside this machine.\nApproving sets a persistent grant for 30 days: destination discord:#ops-reports, so the next run passes.\nTo approve within 24 hours: {approve} h-1a2b3c\nThe held call is not run again either way."
+    },
+    {
+      "name": "no suggested grant: approving sets nothing",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        }
+      },
+      "tool": "message",
+      "where": "session s_0a1b2c3d4e5f",
+      "id": "h-1a2b3c",
+      "hint": null,
+      "text": "Sentrook held a tool call on an unattended run (session s_0a1b2c3d4e5f); it did not run.\nTool: message. Sentrook (risk 47): Sends a message to discord:#ops-reports. Why: trigger.scheduled, send.unbound_channel. Scores: suspicion 31, consequence 42, confidence 80.\nHeld because it sends data to a destination outside this machine.\nSentrook suggested no grant for this call, so approving sets nothing; the next run is scanned as before.\nTo approve within 24 hours: {approve} h-1a2b3c\nThe held call is not run again either way."
+    },
+    {
+      "name": "an enforced review of a file write, with a file grant limited to write",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 52.4,
+        "enforced": "review",
+        "tool_description": {
+          "category": "writes_file",
+          "template": "Appends to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/jobs/nightly/run.log"
+          }
+        },
+        "reasons": [
+          {
+            "code": "destroy.overwrite"
+          }
+        ]
+      },
+      "tool": "write",
+      "where": "subagent run, session s_9f8e7d6c5b4a",
+      "id": "h-00ff00",
+      "hint": {
+        "kind": "file",
+        "pattern": "~/jobs/nightly/*.log",
+        "allows": [
+          "write"
+        ]
+      },
+      "text": "Sentrook held a tool call on an unattended run (subagent run, session s_9f8e7d6c5b4a); it did not run.\nTool: write. Sentrook (risk 52): Appends to ~/jobs/nightly/run.log. Why: destroy.overwrite.\nHeld because it deletes or overwrites data in a way that is hard to undo.\nApproving sets a persistent grant for 30 days: file ~/jobs/nightly/*.log (allows write), so the next run passes.\nTo approve within 24 hours: {approve} h-00ff00\nThe held call is not run again either way."
+    },
+    {
+      "name": "a suggestion that is not a plain grant is read as none",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 52.4,
+        "enforced": "review",
+        "tool_description": {
+          "category": "writes_file",
+          "template": "Appends to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "path",
+            "display": "~/jobs/nightly/run.log"
+          }
+        },
+        "reasons": [
+          {
+            "code": "destroy.overwrite"
+          }
+        ]
+      },
+      "tool": "write",
+      "where": "session s_9f8e7d6c5b4a",
+      "id": "h-00ff00",
+      "hint": {
+        "kind": "destination",
+        "pattern": "x",
+        "allows": [
+          "read"
+        ]
+      },
+      "text": "Sentrook held a tool call on an unattended run (session s_9f8e7d6c5b4a); it did not run.\nTool: write. Sentrook (risk 52): Appends to ~/jobs/nightly/run.log. Why: destroy.overwrite.\nHeld because it deletes or overwrites data in a way that is hard to undo.\nSentrook suggested no grant for this call, so approving sets nothing; the next run is scanned as before.\nTo approve within 24 hours: {approve} h-00ff00\nThe held call is not run again either way."
+    }
+  ],
+  "outcomes": [
+    {
+      "name": "review at 47",
+      "risk": 47,
+      "enforced": null,
+      "attended": "review",
+      "unattended": "held"
+    },
+    {
+      "name": "enforced review below the review line",
+      "risk": 20,
+      "enforced": "review",
+      "attended": "review",
+      "unattended": "held"
+    },
+    {
+      "name": "at the block line",
+      "risk": 80,
+      "enforced": null,
+      "attended": "block",
+      "unattended": "block"
+    },
+    {
+      "name": "over the block line",
+      "risk": 92,
+      "enforced": null,
+      "attended": "block",
+      "unattended": "block"
+    },
+    {
+      "name": "enforced block below the review line",
+      "risk": 20,
+      "enforced": "block",
+      "attended": "block",
+      "unattended": "block"
+    },
+    {
+      "name": "allowed",
+      "risk": 10,
+      "enforced": null,
+      "attended": "allow",
+      "unattended": "allow"
+    }
+  ],
+  "history": [
+    {
+      "name": "held, not answered yet",
+      "decision": "held",
+      "resolution": null,
+      "action": "held",
+      "review": "no answer"
+    },
+    {
+      "name": "held, approved",
+      "decision": "held",
+      "resolution": "hold_approved",
+      "action": "held",
+      "review": "approved"
+    },
+    {
+      "name": "held, expired",
+      "decision": "held",
+      "resolution": "hold_expired",
+      "action": "held",
+      "review": "expired"
+    }
+  ]
+}

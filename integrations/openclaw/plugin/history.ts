@@ -29,7 +29,13 @@ type Rec = Record<string, any>;
 export type ScanWithResolution = [scan: Rec, resolution: Rec | null];
 
 const APPROVED = new Set(["once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"]);
-const REVIEW: Record<string, string> = { deny: "denied", timeout: "timed out", cancelled: "cancelled" };
+const REVIEW: Record<string, string> = {
+  deny: "denied",
+  timeout: "timed out",
+  cancelled: "cancelled",
+  hold_approved: "approved",
+  hold_expired: "expired",
+};
 /** A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked. */
 const REVIEW_LOOP = "review_loop";
 const ID = /^[0-9a-fA-F-]{4,36}$/;
@@ -171,6 +177,7 @@ function baseAction(scan: Rec, resolution: Rec | null): string {
   if (verdict === "block") return "blocked";
   if (verdict === "review") {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";
+    if (decision === "held") return "held";
     return decision === "blocked" ? "blocked (no reviewer)" : "review";
   }
   if (verdict === "allow") return "allowed";
@@ -179,7 +186,7 @@ function baseAction(scan: Rec, resolution: Rec | null): string {
 
 /** How the review was answered; `-` when there was none. */
 export function reviewOf(action: string, resolution: Rec | null): string {
-  if (resolution === null) return action.startsWith("review") ? "no answer" : "-";
+  if (resolution === null) return action.startsWith("review") || action.startsWith("held") ? "no answer" : "-";
   const choice = String(resolution.resolution ?? "").trim().toLowerCase();
   if (choice === "deny" && resolution.decided_by === REVIEW_LOOP) return "auto-denied by the review loop";
   return APPROVED.has(choice) ? "approved" : (REVIEW[choice] ?? "not approved");

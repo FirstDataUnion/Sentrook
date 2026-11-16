@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from . import hold
 from .auth import (
     clear_scan_token_cache,
     get_scan_access_token,
@@ -90,6 +91,15 @@ def run_verify(
             True,
             f"{len(cfg.channel_bindings)} in config"
             + (f"; cannot apply: {problems}" if problems else ""),
+        )
+    )
+    # Reported, not failed: without a notice target a held call still waits; the owner is just not told.
+    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
+    checks.append(
+        (
+            "held-call notices",
+            True,
+            f"to the {target} home channel" if target else f"not sent: {why}",
         )
     )
     return checks

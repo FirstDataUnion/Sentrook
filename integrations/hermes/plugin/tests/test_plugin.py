@@ -166,17 +166,15 @@ def test_process_manage_kind_follows_the_action(harness):
     assert [s["tool_kind"] for s in pending["batch"]["siblings"]] == ["other"]
 
 
-def test_unattended_review_blocks(harness):
+def test_unattended_review_is_held(harness):
     turn(harness, platform="cron")
     r = call(harness, "c1", "rm REVIEW")
-    assert r["action"] == "block"
-    # A review nobody can answer gets the same agent text as any block: no codes, no risk.
-    assert r["message"] == (
-        "Sentrook security block: this tool call did not run because it reads or sends sensitive "
-        "data, such as credentials or personal data. Do not retry it, rephrase it or try to reach the "
-        "same result another way unless the user explicitly tells you to. Tell the user what was "
-        "blocked and why, and ask how they want to proceed."
-    )
+    # A review nobody can answer waits for the owner (see test_hold): no codes, no risk for the agent.
+    assert r == {
+        "action": "block",
+        "message": "Sentrook held this tool call for the owner's approval, so it did not run. Do not "
+        "retry this call in this run.",
+    }
     assert harness.scans[0]["trigger"]["kind"] == "scheduled"
     assert harness.scans[0]["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
 

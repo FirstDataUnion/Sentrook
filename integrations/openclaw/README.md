@@ -229,7 +229,7 @@ command line as `openclaw sentrook <verb>`.
 
 | Chat | What it does |
 | --- | --- |
-| `/sentrook status` | Plugin version, mode, thresholds, scan host and whether credentials are set |
+| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls and where their notices go |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
 | `/sentrook-why [request_id\|last]` | One scan in detail |
@@ -238,18 +238,22 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-revoke <id>` | Remove a grant set by command |
 | `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
 | `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h |
+| `/sentrook-notify here\|off\|status` | Where the notice of a held call goes: `here`, sent as a direct message to the agent, sends notices to you in that chat |
+| `/sentrook-approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
 
 `openclaw sentrook verify` exists only on the command line. There is no session on the command line, so
 `openclaw sentrook snooze` needs `--all` and `openclaw sentrook grant` needs `--persistent` or `--session <ref>`.
 
 **Owner only.** `/sentrook status` and `/sentrook help` are open to anyone who can message the agent. The dashed
 commands need the gateway scope `operator.admin`: the owner's default Control UI connection has it, and so does
-anyone holding the shared gateway token. Limited Control UI sessions are refused. On the command line, whoever can
+anyone holding the shared gateway token. Limited Control UI sessions are refused. In a chat channel, OpenClaw lets the
+owner (a sender in `commands.ownerAllowFrom`) run them from a direct message, which is how `/sentrook-notify here` and
+`/sentrook-approve` are meant to be used. On the command line, whoever can
 run `openclaw` on the machine counts as the owner. Every attempt, allowed or refused, is recorded in the traffic log
 (unless you turned it off).
 
 A snooze never relaxes a block, a review the scanner marks as enforced, or an unattended run (cron jobs, subagents,
-webhooks): those still stop.
+webhooks): those still stop, and a review on an unattended run is held for you instead.
 
 On Mattermost, a message that starts with `/` is taken by Mattermost as one of its own slash commands. Mention the
 bot first: `@yourbot /sentrook status`.
@@ -269,14 +273,29 @@ sends sensitive data"), and asked not to retry it or work around it unless you t
 is not told which checks fired or the risk score; you can see those with `openclaw sentrook why last`.
 
 A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your answer
-(`approval.interactiveTimeoutMs`) and then denies the call. Cron jobs and subagents wait 30 minutes
-(`approval.scheduledTimeoutMs`) and then deny it too.
+(`approval.interactiveTimeoutMs`) and then denies the call.
 
-`approval.scheduledTimeoutBehavior: allow` asks OpenClaw to let an unanswered cron or subagent review go through
-instead. It works only on an OpenClaw release that reads the approval's timeout behaviour, and no release up to
-and including 2026.11.2 does (nor the 2026.11.5-beta.1 pre-release): on those, a plugin approval nobody answers is always denied, whatever this is set to.
-With `allow` on such a release, `openclaw sentrook status` and `openclaw sentrook verify` say the setting is not
-honoured.
+### Held calls in cron jobs and subagents
+
+Nobody is there to answer a review in a cron job, a heartbeat, a hook or a subagent (`approval.scheduledIntentKinds`).
+There the call is **held** instead:
+
+- The call does not run. The agent is told it is held for your approval and not to retry it in this run.
+- You get one notice as a direct message: the run and session, the tool and what it does, why it was held (the same
+  description, reason codes and scores a review shows), and an approve id. Run `/sentrook-notify here` once, as a
+  direct message to the agent on the channel where you want the notices; until then nothing is sent, the call is
+  still held, and `status` and `verify` say notices are not sent.
+- Reply `/sentrook-approve <id>` within 24 hours. When Sentrook suggested a grant for the call, approving sets it as a
+  persistent grant that ends after 30 days, so the job's next run is scanned with it. When it suggested none,
+  approving sets nothing and the reply says so; add a grant with `/sentrook-grant --persistent` if the job should pass.
+  The held call itself is never run again.
+- A hold nobody approves expires after 24 hours, and nothing runs.
+
+A block (at `blockAt` or above, or one the scanner enforces) is never held: it stays a block. The traffic log records
+the scan with decision `held`, then the approval or the expiry; `/sentrook-history` shows them.
+
+`approval.scheduledTimeoutMs` and `approval.scheduledTimeoutBehavior` no longer apply to reviews, since an unattended
+review is held rather than asked. They are still read, so an existing config loads.
 
 ### Skills and memory the agent saves on its own
 
@@ -410,9 +429,10 @@ In short, for anyone deciding whether to install it:
   each skill and memory save OpenClaw makes on its own, and a redacted copy is kept on disk for up to 7 days to send
   with them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never approves
-  a call on your behalf. Where nobody can answer (cron jobs, subagents) an unanswered review is denied.
+  a call on your behalf. Where nobody can answer (cron jobs, subagents) a review holds the call and sends you one
+  notice, through the channel you chose with `/sentrook-notify here`; that notice is the only message it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
-  command, snooze state and the conversations above), or to the paths you set for them (`stateDir`,
+  command, snooze state, held calls, the notice target and the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
@@ -435,8 +455,8 @@ also come from a `SENTROOK_*` environment variable; the config value wins.
 | `onScanError` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `timeoutMs` | `30000` | How long to wait for a scan |
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
-| `approval.scheduledTimeoutMs` | `1800000` | How long a review in a cron job or subagent waits |
-| `approval.scheduledTimeoutBehavior` | `deny` | What a cron or subagent review does when nobody answers: `allow` or `deny`. OpenClaw 2026.11.2 and older ignore `allow` and deny it |
+| `approval.scheduledTimeoutMs` | `1800000` | No longer used for reviews: an unattended review is held (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
+| `approval.scheduledTimeoutBehavior` | `deny` | No longer used for reviews: an unattended review is held |
 | `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |

@@ -5,8 +5,8 @@ request. Over the API server and `hermes chat --oneshot` the text goes to the mo
 CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are built from it.
 
 `history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
-grants and channel bindings set by command, and `snooze` relaxes review prompts, so only the owner may
-run them: both forms go through the owner check (`owner_command`), which audits every attempt.
+grants and channel bindings set by command, `snooze` relaxes review prompts, and `approve` answers a
+call held on an unattended run (see `hold`), so only the owner may run them: both forms go through the owner check (`owner_command`), which audits every attempt.
 `status` and `help` stay open.
 
 `snooze` and a session `grant` cover the session the slash command was sent from (Hermes passes its
@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, skill_review, snooze
+from . import grants, history, hold, skill_review, snooze
 from .auth import missing_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
@@ -77,6 +77,7 @@ def run_status(
             f"grants: {grant_count}",
             f"channel bindings: {binding_count}",
             f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
+            f"held calls: {hold.status_line(cfg.state_dir, cfg.owner_channel, datetime.now(UTC))}",
             "skill review: "
             + skill_review.status_line(
                 skill_review.setting_text(cfg.skill_review, cfg.skill_review_unknown),
@@ -189,6 +190,16 @@ def run_snooze(
     return _changed(cfg, snooze.run(cfg.state_dir, rest, ref, who, now, CMD), who, "snooze")
 
 
+def run_approve(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env)
+    if who is None:
+        return refusal("approve")
+    log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
+    return hold.approve(cfg.state_dir, rest, who, datetime.now(UTC), CMD, log.write)
+
+
 def run_help(
     rest: str = "",
     settings: dict[str, Any] | None = None,
@@ -211,7 +222,7 @@ def run_help(
 COMMANDS: dict[str, Subcommand] = {
     "status": Subcommand(
         "plugin version, mode, thresholds, scan host, credentials present, traffic log, grants, "
-        "snooze, skill review",
+        "snooze, held calls, skill review",
         run_status,
     ),
     "history": Subcommand(
@@ -262,6 +273,14 @@ COMMANDS: dict[str, Subcommand] = {
         cli_rest=True,
         session=True,
     ),
+    "approve": Subcommand(
+        "approve a call held on an unattended run, by the id in Sentrook's notice, within 24h: "
+        "sets the grant Sentrook suggested (persistent, 30 days); the held call is not run again",
+        run_approve,
+        args="<id>",
+        owner_only=True,
+        cli_rest=True,
+    ),
     "help": Subcommand("this list", run_help),
 }
 
@@ -308,6 +327,6 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
     ctx.register_command(
         name="sentrook",
         handler=handler,
-        description="Sentrook plugin status, scan history, grants, snooze and help",
+        description="Sentrook plugin status, scan history, grants, snooze, held calls and help",
         args_hint=" | ".join(f"{name} {c.args}".rstrip() for name, c in COMMANDS.items()),
     )

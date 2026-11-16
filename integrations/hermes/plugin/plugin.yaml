@@ -1,5 +1,5 @@
 name: sentrook
-version: 2.0.0-beta.8
+version: 2.0.0-beta.9
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
@@ -68,7 +68,14 @@ config_schema:
     type: list
     description: >
       Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
-      Hermes approval prompts). Elsewhere outside chat platforms, reviews block. Env SENTROOK_ATTENDED_PLATFORMS.
+      Hermes approval prompts). Elsewhere outside chat platforms, a review holds the call for the owner's
+      `/sentrook approve`. Env SENTROOK_ATTENDED_PLATFORMS.
+  owner_channel:
+    type: str
+    description: >
+      The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run.
+      Unset, the only platform with a home channel is used; with none or several, no notice is sent (status
+      and verify say so) and the call is still held. Env SENTROOK_OWNER_CHANNEL.
   skill_review:
     type: str
     default: allow

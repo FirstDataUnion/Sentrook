@@ -70,6 +70,17 @@ function fit(desc: string, codes: string[], tail: string, limit: number): string
   return `${clip(desc, limit - end.length - 1)}.${end}`;
 }
 
+/**
+ * One line for a review outside the host's approval card (the owner's notice of a held call): the same
+ * description, reason codes and scores, after `Sentrook (risk N): `, within 300 characters. The Hermes
+ * plugin's review message is the same text.
+ */
+export function reviewMessage(resp: ScanResponse, toolName: string): string {
+  const head = `Sentrook (risk ${Math.round(resp.risk ?? 0)}): `;
+  const body = fit(describe(resp, toolName), reasonCodes(resp), scoresLine(resp), 300 - head.length);
+  return `${head}${body}`;
+}
+
 export function reviewCopy(resp: ScanResponse, toolName: string): { title: string; description: string } {
   const risk = ` (risk ${Math.round(resp.risk ?? 0)})`;
   const head = "Sentrook: review ";
@@ -84,7 +95,7 @@ export function reviewCopy(resp: ScanResponse, toolName: string): { title: strin
  * risk score, the entities or the tool description: those would tell a steered agent which detector to
  * rephrase around. The human sees the detail in the review card, `why` and the traffic log.
  */
-const BLOCK_CATEGORIES = {
+export const BLOCK_CATEGORIES = {
   sensitive_data: "it reads or sends sensitive data, such as credentials or personal data",
   sends_data: "it sends data to a destination outside this machine",
   untrusted_code: "it runs or installs code from a source that is not trusted",

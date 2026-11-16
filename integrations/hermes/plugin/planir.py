@@ -30,7 +30,7 @@ from .redact import Redactor, cap_args
 from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
 from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.8"
+PLUGIN_VERSION = "2.0.0-beta.9"
 
 TOOL_KIND = {
     "terminal": "exec",
@@ -311,6 +311,18 @@ def _text(v: Any) -> str:
     return "" if v is None else json.dumps(v, default=str)
 
 
+#: History decisions the plugin keeps that PlanIR has no word for, and the word it sends instead. A held
+#: call is a review nobody has answered yet: it did not run, and a retry of it is a retry after a review.
+_SENT_DECISION = {"held": "review_timed_out"}
+
+
+def _sent_entry(h: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in h.items() if not k.startswith("_")}
+    if out.get("decision") in _SENT_DECISION:
+        out["decision"] = _SENT_DECISION[out["decision"]]
+    return out
+
+
 def build_planir(
     *,
     kw: dict[str, Any],
@@ -392,7 +404,7 @@ def build_planir(
     window_ids = {h["call_id"] for h in window}
     # Every tool result must refer to a call in the history window (a scanner invariant).
     sent_inputs = [i for i in sess["buffer"] if i["call_id"] in window_ids]
-    history = [{k: v for k, v in h.items() if not k.startswith("_")} for h in window]
+    history = [_sent_entry(h) for h in window]
 
     security = host_cfg.get("security") or {}
     narration = (turn.get("assistant_text") or "").strip()

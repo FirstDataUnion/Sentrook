@@ -93,6 +93,22 @@ export interface SnoozeFile {
   [key: string]: unknown;
 }
 
+export interface HoldsFile {
+  version?: number;
+  holds: unknown[];
+  [key: string]: unknown;
+}
+
+/** Where the owner gets notices: a direct message on one channel, as `/sentrook-notify here` recorded it. */
+export interface NotifyTarget {
+  channel: string;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+  set_at: string;
+  set_by: Record<string, unknown>;
+}
+
 /** The only time form read back from `grants.json` and `snooze.json`; both plugins accept exactly this. */
 const ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?$/;
 
@@ -269,6 +285,32 @@ export class Store {
 
   saveSnooze(value: SnoozeFile): void {
     this.writeJson(path.join(this.dir, "snooze.json"), value);
+  }
+
+  /** `holds.json`, empty when absent; null when it exists but cannot be read. */
+  loadHolds(): HoldsFile | null {
+    const file = path.join(this.dir, "holds.json");
+    if (!existsSync(file)) return { version: 1, holds: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const h = data as Record<string, unknown>;
+    if (!Object.hasOwn(h, "holds")) h.holds = [];
+    return Array.isArray(h.holds) ? (h as HoldsFile) : null;
+  }
+
+  saveHolds(value: HoldsFile): void {
+    this.writeJson(path.join(this.dir, "holds.json"), value);
+  }
+
+  /** The owner's notice target from `notify.json`; null when none is set or the file cannot be read. */
+  loadNotify(): NotifyTarget | null {
+    const data = this.readJson<any>(path.join(this.dir, "notify.json"), null);
+    const t = data && typeof data === "object" ? data.target : null;
+    return t && typeof t.channel === "string" && t.channel && typeof t.to === "string" && t.to ? (t as NotifyTarget) : null;
+  }
+
+  saveNotify(target: NotifyTarget | null): void {
+    this.writeJson(path.join(this.dir, "notify.json"), { version: 1, target });
   }
 
   private selfEditFile(runId: string) {

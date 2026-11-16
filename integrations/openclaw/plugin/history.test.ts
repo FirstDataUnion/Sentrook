@@ -196,10 +196,12 @@ test("history and why are owner commands that require the admin scope", async ()
   const { commands } = await registered();
   assert.deepEqual(Object.keys(commands).sort(), [
     "sentrook",
+    "sentrook-approve",
     "sentrook-bind",
     "sentrook-grant",
     "sentrook-grants",
     "sentrook-history",
+    "sentrook-notify",
     "sentrook-revoke",
     "sentrook-snooze",
     "sentrook-why",

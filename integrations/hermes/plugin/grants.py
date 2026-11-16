@@ -402,6 +402,68 @@ def add_grant(
     return _change(state_dir, now, fn)
 
 
+def hint_grant(hint: Any) -> dict[str, Any] | None:
+    """A suggested grant as a grant this file can hold (kind, pattern, allows for a file grant), or None
+    when it cannot be read as one. A suggestion never sets a session, a scope or an expiry of its own."""
+    if not isinstance(hint, dict):
+        return None
+    kind, pattern = hint.get("kind"), hint.get("pattern")
+    if kind not in KINDS or not isinstance(pattern, str):
+        return None
+    pattern = pattern.strip()
+    if not pattern or len(pattern) > MAX_PATTERN or not pattern.isprintable():
+        return None
+    grant: dict[str, Any] = {"kind": kind, "pattern": pattern}
+    allows = hint.get("allows")
+    if allows is not None:
+        if kind != "file" or not isinstance(allows, list) or not allows:
+            return None
+        if any(a not in ALLOWS for a in allows):
+            return None
+        grant["allows"] = list(dict.fromkeys(allows))
+    return grant
+
+
+def describe_grant(grant: dict[str, Any]) -> str:
+    """`destination discord:#ops`, with `(allows read)` for a file grant that limits them."""
+    allows = f" (allows {','.join(grant['allows'])})" if grant.get("allows") else ""
+    return _clean(f"{grant['kind']} {grant['pattern']}{allows}", 300)
+
+
+def add_suggested(
+    state_dir: Path,
+    grant: dict[str, Any],
+    by: dict[str, Any],
+    now: datetime,
+    span: timedelta,
+    hold_id: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Adds `grant` (from `hint_grant`) as a persistent grant ending `span` from now, for an approved
+    hold. The reply names the new grant's id; None for the record when the file could not be read."""
+
+    def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)}
+        gid = f"gr-{secrets.token_hex(3)}"
+        while gid in taken:
+            gid = f"gr-{secrets.token_hex(3)}"
+        entry = {
+            "id": gid,
+            **grant,
+            "scope": "persistent",
+            "granted_at": _iso(now),
+            "expires_at": _iso(now + span),
+            "set_by": by,
+            "from_hold": hold_id,
+        }
+        data["grants"].append(entry)
+        return (
+            f"Granted {gid}: {describe_grant(entry)} (persistent, expires {_show(now + span)}).",
+            {"op": "grant", "entry": entry},
+        )
+
+    return _change(state_dir, now, fn)
+
+
 def revoke(
     state_dir: Path, cfg: PluginConfig, rest: str, now: datetime, cmd: Cmd
 ) -> tuple[str, dict[str, Any] | None]:

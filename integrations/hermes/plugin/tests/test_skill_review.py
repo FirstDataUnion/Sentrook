@@ -96,14 +96,14 @@ def test_a_loop_save_is_declared_as_a_self_edit(h, monkeypatch, tool, args, stor
 
 @pytest.mark.parametrize(("tool", "args", "store"), LOOP_CALLS, ids=LOOP_IDS)
 @pytest.mark.parametrize("platform", ["api_server", "webhook", "curator", None])
-def test_an_unattended_review_of_a_loop_save_is_a_block(h, tool, args, store, platform):
+def test_an_unattended_review_of_a_loop_save_is_held(h, tool, args, store, platform):
     if platform is not None:
         turn(h, platform)
     h.reply.update(risk=55)
     out, rec = call(h, tool, args)
     assert out["action"] == "block"
-    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "blocked", True)
-    assert history_action(h) == "blocked (no reviewer)"
+    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "held", True)
+    assert history_action(h) == "held"
     assert "self_edit" in h.scans[-1]
 
 
@@ -120,16 +120,16 @@ def test_an_attended_review_of_a_loop_save_asks(h, monkeypatch, platform):
 
 
 @pytest.mark.parametrize("platform", ["api_server", "webhook", None])
-def test_a_reviewed_bare_save_is_blocked_unattended_and_still_declared(h, platform):
+def test_a_reviewed_bare_save_is_held_unattended_and_still_declared(h, platform):
     """The scanner reviews a loop save whose only reasons are the save itself and the system trigger: the
-    plugin applies that review as it is (no allow of its own), and the save still carries its block."""
+    plugin applies that review as it is (no allow of its own): the save is held for the owner."""
     if platform is not None:
         turn(h, platform, "keep replies short")
     h.reply.update(risk=55, reasons=[{"code": "selfmod.memory"}, {"code": "trigger.system"}])
     out, rec = call(h, *LOOP_CALLS[4][:2])
     assert out is not None and out["action"] == "block"
-    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "blocked", True)
-    assert history_action(h) == "blocked (no reviewer)"
+    assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "held", True)
+    assert history_action(h) == "held"
     sent = h.scans[-1]
     assert sent["trigger"] == SYSTEM_TRIGGER and sent["self_edit"]["store"] == "memory"
 
@@ -149,7 +149,9 @@ def test_an_enforced_floor_applies(h, floor):
     assert out["action"] == ("approve" if floor == "review" else "block")
     turn(h, "api_server")
     out, rec = call(h, *LOOP_CALLS[4][:2])
-    assert out["action"] == "block" and rec["decision"] == "blocked"
+    # Unattended: an enforced review waits for the owner, an enforced block stays a block.
+    assert out["action"] == "block"
+    assert rec["decision"] == ("held" if floor == "review" else "blocked")
 
 
 def test_observe_mode_is_unchanged(h):
@@ -202,7 +204,7 @@ def test_other_tools_in_a_loop_run_are_sent_normally(h, tool, args):
     turn(h, "api_server")
     h.reply.update(risk=55)
     out, rec = call(h, tool, args)
-    assert out["action"] == "block" and rec["decision"] == "blocked"
+    assert out["action"] == "block" and rec["decision"] == "held"
     assert "skill_review" not in rec
     assert h.scans[-1]["trigger"]["kind"] == "hook" and "self_edit" not in h.scans[-1]
 
@@ -218,7 +220,7 @@ def test_without_the_write_origin_nothing_is_declared_and_no_error(h, monkeypatc
     turn(h, "api_server")
     h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out["action"] == "block" and rec["decision"] == "blocked"
+    assert out["action"] == "block" and rec["decision"] == "held"
     assert "skill_review" not in rec
     assert h.scans[-1]["trigger"]["kind"] == "hook" and "self_edit" not in h.scans[-1]
 
@@ -231,7 +233,7 @@ def test_skill_review_review_sends_a_loop_save_like_any_other_call(h):
     turn(h, "api_server", "tidy my notes")
     h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out["action"] == "block" and rec["decision"] == "blocked"
+    assert out["action"] == "block" and rec["decision"] == "held"
     assert rec["skill_review"] is True  # still counted
     sent = h.scans[-1]
     assert sent["trigger"]["kind"] == "hook" and "self_edit" not in sent
@@ -300,7 +302,7 @@ def status(h):
     return next(line for line in out.splitlines() if line.startswith("skill review:"))
 
 
-def test_status_counts_allowed_blocked_and_asked_loop_saves(h):
+def test_status_counts_allowed_blocked_asked_and_held_loop_saves(h):
     assert status(h) == "skill review: allow; loop saves in the traffic log: 0 allowed, 0 blocked"
     turn(h, "api_server")
     call(h, *LOOP_CALLS[0][:2])
@@ -309,12 +311,15 @@ def test_status_counts_allowed_blocked_and_asked_loop_saves(h):
     call(h, *LOOP_CALLS[3][:2])
     h.prov["origin"] = "assistant_tool"
     call(h, *LOOP_CALLS[3][:2])  # an owner turn: not a loop save, not counted
-    assert status(h) == "skill review: allow; loop saves in the traffic log: 2 allowed, 1 blocked"
+    assert (
+        status(h)
+        == "skill review: allow; loop saves in the traffic log: 2 allowed, 0 blocked, 1 held"
+    )
 
     h.prov["origin"] = "background_review"
     turn(h, "telegram")
     call(h, *LOOP_CALLS[3][:2])
-    assert status(h).endswith("2 allowed, 1 blocked, 1 asked")
+    assert status(h).endswith("2 allowed, 0 blocked, 1 asked, 1 held")
 
 
 def test_an_unknown_value_reads_as_allow_and_is_named(h):
