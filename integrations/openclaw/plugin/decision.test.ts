@@ -28,6 +28,17 @@ test("an enforced floor is never weakened", () => {
   assert.equal(decide(resp(90, "review"), lines), "block");
 });
 
+const CEILING = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../fixtures/ceiling/cases.json", import.meta.url)), "utf8"),
+) as { cases: { name: string; lines: { review_at: number; block_at: number }; response: ScanResponse; verdict: string }[] };
+
+test("verdict ceiling: lowered to review, never raised, enforced still wins", () => {
+  assert.ok(CEILING.cases.length >= 5);
+  for (const c of CEILING.cases) {
+    assert.equal(decide(c.response, { reviewAt: c.lines.review_at, blockAt: c.lines.block_at }), c.verdict, c.name);
+  }
+});
+
 test("tool description fills entity placeholders", () => {
   const r = resp(90, null, {
     tool_description: { category: "x", template: "Sends {E2} to {E1}" },

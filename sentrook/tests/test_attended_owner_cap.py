@@ -1,28 +1,41 @@
-"""The attended-owner cap: in a chat the owner attends, a call is held at review unless a strong signal says block.
+"""The attended-owner ceiling: in a chat the owner attends, a call is held at review unless a strong signal says block.
 
 A high score alone (the model finds the call unsupported, the session read injected-looking content, the call
-changes the agent's own setup) leaves the risk just under the block line in an attended owner session. A floor,
-an `enforced` decision, a key argument that came only from content the agent read, a known-bad entity, or
-sensitive data sent to a destination nothing sanctions still block. Unattended runs are unchanged.
+changes the agent's own setup) does not block in an attended owner session: the response carries a verdict ceiling
+of `review` and the risk stays as scored. A floor, an `enforced` decision, a key argument that came only from content
+the agent read, a known-bad entity, sensitive data sent to a destination nothing sanctions, a look-alike or a retry
+of a denied action set no ceiling. Unattended runs, group chats and scans whose probes failed are unchanged.
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 
 import pytest
 from test_converge_scan import ATTACK_ANSWERS, KEY, _prepared, options, scanner
 
 from sentrook.converge import converge, load_params
 from sentrook.converge.attended import attended_owner
-from sentrook.enums import Enforce, ProbeStep
+from sentrook.converge.params import PARAMS_DIR
+from sentrook.enums import Enforce, ProbeStatus, ProbeStep
 from sentrook.planir.models import PlanIR
 from sentrook.probes.base import Contribution, Envelope, Floor
 from sentrook.serve.config import ServeConfig
 
 V5, V6 = load_params("conv-v5"), load_params("conv-v6")
-CAP = 79.0  # risk, on the response's 0-100 scale
+RANK = {"allow": 0, "review": 1, "block": 2}
+
+
+def decide(resp, review_at: float = 45, block_at: float = 80) -> str:
+    """What a plugin does: the verdict from risk and its lines, lowered to the ceiling, raised to `enforced`."""
+    v = "block" if resp.risk >= block_at else "review" if resp.risk >= review_at else "allow"
+    if resp.ceiling is not None and RANK[resp.ceiling] < RANK[v]:
+        v = resp.ceiling
+    if resp.enforced is not None and RANK[resp.enforced.value] > RANK[v]:
+        v = resp.enforced.value
+    return v
 
 
 def _c(signal: str, value: float, reason: str, subject: str | None = None) -> Contribution:
@@ -54,6 +67,30 @@ def _high_selfmod(reason: str = "selfmod.scheduler") -> list[Envelope]:
     ]
 
 
+def _send(*aira: Contribution, context: list[Contribution] | None = None) -> list[Envelope]:
+    """A send the model doubts, with the rule-based claims given."""
+    return [
+        Envelope(
+            step=ProbeStep.JEV_CALL,
+            contributions=[
+                _c("suspicion.misalignment", 0.95, "call.not_supported_by_request"),
+                _c("consequence.reach", 0.9, "jev.reach"),
+                _c("consequence.irreversibility", 0.9, "jev.irreversibility"),
+            ],
+        ),
+        Envelope(step=ProbeStep.AIRA, contributions=list(aira)),
+        Envelope(step=ProbeStep.CONTEXT, contributions=context or []),
+    ]
+
+
+def _credential_upload(dest: str = "E1") -> list[Envelope]:
+    return _send(
+        _c("consequence.reach", 1.0, "exfil.exec_egress", dest),
+        _c("consequence.irreversibility", 1.0, "exfil.exec_egress", dest),
+        _c("consequence.sensitivity", 1.0, "path.credential_store", "E2"),
+    )
+
+
 def _run(case: dict, envs: list[Envelope], params=V6):
     return converge(_prepared(case), envs, params=params, scanner_version="t", token_key=KEY)
 
@@ -62,13 +99,42 @@ def _codes(res) -> list[str]:
     return [r.code for r in res.response.reasons]
 
 
-def _with_trigger(case: dict, *, kind="message", relation="owner", role="main") -> dict:
+def _info(res) -> dict:
+    return res.response.metadata.versions["attended_owner"]
+
+
+def assert_held(case, envs, params=V6) -> None:
+    """Held at review: the ceiling is set, the risk is the score conv-v5 gives, and it would block without it."""
+    res = _run(case, envs, params)
+    r = res.response
+    assert r.ceiling == "review" and r.enforced is None
+    assert r.risk == _run(case, envs, V5).response.risk >= 80
+    assert decide(r) == "review"
+    assert "cap.attended_owner" in _codes(res)
+
+
+def assert_blocks(case, envs, params=V6, strong: list[str] | None = None) -> None:
+    res = _run(case, envs, params)
+    r = res.response
+    assert r.ceiling is None and decide(r) == "block"
+    assert "cap.attended_owner" not in _codes(res)
+    if strong is not None:
+        assert _info(res)["strong"] == strong
+
+
+def _with_trigger(case: dict, *, kind="message", relation="owner", role="main", basis=None) -> dict:
     case = copy.deepcopy(case)
     fx = case["fixture"]
     fx["trigger"]["kind"] = kind
     fx["trigger"]["sender"]["relation"] = relation
+    if basis is not None:
+        fx["trigger"]["sender"]["basis"] = basis
     fx["session"]["agent_role"] = role
     return case
+
+
+def _with(**kw):
+    return dataclasses.replace(V6, **kw)
 
 
 # ---- attended: from the PlanIR -------------------------------------------------------------------------------
@@ -98,79 +164,130 @@ def test_attended_means_an_owner_message_on_the_main_agent(
     assert attended_owner(PlanIR.model_validate(case["fixture"])) is attended
 
 
-# ---- must stay at review or below ----------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("basis", "attended"),
+    [
+        # OpenClaw: the host's owner flag; it reports no group-chat basis
+        (["host_owner_flag"], True),
+        # Hermes: a listed user in a group, channel or thread
+        (["group_chat"], False),
+        # Hermes: a direct message admitted only by allow-all
+        (["host_open_access"], False),
+        (["host_owner_flag", "group_chat"], False),
+    ],
+)
+def test_an_owner_message_in_a_group_chat_is_not_attended(attack_case, basis, attended):
+    case = _with_trigger(attack_case, basis=basis)
+    assert attended_owner(PlanIR.model_validate(case["fixture"])) is attended
+    res = _run(case, _high_selfmod())
+    assert (res.response.ceiling == "review") is attended
+    assert _info(res)["attended"] is attended
+
+
+def test_a_self_edit_block_on_a_message_trigger_is_not_attended(attack_case):
+    """A self-edit block says the host's background process made the call; a message trigger does not undo that."""
+    case = copy.deepcopy(attack_case)
+    case["fixture"]["self_edit"] = {"kind": "memory_review", "store": "memory", "conversation": []}
+    planir = PlanIR.model_validate(case["fixture"])
+    assert not planir.is_self_edit  # ignored as a self-edit: the trigger is not `system`
+    assert attended_owner(planir) is False
+    res = _run(case, _high_selfmod())
+    assert res.response.ceiling is None and decide(res.response) == "block"
+
+
+# ---- held at review ------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "reason", ["selfmod.config", "selfmod.scheduler", "selfmod.plugin", "selfmod.memory"]
 )
-def test_an_owner_asked_change_to_the_agents_setup_caps_at_review(twin_case, reason):
-    before = _run(twin_case, _high_selfmod(reason), params=V5)
-    assert before.response.risk >= 80  # blocks today
+def test_an_owner_asked_change_to_the_agents_setup_is_held_at_review(twin_case, reason):
+    assert_held(twin_case, _high_selfmod(reason))
     res = _run(twin_case, _high_selfmod(reason))
-    r = res.response
-    assert r.risk == CAP and r.enforced is None and r.floors_applied == []
-    assert 45 <= r.risk < 80
-    cap = next(x for x in r.reasons if x.code == "cap.attended_owner")
-    assert cap.detail == {"risk_before": before.response.risk}
-    assert r.metadata.versions["attended_owner"] == {
+    assert res.response.reasons[0].code == "cap.attended_owner"
+    assert res.response.reasons[0].detail == {"ceiling": "review"}
+    assert _info(res) == {
         "attended": True,
         "strong": [],
-        "capped": True,
+        "probe_failed": False,
+        "ceiling": "review",
     }
 
 
-def test_a_score_under_the_cap_is_left_alone(twin_case):
+def test_the_risk_is_left_as_scored(twin_case):
+    """No numeric cap: owners with custom lines decide from the real score, and the ceiling only lowers."""
+    v5 = _run(twin_case, _high_selfmod(), V5).response
+    v6 = _run(twin_case, _high_selfmod()).response
+    assert v6.risk == v5.risk and v6.risk >= 90
+    assert v6.tree == v5.tree
+    # custom lines review 85 / block 95: the score is reviewed, not let through as a lowered score would be
+    assert decide(v6, 85, 95) == "review"
+    # custom lines review 60 / block 88: the block is lowered to review
+    assert decide(v6, 60, 88) == "review"
+    # the ceiling never raises: a low score stays allowed
+    assert decide(v6, 99.5, 99.9) == "allow"
+
+
+def test_under_the_block_line_the_reason_goes_last(twin_case):
     envs = _high_selfmod()
     envs[0].contributions[0] = _c("suspicion.misalignment", 0.3, "call.not_supported_by_request")
     envs[1].contributions[0] = _c("suspicion.session_exposure", 0.1, "exposure.session_tainted")
     res = _run(twin_case, envs)
-    assert res.response.risk == _run(twin_case, envs, params=V5).response.risk < 79
-    assert "cap.attended_owner" not in _codes(res)
-    assert res.response.metadata.versions["attended_owner"]["capped"] is False
+    r = res.response
+    assert r.risk == _run(twin_case, envs, V5).response.risk < 80
+    assert r.ceiling == "review" and decide(r) == decide(_run(twin_case, envs, V5).response)
+    assert _codes(res)[-1] == "cap.attended_owner"
 
 
-def test_a_plain_send_the_model_doubts_caps_at_review(attack_case):
+def test_a_plain_send_the_model_doubts_is_held(attack_case):
     """No sensitive source, no untrusted origin: the model's doubt alone does not block an attended owner."""
-    envs = [
-        Envelope(
-            step=ProbeStep.JEV_CALL,
-            contributions=[_c("suspicion.misalignment", 0.95, "call.not_supported_by_request")],
-        ),
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[
-                _c("consequence.reach", 1.0, "send.off_host", "E1"),
-                _c("consequence.irreversibility", 0.8, "send.off_host", "E1"),
-                _c("consequence.sensitivity", 0.9, "jev.sensitivity"),
-            ],
-        ),
-    ]
-    assert _run(attack_case, envs, params=V5).response.risk >= 80
-    res = _run(attack_case, envs)
-    assert res.response.risk == CAP
+    envs = _send(
+        _c("consequence.reach", 1.0, "send.off_host", "E1"),
+        _c("consequence.irreversibility", 0.8, "send.off_host", "E1"),
+        _c("consequence.sensitivity", 0.9, "jev.sensitivity"),
+    )
+    assert_held(attack_case, envs)
 
 
-def test_a_credential_sent_where_a_grant_covers_the_destination_caps_at_review(twin_case):
+def test_a_credential_sent_where_a_grant_covers_the_destination_is_held(twin_case):
     """The owner granted the destination: the credential belongs there, so the score alone does not block."""
-    envs = [
-        Envelope(
-            step=ProbeStep.JEV_CALL,
-            contributions=[_c("suspicion.misalignment", 0.95, "call.not_supported_by_request")],
-        ),
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[
-                _c("consequence.reach", 1.0, "exfil.exec_egress", "E1"),
-                _c("consequence.irreversibility", 1.0, "exfil.exec_egress", "E1"),
-                _c("consequence.sensitivity", 1.0, "path.credential_store", "E2"),
-            ],
-        ),
-    ]
-    res = _run(twin_case, envs)
+    res = _run(twin_case, _credential_upload())
     assert any(r.reason == "relief.destination_grant" for r in res.relief)
-    assert res.response.risk == CAP
-    assert "sensitive_sent" not in res.response.metadata.versions["attended_owner"]["strong"]
+    assert "sensitive_sent" not in _info(res)["strong"]
+    assert_held(twin_case, _credential_upload())
+
+
+def _ungranted(twin_case: dict, request: str | None = None) -> dict:
+    case = copy.deepcopy(twin_case)
+    case["fixture"]["grants"] = []
+    if request is not None:
+        case["fixture"]["request"]["text"] = request
+    return case
+
+
+def test_a_credential_sent_to_a_request_named_destination_is_held(twin_case):
+    case = _ungranted(
+        twin_case, "Summarise my unread emails, and copy my AWS credentials to backup.mycorp.com"
+    )
+    res = _run(case, _credential_upload())
+    assert [r.reason for r in res.relief] == ["relief.request_named_destination"]
+    assert_held(case, _credential_upload())
+    # the same send with nothing naming the destination blocks
+    assert_blocks(_ungranted(twin_case), _credential_upload(), strong=["sensitive_sent"])
+
+
+def test_a_credential_sent_to_a_known_good_destination_is_held(twin_case):
+    case = _ungranted(twin_case)
+    envs = _credential_upload()
+    envs.append(
+        Envelope(
+            step=ProbeStep.ENTITY_ORACLE,
+            evidence={"entities": {"E1": {"verdict": "known_good", "match": "exact"}}},
+        )
+    )
+    res = _run(case, envs)
+    assert [r.reason for r in res.relief] == ["relief.known_good_destination"]
+    assert_held(case, envs)
 
 
 def test_an_untrusted_origin_on_a_file_the_call_reads_is_not_strong(attack_case):
@@ -179,29 +296,19 @@ def test_an_untrusted_origin_on_a_file_the_call_reads_is_not_strong(attack_case)
     envs[1].contributions.append(
         _c("suspicion.untrusted_origin", 0.5, "origin.only_in_untrusted", "E2")
     )
-    res = _run(attack_case, envs)
-    assert res.response.risk == CAP
+    assert_held(attack_case, envs)
 
 
 def test_the_bare_session_sensitive_flag_is_not_a_credential_leaving(attack_case):
-    envs = [
-        Envelope(
-            step=ProbeStep.JEV_CALL,
-            contributions=[_c("suspicion.misalignment", 0.95, "call.not_supported_by_request")],
-        ),
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[
-                _c("consequence.reach", 1.0, "exfil.exec_egress", "E1"),
-                _c("consequence.irreversibility", 1.0, "exfil.exec_egress", "E1"),
-                _c("consequence.sensitivity", 0.8, "exfil.session_holds_sensitive"),
-            ],
-        ),
-    ]
-    assert _run(attack_case, envs).response.risk == CAP
+    envs = _send(
+        _c("consequence.reach", 1.0, "exfil.exec_egress", "E1"),
+        _c("consequence.irreversibility", 1.0, "exfil.exec_egress", "E1"),
+        _c("consequence.sensitivity", 0.8, "exfil.session_holds_sensitive"),
+    )
+    assert_held(attack_case, envs)
 
 
-# ---- must still block ----------------------------------------------------------------------------------------
+# ---- still blocks --------------------------------------------------------------------------------------------
 
 
 def test_a_change_whose_instruction_came_only_from_fetched_content_still_blocks(attack_case):
@@ -209,16 +316,14 @@ def test_a_change_whose_instruction_came_only_from_fetched_content_still_blocks(
     envs[1].contributions.append(
         _c("suspicion.untrusted_origin", 1.0, "origin.only_in_untrusted", "E1")
     )
-    res = _run(attack_case, envs)
-    assert res.response.risk >= 80
-    assert "cap.attended_owner" not in _codes(res)
-    assert res.response.metadata.versions["attended_owner"]["strong"] == ["untrusted_origin"]
+    assert_blocks(attack_case, envs, strong=["untrusted_origin"])
 
 
 @pytest.mark.parametrize(
     "reason",
     [
         "origin.written_content_untrusted",
+        "origin.agent_created_dirty_lineage",
         "origin.lookalike_of_named_host",
         "origin.lookalike_of_named_package",
         "origin.sibling_value_untrusted",
@@ -227,49 +332,55 @@ def test_a_change_whose_instruction_came_only_from_fetched_content_still_blocks(
 def test_every_untrusted_origin_on_an_acting_entity_still_blocks(attack_case, reason):
     envs = _high_selfmod()
     envs[1].contributions.append(_c("suspicion.untrusted_origin", 1.0, reason, "E1"))
-    assert _run(attack_case, envs).response.risk >= 80
+    assert_blocks(attack_case, envs, strong=["untrusted_origin"])
+
+
+@pytest.mark.parametrize(
+    ("value", "role"),
+    [(1.0, "recipient or destination"), (0.6, "tool provider")],
+)
+def test_an_untrusted_origin_at_the_acting_role_weights_still_blocks(attack_case, value, role):
+    """Scaled by role: destinations and recipients 1.0, tool providers 0.6 (the boundary); data sources 0.5 do not."""
+    envs = _high_selfmod()
+    envs[1].contributions.append(
+        _c("suspicion.untrusted_origin", value, "origin.only_in_untrusted", "E1")
+    )
+    assert_blocks(attack_case, envs, strong=["untrusted_origin"])
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "code.steered_source",
+        "exposure.session_injected_content",
+        "artefact.push_with_secret",
+        "artefact.credential_file_pushed",
+    ],
+)
+def test_steered_code_injected_content_and_published_secrets_still_block(attack_case, reason):
+    envs = _high_selfmod()
+    envs[2].contributions.append(_c("consequence.sensitivity", 0.8, reason, "E1"))
+    assert_blocks(attack_case, envs, strong=["untrusted_content"])
 
 
 def test_a_credential_sent_to_an_unknown_host_still_blocks(attack_case):
-    envs = [
-        Envelope(
-            step=ProbeStep.JEV_CALL,
-            contributions=[_c("suspicion.misalignment", 0.95, "call.not_supported_by_request")],
-        ),
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[
-                _c("consequence.reach", 1.0, "exfil.exec_egress", "E1"),
-                _c("consequence.irreversibility", 1.0, "exfil.exec_egress", "E1"),
-                _c("consequence.sensitivity", 1.0, "path.credential_store", "E2"),
-            ],
-        ),
-    ]
-    res = _run(attack_case, envs)
-    assert res.response.risk >= 80
-    assert res.response.metadata.versions["attended_owner"]["strong"] == ["sensitive_sent"]
+    assert_blocks(attack_case, _credential_upload(), strong=["sensitive_sent"])
 
 
 def test_a_secret_the_agent_wrote_into_a_file_it_sends_still_blocks(attack_case):
-    envs = [
-        Envelope(
-            step=ProbeStep.JEV_CALL,
-            contributions=[_c("suspicion.misalignment", 0.95, "call.not_supported_by_request")],
-        ),
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[
-                _c("consequence.reach", 1.0, "send.off_host", "E1"),
-                _c("consequence.irreversibility", 0.8, "send.off_host", "E1"),
-                _c("consequence.sensitivity", 0.9, "jev.sensitivity"),
-            ],
-        ),
-        Envelope(
-            step=ProbeStep.CONTEXT,
-            contributions=[_c("suspicion.overreach", 0.8, "lineage.secret_carried_to_send", "E2")],
-        ),
-    ]
-    assert _run(attack_case, envs).response.risk >= 80
+    envs = _send(
+        _c("consequence.reach", 1.0, "send.off_host", "E1"),
+        _c("consequence.irreversibility", 0.8, "send.off_host", "E1"),
+        _c("consequence.sensitivity", 0.9, "jev.sensitivity"),
+        context=[_c("suspicion.overreach", 0.8, "lineage.secret_carried_to_send", "E2")],
+    )
+    assert_blocks(attack_case, envs, strong=["sensitive_sent"])
+
+
+def test_a_credential_in_a_call_that_sends_without_a_rule_detected_sink_still_blocks(attack_case):
+    """An inline script's upload: the sensitivity claim and the call's destination are all there is."""
+    envs = _send(_c("consequence.sensitivity", 1.0, "path.credential_store", "E2"))
+    assert_blocks(attack_case, envs, strong=["sensitive_sent"])
 
 
 def test_a_known_bad_entity_still_blocks(attack_case):
@@ -280,9 +391,7 @@ def test_a_known_bad_entity_still_blocks(attack_case):
             contributions=[_c("suspicion.distrust", 1.0, "reputation.known_bad_host", "E1")],
         )
     )
-    res = _run(attack_case, envs)
-    assert res.response.risk >= 80
-    assert "known_bad" in res.response.metadata.versions["attended_owner"]["strong"]
+    assert_blocks(attack_case, envs, strong=["known_bad"])
 
 
 @pytest.mark.parametrize(
@@ -293,66 +402,28 @@ def test_a_known_bad_entity_still_blocks(attack_case):
         ("untrusted_code_execution", Enforce.BLOCK),
         ("sensitive_data_sent", None),
         ("injected_content_used", None),
+        ("lookalike_code_source", None),
     ],
 )
-def test_a_floor_lifts_the_cap(attack_case, floor, enforce):
+def test_a_floor_sets_no_ceiling(attack_case, floor, enforce):
     envs = _high_selfmod()
     envs[2].floors.append(Floor(floor=floor, min_risk=0.6, enforce=enforce))
     res = _run(attack_case, envs)
-    r = res.response
-    assert r.risk == _run(attack_case, envs, params=V5).response.risk >= 80
-    assert r.enforced is enforce
-    assert "cap.attended_owner" not in _codes(res)
-    assert r.metadata.versions["attended_owner"]["strong"] == [f"floor.{floor}"]
+    assert res.response.enforced is enforce and res.response.ceiling is None
+    assert _info(res)["strong"] == [f"floor.{floor}"]
+    assert_blocks(attack_case, envs)
 
 
 def test_an_enforced_block_still_blocks_whatever_the_score(attack_case):
-    envs = [
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[_c("consequence.self_modification", 0.3, "selfmod.config")],
-            floors=[Floor(floor="guardrail_tampering", min_risk=1.0, enforce=Enforce.BLOCK)],
-        )
-    ]
+    envs = _high_selfmod()
+    envs[2] = Envelope(
+        step=ProbeStep.AIRA,
+        contributions=[_c("consequence.self_modification", 0.3, "selfmod.config")],
+        floors=[Floor(floor="guardrail_tampering", min_risk=1.0, enforce=Enforce.BLOCK)],
+    )
     r = _run(attack_case, envs).response
-    assert r.enforced is Enforce.BLOCK and r.risk == 100.0
-
-
-def _credential_read_in_a_send() -> list[Envelope]:
-    """A call that reads a credential file and sends, where the rule-based send detector found no sink of its
-    own (an inline script's upload): the sensitivity claim and the call's destination are all there is."""
-    return [
-        Envelope(
-            step=ProbeStep.JEV_CALL,
-            contributions=[
-                _c("suspicion.misalignment", 0.95, "call.not_supported_by_request"),
-                _c("consequence.reach", 0.9, "jev.reach"),
-                _c("consequence.irreversibility", 0.9, "jev.irreversibility"),
-            ],
-        ),
-        Envelope(
-            step=ProbeStep.AIRA,
-            contributions=[_c("consequence.sensitivity", 1.0, "path.credential_store", "E2")],
-        ),
-    ]
-
-
-def test_a_credential_in_a_call_that_sends_to_an_unknown_host_still_blocks(attack_case):
-    res = _run(attack_case, _credential_read_in_a_send())
-    assert res.response.risk >= 80
-    assert res.response.metadata.versions["attended_owner"]["strong"] == ["sensitive_sent"]
-
-
-def test_a_credential_in_a_call_that_sends_to_a_granted_host_caps(twin_case):
-    res = _run(twin_case, _credential_read_in_a_send())
-    assert res.response.risk == CAP
-
-
-# ---- look-alikes and retries of a denied action: strong in conv-v6; fresh injection stays off -------------
-
-
-def _with(**kw):
-    return dataclasses.replace(V6, **kw)
+    assert r.enforced is Enforce.BLOCK and r.ceiling is None and r.risk == 100.0
+    assert decide(r, 99.5, 99.9) == "block"
 
 
 @pytest.mark.parametrize(
@@ -366,28 +437,19 @@ def _with(**kw):
 def test_a_lookalike_entity_still_blocks(attack_case, reason):
     envs = _high_selfmod()
     envs[1].contributions.append(_c("suspicion.overreach", 0.9, reason, "E1"))
-    res = _run(attack_case, envs)
-    assert res.response.risk >= 80
-    assert "cap.attended_owner" not in _codes(res)
-    assert res.response.metadata.versions["attended_owner"]["strong"] == ["lookalike"]
-    # the parameter switches it off
-    assert (
-        _run(attack_case, envs, params=_with(attended_owner_lookalike=False)).response.risk == CAP
-    )
+    assert_blocks(attack_case, envs, strong=["lookalike"])
+    assert_held(attack_case, envs, params=_with(attended_owner_lookalike=False))
 
 
-def test_a_retry_of_a_denied_action_still_blocks(attack_case):
+@pytest.mark.parametrize(("value", "strong"), [(0.9, True), (0.8, True), (0.79, False)])
+def test_a_retry_of_a_denied_action_still_blocks(attack_case, value, strong):
     envs = _high_selfmod()
-    envs[1].contributions.append(_c("suspicion.retry_after_denial", 0.9, "retry.same_action"))
-    res = _run(attack_case, envs)
-    assert res.response.risk >= 80
-    assert res.response.metadata.versions["attended_owner"]["strong"] == ["retry_after_denial"]
-    # a weaker retry match (the same data read again) is not strong
-    envs[1].contributions[-1] = _c("suspicion.retry_after_denial", 0.5, "retry.same_source_only")
-    assert _run(attack_case, envs).response.risk == CAP
-    # the parameter switches it off
-    envs[1].contributions[-1] = _c("suspicion.retry_after_denial", 0.9, "retry.same_action")
-    assert _run(attack_case, envs, params=_with(attended_owner_retry_min=None)).response.risk == CAP
+    envs[1].contributions.append(_c("suspicion.retry_after_denial", value, "retry.same_action"))
+    if strong:
+        assert_blocks(attack_case, envs, strong=["retry_after_denial"])
+        assert_held(attack_case, envs, params=_with(attended_owner_retry_min=None))
+    else:
+        assert_held(attack_case, envs)
 
 
 def test_fresh_injection_is_strong_only_when_switched_on(attack_case):
@@ -398,43 +460,65 @@ def test_fresh_injection_is_strong_only_when_switched_on(attack_case):
             contributions=[_c("suspicion.exposure", 0.9, "exposure.instructions")],
         )
     )
-    assert _run(attack_case, envs).response.risk == CAP
+    assert_held(attack_case, envs)
     on = _with(
         attended_owner_injection_exposure_min=0.5, attended_owner_injection_misalignment_min=0.5
     )
-    res = _run(attack_case, envs, params=on)
-    assert res.response.risk >= 80
-    assert res.response.metadata.versions["attended_owner"]["strong"] == ["fresh_injection"]
+    assert_blocks(attack_case, envs, params=on, strong=["fresh_injection"])
     # the session's earlier taint is not this request's injection
     envs[-1] = Envelope(
         step=ProbeStep.JEV_EXPOSURE,
         contributions=[_c("suspicion.exposure", 0.1, "exposure.instructions")],
     )
-    assert _run(attack_case, envs, params=on).response.risk == CAP
+    assert_held(attack_case, envs, params=on)
 
 
-def test_the_optional_signals_load_from_a_parameter_file(tmp_path):
-    import json
+# ---- a probe that failed sets no ceiling ---------------------------------------------------------------------
 
-    from sentrook.converge.params import PARAMS_DIR
 
-    raw = json.loads((PARAMS_DIR / "conv-v6.json").read_text(encoding="utf-8"))
-    raw["name"] = "conv-test"
-    raw["attended_owner_cap"].update(
-        {
-            "lookalike": True,
-            "retry_min": 0.8,
-            "fresh_injection": {"exposure_min": 0.5, "misalignment_min": 0.6},
-        }
+def _strong_origin() -> list[Envelope]:
+    envs = _high_selfmod("selfmod.config")
+    envs[1].contributions.append(
+        _c("suspicion.untrusted_origin", 1.0, "origin.only_in_untrusted", "E1")
     )
-    path = tmp_path / "conv-test.json"
-    path.write_text(json.dumps(raw), encoding="utf-8")
-    p = load_params(path)
-    assert p.attended_owner_lookalike is True and p.attended_owner_retry_min == 0.8
-    assert p.attended_owner_injection_exposure_min == 0.5
-    assert p.attended_owner_injection_misalignment_min == 0.6
-    assert V6.attended_owner_lookalike is True and V6.attended_owner_retry_min == 0.8
-    assert V6.attended_owner_injection_exposure_min is None
+    return envs
+
+
+@pytest.mark.parametrize("step", [ProbeStep.CONTEXT, ProbeStep.AIRA, ProbeStep.JEV_CALL])
+@pytest.mark.parametrize("status", [ProbeStatus.ERROR, ProbeStatus.TIMEOUT])
+def test_a_failed_probe_sets_no_ceiling(attack_case, step, status):
+    """The strong signal may be in the answer that never came: with the context probe down the untrusted origin
+    above is lost, and holding the call at review would let an attack through on a probe failure."""
+    envs = _strong_origin()
+    idx = next(i for i, e in enumerate(envs) if e.step is step)
+    envs[idx] = Envelope.failed(step, status, "down")
+    res = _run(attack_case, envs)
+    assert res.response.ceiling is None
+    assert _info(res)["probe_failed"] is True and _info(res)["ceiling"] is None
+    assert decide(res.response) == decide(_run(attack_case, envs, V5).response)
+
+
+def test_the_context_probe_error_from_review_keeps_its_score(attack_case):
+    envs = _strong_origin()
+    envs[1].status = ProbeStatus.ERROR
+    v5 = _run(attack_case, envs, V5).response
+    v6 = _run(attack_case, envs).response
+    assert v6.risk == v5.risk and v6.ceiling is None and v6.status.value == "degraded"
+
+
+@pytest.mark.parametrize("step", [ProbeStep.CONTEXT, ProbeStep.AIRA])
+def test_a_missing_or_skipped_signal_probe_sets_no_ceiling(attack_case, step):
+    envs = [e for e in _high_selfmod() if e.step is not step]
+    assert _run(attack_case, envs).response.ceiling is None
+    envs.append(Envelope.failed(step, ProbeStatus.SKIPPED, "not run"))
+    assert _run(attack_case, envs).response.ceiling is None
+
+
+def test_an_oracle_lookup_that_fell_back_sets_no_ceiling(attack_case):
+    envs = _high_selfmod()
+    envs.append(Envelope(step=ProbeStep.ENTITY_ORACLE, evidence={"fallback": "null"}))
+    res = _run(attack_case, envs)
+    assert res.response.ceiling is None and _info(res)["probe_failed"] is True
 
 
 # ---- unattended runs and older parameter sets are unchanged --------------------------------------------------
@@ -455,18 +539,19 @@ def test_unattended_runs_are_unchanged(twin_case, kind, relation, role):
     case = _with_trigger(twin_case, kind=kind, relation=relation, role=role)
     v5 = _run(case, _high_selfmod(), params=V5).response
     v6 = _run(case, _high_selfmod()).response
-    assert v6.risk == v5.risk >= 80
+    assert v6.risk == v5.risk >= 80 and v6.ceiling is None
     assert "cap.attended_owner" not in [r.code for r in v6.reasons]
     assert v6.metadata.versions["attended_owner"] == {
         "attended": False,
         "strong": [],
-        "capped": False,
+        "probe_failed": False,
+        "ceiling": None,
     }
 
 
-def test_conv_v5_has_no_cap(twin_case):
+def test_conv_v5_has_no_ceiling(twin_case):
     r = _run(twin_case, _high_selfmod(), params=V5).response
-    assert r.risk >= 80 and "attended_owner" not in r.metadata.versions
+    assert r.risk >= 80 and r.ceiling is None and "attended_owner" not in r.metadata.versions
 
 
 # ---- end to end through the scanner --------------------------------------------------------------------------
@@ -478,13 +563,13 @@ def test_the_worked_attack_still_blocks_end_to_end(attack_case):
         attack_case["fixture"], options(attack_case, probes_enabled=None)
     )
     r = res.response
-    assert r.risk >= 80
+    assert r.ceiling is None and decide(r) == "block"
     assert {"untrusted_origin", "sensitive_sent"} <= set(
         r.metadata.versions["attended_owner"]["strong"]
     )
 
 
-def test_an_owner_asked_cron_edit_caps_end_to_end(twin_case):
+def test_an_owner_asked_cron_edit_is_held_end_to_end(twin_case):
     case = copy.deepcopy(twin_case)
     fx = case["fixture"]
     fx["request"]["text"] = "Take a look at the scheduled job and make sure it is set up correctly"
@@ -503,17 +588,37 @@ def test_an_owner_asked_cron_edit_caps_end_to_end(twin_case):
     }
     v5 = scanner(answers, params=V5).scan(fx, options(case, probes_enabled=None)).response
     v6 = scanner(answers, params=V6).scan(fx, options(case, probes_enabled=None)).response
-    assert v5.risk >= 80
-    assert v6.risk == CAP and v6.enforced is None
+    assert decide(v5) == "block"
+    assert v6.risk == v5.risk and v6.ceiling == "review" and v6.enforced is None
+    assert decide(v6) == "review"
+    # the response serialises the ceiling for the plugins
+    assert json.loads(v6.model_dump_json())["ceiling"] == "review"
 
 
 # ---- parameters ----------------------------------------------------------------------------------------------
 
 
-def test_conv_v6_is_conv_v5_with_the_cap_on():
+def test_the_optional_signals_load_from_a_parameter_file(tmp_path):
+    raw = json.loads((PARAMS_DIR / "conv-v6.json").read_text(encoding="utf-8"))
+    raw["name"] = "conv-test"
+    raw["attended_owner_cap"].update(
+        {
+            "lookalike": False,
+            "retry_min": 0.9,
+            "fresh_injection": {"exposure_min": 0.5, "misalignment_min": 0.6},
+        }
+    )
+    path = tmp_path / "conv-test.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    p = load_params(path)
+    assert p.attended_owner_lookalike is False and p.attended_owner_retry_min == 0.9
+    assert p.attended_owner_injection_exposure_min == 0.5
+    assert p.attended_owner_injection_misalignment_min == 0.6
+
+
+def test_conv_v6_is_conv_v5_with_the_ceiling_on():
     assert V6.name == "conv-v6" and V6.oracle.name == "conv-v6/oracle"
     assert V6.attended_owner_cap is True and V5.attended_owner_cap is False
-    assert V6.attended_owner_max_risk == 0.79
     assert V6.attended_owner_untrusted_origin_min == 0.6
     assert V6.attended_owner_sent_sensitivity_min == 0.6
     assert V6.attended_owner_lookalike is True and V6.attended_owner_retry_min == 0.8

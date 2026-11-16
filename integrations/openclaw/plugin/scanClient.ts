@@ -12,6 +12,8 @@ export interface ScanResponse {
   status: "ok" | "degraded" | "error";
   risk: number | null;
   enforced: "block" | "review" | null;
+  /** The highest verdict the risk may reach; only `review` is honoured, anything else is ignored. */
+  ceiling?: string | null;
   tree?: {
     suspicion?: { score?: number | null };
     consequence?: { score?: number | null };

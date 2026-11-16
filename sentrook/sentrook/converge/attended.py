@@ -1,8 +1,10 @@
-"""The attended-owner cap: in a chat the owner is attending, a call is never blocked on its score alone.
+"""The attended-owner ceiling: in a chat the owner is attending, a call is never blocked on its score alone.
 
 When the owner is in the conversation and asked for the work, a review reaches them and they can approve or deny
-it; a block leaves them no way to approve a change they asked for. So in an attended owner session the computed
-risk is held just under the block line unless the call carries an independent strong signal:
+it; a block leaves them no way to approve a change they asked for. So in an attended owner session the response
+carries a verdict ceiling of `review` unless the call carries an independent strong signal. The risk stays as
+scored: the plugin decides from risk and its own lines, lowers that to the ceiling, then raises it to `enforced`.
+The strong signals:
 
 - a floor applied (guardrail tampering, a known-bad entity, untrusted code, sensitive data sent, injected content
   acted on, a look-alike code source), which also covers every `enforced` decision;
@@ -21,8 +23,10 @@ denied (`retry_min`); and this request's new untrusted content judged to instruc
 not to follow from the owner's request (`fresh_injection`, model judgements only).
 
 Attended is derived from the PlanIR, not from a plugin flag: the turn is a message (not scheduled, heartbeat,
-hook, sub-agent, system or unknown), the sender is the owner and the agent is the main agent. Unattended runs,
-other senders and unknown triggers are unchanged.
+hook, sub-agent, system or unknown), the sender is the owner outside a group chat or open host (sender basis not
+`group_chat` or `host_open_access`) and the agent is the main agent. Unattended runs, other senders, group chats and
+unknown triggers are unchanged. No ceiling is set when a probe errored, timed out or fell back, or when the context or
+rule-based probe did not answer: the strong signals come from them.
 """
 
 from __future__ import annotations
@@ -30,10 +34,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from ..planir.models import AgentRole, PlanIR, SenderRelation, TriggerKind
+from ..enums import ProbeStatus, ProbeStep
+from ..planir.models import AgentRole, PlanIR, SenderBasis, SenderRelation, TriggerKind
 from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role
 from ..prepare.grants import sends_off_host
+from ..probes.base import Envelope
 from .merge import Claim
 from .params import ConvergenceParams
 
@@ -92,24 +98,48 @@ DESTINATION_RELIEF = frozenset(
 )
 
 
+#: Sender bases that put the owner's message in a room others can write to: a group, channel or thread, or a
+#: host open to anyone. The owner is there, but so is everyone else, and a review there is everyone's.
+SHARED_BASIS = frozenset({SenderBasis.GROUP_CHAT, SenderBasis.HOST_OPEN_ACCESS})
+#: The probes the strong signals come from: without their answer nobody looked for one.
+SIGNAL_PROBES = (ProbeStep.CONTEXT, ProbeStep.AIRA)
+#: The plugins' default block line, on the 0-1 scale: above it the ceiling is what decides the outcome there, so
+#: its reason leads.
+DEFAULT_BLOCK_LINE = 0.8
+
+
 def attended_owner(planir: PlanIR) -> bool:
-    """The owner is in the conversation: a message turn from the owner, on the main agent."""
+    """The owner is in the conversation: a message turn from the owner, on the main agent, not in a group chat."""
     return (
         planir.trigger.kind is TriggerKind.MESSAGE
         and planir.trigger.sender.relation is SenderRelation.OWNER
+        and not SHARED_BASIS & set(planir.trigger.sender.basis)
         and planir.session.agent_role is AgentRole.MAIN
-        and not planir.is_self_edit
+        # a self-edit block says the host's own background process made the call, whatever the trigger says
+        and planir.self_edit is None
     )
+
+
+def probe_failed(envelopes: Iterable[Envelope]) -> bool:
+    """A probe errored or timed out, a lookup fell back, or a probe the strong signals come from did not answer."""
+    envelopes = list(envelopes)
+    if any(env.status in (ProbeStatus.ERROR, ProbeStatus.TIMEOUT) for env in envelopes):
+        return True
+    if any(env.evidence.get("fallback") for env in envelopes):
+        return True
+    answered = {env.step for env in envelopes if env.status is ProbeStatus.OK}
+    return not all(step in answered for step in SIGNAL_PROBES)
 
 
 @dataclass
 class CapCheck:
     attended: bool
     strong: list[str] = field(default_factory=list)
+    probe_failed: bool = False
 
     @property
     def applies(self) -> bool:
-        return self.attended and not self.strong
+        return self.attended and not self.probe_failed and not self.strong
 
 
 def _send_destinations(claims: list[Claim], prepared: Prepared) -> list[str | None] | None:
@@ -172,11 +202,12 @@ def check(
     relief_subjects: Iterable[tuple[str | None, str]],
     floors: list[str],
     params: ConvergenceParams,
+    envelopes: Iterable[Envelope] = (),
 ) -> CapCheck:
     """`claims`: every claim before relief; `kept`: the claims relief left; `relief_subjects`: (subject, reason)
     per relief applied; `floors`: the floors applied. Returns whether the call is in an attended owner session
     and which strong signals it carries (empty: the cap applies)."""
-    out = CapCheck(attended=attended_owner(prepared.planir))
+    out = CapCheck(attended=attended_owner(prepared.planir), probe_failed=probe_failed(envelopes))
     if not out.attended:
         return out
     claims, kept = list(claims), list(kept)

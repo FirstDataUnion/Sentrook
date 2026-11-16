@@ -224,7 +224,11 @@ Where slash commands don't reach the plugin, use `hermes sentrook <command>` on 
 ## How enforce mode decides
 
 Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`review_at`, `block_at`). Some findings,
-such as reading credentials and sending them off the machine, are floors that apply whatever the score.
+such as reading credentials and sending them off the machine, are floors that apply whatever the score. When you are in the chat
+and asked for the work yourself, a high score alone asks you rather than blocking: the scanner marks the call as
+review at most unless something independent points to an attack (content the agent read supplied the target, a
+known-bad or look-alike entity, a retry of a call you denied, a credential sent somewhere you did not name or
+grant, or a floor). Group chats, scheduled runs and sub-agents do not get this.
 
 When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It

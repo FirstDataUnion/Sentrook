@@ -46,10 +46,9 @@ class ConvergenceParams:
     #: A destination or recipient the owner's own configuration supplied on an earlier scan (the token's trusted
     #: set) is relieved of the library's distrust.
     owner_config_relief: bool = False
-    #: In an attended owner session (a message turn from the owner, on the main agent), hold the computed risk at
-    #: `attended_owner_max_risk` unless the call carries an independent strong signal (`converge.attended`).
+    #: In an attended owner session (a message turn from the owner, on the main agent, not in a group chat), set the
+    #: response's verdict ceiling to review unless the call carries an independent strong signal (`converge.attended`).
     attended_owner_cap: bool = False
-    attended_owner_max_risk: float = 0.79
     #: A key argument's untrusted origin, as scaled by its role, that counts as a strong signal.
     attended_owner_untrusted_origin_min: float = 0.6
     #: The sensitivity of a source a send carries that counts as sensitive data leaving.
@@ -118,7 +117,6 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         known_good_content_relief=bool(kgr.get("content_destinations", False)),
         owner_config_relief=bool(ocr.get("enabled", False)),
         attended_owner_cap=bool(aoc.get("enabled", False)),
-        attended_owner_max_risk=float(aoc.get("max_risk", 0.79)),
         attended_owner_untrusted_origin_min=float(aoc.get("untrusted_origin_min", 0.6)),
         attended_owner_sent_sensitivity_min=float(aoc.get("sent_sensitivity_min", 0.6)),
         attended_owner_lookalike=bool(aoc.get("lookalike", False)),

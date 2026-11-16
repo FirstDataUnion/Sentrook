@@ -1,6 +1,6 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
-Order: merge → tier scores → risk → relief (recompute) → attended-owner cap (when the parameters turn it on)
+Order: merge → tier scores → risk → relief (recompute) → attended-owner ceiling (when the parameters turn it on)
 → floors → reasons → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
@@ -29,6 +29,7 @@ from ..response.models import (
     SuspicionTier,
 )
 from ..state.token import encode_state
+from .attended import DEFAULT_BLOCK_LINE
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
@@ -269,7 +270,7 @@ def converge(
         tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
     attended: dict | None = None
-    capped_from: float | None = None
+    ceiling: str | None = None
     if params.attended_owner_cap:
         cap = attended_check(
             prepared,
@@ -278,14 +279,15 @@ def converge(
             [(r.subject, r.reason) for r in relief],
             [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
             params,
+            envelopes,
         )
-        if cap.applies and tiers.risk > params.attended_owner_max_risk:
-            capped_from = tiers.risk
-            tiers.risk = params.attended_owner_max_risk
+        if cap.applies:
+            ceiling = "review"
         attended = {
             "attended": cap.attended,
             "strong": cap.strong,
-            "capped": capped_from is not None,
+            "probe_failed": cap.probe_failed,
+            "ceiling": ceiling,
         }
 
     floors: list[FloorApplied] = []
@@ -344,15 +346,13 @@ def converge(
     latency = None if started is None else round((time.perf_counter() - started) * 1000, 1)
     entities: dict[str, EntityDisplay] = entity_table(prepared)
     reasons = _reasons(merged, tiers, floors, relief, params, params.u)
-    if capped_from is not None:
-        # first: it is why the call is held for review rather than blocked
-        reasons.insert(
-            0,
-            Reason(
-                code="cap.attended_owner",
-                detail={"risk_before": round(capped_from * 100.0, 2)},
-            ),
-        )
+    if ceiling is not None:
+        # why the call is held for review rather than blocked: first when the risk reaches the default block line
+        cap_reason = Reason(code="cap.attended_owner", detail={"ceiling": ceiling})
+        if tiers.risk >= DEFAULT_BLOCK_LINE:
+            reasons.insert(0, cap_reason)
+        else:
+            reasons.append(cap_reason)
     for r in reasons:  # make sure every entity a reason names is displayable
         if r.subject and r.subject not in entities:
             ent = prepared.entities.by_id(r.subject)
@@ -364,6 +364,7 @@ def converge(
         status=status,
         risk=round(tiers.risk * 100.0, 2),
         enforced=enforced,
+        ceiling=ceiling if enforced is None else None,
         tree=_tree(merged, tiers),
         floors_applied=floors,
         relief_applied=[
