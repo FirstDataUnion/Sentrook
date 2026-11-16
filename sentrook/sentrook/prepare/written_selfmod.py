@@ -18,15 +18,19 @@ What counts as written self-modification content:
 
 How the roles are read:
 
-- shell text (a cron line, a hook or startup script, a job's command): a host the text fetches code from and runs
-  (piped to a shell, downloaded then run, cloned then built) is a code source; any other host a network client in
-  the text contacts (`curl`, `wget`, `ssh`, `nc`, ...) is a destination. Cron schedule fields are dropped first and
-  comments are ignored.
-- program text (a hook written as a script in another language): every host it names is a destination.
-- instruction text (a skill, a job prompt, an agent instruction file): the commands it holds (fenced or inline code)
-  are read as shell text, except those the text warns against; a sentence that tells the agent to fetch and run
-  something names a code source, and one that tells it to post, send or upload something names a destination. A
-  link the text only mentions (documentation, a reference) takes no role.
+- shell text the host or the shell runs (a cron line, a hook or startup script, a unit, a job's command): a host the
+  text fetches code from and runs (piped to a shell, downloaded then run, cloned then built) is a code source; any
+  other host a network client in the text contacts (`curl`, `wget`, `ssh`, `nc`, ...) is a destination. Nobody scans
+  that run, so a plain request to a host counts. Cron schedule fields are dropped first and comments are ignored.
+- program text the host runs (a hook written in another language): every host it names is a destination. A
+  `hooks/` folder of the workspace's own code (a web app's hooks) is not a host hook.
+- what the agent runs later through its own tools (a skill's commands and scripts): a fetch-and-run is a code source
+  and a send (an upload, a POST, a raw socket) a destination; a plain lookup is not charged now, since each command
+  is scanned when the agent runs it.
+- instruction text (a skill, a job prompt, an agent instruction file): its commands (fenced or inline code) as above,
+  except those the text warns against; a sentence that tells the agent to fetch and run something names a code
+  source, and one that tells it to post, send or upload something names a destination. A link the text only
+  mentions (documentation, a reference) takes no role.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from ..aira.lists import Lists, load_lists
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ToolKind
 from .entities import (
+    _EGRESS_MARKERS,
     EntityKind,
     Found,
     Role,
@@ -62,6 +67,11 @@ class Form(StrEnum):
 class WrittenText:
     text: str
     form: Form
+    #: The host or the shell runs it (a cron line, a hook, a startup file), outside the agent's own scanned tool
+    #: calls: every host it contacts is a destination. Otherwise (a skill's commands or scripts, which the agent runs
+    #: through its tools) only a fetch-and-run is a code source and only a send (an upload, a POST, a raw socket) a
+    #: destination.
+    host_run: bool = True
 
 
 #: Path groups whose files hold content that runs or is followed later.
@@ -152,6 +162,7 @@ _SEND = re.compile(
     r"(?:s|ed|ing)?\b",
     re.IGNORECASE,
 )
+_CODE = re.compile(r"(?ms)^[ \t]*(```|~~~)[^\n]*\n.*?^[ \t]*\1[ \t]*$|`[^`\n]+`")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=\S)|\n+")
 
 
@@ -182,15 +193,14 @@ def _form_of(path: str, groups: list[str]) -> Form | None:
         return Form.PROSE
     if low.endswith(_PROGRAM_SUFFIXES):
         return Form.PROGRAM
+    if "agent_plugins" in groups and not low.endswith((".sh", ".bash", ".zsh")):
+        if "." in low.rsplit("/", 1)[-1]:
+            return None  # a skill's data or config file
     if _SHELL_GROUPS & set(groups):
         return Form.SHELL
     if "agent_plugins" in groups:
         # a script in a skill folder runs when the skill is used
-        return (
-            Form.SHELL
-            if low.endswith((".sh", ".bash", ".zsh")) or "." not in low.rsplit("/", 1)[-1]
-            else None
-        )
+        return Form.SHELL
     return None
 
 
@@ -223,7 +233,8 @@ def _file_texts(
         and _project_file(norm, home, workspace_root)
     ):
         return []  # a `hooks/` folder of a project's own code (a web app's hooks), not a host hook
-    return [WrittenText(t, form) for t in texts if t.strip()]
+    host_run = bool(_SHELL_GROUPS & set(groups))
+    return [WrittenText(t, form, host_run) for t in texts if t.strip()]
 
 
 def _project_file(path: str, home: str | None, workspace_root: str | None) -> bool:
@@ -332,12 +343,14 @@ def _exec_texts(
         form = Form.PROSE
     elif ("selfmod.scheduler" in cli and _HOST_JOB_CLI.search(rest)) or _CRONTAB_STDIN.search(rest):
         form = Form.SHELL
+    host_run = True
     if form is None:
         targets = _write_targets(rest)
         for t in targets:
             groups = _groups(normalise_path(t, home=home, workspace_root=workspace_root), lists)
             if groups:
                 form = _form_of(t, groups) or Form.SHELL
+                host_run = bool(_SHELL_GROUPS & set(groups))
                 break
     if form is None:
         return []
@@ -346,7 +359,7 @@ def _exec_texts(
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body and _hosts_in(body):
             bodies.append(body.replace('\\"', '"'))
-    return [WrittenText(b, form) for b in dict.fromkeys(bodies) if b.strip()]
+    return [WrittenText(b, form, host_run) for b in dict.fromkeys(bodies) if b.strip()]
 
 
 _REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\s*([^\s;&|<>]+)")
@@ -378,12 +391,22 @@ def future_entities(
 
     for wt in texts:
         if wt.form is Form.SHELL:
-            add(_shell_roles(wt.text, home=home, workspace_root=workspace_root))
+            add(
+                _shell_roles(
+                    wt.text, home=home, workspace_root=workspace_root, contacts=wt.host_run
+                )
+            )
         elif wt.form is Form.PROGRAM:
+            program_lines = (
+                [wt.text]
+                if wt.host_run
+                else [line for line in wt.text.splitlines() if _EGRESS_MARKERS.search(line)]
+            )
             add(
                 [
                     Found(EntityKind.HOST, h, h, Role.DATA_DESTINATION)
-                    for h in _hosts_in(wt.text, inline_program=True, emails=False)
+                    for line in program_lines
+                    for h in _hosts_in(line, inline_program=True, emails=False)
                     if not _local(h)
                 ]
             )
@@ -427,7 +450,11 @@ def _shell_lines(text: str) -> list[str]:
     return lines
 
 
-def _shell_roles(text: str, *, home: str | None, workspace_root: str | None) -> list[Found]:
+def _shell_roles(
+    text: str, *, home: str | None, workspace_root: str | None, contacts: bool = True
+) -> list[Found]:
+    """Code sources and destinations of shell text. With `contacts`, every host a network client contacts is a
+    destination; without it, only a host the text sends to (an upload, a POST, a raw socket)."""
     lines = _shell_lines(text)
     if not lines:
         return []
@@ -445,6 +472,8 @@ def _shell_roles(text: str, *, home: str | None, workspace_root: str | None) -> 
     for line in lines:
         for tokens in shell_segments(line):
             seg = " ".join(tokens)
+            if not contacts and not _EGRESS_MARKERS.search(seg):
+                continue
             if (
                 tokens[0].rsplit("/", 1)[-1] in NET_HEADS
                 or "/dev/tcp/" in seg
@@ -461,8 +490,14 @@ def _prose_roles(text: str, *, home: str | None, workspace_root: str | None) -> 
     out: list[Found] = []
     commands = [cmd for cmd, negated in steps_in(text) if not negated]
     if commands:
-        out.extend(_shell_roles("\n".join(commands), home=home, workspace_root=workspace_root))
-    for sentence in _SENTENCE.split(text):
+        out.extend(
+            _shell_roles(
+                "\n".join(commands), home=home, workspace_root=workspace_root, contacts=False
+            )
+        )
+    # the commands were read above: the sentences are the words around them
+    words = _CODE.sub(lambda m: " " * len(m.group(0)), text)
+    for sentence in _SENTENCE.split(words):
         if not sentence.strip():
             continue
         for host in _hosts_in(sentence, emails=False):
