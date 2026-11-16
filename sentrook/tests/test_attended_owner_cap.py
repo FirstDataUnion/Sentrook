@@ -752,7 +752,9 @@ def test_conv_v6_is_conv_v5_with_the_ceiling_on():
     assert a == b
 
 
-def test_serve_defaults_to_conv_v6_and_conv_v5_stays_selectable():
-    assert ServeConfig().convergence == "conv-v6"
-    assert ServeConfig.from_env({}).convergence == "conv-v6"
-    assert ServeConfig.from_env({"SENTROOK_CONVERGENCE": "conv-v5"}).convergence == "conv-v5"
+def test_serve_defaults_to_conv_v5_and_conv_v6_stays_selectable():
+    """The ceiling is off by default: it moved real attack cases from block to review."""
+    assert ServeConfig().convergence == "conv-v5"
+    assert ServeConfig.from_env({}).convergence == "conv-v5"
+    assert ServeConfig.from_env({"SENTROOK_CONVERGENCE": "conv-v6"}).convergence == "conv-v6"
+    assert load_params(ServeConfig().convergence).attended_owner_cap is False
