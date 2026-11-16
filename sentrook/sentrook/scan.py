@@ -123,7 +123,12 @@ def _aira_factory(prepared: Prepared, config: ScannerConfig) -> Probe | None:
     except Exception:  # noqa: BLE001 (an unfinished or broken AIRA module must not take the scan down)
         return None
     packs = tuple(prepared.planir.options.packs or config.default_packs)
-    return AiraProbe(enabled_packs=set(packs))
+    return AiraProbe(
+        enabled_packs=set(packs),
+        unvetted_package_sensitivity=config.params.oracle.unvetted_package_sensitivity,
+        unvetted_package_as_root=config.params.oracle.unvetted_package_as_root,
+        unvetted_package_ecosystems=tuple(config.params.oracle.unvetted_package_ecosystems),
+    )
 
 
 def views_label(jev_views: dict[str, str]) -> str:

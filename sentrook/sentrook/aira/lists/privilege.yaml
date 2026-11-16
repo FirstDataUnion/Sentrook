@@ -2,7 +2,7 @@
 # elevation itself); the preload, setuid and shadowing arms are always on because they hide what the
 # command is from everyone, host included.
 
-version: 1
+version: 2
 
 # Wrappers that elevate (exec_shape strips them and sets `privileged`), and heads that do.
 elevation_wrappers:
@@ -12,6 +12,26 @@ elevation_wrappers:
   - pkexec
 elevation_heads:
   - su
+
+# A switch of the running group (`sg group -c cmd`, `newgrp group`) into a group whose members can
+# become root on the host: container and VM daemons that run as root, raw disk and memory devices,
+# the shadow file, and the groups sudo and su trust. A member needs no password for the switch, so
+# the host does not gate it; this arm is always on.
+group_switch_heads:
+  - sg
+  - newgrp
+root_equivalent_groups:
+  - root
+  - wheel
+  - sudo
+  - admin
+  - docker
+  - lxd
+  - incus-admin
+  - libvirt
+  - disk
+  - shadow
+  - kmem
 
 # setuid / setgid bits and capabilities. Regex over one shell segment.
 setuid_patterns:

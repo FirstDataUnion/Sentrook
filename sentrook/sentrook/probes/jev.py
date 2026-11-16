@@ -31,7 +31,15 @@ from ..jev.chunking import chunk_exposure_state, est_tokens
 from ..jev.client import ApiError, Decider, DecisionResult, JevConfig
 from ..jev.questions import QuestionSet, build_body, load_question_set
 from ..prepare import Prepared
-from ..prepare.views import REPUTATION, VIEW_KEYS, with_reputation
+from ..prepare.entities import EntityKind, Origin, Role
+from ..prepare.views import (
+    BATCH_VIEWS,
+    OWNER_CONFIG_VIEWS,
+    REPUTATION,
+    VIEW_KEYS,
+    with_reputation,
+    with_resolved,
+)
 from .base import Contribution, Envelope, SessionMark
 
 PROBE_VERSION = "jev/2.0.0a1"
@@ -101,6 +109,35 @@ def mapped_contributions(qs: QuestionSet, answers: dict[str, Any]) -> list[Contr
                     signal=m["signal"], value=_score(answers[q], qs.levels(q)), reason=m["reason"]
                 )
             )
+    return out
+
+
+#: Roles in which an owner-configured entity is listed for the judge: where the call sends to, never what it runs.
+_OWNER_CONFIG_ROLES = frozenset({Role.DATA_DESTINATION, Role.RECIPIENT})
+_OWNER_CONFIG_KINDS = frozenset({EntityKind.HOST, EntityKind.RECIPIENT, EntityKind.CHANNEL})
+
+
+def owner_config_entries(
+    prepared: Prepared, verdicts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """`reputation` entries for the call's destinations and recipients that the owner's own configuration supplied
+    on an earlier scan (the token's trusted set), as `verdict: owner_config`. Trust a config read in this request
+    establishes is left out: the exposure probe, running alongside, may judge that read injected. An entity content
+    the agent read also named, one the library already has a verdict for, and anything the call runs or installs
+    from are left out too."""
+    listed = {(v.get("kind"), v.get("value")) for v in verdicts}
+    out: list[dict[str, Any]] = []
+    for ent in prepared.entities.pending():
+        if not ent.in_prior_trusted or ent.in_session_untrusted:
+            continue
+        if Origin.UNTRUSTED_INPUT in ent.origins or ent.kind not in _OWNER_CONFIG_KINDS:
+            continue
+        if not ent.roles & _OWNER_CONFIG_ROLES or ent.roles & {Role.CODE_SOURCE, Role.EXECUTABLE}:
+            continue
+        if (ent.kind.value, ent.display) in listed:
+            continue
+        out.append({"kind": ent.kind.value, "value": ent.display, "verdict": "owner_config"})
+    out.sort(key=lambda e: (str(e["kind"]), str(e["value"])))
     return out
 
 
@@ -315,7 +352,20 @@ class JevCallProbe(_JevProbe):
         known the key is absent."""
         state = prepared.views[self.view_name]
         if REPUTATION in VIEW_KEYS.get(self.view_name, ()):
-            return with_reputation(state, prepared.oracle_verdicts)
+            verdicts = list(prepared.oracle_verdicts)
+            if self.view_name in OWNER_CONFIG_VIEWS:
+                verdicts += owner_config_entries(prepared, verdicts)
+            state = with_reputation(state, verdicts)
+        if self.view_name in BATCH_VIEWS:
+            # Only a command the join changed in place: a read file's content appended to the command says nothing
+            # the sibling's own arguments do not already show.
+            pending = prepared.pending.command if isinstance(prepared.pending.command, str) else ""
+            commands = [
+                c.command
+                for c in prepared.resolved
+                if isinstance(c.command, str) and not (pending and c.command.startswith(pending))
+            ]
+            state = with_resolved(state, commands)
         return state
 
     def run(self, prepared: Prepared, *, repeat: int | None = None) -> Envelope:

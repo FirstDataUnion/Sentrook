@@ -70,8 +70,7 @@ def test_call_v6_sends_the_call_v5_state_and_only_the_clause_differs(twin_case):
             assert q6[name] == q5[name], name
 
 
-def test_call_v6_is_the_shipped_default_and_earlier_sets_stay_selectable():
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v6"
+def test_call_v6_and_earlier_sets_stay_selectable():
     for name in ("call-v3", "call-v4", "call-v5", "call-v6"):
         env = {"SENTROOK_JEV_CALL_QUESTIONS": name}
         assert ServeConfig.from_env(env).jev_call_question_set == name

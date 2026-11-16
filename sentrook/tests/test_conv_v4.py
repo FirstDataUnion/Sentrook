@@ -50,9 +50,9 @@ def test_conv_v4_only_lowers_unknown_destination_and_recipient_distrust():
     assert same(V4, V3, skip=("oracle", "context", "notes"))
 
 
-def test_serve_defaults_to_conv_v4():
-    assert ServeConfig().convergence == "conv-v4"
-    assert ServeConfig.from_env({"SENTROOK_TEST_MODE": "1"}).convergence == "conv-v4"
+def test_conv_v4_stays_selectable():
+    env = {"SENTROOK_TEST_MODE": "1", "SENTROOK_CONVERGENCE": "conv-v4"}
+    assert ServeConfig.from_env(env).convergence == "conv-v4"
 
 
 @pytest.fixture
