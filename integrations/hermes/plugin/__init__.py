@@ -230,6 +230,11 @@ def on_pre_llm_call(**kw: Any) -> None:
         # event notice is not a request either, and its text goes as an untrusted input.
         host = None if background else host_turns.classify(kw.get("user_message"))
         own, content = host_turns.parts(host, kw.get("user_message")) if host else (None, None)
+        if host is None:
+            # An ordinary message behind host notes: the request is the message without them.
+            rest = host_turns.strip_notes(kw.get("user_message"))
+            if rest != host_turns.message_text(kw.get("user_message")):
+                own = rest
         # The turn is a request (an owner's message, or a standing instruction's own words) unless the host's
         # text is only content.
         is_request = host is None or own is not None
@@ -244,7 +249,7 @@ def on_pre_llm_call(**kw: Any) -> None:
                     "parent_session_id": kw.get("parent_session_id"),
                     "user_message": kw.get("user_message"),
                     "host_turn": host.form if host else None,
-                    "request_text": own if host else None,
+                    "request_text": own,
                 },
             )
             merged = bool(turn_id)

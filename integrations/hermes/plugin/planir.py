@@ -423,7 +423,7 @@ def build_planir(
             request_text = host_turns.REQUEST_TEXT
         trigger = host_turns.trigger_for(trigger, host.trigger if host else "system")
     else:
-        request_text = _text(turn.get("user_message"))
+        request_text = _request_of(turn)
     # A background call's turn is the number of the owner turn its request came from.
     request_turn_no = req_no if request_turn is not None else None
 

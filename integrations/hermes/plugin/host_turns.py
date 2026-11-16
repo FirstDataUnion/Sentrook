@@ -23,7 +23,9 @@ forms too, so nothing changes for any other sender: their trigger and sender sta
 an untrusted input, and they never get an earlier request in its place (`carries`).
 
 A form is recognised at the start of the message, or after one `[name] ` speaker prefix (Hermes names the
-speaker in shared group and thread sessions). A message ending with Hermes's internal notification footer is
+speaker in shared group and thread sessions), once the one-shot notes the gateway puts in front of the next
+message (a model switch or reset, a skills reload, a system note) are taken off (`strip_notes`). Those notes
+are host context: an owner's message behind them is their request without the notes. A message ending with Hermes's internal notification footer is
 an event notice whatever its start.
 """
 
@@ -76,7 +78,8 @@ _STARTS = (
         re.compile(
             r"\[IMPORTANT: Background process |\[Background process \S+ heartbeat #"
             r"|\[IMPORTANT: \d+ background process(?:es completed| results arrived)"
-            r"|\[IMPORTANT: Watch(?: patterns disabled for process |-pattern overflow)"
+            r"|\[IMPORTANT: Watch(?: patterns disabled for process |-pattern overflow"
+            r"|-pattern notifications resumed)"
         ),
     ),
     # A kanban task's wake (any locale), and a kanban goal-mode worker's next step after the judge.
@@ -124,9 +127,30 @@ def _footer(text: str) -> bool:
     return at >= 0 and "\n" not in text[at:] and text.endswith("]")
 
 
+#: One-shot notes the gateway puts in front of the next message in a session (a model switch or reset, a
+#: skills reload, a system note), each followed by a blank line. Host context, never the request.
+_NOTE = re.compile(
+    r"(?:\[Note: (?:model was just switched|the session model override was cleared)[^\n]*\]"
+    r"|\[System note: [^\n]*\]"
+    r"|\[USER INITIATED SKILLS RELOAD:\n.*?\nUse skills_list to see the updated catalog\.\])\n\n",
+    re.DOTALL,
+)
+
+
+def strip_notes(message: Any) -> str:
+    """The message without the host notes in front of it. A message that is only notes is returned as it
+    was (a resume note on its own)."""
+    text = message_text(message)
+    rest = text.lstrip()
+    while m := _NOTE.match(rest):
+        rest = rest[m.end() :].lstrip()
+    return rest if rest.strip() and rest != text.lstrip() else text
+
+
 def classify(message: Any) -> HostTurn | None:
-    """The host turn a user message is, or None for a message someone sent."""
-    text = message_text(message).strip()
+    """The host turn a user message is (after any host notes in front of it), or None for a message someone
+    sent."""
+    text = strip_notes(message).strip()
     bodies = [text]
     if m := _SPEAKER.match(text):
         bodies.append(text[m.end() :])
@@ -138,14 +162,20 @@ def classify(message: Any) -> HostTurn | None:
 
 
 _GATE_OUTPUT = "\nOutput (tail):\n"
-_GATE_END = "\n```\n\nFix the underlying problem"
+#: The fixed text after the output's closing fence; anything else there is content.
+GATE_TRAILER = (
+    "\n\nFix the underlying problem so this gate passes, then re-run it to confirm. Do not declare "
+    "the goal complete while any gate fails. If the gate itself is wrong or cannot pass, say so "
+    "clearly and stop."
+)
 #: What the request of a failed-gate goal step says in place of the command's output.
-GATE_OUTPUT_NOTE = "\nOutput (tail): sent as content, not part of the request.\n"
+GATE_OUTPUT_NOTE = "\nOutput (tail): sent as content, not part of the request."
 
 
 def parts(host: HostTurn, message: Any) -> tuple[str | None, str | None]:
-    """A host turn's request text (None when it has none of its own) and the text it sends as content."""
-    text = message_text(message)
+    """A host turn's request text (None when it has none of its own) and the text it sends as content, both
+    without the host notes in front of it."""
+    text = strip_notes(message)
     if not host.own_request:
         return None, text
     if host.form != "goal_gate":
@@ -154,13 +184,11 @@ def parts(host: HostTurn, message: Any) -> tuple[str | None, str | None]:
     if start < 0:
         # Not the shape expected: none of it can be told apart from the output, so all of it is content.
         return None, text
-    end = text.rfind(_GATE_END)
-    if end <= start:
-        return text[:start] + GATE_OUTPUT_NOTE, text[start:]
-    return (
-        text[:start] + GATE_OUTPUT_NOTE + text[end + len("\n```") :],
-        text[start : end + len("\n```")],
-    )
+    if text.endswith("\n```" + GATE_TRAILER):
+        end = len(text) - len(GATE_TRAILER)
+        return text[:start] + GATE_OUTPUT_NOTE + GATE_TRAILER, text[start:end]
+    # No fixed trailer right after the closing fence: everything from the output on is content.
+    return text[:start] + GATE_OUTPUT_NOTE, text[start:]
 
 
 def is_owner(trigger: dict[str, Any]) -> bool:
