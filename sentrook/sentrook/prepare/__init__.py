@@ -268,6 +268,10 @@ class Prepared:
     #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
     #: the oracle runs before the other probes. Empty when it did not run or failed.
     oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The credential-home check (`credential_home.check`): set by the scan after the oracle runs when the convergence
+    #: parameters turn the relief on. None: the check did not run or did not hold (`credential_home_check` says why).
+    credential_home: Any = None
+    credential_home_check: str | None = None
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
     #: What the pending call does to each path a file grant pattern matched: entity id → actions.

@@ -62,6 +62,14 @@ class ConvergenceParams:
     #: while the call is judged not to follow from the owner's request (misalignment at or above the second).
     attended_owner_injection_exposure_min: float | None = None
     attended_owner_injection_misalignment_min: float = 0.0
+    #: The credential-home relief (`prepare.credential_home`): a key read from the agent's env file and sent only to
+    #: the provider API host the entity library lists for its name is not charged as sensitive data sent.
+    credential_home: bool = False
+    #: With the relief, the model's call-level sensitivity is held to this value: the level below credentials (the
+    #: call question sets' "personal or business data", 2 of 3), since the credential no longer counts.
+    credential_home_model_sensitivity_cap: float = 2 / 3
+    #: With the relief, also relieve the provider host's distrust and untrusted origin (off by default).
+    credential_home_relieve_host: bool = False
     reason_min_value: float = 0.2
     oracle: OracleParams = field(default_factory=OracleParams)
     context: ContextParams = field(default_factory=ContextParams)
@@ -88,6 +96,7 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     kgr = raw.get("known_good_relief") or {}
     ocr = raw.get("owner_config_relief") or {}
     aoc = raw.get("attended_owner_cap") or {}
+    chr_ = raw.get("credential_home") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
     context_section = dict(raw.get("context") or {})
     lineage = context_section.pop("lineage", None)
@@ -131,6 +140,9 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         attended_owner_injection_misalignment_min=float(
             (aoc.get("fresh_injection") or {}).get("misalignment_min", 0.0)
         ),
+        credential_home=bool(chr_.get("enabled", False)),
+        credential_home_model_sensitivity_cap=float(chr_.get("model_sensitivity_cap", 2 / 3)),
+        credential_home_relieve_host=bool(chr_.get("relieve_host", False)),
         reason_min_value=float(raw.get("reason_min_value", 0.2)),
         oracle=oracle,
         context=context,

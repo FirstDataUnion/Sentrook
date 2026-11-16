@@ -302,9 +302,19 @@ def _reaching(a: CallAnalysis, ctx: Context) -> bool:
     return _match_any(lists.patterns("egress", "file_arg_patterns"), a.scan_text) is not None
 
 
+def _credential_home_file(ctx: Context, p: PathRef) -> bool:
+    """The env file whose keys the call sends only to their own service (`prepare.credential_home`): read for that,
+    it is not credential material leaving the machine."""
+    home = getattr(ctx.prepared, "credential_home", None)
+    if home is None:
+        return False
+    return (p.entity_id is not None and p.entity_id in home.env_files) or p.value in home.env_paths
+
+
 def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C1: credential material reached — a sensitive path with a reading head, a `file_read`, a
-    listing of a credential directory, or an `@file` form."""
+    listing of a credential directory, or an `@file` form. An env file read for a key the call sends only to its
+    own service (`prepare.credential_home`) carries no sensitivity; it still joins the session's sensitive set."""
     if a.kind is ToolKind.EXEC:
         if not _reaching(a, ctx):
             return []
@@ -321,7 +331,10 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if g is None:
             continue
         f = Finding(rule=f"C1.{g}", cls="C1", reason=f"path.{g}", detail={"path": p.display})
-        f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
+        if _credential_home_file(ctx, p):
+            f.detail["credential_home"] = True
+        else:
+            f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
         f.holds_sensitive(p.entity_id)
         out.append(f)
         seen.add(g)
@@ -499,6 +512,8 @@ def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
         if a.kind is ToolKind.EXEC and p.is_destination and not p.is_source:
             continue
         g = _top_sensitive_group(p.groups)
+        if g is not None and _credential_home_file(ctx, p):
+            continue  # its key goes only to its own service
         if g is not None:
             reason = "exfil.attachment" if p.value in attached else f"path.{g}"
             sources.append(Source(reason, ctx.weight("sensitivity", g), p.entity_id, p.display))
@@ -534,6 +549,9 @@ def _session_sensitive_source(ctx: Context) -> Source | None:
     prepared = ctx.prepared
     binding = prepared.session_binding.sensitive
     weight = ctx.weight("sensitivity", "session_holds_sensitive")
+    if getattr(prepared, "credential_home", None) is not None:
+        # the check found the session's sensitive data to be only the env files whose key goes to its own service
+        return None
     if binding.bound:
         return Source(
             "exfil.session_holds_sensitive",
@@ -572,6 +590,12 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
     if not sinks:
         return []
     sources = _sources(a, ctx)
+    # An env file whose key the call sends only to its own service is no source, but the session still holds it.
+    home_files = [
+        p.entity_id
+        for p in a.paths
+        if _top_sensitive_group(p.groups) is not None and _credential_home_file(ctx, p)
+    ]
     out: list[Finding] = []
     if sources:
         for sink in sinks:
@@ -611,6 +635,8 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
             subject = dest.entity_id if dest is not None else None
             f.add(REACH, ctx.weight("send", "reach"), subject)
             f.add(IRREVERSIBILITY, ctx.weight("send", "irreversibility"), subject)
+        for subject in home_files:
+            f.holds_sensitive(subject)
         out.append(f)
     return out
 

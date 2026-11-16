@@ -1,6 +1,6 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
-Order: merge → tier scores → risk → relief (recompute) → attended-owner ceiling (when the parameters turn it on)
+Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner ceiling (when the parameters turn it on)
 → floors → reasons → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
@@ -8,7 +8,7 @@ and token. Only numbers, enums and opaque entity IDs enter here; no request text
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
@@ -33,7 +33,7 @@ from .attended import DEFAULT_BLOCK_LINE, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
-from .merge import Merged, collect, merge
+from .merge import Claim, Merged, collect, merge
 from .params import ConvergenceParams, load_params
 from .registry import SIGNALS
 from .relief import Relief, compute_relief
@@ -201,6 +201,17 @@ def _reasons(
     return [r for _, r in scored]
 
 
+def cap_model_sensitivity(claims: list[Claim], cap: float) -> list[Claim]:
+    """The model's call-level sensitivity held to `cap`: with the credential-home relief the call's credential no
+    longer counts, so what the call moves is at most the level below credentials."""
+    return [
+        replace(c, value=min(c.value, cap))
+        if c.signal == "consequence.sensitivity" and c.step == ProbeStep.JEV_CALL.value
+        else c
+        for c in claims
+    ]
+
+
 def exposure_unjudged(prepared: Prepared, envelopes: list[Envelope]) -> bool:
     """The request brings new untrusted content the exposure probe would judge (not only reads of the agent's own
     skills or memory), and no exposure envelope came back OK: the probe failed, timed out or did not run, so nobody
@@ -227,6 +238,8 @@ def converge(
     views: str = "trim-v1",
 ) -> ConvergeResult:
     claims = collect(envelopes)
+    if params.credential_home and prepared.credential_home is not None:
+        claims = cap_model_sensitivity(claims, params.credential_home_model_sensitivity_cap)
     merged = merge(claims)
     unjudged = exposure_unjudged(prepared, envelopes)
     tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)

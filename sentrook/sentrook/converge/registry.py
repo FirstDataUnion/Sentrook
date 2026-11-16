@@ -239,6 +239,7 @@ REASONS: dict[str, str] = {
     "relief.owner_config_destination": "{subject} is a destination from your own agent configuration.",
     "relief.known_good_destination": "{subject} is a known good destination.",
     "relief.known_good_provider": "{subject} is a known good tool provider.",
+    "relief.credential_own_service": "The credential this call sends goes only to {subject}, the service it belongs to.",
     # AIRA: consequence classes (C1 to C10) and extent
     "path.credential_store": "{subject} is a credential store.",
     "path.credential_bearing_config": "{subject} is configuration that carries credentials.",
