@@ -60,6 +60,7 @@ from .entities import (
     extract_exec,
     extract_mentions,
     host_of_url,
+    install_walk,
     is_computed_package,
     is_under,
     normalise_host,
@@ -260,6 +261,10 @@ class Prepared:
     #: Per input read from the owner's config: hashes it added to the trusted set (withdrawn if the
     #: same scan judges that input injected).
     trusted_by_input: dict[int, list[str]] = field(default_factory=dict)
+    #: Local paths the pending call installs that a download in this command or an earlier step that ran
+    #: saved (or a copy or move of one): normalised path → the download's hosts, each a code source of
+    #: the call (`_downloaded_installs`).
+    downloaded_from: dict[str, list[str]] = field(default_factory=dict)
     #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
     #: the oracle runs before the other probes. Empty when it did not run or failed.
     oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -378,7 +383,7 @@ def _mark_request_named(
     target, or a host that only the pending call spells out. A pending-call entity whose value appears
     verbatim in the request (case-insensitive, whole token) is request-named. A PyPI name is folded on
     extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does.
-    A package that is a local file (`pip install /work/wheels/x.whl`) is also named by its path under
+    A local path an installer installs (`pip install /work/wheels/x.whl`) is also named by its path under
     one of `roots` (the workspace, home, the call's working directory), as an owner writes it."""
     text = request_text.lower()
     if not text:
@@ -389,7 +394,8 @@ def _mark_request_named(
             or Origin.REQUEST in ent.origins
         ):
             continue
-        if ent.kind not in (
+        installed = ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles
+        if not installed and ent.kind not in (
             EntityKind.RECIPIENT,
             EntityKind.CHANNEL,
             EntityKind.HOST,
@@ -404,9 +410,21 @@ def _mark_request_named(
 def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> bool:
     """The entity's value appears in the lower-cased `text` as a whole token: verbatim, a channel by
     its shorter names, a package also without its ecosystem prefix (a PyPI name spelt as PyPI allows),
-    a package installed from a URL by that URL's host and path. A package that is a local file is
-    also named by its path under one of `roots`, or its `~/` form; a bare file name is not enough,
-    since another file may carry it."""
+    a package installed from a URL by that URL's host and path. A path is named by its path under one
+    of `roots`, or its `~/` form; a bare file name is not enough, since another file may carry it."""
+    if ent.kind is EntityKind.PATH:
+        name = ent.value.lower()
+        relative: set[str] = set()
+        for i, root in enumerate(roots):
+            prefix = (root or "").lower().rstrip("/") + "/"
+            if len(prefix) > 1 and name.startswith(prefix) and "/" in name[len(prefix) :]:
+                relative.add(name[len(prefix) :])
+            if i == 1 and len(prefix) > 1 and name.startswith(prefix):
+                relative.add("~/" + name[len(prefix) :])
+        # A relative path is named only as a whole path, not as the tail of a longer one.
+        return any(
+            re.search(r"(?<![\w./~-])" + re.escape(rel) + r"(?![\w/-])", text) for rel in relative
+        )
     candidates = {ent.value.lower()}
     if ent.kind is EntityKind.CHANNEL:
         candidates.update(channel_names(ent.value))
@@ -414,20 +432,7 @@ def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> 
         # Installed from a URL: named by that URL, whatever scheme the owner wrote before the host.
         candidates.add(ent.value[4:].lower())
     elif ent.kind is EntityKind.PACKAGE and ":" in ent.value:
-        name = ent.value.split(":", 1)[1].lower()
-        candidates.add(name)
-        relative: set[str] = set()
-        for i, root in enumerate(roots if name.startswith("/") else ()):
-            prefix = (root or "").lower().rstrip("/") + "/"
-            if len(prefix) > 1 and name.startswith(prefix) and "/" in name[len(prefix) :]:
-                relative.add(name[len(prefix) :])
-            if i == 1 and len(prefix) > 1 and name.startswith(prefix):
-                relative.add("~/" + name[len(prefix) :])
-        # A relative path is named only as a whole path, not as the tail of a longer one.
-        if any(
-            re.search(r"(?<![\w./~-])" + re.escape(rel) + r"(?![\w/-])", text) for rel in relative
-        ):
-            return True
+        candidates.add(ent.value.split(":", 1)[1].lower())
     pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
     for cand in candidates:
         if len(cand) < 3:
@@ -607,6 +612,27 @@ def _executed_paths(pending: CanonicalCall, table: EntityTable) -> list[Entity]:
     return [e for e in table.pending() if e.kind is EntityKind.PATH and Role.EXECUTABLE in e.roles]
 
 
+#: The build manifests an install of a local directory runs: a Python build's `setup.py` (or the build
+#: its `pyproject.toml` or `setup.cfg` names) and an npm package's `package.json` scripts.
+_BUILD_MANIFESTS = ("setup.py", "pyproject.toml", "setup.cfg", "package.json")
+
+
+def _run_targets(
+    pending: CanonicalCall, table: EntityTable, home: str
+) -> list[tuple[str, str, bool]]:
+    """The files the pending command runs whose content an agent's write may show, as (path, display,
+    whether a missing write is a coverage gap): the executables it names, then the build manifests of
+    each local directory an installer installs, which run only when they exist."""
+    targets = [(e.value, e.display, True) for e in _executed_paths(pending, table)]
+    if pending.tool_kind is ToolKind.EXEC:
+        for ent in table.pending():
+            if ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles:
+                for name in _BUILD_MANIFESTS:
+                    path = ent.value.rstrip("/") + "/" + name
+                    targets.append((path, display_path(path, home), False))
+    return targets
+
+
 def _find_written(
     planir: PlanIR,
     history: list[CanonicalCall],
@@ -644,6 +670,59 @@ def _find_written(
                 truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _downloaded_installs(
+    pending: CanonicalCall,
+    siblings: list[CanonicalCall],
+    history: list[CanonicalCall],
+    not_run: frozenset[int],
+    copies: CopyHistory,
+    table: EntityTable,
+    now: int,
+    home: str,
+    ws: str,
+) -> dict[str, list[str]]:
+    """The local paths the pending command installs (path entities with the code-source role) that a
+    download saved: earlier in the same command, in a sibling call of the batch, or in an earlier step
+    that ran, at that path or at one it was copied or moved from. Each maps to the download's hosts, less
+    package registries (`installers.package_registry_hosts`), which serve only published packages."""
+    if pending.tool_kind is not ToolKind.EXEC:
+        return {}
+    installs = [
+        e.value
+        for e in table.pending()
+        if e.kind is EntityKind.PATH and Role.CODE_SOURCE in e.roles
+    ]
+    if not installs:
+        return {}
+    walk = install_walk(pending.command or "", home=home, workspace_root=ws, cwd=pending.get("cwd"))
+    earlier: dict[str, set[str]] = {}
+    ran = [c for c in history if c.step is not None and c.step not in not_run]
+    for call in (*siblings, *ran):
+        cmd = call.command or "" if call.tool_kind is ToolKind.EXEC else ""
+        if "curl" not in cmd and "wget" not in cmd:
+            continue
+        saved = install_walk(cmd, home=home, workspace_root=ws, cwd=call.get("cwd")).downloaded
+        for path, hosts in saved.items():
+            earlier.setdefault(path, set()).update(hosts)
+    out: dict[str, set[str]] = {p: set(h) for p, h in walk.installed.items()}
+    for path in installs:
+        for origin in (path, *copies.ancestors(path, now)):
+            if origin in earlier:
+                out.setdefault(path, set()).update(earlier[origin])
+    charged = {p: sorted(h for h in hosts if not _package_registry(h)) for p, hosts in out.items()}
+    return {p: hosts for p, hosts in charged.items() if hosts}
+
+
+def _package_registry(host: str) -> bool:
+    from ..aira.lists import load_lists
+
+    host = host.lower().strip(".")
+    registries = load_lists().strings("installers", "package_registry_hosts")
+    return any(
+        host == r or host.endswith("." + r) for r in (h.lower().strip(".") for h in registries)
+    )
 
 
 #: Arguments of a scheduler tool that name what the job runs.
@@ -1315,8 +1394,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         coverage.append(CoverageNote("copy_history_failed", f"{type(exc).__name__}: {exc}"))
 
     written: WrittenFile | None = None
-    for exe in _executed_paths(pending, table):
-        written = _find_executed(planir, history, copies, exe.value, home, ws)
+    for exe_path, exe_display, required in _run_targets(pending, table, home):
+        written = _find_executed(planir, history, copies, exe_path, home, ws)
         if written is not None:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
@@ -1327,11 +1406,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if written.truncated:
                 coverage.append(
                     CoverageNote(
-                        "written_file_truncated", f"{exe.display} from step {written.step}"
+                        "written_file_truncated", f"{exe_display} from step {written.step}"
                     )
                 )
             break
-        coverage.append(CoverageNote("written_file_not_visible", exe.display))
+        if required:
+            coverage.append(CoverageNote("written_file_not_visible", exe_display))
     if written is None:
         # A scheduler tool call that names a script the agent wrote: the job runs that file later,
         # so its content is read as the content of a file the call runs.
@@ -1379,6 +1459,24 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                         ", ".join(display_path(w.path, home) for w in parts),
                     )
                 )
+
+    downloaded_from: dict[str, list[str]] = {}
+    try:
+        downloaded_from = _downloaded_installs(
+            pending, siblings, history, not_run, copies, table, planir.session.step, home, ws
+        )
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("download_join_failed", f"{type(exc).__name__}: {exc}"))
+    for path, hosts in downloaded_from.items():
+        for h in hosts:
+            table.add(
+                EntityKind.HOST,
+                h,
+                display=h,
+                role=Role.CODE_SOURCE,
+                origin=Origin.PENDING_CALL,
+                ref=f"download:{display_path(path, home)}",
+            )
 
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
     _mark_packages_named_in_content(inputs, owner_config, table, planir.session.step)
@@ -1499,6 +1597,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         resolved=resolved,
         lineage=lineage,
         copies=copies,
+        downloaded_from=downloaded_from,
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,

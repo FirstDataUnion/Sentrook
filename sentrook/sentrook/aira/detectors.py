@@ -975,6 +975,36 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             )
             _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
             out.append(f)
+        for path in a.paths:
+            # A local path an installer installs (`pip install -e .`): still an install, but of what is
+            # on disk, which no registry serves and no library could vouch for.
+            if Role.CODE_SOURCE not in path.roles:
+                continue
+            f = Finding(
+                rule="C3.package_install",
+                cls="C3",
+                reason="code.package_install",
+                detail={"path": path.display},
+            )
+            f.add(REACH, reach, path.entity_id).add(
+                IRREVERSIBILITY, ctx.weight("code", "package_irreversibility"), path.entity_id
+            )
+            if a.source == "pending":
+                # A file the session downloaded: the host it came from supplies the code, as for an
+                # install from that URL, unless the library vouches for it. Installer hosts are not
+                # exempt here (a release asset is anyone's file); package registries never get this far.
+                unvetted = ctx.weight("code", "sensitivity_unvetted")
+                for host in ctx.prepared.downloaded_from.get(path.value, ()):
+                    ent = ctx.prepared.entities.get(EntityKind.HOST, host)
+                    info = ctx.prepared.oracle_entities.get(ent.id) if ent else None
+                    if ent is None or (
+                        isinstance(info, dict) and info.get("verdict") == "known_good"
+                    ):
+                        continue
+                    f.detail.setdefault("downloaded_from", []).append(host)
+                    if unvetted > 0:
+                        f.add(SENSITIVITY, unvetted, ent.id, "code.unvetted_source")
+            out.append(f)
 
     written = ctx.prepared.written_file
     if written is not None and a.source == "pending":

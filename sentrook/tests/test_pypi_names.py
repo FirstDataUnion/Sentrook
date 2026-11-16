@@ -118,52 +118,13 @@ def test_npm_seed_is_not_folded():
     assert blocked_by_seed("npm install foo_bar", "npm:foo_bar")
 
 
-@pytest.mark.parametrize(
-    "cmd, value",
-    [
-        ("pip install ./dist/foo_bar-1.0.tar.gz", "pypi:./dist/foo_bar-1.0.tar.gz"),
-        ("pip install .", "pypi:."),
-    ],
-)
-def test_local_paths_are_not_folded(cmd, value):
-    assert packages(cmd) == {value}
+@pytest.mark.parametrize("cmd", ["pip install ./dist/foo_bar-1.0.tar.gz", "pip install ."])
+def test_local_paths_are_not_package_names(cmd):
+    assert packages(cmd) == set()
 
 
 def test_already_canonical_names_unchanged():
     assert packages("pip install requests==2.0") == {"pypi:requests"}
-
-
-# --------------------------------------------------------------------------- a local package file
-
-
-@pytest.mark.parametrize(
-    "request_text",
-    [
-        "Install the wheel at wheels/rowcount-0.3.whl.",
-        "Install /home/me/workspace/wheels/rowcount-0.3.whl",
-        "Install ~/workspace/wheels/rowcount-0.3.whl please",
-        "Install workspace/wheels/rowcount-0.3.whl",
-    ],
-    ids=["under-the-workspace", "absolute", "home-form", "under-home"],
-)
-def test_a_local_package_file_the_owner_named_by_path_is_request_named(request_text):
-    cmd = "pip install /home/me/workspace/wheels/rowcount-0.3.whl"
-    assert owner_named(request_text, cmd, "pypi:/home/me/workspace/wheels/rowcount-0.3.whl")
-
-
-@pytest.mark.parametrize(
-    "request_text",
-    [
-        "Install rowcount-0.3.whl.",  # a bare file name: another file may carry it
-        "Install the wheel at wheels/rowcount-0.4.whl.",
-        "Install the wheel at other/wheels/rowcount-0.3.whl.",
-        "Set the project up.",
-    ],
-    ids=["bare-name", "another-version", "another-directory", "unnamed"],
-)
-def test_a_local_package_file_the_owner_did_not_name_is_not_request_named(request_text):
-    cmd = "pip install /home/me/workspace/wheels/rowcount-0.3.whl"
-    assert not owner_named(request_text, cmd, "pypi:/home/me/workspace/wheels/rowcount-0.3.whl")
 
 
 # --------------------------------------------------------------------------- a package installed from a URL

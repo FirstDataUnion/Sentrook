@@ -2,7 +2,7 @@
 # installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
 # min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
 
-version: 4
+version: 5
 
 fetch_heads:
   - curl
@@ -334,3 +334,12 @@ installer_hosts:
   - cloudflare.com
   - vercel.com
   - netlify.com
+
+# Package registries: hosts that serve only packages published through the registry, unlike installer
+# and code hosts that serve anyone's files (a release asset, a model repository). A file downloaded
+# from one and then installed from disk is the registry's package, not an unvetted code source.
+package_registry_hosts:
+  - pypi.org
+  - files.pythonhosted.org
+  - registry.npmjs.org
+  - registry.yarnpkg.com
