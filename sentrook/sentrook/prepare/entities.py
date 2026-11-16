@@ -115,6 +115,8 @@ class Entity:
     #: line, a hook, a skill, a job prompt; `prepare.written_selfmod`): a host that run sends to or runs code from.
     #: Kept apart from `roles`: the call itself neither sends to it nor runs code from it.
     future_roles: set[Role] = field(default_factory=set)
+    #: Only that written content names it: the call's own arguments, as the extractors read them, do not.
+    only_in_written_selfmod: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])

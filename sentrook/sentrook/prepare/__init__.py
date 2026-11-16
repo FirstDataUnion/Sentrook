@@ -1230,9 +1230,11 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         written_selfmod = []
         coverage.append(CoverageNote("written_selfmod_failed", f"{type(exc).__name__}: {exc}"))
     for f in written_selfmod:
+        new = table.get(f.kind, f.value) is None
         ent = table.add(f.kind, f.value, display=f.display, origin=Origin.PENDING_CALL)
-        if not ent.roles:
+        if new:
             ent.roles.add(Role.MENTIONED)
+            ent.only_in_written_selfmod = True
         if f.role is not None:
             ent.future_roles.add(f.role)
     for sib in siblings:

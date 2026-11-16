@@ -171,12 +171,14 @@ def verdicts_for_view(envelope: Envelope, *, near_miss: bool = False) -> list[di
     an OK oracle envelope, as `kind`, `value`, `verdict` (and `tier` when the library gives one),
     sorted for a stable request body. Unknown entities are left out: not vouched for is the
     model's default. With `near_miss` (the call-v5 view), an unknown entity that is a near miss of a
-    `known_good` one is listed too, as `verdict: unknown` with the entry it imitates in `near_miss`."""
+    `known_good` one is listed too, as `verdict: unknown` with the entry it imitates in `near_miss`. An entity only
+    self-modification content the call writes names (`Entity.only_in_written_selfmod`) is scored, not listed."""
     if envelope.status is not ProbeStatus.OK:
         return []
     out: list[dict[str, object]] = []
     for info in (envelope.evidence.get("entities") or {}).values():
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or info.get("only_in_written_selfmod"):
+            # named only inside self-modification content the call writes: scored here, not shown to the judge
             continue
         near = info.get("near_miss") if near_miss else None
         if info.get("verdict") not in VIEW_VERDICTS and not (
@@ -263,6 +265,8 @@ class EntityOracleProbe:
         }
         if ent.future_roles:
             info["future_roles"] = sorted(r.value for r in ent.future_roles)
+        if ent.only_in_written_selfmod:
+            info["only_in_written_selfmod"] = True
         if ent.recipient_domain_of:
             info["mail_domain_of"] = list(ent.recipient_domain_of)
         if v.credential_names:
