@@ -1,6 +1,7 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
-Order: merge → tier scores → risk → relief (recompute) → floors → reasons → tool description → flags
+Order: merge → tier scores → risk → relief (recompute) → attended-owner cap (when the parameters turn it on)
+→ floors → reasons → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
@@ -28,6 +29,7 @@ from ..response.models import (
     SuspicionTier,
 )
 from ..state.token import encode_state
+from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
 from .merge import Merged, collect, merge
@@ -266,6 +268,26 @@ def converge(
         merged = merge(claims, excluded)
         tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
+    attended: dict | None = None
+    capped_from: float | None = None
+    if params.attended_owner_cap:
+        cap = attended_check(
+            prepared,
+            claims,
+            [c for kept in merged.claims.values() for c in kept],
+            [(r.subject, r.reason) for r in relief],
+            [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
+            params,
+        )
+        if cap.applies and tiers.risk > params.attended_owner_max_risk:
+            capped_from = tiers.risk
+            tiers.risk = params.attended_owner_max_risk
+        attended = {
+            "attended": cap.attended,
+            "strong": cap.strong,
+            "capped": capped_from is not None,
+        }
+
     floors: list[FloorApplied] = []
     risk = tiers.risk
     enforced: Enforce | None = None
@@ -322,6 +344,15 @@ def converge(
     latency = None if started is None else round((time.perf_counter() - started) * 1000, 1)
     entities: dict[str, EntityDisplay] = entity_table(prepared)
     reasons = _reasons(merged, tiers, floors, relief, params, params.u)
+    if capped_from is not None:
+        # first: it is why the call is held for review rather than blocked
+        reasons.insert(
+            0,
+            Reason(
+                code="cap.attended_owner",
+                detail={"risk_before": round(capped_from * 100.0, 2)},
+            ),
+        )
     for r in reasons:  # make sure every entity a reason names is displayable
         if r.subject and r.subject not in entities:
             ent = prepared.entities.by_id(r.subject)
@@ -363,6 +394,7 @@ def converge(
                 "flags": sorted(f.value for f in flags),
                 "token_status": prepared.state.status.value,
                 "coverage_notes": sorted(coverage_codes),
+                **({"attended_owner": attended} if attended is not None else {}),
             },
         ),
     )

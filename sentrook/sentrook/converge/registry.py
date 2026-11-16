@@ -224,6 +224,8 @@ REASONS: dict[str, str] = {
     "coverage.trigger_unknown": "We could not tell what started this run.",
     "coverage.context": "Part of the session context was missing or truncated.",
     "coverage.probe_failed": "One of the analysis steps failed.",
+    # cap
+    "cap.attended_owner": "You are in this chat and asked for this work, and nothing independent points to an attack, so the call is held for your review rather than blocked.",
     # agreement
     "agreement.consequence_split": "The rule-based and model-based assessments of this call's consequences disagree.",
     "agreement.suspicion_split": "The rule-based and model-based assessments of this call's intent disagree.",

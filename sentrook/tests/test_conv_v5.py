@@ -99,13 +99,13 @@ def test_everything_else_is_as_conv_v4():
     assert V5.oracle.unvetted_package_as_root is False
 
 
-def test_serve_defaults_to_conv_v5_and_call_v8_and_the_earlier_sets_stay_selectable():
+def test_serve_defaults_to_call_v8_and_the_earlier_sets_stay_selectable():
     for cfg in (
         ServeConfig(),
         ServeConfig.from_env({}),
         ServeConfig.from_env({"SENTROOK_TEST_MODE": "1"}),
     ):
-        assert cfg.convergence == "conv-v5" and cfg.jev_call_question_set == "call-v8"
+        assert cfg.jev_call_question_set == "call-v8"
     old = ServeConfig.from_env(
         {"SENTROOK_CONVERGENCE": "conv-v4", "SENTROOK_JEV_CALL_QUESTIONS": "call-v6"}
     )
