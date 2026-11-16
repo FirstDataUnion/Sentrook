@@ -691,6 +691,35 @@ test("a cron marker in the prompt names a job only on a run the host calls a cro
   assert.ok(!r.sent.at(-1).text.includes("9f1c2a"));
 });
 
+test("a webhook or event run (trigger event) is unattended: a review is held and labelled", async () => {
+  // Must fire: OpenClaw starts webhook, mapped-hook and channel-join runs with trigger "event"; nobody can answer there.
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  const { out, rec } = await r.send("event", "hook-1");
+  assert.equal(scans.at(-1).trigger.kind, "hook");
+  assert.deepEqual(out, { block: true, blockReason: FIXTURES.held_text });
+  assert.equal(rec.decision, "held");
+  assert.equal(holds().at(-1).where, `webhook or event run, session ${rec.session_ref}`);
+  assert.equal(r.sent.length, 1);
+});
+
+test("only the event trigger becomes a hook run: chat, cron, heartbeat and others keep their kinds", async () => {
+  // Must stay silent: a chat still asks; cron and heartbeat are still held; manual, memory and no trigger are unchanged.
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  const chat = await r.send("user", "chat-1");
+  assert.equal(scans.at(-1).trigger.kind, "message");
+  assert.ok(chat.out.requireApproval, "a chat run asks");
+  const kinds: Record<string, string> = { cron: "scheduled", heartbeat: "heartbeat", manual: "system", memory: "system" };
+  for (const [trigger, kind] of Object.entries(kinds)) {
+    const { rec } = await r.send(trigger, `run-${trigger}`);
+    assert.equal(scans.at(-1).trigger.kind, kind, trigger);
+    if (trigger === "cron" || trigger === "heartbeat") assert.equal(rec.decision, "held", trigger);
+  }
+  await r.send(undefined as unknown as string, "run-none");
+  assert.equal(scans.at(-1).trigger.kind, "unknown");
+});
+
 test("a retried approve after the holds file failed to save sets one grant", async () => {
   const r = registered();
   const { rec } = await r.send("cron");

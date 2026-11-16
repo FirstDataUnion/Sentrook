@@ -214,6 +214,10 @@ export function triggerKind(run: RunContext): string {
       return "scheduled";
     case "heartbeat":
       return "heartbeat";
+    // OpenClaw 2026.11+ starts webhook, mapped-hook and channel-join runs with trigger "event" (earlier releases
+    // sent "cron"); nobody is there to answer in them.
+    case "event":
+      return "hook";
     case undefined:
     case null:
       return "unknown";

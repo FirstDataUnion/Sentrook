@@ -628,7 +628,12 @@ const plugin = {
     function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const label: Record<string, string> = { scheduled: "scheduled run", heartbeat: "heartbeat run", subagent: "subagent run" };
+      const label: Record<string, string> = {
+        scheduled: "scheduled run",
+        heartbeat: "heartbeat run",
+        hook: "webhook or event run",
+        subagent: "subagent run",
+      };
       const job = triggerKind === "scheduled" ? hold.cronJobOf(run?.prompt) : null;
       const where = hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name);
       const target = store.loadNotify();
