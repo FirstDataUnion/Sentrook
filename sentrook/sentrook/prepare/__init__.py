@@ -352,6 +352,8 @@ class Prepared:
         prov = self.pending.provider
         if prov.kind not in (ProviderKind.MCP, ProviderKind.PLUGIN) or not prov.identity:
             return None
+        if ent.kind not in (EntityKind.MCP_SERVER, EntityKind.PLUGIN):
+            return None  # another kind of entity that happens to share the provider's name
         if normalise_remote_identity(prov.identity) != ent.value:
             return None  # not the pending call's own provider
         here = (prov.kind, provider_name(ent.value))

@@ -10,7 +10,9 @@ a party the library vouches for and is not it. When it supplies code or tools, i
 covers), which lifts the score without setting an outcome. An unknown MCP server or plugin that is the
 only known destination of the call's send (a send tool that names no recipient, channel or host) can
 take a destination-grade distrust instead of the provider's (`unknown_sole_destination_provider`, off
-at 0). Unknown entities in a risky role lower `confidence.coverage`; so does an unavailable oracle.
+at 0). An unknown MCP server or plugin serving a tool that an earlier step of the session called through
+a different provider takes at least `unknown_switched_provider` (off at 0): the host's configuration did
+not simply supply it; where both arms apply the higher value wins. Unknown entities in a risky role lower `confidence.coverage`; so does an unavailable oracle.
 A host that is only the mail domain of an
 email recipient in the call is part of that recipient: when the library has nothing on the host itself
 (unknown, not a near miss, no distrust of its own), it adds no distrust and no coverage loss beyond
@@ -77,6 +79,11 @@ class OracleParams:
     #: that names no recipient, channel or host) takes at least this distrust, as a party that receives
     #: data. 0 leaves it scored as a tool provider only.
     unknown_sole_destination_provider: float = 0.0
+    #: The pending call's MCP server or plugin, when an earlier step of the session called the same tool
+    #: name through a different provider (another version of the same package is the same provider) and
+    #: the library does not vouch for this one, takes at least this distrust: the host's configuration
+    #: did not simply supply it. With the sole-destination arm, the higher value wins. 0 = off.
+    unknown_switched_provider: float = 0.0
     known_bad_distrust: float = 1.0
     #: An unknown entity in one of `NEAR_MISS_ROLES` that is a near miss of a `known_good` entry.
     near_miss_distrust: float = 0.9
@@ -347,6 +354,15 @@ class EntityOracleProbe:
                     distrust = self.params.unknown_sole_destination_provider
                     risky_role = Role.DATA_DESTINATION.value
                     reason = f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                if (
+                    not (near is not None and risky_role in NEAR_MISS_ROLES)
+                    and self.params.unknown_switched_provider > 0
+                    and self.params.unknown_switched_provider > distrust
+                    and prepared.provider_switched_from(ent) is not None
+                ):
+                    # the session used this tool through another provider: the host did not just supply it
+                    distrust = self.params.unknown_switched_provider
+                    reason = "reputation.switched_provider"
                 if risky_role in (
                     Role.DATA_DESTINATION.value,
                     Role.RECIPIENT.value,

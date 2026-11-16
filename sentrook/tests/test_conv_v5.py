@@ -40,6 +40,7 @@ CHANGED = [
     ("oracle.unvetted_package_sensitivity", 0.0, 0.67),
     ("oracle.near_miss_floor", 0.0, 0.6),
     ("oracle.unknown_sole_destination_provider", 0.0, 0.5),
+    ("oracle.unknown_switched_provider", 0.0, 0.3),
     ("context.origin_agent_data_path_owner_turn", None, 0.0),
     ("context.escalation_min_tiers", 2, 3),
     ("context.lineage_filter_overreach", 0.6, 0.8),
