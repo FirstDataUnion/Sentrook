@@ -1,6 +1,7 @@
 """The call view's token budget follows the question set it is sent with.
 
-The call probe sends one request: the call view plus the set's questions, which repeat the preamble per question.
+The call probe sends one request: the call view plus the set's questions, which carry the preamble (or the blocks
+each question lists).
 The view is built to the room the configured set leaves in the chunking budget, so a request at the limit has its
 input contents stripped rather than being sent over the model's context, and a larger question set shrinks the view
 instead of overrunning it. Small requests are not affected.
