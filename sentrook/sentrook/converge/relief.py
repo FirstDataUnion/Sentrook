@@ -32,6 +32,14 @@ expiry) that cover what the call does (`allows`):
   (`distrust` and `untrusted_origin`), unless that identity reached the agent through untrusted
   content: the provider entity itself, or the host of a remote server or the package of a local one
   as content names it, in the session's untrusted set or in this request's untrusted inputs.
+- **Credential-home relief** (parameter `credential_home`, off by default): when the credential-home check holds
+  (`prepare.credential_home`: a key read from the agent's env file and sent only to the provider API host the entity
+  library lists for its name), the call is not charged as sending sensitive data. The rule-based probes leave the env
+  file's credential sensitivity and the sensitive-data-sent floor out themselves (a floor is never lowered here);
+  convergence holds the model's call-level sensitivity to `credential_home_model_sensitivity_cap`, the level below
+  credentials, and reports the relief on the provider host. Nothing on the suspicion side changes, unless
+  `credential_home.relieve_host` (off by default) also relieves the provider host of its distrust and untrusted
+  origin, as a matched destination grant would.
 - Grants sanction access, never what happens to the data afterwards: relief never clears session flags
   and never lowers a floor (floors are applied after relief).
 """
@@ -203,6 +211,33 @@ def compute_relief(
                     "distrust",
                     "relief.owner_config_destination",
                     (("suspicion.distrust", ent.id),),
+                )
+            )
+
+    home = prepared.credential_home if params.credential_home else None
+    if home is not None:
+        relieved = {r.subject for r in out}
+        hosts = [h for h in home.hosts if h not in relieved]
+        if params.credential_home_relieve_host and hosts:
+            # the host is where the key belongs: it loses its unknown-party distrust and agent-chosen origin too
+            for h in hosts:
+                out.append(
+                    Relief(
+                        None,
+                        h,
+                        "sensitivity+distrust+untrusted_origin",
+                        "relief.credential_own_service",
+                        (("suspicion.distrust", h), ("suspicion.untrusted_origin", h)),
+                    )
+                )
+        else:
+            out.append(
+                Relief(
+                    None,
+                    home.hosts[0] if home.hosts else None,
+                    "sensitivity",
+                    "relief.credential_own_service",
+                    (),
                 )
             )
 

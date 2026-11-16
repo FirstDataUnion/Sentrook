@@ -303,6 +303,14 @@ class Scanner:
                 prepared.oracle_verdicts = verdicts_for_view(
                     env, near_miss=views[CALL] in NEAR_MISS_VIEWS
                 )
+            if env.status is ProbeStatus.OK and self.config.params.credential_home:
+                # A key sent only to its own service: AIRA, the context probe and convergence read the result.
+                from .prepare.credential_home import check as credential_home_check
+
+                (
+                    prepared.credential_home,
+                    prepared.credential_home_check,
+                ) = credential_home_check(prepared)
         with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
             futures = {}
             for step in ALL_PROBES:
