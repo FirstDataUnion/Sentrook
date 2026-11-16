@@ -633,11 +633,44 @@ def test_approve_keeps_the_hold_when_the_grants_file_is_locked(h, monkeypatch):
 # ---- what the notice carries --------------------------------------------------------------------------------
 
 CANARY = "CANARY-not-a-real-secret-4471"
+NOTICE_ABSENT = (
+    "47",
+    "risk",
+    "send.unbound_channel",
+    "exfil",
+    "Scores",
+    "suspicion",
+    "consequence",
+    "~/.config/ops/token",
+    "path",
+    CANARY,
+    "brief, key",
+    "grant",
+)
 
 
-def test_the_notice_carries_only_the_minimal_fields(h):
+def leaked(text, ids):
+    """The strings from NOTICE_ABSENT found in a notice, after taking out the hold id and session ref:
+    both are random, and either can contain "47" (the risk score the test sets) by chance."""
+    for i in ids:
+        text = text.replace(i, "<id>")
+    return [s for s in NOTICE_ABSENT if s in text]
+
+
+def test_the_leak_check_ignores_digits_inside_the_ids_and_still_finds_the_risk_score():
+    text = "To approve: /sentrook approve h-a47b00\nsession s_1f47c9"
+    assert leaked(text, ["h-a47b00", "s_1f47c9"]) == []
+    assert leaked(text + "\nrisk 47", ["h-a47b00", "s_1f47c9"]) == ["47", "risk"]
+    assert leaked(text + "\nscore 47", ["h-a47b00", "s_1f47c9"]) == ["47"]
+
+
+@pytest.mark.parametrize("forced_hex", [None, "a47b00"])
+def test_the_notice_carries_only_the_minimal_fields(h, monkeypatch, forced_hex):
     """Hermes copies the notice into the agent's own transcript: it names the run, the tool and its
     target, the category and the commands, and nothing a steered agent could use."""
+    if forced_hex:
+        real = hold.secrets.token_hex
+        monkeypatch.setattr(hold.secrets, "token_hex", lambda n: forced_hex if n == 3 else real(n))
     h.reply = {
         "risk": 47,
         "reasons": [{"code": "send.unbound_channel"}, {"code": "exfil.exec_egress"}],
@@ -671,21 +704,9 @@ def test_the_notice_carries_only_the_minimal_fields(h):
         f"To approve within 24 hours: /sentrook approve {hid}\n"
         f"For the reasons: /sentrook why {hid}"
     )
-    for absent in (
-        "47",
-        "risk",
-        "send.unbound_channel",
-        "exfil",
-        "Scores",
-        "suspicion",
-        "consequence",
-        "~/.config/ops/token",
-        "path",
-        CANARY,
-        "brief, key",
-        "grant",
-    ):
-        assert absent not in text, absent
+    if forced_hex:
+        assert hid == f"h-{forced_hex}"
+    assert leaked(text, [hid, rec["session_ref"]]) == []
 
 
 def test_why_with_a_hold_id_gives_the_owner_the_reasons(h):

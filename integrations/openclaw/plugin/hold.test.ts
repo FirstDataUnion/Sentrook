@@ -601,6 +601,21 @@ test("approve keeps the hold when the grant cannot be written", async () => {
 // ---- what the notice carries ---------------------------------------------------------------------------
 
 const CANARY = "CANARY-not-a-real-secret-4471";
+const NOTICE_ABSENT = ["47", "risk", "send.unbound_channel", "exfil", "Scores", "suspicion", "consequence", "~/.config/ops/token", "path", CANARY, "brief, key", "grant"];
+
+// The strings from NOTICE_ABSENT found in a notice, after taking out the hold id and session ref: both are
+// random, and either can contain "47" (the risk score the test sets) by chance.
+function leaked(text: string, ids: string[]): string[] {
+  const rest = ids.reduce((t, id) => t.replaceAll(id, "<id>"), text);
+  return NOTICE_ABSENT.filter((s) => rest.includes(s));
+}
+
+test("the leak check ignores digits inside the hold id and session ref, and still finds the risk score", () => {
+  const text = "To approve: /sentrook-approve h-a47b00\nsession s_1f47c9";
+  assert.deepEqual(leaked(text, ["h-a47b00", "s_1f47c9"]), []);
+  assert.deepEqual(leaked(`${text}\nrisk 47`, ["h-a47b00", "s_1f47c9"]), ["47", "risk"]);
+  assert.deepEqual(leaked(`${text}\nscore 47`, ["h-a47b00", "s_1f47c9"]), ["47"]);
+});
 
 test("the notice carries only the minimal fields: no risk, reasons, scores, entities, arguments or secrets", async () => {
   const r = registered();
@@ -630,9 +645,7 @@ test("the notice carries only the minimal fields: no risk, reasons, scores, enti
       `To approve within 24 hours: /sentrook-approve ${id}\n` +
       `For the reasons: /sentrook-why ${id}`,
   );
-  for (const absent of ["47", "risk", "send.unbound_channel", "exfil", "Scores", "suspicion", "consequence", "~/.config/ops/token", "path", CANARY, "brief, key", "grant"]) {
-    assert.ok(!r.sent[0].text.includes(absent), absent);
-  }
+  assert.deepEqual(leaked(r.sent[0].text, [id, rec.session_ref]), []);
 });
 
 test("/sentrook-why with a hold id gives the owner the reasons", async () => {
