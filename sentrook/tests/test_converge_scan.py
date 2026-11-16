@@ -713,10 +713,11 @@ def test_known_good_provider_relief(twin_case):
     assert relief[0].subject == provider.id and relief[0].grant_ref is None
     assert any(x.code == "relief.known_good_provider" for x in r.reasons)
 
-    # Switched off by parameters, the provider keeps its origin and the call scores higher.
+    # Switched off by parameters, no relief is recorded. A configured provider nothing untrusted named has no
+    # origin claim of its own and a known_good one no distrust, so the score does not move.
     off = scanner(BENIGN_ANSWERS, params=replace(load_params(), known_good_relief=False))
     r_off = off.scan(case["fixture"], options(case)).response
-    assert _provider_relief(r_off) == [] and r_off.risk > r.risk
+    assert _provider_relief(r_off) == [] and r_off.risk == r.risk
 
     # An identity the library does not know gets no relief.
     case = _mcp_case(twin_case, good, verdict="unknown")

@@ -20,6 +20,7 @@ from sentrook.jev.chunking import BUDGET_TOKENS, CHARS_PER_TOKEN, est_tokens
 from sentrook.jev.client import CONTEXT_TOKENS
 from sentrook.jev.questions import load_question_set
 from sentrook.prepare.views import (
+    CALL_QUESTIONS_RESERVE_TOKENS,
     CALL_V3,
     CALL_V5,
     MEASURED_DENSEST_STATE_CHARS_PER_TOKEN,
@@ -39,6 +40,15 @@ def test_call_v6_and_selfedit_v3_get_their_measured_room():
     call, selfedit = view_budgets([load_question_set("call-v6"), load_question_set("selfedit-v3")])
     assert call == BUDGET_TOKENS - 7_100 == 20_100
     assert selfedit == BUDGET_TOKENS - 8_800 == 18_400
+
+
+def test_call_v7_gets_its_measured_room_and_leaves_call_v6_alone():
+    """call-v7's questions estimate well over the default reserve; its measured cost fits under it."""
+    qs = load_question_set("call-v7")
+    assert est_tokens(qs.built_questions()) > CALL_QUESTIONS_RESERVE_TOKENS
+    assert question_reserve_tokens(qs) == 11_200 < CALL_QUESTIONS_RESERVE_TOKENS
+    assert view_budgets([qs]) == (BUDGET_TOKENS - 11_200, None)
+    assert view_budgets([load_question_set("call-v6")]) == (20_100, None)
 
 
 def test_the_served_sets_are_measured_at_their_current_sha():

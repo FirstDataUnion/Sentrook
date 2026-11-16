@@ -379,9 +379,20 @@ export function callCwd(args: unknown): string | null {
 }
 
 /**
+ * The owner and repository a repo grant names, without its host: the call may fetch the repository from another
+ * host than the one the pattern is written with (`raw.githubusercontent.com` for `github.com`, or a git remote).
+ */
+function repoPath(pattern: string): string {
+  const rest = pattern.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/\/+$/, "").replace(/\.git$/, "");
+  const slash = rest.indexOf("/");
+  return slash < 0 ? rest : rest.slice(slash + 1);
+}
+
+/**
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
- * call's provider identity (a `remote:` pattern without its port, as the identity is). Paths are read the way the scanner resolves them: under home in any form (`~/…`,
+ * call's provider identity (a `remote:` pattern without its port, as the identity is), and a repo grant by its
+ * owner and repository alone. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
  * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace. A destination is read the way the
  * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send names
  * `platform` (`callPlatform`).
@@ -412,7 +423,11 @@ export function relevantGrants(
     const hay = [...texts];
     if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
     const forms: Array<[string, boolean]> =
-      g.kind === "destination" ? destinationForms(pats[i]!, opts.platform ?? null) : [[pats[i]!, false]];
+      g.kind === "destination"
+        ? destinationForms(pats[i]!, opts.platform ?? null)
+        : g.kind === "repo"
+          ? [[repoPath(pats[i]!), false]]
+          : [[pats[i]!, false]];
     if (!forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
     out.push({
       grant_ref: `g_${i + 1}`,

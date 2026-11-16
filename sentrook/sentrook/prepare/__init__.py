@@ -9,12 +9,13 @@ before any probe.
 3. Canonicalise tool arguments (pending call, siblings, history).
 4. Classify each new input as trusted or untrusted from its source facts.
 5. Extract entities with roles from the pending call, siblings, untrusted inputs, the request, grants,
-   history and, when the call executes a file the agent wrote earlier, that file's content; assign
+   history and, when the call executes a file the agent wrote earlier (or a copy of one, `copies`)
+   or is a scheduler tool call naming such a file as the job's script, that file's content; assign
    opaque IDs. Record the call's lineage in the history: the agent-written file it runs, the
    agent-written files it reads or sends, items the agent moved or copied into a tree the call
    destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
-   introduced first is not promoted by a later echo). Entities from a scanned read of the agent's own
+   introduced first is not promoted by a later echo, nor a path by the receipt of the step that wrote it). Entities from a scanned read of the agent's own
    config or instruction files (one the agent did not write in this session, and not tainted) are the
    owner's: they join the token's trusted set instead. Bind the pending call to the token's sensitive
    and tainted sets (`session_sets`): the files and tables it reads, runs or applies that the sets hold,
@@ -45,10 +46,12 @@ from ..planir.models import InputKind, NewInput, PlanIR, ProviderKind, ResultSta
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
 from . import views
+from .copies import CopyHistory, copy_history
 from .entities import (
     Entity,
     EntityKind,
     EntityTable,
+    Found,
     Origin,
     Role,
     channel_names,
@@ -56,12 +59,18 @@ from .entities import (
     extract_call,
     extract_exec,
     extract_mentions,
+    host_of_url,
+    install_walk,
+    is_computed_package,
     is_under,
     normalise_host,
     normalise_path,
     normalise_recipient,
+    normalise_remote_identity,
     paths_in,
     platform_targets,
+    provider_counterpart,
+    provider_name,
     resolve_token,
     send_platform,
     shell_segments,
@@ -85,10 +94,11 @@ from .session_sets import (
     owner_config_path,
     producer_artefacts,
 )
-from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
+from .sibling_join import Resolution, SiblingWrite, resolve_pending, sibling_writes
 from .skill_steps import skill_step_calls
 from .steering import steering_marks, steers
 from .trust import Trust, classify
+from .url_carry import CarriedText, url_carries_local
 
 __all__ = [
     "Lineage",
@@ -98,6 +108,7 @@ __all__ = [
     "PrepareOptions",
     "WrittenFile",
     "prepare",
+    "sql_targets",
     "InvalidPlanIR",
 ]
 
@@ -231,6 +242,8 @@ class Prepared:
     #: synthetic exec calls, source `resolved`. Empty when no sibling write reaches the command.
     resolved: list[CanonicalCall] = field(default_factory=list)
     lineage: Lineage = field(default_factory=Lineage)
+    #: The history's copies and moves (`copies.copy_history`): which file a path is a copy of.
+    copies: CopyHistory = field(default_factory=CopyHistory)
     coverage: list[CoverageNote] = field(default_factory=list)
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
@@ -248,6 +261,10 @@ class Prepared:
     #: Per input read from the owner's config: hashes it added to the trusted set (withdrawn if the
     #: same scan judges that input injected).
     trusted_by_input: dict[int, list[str]] = field(default_factory=dict)
+    #: Local paths the pending call installs that a download in this command or an earlier step that ran
+    #: saved (or a copy or move of one): normalised path → the download's hosts, each a code source of
+    #: the call (`_downloaded_installs`).
+    downloaded_from: dict[str, list[str]] = field(default_factory=dict)
     #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
     #: the oracle runs before the other probes. Empty when it did not run or failed.
     oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -274,6 +291,14 @@ class Prepared:
     #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
     #: matchers read. Jev's views carry the full text.
     request_words: str = ""
+    #: The parts of the pending fetch's URL that reproduce a local read in this request (`url_carry`): a fetch
+    #: with no body that carries local data out all the same. Empty for every other call.
+    url_carries: list[CarriedText] = field(default_factory=list)
+    #: The values the sibling join put in place of the pending command's substitutions
+    #: (`Resolution.values`). Empty when nothing was substituted.
+    sibling_values: tuple[str, ...] = ()
+    #: New inputs read from the owner's own configuration: owner-supplied, not untrusted content.
+    owner_config_inputs: frozenset[int] = frozenset()
 
     @property
     def platform(self) -> str:
@@ -301,6 +326,45 @@ class Prepared:
             return prior
         return max(seqs) if prior is None else max(prior, max(seqs))
 
+    def provider_from_untrusted(self, ent: Entity) -> bool:
+        """The provider's identity reached the agent through content it read: the provider entity, or the
+        host or package its identity names, is in the session's untrusted set from earlier steps or came
+        in through this request's untrusted inputs. The earlier set is read as it was before this request
+        added to it, so a request full of untrusted entities cannot push the counterpart out of it."""
+        if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
+            return True
+        counterpart = provider_counterpart(ent.value)
+        if counterpart is None:
+            return False
+        kind, value = counterpart
+        other = self.entities.get(kind, value)
+        if other is not None and (
+            other.in_session_untrusted or Origin.UNTRUSTED_INPUT in other.origins
+        ):
+            return True
+        return entity_hash(self.state.salt, kind.value, value) in self.prior_untrusted
+
+    def provider_switched_from(self, ent: Entity) -> str | None:
+        """The provider an earlier step of this session called the pending call's tool through, when the
+        pending call routes the same tool name through `ent`, a different MCP server or plugin. Another
+        version of the same package is the same provider. None when no earlier step called that tool, or
+        every one that did went through `ent`."""
+        prov = self.pending.provider
+        if prov.kind not in (ProviderKind.MCP, ProviderKind.PLUGIN) or not prov.identity:
+            return None
+        if ent.kind not in (EntityKind.MCP_SERVER, EntityKind.PLUGIN):
+            return None  # another kind of entity that happens to share the provider's name
+        if normalise_remote_identity(prov.identity) != ent.value:
+            return None  # not the pending call's own provider
+        here = (prov.kind, provider_name(ent.value))
+        for h in self.history:
+            if h.tool != self.pending.tool or not h.provider.identity:
+                continue
+            earlier = normalise_remote_identity(h.provider.identity)
+            if (h.provider.kind, provider_name(earlier)) != here:
+                return earlier
+        return None
+
     def denied_steps(self) -> list[CanonicalCall]:
         denied = {"denied_by_user", "blocked", "review_timed_out"}
         by_step = {h.step: h for h in self.planir.history}
@@ -311,12 +375,16 @@ class Prepared:
         ]
 
 
-def _mark_request_named(request_text: str, table: EntityTable) -> None:
+def _mark_request_named(
+    request_text: str, table: EntityTable, roots: tuple[str | None, ...] = ()
+) -> None:
     """An owner may name a recipient, channel, account or host in a form the mention extractor does not
     produce on its own: a person's name (`Pay Mara Quill`), an account number, `#ops-yard` for a channel
     target, or a host that only the pending call spells out. A pending-call entity whose value appears
     verbatim in the request (case-insensitive, whole token) is request-named. A PyPI name is folded on
-    extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does."""
+    extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does.
+    A local path an installer installs (`pip install /work/wheels/x.whl`) is also named by its path under
+    one of `roots` (the workspace, home, the call's working directory), as an owner writes it."""
     text = request_text.lower()
     if not text:
         return
@@ -326,7 +394,8 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
             or Origin.REQUEST in ent.origins
         ):
             continue
-        if ent.kind not in (
+        installed = ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles
+        if not installed and ent.kind not in (
             EntityKind.RECIPIENT,
             EntityKind.CHANNEL,
             EntityKind.HOST,
@@ -334,19 +403,81 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
             EntityKind.PLUGIN,
         ):
             continue
-        candidates = {ent.value.lower()}
-        if ent.kind is EntityKind.CHANNEL:
-            candidates.update(channel_names(ent.value))
-        if ent.kind is EntityKind.PACKAGE and ":" in ent.value:
-            candidates.add(ent.value.split(":", 1)[1].lower())
-        pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
-        for cand in candidates:
-            if len(cand) < 3:
+        if _value_named(ent, text, roots):
+            ent.add_origin(Origin.REQUEST, "verbatim")
+
+
+def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> bool:
+    """The entity's value appears in the lower-cased `text` as a whole token: verbatim, a channel by
+    its shorter names, a package also without its ecosystem prefix (a PyPI name spelt as PyPI allows),
+    a package installed from a URL by that URL's host and path. A path is named by its path under one
+    of `roots`, or its `~/` form; a bare file name is not enough, since another file may carry it."""
+    if ent.kind is EntityKind.PATH:
+        name = ent.value.lower()
+        relative: set[str] = set()
+        for i, root in enumerate(roots):
+            prefix = (root or "").lower().rstrip("/") + "/"
+            if len(prefix) > 1 and name.startswith(prefix) and "/" in name[len(prefix) :]:
+                relative.add(name[len(prefix) :])
+            if i == 1 and len(prefix) > 1 and name.startswith(prefix):
+                relative.add("~/" + name[len(prefix) :])
+        # A relative path is named only as a whole path, not as the tail of a longer one.
+        return any(
+            re.search(r"(?<![\w./~-])" + re.escape(rel) + r"(?![\w/-])", text) for rel in relative
+        )
+    candidates = {ent.value.lower()}
+    if ent.kind is EntityKind.CHANNEL:
+        candidates.update(channel_names(ent.value))
+    if ent.kind is EntityKind.PACKAGE and ent.value.startswith("git+"):
+        # Installed from a URL: named by that URL, whatever scheme the owner wrote before the host.
+        candidates.add(ent.value[4:].lower())
+    elif ent.kind is EntityKind.PACKAGE and ":" in ent.value:
+        candidates.add(ent.value.split(":", 1)[1].lower())
+    pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
+    for cand in candidates:
+        if len(cand) < 3:
+            continue
+        body = "[-_.]+".join(map(re.escape, cand.split("-"))) if pypi else re.escape(cand)
+        if re.search(r"(?<![\w.@-])" + body + r"(?![\w-])", text):
+            return True
+    return False
+
+
+def _mark_packages_named_in_content(
+    inputs: list[PreparedInput], owner_config: set[int], table: EntityTable, now: int
+) -> None:
+    """A document can name a package without an installer command the extractor reads: in a sentence
+    ("Install kiln-rowcount."), a list, or a command inside backticks. A package the pending call, a
+    sibling or the script it runs installs, whose name appears as a whole token in an untrusted input,
+    came from that input. Not when the agent's own call named the package at or before the step
+    that produced the input: a result that names it back (an install's own output) echoes the
+    agent's choice. An operand computed at run time has no name to find."""
+    for pi in inputs:
+        content = pi.input.content or ""
+        if not content or pi.trust is not Trust.UNTRUSTED or pi.input.input_seq in owner_config:
+            continue
+        text = content.lower()
+        ref = f"input:{pi.input.input_seq}"
+        arrived = pi.step if pi.step is not None else now
+        for ent in table:
+            if ent.kind not in (EntityKind.PACKAGE, EntityKind.PLUGIN):
                 continue
-            body = "[-_.]+".join(map(re.escape, cand.split("-"))) if pypi else re.escape(cand)
-            if re.search(r"(?<![\w.@-])" + body + r"(?![\w-])", text):
-                ent.add_origin(Origin.REQUEST, "verbatim")
-                break
+            if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
+                continue
+            if ref in (ent.origins.get(Origin.UNTRUSTED_INPUT) or ()):
+                continue
+            if is_computed_package(ent.value):
+                continue
+            if ent.first_history_step is not None and ent.first_history_step <= arrived:
+                continue
+            if not _value_named(ent, text):
+                continue
+            ent.add_origin(Origin.UNTRUSTED_INPUT, ref)
+            ent.first_untrusted_step = (
+                arrived
+                if ent.first_untrusted_step is None
+                else min(ent.first_untrusted_step, arrived)
+            )
 
 
 #: Local parts that are roles rather than names; a capitalised "Team" or "Info" in the request is not a
@@ -368,12 +499,9 @@ _SELF_COPY_RE = re.compile(
 
 def _came_from_untrusted_content(ent: Entity) -> bool:
     """The address reached the agent through content it read, not through the owner."""
-    agent_first = (
-        ent.first_history_step is not None
-        and ent.first_untrusted_step is not None
-        and ent.first_history_step < ent.first_untrusted_step
+    return ent.in_session_untrusted or (
+        Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first
     )
-    return ent.in_session_untrusted or (Origin.UNTRUSTED_INPUT in ent.origins and not agent_first)
 
 
 def _inherit_recipient_domain(table: EntityTable) -> None:
@@ -484,15 +612,49 @@ def _executed_paths(pending: CanonicalCall, table: EntityTable) -> list[Entity]:
     return [e for e in table.pending() if e.kind is EntityKind.PATH and Role.EXECUTABLE in e.roles]
 
 
+#: The build manifests an install of a local directory runs: a Python build's `setup.py` (or the build
+#: its `pyproject.toml` or `setup.cfg` names) and an npm package's `package.json` scripts.
+_BUILD_MANIFESTS = ("setup.py", "pyproject.toml", "setup.cfg", "package.json")
+
+
+def _run_targets(
+    pending: CanonicalCall, table: EntityTable, home: str
+) -> list[tuple[str, str, bool]]:
+    """The files the pending command runs whose content an agent's write may show, as (path, display,
+    whether a missing write is a coverage gap): the executables it names, then the build manifests of
+    each local directory an installer installs, which run only when they exist."""
+    targets = [(e.value, e.display, True) for e in _executed_paths(pending, table)]
+    if pending.tool_kind is ToolKind.EXEC:
+        for ent in table.pending():
+            if ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles:
+                for name in _BUILD_MANIFESTS:
+                    path = ent.value.rstrip("/") + "/" + name
+                    targets.append((path, display_path(path, home), False))
+    return targets
+
+
 def _find_written(
-    planir: PlanIR, history: list[CanonicalCall], path: str, home: str, ws: str
+    planir: PlanIR,
+    history: list[CanonicalCall],
+    path: str,
+    home: str,
+    ws: str,
+    *,
+    after: int | None = None,
+    before: int | None = None,
 ) -> WrittenFile | None:
+    """The agent's own writes and edits of `path` in the history (optionally only the steps after
+    `after` and before `before`), as one file."""
     best: WrittenFile | None = None
     for call in history:
         if (
             call.tool_kind not in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT)
             or not call.path
             or call.step is None
+        ):
+            continue
+        if (after is not None and call.step <= after) or (
+            before is not None and call.step >= before
         ):
             continue
         if normalise_path(call.path, home=home, workspace_root=ws) != path:
@@ -508,6 +670,161 @@ def _find_written(
                 truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _downloaded_installs(
+    pending: CanonicalCall,
+    siblings: list[CanonicalCall],
+    history: list[CanonicalCall],
+    not_run: frozenset[int],
+    copies: CopyHistory,
+    table: EntityTable,
+    now: int,
+    home: str,
+    ws: str,
+) -> dict[str, list[str]]:
+    """The local paths the pending command installs (path entities with the code-source role) that a
+    download saved: earlier in the same command, in a sibling call of the batch, or in an earlier step
+    that ran, at that path or at one it was copied or moved from. Each maps to the download's hosts, less
+    package registries (`installers.package_registry_hosts`), which serve only published packages."""
+    if pending.tool_kind is not ToolKind.EXEC:
+        return {}
+    installs = [
+        e.value
+        for e in table.pending()
+        if e.kind is EntityKind.PATH and Role.CODE_SOURCE in e.roles
+    ]
+    if not installs:
+        return {}
+    walk = install_walk(pending.command or "", home=home, workspace_root=ws, cwd=pending.get("cwd"))
+    earlier: dict[str, set[str]] = {}
+    ran = [c for c in history if c.step is not None and c.step not in not_run]
+    for call in (*siblings, *ran):
+        cmd = call.command or "" if call.tool_kind is ToolKind.EXEC else ""
+        if "curl" not in cmd and "wget" not in cmd:
+            continue
+        saved = install_walk(cmd, home=home, workspace_root=ws, cwd=call.get("cwd")).downloaded
+        for path, hosts in saved.items():
+            earlier.setdefault(path, set()).update(hosts)
+    out: dict[str, set[str]] = {p: set(h) for p, h in walk.installed.items()}
+    for path in installs:
+        for origin in (path, *copies.ancestors(path, now)):
+            if origin in earlier:
+                out.setdefault(path, set()).update(earlier[origin])
+    charged = {p: sorted(h for h in hosts if not _package_registry(h)) for p, hosts in out.items()}
+    return {p: hosts for p, hosts in charged.items() if hosts}
+
+
+def _package_registry(host: str) -> bool:
+    from ..aira.lists import load_lists
+
+    host = host.lower().strip(".")
+    registries = load_lists().strings("installers", "package_registry_hosts")
+    return any(
+        host == r or host.endswith("." + r) for r in (h.lower().strip(".") for h in registries)
+    )
+
+
+#: Arguments of a scheduler tool that name what the job runs.
+_SCHEDULED_SCRIPT_KEYS = ("script", "script_path")
+_SCHEDULED_COMMAND_KEYS = ("command", "cmd")
+
+
+def _scheduled_scripts(
+    pending: CanonicalCall, history: list[CanonicalCall], home: str, ws: str
+) -> list[str]:
+    """The agent-written files a scheduler tool call names as what the job runs (its `script` or
+    `command` argument), in the order they were last written. The job runs later with nobody
+    asked, so creating it is running the file. A path names its file; a bare name (the host looks
+    it up in its own scripts directory) names every file of that name written this session. Empty
+    for other tools, for a read-only action and for a name no step wrote."""
+    if pending.tool_kind not in (ToolKind.OTHER, ToolKind.MCP):
+        return []
+    from ..aira.lists import load_lists
+
+    lists = load_lists()
+    prefix = str(lists.get("selfmod", "tool_name_prefix", default=r"(?:\A|__|[.:/])"))
+    if not any(
+        rule.get("reason") == "selfmod.scheduler"
+        and re.search(prefix + rule.regex.pattern, pending.tool or "", re.IGNORECASE)
+        for rule in lists.rules("selfmod", "tool_names")
+    ):
+        return []
+    action = pending.raw.get("action")
+    if isinstance(action, str) and action.strip().lower() in {
+        a.lower() for a in lists.strings("selfmod", "read_actions")
+    }:
+        return []
+    written: dict[str, int] = {}
+    for call in history:
+        if (
+            call.tool_kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT)
+            and call.path
+            and call.step is not None
+        ):
+            written[normalise_path(call.path, home=home, workspace_root=ws)] = call.step
+    if not written:
+        return []
+    found: list[str] = []
+    for keys, is_command in ((_SCHEDULED_SCRIPT_KEYS, False), (_SCHEDULED_COMMAND_KEYS, True)):
+        for key in keys:
+            value = pending.raw.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            for tokens in shell_segments(value):
+                for tok in tokens:
+                    if tok.startswith("-"):
+                        continue
+                    if tok.startswith(("/", "~", "$HOME")):
+                        path = normalise_path(tok, home=home, workspace_root=ws)
+                        matches = [path] if path in written else []
+                    else:
+                        name = tok.removeprefix("./")
+                        if is_command and "/" not in name and "." not in name:
+                            continue  # a command word (`sh`, `echo`), not a file
+                        matches = [w for w in written if w.endswith("/" + name)]
+                    found.extend(m for m in matches if m not in found)
+    return sorted(found, key=lambda path: written[path])
+
+
+def _find_executed(
+    planir: PlanIR,
+    history: list[CanonicalCall],
+    copies: CopyHistory,
+    path: str,
+    home: str,
+    ws: str,
+) -> WrittenFile | None:
+    """The content of the file at `path` as the agent made it: its own writes, or, when the file
+    was copied or moved there, the writes of the file it was copied from (as they stood at the
+    copy) followed by any edits made to the copy. None when no step shows the content."""
+    now = planir.session.step
+    link = copies.onto(path, now)
+    if link is None:
+        return _find_written(planir, history, path, home, ws)
+    later = _find_written(planir, history, path, home, ws, after=link.step)
+    source: WrittenFile | None = None
+    at = link.step
+    for origin in (link.source, *copies.ancestors(link.source, link.step + 1)):
+        behind = copies.onto(origin, at + 1)
+        source = _find_written(
+            planir, history, origin, home, ws, after=behind.step if behind else None, before=at + 1
+        )
+        if source is not None or behind is None:
+            break
+        at = behind.step
+    if source is None:
+        return later  # a copy of a file no step wrote: only the edits made to the copy are visible
+    if later is None:
+        return WrittenFile(
+            path=path, step=source.step, content=source.content, truncated=source.truncated
+        )
+    return WrittenFile(
+        path=path,
+        step=later.step,
+        content=source.content + "\n" + later.content,
+        truncated=source.truncated or later.truncated,
+    )
 
 
 def _own_store_inputs(
@@ -692,8 +1009,8 @@ def _moved_in(
     return out
 
 
-def _sql_targets(pending: CanonicalCall) -> list[str]:
-    """Database objects the pending call destroys: the object named by a destructive SQL
+def sql_targets(pending: CanonicalCall) -> list[str]:
+    """Database objects a call destroys: the object named by a destructive SQL
     statement (`destructive.yaml` `sql_patterns`) in an exec command or a query argument."""
     text = pending.command if pending.tool_kind is ToolKind.EXEC else pending.get("content")
     if not isinstance(text, str) or not text:
@@ -721,7 +1038,7 @@ def _lineage(
 ) -> Lineage:
     lineage = Lineage(executed=written)
     lineage.destructive_targets = _destructive_targets(pending, home, ws)
-    lineage.sql_targets = _sql_targets(pending)
+    lineage.sql_targets = sql_targets(pending)
 
     written_paths = {
         normalise_path(c.path, home=home, workspace_root=ws)
@@ -873,16 +1190,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
 
     # 5. entities
     table = EntityTable()
-    for f in extract_call(pending, home=home, workspace_root=ws):
-        table.add_found(f, Origin.PENDING_CALL)
-    for sib in siblings:
-        for f in extract_call(sib, home=home, workspace_root=ws):
-            table.add_found(f, Origin.SIBLING, sib.call_id)
     # What the siblings write, and the pending command read through it: the resolved command's
     # entities take the pending call's roles and the sibling's origin. A failure here leaves the
     # scan without the join rather than failing it.
     writes: list[SiblingWrite] = []
     resolved: list[CanonicalCall] = []
+    resolution = Resolution()
     try:
         writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
         resolution = resolve_pending(platform, pending, writes, home=home, workspace_root=ws)
@@ -891,9 +1204,22 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             coverage.append(
                 CoverageNote("sibling_join_truncated", f"first {len(resolved)} resolved commands")
             )
+    except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
+        writes, resolved, resolution = [], [], Resolution()
+        coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
+    for f in extract_call(pending, home=home, workspace_root=ws):
+        if resolution.substituted and is_computed_package(f.value):
+            # The resolved commands name what this operand computes; one they leave computed
+            # comes back through them.
+            continue
+        table.add_found(f, Origin.PENDING_CALL)
+    for sib in siblings:
+        for f in extract_call(sib, home=home, workspace_root=ws):
+            table.add_found(f, Origin.SIBLING, sib.call_id)
+    try:
         for call in resolved:
             for f in extract_call(call, home=home, workspace_root=ws):
-                table.add_found(f, Origin.SIBLING, call.call_id)
+                table.add_found(f, Origin.SIBLING, call.call_id).in_resolved_command = True
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
@@ -908,12 +1234,39 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         except Exception as exc:  # noqa: BLE001
             coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
+    # A fetch whose URL reproduces a local read sends that text whatever its method: the host it names
+    # receives data. A failure here leaves the call a read rather than failing the scan.
+    url_carries: list[CarriedText] = []
+    try:
+        url_carries = url_carries_local(
+            pending, inputs, {c.step: c for c in history if c.step is not None}, words
+        )
+    except Exception as exc:  # noqa: BLE001
+        coverage.append(CoverageNote("url_carry_failed", f"{type(exc).__name__}: {exc}"))
+    if url_carries:
+        carried_to = host_of_url(str(pending.get("url") or ""))
+        if carried_to:
+            table.add_found(
+                Found(EntityKind.HOST, carried_to, carried_to, Role.DATA_DESTINATION),
+                Origin.PENDING_CALL,
+            )
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
         ref = None
         if f.kind is EntityKind.HOST:
             ref = "address" if f.domain_of is not None else "mention"
         table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST, ref=ref)
-    _mark_request_named(words, table)
+    pending_cwd = pending.get("cwd")
+    _mark_request_named(
+        words,
+        table,
+        (
+            ws,
+            home,
+            normalise_path(pending_cwd, home=home, workspace_root=ws)
+            if isinstance(pending_cwd, str) and pending_cwd
+            else None,
+        ),
+    )
 
     grant_hits: dict[str, list[str]] = {}
     call_grants: list[str] = []
@@ -1028,9 +1381,21 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     else min(ent.first_history_step, call.step)
                 )
 
+    # Copies and moves that ran: a denied or blocked step copied nothing.
+    not_run = frozenset(
+        h.step
+        for h in planir.history
+        if h.decision.value in ("denied_by_user", "blocked", "review_timed_out", "blocked_on_error")
+    )
+    copies = CopyHistory()
+    try:
+        copies = copy_history(history, not_run, home=home, workspace_root=ws)
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("copy_history_failed", f"{type(exc).__name__}: {exc}"))
+
     written: WrittenFile | None = None
-    for exe in _executed_paths(pending, table):
-        written = _find_written(planir, history, exe.value, home, ws)
+    for exe_path, exe_display, required in _run_targets(pending, table, home):
+        written = _find_executed(planir, history, copies, exe_path, home, ws)
         if written is not None:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
@@ -1041,30 +1406,93 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if written.truncated:
                 coverage.append(
                     CoverageNote(
-                        "written_file_truncated", f"{exe.display} from step {written.step}"
+                        "written_file_truncated", f"{exe_display} from step {written.step}"
                     )
                 )
             break
-        coverage.append(CoverageNote("written_file_not_visible", exe.display))
+        if required:
+            coverage.append(CoverageNote("written_file_not_visible", exe_display))
+    if written is None:
+        # A scheduler tool call that names a script the agent wrote: the job runs that file later,
+        # so its content is read as the content of a file the call runs.
+        try:
+            scheduled = _scheduled_scripts(pending, history, home, ws)
+        except Exception as exc:  # noqa: BLE001 (an odd argument must not fail the scan)
+            scheduled = []
+            coverage.append(CoverageNote("scheduled_script_failed", f"{type(exc).__name__}: {exc}"))
+        parts = [
+            w
+            for w in (_find_executed(planir, history, copies, s, home, ws) for s in scheduled)
+            if w is not None
+        ]
+        if parts:
+            written = WrittenFile(
+                path=parts[-1].path,
+                step=max(w.step for w in parts),
+                content="\n".join(w.content for w in parts),
+                truncated=any(w.truncated for w in parts),
+            )
+            for w in parts:
+                table.add(
+                    EntityKind.PATH,
+                    w.path,
+                    display=display_path(w.path, home),
+                    role=Role.EXECUTABLE,
+                    origin=Origin.PENDING_CALL,
+                )
+            for f in extract_exec(written.content, home=home, workspace_root=ws, cwd=None):
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
+            for f in extract_mentions(written.content, home=home, workspace_root=ws, role=None):
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
+            if written.truncated:
+                coverage.append(
+                    CoverageNote(
+                        "written_file_truncated",
+                        f"{display_path(written.path, home)} from step {written.step}",
+                    )
+                )
+            if len(parts) > 1:
+                # A bare name several written files share: all of them are read.
+                coverage.append(
+                    CoverageNote(
+                        "scheduled_script_ambiguous",
+                        ", ".join(display_path(w.path, home) for w in parts),
+                    )
+                )
+
+    downloaded_from: dict[str, list[str]] = {}
+    try:
+        downloaded_from = _downloaded_installs(
+            pending, siblings, history, not_run, copies, table, planir.session.step, home, ws
+        )
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("download_join_failed", f"{type(exc).__name__}: {exc}"))
+    for path, hosts in downloaded_from.items():
+        for h in hosts:
+            table.add(
+                EntityKind.HOST,
+                h,
+                display=h,
+                role=Role.CODE_SOURCE,
+                origin=Origin.PENDING_CALL,
+                ref=f"download:{display_path(path, home)}",
+            )
 
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
+    _mark_packages_named_in_content(inputs, owner_config, table, planir.session.step)
 
     # 6. untrusted set
     prior_trusted = frozenset(state.trusted)
     for ent in table:
         ent.hash = entity_hash(state.salt, ent.kind.value, ent.value)
         ent.in_session_untrusted = ent.hash in prior_untrusted
-        ent.in_session_trusted = ent.hash in prior_trusted or Origin.OWNER_CONFIG in ent.origins
+        ent.in_prior_trusted = ent.hash in prior_trusted
+        ent.in_session_trusted = ent.in_prior_trusted or Origin.OWNER_CONFIG in ent.origins
     additions: list[str] = []
     for ent in table:
         if Origin.UNTRUSTED_INPUT not in ent.origins or ent.hash is None:
             continue
-        agent_first = (
-            ent.first_history_step is not None
-            and ent.first_untrusted_step is not None
-            and ent.first_history_step < ent.first_untrusted_step
-        )
-        if not agent_first:
+        if not ent.agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
     trusted_by_input: dict[int, list[str]] = {}
@@ -1168,6 +1596,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         written_file=written,
         resolved=resolved,
         lineage=lineage,
+        copies=copies,
+        downloaded_from=downloaded_from,
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,
@@ -1188,4 +1618,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         view_meta=view_meta,
         request_words=words,
         own_store_inputs=own_store_inputs,
+        url_carries=url_carries,
+        sibling_values=resolution.values,
+        owner_config_inputs=frozenset(owner_config),
     )

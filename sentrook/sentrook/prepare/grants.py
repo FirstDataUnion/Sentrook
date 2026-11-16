@@ -26,6 +26,12 @@ Matching, by kind:
   (and when the host OS is unknown), not on macOS or Windows.
 - `provider`: an MCP server or plugin identity against a glob; a pattern ending in `/` covers the scope.
   A `remote:` pattern is read without its port or IPv6 brackets, as the identity is.
+- `repo`: a repository on a host where any account publishes (`installers.multi_tenant_hosts`) against
+  a glob written the way the scanner names it: `github.com/<owner>/<repo>` (a raw or archive host's URL
+  form, `raw.githubusercontent.com/<owner>/<repo>`, reads as the same), `github.com/<owner>/*` for an
+  account. The host and the owner must be written out: a pattern that would cover every account on the
+  host (`github.com`, `github.com/*`, `*/x/y`) covers nothing, and nor does any pattern on a host
+  whose paths name no repository (a release-asset host).
 - `tool`: the whole call, when every command in it is covered: a pattern without spaces against the
   command name (directory stripped), one with spaces against the whole command.
 """
@@ -53,6 +59,7 @@ from .entities import (
     normalise_remote_identity,
     resolve_token,
     shell_segments,
+    tenant_rule,
 )
 
 DISTRUST = "suspicion.distrust"
@@ -108,6 +115,12 @@ GRANT_KINDS: dict[str, GrantKind] = {
             entity_kinds=frozenset({EntityKind.MCP_SERVER, EntityKind.PLUGIN}),
             relieves=(DISTRUST,),
             reason="relief.provider_grant",
+        ),
+        GrantKind(
+            "repo",
+            entity_kinds=frozenset({EntityKind.REPO}),
+            relieves=(DISTRUST, UNTRUSTED_ORIGIN, SENSITIVITY),
+            reason="relief.repo_grant",
         ),
         GrantKind(
             "tool",
@@ -185,7 +198,14 @@ _LONG_UPLOAD = (
 )
 
 
-def _command_sends(command: str, depth: int) -> bool:
+def sends_by_unwritten_route(command: str) -> bool:
+    """The command sends through a tool whose destination need not be written as a host (`nc`, `scp`,
+    `rsync`, `ssh`, `git push`, `aws s3`, `/dev/tcp`, …): its entities may not show every party it
+    reaches. An upload with `curl` or `wget` names its host and is not one of these."""
+    return _command_sends(command, 0, uploads=False)
+
+
+def _command_sends(command: str, depth: int, *, uploads: bool = True) -> bool:
     if re.search(r"/dev/(?:tcp|udp)/", command):
         return True
     for tokens in shell_segments(command):
@@ -199,7 +219,7 @@ def _command_sends(command: str, depth: int) -> bool:
             return True
         if head.startswith("python") and "http.server" in args:
             return True
-        if head in ("curl", "wget"):
+        if uploads and head in ("curl", "wget"):
             for i, tok in enumerate(args):
                 nxt = args[i + 1] if i + 1 < len(args) else ""
                 if tok.startswith(_LONG_UPLOAD) or tok.startswith("--request=P"):
@@ -213,7 +233,7 @@ def _command_sends(command: str, depth: int) -> bool:
         if head in _SHELLS and depth < 3:
             for i, tok in enumerate(args[:-1]):
                 if tok.startswith("-") and not tok.startswith("--") and "c" in tok:
-                    if _command_sends(args[i + 1], depth + 1):
+                    if _command_sends(args[i + 1], depth + 1, uploads=uploads):
                         return True
                     break
     return False
@@ -271,10 +291,31 @@ def _provider(pat: str, entity: Entity, host_os: OS) -> bool:
     return fnmatch.fnmatch(value, pat)
 
 
+_GLOB_CHARS = re.compile(r"[*?\[\]]")
+
+
+def _repo(pat: str, entity: Entity, host_os: OS) -> bool:
+    """A repo pattern names its host and owner without wildcards; the host may be written as a raw or
+    archive host, which reads as the site it serves."""
+    pat = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pat.strip().lower()).rstrip("/").removesuffix(".git")
+    host, _, rest = pat.partition("/")
+    rule = None if _GLOB_CHARS.search(host) else tenant_rule(host)
+    if rule is None or rule.segments <= 0:
+        return False
+    segs = [s for s in rest.split("/") if s]
+    if segs and segs[0] in rule.skip:
+        segs = segs[1:]
+    owner = segs[1:] if segs and segs[0] in rule.prefixes else segs
+    if not owner or _GLOB_CHARS.search(owner[0]) or owner[0] in (".", ".."):
+        return False
+    return fnmatch.fnmatchcase(entity.value.lower(), "/".join([rule.name, *segs]))
+
+
 _ENTITY_MATCHERS: dict[str, Callable[[str, Entity, OS], bool]] = {
     "destination": _destination,
     "file": _file,
     "provider": _provider,
+    "repo": _repo,
 }
 
 

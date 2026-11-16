@@ -31,7 +31,7 @@ import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
 import { bindingProblem } from "./planir.ts";
 import { type GrantsFile, readTime, Store } from "./store.ts";
 
-export const KINDS = ["destination", "file", "provider"];
+export const KINDS = ["destination", "file", "provider", "repo"];
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
 const SESSION_REF = /^s_[0-9a-f]{12}$/;
@@ -227,7 +227,7 @@ export function grantUsage(cmd: Cmd): string {
   return (
     `usage: ${cmd("grant")} <kind> <pattern> [--persistent | --scope session|persistent] ` +
     "[--session <ref>] [--allows read,write] [--expires 12h]\n" +
-    "kind is destination, file or provider; --allows is for file grants; scope defaults to " +
+    "kind is destination, file, provider or repo (github.com/<owner>/<repo>); --allows is for file grants; scope defaults to " +
     "session: this session only, or the one --session names (a ref from " +
     `${cmd("history")}); cron jobs, subagents and other chats need --persistent`
   );
@@ -277,7 +277,7 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
   if (pos.length !== 2) return "";
   const kind = pos[0]!.toLowerCase();
   const pattern = pos[1]!;
-  if (!KINDS.includes(kind)) return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file or provider.`;
+  if (!KINDS.includes(kind)) return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file, provider or repo.`;
   if (pattern.length > MAX_PATTERN || !printable(pattern)) {
     return `The pattern must be at most ${MAX_PATTERN} printable characters.`;
   }

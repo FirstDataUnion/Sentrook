@@ -234,7 +234,7 @@ COMMANDS: dict[str, Subcommand] = {
         session=True,
     ),
     "grant": Subcommand(
-        "add a grant: kind destination|file|provider; flags --persistent (default: this session "
+        "add a grant: kind destination|file|provider|repo; flags --persistent (default: this session "
         "only, not cron jobs, subagents or other chats), --session <ref> (from history), "
         "--allows read,write (file only), --expires 12h",
         run_grant,

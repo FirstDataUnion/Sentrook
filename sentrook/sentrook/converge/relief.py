@@ -11,10 +11,22 @@ expiry) that cover what the call does (`allows`):
   contributions.
 - **Request-named destination relief**: on an owner-sender turn, a destination or
   recipient the owner named verbatim in the request is treated as a matched destination grant, for
-  sends only, never for code sources or installs.
+  sends only, never for code sources or installs. The parameters may extend it to the host's own task
+  turns (`request_named_relief.trigger_kinds`: scheduled, heartbeat, sub-agent), whose task text names
+  the destination; never to a turn whose sender is someone else or an open channel, and on those turns
+  never to a destination that content the agent read supplied. Who wrote the task stays priced by
+  `request_origin`.
 - **Known-good destination relief**: a destination or recipient the entity oracle marks `known_good`
   is treated the same way, for sends only, unless it reached the agent through untrusted content
   (a destination dictated by something the agent read keeps its origin, however reputable).
+  The parameters may relax that (`known_good_relief.content_destinations`, off by default) when the
+  library entry matches exactly, the session is not tainted, this scan's exposure check stayed below
+  the taint threshold with no new content left unjudged, and nothing steered the agent to it.
+- **Owner-config destination relief** (parameter `owner_config_relief`, off by default): a destination
+  or recipient the owner's own configuration supplied on an earlier scan (the token's trusted set) loses
+  its `distrust` contribution, for sends only; never for trust a config read in this request establishes
+  (its exposure check may fail, or judge the read injected), never when content the agent read also
+  supplied it, and never in a scan that judges a config read naming it injected.
 - **Known-good provider relief**: an MCP server or plugin the call's tool comes from, whose identity
   the entity oracle marks `known_good`, is relieved as a matched provider grant would leave it
   (`distrust` and `untrusted_origin`), unless that identity reached the agent through untrusted
@@ -29,11 +41,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from ..planir.models import SenderRelation
+from ..enums import SessionFlag
+from ..planir.models import SenderBasis, SenderRelation, TriggerKind
 from ..prepare import Prepared
-from ..prepare.entities import Entity, Origin, Role, provider_counterpart
+from ..prepare.entities import Entity, Origin, Role
 from ..prepare.grants import GRANT_KINDS, sends_off_host
-from ..state.token import entity_hash
 from .merge import ANY_SUBJECT
 from .params import ConvergenceParams
 
@@ -48,29 +60,53 @@ class Relief:
     excluded: tuple[tuple[str, str | None], ...]
 
 
-def _provider_from_untrusted(prepared: Prepared, ent: Entity) -> bool:
-    """The provider's identity reached the agent through content it read: the provider entity, or the
-    host or package its identity names, is in the session's untrusted set from earlier steps or came
-    in through this request's untrusted inputs. The earlier set is read as it was before this request
-    added to it, so a request full of untrusted entities cannot push the counterpart out of it."""
-    if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
-        return True
-    counterpart = provider_counterpart(ent.value)
-    if counterpart is None:
-        return False
-    kind, value = counterpart
-    other = prepared.entities.get(kind, value)
-    if other is not None and (
-        other.in_session_untrusted or Origin.UNTRUSTED_INPUT in other.origins
+#: Trigger kinds the host generates from a stored task: the only ones `request_named_trigger_kinds` may add.
+_HOST_TASK_KINDS = frozenset({TriggerKind.SCHEDULED, TriggerKind.HEARTBEAT, TriggerKind.SUBAGENT})
+_OPEN_BASIS = frozenset({SenderBasis.GROUP_CHAT, SenderBasis.HOST_OPEN_ACCESS})
+
+
+def _host_task_turn(prepared: Prepared, params: ConvergenceParams) -> bool:
+    """A scheduled, heartbeat or sub-agent turn the parameters list, whose sender is not someone else and
+    whose channel is not open to anyone."""
+    trig = prepared.planir.trigger
+    if (
+        trig.kind not in _HOST_TASK_KINDS
+        or trig.kind.value not in params.request_named_trigger_kinds
     ):
-        return True
-    return entity_hash(prepared.state.salt, kind.value, value) in prepared.prior_untrusted
+        return False
+    return trig.sender.relation is not SenderRelation.OTHER and not _OPEN_BASIS & set(
+        trig.sender.basis
+    )
+
+
+def _clean_content(
+    prepared: Prepared, params: ConvergenceParams, ent: Entity, exposure: float | None
+) -> bool:
+    """The parameters allow known-good relief for a destination content supplied, and that content
+    reads as clean: the session is not tainted (no earlier input was judged an injection), this scan's
+    exposure check stayed below the taint threshold, new content did not go unjudged (a failed check,
+    or inputs the check leaves out), and nothing steered the agent to the host."""
+    if not params.known_good_content_relief:
+        return False
+    if SessionFlag.TAINTED in prepared.state.flags or ent.steered:
+        return False
+    if exposure is None:
+        return not any(i.input.content for i in prepared.untrusted_inputs(new_only=True))
+    return exposure < params.jev_taint_threshold
 
 
 def compute_relief(
-    prepared: Prepared, params: ConvergenceParams, known_good: Iterable[str] = ()
+    prepared: Prepared,
+    params: ConvergenceParams,
+    known_good: Iterable[str] = (),
+    withdrawn_trust: Iterable[str] = (),
+    known_good_exact: Iterable[str] = (),
+    exposure: float | None = None,
 ) -> list[Relief]:
-    """`known_good`: entity ids the oracle probe reported as `known_good` in this scan."""
+    """`known_good`: entity ids the oracle probe reported as `known_good` in this scan.
+    `withdrawn_trust`: hashes of the entities a config read supplied that this scan judged injected.
+    `known_good_exact`: the `known_good` ids whose library entry matched exactly.
+    `exposure`: this scan's merged exposure, None when no probe judged the new inputs."""
     out: list[Relief] = []
     grants = {g.grant_ref: g for g in prepared.planir.grants}
     off_host = sends_off_host(prepared.pending, prepared.entities.pending())
@@ -115,13 +151,19 @@ def compute_relief(
 
     if params.request_named_relief:
         owner = prepared.planir.trigger.sender.relation is SenderRelation.OWNER
-        if owner or not params.request_named_owner_only:
+        host_task = not owner and _host_task_turn(prepared, params)
+        if owner or host_task or not params.request_named_owner_only:
             relieved = {r.subject for r in out}
             for ent in prepared.entities:
                 if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
                     continue  # the destination may live in the script the call runs
                 if ent.id in relieved or Origin.REQUEST not in ent.origins:
                     continue
+                if host_task and (
+                    ent.in_session_untrusted
+                    or (Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first)
+                ):
+                    continue  # a task text is not the owner's word against content that supplied it
                 roles = {r.value for r in ent.roles}
                 if not roles & set(params.request_named_roles):
                     continue
@@ -137,8 +179,36 @@ def compute_relief(
                     )
                 )
 
+    if params.owner_config_relief:
+        relieved = {r.subject for r in out}
+        withdrawn = set(withdrawn_trust)
+        for ent in prepared.entities:
+            if ent.id in relieved or not ent.in_prior_trusted or ent.hash in withdrawn:
+                continue
+            if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
+                continue
+            if ent.in_session_untrusted or (
+                Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first
+            ):
+                continue  # content the agent read wins over the owner's config
+            roles = {r.value for r in ent.roles}
+            if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
+                continue  # a configured host sanctions sending to it, never running code from it
+            if not roles & set(params.request_named_roles):
+                continue
+            out.append(
+                Relief(
+                    None,
+                    ent.id,
+                    "distrust",
+                    "relief.owner_config_destination",
+                    (("suspicion.distrust", ent.id),),
+                )
+            )
+
     if params.known_good_relief:
         relieved = {r.subject for r in out}
+        exact = set(known_good_exact)
         for eid in known_good:
             ent = prepared.entities.by_id(eid)
             if ent is None or eid in relieved:
@@ -149,7 +219,7 @@ def compute_relief(
             if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
                 continue  # reputation sanctions sending to a host, never running code from it
             if Role.TOOL_PROVIDER.value in roles:
-                if not _provider_from_untrusted(prepared, ent):
+                if not prepared.provider_from_untrusted(ent):
                     out.append(
                         Relief(
                             None,
@@ -162,7 +232,9 @@ def compute_relief(
                 continue
             if not roles & set(params.request_named_roles):
                 continue
-            if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
+            if (ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins) and not (
+                eid in exact and _clean_content(prepared, params, ent, exposure)
+            ):
                 continue  # a destination taken from content the agent read keeps its origin
             out.append(
                 Relief(

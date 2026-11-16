@@ -5,13 +5,25 @@ it executes) touches, with its roles, and contributes `suspicion.distrust` per e
 role. A `known_bad` entity also raises the `known_bad_entity` floor (1.0, block). An unknown entity that
 is a near miss of a `known_good` one (another TLD, a hyphen, a confusable character or one edit away)
 gets the near-miss distrust instead of the unknown one when it takes data, code or tools: it looks like
-a party the library vouches for and is not it. Unknown entities in a risky role lower
-`confidence.coverage`; so does an unavailable oracle. A host that is only the mail domain of an
+a party the library vouches for and is not it. When it supplies code or tools, it can also raise the
+`lookalike_code_source` floor (`near_miss_floor`, off by default; never for an entity a grant
+covers), which lifts the score without setting an outcome. An unknown MCP server or plugin that is the
+only known destination of the call's send (a send tool that names no recipient, channel or host) can
+take a destination-grade distrust instead of the provider's (`unknown_sole_destination_provider`, off
+at 0). An unknown MCP server or plugin serving a tool that an earlier step of the session called through
+a different provider takes at least `unknown_switched_provider` (off at 0): the host's configuration did
+not simply supply it; where both arms apply the higher value wins. Unknown entities in a risky role lower `confidence.coverage`; so does an unavailable oracle.
+A host that is only the mail domain of an
 email recipient in the call is part of that recipient: when the library has nothing on the host itself
 (unknown, not a near miss, no distrust of its own), it adds no distrust and no coverage loss beyond
-the recipient's, so relief on the address leaves nothing behind on its domain. Paths are not reputation
-questions (their sensitivity comes from AIRA's path classes) and loopback hosts are the agent's own
-machine, so neither is looked up.
+the recipient's, so relief on the address leaves nothing behind on its domain. An entity only another
+call in the batch names (not the pending call, the file it runs, or the pending command read through a
+sibling's write) is looked up and reported, but an unknown one adds no distrust and no coverage loss
+here: every call in a batch has its own scan. A known-bad one, a look-alike of a vouched entity and one
+the library gives a distrust of its own count wherever in the batch they are. Paths are not reputation
+questions (their sensitivity comes from AIRA's path classes), loopback hosts are the agent's own
+machine, and a recipient written as a self-reference (`me`, `self`, `owner`) is the account the tool
+runs as, so none of these is looked up.
 """
 
 from __future__ import annotations
@@ -30,6 +42,7 @@ from ..oracle.client import (
     VerdictKind,
     is_local_host,
 )
+from ..planir.models import ToolKind
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role
 from .base import Contribution, Envelope, Floor
@@ -43,6 +56,7 @@ LOOKUP_KINDS = (
     EntityKind.PACKAGE,
     EntityKind.PLUGIN,
     EntityKind.MCP_SERVER,
+    EntityKind.REPO,
 )
 
 
@@ -62,12 +76,36 @@ class OracleParams:
             Role.MENTIONED.value: 0.1,
         }
     )
+    #: An unknown MCP server or plugin that is the only known destination of the call's send (a send tool
+    #: that names no recipient, channel or host) takes at least this distrust, as a party that receives
+    #: data. 0 leaves it scored as a tool provider only.
+    unknown_sole_destination_provider: float = 0.0
+    #: The pending call's MCP server or plugin, when an earlier step of the session called the same tool
+    #: name through a different provider (another version of the same package is the same provider) and
+    #: the library does not vouch for this one, takes at least this distrust: the host's configuration
+    #: did not simply supply it. With the sole-destination arm, the higher value wins. 0 = off.
+    unknown_switched_provider: float = 0.0
     known_bad_distrust: float = 1.0
     #: An unknown entity in one of `NEAR_MISS_ROLES` that is a near miss of a `known_good` entry.
     near_miss_distrust: float = 0.9
     known_bad_floor: float = 1.0
+    #: Minimum risk for a near miss that supplies code or tools to the call (`NEAR_MISS_CODE_ROLES`),
+    #: unless a grant covers it. It lifts the score and sets no outcome (0 = off).
+    near_miss_floor: float = 0.0
     coverage_unknown_risky: float = 0.8
     coverage_unavailable: float = 0.7
+    #: `consequence.sensitivity` of installing a package the library does not know and neither the
+    #: owner's request nor a grant names: its install scripts run with the agent's own read access and
+    #: nobody vouched for them. Read by the AIRA probe, which sees the install (0 = off).
+    unvetted_package_sensitivity: float = 0.0
+    #: Where "the library does not know it" says something: ecosystems the library covers with its
+    #: known-good packages, and installs from a URL (`git+`), which no registry stands behind.
+    #: Elsewhere (system package managers and the like) unknown only means not covered.
+    unvetted_package_ecosystems: tuple[str, ...] = ("npm", "pypi", "git+")
+    #: Carry that sensitivity for a package the owner named too, when the install runs as root
+    #: (`sudo apt-get install …`): the package's maintainer scripts then run with root's access, and
+    #: naming a package is not vetting it. Off by default.
+    unvetted_package_as_root: bool = False
 
 
 #: The roles in which a near miss takes the near-miss distrust: the entity receives data or supplies
@@ -80,6 +118,12 @@ NEAR_MISS_ROLES = frozenset(
         Role.EXECUTABLE.value,
         Role.TOOL_PROVIDER.value,
     }
+)
+
+#: The roles in which a near miss supplies code or tools: what the call runs, or runs through, is the
+#: look-alike's, whatever little the call itself carries.
+NEAR_MISS_CODE_ROLES = frozenset(
+    {Role.CODE_SOURCE.value, Role.EXECUTABLE.value, Role.TOOL_PROVIDER.value}
 )
 
 VIEW_VERDICTS = (VerdictKind.KNOWN_GOOD.value, VerdictKind.KNOWN_BAD.value)
@@ -151,6 +195,23 @@ class EntityOracleProbe:
             out.append(ent)
         return out
 
+    def _sole_destination_providers(self, prepared: Prepared) -> set[str]:
+        """Entity ids of the providers that are the only known destination of the pending call's send."""
+        if self.params.unknown_sole_destination_provider <= 0:
+            return set()
+        if prepared.pending.tool_kind not in (ToolKind.MCP, ToolKind.OTHER):
+            return set()
+        try:
+            from ..aira.analysis import analyse
+            from ..aira.detectors import sole_destination_providers
+            from ..aira.lists import load_lists
+
+            lists = load_lists()
+            refs = sole_destination_providers(analyse(prepared.pending, prepared, lists), lists)
+        except Exception:  # noqa: BLE001 (without the rule lists the provider keeps its own role)
+            return set()
+        return {r.entity_id for r in refs if r.entity_id}
+
     @staticmethod
     def _entity_info(ent: Entity, v: Verdict, roles: list[str], near: dict | None) -> dict:
         info = {
@@ -171,8 +232,10 @@ class EntityOracleProbe:
     def run(self, prepared: Prepared) -> Envelope:
         started = time.perf_counter()
         candidates = self._candidates(prepared)
+        sole_destinations = self._sole_destination_providers(prepared)
         local = [e for e in candidates if e.kind is EntityKind.HOST and is_local_host(e.value)]
-        remote = [e for e in candidates if e not in local]
+        own = [e for e in candidates if e.self_recipient]
+        remote = [e for e in candidates if e not in local and e not in own]
         queries = [
             EntityQuery(
                 kind=e.kind.value, value=e.value, roles=tuple(sorted(r.value for r in e.roles))
@@ -210,6 +273,21 @@ class EntityOracleProbe:
                 "verdict": "local",
                 "roles": sorted(r.value for r in ent.roles),
             }
+        for ent in own:
+            contributions.append(
+                Contribution(
+                    signal="suspicion.distrust",
+                    value=0.0,
+                    subject=ent.id,
+                    reason="reputation.self_recipient",
+                )
+            )
+            per_entity[ent.id] = {
+                "kind": ent.kind.value,
+                "value": ent.display,
+                "verdict": "self",
+                "roles": sorted(r.value for r in ent.roles),
+            }
         for ent in remote:
             v = result.get(ent.kind.value, ent.value)
             near = _near_miss(v)
@@ -244,10 +322,48 @@ class EntityOracleProbe:
                 if near is not None and risky_role in NEAR_MISS_ROLES:
                     distrust = max(distrust, self.params.near_miss_distrust)
                     reason = f"reputation.near_miss_{ent.kind.value}"
+                    if (
+                        self.params.near_miss_floor > 0
+                        and NEAR_MISS_CODE_ROLES & set(roles)
+                        and Origin.GRANT not in ent.origins
+                    ):
+                        floors.append(
+                            Floor(
+                                floor="lookalike_code_source",
+                                min_risk=self.params.near_miss_floor,
+                                subject=ent.id,
+                                reason=reason,
+                            )
+                        )
                 elif v.distrust is None and ent.recipient_domain_of:
                     # only a recipient's mail domain: the recipient's own claim speaks for it
                     per_entity[ent.id] = self._entity_info(ent, v, roles, near)
                     continue
+                elif v.distrust is None and ent.sibling_only:
+                    # only another call in the batch names it: that call's own scan charges it
+                    per_entity[ent.id] = {
+                        **self._entity_info(ent, v, roles, near),
+                        "sibling_only": True,
+                    }
+                    continue
+                elif (
+                    v.distrust is None
+                    and ent.id in sole_destinations
+                    and self.params.unknown_sole_destination_provider > distrust
+                ):
+                    # the send names nowhere else for the data to go: the provider receives it
+                    distrust = self.params.unknown_sole_destination_provider
+                    risky_role = Role.DATA_DESTINATION.value
+                    reason = f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                if (
+                    not (near is not None and risky_role in NEAR_MISS_ROLES)
+                    and self.params.unknown_switched_provider > 0
+                    and self.params.unknown_switched_provider > distrust
+                    and prepared.provider_switched_from(ent) is not None
+                ):
+                    # the session used this tool through another provider: the host did not just supply it
+                    distrust = self.params.unknown_switched_provider
+                    reason = "reputation.switched_provider"
                 if risky_role in (
                     Role.DATA_DESTINATION.value,
                     Role.RECIPIENT.value,
@@ -291,6 +407,11 @@ class EntityOracleProbe:
                 "available": result.available,
                 "queried": len(queries),
                 "local": [e.id for e in local],
+                **(
+                    {"sole_destination_provider": sorted(sole_destinations)[0]}
+                    if sole_destinations
+                    else {}
+                ),
                 **({"lookup_error": lookup_error, "fallback": "null"} if lookup_error else {}),
             },
         )

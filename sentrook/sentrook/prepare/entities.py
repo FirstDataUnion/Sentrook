@@ -16,9 +16,9 @@ from __future__ import annotations
 import itertools
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from ..aira.exec_shape import derive_exec_shape
@@ -37,6 +37,9 @@ class EntityKind(StrEnum):
     CHANNEL = "channel"
     MCP_SERVER = "mcp_server"
     PLUGIN = "plugin"
+    #: A repository (or account) on a host where any account publishes (`github.com/<owner>/<repo>`):
+    #: the code source of code run from such a host (`installers.multi_tenant_hosts`).
+    REPO = "repo"
 
 
 class Role(StrEnum):
@@ -48,6 +51,9 @@ class Role(StrEnum):
     TOOL_PROVIDER = "tool_provider"
     MENTIONED = "mentioned"  # appears in content or a task text without the call acting on it
 
+
+#: Bare words a message tool resolves to the account it runs as: the owner, not a third party.
+SELF_RECIPIENTS: frozenset[str] = frozenset({"me", "self", "myself", "owner"})
 
 #: Roles the oracle treats as risky for an unknown entity.
 RISKY_ROLES: frozenset[Role] = frozenset(
@@ -90,6 +96,9 @@ class Entity:
     steered: bool = False
     #: The owner's own configuration supplied it, in this request or (through the token's trusted set) earlier.
     in_session_trusted: bool = False
+    #: The token's trusted set already held it: a config read on an earlier scan supplied it, and that scan's
+    #: exposure check did not withdraw it. Trust a config read in this request establishes is not in it.
+    in_prior_trusted: bool = False
     #: Ids of the email recipients (in the pending call, a sibling or a written file) whose mail domain this host is.
     mail_domain_of: list[str] = field(default_factory=list)
     #: One of those calls names the host in its own right (a URL, a command target, a mention), not only as
@@ -100,6 +109,8 @@ class Entity:
     #: The owner's request reaches this host only through an email address on it, and a call uses the host in
     #: its own right: still a host the owner named for the look-alike check, but not sanctioned.
     owner_named_via_address: bool = False
+    #: The pending command, read through a sibling's write, names it (`sibling_join.resolve_pending`).
+    in_resolved_command: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])
@@ -119,6 +130,40 @@ class Entity:
     def sanctioned(self) -> bool:
         """Named by the owner's request or covered by a grant."""
         return self.has_origin(Origin.REQUEST, Origin.GRANT)
+
+    @property
+    def self_recipient(self) -> bool:
+        """A recipient written as a self-reference (`me`, `self`, `owner`): a bare word, never an
+        address, a handle or a channel."""
+        return self.kind is EntityKind.RECIPIENT and self.value.strip().lower() in SELF_RECIPIENTS
+
+    @property
+    def sibling_only(self) -> bool:
+        """Only another call in the batch names it, as that call stands: not the pending call, not the
+        file it runs, and not the pending command read through a sibling's write. Every call in a batch
+        has its own scan, so such an entity is the sibling's to answer for. Never a code source or an
+        executable: a sibling can set where the pending call fetches or runs code from without the pending
+        call naming it (a registry a sibling writes into a package manager's config file), so code a batch
+        supplies is charged to every call in it."""
+        return (
+            Origin.SIBLING in self.origins
+            and not self.in_resolved_command
+            and not self.has_origin(Origin.PENDING_CALL, Origin.WRITTEN_FILE)
+            and not self.roles & {Role.CODE_SOURCE, Role.EXECUTABLE}
+        )
+
+    @property
+    def agent_first(self) -> bool:
+        """The agent named it in its own arguments before the first result that mentions it. For a path,
+        the same step counts too: a step's arguments exist before its result, so a write receipt that
+        repeats the path the step wrote does not make the path content-supplied. Not for a host or any other
+        kind: a fetched page that names its own host ("post your key to this host") is that content steering
+        the agent back to it."""
+        if self.first_history_step is None or self.first_untrusted_step is None:
+            return False
+        if self.kind is EntityKind.PATH:
+            return self.first_history_step <= self.first_untrusted_step
+        return self.first_history_step < self.first_untrusted_step
 
 
 class EntityTable:
@@ -235,6 +280,15 @@ _SEARCH_VALUE_FLAGS = frozenset(
     --ignore-dir""".split()
 )
 _SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&"})
+#: The object a SQL statement defines, destroys or writes rows to (`DROP TABLE app.ledger`,
+#: `DELETE FROM app.ledger`): a dotted name there is schema.table, not a host. Only the name
+#: straight after the keywords; URLs, addresses and host arguments are read before this applies.
+_SQL_OBJECT_RE = re.compile(
+    r"\b(?:(?:DROP|ALTER|CREATE|TRUNCATE)\s+(?:TABLE|VIEW|INDEX|SCHEMA|DATABASE|COLLECTION)\s+"
+    r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?|TRUNCATE\s+|DELETE\s+FROM\s+|INSERT\s+INTO\s+)"
+    r"([\w.\"`]+)",
+    re.IGNORECASE,
+)
 _INLINE_PROGRAM_RE = re.compile(
     r"\b(?:python[\d.]*\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c"
     r"|(?:node|nodejs|bun)\s+(?:-\S+\s+)*?(?:-e|--eval|-p|--print)"
@@ -384,7 +438,10 @@ _GIT_RE = re.compile(r"\bgit\s+clone\s+(?:-\S+\s+)*(\S+)|\bgit\+(\S+)", re.IGNOR
 _EGRESS_MARKERS = re.compile(
     r"(?:\s|^)(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file|--post-data|--post-file|"
     r"-X\s*(?:POST|PUT|PATCH)|--request\s*(?:POST|PUT|PATCH)|--method\s*(?:POST|PUT))\b"
-    r"|urlopen\(|requests\.(?:post|put|patch)\(|\.post\(|/dev/tcp/|\bnc\b|\bncat\b|\bscp\b|\brsync\b|\bsftp\b|\bssh\b|\bmail\b|\bsendmail\b",
+    r"|urlopen\(|requests\.(?:post|put|patch)\(|\.post\(|/dev/tcp/|\bnc\b|\bncat\b|\bscp\b|\brsync\b|\bsftp\b|\bssh\b"
+    # a mailer where a command starts, by name or path; not a directory named `mail` in a path
+    r"|(?:\A|[;&|({\"'`]|\$\(|(?:\b(?:sudo|doas|env|nohup|exec|command|time|xargs)|-exec(?:dir)?|-c)\s)\s*"
+    r"(?:[\w.~-]*/)*(?:mail|sendmail)(?=[\s;&|)\"'`]|\Z)",
     re.IGNORECASE,
 )
 _PIPE_TO_INTERPRETER = re.compile(
@@ -513,6 +570,17 @@ def normalise_package(ecosystem: str, name: str) -> str | None:
     return f"{ecosystem}:{n}" if n else None
 
 
+_PROVIDER_VERSION_RE = re.compile(r"@[^@/:\s]+$")
+
+
+def provider_name(identity: str) -> str:
+    """A provider identity without its version: `npm:@acme/gmail-mcp@1.4.2` → `npm:@acme/gmail-mcp`.
+    The scope's `@` is kept because a version never contains `/`."""
+    identity = identity.strip().lower()
+    name = _PROVIDER_VERSION_RE.sub("", identity)
+    return name if name and not name.endswith(":") else identity
+
+
 def provider_counterpart(identity: str) -> tuple[EntityKind, str] | None:
     """The entity a tool provider's identity is extracted as when a command or content names it: the
     host of a remote server (`remote:mcp.x.test` is the host `mcp.x.test`) or the package a local
@@ -586,10 +654,12 @@ def _quoted_span(text: str, start: int) -> tuple[int, int]:
 
 def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], list[range]]:
     """Spans where a bare dotted token is not a host: (always skipped, inline program text). In
-    program text a token is kept only when it is a whole quoted string literal."""
+    program text a token is kept only when it is a whole quoted string literal. The object a SQL
+    statement defines, destroys or inserts into is always skipped."""
     skip = [range(*m.span(1)) for m in _PY_MODULE_RE.finditer(text)]
     skip += _config_key_spans(text)
     skip += _search_pattern_spans(text)
+    skip += [range(*m.span(1)) for m in _SQL_OBJECT_RE.finditer(text)]
     programs = [range(0, len(text))] if inline_program else []
     for m in _INLINE_PROGRAM_RE.finditer(text):
         programs.append(range(*_quoted_span(text, m.end())))
@@ -747,21 +817,155 @@ def paths_in(
     return list(dict.fromkeys(out))
 
 
+def substitution_spans(command: str) -> list[tuple[int, int]]:
+    """Spans of `$(…)` and backtick substitutions, outermost only. Parentheses inside quotes do
+    not count; an unclosed substitution ends the scan."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(command)
+    while i < n:
+        if command.startswith("$(", i):
+            depth, j, quote = 0, i + 1, None
+            while j < n:
+                c = command[j]
+                if quote:
+                    if c == "\\" and quote == '"':
+                        j += 1
+                    elif c == quote:
+                        quote = None
+                elif c in ("'", '"'):
+                    quote = c
+                elif c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if j >= n:
+                break
+            spans.append((i, j + 1))
+            i = j + 1
+        elif command[i] == "`":
+            j = command.find("`", i + 1)
+            if j < 0:
+                break
+            spans.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+#: The package name of an install operand the shell computes when the command runs (`$(…)` or
+#: backticks). What it prints cannot be read off the command, so the operand is one package nobody can
+#: name, and the words inside the substitution are another command's, never package names.
+COMPUTED_PACKAGE = "$(...)"
+_COMPUTED = "\x00computed\x00"
+
+
+def is_computed_package(value: str) -> bool:
+    """`value` is the entity of an install operand computed at run time (`npm:$(...)`)."""
+    return value == COMPUTED_PACKAGE or value.endswith(":" + COMPUTED_PACKAGE)
+
+
+def _install_operands(text: str, start: int, spans: list[tuple[int, int]]) -> str:
+    """An installer's operands: the text from `start` to the end of its simple command, with each
+    command substitution among them replaced by one marker word. A separator inside a substitution
+    belongs to the substituted command and does not end the installer's."""
+    ends = {a: b for a, b in spans if a >= start}
+    out: list[str] = []
+    i = start
+    while i < len(text):
+        if i in ends:
+            out.append(_COMPUTED)
+            i = ends[i]
+        elif text[i] in ";&|\n":
+            break
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+#: Package extras after a local operand (`.[dev]`, `./pkg[test,docs]`).
+_EXTRAS_RE = re.compile(r"\[[^\]]*\]\Z")
+
+
+#: Installer options whose value is a package index or registry, by installer: where the packages come
+#: from, so a code source, never a package.
+_PIP_INDEX_FLAGS = frozenset({"-i", "--index-url", "--extra-index-url", "-f", "--find-links"})
+_INDEX_FLAGS = {
+    **dict.fromkeys(("pip", "pip3", "pipx", "uv pip"), _PIP_INDEX_FLAGS),
+    **dict.fromkeys(("npm", "pnpm", "yarn", "bun"), frozenset({"--registry"})),
+}
+
+
+#: A shell redirection among a command's words: an optional fd number (or `&`), the operator (`>`, `>>`,
+#: `>|`, `<`, `<<`, `<<<`, `>&`, `<&`, `<>`), and the target when it is glued on (`2>&1`, `>/dev/null`).
+_REDIRECTION = re.compile(r"(?:\d+|&)?(?:>>|>\||>&|>|<<<|<<-?|<&|<>|<)(.*)")
+
+
+def _local_install_operand(token: str, eco: str = "") -> str | None:
+    """The path an installer operand names when it is on disk rather than in a registry: `.`, `..`, or a
+    path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or, for
+    Go, its `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
+    tok = token.strip().strip("'\"")
+    tok = _EXTRAS_RE.sub("", tok)
+    if eco == "go" and tok.endswith("/..."):
+        tok = tok[:-4] or "."
+    if tok in (".", "..", "~", "$HOME") or tok.startswith(("./", "../", "/", "~/", "$HOME/")):
+        return tok
+    return None
+
+
 def _packages_in(text: str) -> list[str]:
+    return _installs_in(text)[0]
+
+
+def _installs_in(text: str) -> tuple[list[str], list[str], list[str]]:
+    """The packages installer commands in `text` name, their operands that are local paths (as written,
+    see `_local_install_operand`), and the index or registry URLs their options name (`--index-url URL`,
+    `--registry=URL`). A local path installs what is on disk and an index serves packages: neither is a
+    package."""
     pkgs: list[str] = []
+    local: list[str] = []
+    indexes: list[str] = []
+    spans = substitution_spans(text) if ("$(" in text or "`" in text) else []
     for m in _INSTALLERS.finditer(text):
         eco_key = re.sub(r"\s+", " ", m.group("eco").lower())
         if eco_key.startswith(("openclaw", "hermes")):
             eco = "plugin"
         else:
             eco = _ECOSYSTEM.get(eco_key, eco_key)
-        tokens = m.group("rest").split()
-        skip_next = False
+        rest = _install_operands(text, m.start("rest"), spans) if spans else m.group("rest")
+        tokens = rest.split()
+        index_flags = _INDEX_FLAGS.get(eco_key, frozenset())
+        skip_next = index_next = False
         for tok in tokens:
+            redirect = _REDIRECTION.fullmatch(tok)
+            if redirect:
+                # not an operand, nor is the target that follows a bare operator
+                skip_next = not redirect.group(1)
+                index_next = False
+                continue
+            if index_next:
+                indexes.append(tok.strip("'\""))
+                index_next = False
+                continue
             if skip_next:
                 skip_next = False
                 continue
+            if _COMPUTED in tok:
+                pkgs.append(COMPUTED_PACKAGE if eco == "plugin" else f"{eco}:{COMPUTED_PACKAGE}")
+                continue
             if tok.startswith("-"):
+                flag, eq, value = tok.partition("=")
+                if flag in index_flags:
+                    if eq:
+                        indexes.append(value.strip("'\""))
+                    else:
+                        index_next = True
+                    continue
                 if tok in (
                     "-r",
                     "--requirement",
@@ -781,6 +985,10 @@ def _packages_in(text: str) -> list[str]:
             if eco == "plugin":
                 pkgs.append(tok.strip("'\""))
                 continue
+            path = _local_install_operand(tok, eco)
+            if path is not None:
+                local.append(path)
+                continue
             p = normalise_package(eco, tok)
             if p:
                 pkgs.append(p)
@@ -796,7 +1004,7 @@ def _packages_in(text: str) -> list[str]:
                 .rstrip("/")
                 .removesuffix(".git")
             )
-    return list(dict.fromkeys(pkgs))
+    return list(dict.fromkeys(pkgs)), list(dict.fromkeys(local)), list(dict.fromkeys(indexes))
 
 
 def _is_address(value: str, platform: str | None) -> bool:
@@ -977,10 +1185,21 @@ def shell_segments(command: str) -> list[list[str]]:
     """The simple commands of a shell string as token lists, wrappers (`sudo`, `env`, …) and leading
     variable assignments dropped. Quoting is honoured within a segment where it parses; this is a
     light split for lineage questions, not the AIRA shell parser."""
+    return [tokens for _, tokens in shell_segments_sep(command)]
+
+
+def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
+    """`shell_segments`, each with the separator before it (`|`, `&&`, `||`, `;`, a newline, or `""`
+    for the first)."""
     import shlex
 
-    out: list[list[str]] = []
-    for seg in _SEGMENT_SPLIT_RE.split(command or ""):
+    out: list[tuple[str, list[str]]] = []
+    parts = re.split("(" + _SEGMENT_SPLIT_RE.pattern + ")", command or "")
+    sep = ""
+    for i, seg in enumerate(parts):
+        if i % 2:
+            sep = seg
+            continue
         seg = seg.strip().lstrip("(").rstrip(")").strip()
         if not seg or seg.startswith("#"):
             continue
@@ -991,7 +1210,7 @@ def shell_segments(command: str) -> list[list[str]]:
         while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
             tokens = tokens[1:]
         if tokens:
-            out.append(tokens)
+            out.append((sep, tokens))
     return out
 
 
@@ -1074,6 +1293,115 @@ def _fetch_outputs(tokens: list[str]) -> list[str]:
                     out.append(base)
         i += 1
     return [o for o in out if o and o != "-"]
+
+
+_WGET_OUTPUT_FLAG = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O(?:.+)?")
+_WGET_SHORT_O = re.compile(r"-[A-Za-z]*O(.*)")
+#: A redirection of standard output to a file: `>f`, `> f`, `>>f`, `1>f`, `&>f`.
+_STDOUT_REDIRECT = re.compile(r"(?:1|&)?>>?(.*)")
+
+
+def _download_outputs(tokens: list[str]) -> list[str]:
+    """`_fetch_outputs`, plus wget's combined short flags ending in `O` (`-qO FILE`, `-qOFILE`) and, when
+    no output flag names a file, the one wget saves to: the URL's basename, under `-P DIR` /
+    `--directory-prefix DIR` when given."""
+    out = _fetch_outputs(tokens)
+    if tokens[0] != "wget":
+        return out
+    for i, tok in enumerate(tokens[1:], 1):
+        m = _WGET_SHORT_O.fullmatch(tok)
+        if m and m.group(1) and m.group(1) != "-":
+            out.append(m.group(1))
+        elif m and tok != "-O" and not m.group(1) and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+    if any(_WGET_OUTPUT_FLAG.fullmatch(t) for t in tokens[1:]):
+        return [o for o in out if o != "-"]
+    prefix = ""
+    for i, tok in enumerate(tokens[1:], 1):
+        if tok in ("-P", "--directory-prefix") and i + 1 < len(tokens):
+            prefix = tokens[i + 1].rstrip("/") + "/"
+        elif tok.startswith("--directory-prefix="):
+            prefix = tok.split("=", 1)[1].rstrip("/") + "/"
+    for url in (t for t in tokens[1:] if _URL_RE.match(t)):
+        base = urlsplit(url).path.rsplit("/", 1)[-1]
+        if base:
+            out.append(prefix + base)
+    return out
+
+
+def _stdout_files(tokens: list[str]) -> list[str]:
+    """The files a segment's standard output is redirected to, and a `tee`'s file operands."""
+    out: list[str] = []
+    for i, tok in enumerate(tokens):
+        m = _STDOUT_REDIRECT.fullmatch(tok)
+        if m and m.group(1):
+            out.append(m.group(1))
+        elif m and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+    if tokens[0] == "tee":
+        out.extend(t for t in tokens[1:] if not t.startswith(("-", ">")) and t not in out)
+    return [o for o in out if o not in ("-", "/dev/null") and not o.startswith("&")]
+
+
+@dataclass
+class InstallWalk:
+    """What a command installs from disk and downloads, read segment by segment (`install_walk`)."""
+
+    #: Local installer operands: (as written, resolved where that segment runs).
+    local: list[tuple[str, str]] = field(default_factory=list)
+    #: Local paths an installer installs from a download earlier in the command → the download's hosts.
+    installed: dict[str, set[str]] = field(default_factory=dict)
+    #: Every file the command downloads (`curl`, `wget`, or their output redirected or teed), as a
+    #: normalised path, and where it is copied or moved to later in the command → the download's hosts.
+    downloaded: dict[str, set[str]] = field(default_factory=dict)
+
+
+def install_walk(
+    command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
+) -> InstallWalk:
+    """Read a command's segments in order, tracking `cd`: the local paths its installers install, the
+    files its `curl` and `wget` segments save (with their output flags, a redirection or a `tee` later in
+    the same pipeline), carried through a later `cp` or `mv`, and which installs take a download."""
+    from .copies import _operands
+
+    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
+    walk = InstallWalk()
+
+    def at(raw: str) -> str:
+        return resolve_token(raw, base, home=home, workspace_root=workspace_root)[0]
+
+    def save(path: str, hosts: set[str]) -> None:
+        walk.downloaded.setdefault(path, set()).update(hosts)
+
+    piped: set[str] = set()  # hosts a fetch earlier in this pipeline writes to standard output
+    for sep, tokens in shell_segments_sep(command):
+        piped = piped if sep == "|" else set()
+        head = tokens[0]
+        if head == "cd" and len(tokens) > 1:
+            base = at(tokens[1])
+            continue
+        if head in _FETCH_HEADS:
+            piped = set(_hosts_in(" ".join(tokens)))
+            for raw in _download_outputs(tokens):
+                save(at(raw), piped)
+        if piped:
+            for raw in _stdout_files(tokens):
+                save(at(raw), piped)
+        if head in ("cp", "mv") and walk.downloaded:
+            ops = _operands(tokens[1:])
+            for src in ops[0] if ops else ():
+                hosts = walk.downloaded.get(at(src))
+                if hosts:
+                    dest = at(ops[1])
+                    save(dest, hosts)
+                    save(dest.rstrip("/") + "/" + at(src).rsplit("/", 1)[-1], hosts)
+            continue
+        for raw in _installs_in(" ".join(tokens))[1]:
+            path = at(raw)
+            walk.local.append((raw, path))
+            if path in walk.downloaded:
+                walk.installed.setdefault(path, set()).update(walk.downloaded[path])
+    return walk
 
 
 def fetched_then_run(
@@ -1399,6 +1727,63 @@ def pipes_into_code(command: str, *, inline_program: bool = False) -> bool:
     return any(stage_runs_stdin(s, lists) for s in stages)
 
 
+def registry_hosts(call: CanonicalCall) -> list[str]:
+    """Hosts the call points a package manager at: named on a registry line written into a
+    package-manager config file (`.npmrc`, `pip.conf`, …), or in a command that sets the registry
+    (`npm config set registry URL`). Later installs come from there, so each is a code source.
+    A host the file or the command names anywhere else is not one."""
+    lists = load_lists()
+    kind = call.tool_kind
+    if kind is ToolKind.EXEC:
+        text = call.analysis_text or ""
+        spans = [
+            text[m.start() : _command_end(text, m.end())]
+            for rx in lists.patterns("installers", "registry_cli_patterns")
+            for m in rx.finditer(text)
+        ]
+    elif kind is ToolKind.FILE_READ or not call.path:
+        return []
+    else:
+        if not any(
+            rx.search(call.path)
+            for rx in lists.patterns("installers", "registry_config_path_patterns")
+        ):
+            return []
+        edits = [e.get("new") or "" for e in call.get("edits") or [] if isinstance(e, dict)]
+        text = "\n".join(e for e in edits if e) or str(call.get("content") or "")
+        spans = [
+            text[m.start() : _setting_end(text, m.start())]
+            for rx in lists.patterns("installers", "registry_config_text_patterns")
+            for m in rx.finditer(text)
+        ]
+    return list(dict.fromkeys(h for span in spans for h in _hosts_in(span, emails=False)))
+
+
+def _setting_end(text: str, start: int) -> int:
+    """The end of the registry setting that starts at `start`: its line, and for a section header
+    (`[registries.x]`) or a list key (`channels:`) the lines under it, up to the next section
+    header, the next key at the margin or a blank line."""
+    end = _line_end(text, start)
+    line = text[start:end].strip()
+    if not (line.startswith("[") or line.endswith(":")):
+        return end
+    while end < len(text):
+        nxt = _line_end(text, end + 1)
+        body = text[end + 1 : nxt]
+        if not body.strip() or body.lstrip().startswith("["):
+            break
+        if line.endswith(":") and not body.startswith((" ", "\t", "-")):
+            break
+        end = nxt
+    return end
+
+
+def _command_end(text: str, start: int) -> int:
+    """The end of the simple command `start` lies in: the next separator or the end of the text."""
+    m = _SEGMENT_SPLIT_RE.search(text, start)
+    return m.start() if m else len(text)
+
+
 def extract_exec(
     command: str,
     *,
@@ -1471,12 +1856,25 @@ def extract_exec(
             if tok.startswith(("/", "~", "./", "../", "$HOME")):
                 destinations.add(tok.strip("'\""))
 
+    # An installer operand that is a local path installs, and so runs, what is there: a code source
+    # resolved against the working directory (`.` is that directory), not a registry package.
+    # An index or registry an installer option names serves the packages: a code source too.
+    packages, _, indexes = _installs_in(command)
+    local = install_walk(command, home=home, workspace_root=workspace_root, cwd=cwd).local
+    installed = list(dict.fromkeys(path for _, path in local))
+    # The same operands as the generic path scan spells them, which the installed paths replace.
+    unresolved = {
+        normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw, _ in local
+    }
+
     for norm, disp in paths_in(command, home, workspace_root, cwd):
         raw_matches = [
             r
             for r in sources | destinations | executables
             if normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
         ]
+        if (norm in installed or norm in unresolved) and not raw_matches and norm not in run_files:
+            continue  # only installed: added below as a code source
         if norm in run_files or any(
             normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
             for r in executables
@@ -1492,8 +1890,14 @@ def extract_exec(
         else:
             role = Role.DATA_SOURCE
         found.append(Found(EntityKind.PATH, norm, disp, role))
+    for norm in installed:
+        found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.CODE_SOURCE))
+    for url in indexes:
+        h = host_of_url(url)
+        if h:
+            found.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
 
-    for p in _packages_in(command):
+    for p in packages:
         kind = (
             EntityKind.PLUGIN
             if (p.startswith("@") or (p.count("/") == 1 and ":" not in p))
@@ -1501,13 +1905,170 @@ def extract_exec(
             else EntityKind.PACKAGE
         )
         found.append(Found(kind, p, p, Role.CODE_SOURCE))
-    return found
+    return _repo_code_sources(command, found)
+
+
+# --------------------------------------------------------------------------- multi-tenant code hosts
+
+#: `git@github.com:owner/repo.git`: a git remote in scp form (no scheme, a `:` before the path).
+_SCP_REMOTE_RE = re.compile(
+    r"\A(?:[\w.-]+@)?((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24}):(?!//)(?!\d+(?:/|\Z))(\S+)\Z"
+)
+#: A token that may be a URL: what is left between shell quotes, separators and brackets.
+_URL_TOKEN_RE = re.compile(r"[^\s\"'<>`|;&()\[\]{}]+")
+
+
+class TenantRule(NamedTuple):
+    #: The name repositories are written under (`github.com` for raw.githubusercontent.com).
+    name: str
+    #: Path segments that name a repository; 0 when no path does.
+    segments: int
+    #: Leading segments kept in front of them (`spaces` on huggingface.co).
+    prefixes: frozenset[str]
+    #: Leading segments dropped before them (`repos` on api.github.com).
+    skip: frozenset[str]
+
+
+def tenant_rules() -> dict[str, TenantRule]:
+    """`installers.multi_tenant_hosts` by host."""
+    out: dict[str, TenantRule] = {}
+    for rule in load_lists().get("installers", "multi_tenant_hosts", default=[]) or []:
+        if not isinstance(rule, dict) or not rule.get("host"):
+            continue
+        host = normalise_host(str(rule["host"]))
+        out[host] = TenantRule(
+            normalise_host(str(rule.get("as") or host)),
+            int(rule.get("segments") or 0),
+            frozenset(str(p).lower() for p in rule.get("prefixes") or ()),
+            frozenset(str(p).lower() for p in rule.get("skip") or ()),
+        )
+    return out
+
+
+def tenant_rule(host: str) -> TenantRule | None:
+    """The rule for a multi-tenant host. Any other subdomain of a listed host (`cdn-lfs.huggingface.co`,
+    `user-images.githubusercontent.com`) serves the same accounts' files with no repository in a form
+    known here: it names none. None for any other host."""
+    rules = tenant_rules()
+    host = normalise_host(host)
+    if host in rules:
+        return rules[host]
+    if any(host.endswith("." + listed) for listed in rules):
+        return TenantRule(host, 0, frozenset(), frozenset())
+    return None
+
+
+def _remove_dot_segments(segs: list[str]) -> list[str]:
+    """The path as a client sends it: `.` dropped, `..` removing the segment before it."""
+    out: list[str] = []
+    for seg in segs:
+        if seg == ".":
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
+    return out
+
+
+def _tenant_split(url: str) -> tuple[str, str] | None:
+    """(host, repository) for a URL, a schemeless URL or an scp-style git remote on a multi-tenant
+    host; None for any other host."""
+    url = url.strip().strip("'\"")
+    m = None if "://" in url else _SCP_REMOTE_RE.match(url)
+    if m:
+        host, path = normalise_host(m.group(1)), m.group(2)
+    else:
+        try:
+            parts = urlsplit(url if "://" in url else "https://" + url)
+            hostname = parts.hostname
+        except ValueError:
+            return None
+        if not hostname:
+            return None
+        host, path = normalise_host(hostname), parts.path
+    rule = tenant_rule(host)
+    if rule is None:
+        return None
+    if rule.segments <= 0:
+        return host, host
+    segs = _remove_dot_segments([s for s in path.split("/") if s])
+    if segs and segs[0].lower() in rule.skip:
+        segs = segs[1:]
+    lead: list[str] = []
+    if segs and segs[0].lower() in rule.prefixes:
+        lead, segs = [segs[0]], segs[1:]
+    if len(segs) < rule.segments:
+        return host, rule.name
+    named = [*lead, *segs[: rule.segments]]
+    named[-1] = named[-1].removesuffix(".git")
+    return host, "/".join([rule.name, *named]).lower()
+
+
+def repo_of_url(url: str) -> str | None:
+    """The repository a URL on a multi-tenant host (`installers.multi_tenant_hosts`) names:
+    `github.com/<owner>/<repo>` for GitHub and its raw and archive hosts, `gist.github.com/<user>`,
+    `huggingface.co/<org>/<name>` (and `huggingface.co/spaces/<org>/<name>`), in lower case. A path that
+    names no repository gives the host's own name, and a host whose paths never do (a release-asset
+    host) gives the host: neither is a repository a grant can cover. None for any other host."""
+    split = _tenant_split(url)
+    return split[1] if split else None
+
+
+def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
+    """A multi-tenant host the command takes code from supplies anyone's files: the code source is the
+    repository each of its URLs in the command names, and the host is only read from. A fetch run by
+    substitution (`sh -c "$(curl …)"`, `bash <(curl …)`) counts, as the installers list reads it."""
+    hosts = {f.value for f in found if f.kind is EntityKind.HOST}
+    tenant = {
+        f.value
+        for f in found
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and tenant_rule(f.value)
+    }
+    if any(tenant_rule(h) for h in hosts - tenant) and any(
+        p.search(command) for p in load_lists().patterns("installers", "fetch_to_shell_patterns")
+    ):
+        tenant |= {h for h in hosts if tenant_rule(h)}
+    if not tenant:
+        return found
+    repos: dict[str, None] = {}
+    seen: set[str] = set()
+    for m in _URL_TOKEN_RE.finditer(command):
+        split = _tenant_split(m.group(0))
+        if split is not None and split[0] in tenant:
+            seen.add(split[0])
+            repos[split[1]] = None
+    for host in sorted(tenant - seen):
+        rule = tenant_rule(host)
+        repos[host if rule is None or rule.segments <= 0 else rule.name] = None
+    # A clone is already its repository as a `git+` package; the package stays its code source.
+    packaged = {f.value for f in found if f.kind is EntityKind.PACKAGE}
+    repos = {r: None for r in repos if "git+" + r not in packaged}
+    out = [
+        replace(f, role=Role.DATA_SOURCE)
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and f.value in tenant
+        else f
+        for f in found
+    ]
+    out.extend(Found(EntityKind.REPO, r, r, Role.CODE_SOURCE) for r in repos)
+    return out
 
 
 def extract_call(
     call: CanonicalCall, *, home: str | None, workspace_root: str | None
 ) -> list[Found]:
-    """Entities of a canonical call with roles by tool kind."""
+    """Entities of a canonical call with roles by tool kind. A host the call sets as a package
+    registry is a code source as well as whatever else the call makes of it."""
+    found = _extract_call(call, home=home, workspace_root=workspace_root)
+    for h in registry_hosts(call):
+        found.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
+    return found
+
+
+def _extract_call(
+    call: CanonicalCall, *, home: str | None, workspace_root: str | None
+) -> list[Found]:
     found: list[Found] = []
     cwd = call.get("cwd")
     kind = call.tool_kind

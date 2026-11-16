@@ -154,6 +154,9 @@ def test_options_scope_allows_and_expiry(term):
     assert stored(term)["grants"][1]["scope"] == "persistent"
     slash(term, "grant destination #ops --scope session")
     assert stored(term)["grants"][2]["scope"] == "session"
+    slash(term, "grant repo github.com/kestrelwade/yard-helper --persistent")
+    g = stored(term)["grants"][3]
+    assert (g["kind"], g["pattern"]) == ("repo", "github.com/kestrelwade/yard-helper")
 
 
 @pytest.mark.parametrize(
@@ -170,7 +173,7 @@ def test_options_scope_allows_and_expiry(term):
         ("grant destination #ops --persistant", "Unknown option --persistant."),
         (
             "grant destinaton #ops",
-            'Unknown grant kind "destinaton": use destination, file or provider.',
+            'Unknown grant kind "destinaton": use destination, file, provider or repo.',
         ),
         (
             "grant file /x --allows read,wrte",

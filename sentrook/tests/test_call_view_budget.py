@@ -1,6 +1,7 @@
 """The call view's token budget follows the question set it is sent with.
 
-The call probe sends one request: the call view plus the set's questions, which repeat the preamble per question.
+The call probe sends one request: the call view plus the set's questions, which carry the preamble (or the blocks
+each question lists).
 The view is built to the room the configured set leaves in the chunking budget, so a request at the limit has its
 input contents stripped rather than being sent over the model's context, and a larger question set shrinks the view
 instead of overrunning it. Small requests are not affected.
@@ -87,8 +88,11 @@ def _scanner(call_set: str, selfedit_set: str | None = None, decider=None) -> Sc
 
 @pytest.mark.parametrize("name", CALL_SETS)
 def test_every_shipped_call_set_fits_the_default_reserve(name):
-    assert _questions_tokens(name) <= CALL_QUESTIONS_RESERVE_TOKENS
-    assert CALL_STATE_BUDGET_TOKENS + _questions_tokens(name) <= BUDGET_TOKENS
+    """The room a shipped set takes (its measured cost at its current sha, else its character estimate) fits the
+    default reserve, so a view built at the default budget plus the set's questions stays within the chunking budget.
+    A set too large by estimate fits only once measured, and falls back to failing here if edited since."""
+    assert _reserve(name) <= CALL_QUESTIONS_RESERVE_TOKENS
+    assert CALL_STATE_BUDGET_TOKENS + _reserve(name) <= BUDGET_TOKENS
 
 
 @pytest.mark.parametrize("name", SELFEDIT_SETS)
