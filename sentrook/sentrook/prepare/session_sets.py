@@ -338,25 +338,52 @@ def bind(
     )
 
 
+#: Directories under the home whose top-level instruction files the host itself loads: an OpenClaw agent
+#: workspace (`workspace`, `workspace-<agent>`) and a Hermes profile.
+_HOST_TOP_DIR = re.compile(r"/\.openclaw/workspace(?:-[^/]+)?|/\.hermes/profiles/[^/]+")
+
+
 def owner_config_path(
     call: CanonicalCall, *, home: str | None, workspace_root: str | None
 ) -> str | None:
     """The agent config or instruction file `call` reads, when that is all it does: a file read, or a
     command made only of reading heads over one file in the agent's config list (`agent_config` in the
-    sensitive-path lists), in the agent's own place: under `~/.openclaw/` or `~/.hermes/`, in
-    `/etc/hermes/`, or at the top of the workspace. An AGENTS.md in a cloned repository is not the owner's.
-    None otherwise."""
+    sensitive-path lists), in the host's own directory (`~/.openclaw/`, `~/.hermes/`, `/etc/hermes/`).
+    None otherwise.
+
+    A config file counts at any depth there. An instruction file (`AGENTS.md`, `SOUL.md`, ...) counts
+    only at the top of one of those directories, of a Hermes profile, of an OpenClaw agent workspace
+    (`~/.openclaw/workspace*/`), or of the call's workspace when that workspace is inside one of them.
+    A workspace outside them (Hermes works in its working directory) holds the files of whatever
+    repository the owner opened, and a deeper file is a repository or a copy the agent brought in:
+    their instructions are their author's, not the owner's."""
     from ..aira.lists import load_lists
 
     group = load_lists().group("agent_config")
+    instruction_names = {b.lower() for b in group.basenames}
+    roots = ["/etc/hermes"]
+    if home:
+        roots += [f"{home.rstrip('/')}/.openclaw", f"{home.rstrip('/')}/.hermes"]
+
+    def inside(path: str, root: str) -> bool:
+        return path == root or path.startswith(root + "/")
 
     def owned(path: str) -> bool:
-        roots = [f"{home.rstrip('/')}/.openclaw/", f"{home.rstrip('/')}/.hermes/"] if home else []
-        if path.startswith((*roots, "/etc/hermes/")):
+        if not any(inside(path, r) for r in roots):
+            return False
+        p = PurePosixPath(path)
+        if p.name.lower() not in instruction_names:
             return True
-        return bool(workspace_root) and str(PurePosixPath(path).parent) == workspace_root.rstrip(
-            "/"
-        )
+        parent = str(p.parent)
+        tops = set(roots)
+        ws = (workspace_root or "").rstrip("/")
+        if ws and any(inside(ws, r) for r in roots):
+            tops.add(ws)
+        if parent in tops:
+            return True
+        if home and _HOST_TOP_DIR.fullmatch(parent[len(home.rstrip("/")) :]):
+            return True
+        return False
 
     if call.tool_kind is ToolKind.FILE_READ:
         if not call.path:
