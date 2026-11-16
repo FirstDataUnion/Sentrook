@@ -541,3 +541,46 @@ def test_inline_eval_and_hook_consent_fire(raw):
 )
 def test_inline_eval_and_hook_consent_tightening_stays_silent(raw):
     stays_silent(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        h_write("~/.hermes/.env", "OPENROUTER_API_KEY=x\nHERMES_ACCEPT_HOOKS=1\n"),
+        h_patch("~/.hermes/.env", "HERMES_ACCEPT_HOOKS=0", "HERMES_ACCEPT_HOOKS=true"),
+        h_ex("hermes config set HERMES_ACCEPT_HOOKS 1"),
+        h_ex("echo 'HERMES_ACCEPT_HOOKS=yes' >> ~/.hermes/.env"),
+        h_ex('HERMES_ACCEPT_HOOKS=1 hermes chat -q "tidy the repo"'),
+        h_ex("export HERMES_ACCEPT_HOOKS=true"),
+        h_ex('hermes chat --accept-hooks -q "tidy the repo"'),
+        h_ex("hermes --accept-hooks gateway run"),
+    ],
+    ids=[
+        "env write",
+        "env patch",
+        "config set",
+        "env redirect",
+        "command assignment",
+        "export",
+        "chat flag",
+        "global flag",
+    ],
+)
+def test_hook_consent_env_and_flag_fire(raw):
+    fires(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        h_write("~/.hermes/.env", "OPENROUTER_API_KEY=x\nHERMES_ACCEPT_HOOKS=0\n"),
+        h_patch("~/.hermes/.env", "HERMES_ACCEPT_HOOKS=1", "HERMES_ACCEPT_HOOKS=0"),
+        h_ex("hermes config set HERMES_ACCEPT_HOOKS false"),
+        h_ex("unset HERMES_ACCEPT_HOOKS"),
+        h_ex('HERMES_ACCEPT_HOOKS=0 hermes chat -q "tidy the repo"'),
+        h_ex('hermes chat -q "what does --accept-hooks do"'),
+    ],
+    ids=["env write off", "env patch off", "config set off", "unset", "assignment off", "quoted"],
+)
+def test_hook_consent_env_and_flag_off_stays_silent(raw):
+    stays_silent(raw)

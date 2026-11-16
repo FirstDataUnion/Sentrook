@@ -239,8 +239,9 @@ approval_loosening:
     - key: 'strictInlineEval|strict_inline_eval'
       value: 'false|0|no|off'
       scope: any
-    # Hermes `hooks_auto_accept: true`: shell hooks are registered without asking the owner.
-    - key: 'hooks_auto_accept'
+    # Hermes `hooks_auto_accept: true` (or `HERMES_ACCEPT_HOOKS`): shell hooks are registered
+    # without asking the owner.
+    - key: 'hooks_auto_accept|HERMES_ACCEPT_HOOKS'
       value: 'true|1|yes|on'
       scope: any
     # A bare approvals switch turned off.
@@ -297,12 +298,12 @@ approval_loosening:
       subcommand: approvals
       verb: allowlist
       allowlist_add: add
-  # Launching the host with approvals bypassed: a flag on the CLI head, or the environment
-  # variable assigned anywhere in the command.
+  # Launching the host with approvals or hook consent bypassed: a flag on the CLI head, or the
+  # environment variable assigned anywhere in the command.
   launch_flags:
-    hermes: [--yolo]
+    hermes: [--yolo, --accept-hooks]
   env_assignment_patterns:
-    - '(?:\A|[\s;&|(])HERMES_YOLO_MODE=["'']?(?:1|true|yes|on)\b'
+    - '(?:\A|[\s;&|(])(?:HERMES_YOLO_MODE|HERMES_ACCEPT_HOOKS)=["'']?(?:1|true|yes|on)\b'
 
 # Exec heads whose arguments naming a guardrail path count as a write. `sed` only with `-i`.
 writing_heads:
