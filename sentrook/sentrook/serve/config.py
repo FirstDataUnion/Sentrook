@@ -110,11 +110,11 @@ class ServeConfig:
     jev_api_key: str | None = None
     jev_model: str = DEFAULT_MODEL
     jev_timeout_s: float = 20.0
-    # Shipped defaults: the call-v7 / exposure-v2 question sets and conv-v5. The frozen v1 sets, the earlier call
+    # Shipped defaults: the call-v8 / exposure-v2 question sets and conv-v5. The frozen v1 sets, the earlier call
     # sets and conv-v1 to conv-v4 stay selectable (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the
     # Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
     jev_exposure_question_set: str = "exposure-v2"
-    jev_call_question_set: str = "call-v7"
+    jev_call_question_set: str = "call-v8"
     #: Declared self-edits (the host's own background saves to memory or skills); "" sends them to the call set.
     jev_selfedit_question_set: str = "selfedit-v3"
     oracle_url: str | None = None
@@ -196,7 +196,7 @@ class ServeConfig:
             ),
             jev_selfedit_question_set=_selfedit_set(env),
             jev_call_question_set=_question_set(
-                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v7", "call"
+                env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v8", "call"
             ),
             oracle_url=(env.get("SENTROOK_ORACLE_URL") or "").strip() or None,
             oracle_api_key=(env.get("SENTROOK_ORACLE_API_KEY") or "").strip() or None,

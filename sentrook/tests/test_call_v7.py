@@ -102,8 +102,7 @@ def test_the_set_loads_on_its_own_view_and_its_preamble_documents_the_new_blocks
     assert list(qs.questions) == list(load_question_set("call-v6").questions)
 
 
-def test_call_v7_is_the_default_and_call_v6_stays_selectable():
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v7"
+def test_call_v7_and_call_v6_stay_selectable():
     for name in ("call-v5", "call-v6", "call-v7"):
         env = {"SENTROOK_JEV_CALL_QUESTIONS": name}
         assert ServeConfig.from_env(env).jev_call_question_set == name

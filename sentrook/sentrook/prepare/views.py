@@ -213,7 +213,7 @@ SIBLING_KEEP = ("tool", "tool_kind", "provider", "arguments")
 #: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
 CALL_INPUT_CAP_CHARS = 6000
 CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
-#: Room left in the chunking budget for the call questions, which repeat the preamble per question, when the
+#: Room left in the chunking budget for the call questions (with their preamble or preamble blocks) when the
 #: caller does not say which set it sends. It covers every shipped call set (a test pins it); the scanner sizes the
 #: budget from the set it is configured with instead (`set_state_budget_tokens`).
 CALL_QUESTIONS_RESERVE_TOKENS = 12_000
@@ -227,9 +227,15 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: Keyed by the set's name and the first 12 characters of its sha, so a set edited since it was measured falls back to
 #: its estimate until measured again. call-v7's key was moved by hand to its sha after a one-clause preamble edit (the
 #: batch named as content being judged, about 20 tokens), which the rounding up covers.
+#: A set built from blocks sends more or fewer of them depending on the state, so its entry is its largest form, the one
+#: `built_questions()` gives with no state. call-v8, measured on 2,490 uncached bodies by the state's blocks: neither
+#: conditional block 5,757 (2,125 bodies), reputation only 6,280 (283), batch only 8,105 (79), both 8,612 (3); its
+#: entry is the largest form rounded up. In characters of questions JSON the four forms are 23,769, 25,908, 34,713
+#: and 36,852.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
+    ("call-v8", "d8a11ad2bb37"): 8_700,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
@@ -251,7 +257,8 @@ def state_budget_tokens(built_questions: dict[str, Any]) -> int:
 
 def question_reserve_tokens(qs: QuestionSet) -> int:
     """The room a set's questions take: its measured cost when it has one at its current sha, otherwise the estimate
-    from its characters. The state is still estimated at 2.5 characters per token."""
+    from its characters. The state is still estimated at 2.5 characters per token. For a set whose questions depend
+    on the state (blocks sent only with a batch or a reputation block), both are for its largest form."""
     measured = MEASURED_QUESTION_TOKENS.get((qs.name, qs.sha[:12]))
     return measured if measured is not None else est_tokens(qs.built_questions())
 

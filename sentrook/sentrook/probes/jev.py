@@ -257,6 +257,8 @@ class JevExposureProbe(_JevProbe):
             if own:
                 env.evidence["own_store_skipped"] = own
             return env
+        # the questions' largest form: chunks are cut before each is built, so a set whose blocks depend on the
+        # state is sized as if every block were sent
         questions_tokens = est_tokens(self.qs.built_questions())
         chunks = chunk_exposure_state(state, questions_tokens)
         started = time.perf_counter()
@@ -450,5 +452,9 @@ class JevCallProbe(_JevProbe):
                 "p_level_ge_2": split,
                 "confidences": confs,
                 "usage": _usage_summary([res]),
+                # which conditional preamble blocks the questions carried (sets built from blocks only)
+                **(
+                    {"question_blocks": self.qs.conditional_blocks(state)} if self.qs.blocks else {}
+                ),
             },
         )
