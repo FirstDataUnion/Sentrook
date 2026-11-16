@@ -550,7 +550,7 @@ const plugin = {
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
-          const copy = reviewCopy(resp, event.toolName);
+          const copy = reviewCopy(resp, event.toolName, relaxed);
           hook = {
             requireApproval: {
               ...copy,

@@ -513,7 +513,7 @@ def _scan_one(
             key = _rule_key(resp.get("action_fingerprint"), planir["request_id"])
             directive = {
                 "action": "approve",
-                "message": review_message(resp, built["tool"]),
+                "message": review_message(resp, built["tool"], relaxed),
                 "rule_key": key,
             }
             store.put_review(

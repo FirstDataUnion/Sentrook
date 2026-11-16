@@ -276,7 +276,9 @@ def test_scan_errors_and_observe_mode_are_not_snoozed(term, monkeypatch):
 # ---- a snooze in a chat the owner attends: a relaxable block asks instead ---------------------------
 
 
-RELAX = json.loads((FIXTURES / "relax.json").read_text())["cases"]
+RELAX_DOC = json.loads((FIXTURES / "relax.json").read_text())
+RELAX = RELAX_DOC["cases"]
+NOTE = RELAX_DOC["relaxed_note"]
 
 
 @pytest.fixture
@@ -317,8 +319,16 @@ def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
         assert rec["decision"] == "blocked" and rec["verdict"] == "block"
     else:
         assert out["action"] == "block" and rec["decision"] == "held"
-    lowered = want == "review" and case["response"]["risk"] >= 80
-    assert rec.get("relaxed", False) is (lowered and case["response"].get("ceiling") is None)
+    relaxed = (
+        want == "review"
+        and case["response"]["risk"] >= 80
+        and case["response"].get("ceiling") is None
+    )
+    assert rec.get("relaxed", False) is relaxed
+    if want == "review":
+        # the owner is told why a block asks: the shared line ends the prompt, and only then
+        assert out["message"].endswith(f" {NOTE}") is relaxed
+        assert (NOTE in out["message"]) is relaxed
 
 
 def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
@@ -327,6 +337,7 @@ def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
     scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
     out, rec = call(scripted, "openclaw cron edit nightly --every 6h")
     assert out["action"] == "approve" and out["message"].startswith("Sentrook (risk 92): ")
+    assert out["message"].endswith(f" {NOTE}")
     assert (rec["verdict"], rec["decision"], rec["relaxed"]) == ("review", "review_timed_out", True)
     assert rec["response"]["risk"] == 92  # the score is unchanged
     # the same call again is asked again: a relaxed block is never snoozed through

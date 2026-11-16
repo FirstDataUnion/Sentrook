@@ -216,7 +216,8 @@ If Sentrook blocks your own setup work, snooze for the duration: blocks without 
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
 marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
 or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
-granted, no floor, and the scan was complete) becomes an approval prompt. It is never allowed without asking, and the snooze does not skip that
+granted, no floor, and the scan was complete) becomes an approval prompt that ends "Sentrook would normally block this; it is asking because a
+snooze is on." It is never allowed without asking, and the snooze does not skip that
 prompt.
 
 A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
