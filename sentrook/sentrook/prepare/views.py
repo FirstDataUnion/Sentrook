@@ -228,14 +228,14 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: its estimate until measured again. call-v7's key was moved by hand to its sha after a one-clause preamble edit (the
 #: batch named as content being judged, about 20 tokens), which the rounding up covers.
 #: A set built from blocks sends more or fewer of them depending on the state, so its entry is its largest form, the one
-#: `built_questions()` gives with no state. call-v8's entry is an estimate pending measurement: its largest form (a
-#: batch and a reputation block) is 36,852 characters of questions JSON, counted at 4.0 characters per token and
-#: rounded up to the next 100 (an earlier split of the same preamble measured 4.13). Without a batch or reputation
-#: it is 23,769 characters; with the batch only 34,713, with reputation only 25,908.
+#: `built_questions()` gives with no state. call-v8, measured on 2,490 uncached bodies by the state's blocks: neither
+#: conditional block 5,757 (2,125 bodies), reputation only 6,280 (283), batch only 8,105 (79), both 8,612 (3); its
+#: entry is the largest form rounded up. In characters of questions JSON the four forms are 23,769, 25,908, 34,713
+#: and 36,852.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
-    ("call-v8", "d8a11ad2bb37"): 9_300,
+    ("call-v8", "d8a11ad2bb37"): 8_700,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.

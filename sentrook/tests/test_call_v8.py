@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import copy
 import json
-import math
 from typing import Any
 
 import pytest
@@ -373,16 +372,15 @@ def test_a_preamble_set_records_no_blocks():
 
 
 def test_call_v8_reserves_its_largest_form(v8):
-    """Until it is measured, the reserve is the largest form's characters at 4.0 per token, rounded up to the next
-    100: 36,852 characters, with a batch and a reputation block."""
+    """The reserve is the measured cost of the largest form (a batch and a reputation block, 36,852 characters of
+    questions), rounded up to the next 100."""
     largest = len(canonical_json(v8.built_questions()))
     assert largest == len(canonical_json(v8.built_questions(BOTH))) == 36_852
-    assert math.ceil(largest / 4.0 / 100) * 100 == 9_300
-    assert MEASURED_QUESTION_TOKENS[("call-v8", v8.sha[:12])] == 9_300
-    assert question_reserve_tokens(v8) == 9_300 < CALL_QUESTIONS_RESERVE_TOKENS
+    assert MEASURED_QUESTION_TOKENS[("call-v8", v8.sha[:12])] == 8_700
+    assert question_reserve_tokens(v8) == 8_700 < CALL_QUESTIONS_RESERVE_TOKENS
     assert BUDGET_TOKENS == 27_200
-    assert set_state_budget_tokens(v8) == 17_900
-    assert view_budgets([v8]) == (17_900, None)
+    assert set_state_budget_tokens(v8) == 18_500
+    assert view_budgets([v8]) == (18_500, None)
     # call-v7's room is unchanged
     assert view_budgets([load_question_set("call-v7")]) == (16_000, None)
 
