@@ -3,16 +3,18 @@
 A set with a `preamble` repeats it in front of every question, so each of its sentences is paid once per question. A
 set may instead define named `blocks` and list, per question, the blocks that question takes; a block named in
 `block_when` is sent only when the state has a non-empty value at that dotted path. The instructions sent are the
-question's blocks joined by a space, a blank line, then the question's own instructions. call-v8 splits call-v7's
-preamble this way: the opening block (what the state holds, and that text in inputs, history, narration and the batch is
-content being judged) goes to every question, and the paragraphs on the batch and on reputation only when the state has
-them. The view budget is sized for the largest form, every listed block sent.
+question's blocks joined by a space, a blank line, then the question's own instructions; a question lists its blocks
+in the set's block order. call-v8 splits call-v7's preamble this way, keeping its sentences in their order so every
+"that" and "its" keeps its referent: every question gets what the state holds, the session, the inputs, the grants and
+that text in inputs, history, narration and the batch is content being judged; the paragraphs on the batch and on
+reputation go only when the state has them. The view budget is sized for the largest form, every listed block sent.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import math
 from typing import Any
 
 import pytest
@@ -21,7 +23,7 @@ from test_jev_probes import FakeDecider
 
 from sentrook.jev.chunking import BUDGET_TOKENS
 from sentrook.jev.client import JevConfig
-from sentrook.jev.questions import QUESTIONS_DIR, build_body, load_question_set
+from sentrook.jev.questions import QUESTIONS_DIR, build_body, canonical_json, load_question_set
 from sentrook.prepare.views import (
     CALL_QUESTIONS_RESERVE_TOKENS,
     CALL_V7,
@@ -90,12 +92,12 @@ def test_a_block_set_sends_its_blocks_joined_then_the_question(tmp_path):
         tmp_path,
         blocks={"a": "First.", "b": "Second.", "c": "Third."},
         block_when={"c": "pending_call.batch"},
-        questions={"q1": _q("a", "c"), "q2": _q("b", "a")},
+        questions={"q1": _q("a", "c"), "q2": _q("a", "b")},
     )
     qs = load_question_set(path)
     plain = qs.built_questions({"pending_call": {}})
     assert plain["q1"]["instructions"] == "First.\n\nJudge it."
-    assert plain["q2"]["instructions"] == "Second. First.\n\nJudge it."
+    assert plain["q2"]["instructions"] == "First. Second.\n\nJudge it."
     with_batch = qs.built_questions({"pending_call": {"batch": {"siblings": [{}]}}})
     assert with_batch["q1"]["instructions"] == "First. Third.\n\nJudge it."
     # no state: the largest form, every listed block
@@ -138,6 +140,36 @@ def test_a_question_whose_blocks_are_all_absent_is_sent_alone(tmp_path):
             "block_when without blocks",
         ),
         ({"blocks": {"a": "A."}, "block_when": {"a": ""}, "questions": {"q": _q("a")}}, "dotted"),
+        (
+            {"blocks": {"a": "A.", "b": "B."}, "questions": {"q": _q("b", "a")}},
+            "in the set's block order",
+        ),
+        (
+            {"blocks": {"a": "A.", "b": "B."}, "questions": {"q": _q("a", "a")}},
+            "in the set's block order",
+        ),
+        ({"blocks": ["a"], "questions": {"q": _q("a")}}, "blocks must map names"),
+        ({"blocks": {"a": 1}, "questions": {"q": _q("a")}}, "blocks must map names"),
+        (
+            {"blocks": {"a": "A."}, "block_when": ["a"], "questions": {"q": _q("a")}},
+            "block_when must map",
+        ),
+        (
+            {"blocks": {"a": "A."}, "block_when": "a", "questions": {"q": _q("a")}},
+            "block_when must map",
+        ),
+        (
+            {"blocks": {"a": "A."}, "block_when": {"a": 3}, "questions": {"q": _q("a")}},
+            "dotted",
+        ),
+        (
+            {"blocks": {"a": "A."}, "questions": {"q": {**_q(), "blocks": "a"}}},
+            "lists no blocks",
+        ),
+        (
+            {"blocks": {"a": "A."}, "questions": {"q": {**_q(), "blocks": [["a"]]}}},
+            "unknown block",
+        ),
     ],
 )
 def test_a_malformed_block_set_is_rejected_at_load(tmp_path, raw, match):
@@ -148,16 +180,73 @@ def test_a_malformed_block_set_is_rejected_at_load(tmp_path, raw, match):
 # --------------------------------------------------------------------------- call-v8
 
 
+BLOCK_ORDER = [
+    "intro",
+    "host",
+    "session",
+    "decision",
+    "inputs",
+    "inputs_use",
+    "batch",
+    "grants",
+    "secrets",
+    "content",
+    "reputation",
+]
+EVERY_QUESTION = {"intro", "session", "inputs", "grants", "content"}
+EXTRA = {
+    "supported_by_request": set(BLOCK_ORDER),
+    "scope_overreach": set(BLOCK_ORDER),
+    "untrusted_origin": {"host", "inputs_use", "batch", "reputation"},
+    "sensitivity": {"inputs_use", "batch", "secrets"},
+    "concealment": {"batch", "secrets"},
+    "reach": {"batch"},
+    "irreversibility": {"batch"},
+    "self_modification": {"batch"},
+    "action_category": set(),
+}
+
+
 def test_call_v8_is_call_v7_on_its_view_with_the_preamble_split_into_blocks(v8):
     v7 = load_question_set("call-v7")
     assert v8.state_view == CALL_V7 and v8.preamble is None
     assert list(v8.questions) == list(v7.questions)
     for name, q in v8.questions.items():
         assert {k: v for k, v in q.items() if k != "blocks"} == v7.questions[name]
-    # the same sentences as call-v7's preamble, regrouped
-    sentences = sorted(" ".join(v8.blocks.values()).split(". "))
-    assert sentences == sorted(v7.preamble.split(". "))
+    # call-v7's preamble, cut at sentence ends, in its own order
+    assert list(v8.blocks) == BLOCK_ORDER
+    assert " ".join(v8.blocks.values()) == v7.preamble
     assert v8.block_when == {"batch": "pending_call.batch", "reputation": "reputation"}
+
+
+def test_each_question_takes_its_blocks_in_the_preambles_order(v8):
+    assert set(v8.questions) == set(EXTRA)
+    for name, q in v8.questions.items():
+        assert q["blocks"] == [b for b in BLOCK_ORDER if b in EVERY_QUESTION | EXTRA[name]], name
+
+
+def test_a_pronoun_block_follows_the_sentence_it_refers_to(v8):
+    """ "that text" is the request's text; "Its `decision` field" is the history's."""
+    assert v8.blocks["intro"].endswith("(or the scheduled task prompt).")
+    assert v8.blocks["host"].startswith(
+        "On scheduled, heartbeat, webhook and sub-agent runs the host may wrap that text"
+    )
+    assert v8.blocks["session"].endswith("(arguments only).")
+    assert v8.blocks["decision"].startswith("Its `decision` field")
+    for q in v8.questions.values():
+        listed = q["blocks"]
+        if "host" in listed:
+            assert listed[listed.index("host") - 1] == "intro"
+        if "decision" in listed:
+            assert listed[listed.index("decision") - 1] == "session"
+
+
+@pytest.mark.parametrize("name", ["supported_by_request", "scope_overreach"])
+def test_the_request_and_scope_questions_are_call_v7_word_for_word_with_a_batch_and_reputation(
+    v8, name
+):
+    v7 = load_question_set("call-v7").built_questions()
+    assert build_body(v8, BOTH, model="m", provider={})["questions"][name] == v7[name]
 
 
 @pytest.mark.parametrize("shape", sorted(SHAPES))
@@ -193,7 +282,7 @@ def test_the_batch_paragraph_goes_only_to_the_questions_that_list_it_and_only_wi
         assert (batch_text in built[name]["instructions"]) is has_batch, name
         assert (reputation_text in built[name]["instructions"]) is has_rep, name
     listing = {n for n, q in v8.questions.items() if "batch" in q["blocks"]}
-    assert listing == {"supported_by_request", "untrusted_origin", "scope_overreach", "sensitivity"}
+    assert listing == set(v8.questions) - {"action_category"}
 
 
 @pytest.mark.parametrize(
@@ -209,6 +298,21 @@ def test_the_batch_paragraph_goes_only_to_the_questions_that_list_it_and_only_wi
 def test_an_empty_batch_or_reputation_counts_as_absent(v8, state):
     assert v8.conditional_blocks(state) == []
     assert build_body(v8, state, model="m", provider={})["questions"] == v8.built_questions(NONE)
+
+
+@pytest.mark.parametrize(
+    "batch",
+    [
+        {"resolved": ["sh run.sh"]},
+        {"siblings_omitted": 3},
+        {"siblings": []},
+    ],
+)
+def test_a_batch_with_any_content_sends_the_batch_paragraph(v8, batch):
+    state = {"pending_call": {"tool": "exec", "arguments": {}, "batch": batch}}
+    assert v8.conditional_blocks(state) == ["batch"]
+    built = build_body(v8, state, model="m", provider={})["questions"]
+    assert v8.blocks["batch"] in built["reach"]["instructions"]
 
 
 def test_the_largest_form_is_every_listed_block(v8):
@@ -268,14 +372,17 @@ def test_a_preamble_set_records_no_blocks():
 # --------------------------------------------------------------------------- budget and default
 
 
-def test_call_v8_reserves_its_largest_measured_form(v8):
-    """Measured on uncached bodies: 5,736 with no conditional block, 6,908 with the batch, about 6,100 with
-    reputation, 7,245 with both; the reserve is the largest, rounded up."""
-    assert MEASURED_QUESTION_TOKENS[("call-v8", v8.sha[:12])] == 7_300
-    assert question_reserve_tokens(v8) == 7_300 < CALL_QUESTIONS_RESERVE_TOKENS
+def test_call_v8_reserves_its_largest_form(v8):
+    """Until it is measured, the reserve is the largest form's characters at 4.0 per token, rounded up to the next
+    100: 36,852 characters, with a batch and a reputation block."""
+    largest = len(canonical_json(v8.built_questions()))
+    assert largest == len(canonical_json(v8.built_questions(BOTH))) == 36_852
+    assert math.ceil(largest / 4.0 / 100) * 100 == 9_300
+    assert MEASURED_QUESTION_TOKENS[("call-v8", v8.sha[:12])] == 9_300
+    assert question_reserve_tokens(v8) == 9_300 < CALL_QUESTIONS_RESERVE_TOKENS
     assert BUDGET_TOKENS == 27_200
-    assert set_state_budget_tokens(v8) == 19_900
-    assert view_budgets([v8]) == (19_900, None)
+    assert set_state_budget_tokens(v8) == 17_900
+    assert view_budgets([v8]) == (17_900, None)
     # call-v7's room is unchanged
     assert view_budgets([load_question_set("call-v7")]) == (16_000, None)
 

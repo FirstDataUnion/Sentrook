@@ -5,8 +5,8 @@ every question's instructions, and `questions` (each `type` noul | score | choic
 `criteria`), and optionally `mapping`, how the answers become signals (kept out of the request body).
 
 Instead of a `preamble`, a set may define named `blocks` (name -> text) that each question lists, in order, under
-its own `blocks`; a question is sent only the blocks it lists, joined by a space, then a blank line, then its own
-instructions. `block_when` makes a block conditional: it maps a block name to a dotted path in the state, and the
+its own `blocks`, in the set's block order; a question is sent only the blocks it lists, joined by a space, then a
+blank line, then its own instructions. `block_when` makes a block conditional: it maps a block name to a dotted path in the state, and the
 block is sent only when the state has a non-empty value there (a batch, a reputation block). The questions sent
 then depend on the state; with no state, `built_questions` gives the largest form, every listed block, which is
 what the view budget is sized for. A set uses a `preamble` or `blocks`, never both. `exposure-v1` and
@@ -90,7 +90,9 @@ def _has(state: Any, path: str) -> bool:
 
 
 def _check_blocks(raw: dict[str, Any], where: str) -> None:
-    """A set uses a preamble or blocks, never both; every block a question or `block_when` names exists."""
+    """A set uses a preamble or blocks, never both; every block a question or `block_when` names exists, and each
+    question lists its blocks in the set's block order, so the sentences it is sent keep the order they were written
+    in."""
     blocks = raw.get("blocks")
     when = raw.get("block_when")
     questions = raw["questions"]
@@ -109,18 +111,26 @@ def _check_blocks(raw: dict[str, Any], where: str) -> None:
         isinstance(k, str) and isinstance(v, str) and v for k, v in blocks.items()
     ):
         raise ValueError(f"{where}: blocks must map names to non-empty text")
+    if when is not None and not isinstance(when, dict):
+        raise ValueError(f"{where}: block_when must map block names to dotted state paths")
     for block, path in (when or {}).items():
         if block not in blocks:
             raise ValueError(f"{where}: block_when names {block!r}, which is not a block")
-        if not isinstance(path, str) or not path or "" in path.split("."):
+        if not isinstance(path, str) or "" in path.split("."):
             raise ValueError(f"{where}: block_when[{block!r}] must be a dotted state path")
+    order = {b: i for i, b in enumerate(blocks)}
     for name, q in questions.items():
         listed = q.get("blocks")
         if not isinstance(listed, list) or not listed:
             raise ValueError(f"{where}: question {name!r} lists no blocks")
         for b in listed:
-            if b not in blocks:
+            if not isinstance(b, str) or b not in blocks:
                 raise ValueError(f"{where}: question {name!r} names unknown block {b!r}")
+        at = [order[b] for b in listed]
+        if at != sorted(set(at)):
+            raise ValueError(
+                f"{where}: question {name!r} must list its blocks once each, in the set's block order"
+            )
 
 
 def canonical_json(obj: Any) -> str:

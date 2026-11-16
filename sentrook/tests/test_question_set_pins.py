@@ -59,10 +59,10 @@ def test_a_preamble_set_builds_the_questions_it_always_has(name, pin):
 #: state in `STATES` (none, batch, reputation, both).
 BLOCK_SET_PINS = {
     "call-v8": (
-        "ba9e38d9bf9956c72dc5010c5b45b67021250f21b0dc8b56af5d7e99702a51ab",
-        "ac16038907432b1f4d957fa4cb90d76e59701d94e3b87a1c923d69f6672c2aad",
-        "fa1fd36b3c1a43b171c9c7f5c37f0740899f55cf60ebbc1650b268ceb13e3df5",
-        "13869813ba121a943c77bfc9ec270bf5b15dae57d28e18a302aab5274bb88aa1",
+        "272d79f27aa5578797eca4b49678d48f26811356739ba23c8bf26acc5ad26af8",
+        "ece0f3da107899544ef8f7cc55aff0e5589b3839f08e8fdc0bfc6b8397c3bb58",
+        "d9ec48dfebd208ec64fc06484828adfa8f6c613bed1dc1441ed7b884db482a14",
+        "180f8075cfee54cc92e12af9768707d95348d49b91d282783bb4bff9f95b97ae",
     ),
 }
 

@@ -213,7 +213,7 @@ SIBLING_KEEP = ("tool", "tool_kind", "provider", "arguments")
 #: characters); they bound production requests. An input cut by a cap carries `scanner_truncated`.
 CALL_INPUT_CAP_CHARS = 6000
 CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
-#: Room left in the chunking budget for the call questions, which repeat the preamble per question, when the
+#: Room left in the chunking budget for the call questions (with their preamble or preamble blocks) when the
 #: caller does not say which set it sends. It covers every shipped call set (a test pins it); the scanner sizes the
 #: budget from the set it is configured with instead (`set_state_budget_tokens`).
 CALL_QUESTIONS_RESERVE_TOKENS = 12_000
@@ -228,13 +228,14 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: its estimate until measured again. call-v7's key was moved by hand to its sha after a one-clause preamble edit (the
 #: batch named as content being judged, about 20 tokens), which the rounding up covers.
 #: A set built from blocks sends more or fewer of them depending on the state, so its entry is its largest form, the one
-#: `built_questions()` gives with no state. call-v8 (502 uncached bodies, longest answer 255 tokens): 5,736 with no
-#: conditional block, about 6,100 with the reputation block (largest residual 6,571), 6,908 with the batch block
-#: (largest residual 6,973), 7,245 with both; its estimate for the largest form is 12,185.
+#: `built_questions()` gives with no state. call-v8's entry is an estimate pending measurement: its largest form (a
+#: batch and a reputation block) is 36,852 characters of questions JSON, counted at 4.0 characters per token and
+#: rounded up to the next 100 (an earlier split of the same preamble measured 4.13). Without a batch or reputation
+#: it is 23,769 characters; with the batch only 34,713, with reputation only 25,908.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
-    ("call-v8", "e43a1560b643"): 7_300,
+    ("call-v8", "d8a11ad2bb37"): 9_300,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
