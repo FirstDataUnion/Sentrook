@@ -181,12 +181,17 @@ session with `--session <ref>`, taking the ref from the `session` column of `/se
 | Work on a client's site for the afternoon | `/sentrook-grant destination *.client.example --expires 4h` |
 | Let it clear out a scratch folder | `/sentrook-grant file /home/you/scratch/ --allows delete --persistent` |
 | Use your team's MCP servers | `/sentrook-grant provider npm:@yourteam/ --persistent` |
+| Run install scripts from a GitHub repository you trust | `/sentrook-grant repo github.com/yourteam/tools --persistent` |
 
 A file grant can use the full path or `~` for your home folder (`~/notes/*`). A `*` matches anything, including `/`.
 A pattern ending in `/` covers that folder and everything in it. `--allows` must name everything the call does to
 the file: deleting it (`rm`, or moving it away) needs `delete`. Without `--allows` a file grant allows reading only.
 A provider pattern is the server's package as `/sentrook-why` shows it, for example `npm:@yourteam/notes-mcp@1.4.0`;
 ending it in `/` covers the whole scope. Patterns that would match everything (`*`, `*.*`, `/`) are ignored.
+Anyone can publish on GitHub and Hugging Face, so a script fetched from one and run counts as code from an unknown source until a
+repo grant covers its repository: `github.com/<owner>/<repo>` (raw.githubusercontent.com and git remotes count as
+github.com), `github.com/<owner>/*` for an account, `huggingface.co/<org>/<name>`. The host and owner must be written
+out; a release-asset download (objects.githubusercontent.com) names no repository and no grant covers it.
 
 `/sentrook-grants` lists every grant in force with its id; `/sentrook-revoke <id>` removes one set by command.
 

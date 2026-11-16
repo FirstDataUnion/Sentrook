@@ -239,13 +239,15 @@ test("options: scope, allows and expiry", async () => {
   assert.equal(stored().grants[1].scope, "persistent");
   await run(r, "sentrook-grant", "destination #ops --scope session");
   assert.equal(stored().grants[2].scope, "session");
+  await run(r, "sentrook-grant", "repo github.com/kestrelwade/yard-helper --persistent");
+  assert.deepEqual([stored().grants[3].kind, stored().grants[3].pattern], ["repo", "github.com/kestrelwade/yard-helper"]);
 });
 
 for (const [args, reply] of [
   ["destination #ops --scope persistant", 'Unknown scope "persistant": use session or persistent.'],
   ["destination #ops --scope=Persistent", 'Unknown scope "Persistent": use session or persistent.'],
   ["destination #ops --persistant", "Unknown option --persistant."],
-  ["destinaton #ops", 'Unknown grant kind "destinaton": use destination, file or provider.'],
+  ["destinaton #ops", 'Unknown grant kind "destinaton": use destination, file, provider or repo.'],
   ["file /x --allows read,wrte", 'Unknown allows value "wrte": use read, write, edit, delete or exec.'],
   ["destination #ops --allows write", "--allows applies to file grants only."],
   ["destination #ops --expires 2w", 'Unknown expiry "2w": use a number with m, h or d, from 1m to 365d.'],

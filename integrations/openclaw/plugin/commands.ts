@@ -110,7 +110,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     command: "sentrook-grant",
     args: "<kind> <pattern> [flags]",
     description:
-      "Add a grant: kind destination|file|provider; flags --persistent (default: this session only, " +
+      "Add a grant: kind destination|file|provider|repo; flags --persistent (default: this session only, " +
       "not cron jobs, subagents or other chats), --session <ref> (from history), --allows read,write (file only), --expires 12h",
     cliRest: true,
     run: (ctx, rest) =>

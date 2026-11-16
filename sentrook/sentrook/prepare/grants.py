@@ -26,6 +26,12 @@ Matching, by kind:
   (and when the host OS is unknown), not on macOS or Windows.
 - `provider`: an MCP server or plugin identity against a glob; a pattern ending in `/` covers the scope.
   A `remote:` pattern is read without its port or IPv6 brackets, as the identity is.
+- `repo`: a repository on a host where any account publishes (`installers.multi_tenant_hosts`) against
+  a glob written the way the scanner names it: `github.com/<owner>/<repo>` (a raw or archive host's URL
+  form, `raw.githubusercontent.com/<owner>/<repo>`, reads as the same), `github.com/<owner>/*` for an
+  account. The host and the owner must be written out: a pattern that would cover every account on the
+  host (`github.com`, `github.com/*`, `*/x/y`) covers nothing, and nor does any pattern on a host
+  whose paths name no repository (a release-asset host).
 - `tool`: the whole call, when every command in it is covered: a pattern without spaces against the
   command name (directory stripped), one with spaces against the whole command.
 """
@@ -53,6 +59,7 @@ from .entities import (
     normalise_remote_identity,
     resolve_token,
     shell_segments,
+    tenant_rules,
 )
 
 DISTRUST = "suspicion.distrust"
@@ -108,6 +115,12 @@ GRANT_KINDS: dict[str, GrantKind] = {
             entity_kinds=frozenset({EntityKind.MCP_SERVER, EntityKind.PLUGIN}),
             relieves=(DISTRUST,),
             reason="relief.provider_grant",
+        ),
+        GrantKind(
+            "repo",
+            entity_kinds=frozenset({EntityKind.REPO}),
+            relieves=(DISTRUST, UNTRUSTED_ORIGIN, SENSITIVITY),
+            reason="relief.repo_grant",
         ),
         GrantKind(
             "tool",
@@ -278,10 +291,31 @@ def _provider(pat: str, entity: Entity, host_os: OS) -> bool:
     return fnmatch.fnmatch(value, pat)
 
 
+_GLOB_CHARS = re.compile(r"[*?\[\]]")
+
+
+def _repo(pat: str, entity: Entity, host_os: OS) -> bool:
+    """A repo pattern names its host and owner without wildcards; the host may be written as a raw or
+    archive host, which reads as the site it serves."""
+    pat = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pat.strip().lower()).rstrip("/").removesuffix(".git")
+    host, _, rest = pat.partition("/")
+    rule = tenant_rules().get(host)
+    if rule is None or _GLOB_CHARS.search(host):
+        return False
+    name, segments, prefixes = rule
+    segs = rest.split("/") if rest else []
+    if segs and segs[0] in prefixes:
+        segs = segs[1:]
+    if segments <= 0 or not segs or _GLOB_CHARS.search(segs[0]) or not segs[0]:
+        return False
+    return fnmatch.fnmatchcase(entity.value.lower(), "/".join([name, *rest.split("/")]))
+
+
 _ENTITY_MATCHERS: dict[str, Callable[[str, Entity, OS], bool]] = {
     "destination": _destination,
     "file": _file,
     "provider": _provider,
+    "repo": _repo,
 }
 
 

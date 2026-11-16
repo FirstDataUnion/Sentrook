@@ -250,6 +250,14 @@ def call_cwd(args: Any) -> str | None:
     return None
 
 
+def _repo_path(pattern: str) -> str:
+    """The owner and repository a repo grant names, without its host: the call may fetch the repository
+    from another host than the one the pattern is written with (`raw.githubusercontent.com` for
+    `github.com`, or a git remote)."""
+    rest = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pattern)
+    return rest.split("/", 1)[1] if "/" in rest else rest
+
+
 def relevant_grants(
     grants: list[dict[str, Any]],
     args_text: str,
@@ -263,7 +271,7 @@ def relevant_grants(
     """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
     the owner's other grants out of the request, so it errs towards sending. A provider grant is also
     matched against the call's provider identity (a `remote:` pattern without its port, as the identity
-    is). Paths are read the way the scanner resolves them: under
+    is), and a repo grant by its owner and repository alone. Paths are read the way the scanner resolves them: under
     home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
     A destination is read the way the scanner reads a channel: a `#name` as `channel:name`, and a
     `<platform>:` prefix as met when the send names `platform` (`call_platform`)."""
@@ -284,7 +292,12 @@ def relevant_grants(
         hay = list(texts)
         if g["kind"] == "provider" and identity:
             hay.append(identity.lower())
-        forms = _destination_forms(pat, platform) if g["kind"] == "destination" else [(pat, False)]
+        if g["kind"] == "destination":
+            forms = _destination_forms(pat, platform)
+        elif g["kind"] == "repo":
+            forms = [(_repo_path(pat), False)]
+        else:
+            forms = [(pat, False)]
         if any(_pieces_in(f, h, short_ok=ok) for f, ok in forms for h in hay):
             out.append({"grant_ref": f"g_{i + 1}", **g})
     return out

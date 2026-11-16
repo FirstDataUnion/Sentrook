@@ -56,6 +56,7 @@ LOOKUP_KINDS = (
     EntityKind.PACKAGE,
     EntityKind.PLUGIN,
     EntityKind.MCP_SERVER,
+    EntityKind.REPO,
 )
 
 
