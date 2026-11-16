@@ -989,6 +989,19 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(REACH, reach, path.entity_id).add(
                 IRREVERSIBILITY, ctx.weight("code", "package_irreversibility"), path.entity_id
             )
+            if a.source == "pending":
+                # A file the session downloaded: the host it came from supplies the code, as for an
+                # install from that URL, unless the library vouches for it.
+                for host in ctx.prepared.downloaded_from.get(path.value, ()):
+                    ent = ctx.prepared.entities.get(EntityKind.HOST, host)
+                    info = ctx.prepared.oracle_entities.get(ent.id) if ent else None
+                    if ent is None or (
+                        isinstance(info, dict) and info.get("verdict") == "known_good"
+                    ):
+                        continue
+                    f.detail.setdefault("downloaded_from", []).append(host)
+                    ref = EntityRef(EntityKind.HOST, host, {Role.CODE_SOURCE}, ent.id)
+                    _add_unvetted_sensitivity(f, ref, ent.id, ctx)
             out.append(f)
 
     written = ctx.prepared.written_file

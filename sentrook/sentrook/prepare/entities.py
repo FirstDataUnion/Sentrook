@@ -1246,6 +1246,54 @@ def _fetch_outputs(tokens: list[str]) -> list[str]:
     return [o for o in out if o and o != "-"]
 
 
+_WGET_OUTPUT_FLAG = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O(?:.+)?")
+
+
+def _download_outputs(tokens: list[str]) -> list[str]:
+    """`_fetch_outputs`, plus the file wget saves to when no output flag names one: the URL's basename,
+    under `-P DIR` / `--directory-prefix DIR` when given."""
+    out = _fetch_outputs(tokens)
+    if tokens[0] != "wget" or any(_WGET_OUTPUT_FLAG.fullmatch(t) for t in tokens[1:]):
+        return out
+    prefix = ""
+    for i, tok in enumerate(tokens[1:], 1):
+        if tok in ("-P", "--directory-prefix") and i + 1 < len(tokens):
+            prefix = tokens[i + 1].rstrip("/") + "/"
+        elif tok.startswith("--directory-prefix="):
+            prefix = tok.split("=", 1)[1].rstrip("/") + "/"
+    for url in (t for t in tokens[1:] if _URL_RE.match(t)):
+        base = urlsplit(url).path.rsplit("/", 1)[-1]
+        if base:
+            out.append(prefix + base)
+    return out
+
+
+def downloads_in(
+    command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """The files a command downloads with `curl` or `wget`, as normalised path → the hosts named in the
+    downloading segment, and the local paths an installer in a later segment of the same command
+    installs from those downloads (`curl -o x.whl URL && pip install ./x.whl`), with the same hosts.
+    Returns (installed, downloaded)."""
+    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
+    downloaded: dict[str, set[str]] = {}
+    installed: dict[str, set[str]] = {}
+    for tokens in shell_segments(command):
+        if tokens[0] == "cd" and len(tokens) > 1:
+            base, _ = resolve_token(tokens[1], base, home=home, workspace_root=workspace_root)
+        elif tokens[0] in _FETCH_HEADS:
+            hosts = set(_hosts_in(" ".join(tokens)))
+            for raw in _download_outputs(tokens):
+                path, _ = resolve_token(raw, base, home=home, workspace_root=workspace_root)
+                downloaded.setdefault(path, set()).update(hosts)
+        elif downloaded:
+            for raw in _installs_in(" ".join(tokens))[1]:
+                path, _ = resolve_token(raw, base, home=home, workspace_root=workspace_root)
+                if path in downloaded:
+                    installed.setdefault(path, set()).update(downloaded[path])
+    return installed, downloaded
+
+
 def fetched_then_run(
     command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
 ) -> tuple[set[str], set[str]]:

@@ -56,6 +56,7 @@ from .entities import (
     Role,
     channel_names,
     display_path,
+    downloads_in,
     extract_call,
     extract_exec,
     extract_mentions,
@@ -260,6 +261,10 @@ class Prepared:
     #: Per input read from the owner's config: hashes it added to the trusted set (withdrawn if the
     #: same scan judges that input injected).
     trusted_by_input: dict[int, list[str]] = field(default_factory=dict)
+    #: Local paths the pending call installs that a download in this command or an earlier step that ran
+    #: saved (or a copy or move of one): normalised path → the download's hosts, each a code source of
+    #: the call (`_downloaded_installs`).
+    downloaded_from: dict[str, list[str]] = field(default_factory=dict)
     #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
     #: the oracle runs before the other probes. Empty when it did not run or failed.
     oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -642,6 +647,63 @@ def _find_written(
                 truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _downloaded_installs(
+    pending: CanonicalCall,
+    history: list[CanonicalCall],
+    not_run: frozenset[int],
+    copies: CopyHistory,
+    table: EntityTable,
+    now: int,
+    home: str,
+    ws: str,
+) -> dict[str, list[str]]:
+    """The local paths the pending command installs (path entities with the code-source role) that a
+    download saved: in an earlier segment of the same command, or in an earlier step that ran, at that
+    path or at one it was copied or moved from. Each maps to the download's hosts, less the hosts on the
+    installer list (a registry or installer the scanner already trusts to serve code)."""
+    if pending.tool_kind is not ToolKind.EXEC:
+        return {}
+    installs = [
+        e.value
+        for e in table.pending()
+        if e.kind is EntityKind.PATH and Role.CODE_SOURCE in e.roles
+    ]
+    if not installs:
+        return {}
+    same, _ = downloads_in(
+        pending.command or "", home=home, workspace_root=ws, cwd=pending.get("cwd")
+    )
+    earlier: dict[str, set[str]] = {}
+    for call in history:
+        if call.tool_kind is not ToolKind.EXEC or call.step is None or call.step in not_run:
+            continue
+        cmd = call.command or ""
+        if not any(head in cmd for head in ("curl", "wget")):
+            continue
+        _, saved = downloads_in(cmd, home=home, workspace_root=ws, cwd=call.get("cwd"))
+        for path, hosts in saved.items():
+            earlier.setdefault(path, set()).update(hosts)
+    out: dict[str, set[str]] = {p: set(h) for p, h in same.items()}
+    for path in installs:
+        for origin in (path, *copies.ancestors(path, now)):
+            if origin in earlier:
+                out.setdefault(path, set()).update(earlier[origin])
+    charged = {p: sorted(h for h in hosts if not _listed_installer(h)) for p, hosts in out.items()}
+    return {p: hosts for p, hosts in charged.items() if hosts}
+
+
+def _listed_installer(host: str) -> bool:
+    from ..aira.lists import load_lists
+
+    host = host.lower().strip(".")
+    return any(
+        host == listed or host.endswith("." + listed)
+        for listed in (
+            h.lower().strip(".") for h in load_lists().strings("installers", "installer_hosts")
+        )
+    )
 
 
 #: Arguments of a scheduler tool that name what the job runs.
@@ -1378,6 +1440,24 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     )
                 )
 
+    downloaded_from: dict[str, list[str]] = {}
+    try:
+        downloaded_from = _downloaded_installs(
+            pending, history, not_run, copies, table, planir.session.step, home, ws
+        )
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("download_join_failed", f"{type(exc).__name__}: {exc}"))
+    for path, hosts in downloaded_from.items():
+        for h in hosts:
+            table.add(
+                EntityKind.HOST,
+                h,
+                display=h,
+                role=Role.CODE_SOURCE,
+                origin=Origin.PENDING_CALL,
+                ref=f"download:{display_path(path, home)}",
+            )
+
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
     _mark_packages_named_in_content(inputs, owner_config, table, planir.session.step)
 
@@ -1497,6 +1577,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         resolved=resolved,
         lineage=lineage,
         copies=copies,
+        downloaded_from=downloaded_from,
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,
