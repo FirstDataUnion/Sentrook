@@ -884,8 +884,32 @@ def _install_operands(text: str, start: int, spans: list[tuple[int, int]]) -> st
     return "".join(out)
 
 
+#: Package extras after a local operand (`.[dev]`, `./pkg[test,docs]`).
+_EXTRAS_RE = re.compile(r"\[[^\]]*\]\Z")
+
+
+def _local_install_operand(token: str) -> str | None:
+    """The path an installer operand names when it is on disk rather than in a registry: `.`, `..`, or a
+    path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or Go's
+    `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
+    tok = token.strip().strip("'\"")
+    tok = _EXTRAS_RE.sub("", tok)
+    if tok.endswith("/..."):
+        tok = tok[:-4] or "."
+    if tok in (".", "..", "~", "$HOME") or tok.startswith(("./", "../", "/", "~/", "$HOME/")):
+        return tok
+    return None
+
+
 def _packages_in(text: str) -> list[str]:
+    return _installs_in(text)[0]
+
+
+def _installs_in(text: str) -> tuple[list[str], list[str]]:
+    """The packages installer commands in `text` name, and their operands that are local paths (as
+    written, see `_local_install_operand`). A local path installs what is on disk: it is not a package."""
     pkgs: list[str] = []
+    local: list[str] = []
     spans = substitution_spans(text) if ("$(" in text or "`" in text) else []
     for m in _INSTALLERS.finditer(text):
         eco_key = re.sub(r"\s+", " ", m.group("eco").lower())
@@ -923,6 +947,10 @@ def _packages_in(text: str) -> list[str]:
             if eco == "plugin":
                 pkgs.append(tok.strip("'\""))
                 continue
+            path = _local_install_operand(tok)
+            if path is not None:
+                local.append(path)
+                continue
             p = normalise_package(eco, tok)
             if p:
                 pkgs.append(p)
@@ -938,7 +966,7 @@ def _packages_in(text: str) -> list[str]:
                 .rstrip("/")
                 .removesuffix(".git")
             )
-    return list(dict.fromkeys(pkgs))
+    return list(dict.fromkeys(pkgs)), list(dict.fromkeys(local))
 
 
 def _is_address(value: str, platform: str | None) -> bool:
@@ -1670,12 +1698,28 @@ def extract_exec(
             if tok.startswith(("/", "~", "./", "../", "$HOME")):
                 destinations.add(tok.strip("'\""))
 
+    # An installer operand that is a local path installs, and so runs, what is there: a code source
+    # resolved against the working directory (`.` is that directory), not a registry package.
+    packages, local = _installs_in(command)
+    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
+    installed = list(
+        dict.fromkeys(
+            resolve_token(raw, base, home=home, workspace_root=workspace_root)[0] for raw in local
+        )
+    )
+    # The same operands as the generic path scan spells them, which the installed paths replace.
+    unresolved = {
+        normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw in local
+    }
+
     for norm, disp in paths_in(command, home, workspace_root, cwd):
         raw_matches = [
             r
             for r in sources | destinations | executables
             if normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
         ]
+        if (norm in installed or norm in unresolved) and not raw_matches and norm not in run_files:
+            continue  # only installed: added below as a code source
         if norm in run_files or any(
             normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
             for r in executables
@@ -1691,8 +1735,10 @@ def extract_exec(
         else:
             role = Role.DATA_SOURCE
         found.append(Found(EntityKind.PATH, norm, disp, role))
+    for norm in installed:
+        found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.CODE_SOURCE))
 
-    for p in _packages_in(command):
+    for p in packages:
         kind = (
             EntityKind.PLUGIN
             if (p.startswith("@") or (p.count("/") == 1 and ":" not in p))

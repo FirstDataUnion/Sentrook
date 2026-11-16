@@ -975,6 +975,21 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             )
             _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
             out.append(f)
+        for path in a.paths:
+            # A local path an installer installs (`pip install -e .`): still an install, but of what is
+            # on disk, which no registry serves and no library could vouch for.
+            if Role.CODE_SOURCE not in path.roles:
+                continue
+            f = Finding(
+                rule="C3.package_install",
+                cls="C3",
+                reason="code.package_install",
+                detail={"path": path.display},
+            )
+            f.add(REACH, reach, path.entity_id).add(
+                IRREVERSIBILITY, ctx.weight("code", "package_irreversibility"), path.entity_id
+            )
+            out.append(f)
 
     written = ctx.prepared.written_file
     if written is not None and a.source == "pending":

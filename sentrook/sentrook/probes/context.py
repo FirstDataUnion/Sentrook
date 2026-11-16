@@ -487,7 +487,8 @@ class ContextProbe:
             if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
                 continue
             if ent.kind is EntityKind.PATH and not (
-                ent.roles & {Role.EXECUTABLE, Role.DATA_SOURCE, Role.DATA_DESTINATION}
+                ent.roles
+                & {Role.EXECUTABLE, Role.CODE_SOURCE, Role.DATA_SOURCE, Role.DATA_DESTINATION}
             ):
                 continue
             if ent.sibling_only:

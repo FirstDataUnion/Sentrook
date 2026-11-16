@@ -376,7 +376,7 @@ def _mark_request_named(
     target, or a host that only the pending call spells out. A pending-call entity whose value appears
     verbatim in the request (case-insensitive, whole token) is request-named. A PyPI name is folded on
     extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does.
-    A package that is a local file (`pip install /work/wheels/x.whl`) is also named by its path under
+    A local path an installer installs (`pip install /work/wheels/x.whl`) is also named by its path under
     one of `roots` (the workspace, home, the call's working directory), as an owner writes it."""
     text = request_text.lower()
     if not text:
@@ -387,7 +387,8 @@ def _mark_request_named(
             or Origin.REQUEST in ent.origins
         ):
             continue
-        if ent.kind not in (
+        installed = ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles
+        if not installed and ent.kind not in (
             EntityKind.RECIPIENT,
             EntityKind.CHANNEL,
             EntityKind.HOST,
@@ -402,9 +403,21 @@ def _mark_request_named(
 def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> bool:
     """The entity's value appears in the lower-cased `text` as a whole token: verbatim, a channel by
     its shorter names, a package also without its ecosystem prefix (a PyPI name spelt as PyPI allows),
-    a package installed from a URL by that URL's host and path. A package that is a local file is
-    also named by its path under one of `roots`, or its `~/` form; a bare file name is not enough,
-    since another file may carry it."""
+    a package installed from a URL by that URL's host and path. A path is named by its path under one
+    of `roots`, or its `~/` form; a bare file name is not enough, since another file may carry it."""
+    if ent.kind is EntityKind.PATH:
+        name = ent.value.lower()
+        relative: set[str] = set()
+        for i, root in enumerate(roots):
+            prefix = (root or "").lower().rstrip("/") + "/"
+            if len(prefix) > 1 and name.startswith(prefix) and "/" in name[len(prefix) :]:
+                relative.add(name[len(prefix) :])
+            if i == 1 and len(prefix) > 1 and name.startswith(prefix):
+                relative.add("~/" + name[len(prefix) :])
+        # A relative path is named only as a whole path, not as the tail of a longer one.
+        return any(
+            re.search(r"(?<![\w./~-])" + re.escape(rel) + r"(?![\w/-])", text) for rel in relative
+        )
     candidates = {ent.value.lower()}
     if ent.kind is EntityKind.CHANNEL:
         candidates.update(channel_names(ent.value))
@@ -412,20 +425,7 @@ def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> 
         # Installed from a URL: named by that URL, whatever scheme the owner wrote before the host.
         candidates.add(ent.value[4:].lower())
     elif ent.kind is EntityKind.PACKAGE and ":" in ent.value:
-        name = ent.value.split(":", 1)[1].lower()
-        candidates.add(name)
-        relative: set[str] = set()
-        for i, root in enumerate(roots if name.startswith("/") else ()):
-            prefix = (root or "").lower().rstrip("/") + "/"
-            if len(prefix) > 1 and name.startswith(prefix) and "/" in name[len(prefix) :]:
-                relative.add(name[len(prefix) :])
-            if i == 1 and len(prefix) > 1 and name.startswith(prefix):
-                relative.add("~/" + name[len(prefix) :])
-        # A relative path is named only as a whole path, not as the tail of a longer one.
-        if any(
-            re.search(r"(?<![\w./~-])" + re.escape(rel) + r"(?![\w/-])", text) for rel in relative
-        ):
-            return True
+        candidates.add(ent.value.split(":", 1)[1].lower())
     pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
     for cand in candidates:
         if len(cand) < 3:
