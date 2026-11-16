@@ -227,9 +227,14 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: Keyed by the set's name and the first 12 characters of its sha, so a set edited since it was measured falls back to
 #: its estimate until measured again. call-v7's key was moved by hand to its sha after a one-clause preamble edit (the
 #: batch named as content being judged, about 20 tokens), which the rounding up covers.
+#: A set built from blocks sends more or fewer of them depending on the state, so its entry is its largest form, the one
+#: `built_questions()` gives with no state. call-v8 (502 uncached bodies, longest answer 255 tokens): 5,736 with no
+#: conditional block, about 6,100 with the reputation block (largest residual 6,571), 6,908 with the batch block
+#: (largest residual 6,973), 7,245 with both; its estimate for the largest form is 12,185.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
+    ("call-v8", "e43a1560b643"): 7_300,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
@@ -251,7 +256,8 @@ def state_budget_tokens(built_questions: dict[str, Any]) -> int:
 
 def question_reserve_tokens(qs: QuestionSet) -> int:
     """The room a set's questions take: its measured cost when it has one at its current sha, otherwise the estimate
-    from its characters. The state is still estimated at 2.5 characters per token."""
+    from its characters. The state is still estimated at 2.5 characters per token. For a set whose questions depend
+    on the state (blocks sent only with a batch or a reputation block), both are for its largest form."""
     measured = MEASURED_QUESTION_TOKENS.get((qs.name, qs.sha[:12]))
     return measured if measured is not None else est_tokens(qs.built_questions())
 

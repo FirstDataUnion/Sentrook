@@ -2,8 +2,8 @@
 
 A request body's questions are part of the TestNest cache key and of what a recorded result is attributable to, so a
 change to how a set is built (not only to its wording) must not move a shipped set's questions. Each pin is the sha256
-of the canonical JSON of the set's built questions, as `build_body` sends them for any state. A new set adds its pin;
-an existing pin never changes.
+of the canonical JSON of the set's built questions, as `build_body` sends them (for a set built from blocks, one per
+shape of state). A new set adds its pin; an existing pin never changes.
 """
 
 from __future__ import annotations
@@ -55,8 +55,29 @@ def test_a_preamble_set_builds_the_questions_it_always_has(name, pin):
         assert _sha(body["questions"]) == pin
 
 
-def test_every_shipped_preamble_set_is_pinned():
+#: Sets built from blocks: the questions depend on whether the state has a batch and a reputation block, one pin per
+#: state in `STATES` (none, batch, reputation, both).
+BLOCK_SET_PINS = {
+    "call-v8": (
+        "ba9e38d9bf9956c72dc5010c5b45b67021250f21b0dc8b56af5d7e99702a51ab",
+        "ac16038907432b1f4d957fa4cb90d76e59701d94e3b87a1c923d69f6672c2aad",
+        "fa1fd36b3c1a43b171c9c7f5c37f0740899f55cf60ebbc1650b268ceb13e3df5",
+        "13869813ba121a943c77bfc9ec270bf5b15dae57d28e18a302aab5274bb88aa1",
+    ),
+}
+
+
+@pytest.mark.parametrize(("name", "pins"), sorted(BLOCK_SET_PINS.items()))
+def test_a_block_set_builds_the_questions_pinned_for_each_state_shape(name, pins):
+    qs = load_question_set(name)
+    for state, pin in zip(STATES, pins, strict=True):
+        assert _sha(build_body(qs, state, model="m", provider={})["questions"]) == pin
+    # with no state, the largest form: every block, as with both a batch and a reputation block
+    assert _sha(qs.built_questions()) == pins[-1]
+
+
+def test_every_shipped_set_is_pinned():
     for path in sorted(QUESTIONS_DIR.glob("*.json")):
         qs = load_question_set(path.stem)
-        if qs.preamble is not None:
-            assert path.stem in PREAMBLE_SET_PINS, path.stem
+        pins = BLOCK_SET_PINS if qs.blocks else PREAMBLE_SET_PINS
+        assert path.stem in pins, path.stem
