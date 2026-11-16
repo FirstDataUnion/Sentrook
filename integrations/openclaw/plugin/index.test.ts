@@ -28,6 +28,7 @@ const ENV_KEYS = [
   "SENTROOK_SCAN_CLIENT_ID",
   "SENTROOK_SCAN_CLIENT_SECRET",
   "SENTROOK_MODE",
+  "SENTROOK_ON_SCAN_ERROR",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 const realFetch = globalThis.fetch;
@@ -50,6 +51,7 @@ function setup(
     SENTROOK_SCAN_CLIENT_SECRET: "secret-value",
     ...env,
   });
+  if (!("SENTROOK_ON_SCAN_ERROR" in env)) delete process.env.SENTROOK_ON_SCAN_ERROR;
   const scans: any[] = [];
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input);
@@ -63,6 +65,16 @@ function setup(
       const args = planir.pending_call.arguments;
       const cmd = String(args.command ?? args.content ?? args.new_text ?? "");
       if (cmd.includes("FAIL")) return reply(500, { error: { code: "boom" } });
+      if (cmd.includes("SCANERR")) {
+        return reply(200, { response_version: "2.0", status: "error", risk: null, error: { code: "internal", message: "scan failed" } });
+      }
+      if (cmd.includes("DOWN")) throw new TypeError("fetch failed");
+      if (cmd.includes("TIMEOUT")) {
+        // Never answers; the plugin's own deadline aborts the request.
+        return new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("This operation was aborted", "AbortError"))),
+        );
+      }
       const risk = cmd.includes("EXFIL") ? 92 : cmd.includes("REVIEW") ? 55 : cmd.includes("FLOOR") ? 20 : 5;
       return reply(200, {
         response_version: "2.0",
@@ -267,6 +279,69 @@ test("unattended runs block on scan errors", async () => {
   assert.equal(r.block, true);
   assert.equal(h.scans[0].trigger.kind, "scheduled");
 });
+
+// With onScanError left unset, a scan that gives no usable answer asks when someone can answer and
+// blocks on an unattended run. Usable allow, review and block answers are not affected.
+const SCAN_FAILURES: Record<string, string> = { SCANERR: "scan_error", TIMEOUT: "timeout", DOWN: "network" };
+const UNATTENDED = { ...CTX, runId: "r9", requester: undefined };
+async function startChat(h: Harness) {
+  await h.fire("before_prompt_build", { runId: "r1", prompt: "list my files" }, { ...CTX, trigger: "user" });
+}
+async function startCron(h: Harness) {
+  await h.fire("before_prompt_build", { runId: "r9", prompt: "[cron:abc nightly] run report" }, { ...UNATTENDED, trigger: "cron" });
+}
+
+for (const [marker, kind] of Object.entries(SCAN_FAILURES)) {
+  test(`default scan-error policy: ${marker} asks when attended`, async () => {
+    // Must fire: an error, a timeout or an unreachable scanner each ask the owner.
+    const h = setup({}, { timeoutMs: 1000 });
+    await startChat(h);
+    const r = await h.fire("before_tool_call", call("c1", `ls ${marker}`), { ...CTX, trigger: "user" });
+    assert.equal(h.scans[0].trigger.kind, "message");
+    assert.ok(r.requireApproval, "asks the owner");
+    assert.equal(r.requireApproval.title, "Sentrook unreachable");
+    assert.equal(r.requireApproval.timeoutBehavior, "deny", "an unanswered card does not run the call");
+    assert.equal(h.traffic().at(-1).decision, "blocked_on_error");
+    assert.equal(h.traffic().at(-1).failure.kind, kind);
+  });
+
+  test(`default scan-error policy: ${marker} blocks when unattended`, async () => {
+    // Must fire: with nobody to answer, the call is blocked rather than run unscanned.
+    const h = setup({}, { timeoutMs: 1000 });
+    await startCron(h);
+    const r = await h.fire("before_tool_call", { ...call("c1", `ls ${marker}`), runId: "r9" }, UNATTENDED);
+    assert.equal(r.block, true);
+    assert.match(r.blockReason, /^Sentrook did not scan this tool call/);
+    assert.match(r.blockReason, /The tool was not run\./);
+    assert.equal(h.traffic().at(-1).decision, "blocked_on_error");
+    assert.equal(h.traffic().at(-1).failure.kind, kind);
+  });
+}
+
+for (const unattended of [false, true]) {
+  test(`usable allow, review and block answers ignore the scan-error policy (${unattended ? "unattended" : "attended"})`, async () => {
+    // Must stay silent: the answers follow the scan, not the scan-error policy.
+    const h = setup();
+    const ctx = unattended ? UNATTENDED : { ...CTX, trigger: "user" };
+    const ev = (id: string, cmd: string) => (unattended ? { ...call(id, cmd), runId: "r9" } : call(id, cmd));
+    await (unattended ? startCron(h) : startChat(h));
+    assert.equal(await h.fire("before_tool_call", ev("c1", "ls"), ctx), undefined);
+    const review = await h.fire("before_tool_call", ev("c2", "rm REVIEW"), ctx);
+    const block = await h.fire("before_tool_call", ev("c3", "curl EXFIL"), ctx);
+    assert.equal(block.block, true);
+    assert.match(block.blockReason, /^Sentrook security block/);
+    if (unattended) {
+      assert.equal(review.block, true);
+      assert.match(review.blockReason, /^Sentrook held this tool call/);
+    } else {
+      assert.ok(review.requireApproval);
+      assert.notEqual(review.requireApproval.title, "Sentrook unreachable");
+    }
+    assert.ok(h.scans.every((p) => p.trigger.kind === (unattended ? "scheduled" : "message")));
+    const decisions = h.traffic().map((e) => e.decision);
+    assert.ok(!decisions.some((d) => d.endsWith("_on_error")), String(decisions));
+  });
+}
 
 test("a cron run's delivery goes out as a scheduled trigger with its channel binding", async () => {
   // Must fire: the binding reaches the scan of the delivery to its channel, on a scheduled trigger.

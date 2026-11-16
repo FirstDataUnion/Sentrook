@@ -68,7 +68,7 @@ def harness(tmp_path, monkeypatch):
         "SENTROOK_SCAN_CLIENT_SECRET": "secret-value",
     }.items():
         monkeypatch.setenv(k, v)
-    for k in ("SENTROOK_MODE", "HERMES_CRON_SESSION", "HERMES_YOLO_MODE"):
+    for k in ("SENTROOK_MODE", "SENTROOK_ON_SCAN_ERROR", "HERMES_CRON_SESSION", "HERMES_YOLO_MODE"):
         monkeypatch.delenv(k, raising=False)
     fake = FakeScanner()
     monkeypatch.setattr(auth, "http_json", fake)
