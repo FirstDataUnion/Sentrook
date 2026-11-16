@@ -73,8 +73,10 @@ config_schema:
   owner_channel:
     type: str
     description: >
-      The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run.
-      Until it is set no notice is sent (status and verify say so); the call is still held. Env
+      The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run,
+      and of a call blocked there because the scan failed (at most once per job, or per session for other
+      runs, every 6 hours). Until it is set no notice is sent (status and verify say so); the call is still
+      held or blocked. Env
       SENTROOK_OWNER_CHANNEL.
   skill_review:
     type: str

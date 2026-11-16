@@ -336,6 +336,17 @@ class Store:
         with self.lock:
             self._write(self.dir / "snooze.json", value)
 
+    def load_scan_failure_notices(self) -> dict[str, Any]:
+        """When each job or session last had a scan-failure notice; empty when absent or unreadable."""
+        with self.lock:
+            data = self._read(self.dir / "scan-failure-notices.json", None)
+        sent = data.get("sent") if isinstance(data, dict) else None
+        return sent if isinstance(sent, dict) else {}
+
+    def save_scan_failure_notices(self, sent: dict[str, str]) -> None:
+        with self.lock:
+            self._write(self.dir / "scan-failure-notices.json", {"version": 1, "sent": sent})
+
     def load_holds(self) -> dict[str, Any] | None:
         """`holds.json`, empty when absent; None when it exists but cannot be read."""
         path = self.dir / "holds.json"

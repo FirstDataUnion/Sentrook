@@ -30,9 +30,11 @@ In short, for anyone deciding whether to install it:
 - **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never
   approves a call on your behalf. Where nobody can answer (cron jobs, subagents), a review holds the call: it does not
   run, and you get one notice as a direct message, on the chat you chose with `/sentrook-notify here`, with an id to
-  approve within 24 hours (`/sentrook-approve`). That notice is the only message the plugin sends.
+  approve within 24 hours (`/sentrook-approve`). A call blocked there because the scan failed sends you a notice on
+  the same chat, at most once per job (per session for other runs) every 6 hours. Those notices are the only
+  messages the plugin sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
-  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls and where their notices go; the conversations
+  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls and where their notices go; when each job last had a scan-failure notice; the conversations
   above), or to the paths
   you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.

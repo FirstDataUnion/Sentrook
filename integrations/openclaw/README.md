@@ -375,14 +375,20 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
 (`onScanError`: `review`):
 
 - **In a cron job, a heartbeat, a subagent or a run started from an event** (`approval.scheduledIntentKinds`) nobody
-  is there to answer, so the call is blocked. It is not held and no notice is sent. The agent is told that Sentrook did not scan the call, that
-  this is a service problem rather than a security block, and that the call did not run.
+  is there to answer, so the call is blocked. The agent is told that Sentrook did not scan the call, that this is a
+  service problem rather than a security block, and that the call did not run. The call is not held, so there is
+  nothing to approve, but you get a notice where held-call notices go (`/sentrook-notify here`). It names the run,
+  the tool and the reason (the service could not be reached, did not answer in time, returned an error or
+  rate-limited the scan, or the endpoint or credentials are wrong). You get one notice per cron job (per session for
+  other runs): further failures in the same job are blocked without a notice for 6 hours, so an outage sends one
+  message per job, not one per call. The traffic log records each with `notice` `queued`, `quiet` or `unsent`.
 - **Anywhere else**, such as a chat, you are asked whether to run the call without a scan. It runs only if you
   approve; a prompt nobody answers denies the call after 5 minutes (`approval.interactiveTimeoutMs`).
 
 A snooze does not change this. Set `onScanError` to `deny` to block the call everywhere, or to `allow` to run it
 without a scan everywhere. Bad credentials or endpoints are never let through silently: with `allow` the call is
-blocked, and with `review` you are asked as above. In observe mode the failure is logged and the call runs.
+blocked, and with `review` you are asked as above. Whatever the setting, a call blocked on an unattended run because
+the scan failed sends the notice described above. In observe mode the failure is logged and the call runs.
 The traffic log records these scans with decision `blocked_on_error` or `allowed_on_error`, and `/sentrook-history`
 shows them as scan errors.
 
@@ -447,9 +453,12 @@ In short, for anyone deciding whether to install it:
   with them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never approves
   a call on your behalf. Where nobody can answer (cron jobs, subagents) a review holds the call and sends you one
-  notice, through the channel you chose with `/sentrook-notify here`; that notice is the only message it sends.
+  notice, through the channel you chose with `/sentrook-notify here`, and a call blocked because the scan failed sends
+  you one notice per job (per session for other runs) every 6 hours at most; those notices are the only messages
+  it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
-  command, snooze state, held calls and their lock files, the notice target and the conversations above), or to the paths you set for them (`stateDir`,
+  command, snooze state, held calls and their lock files, the notice target, when each job last had a scan-failure notice, and
+  the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.

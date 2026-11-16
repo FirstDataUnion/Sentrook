@@ -26,6 +26,7 @@ from . import (
     hold,
     host_turns,
     owner,
+    scan_failure_notice,
     skill_review,
     snooze,
 )
@@ -461,6 +462,7 @@ def _scan_one(
     verdict: str | None = None
     snoozed = False
     held: dict[str, Any] | None = None
+    failure_notice: dict[str, Any] | None = None
     if isinstance(result, ScanOk):
         resp = result.response
         # The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
@@ -517,6 +519,8 @@ def _scan_one(
                     store.put_review(
                         key, {"sid": sid, "request_id": planir["request_id"], "on_error": True}
                     )
+                elif unattended:
+                    failure_notice = _scan_failure_notice(cfg, built, result)
         entry["decision"] = "blocked_on_error" if directive else "allowed_on_error"
 
     sess["history"].append(entry)
@@ -534,6 +538,7 @@ def _scan_one(
             "decision": entry["decision"],
             **({"snoozed": True} if snoozed else {}),
             **({"hold": held} if held is not None else {}),
+            **({"notice": failure_notice} if failure_notice is not None else {}),
             **({"skill_review": True} if loop_save else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
@@ -562,6 +567,12 @@ def _scan_one(
 
 def _where(built: dict[str, Any]) -> str:
     """The job or session a held call belongs to, for the owner's notice."""
+    return _run_of(built)[0]
+
+
+def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
+    """(the job or session a call belongs to, for the owner's notices; the cron job id when Hermes says
+    which)."""
     sref = built["planir"]["session"]["session_ref"]
     run = None
     try:
@@ -576,12 +587,48 @@ def _where(built: dict[str, Any]) -> str:
             if isinstance(job_name, str) and job_name.strip() != job_id.strip()
             else None
         )
-        return hold.where_text("cron job", sref, job_id.strip(), name)
+        return hold.where_text("cron job", sref, job_id.strip(), name), job_id.strip()
     if built["subagent"] or built["platform"] == "subagent":
-        return hold.where_text("subagent run", sref)
+        return hold.where_text("subagent run", sref), None
     if built["platform"] == "cron":
-        return hold.where_text("cron job", sref)
-    return hold.where_text("unattended run", sref)
+        return hold.where_text("cron job", sref), None
+    return hold.where_text("unattended run", sref), None
+
+
+def _scan_failure_notice(
+    cfg: PluginConfig, built: dict[str, Any], failure: ScanFailure
+) -> dict[str, Any]:
+    """Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session)
+    per quiet period. Returns what the scan record says about the notice. Never raises: the call is
+    blocked whatever happens here."""
+    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
+    if target and not callable(getattr(_ctx, "dispatch_tool", None)):
+        target, why = None, "this Hermes cannot dispatch send_message from a plugin"
+    if not target:
+        return {"status": "unsent", "target": None, "reason": why}
+    where, job_id = _run_of(built)
+    sref = built["planir"]["session"]["session_ref"]
+    key = scan_failure_notice.quiet_key(job_id, sref)
+    try:
+        stamp = scan_failure_notice.claim(cfg.state_dir, key, datetime.now(UTC))
+        if stamp is None:
+            return {"status": "quiet"}
+    except LockTimeout:
+        return {"status": "unsent", "target": None, "reason": "notice file locked"}
+    except Exception as exc:  # noqa: BLE001 - still blocked, just not announced
+        logger.warning("sentrook could not read or write scan-failure notices: %s", exc)
+        return {"status": "unsent", "target": None, "reason": "notice file not written"}
+    text = scan_failure_notice.notice_text(
+        failure, built["tool"], where, job_id is not None, "hermes sentrook verify"
+    )
+    # Not delivered: the next failure in this job is announced instead.
+    hold.deliver(
+        _ctx,
+        target,
+        text,
+        on_fail=lambda: scan_failure_notice.release(cfg.state_dir, key, stamp),
+    )
+    return {"status": "queued", "target": target}
 
 
 def _hold(

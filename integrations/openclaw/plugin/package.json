@@ -25,6 +25,7 @@
     "redact.ts",
     "scanClient.ts",
     "scanErrorPolicy.ts",
+    "scanFailureNotice.ts",
     "selfEdit.ts",
     "snooze.ts",
     "store.ts",
