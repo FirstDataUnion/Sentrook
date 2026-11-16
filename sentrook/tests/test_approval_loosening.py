@@ -393,3 +393,151 @@ def test_sibling_loosening_blocks_the_batch():
 )
 def test_stays_silent(raw):
     stays_silent(raw)
+
+
+# --------------------------------------------------------------------------- interpreters, inline eval, hooks
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        oc_edit(APPROVALS, '"allowlist": []', '"allowlist": [{"pattern": "/usr/bin/python3"}]'),
+        oc_edit(APPROVALS, '"allowlist": []', '"allowlist": [{"pattern": "**/bin/node"}]'),
+        oc_edit("~/.openclaw/exec-policy.json", '"allowlist": []', '"allowlist": ["python"]'),
+        oc_edit("~/.openclaw/exec-policy.json", '"allowlist": []', '"allowlist": ["node -e *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["python3 -c *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", "command_allowlist:\n- ruby *"),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["perl -e *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["php"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["deno run *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["bun *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["osascript -e *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["bash -c *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["sh -lc *"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["/bin/zsh -c"]'),
+        ex('openclaw approvals allowlist add "/usr/local/bin/python3.12"'),
+        ex('openclaw approvals allowlist add --agent main "/usr/bin/osascript"'),
+        h_ex("hermes config set command_allowlist '[\"node *\"]'"),
+    ],
+    ids=[
+        "approvals python3",
+        "approvals node glob",
+        "policy python",
+        "policy node -e",
+        "hermes python3 -c",
+        "hermes ruby block",
+        "hermes perl -e",
+        "hermes php",
+        "hermes deno run",
+        "hermes bun",
+        "hermes osascript",
+        "hermes bash -c",
+        "hermes sh -lc",
+        "hermes zsh -c",
+        "approvals add python3.12",
+        "approvals add osascript",
+        "hermes config set node",
+    ],
+)
+def test_interpreter_allowlist_entries_fire(raw):
+    fires(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        oc_edit(
+            "~/.openclaw/exec-policy.json",
+            '"allowlist": []',
+            '"allowlist": ["/usr/bin/python3 /opt/tools/report.py"]',
+        ),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["node scripts/build.js"]'),
+        h_patch(H_CONFIG, "command_allowlist: []", 'command_allowlist: ["bash ./deploy.sh"]'),
+        ex('openclaw approvals allowlist add "/usr/bin/python3 /opt/tools/report.py"'),
+    ],
+    ids=["python script", "node script", "bash script", "approvals add script"],
+)
+def test_interpreter_with_a_script_path_stays_off_the_floor(raw):
+    stays_silent(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ex("openclaw config set tools.exec.strictInlineEval false"),
+        ex("openclaw config set 'agents.entries.main.tools.exec.strictInlineEval' false"),
+        ex("openclaw config set tools.exec '{\"strictInlineEval\": false}' --strict-json --merge"),
+        oc_edit(OC_CONFIG, '"strictInlineEval": true', '"strictInlineEval": false'),
+        oc_write(OC_CONFIG, '{"tools": {"exec": {"mode": "ask", "strictInlineEval": false}}}'),
+        planir(
+            "apply_patch",
+            "file_edit",
+            {
+                "input": "*** Begin Patch\n*** Update File: ~/.openclaw/openclaw.json\n@@\n"
+                '-      "strictInlineEval": true,\n+      "strictInlineEval": false,\n'
+                "*** End Patch"
+            },
+        ),
+        h_ex("hermes config set hooks_auto_accept true"),
+        h_ex("hermes config set hooks_auto_accept yes"),
+        h_patch(H_CONFIG, "hooks_auto_accept: false", "hooks_auto_accept: true"),
+        h_write(H_CONFIG, "model:\n  default: m\nhooks_auto_accept: true\n"),
+        planir(
+            "patch",
+            "file_edit",
+            {
+                "mode": "patch",
+                "patch": "*** Begin Patch\n*** Update File: ~/.hermes/config.yaml\n@@\n"
+                "-hooks_auto_accept: false\n+hooks_auto_accept: true\n*** End Patch",
+            },
+            platform="hermes",
+        ),
+        h_ex("sed -i 's/hooks_auto_accept: false/hooks_auto_accept: true/' ~/.hermes/config.yaml"),
+    ],
+    ids=[
+        "strict config set",
+        "strict per-agent config set",
+        "strict json value",
+        "strict edit",
+        "strict write",
+        "strict apply_patch",
+        "hooks config set",
+        "hooks config set yes",
+        "hooks patch",
+        "hooks write",
+        "hooks v4a patch",
+        "hooks sed",
+    ],
+)
+def test_inline_eval_and_hook_consent_fire(raw):
+    fires(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ex("openclaw config set tools.exec.strictInlineEval true"),
+        oc_edit(OC_CONFIG, '"strictInlineEval": false', '"strictInlineEval": true'),
+        h_ex("hermes config set hooks_auto_accept false"),
+        h_patch(H_CONFIG, "hooks_auto_accept: true", "hooks_auto_accept: false"),
+        ex("openclaw config get tools.exec.strictInlineEval"),
+        # Left scored: the smart mode, MCP trust, and removing a deny entry.
+        h_ex("hermes config set approvals.mode smart"),
+        h_patch(H_CONFIG, "approvals:\n  mode: manual", "approvals:\n  mode: smart"),
+        h_patch(H_CONFIG, "    trust: untrusted", "    trust: trusted"),
+        h_patch(H_CONFIG, '  deny:\n  - "git push --force*"', "  deny: []"),
+    ],
+    ids=[
+        "strict on",
+        "strict edit on",
+        "hooks off",
+        "hooks patch off",
+        "strict get",
+        "smart mode",
+        "smart mode edit",
+        "mcp trust",
+        "deny removal",
+    ],
+)
+def test_inline_eval_and_hook_consent_tightening_stays_silent(raw):
+    stays_silent(raw)

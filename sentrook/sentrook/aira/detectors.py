@@ -1740,6 +1740,11 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
         if edits:
             pairs = [(str(e.get("old") or ""), str(e.get("new") or "")) for e in edits]
         else:
+            # A write replaces the whole file and the call does not show what it held, so a
+            # loosening setting the file already had (`"exec": {"mode": "full"}` in openclaw.json,
+            # also OpenClaw's gateway default) fires again on a rewrite. Accepted for now: an agent
+            # rewriting the host's config whole is rare, and telling an unchanged setting from a
+            # new one would need the file's earlier content.
             pairs = [("", a.content)]
         for p, mechanism in _written_paths(a, ctx):
             file_change(p.value, p.entity_id, pairs, {"path": p.display, "mechanism": mechanism})

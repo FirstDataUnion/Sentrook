@@ -1146,7 +1146,7 @@ def test_c4star_config_file_edits_are_content_aware():
     "raw",
     [
         ex("hermes config set approvals.terminal auto", platform="hermes"),
-        ex("hermes config set hooks_auto_accept true", platform="hermes"),
+        ex("hermes config set command_allowlist '[\"git status\"]'", platform="hermes"),
         planir("write", "file_write", {"path": "~/.openclaw/exec-approvals.json", "content": "{}"}),
         planir(
             "edit",

@@ -185,8 +185,9 @@ host_approvals:
     - '"(?:allowAll|autoApprove|auto_approve|skipApproval)"\s*:\s*true'
 
 # Loosening the host's approval or allowlist policy (`guardrail.approval_loosening`, the floor).
-# A change that turns approvals off, sets the approval fallback to allow, enables YOLO, or puts a
-# wildcard or a shell in an allowlist removes the human from the loop for every later call. The
+# A change that turns approvals off, sets the approval fallback to allow, enables YOLO, turns off
+# OpenClaw's inline-eval approvals or Hermes's hook consent, or puts a wildcard, a shell or an
+# interpreter in an allowlist removes the human from the loop for every later call. The
 # other host-approval changes above stay scored.
 #
 # Routes: the host's config command (`openclaw config set|patch`, `hermes config set`), OpenClaw's
@@ -233,6 +234,15 @@ approval_loosening:
     - key: 'ask'
       value: 'off|never|false'
       scope: host
+    # OpenClaw `tools.exec.strictInlineEval: false`: inline code (`python -c`, `node -e`, …) no
+    # longer needs approval under an otherwise permissive policy.
+    - key: 'strictInlineEval|strict_inline_eval'
+      value: 'false|0|no|off'
+      scope: any
+    # Hermes `hooks_auto_accept: true`: shell hooks are registered without asking the owner.
+    - key: 'hooks_auto_accept'
+      value: 'true|1|yes|on'
+      scope: any
     # A bare approvals switch turned off.
     - key: 'approvals?|exec[_-]?approvals|requireApproval|require_approval'
       value: 'off|false|none|disabled?|never|no|0'
@@ -246,8 +256,11 @@ approval_loosening:
     - '/\*{1,2}'
     - '\.\*'
     - '\*\s*:\s*\*'
-    # Any shell, or `sudo`, runs any command.
-    - '(?:[\w.~*/-]*/)?(?:ba|z|da|k|fi|c|tc)?sh(?:\s+(?:-c\s+)?\*{1,2})?'
+    # Any shell, interpreter or `sudo` runs any command: bare, or with arguments that are only
+    # options, wildcards or a runner verb (`bash -c *`, `python3 -c *`, `deno run *`). One with a
+    # script path (`/usr/bin/python3 /opt/tools/report.py`) is a narrow entry.
+    - '(?:[\w.~*/-]*/)?(?:ba|z|da|k|fi|c|tc)?sh(?:\s+(?:-{1,2}[\w-]+|\*{1,2}))*'
+    - '(?:[\w.~*/-]*/)?(?:python(?:[23](?:\.\d+)?)?|node(?:js)?|ruby|perl|php|deno|bun|osascript)(?:\s+(?:-{1,2}[\w-]+|\*{1,2}|run|eval|x))*'
     - '(?:[\w.~*/-]*/)?sudo(?:\s+\*{1,2})?'
   # Words that tie a `scope: host` setting in a config file or config command to approvals.
   context_patterns:
