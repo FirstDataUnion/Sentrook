@@ -374,9 +374,21 @@ the memory-wiki vault.
 
 ### When the scan service fails
 
-When the scan service gives no usable answer the plugin asks you whether to run the call without a scan
-(`onScanError`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let
-through silently: even with `onScanError` set to `allow`, the call is blocked, or you are asked.
+A scan gives no usable answer when the scan service returns an error, does not answer within `timeoutMs` (30
+seconds), cannot be reached, or rate-limits the scan. The call is then not scanned, and with the default setting
+(`onScanError`: `review`):
+
+- **In a cron job, a heartbeat or a subagent** (`approval.scheduledIntentKinds`) nobody is there to answer, so the
+  call is blocked. It is not held and no notice is sent. The agent is told that Sentrook did not scan the call, that
+  this is a service problem rather than a security block, and that the call did not run.
+- **Anywhere else**, such as a chat, you are asked whether to run the call without a scan. It runs only if you
+  approve; a prompt nobody answers denies the call after 5 minutes (`approval.interactiveTimeoutMs`).
+
+A snooze does not change this. Set `onScanError` to `deny` to block the call everywhere, or to `allow` to run it
+without a scan everywhere. Bad credentials or endpoints are never let through silently: with `allow` the call is
+blocked, and with `review` you are asked as above. In observe mode the failure is logged and the call runs.
+The traffic log records these scans with decision `blocked_on_error` or `allowed_on_error`, and `/sentrook-history`
+shows them as scan errors.
 
 ## Observe mode
 
