@@ -413,7 +413,7 @@ def test_question_set_env_round_trip_and_health():
         "exposure-v2",
         "call-v8",
     )
-    assert default.convergence == "conv-v5"
+    assert default.convergence == "conv-v6"
     # the frozen v1 sets and conv-v1 stay selectable for the Jev-only comparison
     frozen = ServeConfig.from_env(
         {

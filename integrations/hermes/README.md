@@ -212,8 +212,9 @@ or the local terminal (`hermes chat` or `hermes sentrook …`). Group and channe
 direct message admitted only because the gateway allows all users. Every attempt, allowed or refused, is recorded in
 the traffic log (unless you turned it off). Hermes's own `allow_admin_from` is not used.
 
-A snooze never relaxes a block, a review the scanner marks as enforced, or an unattended run (cron jobs, webhooks,
-the API server): those still stop, and a review on an unattended run is held for you instead.
+A snooze never relaxes a block (including a block-level score the scanner lowered to a review), a review the
+scanner marks as enforced, or an unattended run (cron jobs, webhooks, the API server): those still stop, and a review
+on an unattended run is held for you instead.
 
 Where slash commands don't reach the plugin, use `hermes sentrook <command>` on the machine instead:
 
@@ -224,7 +225,13 @@ Where slash commands don't reach the plugin, use `hermes sentrook <command>` on 
 ## How enforce mode decides
 
 Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`review_at`, `block_at`). Some findings,
-such as reading credentials and sending them off the machine, are floors that apply whatever the score.
+such as reading credentials and sending them off the machine, are floors that apply whatever the score. When you are in the chat
+and asked for the work yourself, a high score alone asks you rather than blocking: the scanner marks the call as
+review at most unless something independent points to an attack (content the agent read supplied the target, a
+known-bad or look-alike entity, a retry of a call you denied, a credential sent somewhere you did not name or
+grant, or a floor). Group chats, scheduled runs and sub-agents do not get this, nor does a scan the scanner could
+not complete (a check failed, reputation data was unavailable, or the session's history was lost). A block lowered to a
+review this way always asks: a snooze never skips it.
 
 When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It

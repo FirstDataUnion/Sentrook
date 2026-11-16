@@ -2,7 +2,8 @@
  * From a scan response to allow / review / block, and the text a human sees.
  *
  * The plugin decides from `risk` and its local lines (review at `reviewAt`, block at `blockAt`),
- * then takes the stricter of that and the scanner's `enforced` floor. In observe mode the decision
+ * lowers that to the scanner's `ceiling` when it is `review`, then takes the stricter of that and the
+ * scanner's `enforced` floor. In observe mode the decision
  * is recorded but never applied.
  */
 
@@ -15,6 +16,8 @@ const RANK: Record<Verdict, number> = { allow: 0, review: 1, block: 2 };
 export function decide(resp: ScanResponse, lines: { reviewAt: number; blockAt: number }): Verdict {
   const risk = resp.risk ?? 0;
   let v: Verdict = risk >= lines.blockAt ? "block" : risk >= lines.reviewAt ? "review" : "allow";
+  // the scanner's ceiling (the owner attends and nothing independent points to an attack) only lowers
+  if (resp.ceiling === "review" && v === "block") v = "review";
   const floor = resp.enforced;
   if (floor && RANK[floor] > RANK[v]) v = floor;
   return v;
@@ -158,7 +161,11 @@ export function blockReason(resp: ScanResponse): string {
   );
 }
 
-/** A review forced by a scanner floor is critical; one from the risk line is a warning. */
-export function severity(resp: ScanResponse): "warning" | "critical" {
-  return resp.enforced === "review" ? "critical" : "warning";
+/**
+ * A review forced by a scanner floor, or a block-level score the scanner's ceiling lowered to a review, is
+ * critical; one from the review line is a warning.
+ */
+export function severity(resp: ScanResponse, lines: { blockAt: number }): "warning" | "critical" {
+  if (resp.enforced === "review") return "critical";
+  return resp.ceiling === "review" && (resp.risk ?? 0) >= lines.blockAt ? "critical" : "warning";
 }

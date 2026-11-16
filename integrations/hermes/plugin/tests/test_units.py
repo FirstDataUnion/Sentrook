@@ -65,6 +65,17 @@ def test_decide():
     assert decide(r(90, "review"), 45, 80) == "block"
 
 
+CEILING = json.loads(
+    (Path(__file__).resolve().parents[3] / "fixtures" / "ceiling" / "cases.json").read_text()
+)["cases"]
+
+
+@pytest.mark.parametrize("case", CEILING, ids=[c["name"] for c in CEILING])
+def test_verdict_ceiling_lowers_to_review_and_never_raises(case):
+    lines = case["lines"]
+    assert decide(case["response"], lines["review_at"], lines["block_at"]) == case["verdict"]
+
+
 def _scored(**extra):
     return {
         "risk": 90,

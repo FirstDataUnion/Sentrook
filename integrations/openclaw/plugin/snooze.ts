@@ -90,8 +90,13 @@ export function active(data: SnoozeFile | null, ref: string, now: Date): boolean
 }
 
 /** A snooze may relax this review: the scanner did not enforce it. */
-export function applies(resp: { enforced?: string | null }): boolean {
-  return resp.enforced !== "review" && resp.enforced !== "block";
+/**
+ * A snooze may relax this review: the scanner did not enforce it, and its score is under the block line (a block
+ * the scanner's ceiling lowered to a review always asks).
+ */
+export function applies(resp: { enforced?: string | null; risk?: number | null }, blockAt: number): boolean {
+  if (resp.enforced === "review" || resp.enforced === "block") return false;
+  return (resp.risk ?? 0) < blockAt;
 }
 
 // ---- status ----------------------------------------------------------------------------------------

@@ -400,7 +400,11 @@ def _scan_one(
     held: dict[str, Any] | None = None
     if isinstance(result, ScanOk):
         resp = result.response
-        verdict = decide(resp, cfg.review_at, cfg.block_at)
+        # The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
+        # block to a review with it, so a lowered block is never held.
+        verdict = decide(
+            {**resp, "ceiling": None} if unattended else resp, cfg.review_at, cfg.block_at
+        )
         sess["token"] = resp.get("state")
         sess["buffer"] = []
         entry["action_fingerprint"] = resp.get("action_fingerprint")
@@ -416,7 +420,7 @@ def _scan_one(
             entry["decision"] = "held"
             directive = {"action": "block", "message": hold.HELD_TEXT}
             held = _hold(cfg, traffic, built, resp)
-        elif snooze.applies(resp) and snooze.active(
+        elif snooze.applies(resp, cfg.block_at) and snooze.active(
             store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):
             # The owner snoozed reviews for this session: scanned and logged, not asked.

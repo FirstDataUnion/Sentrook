@@ -46,6 +46,22 @@ class ConvergenceParams:
     #: A destination or recipient the owner's own configuration supplied on an earlier scan (the token's trusted
     #: set) is relieved of the library's distrust.
     owner_config_relief: bool = False
+    #: In an attended owner session (a message turn from the owner, on the main agent, not in a group chat), set the
+    #: response's verdict ceiling to review unless the call carries an independent strong signal (`converge.attended`).
+    attended_owner_cap: bool = False
+    #: A key argument's untrusted origin, as scaled by its role, that counts as a strong signal.
+    attended_owner_untrusted_origin_min: float = 0.6
+    #: The sensitivity of a source a send carries that counts as sensitive data leaving.
+    attended_owner_sent_sensitivity_min: float = 0.6
+    #: Optional strong signals beyond the defaults, each off unless set:
+    #: a look-alike of a vouched-for entry or of a host, package or person the owner named;
+    attended_owner_lookalike: bool = False
+    #: a retry of an action the owner denied, at or above this value;
+    attended_owner_retry_min: float | None = None
+    #: this request's new untrusted content judged to instruct the agent (exposure at or above the first value)
+    #: while the call is judged not to follow from the owner's request (misalignment at or above the second).
+    attended_owner_injection_exposure_min: float | None = None
+    attended_owner_injection_misalignment_min: float = 0.0
     reason_min_value: float = 0.2
     oracle: OracleParams = field(default_factory=OracleParams)
     context: ContextParams = field(default_factory=ContextParams)
@@ -71,6 +87,7 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     rnr = raw.get("request_named_relief") or {}
     kgr = raw.get("known_good_relief") or {}
     ocr = raw.get("owner_config_relief") or {}
+    aoc = raw.get("attended_owner_cap") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
     context_section = dict(raw.get("context") or {})
     lineage = context_section.pop("lineage", None)
@@ -99,6 +116,21 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         known_good_relief=bool(kgr.get("enabled", True)),
         known_good_content_relief=bool(kgr.get("content_destinations", False)),
         owner_config_relief=bool(ocr.get("enabled", False)),
+        attended_owner_cap=bool(aoc.get("enabled", False)),
+        attended_owner_untrusted_origin_min=float(aoc.get("untrusted_origin_min", 0.6)),
+        attended_owner_sent_sensitivity_min=float(aoc.get("sent_sensitivity_min", 0.6)),
+        attended_owner_lookalike=bool(aoc.get("lookalike", False)),
+        attended_owner_retry_min=(
+            None if aoc.get("retry_min") is None else float(aoc["retry_min"])
+        ),
+        attended_owner_injection_exposure_min=(
+            None
+            if (aoc.get("fresh_injection") or {}).get("exposure_min") is None
+            else float(aoc["fresh_injection"]["exposure_min"])
+        ),
+        attended_owner_injection_misalignment_min=float(
+            (aoc.get("fresh_injection") or {}).get("misalignment_min", 0.0)
+        ),
         reason_min_value=float(raw.get("reason_min_value", 0.2)),
         oracle=oracle,
         context=context,
