@@ -897,6 +897,11 @@ _INDEX_FLAGS = {
 }
 
 
+#: A shell redirection among a command's words: an optional fd number (or `&`), the operator (`>`, `>>`,
+#: `>|`, `<`, `<<`, `<<<`, `>&`, `<&`, `<>`), and the target when it is glued on (`2>&1`, `>/dev/null`).
+_REDIRECTION = re.compile(r"(?:\d+|&)?(?:>>|>\||>&|>|<<<|<<-?|<&|<>|<)(.*)")
+
+
 def _local_install_operand(token: str, eco: str = "") -> str | None:
     """The path an installer operand names when it is on disk rather than in a registry: `.`, `..`, or a
     path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or, for
@@ -934,6 +939,12 @@ def _installs_in(text: str) -> tuple[list[str], list[str], list[str]]:
         index_flags = _INDEX_FLAGS.get(eco_key, frozenset())
         skip_next = index_next = False
         for tok in tokens:
+            redirect = _REDIRECTION.fullmatch(tok)
+            if redirect:
+                # not an operand, nor is the target that follows a bare operator
+                skip_next = not redirect.group(1)
+                index_next = False
+                continue
             if index_next:
                 indexes.append(tok.strip("'\""))
                 index_next = False

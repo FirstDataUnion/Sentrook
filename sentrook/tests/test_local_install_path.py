@@ -273,3 +273,37 @@ def test_an_index_or_registry_flag_names_a_code_source_host_not_a_package(comman
 def test_npm_force_takes_no_value():
     p, _, _ = scan(ex("npm install -f left-pad"))
     assert set(pending(p, EntityKind.PACKAGE)) == {"npm:left-pad"}
+
+
+# --------------------------------------------------------------------------- redirections are not operands
+
+
+@pytest.mark.parametrize(
+    "command, packages, installed",
+    [
+        ("pip install -e . 2>&1 | tail -5", set(), {WS}),
+        ("pip install -e . >/dev/null 2>&1", set(), {WS}),
+        ("pip install -e . > /dev/null", set(), {WS}),
+        ("pip install -e . > log.txt", set(), {WS}),
+        ("pip install -e . >> log.txt", set(), {WS}),
+        ("pip install -e . &> log.txt", set(), {WS}),
+        ("pip install -e . &>>log.txt", set(), {WS}),
+        ("pip install -e . >| log.txt", set(), {WS}),
+        ("npm install ./pkg 2> err.log", set(), {f"{WS}/pkg"}),
+        ("npm install ./pkg 2>>err.log", set(), {f"{WS}/pkg"}),
+        ("npm install ./pkg 1>&2", set(), {f"{WS}/pkg"}),
+        ("npm install ./pkg >&2", set(), {f"{WS}/pkg"}),
+        ("pip install requests > out.txt", {"pypi:requests"}, set()),
+        ("pip install requests 2>/dev/null", {"pypi:requests"}, set()),
+        ("pip install -r requirements.txt < /dev/null", set(), set()),
+        ("pip install requests <<< yes", {"pypi:requests"}, set()),
+        ("pip install requests << EOF", {"pypi:requests"}, set()),
+        ("pip install requests <<EOF", {"pypi:requests"}, set()),
+        ("npm install left-pad@1.3.0 > npm.log 2>&1 && echo done", {"npm:left-pad"}, set()),
+    ],
+)
+def test_a_redirection_and_its_target_are_not_install_operands(command, packages, installed):
+    p, _, _ = scan(ex(command))
+    assert set(pending(p, EntityKind.PACKAGE)) == packages
+    paths = pending(p, EntityKind.PATH)
+    assert {v for v, roles in paths.items() if Role.CODE_SOURCE in roles} == installed
