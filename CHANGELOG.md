@@ -569,3 +569,7 @@ An installer operand that is a local path (`pip install -e .`, `uv pip install -
 - An installer option that names a package index or registry (`--index-url`, `--extra-index-url`, `-i`, `--find-links`, `-f` for pip and `uv pip`; `--registry` for npm, pnpm, Yarn and Bun), written with a space or with `=`, names a code-source host; its value is no longer read as a package.
 - Go's `/...` package pattern is dropped only from a Go operand: `pip install /...` is not the working directory.
 - Tests: `test_downloaded_install` and `test_local_install_path` cover each shape, in an earlier step and in the same command, and the registry exemption.
+
+### Installing a directory whose build manifest the agent wrote runs that file (2026-11-16)
+- `prepare`: when the pending command installs a local directory and the agent wrote or edited its `setup.py`, `pyproject.toml`, `setup.cfg` or `package.json` earlier in the session (directly or through a copy), the install runs a file the agent wrote, as `python3 ./x.py` does: the manifest's content is read like an executed file's (its entities join the call with the written-file origin, it is `Prepared.written_file`, AIRA reads it as the call's own code and `code.run_written_file` applies after a fetch). A directory whose manifest no step wrote is unchanged, and no coverage gap is noted for it.
+- Tests: `test_install_written_manifest` (each manifest, an edit, after a fetch; silent for no write, another directory, a non-manifest file and a registry install).

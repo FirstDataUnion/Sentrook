@@ -610,6 +610,27 @@ def _executed_paths(pending: CanonicalCall, table: EntityTable) -> list[Entity]:
     return [e for e in table.pending() if e.kind is EntityKind.PATH and Role.EXECUTABLE in e.roles]
 
 
+#: The build manifests an install of a local directory runs: a Python build's `setup.py` (or the build
+#: its `pyproject.toml` or `setup.cfg` names) and an npm package's `package.json` scripts.
+_BUILD_MANIFESTS = ("setup.py", "pyproject.toml", "setup.cfg", "package.json")
+
+
+def _run_targets(
+    pending: CanonicalCall, table: EntityTable, home: str
+) -> list[tuple[str, str, bool]]:
+    """The files the pending command runs whose content an agent's write may show, as (path, display,
+    whether a missing write is a coverage gap): the executables it names, then the build manifests of
+    each local directory an installer installs, which run only when they exist."""
+    targets = [(e.value, e.display, True) for e in _executed_paths(pending, table)]
+    if pending.tool_kind is ToolKind.EXEC:
+        for ent in table.pending():
+            if ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles:
+                for name in _BUILD_MANIFESTS:
+                    path = ent.value.rstrip("/") + "/" + name
+                    targets.append((path, display_path(path, home), False))
+    return targets
+
+
 def _find_written(
     planir: PlanIR,
     history: list[CanonicalCall],
@@ -1371,8 +1392,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         coverage.append(CoverageNote("copy_history_failed", f"{type(exc).__name__}: {exc}"))
 
     written: WrittenFile | None = None
-    for exe in _executed_paths(pending, table):
-        written = _find_executed(planir, history, copies, exe.value, home, ws)
+    for exe_path, exe_display, required in _run_targets(pending, table, home):
+        written = _find_executed(planir, history, copies, exe_path, home, ws)
         if written is not None:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
@@ -1383,11 +1404,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if written.truncated:
                 coverage.append(
                     CoverageNote(
-                        "written_file_truncated", f"{exe.display} from step {written.step}"
+                        "written_file_truncated", f"{exe_display} from step {written.step}"
                     )
                 )
             break
-        coverage.append(CoverageNote("written_file_not_visible", exe.display))
+        if required:
+            coverage.append(CoverageNote("written_file_not_visible", exe_display))
     if written is None:
         # A scheduler tool call that names a script the agent wrote: the job runs that file later,
         # so its content is read as the content of a file the call runs.
