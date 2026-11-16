@@ -105,9 +105,14 @@ def run_why(
     cfg = resolve_config(settings, env)
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
+    if hold.is_id(rest):
+        return hold.why_text(cfg.state_dir, cfg.traffic_log_path, rest, datetime.now(UTC))
     match = history.parse_ref(rest)
     if match is None:
-        return "usage: /sentrook why [request_id|last], with an id (or its start) from /sentrook history"
+        return (
+            "usage: /sentrook why [request_id|last], with an id (or its start) from "
+            "/sentrook history, or the id in a held-call notice"
+        )
     found = history.recent_scans(cfg.traffic_log_path, 1, match)
     if found:
         return history.format_why(*found[0])
@@ -233,7 +238,8 @@ COMMANDS: dict[str, Subcommand] = {
         owner_only=True,
     ),
     "why": Subcommand(
-        "one scan's risk, tier scores, reason codes and entities",
+        "one scan's risk, tier scores, reason codes and entities; for a held call's id, also the "
+        "hold and the grant Sentrook suggests",
         run_why,
         args="[request_id|last]",
         owner_only=True,

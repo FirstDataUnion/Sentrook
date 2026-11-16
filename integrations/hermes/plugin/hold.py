@@ -4,9 +4,10 @@ Nobody can answer a review prompt on a cron job, a subagent, a run with approval
 process with no terminal. There the plugin holds the call:
 - the call does not run, and the agent is told it is held for the owner's approval and must not be
   retried in this run (`HELD_TEXT`);
-- the owner gets one notice on the home channel of the platform in `owner_channel` (or of the only
-  platform with a home channel): where the call was held, the tool and what it does, the block
-  category, the scanner's suggested grant when there is one, and an approve id;
+- the owner gets one notice on the home channel of the platform in `owner_channel`: which run, the
+  tool and its target as a review prompt names them, the block category, and an approve id. Hermes
+  copies what `send_message` sends into the agent's own transcript, so the notice carries nothing a
+  steered agent could use; the owner reads the risk, reasons and suggested grant with `why <id>`;
 - `/sentrook approve <id>` within 24 hours sets the suggested grant as a persistent grant that ends
   after 30 days. The held call is not run again; the next run of the job is scanned with the grant.
   With no suggested grant, approving sets nothing and the reply says so.
@@ -41,7 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from . import grants
-from .decision import BLOCK_CATEGORIES, block_category, review_message
+from .decision import BLOCK_CATEGORIES, block_category, describe
 from .store import Store, file_lock, read_time
 
 logger = logging.getLogger("sentrook")
@@ -88,35 +89,35 @@ def _clean(s: Any, cap: int = 200) -> str:
 # ---- the text ---------------------------------------------------------------------------------------
 
 
-def notice_text(
-    resp: dict[str, Any],
-    tool: str,
-    where: str,
-    hold_id: str,
-    hint: dict[str, Any] | None,
-    approve: str,
+def where_text(
+    run: str, session_ref: str, job_id: str | None = None, job_name: str | None = None
 ) -> str:
-    """The owner's notice. `where` names the job or session, `approve` is the approve command as the
-    owner types it. The review line is the one a review prompt shows; nothing more is added."""
-    grant = grants.hint_grant(hint)
-    if grant is not None:
-        relief = (
-            f"Approving sets a persistent grant for 30 days: {grants.describe_grant(grant)}, so the "
-            "next run passes."
+    """Which run a hold belongs to: a cron job by its id, with its name quoted and labelled as the
+    job's name (whoever made the job chose it, possibly the agent, so it must read as a name, never as
+    an instruction), else the kind of run; then the session."""
+    if job_id:
+        name = (
+            f", job name {json.dumps(_clean(job_name, 60), ensure_ascii=False)}" if job_name else ""
         )
-    else:
-        relief = (
-            "Sentrook suggested no grant for this call, so approving sets nothing; the next run is "
-            "scanned as before."
-        )
+        return f"cron job {_clean(job_id, 40)}{name}, session {session_ref}"
+    return f"{run}, session {session_ref}"
+
+
+def notice_text(
+    resp: dict[str, Any], tool: str, where: str, hold_id: str, approve: str, why: str
+) -> str:
+    """The owner's notice. It may be copied into the agent's own transcript (Hermes keeps what
+    `send_message` sends), so it carries only what a steered agent cannot use: that a call was held,
+    which run, the tool and its target as a review prompt names them, the block category, and the ids
+    and commands. The risk, reason codes, scores and entities are for the owner, through `why`."""
     return "\n".join(
         (
-            f"Sentrook held a tool call on an unattended run ({_clean(where)}); it did not run.",
-            f"Tool: {_clean(tool, 80)}. {review_message(resp, tool)}",
+            "Sentrook held a tool call on an unattended run; it did not run.",
+            f"Run: {_clean(where, 200)}",
+            f"Tool: {_clean(tool, 80)}: {_clean(describe(resp, tool), 200)}",
             f"Held because {BLOCK_CATEGORIES[block_category(resp)]}.",
-            relief,
             f"To approve within 24 hours: {approve} {hold_id}",
-            "The held call is not run again either way.",
+            f"For the reasons: {why} {hold_id}",
         )
     )
 
@@ -223,24 +224,38 @@ def approve(
     if not _ID.fullmatch(hid):
         return f"usage: {cmd('approve')} <id>, with the id from Sentrook's notice (h- and 6 hex digits)"
     store = Store(state_dir)
+    change: dict[str, Any] | None = None
+    reply = ""
     with _LOCK, file_lock(state_dir / "holds.json"):
         data = store.load_holds()
         if data is None:
             return f"The holds file {state_dir / 'holds.json'} could not be read; fix or remove it first."
         gone = _sweep(data, now, record)
         found = next((h for h in data["holds"] if h.get("id") == hid), None)
-        if found is not None:
-            data["holds"].remove(found)
-        if gone or found is not None:
-            store.save_holds(data)
-    if found is None:
-        if any(h.get("id") == hid for h in gone):
+        if found is None:
+            if gone:
+                store.save_holds(data)
+            if any(h.get("id") == hid for h in gone):
+                return (
+                    f"Held call {hid} expired: holds last 24 hours. Nothing was approved; the next "
+                    "run is scanned as before."
+                )
             return (
-                f"Held call {hid} expired: holds last 24 hours. Nothing was approved; the next run "
-                "is scanned as before."
+                f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
             )
-        return f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
-    grant = grants.hint_grant(found.get("hint"))
+        # The grant first: when it cannot be written, the hold stays and can be approved again.
+        grant = grants.hint_grant(found.get("hint"))
+        if grant is not None:
+            try:
+                reply, change = grants.add_suggested(state_dir, grant, who, now, GRANT_TTL, hid)
+            except Exception as exc:  # noqa: BLE001 - reported, and the hold is kept
+                reply, change = f"The grants file could not be written ({_clean(exc, 160)}).", None
+            if change is None:
+                if gone:
+                    store.save_holds(data)
+                return f"Not approved: {reply} {hid} is still waiting; approve it again once that is fixed."
+        data["holds"].remove(found)
+        store.save_holds(data)
     done = {
         "kind": "resolution",
         "request_id": found.get("request_id"),
@@ -249,20 +264,65 @@ def approve(
         "hold_id": hid,
         "by": who,
     }
-    if grant is None:
+    if change is None:
         record(done)
         return (
             f"Approved {hid}. Sentrook suggested no grant for this call, so nothing was set: the next "
             f"run is scanned as before. To let it pass, add a grant with {cmd('grant')}. The held call "
             "is not run again."
         )
-    reply, change = grants.add_suggested(state_dir, grant, who, now, GRANT_TTL, hid)
-    if change is None:
-        record(done)
-        return f"Approved {hid}, but no grant was set. {reply}"
     record({"kind": "grants", **change, "by": who})
     record({**done, "grant_id": change["entry"]["id"]})
     return f"Approved {hid}. {reply} The held call is not run again; the next run is scanned with this grant."
+
+
+def find(state_dir: Path, hold_id: str) -> dict[str, Any] | None:
+    """The hold with this id while it waits; None when unknown, answered, expired or unreadable."""
+    data = Store(state_dir).load_holds()
+    return next(
+        (
+            h
+            for h in (data or {}).get("holds") or []
+            if isinstance(h, dict) and h.get("id") == hold_id
+        ),
+        None,
+    )
+
+
+def is_id(text: str) -> bool:
+    return bool(_ID.fullmatch(text))
+
+
+def why_text(state_dir: Path, log: Path, hold_id: str, now: datetime) -> str:
+    """`why <hold id>`: the held call's scan as `why` shows any scan, then the hold itself."""
+    from .history import format_why, recent_scans, records_backward
+
+    rid = next(
+        (
+            r.get("request_id")
+            for r in records_backward(log)
+            if r.get("kind") == "scan"
+            and isinstance(r.get("hold"), dict)
+            and r["hold"].get("id") == hold_id
+        ),
+        None,
+    )
+    found = recent_scans(log, 1, lambda x: x == rid) if isinstance(rid, str) else []
+    if not found:
+        return f"No held call {hold_id} in the recent traffic log."
+    lines = [format_why(*found[0])]
+    waiting = find(state_dir, hold_id)
+    if waiting is not None:
+        at = read_time(waiting.get("expires_at"))
+        lines.append(f"hold: waiting, until {_show(at) if at else '?'}")
+        grant = grants.hint_grant(waiting.get("hint"))
+        lines.append(
+            "suggested grant: "
+            + (f"{grants.describe_grant(grant)} (persistent, 30 days)" if grant else "none")
+        )
+    else:
+        lines.append("hold: answered or expired")
+    return "\n".join(lines)
 
 
 # ---- where the notice goes ----------------------------------------------------------------------------
@@ -285,17 +345,19 @@ def home_platforms() -> list[str]:
         return []
 
 
+NO_OWNER_CHANNEL = (
+    "owner_channel is not set; set it to the platform whose home channel gets held-call notices"
+)
+
+
 def notice_target(owner_channel: str, homes: list[str]) -> tuple[str | None, str]:
-    """(platform whose home channel gets the notice, or None; why there is none)."""
-    if owner_channel:
-        if owner_channel in homes:
-            return owner_channel, ""
-        return None, f"owner_channel {owner_channel} has no home channel"
-    if len(homes) == 1:
-        return homes[0], ""
-    if not homes:
-        return None, "no platform has a home channel; set one, or set owner_channel"
-    return None, f"several platforms have a home channel ({', '.join(homes)}); set owner_channel"
+    """(platform whose home channel gets the notice, or None; why there is none). The owner names the
+    platform: a home channel is not assumed to be the owner's just because it is the only one."""
+    if not owner_channel:
+        return None, NO_OWNER_CHANNEL
+    if owner_channel in homes:
+        return owner_channel, ""
+    return None, f"owner_channel {owner_channel} has no home channel"
 
 
 def status_line(state_dir: Path, owner_channel: str, now: datetime) -> str:

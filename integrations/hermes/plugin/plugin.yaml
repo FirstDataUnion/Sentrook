@@ -74,8 +74,8 @@ config_schema:
     type: str
     description: >
       The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run.
-      Unset, the only platform with a home channel is used; with none or several, no notice is sent (status
-      and verify say so) and the call is still held. Env SENTROOK_OWNER_CHANNEL.
+      Until it is set no notice is sent (status and verify say so); the call is still held. Env
+      SENTROOK_OWNER_CHANNEL.
   skill_review:
     type: str
     default: allow

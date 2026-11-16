@@ -207,6 +207,8 @@ const plugin = {
                       channel: ctx.channel,
                       senderId: ctx.senderId,
                       from: (ctx as any).from,
+                      to: (ctx as any).to,
+                      sessionKey: ctx.sessionKey,
                       accountId: (ctx as any).accountId,
                       messageThreadId: (ctx as any).messageThreadId,
                     },
@@ -525,7 +527,7 @@ const plugin = {
           // Nobody can answer a review here: the call waits for the owner (hold.ts).
           entry.decision = "held";
           hook = { block: true, blockReason: hold.HELD_TEXT };
-          held = holdCall(cfg, built, resp, event.toolName, triggerKind);
+          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -617,12 +619,16 @@ const plugin = {
       return hook;
     }
 
-    /** Stores the hold and sends the owner's notice; returns what the scan record says about it. */
-    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string): Json {
+    /**
+     * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
+     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     */
+    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
       const label: Record<string, string> = { scheduled: "scheduled run", heartbeat: "heartbeat run", subagent: "subagent run" };
-      const where = `${label[triggerKind] ?? "unattended run"}, session ${sref}`;
+      const job = triggerKind === "scheduled" ? hold.cronJobOf(run?.prompt) : null;
+      const where = hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name);
       const target = store.loadNotify();
       let outbound: hold.Outbound | undefined;
       try {
@@ -638,16 +644,17 @@ const plugin = {
       }
       const hint = hold.grantHint(resp);
       const record = (r: Record<string, unknown>) => traffic.write(r);
-      const id = hold.create(
-        cfg.stateDir,
-        { requestId: built.planir.request_id, sessionRef: sref, tool, where, hint, notice },
-        now,
-        record,
-      );
-      if (id === null) {
-        notice = { status: "unsent", target: null, reason: "the holds file could not be read" };
-      } else if (target && notice.status === "queued") {
-        const text = hold.noticeText(resp, tool, where, id, hint, "/sentrook-approve");
+      let id: string | null = null;
+      try {
+        id = hold.create(cfg.stateDir, { requestId: built.planir.request_id, sessionRef: sref, tool, where, hint, notice }, now, record);
+        if (id === null) notice = { status: "unsent", target: null, reason: "holds file unreadable" };
+      } catch (err) {
+        const locked = err instanceof hold.LockTimeoutError;
+        if (!locked) api.logger.warn(`${LOG} could not store a hold: ${String(err)}`);
+        notice = { status: "unsent", target: null, reason: locked ? "holds file locked" : "holds file not written" };
+      }
+      if (id !== null && target && notice.status === "queued") {
+        const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
         const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
           if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
         });

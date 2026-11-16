@@ -385,22 +385,25 @@ export function addGrant(
 }
 
 /**
- * A suggested grant as a grant this file can hold (kind, pattern, allows for a file grant), or null when it
- * cannot be read as one. A suggestion never sets a session, a scope or an expiry of its own.
+ * A suggested grant as the owner could have typed it: run through `parseGrant` with the same rules as
+ * `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more than the command could.
+ * Kind, pattern and allows only; the scope is always persistent and the expiry is the hold's. Null when it is not
+ * one the command would accept.
  */
 export function hintGrant(hint: unknown): Entry | null {
   if (!hint || typeof hint !== "object" || Array.isArray(hint)) return null;
-  const { kind, pattern: raw, allows } = hint as Entry;
-  if (!KINDS.includes(kind) || typeof raw !== "string") return null;
-  const pattern = raw.trim();
-  if (!pattern || [...pattern].length > MAX_PATTERN || !printable(pattern)) return null;
-  const grant: Entry = { kind, pattern };
+  const { kind, pattern, allows } = hint as Entry;
+  if (typeof kind !== "string" || typeof pattern !== "string") return null;
+  const words = [kind, pattern.trim(), "--persistent"];
   if (allows !== undefined && allows !== null) {
-    if (kind !== "file" || !Array.isArray(allows) || !allows.length) return null;
-    if (allows.some((a) => !ALLOWS.includes(a))) return null;
-    grant.allows = [...new Set(allows)];
+    if (!Array.isArray(allows) || !allows.every((a) => typeof a === "string")) return null;
+    words.push("--allows", allows.join(","));
   }
-  return grant;
+  // One word each, as typed: a kind or pattern with spaces could not have been typed either.
+  if (words.slice(0, 2).some((w) => !w || /\s/u.test(w))) return null;
+  const parsed = parseGrant(words.join(" "), (sub) => sub);
+  if (typeof parsed === "string") return null;
+  return { kind: parsed.kind, pattern: parsed.pattern, ...(parsed.allows ? { allows: parsed.allows } : {}) };
 }
 
 /** `destination discord:#ops`, with `(allows read)` for a file grant that limits them. */

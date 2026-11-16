@@ -6,7 +6,9 @@ days). Blocks stay blocks, and attended runs still get a review prompt. The text
 OpenClaw plugin's tests (`integrations/fixtures/hold`).
 """
 
+import contextlib
 import contextvars
+import fcntl
 import json
 import os
 import re
@@ -20,7 +22,7 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import commands, config, grants, history, hold
+from plugin import commands, config, grants, history, hold, store
 from plugin.store import read_time
 
 from .test_plugin import dump_planirs
@@ -29,6 +31,7 @@ FIXTURES = json.loads(
     (Path(__file__).resolve().parents[3] / "fixtures" / "hold" / "cases.json").read_text()
 )
 SEND = FIXTURES["notices"][0]
+HINT = FIXTURES["hints"][0]["hint"]
 CRON = {"session_id": "cron-1", "task_id": "cron-1"}
 #: Stands in for the cron run's own delivery target, which Hermes binds to the run's context.
 RUN_TARGET = contextvars.ContextVar("run_delivery_target", default="unset")
@@ -37,8 +40,8 @@ RUN_TARGET = contextvars.ContextVar("run_delivery_target", default="unset")
 @pytest.fixture
 def h(harness, monkeypatch):
     """The harness with a scanner whose reply each test sets (`.reply`), Discord as the only platform
-    with a home channel, a `dispatch_tool` that records each send (`.sent`), and commands run from the
-    local terminal."""
+    with a home channel and `owner_channel`, a `dispatch_tool` that records each send (`.sent`), and
+    commands run from the local terminal."""
     fake = harness
     fake.reply = {"risk": 47, "enforced": None}
 
@@ -65,6 +68,7 @@ def h(harness, monkeypatch):
         return json.dumps({"success": True, "note": "Sent to discord home channel"})
 
     fake.ctx.dispatch_tool = dispatch_tool
+    fake.ctx.settings["owner_channel"] = "discord"
     for k in ("HERMES_SESSION_PLATFORM", "HERMES_PLATFORM"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(plugin, "session_facts", lambda: {})
@@ -134,9 +138,11 @@ def test_a_scheduled_send_at_risk_47_is_held_and_the_owner_told_once(h):
     where = f"cron job, session {rec['session_ref']}"
     assert entry["where"] == where
     text = hold.notice_text(
-        SEND["response"] | h.reply, "send_message", where, entry["id"], None, "{approve}"
+        SEND["response"] | h.reply, "send_message", where, entry["id"], "{approve}", "{why}"
     )
-    assert notice["args"]["message"] == text.replace("{approve}", "/sentrook approve")
+    assert notice["args"]["message"] == text.replace("{approve}", "/sentrook approve").replace(
+        "{why}", "/sentrook why"
+    )
     table = history.format_history(
         history.recent_scans(h.dir / "sentrook" / "traffic.jsonl", 1), "w"
     )
@@ -145,13 +151,15 @@ def test_a_scheduled_send_at_risk_47_is_held_and_the_owner_told_once(h):
 
 def test_the_notice_names_the_cron_job_when_hermes_says_which(h):
     class Run:
+        job_id = "9f1c2a"
         job_name = "daily-brief"
 
     h.ctx.current_cron_execution = lambda: Run()
     turn(h)
     _out, rec = send(h)
-    assert holds(h)[0]["where"] == f'cron job "daily-brief", session {rec["session_ref"]}'
-    assert '(cron job "daily-brief", session ' in h.sent[0]["args"]["message"]
+    where = f'cron job 9f1c2a, job name "daily-brief", session {rec["session_ref"]}'
+    assert holds(h)[0]["where"] == where
+    assert f"Run: {where}\n" in h.sent[0]["args"]["message"]
 
 
 def test_the_notice_leaves_the_runs_context_behind(h):
@@ -194,21 +202,18 @@ def test_the_held_call_did_not_run_and_is_sent_as_an_unanswered_review(h):
 def test_with_no_home_channel_to_use_the_call_is_still_held_and_the_notice_logged_unsent(
     h, monkeypatch, setting
 ):
-    monkeypatch.setattr(
-        hold, "home_platforms", lambda: ["discord", "telegram"] if setting is None else ["discord"]
-    )
+    """owner_channel is required: even with a single home channel, nothing is sent until it is set."""
+    monkeypatch.setattr(hold, "home_platforms", lambda: ["discord"])
     if setting:
         h.ctx.settings["owner_channel"] = setting
+    else:
+        del h.ctx.settings["owner_channel"]
     turn(h)
     out, rec = send(h)
     assert out["message"] == FIXTURES["held_text"] and rec["decision"] == "held"
     assert rec["hold"]["notice"]["status"] == "unsent"
     assert h.sent == []
-    why = (
-        "several platforms have a home channel (discord, telegram); set owner_channel"
-        if setting is None
-        else "owner_channel telegram has no home channel"
-    )
+    why = hold.NO_OWNER_CHANNEL if setting is None else "owner_channel telegram has no home channel"
     assert rec["hold"]["notice"]["reason"] == why
     assert f"notices not sent ({why})" in slash(h, "status")
     from plugin import cli
@@ -231,14 +236,16 @@ def test_owner_channel_picks_the_home_channel(h, monkeypatch):
 
 
 def test_approve_sets_the_suggested_grant_persistent_for_30_days(h, monkeypatch):
-    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(SEND["hint"]))
+    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
     turn(h)
     _out, rec = send(h)
     hid = rec["hold"]["id"]
     assert rec["hold"]["hint"] is True
-    assert (
-        "Approving sets a persistent grant for 30 days: destination discord:#ops-reports"
-        in h.sent[0]["args"]["message"]
+    # The suggestion is for the owner's eyes: in `why`, never in the notice the agent may see.
+    assert "discord:#ops-reports" not in h.sent[0]["args"]["message"].split("Tool:")[0]
+    assert "grant" not in h.sent[0]["args"]["message"]
+    assert "suggested grant: destination discord:#ops-reports (persistent, 30 days)" in slash(
+        h, f"why {hid}"
     )
     reply = slash(h, f"approve {hid}")
     assert reply.startswith(f"Approved {hid}. Granted gr-")
@@ -419,12 +426,18 @@ def test_observe_mode_holds_nothing(h):
 
 @pytest.mark.parametrize("case", FIXTURES["notices"], ids=lambda c: c["name"])
 def test_notice_text(case):
+    w = case["where"]
+    where = hold.where_text(w["run"], w["session_ref"], w["job_id"], w["job_name"])
+    assert where == case["where_text"]
     assert (
-        hold.notice_text(
-            case["response"], case["tool"], case["where"], case["id"], case["hint"], "{approve}"
-        )
+        hold.notice_text(case["response"], case["tool"], where, case["id"], "{approve}", "{why}")
         == case["text"]
     )
+
+
+@pytest.mark.parametrize("case", FIXTURES["hints"], ids=lambda c: json.dumps(c["hint"]))
+def test_a_suggested_grant_passes_the_grant_commands_rules(case):
+    assert grants.hint_grant(case["hint"]) == case["grant"]
 
 
 @pytest.mark.parametrize("case", FIXTURES["history"], ids=lambda c: c["name"])
@@ -474,24 +487,231 @@ def test_two_processes_holding_calls_at_the_same_time_keep_every_hold(tmp_path):
         h["request_id"] for h in json.loads((tmp_path / "holds.json").read_text())["holds"]
     )
     assert kept == sorted(f"{label}-{i}" for label in ("a", "b") for i in range(40))
-    assert not (tmp_path / "holds.json.lock").exists()
 
 
-def test_a_lock_left_by_a_process_that_died_is_taken_over(tmp_path):
-    lock = tmp_path / "holds.json.lock"
-    lock.write_text("99999\n")
-    old = time.time() - 60
-    os.utime(lock, (old, old))
-    hid = hold.create(
-        tmp_path,
-        request_id="r1",
-        session_ref="s_x",
-        tool="t",
-        where="w",
-        hint=None,
-        notice={},
-        now=datetime.now(UTC),
-        record=lambda _r: None,
+WAITER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from plugin.store import file_lock
+target, log, label, start = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], float(sys.argv[5])
+while time.time() < start:
+    pass
+for _ in range(5):
+    with file_lock(target):
+        with open(log, "a") as f:
+            f.write(f"in {label}\\n")
+        time.sleep(0.02)
+        with open(log, "a") as f:
+            f.write(f"out {label}\\n")
+"""
+
+
+def _children(script, *args):
+    root = str(Path(__file__).resolve().parents[2])
+    return [
+        subprocess.Popen(
+            [sys.executable, "-c", script, root, *[a(label) if callable(a) else a for a in args]],
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        for label in ("a", "b")
+    ]
+
+
+def test_two_waiters_on_a_lock_left_over_never_both_enter(tmp_path):
+    """A lock file left by a process that died is not held (the OS released it with the process), and
+    two processes waiting on it take turns."""
+    (tmp_path / "holds.json.lock").write_text("99999\\n")
+    log = tmp_path / "log"
+    procs = _children(
+        WAITER, str(tmp_path / "holds.json"), str(log), lambda label: label, str(time.time() + 1.0)
     )
-    assert re.fullmatch(r"h-[0-9a-f]{6}", hid)
-    assert not lock.exists()
+    assert [p.wait(60) for p in procs] == [0, 0]
+    lines = log.read_text().splitlines()
+    assert len(lines) == 20
+    for i in range(0, 20, 2):
+        assert lines[i].startswith("in ") and lines[i + 1] == "out " + lines[i][3:], lines
+
+
+HOLDER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from plugin.store import file_lock
+with file_lock(Path(sys.argv[2])):
+    print("held", flush=True)
+    time.sleep(60)
+"""
+
+
+def test_a_lock_held_by_a_process_that_died_is_free_at_once(tmp_path):
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            HOLDER,
+            str(Path(__file__).resolve().parents[2]),
+            str(tmp_path / "holds.json"),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout.readline().strip() == "held"
+    holder.kill()
+    holder.wait(10)
+    t0 = time.monotonic()
+    with store.file_lock(tmp_path / "holds.json"):
+        pass
+    assert time.monotonic() - t0 < 0.5
+
+
+@contextlib.contextmanager
+def held_elsewhere(path):
+    """Holds `path`'s lock through a separate open file, as another process would."""
+    fd = os.open(str(path) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_a_hold_whose_file_is_locked_still_holds_and_logs_the_notice_unsent(h, monkeypatch):
+    monkeypatch.setattr(store, "LOCK_WAIT_S", 0.05)
+    turn(h)
+    with held_elsewhere(h.dir / "sentrook" / "holds.json"):
+        out, rec = send(h)
+    assert out == {"action": "block", "message": FIXTURES["held_text"]}
+    assert rec["decision"] == "held"
+    assert rec["hold"] == {
+        "id": None,
+        "expires_at": None,
+        "hint": False,
+        "notice": {"status": "unsent", "target": None, "reason": "holds file locked"},
+    }
+    assert h.sent == []
+    session = json.loads((h.dir / "sentrook" / "sessions" / "cron-1.json").read_text())
+    assert session["history"][-1]["decision"] == "held"
+
+
+def test_approve_keeps_the_hold_when_the_grant_cannot_be_written(h, monkeypatch):
+    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
+    turn(h)
+    _out, rec = send(h)
+    hid = rec["hold"]["id"]
+    gfile = h.dir / "sentrook" / "grants.json"
+    gfile.write_text("{not json")
+    reply = slash(h, f"approve {hid}")
+    assert reply.startswith("Not approved: The grants file ") and f"{hid} is still waiting" in reply
+    assert [x["id"] for x in holds(h)] == [hid]
+    assert resolutions(h) == []
+    gfile.unlink()
+    assert slash(h, f"approve {hid}").startswith(f"Approved {hid}. Granted gr-")
+    assert holds(h) == []
+
+
+def test_approve_keeps_the_hold_when_the_grants_file_is_locked(h, monkeypatch):
+    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
+    monkeypatch.setattr(store, "LOCK_WAIT_S", 0.05)
+    turn(h)
+    _out, rec = send(h)
+    hid = rec["hold"]["id"]
+    with held_elsewhere(h.dir / "sentrook" / "grants.json"):
+        reply = slash(h, f"approve {hid}")
+    assert reply.startswith("Not approved: The grants file could not be written")
+    assert [x["id"] for x in holds(h)] == [hid]
+
+
+# ---- what the notice carries --------------------------------------------------------------------------------
+
+CANARY = "CANARY-not-a-real-secret-4471"
+
+
+def test_the_notice_carries_only_the_minimal_fields(h):
+    """Hermes copies the notice into the agent's own transcript: it names the run, the tool and its
+    target, the category and the commands, and nothing a steered agent could use."""
+    h.reply = {
+        "risk": 47,
+        "reasons": [{"code": "send.unbound_channel"}, {"code": "exfil.exec_egress"}],
+        "entities": {
+            "E1": {"kind": "channel", "display": "discord:#ops-reports"},
+            "E2": {"kind": "path", "display": "~/.config/ops/token"},
+        },
+    }
+    turn(h)
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name="send_message",
+        args={
+            "action": "send",
+            "target": "discord:#ops-reports",
+            "message": f"brief, key {CANARY}",
+        },
+        tool_call_id="c1",
+        turn_id="t-cron-1",
+        **CRON,
+    )
+    hold.wait_for_notices()
+    rec = [r for r in h.traffic() if r.get("kind") == "scan"][-1]
+    hid = rec["hold"]["id"]
+    assert out["message"] == FIXTURES["held_text"]
+    text = h.sent[0]["args"]["message"]
+    assert text == (
+        "Sentrook held a tool call on an unattended run; it did not run.\n"
+        f"Run: cron job, session {rec['session_ref']}\n"
+        "Tool: send_message: Sends a message to discord:#ops-reports\n"
+        "Held because it sends data to a destination outside this machine.\n"
+        f"To approve within 24 hours: /sentrook approve {hid}\n"
+        f"For the reasons: /sentrook why {hid}"
+    )
+    for absent in (
+        "47",
+        "risk",
+        "send.unbound_channel",
+        "exfil",
+        "Scores",
+        "suspicion",
+        "consequence",
+        "~/.config/ops/token",
+        "path",
+        CANARY,
+        "brief, key",
+        "grant",
+    ):
+        assert absent not in text, absent
+
+
+def test_why_with_a_hold_id_gives_the_owner_the_reasons(h):
+    turn(h)
+    _out, rec = send(h)
+    hid = rec["hold"]["id"]
+    why = slash(h, f"why {hid}")
+    assert why.startswith(f"scan: {rec['request_id']}")
+    assert "risk: 47" in why and "reasons: trigger.scheduled, send.unbound_channel" in why
+    assert "action: held" in why and "review: no answer" in why
+    assert "hold: waiting, until " in why and "suggested grant: none" in why
+    slash(h, f"approve {hid}")
+    assert slash(h, f"why {hid}").endswith("hold: answered or expired")
+    assert slash(h, "why h-abcdef") == "No held call h-abcdef in the recent traffic log."
+
+
+def test_why_with_a_hold_id_is_for_the_owner_only(h, monkeypatch):
+    turn(h)
+    _out, rec = send(h)
+    monkeypatch.setattr(
+        plugin,
+        "session_facts",
+        lambda: {"platform": "telegram", "chat_type": "group", "user_id": "u9"},
+    )
+    monkeypatch.setattr(plugin, "session_surface", lambda: "telegram")
+    assert "Only the owner" in slash(h, f"why {rec['hold']['id']}")
+
+
+def test_a_snooze_never_relieves_an_unattended_review(h):
+    """Order: a block, then a hold on an unattended run, and only then an attended review's snooze."""
+    assert slash(h, "snooze 1h --all").startswith("Snoozed")
+    turn(h)
+    out, rec = send(h)
+    assert out == {"action": "block", "message": FIXTURES["held_text"]}
+    assert rec["decision"] == "held" and "snoozed" not in rec
+    assert len(h.sent) == 1

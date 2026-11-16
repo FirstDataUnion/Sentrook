@@ -32,7 +32,7 @@ from .planir import PLUGIN_VERSION, build_planir, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import ScanFailure, scan_error_to_directive
-from .store import Store
+from .store import LockTimeout, Store
 from .traffic import TrafficLog
 
 logger = logging.getLogger("sentrook")
@@ -496,29 +496,32 @@ def _scan_one(
 def _where(built: dict[str, Any]) -> str:
     """The job or session a held call belongs to, for the owner's notice."""
     sref = built["planir"]["session"]["session_ref"]
-    job = None
+    run = None
     try:
-        run = (
-            _ctx.current_cron_execution()
-            if callable(getattr(_ctx, "current_cron_execution", None))
+        read = getattr(_ctx, "current_cron_execution", None)
+        run = read() if callable(read) else None
+    except Exception:  # noqa: BLE001 - no cron identity: name the session
+        run = None
+    job_id, job_name = getattr(run, "job_id", None), getattr(run, "job_name", None)
+    if isinstance(job_id, str) and job_id.strip():
+        name = (
+            job_name.strip()
+            if isinstance(job_name, str) and job_name.strip() != job_id.strip()
             else None
         )
-        job = getattr(run, "job_name", None)
-    except Exception:  # noqa: BLE001 - no cron identity: name the session
-        job = None
-    if isinstance(job, str) and job.strip():
-        return f'cron job "{job.strip()}", session {sref}'
+        return hold.where_text("cron job", sref, job_id.strip(), name)
     if built["subagent"] or built["platform"] == "subagent":
-        return f"subagent run, session {sref}"
+        return hold.where_text("subagent run", sref)
     if built["platform"] == "cron":
-        return f"cron job, session {sref}"
-    return f"session {sref}"
+        return hold.where_text("cron job", sref)
+    return hold.where_text("unattended run", sref)
 
 
 def _hold(
     cfg: PluginConfig, traffic: TrafficLog, built: dict[str, Any], resp: dict[str, Any]
 ) -> dict[str, Any]:
-    """Stores the hold and sends the owner's notice; returns what the scan record says about it."""
+    """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
+    call is held whatever happens here: a hold that cannot be stored only cannot be approved."""
     now = datetime.now(UTC)
     planir = built["planir"]
     target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
@@ -531,27 +534,35 @@ def _hold(
     )
     hint = hold.grant_hint(resp)
     where = _where(built)
-    hid = hold.create(
-        cfg.state_dir,
-        request_id=planir["request_id"],
-        session_ref=planir["session"]["session_ref"],
-        tool=built["tool"],
-        where=where,
-        hint=hint,
-        notice=notice,
-        now=now,
-        record=traffic.write,
-    )
-    if hid is None:
-        notice = {"status": "unsent", "target": None, "reason": "the holds file could not be read"}
-    elif target:
+    try:
+        hid = hold.create(
+            cfg.state_dir,
+            request_id=planir["request_id"],
+            session_ref=planir["session"]["session_ref"],
+            tool=built["tool"],
+            where=where,
+            hint=hint,
+            notice=notice,
+            now=now,
+            record=traffic.write,
+        )
+        if hid is None:
+            notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
+    except LockTimeout:
+        hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file locked"}
+    except Exception as exc:  # noqa: BLE001 - still held, just not approvable
+        logger.warning("sentrook could not store a hold: %s", exc)
+        hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
+    if hid is not None and target:
         hold.deliver(
             _ctx,
             target,
-            hold.notice_text(resp, built["tool"], where, hid, hint, commands.CMD("approve")),
+            hold.notice_text(
+                resp, built["tool"], where, hid, commands.CMD("approve"), commands.CMD("why")
+            ),
         )
     else:
-        logger.warning("sentrook held a call but sent no notice: %s", why)
+        logger.warning("sentrook held a call but sent no notice: %s", notice.get("reason"))
     return {
         "id": hid,
         "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ") if hid else None,

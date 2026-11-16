@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,17 +19,28 @@ import { clearScanTokenCache } from "./auth.ts";
 import { formatHistory, recentScans, actionOf, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
 import plugin from "./index.ts";
-import { readTime } from "./store.ts";
+import * as grants from "./grants.ts";
+import { readTime, withFileLock } from "./store.ts";
 
 const FIXTURES = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../fixtures/hold/cases.json", import.meta.url)), "utf8"),
 ) as {
   held_text: string;
-  notices: { name: string; response: any; tool: string; where: string; id: string; hint: any; text: string }[];
+  notices: {
+    name: string;
+    response: any;
+    tool: string;
+    where: { run: string; session_ref: string; job_id: string | null; job_name: string | null };
+    where_text: string;
+    id: string;
+    text: string;
+  }[];
+  hints: { hint: unknown; grant: unknown }[];
   outcomes: { name: string; risk: number; enforced: string | null; attended: string; unattended: string }[];
   history: { name: string; decision: string; resolution: string | null; action: string; review: string }[];
 };
 const SEND = FIXTURES.notices[0]!;
+const HINT = FIXTURES.hints[0]!.hint as Record<string, unknown>;
 const HOUR = 3600_000;
 
 const ENV_KEYS = [
@@ -201,12 +212,12 @@ test("a scheduled send at risk 47 is held, the agent told not to retry, and the 
   assert.deepEqual(rec.hold, { id: entry.id, expires_at: entry.expires_at, hint: false, notice: { status: "queued", target: "telegram" } });
   assert.equal(readTime(entry.expires_at)!.getTime() - readTime(entry.held_at)!.getTime(), 24 * HOUR);
   assert.equal(entry.request_id, rec.request_id);
-  const where = `scheduled run, session ${rec.session_ref}`;
+  const where = `cron job abc, job name "daily-brief", session ${rec.session_ref}`;
   assert.equal(entry.where, where);
   assert.equal(r.sent.length, 1);
   const [notice] = r.sent;
   assert.deepEqual({ channel: notice.channel, to: notice.to, accountId: notice.accountId }, { channel: "telegram", to: "100200300", accountId: "default" });
-  const text = hold.noticeText({ ...SEND.response, ...reply }, "message", where, entry.id, null, "/sentrook-approve");
+  const text = hold.noticeText({ ...SEND.response, ...reply }, "message", where, entry.id, "/sentrook-approve", "/sentrook-why");
   assert.equal(notice.text, text);
   assert.match(formatHistory(recentScans(path.join(stateDir, "traffic.jsonl"), 1), "w"), / held +no answer$/m);
 });
@@ -260,7 +271,7 @@ test("approve from the owner's direct message sets the suggested grant, persiste
   // The scan response suggests no grant yet; a hold that carries one is approved like this.
   const file = path.join(stateDir, "holds.json");
   const data = JSON.parse(readFileSync(file, "utf8"));
-  data.holds[0].hint = { ...SEND.hint };
+  data.holds[0].hint = { ...HINT };
   writeFileSync(file, JSON.stringify(data));
   const answer = await r.command("sentrook-approve", id);
   assert.ok(answer.startsWith(`Approved ${id}. Granted gr-`), answer);
@@ -400,8 +411,14 @@ test("observe mode holds nothing", async () => {
 
 test("notice text: the shared text for each case", () => {
   for (const c of FIXTURES.notices) {
-    assert.equal(hold.noticeText(c.response, c.tool, c.where, c.id, c.hint, "{approve}"), c.text, c.name);
+    const where = hold.whereText(c.where.run, c.where.session_ref, c.where.job_id, c.where.job_name);
+    assert.equal(where, c.where_text, c.name);
+    assert.equal(hold.noticeText(c.response, c.tool, where, c.id, "{approve}", "{why}"), c.text, c.name);
   }
+});
+
+test("a suggested grant passes the grant command's rules", () => {
+  for (const c of FIXTURES.hints) assert.deepEqual(grants.hintGrant(c.hint), c.grant, JSON.stringify(c.hint));
 });
 
 test("history columns for held scans", () => {
@@ -446,6 +463,179 @@ for (let i = 0; i < Number(count); i++) {
   const want = ["a", "b"].flatMap((l) => Array.from({ length: 40 }, (_, i) => `${l}-${i}`)).sort();
   assert.deepEqual(kept, want);
   assert.equal(existsSync(path.join(dir, "holds.json.lock")), false);
+});
+
+test("two waiters racing a lock left over never both enter", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-lock-race-"));
+  const lock = path.join(dir, "holds.json.lock");
+  writeFileSync(lock, "99999:dead\n");
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lock, old, old);
+  const log = path.join(dir, "log");
+  const script = path.join(dir, "waiter.ts");
+  writeFileSync(
+    script,
+    `import { appendFileSync } from "node:fs";
+import { withFileLock } from ${JSON.stringify(pathToFileURL(path.resolve("store.ts")).href)};
+const [file, log, label, startAt] = process.argv.slice(2);
+while (Date.now() < Number(startAt)) {}
+for (let i = 0; i < 5; i++) {
+  withFileLock(file, () => {
+    appendFileSync(log, "in " + label + "\\n");
+    const until = Date.now() + 20;
+    while (Date.now() < until) {}
+    appendFileSync(log, "out " + label + "\\n");
+  });
+}
+`,
+  );
+  const startAt = Date.now() + 800;
+  const run = (label: string) =>
+    new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", script, path.join(dir, "holds.json"), log, label, String(startAt)], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let err = "";
+      child.stderr.on("data", (d) => (err += String(d)));
+      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`waiter ${label} exited ${code}: ${err}`))));
+    });
+  await Promise.all([run("a"), run("b")]);
+  const lines = readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(lines.length, 20);
+  for (let i = 0; i < 20; i += 2) {
+    assert.ok(lines[i]!.startsWith("in ") && lines[i + 1] === `out ${lines[i]!.slice(3)}`, lines.join(" | "));
+  }
+  assert.equal(existsSync(lock), false);
+});
+
+test("a holder releases only its own lock", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-lock-own-"));
+  const lock = path.join(dir, "grants.json.lock");
+  withFileLock(path.join(dir, "grants.json"), () => {
+    // Taken over while held (as after a 30-second stall): the new holder's lock must survive this release.
+    writeFileSync(lock, "4242:someone-else\n");
+  });
+  assert.equal(readFileSync(lock, "utf8"), "4242:someone-else\n");
+});
+
+test("a hold whose file is locked still holds, and the notice is logged unsent", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, "holds.json.lock"), "4242:another-process\n");
+  const { out, rec, ctx } = await r.send("cron");
+  assert.deepEqual(out, { block: true, blockReason: FIXTURES.held_text });
+  assert.equal(rec.decision, "held");
+  assert.deepEqual(rec.hold, { id: null, expires_at: null, hint: false, notice: { status: "unsent", target: null, reason: "holds file locked" } });
+  assert.equal(r.sent.length, 0);
+  // The session history has the held call too.
+  reply = { risk: 5 };
+  await r.fire("after_tool_call", { toolName: "message", toolCallId: "c1", runId: ctx.runId, error: "held" }, ctx);
+  await r.send("cron", "cron-1", "c2");
+  assert.equal(scans.at(-1).history[0].decision, "review_timed_out");
+});
+
+test("approve keeps the hold when the grant cannot be written", async () => {
+  const r = registered();
+  const { rec } = await r.send("cron");
+  const id = rec.hold.id;
+  const file = path.join(stateDir, "holds.json");
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  data.holds[0].hint = { ...HINT };
+  writeFileSync(file, JSON.stringify(data));
+  writeFileSync(path.join(stateDir, "grants.json"), "{not json");
+  const answer = await r.command("sentrook-approve", id);
+  assert.ok(answer.startsWith("Not approved: The grants file ") && answer.includes(`${id} is still waiting`), answer);
+  assert.deepEqual(holds().map((h: any) => h.id), [id]);
+  assert.equal(r.records("resolution").length, 0);
+  rmSync(path.join(stateDir, "grants.json"));
+  assert.ok((await r.command("sentrook-approve", id)).startsWith(`Approved ${id}. Granted gr-`));
+  assert.deepEqual(holds(), []);
+});
+
+// ---- what the notice carries ---------------------------------------------------------------------------
+
+const CANARY = "CANARY-not-a-real-secret-4471";
+
+test("the notice carries only the minimal fields: no risk, reasons, scores, entities, arguments or secrets", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  reply = {
+    risk: 47,
+    reasons: [{ code: "send.unbound_channel" }, { code: "exfil.exec_egress" }],
+    entities: { E1: { kind: "channel", display: "discord:#ops-reports" }, E2: { kind: "path", display: "~/.config/ops/token" } },
+  };
+  const runId = "r-cron-9";
+  const ctx = { sessionKey: "agent:main:cron:cron-9", sessionId: "cron-9", agentId: "main", runId, trigger: "cron" };
+  await r.fire("before_prompt_build", { runId, prompt: "[cron:abc daily-brief] post the brief" }, ctx);
+  await r.fire(
+    "before_tool_call",
+    { toolName: "message", toolCallId: "c1", runId, params: { action: "send", channel: "discord", target: "#ops-reports", message: `brief, key ${CANARY}` } },
+    ctx,
+  );
+  await hold.waitForNotices();
+  const rec = r.records("scan").at(-1);
+  const id = rec.hold.id;
+  assert.equal(
+    r.sent[0].text,
+    "Sentrook held a tool call on an unattended run; it did not run.\n" +
+      `Run: cron job abc, job name "daily-brief", session ${rec.session_ref}\n` +
+      "Tool: message: Sends a message to discord:#ops-reports\n" +
+      "Held because it sends data to a destination outside this machine.\n" +
+      `To approve within 24 hours: /sentrook-approve ${id}\n` +
+      `For the reasons: /sentrook-why ${id}`,
+  );
+  for (const absent of ["47", "risk", "send.unbound_channel", "exfil", "Scores", "suspicion", "consequence", "~/.config/ops/token", "path", CANARY, "brief, key", "grant"]) {
+    assert.ok(!r.sent[0].text.includes(absent), absent);
+  }
+});
+
+test("/sentrook-why with a hold id gives the owner the reasons", async () => {
+  const r = registered();
+  const { rec } = await r.send("cron");
+  const id = rec.hold.id;
+  const why = await r.command("sentrook-why", id);
+  assert.ok(why.startsWith(`scan: ${rec.request_id}`), why);
+  assert.ok(why.includes("risk: 47") && why.includes("reasons: trigger.scheduled, send.unbound_channel"), why);
+  assert.ok(why.includes("action: held") && why.includes("review: no answer"), why);
+  assert.ok(why.includes("hold: waiting, until ") && why.includes("suggested grant: none"), why);
+  await r.command("sentrook-approve", id);
+  assert.ok((await r.command("sentrook-why", id)).endsWith("hold: answered or expired"));
+  assert.equal(await r.command("sentrook-why", "h-abcdef"), "No held call h-abcdef in the recent traffic log.");
+  assert.match(await r.command("sentrook-why", id, { ...DM, senderIsOwner: false }), /^Only the owner can run/);
+});
+
+// ---- the notify target ---------------------------------------------------------------------------------
+
+test("/sentrook-notify here refuses a group or channel, and a message with no sender", async () => {
+  const r = registered();
+  for (const ctx of [
+    { ...DM, sessionKey: "agent:main:telegram:group:-1002003004" },
+    { ...DM, channel: "discord", sessionKey: "agent:main:main", to: "channel:1498333845953712258" },
+    { ...DM, channel: "discord", senderId: "channel:1498333845953712258", sessionKey: "agent:main:main" },
+  ]) {
+    assert.match(await r.command("sentrook-notify", "here", ctx), /not in a group or channel/);
+  }
+  assert.match(await r.command("sentrook-notify", "here", { ...DM, senderId: "", from: "telegram:100200300" }), /did not say who sent this/);
+  assert.equal(existsSync(path.join(stateDir, "notify.json")), false);
+});
+
+test("/sentrook-notify here on Discord records the user: form", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here", { ...DM, channel: "discord", senderId: "811122233344455566", sessionKey: "agent:main:discord:direct:811122233344455566" });
+  const saved = JSON.parse(readFileSync(path.join(stateDir, "notify.json"), "utf8")).target;
+  assert.equal(saved.to, "user:811122233344455566");
+});
+
+test("a thread is kept only for a direct message on Telegram or Slack", () => {
+  const by = {};
+  const now = new Date();
+  const t = (ctx: hold.NotifyContext) => hold.targetOf(ctx, by, now) as any;
+  assert.equal(t({ ...DM, messageThreadId: 7 }).threadId, 7);
+  assert.equal(t({ ...DM, channel: "slack", senderId: "U01ABCDEF", sessionKey: "agent:main:slack:direct:u01abcdef", messageThreadId: 1730000000.1 }).threadId, "1730000000.1");
+  assert.equal(t({ ...DM, sessionKey: "agent:main:main", messageThreadId: 7 }).threadId, undefined); // cannot tell
+  assert.equal(t({ ...DM, channel: "discord", senderId: "811122233344455566", messageThreadId: "9" }).threadId, undefined);
+  assert.equal(t({ ...DM, sessionKey: "agent:main:main" }).to, "100200300");
 });
 
 test("a lock left by a process that died is taken over", () => {

@@ -232,7 +232,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls and where their notices go |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
-| `/sentrook-why [request_id\|last]` | One scan in detail |
+| `/sentrook-why [request_id\|last]` | One scan in detail; with the id from a held-call notice, also the hold and the grant Sentrook suggests |
 | `/sentrook-grants` | Grants in force: from config (read-only) and set by command |
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `/sentrook-revoke <id>` | Remove a grant set by command |
@@ -281,10 +281,11 @@ Nobody is there to answer a review in a cron job, a heartbeat, a hook or a subag
 There the call is **held** instead:
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
-- You get one notice as a direct message: the run and session, the tool and what it does, why it was held (the same
-  description, reason codes and scores a review shows), and an approve id. Run `/sentrook-notify here` once, as a
-  direct message to the agent on the channel where you want the notices; until then nothing is sent, the call is
-  still held, and `status` and `verify` say notices are not sent.
+- You get one notice as a direct message. It says only that a call was held, which run (a cron job by its id, and
+  its name in quotes), the tool and its target, a broad category, and the commands; read the risk, the reasons and
+  any grant Sentrook suggests with `/sentrook-why <id>`. Run `/sentrook-notify here` once, as a direct message to the
+  agent on the channel where you want the notices (not in a group or channel; on Discord the notice goes to you as
+  a user). Until then nothing is sent, the call is still held, and `status` and `verify` say notices are not sent.
 - Reply `/sentrook-approve <id>` within 24 hours. When Sentrook suggested a grant for the call, approving sets it as a
   persistent grant that ends after 30 days, so the job's next run is scanned with it. When it suggested none,
   approving sets nothing and the reply says so; add a grant with `/sentrook-grant --persistent` if the job should pass.

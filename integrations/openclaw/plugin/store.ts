@@ -20,6 +20,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -34,46 +35,85 @@ import path from "node:path";
 
 /** A lock file older than this is left over from a process that died holding it, and is taken over. */
 export const LOCK_STALE_MS = 30_000;
-/** How long to wait for another process's lock before giving up. */
-export const LOCK_WAIT_MS = 5_000;
+/** How long to wait for another process's lock before giving up. Short: the gateway waits on it. */
+export const LOCK_WAIT_MS = 1_000;
 const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+
+/** Another process held a state file's lock for longer than `LOCK_WAIT_MS`. */
+export class LockTimeoutError extends Error {}
+
+function readToken(file: string): string | null {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes a lock judged stale, only if it is still the one judged (`seen`): it is renamed aside first, which only
+ * one process can do, and a lock that turns out to be someone's fresh one is put back.
+ */
+function takeOver(lock: string, seen: string): void {
+  const aside = `${lock}.stale.${process.pid}.${randomBytes(4).toString("hex")}`;
+  try {
+    renameSync(lock, aside);
+  } catch {
+    return; // someone else took it over or released it
+  }
+  if (readToken(aside) !== seen) {
+    try {
+      linkSync(aside, lock); // a fresh lock moved by mistake: put it back, unless another is there now
+    } catch {
+      // the path is taken again; the lock that was moved is lost to its owner's release check
+    }
+  }
+  rmSync(aside, { force: true });
+}
 
 /**
  * Runs `fn` holding `<file>.lock`, so a read-modify-write of `file` is safe across processes (the gateway and the
- * `openclaw sentrook` command line) as well as within one. The lock is a file created exclusively; one older than
- * `LOCK_STALE_MS` is from a process that died holding it and is removed. Throws when another process holds it for
- * longer than `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
+ * `openclaw sentrook` command line) as well as within one. The lock is a file created exclusively that holds a
+ * token unique to this holder. One older than `LOCK_STALE_MS` is from a process that died holding it: it is
+ * renamed aside (only one waiter can) and checked before it is removed. A holder removes the lock only while it
+ * still holds its own token. Throws `LockTimeoutError` when another process holds it for longer than
+ * `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
  */
 export function withFileLock<T>(file: string, fn: () => T): T {
   const lock = `${file}.lock`;
+  const token = `${process.pid}:${randomBytes(8).toString("hex")}\n`;
   mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
       const fd = openSync(lock, "wx", 0o600);
-      writeSync(fd, `${process.pid}\n`);
-      closeSync(fd);
+      try {
+        writeSync(fd, token);
+      } finally {
+        closeSync(fd);
+      }
       break;
     } catch (err: any) {
       if (err?.code !== "EEXIST") throw err;
     }
-    let age: number;
+    const before = readToken(lock);
+    let age = 0;
     try {
       age = Date.now() - statSync(lock).mtimeMs;
     } catch {
       continue; // released between the two calls
     }
-    if (age > LOCK_STALE_MS) {
-      rmSync(lock, { force: true });
+    if (before !== null && age > LOCK_STALE_MS && readToken(lock) === before) {
+      takeOver(lock, before);
       continue;
     }
-    if (Date.now() > deadline) throw new Error(`${lock} is held by another process`);
-    Atomics.wait(LOCK_SLEEP, 0, 0, 10);
+    if (Date.now() > deadline) throw new LockTimeoutError(`${lock} is held by another process`);
+    Atomics.wait(LOCK_SLEEP, 0, 0, 5);
   }
   try {
     return fn();
   } finally {
-    rmSync(lock, { force: true });
+    if (readToken(lock) === token) rmSync(lock, { force: true });
   }
 }
 

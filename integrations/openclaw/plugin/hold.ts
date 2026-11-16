@@ -5,9 +5,10 @@
  * There the plugin holds the call:
  * - the call does not run, and the agent is told it is held for the owner's approval and must not be retried in
  *   this run (`HELD_TEXT`);
- * - the owner gets one notice as a direct message, on the channel where they ran `/sentrook-notify here`: where
- *   the call was held, the tool and what it does, the block category, the scanner's suggested grant when there
- *   is one, and an approve id;
+ * - the owner gets one notice as a direct message, on the channel where they ran `/sentrook-notify here`: which
+ *   run, the tool and its target as a review names them, the block category, and an approve id. It carries
+ *   nothing a steered agent could use (the Hermes plugin's notice can reach the agent's transcript, and both
+ *   send the same text); the owner reads the risk, reasons and suggested grant with `/sentrook-why <id>`;
  * - `/sentrook-approve <id>` within 24 hours sets the suggested grant as a persistent grant that ends after 30
  *   days. The held call is not run again; the next run of the job is scanned with the grant. With no suggested
  *   grant, approving sets nothing and the reply says so.
@@ -26,10 +27,14 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
-import { BLOCK_CATEGORIES, blockCategory, reviewMessage } from "./decision.ts";
+import { BLOCK_CATEGORIES, blockCategory, describe } from "./decision.ts";
+import { formatWhy, recentScans, recordsBackward } from "./history.ts";
 import * as grants from "./grants.ts";
+import { OwnerRefused } from "./owner.ts";
 import type { ScanResponse } from "./scanClient.ts";
 import { type HoldsFile, type NotifyTarget, readTime, Store, withFileLock } from "./store.ts";
+
+export { LockTimeoutError } from "./store.ts";
 
 export const HOLD_TTL_MS = 24 * 3600_000;
 export const GRANT_TTL_MS = 30 * 24 * 3600_000;
@@ -67,28 +72,39 @@ function clean(s: unknown, cap = 200): string {
 // ---- the text -----------------------------------------------------------------------------------------
 
 /**
- * The owner's notice. `where` names the job or session, `approve` is the approve command as the owner types it.
- * The review line is the one a review shows; nothing more is added.
+ * Which run a hold belongs to: a cron job by its id, with its name quoted and labelled as the job's name (whoever
+ * made the job chose it, possibly the agent, so it must read as a name, never as an instruction), else the kind of
+ * run; then the session.
  */
-export function noticeText(
-  resp: ScanResponse,
-  tool: string,
-  where: string,
-  holdId: string,
-  hint: unknown,
-  approve: string,
-): string {
-  const grant = grants.hintGrant(hint);
-  const relief = grant
-    ? `Approving sets a persistent grant for 30 days: ${grants.describeGrant(grant)}, so the next run passes.`
-    : "Sentrook suggested no grant for this call, so approving sets nothing; the next run is scanned as before.";
+export function whereText(run: string, sessionRef: string, jobId?: string | null, jobName?: string | null): string {
+  if (jobId) {
+    const name = jobName ? `, job name ${JSON.stringify(clean(jobName, 60))}` : "";
+    return `cron job ${clean(jobId, 40)}${name}, session ${sessionRef}`;
+  }
+  return `${run}, session ${sessionRef}`;
+}
+
+/** The job id and name OpenClaw puts before a cron run's prompt (`[cron:<id> <name>]`); null for other runs. */
+export function cronJobOf(prompt: unknown): { id: string; name: string | null } | null {
+  const m = typeof prompt === "string" ? /^\[cron:([^\]\s]+)(?: ([^\]]*))?\]/.exec(prompt) : null;
+  if (!m) return null;
+  const name = m[2]?.trim();
+  return { id: m[1]!, name: name && name !== m[1] ? name : null };
+}
+
+/**
+ * The owner's notice: that a call was held, which run, the tool and its target as a review names them, the block
+ * category, and the ids and commands. The risk, reason codes, scores and entities are for the owner, through
+ * `why`: the same text can reach the agent's own transcript on Hermes.
+ */
+export function noticeText(resp: ScanResponse, tool: string, where: string, holdId: string, approve: string, why: string): string {
   return [
-    `Sentrook held a tool call on an unattended run (${clean(where)}); it did not run.`,
-    `Tool: ${clean(tool, 80)}. ${reviewMessage(resp, tool)}`,
+    "Sentrook held a tool call on an unattended run; it did not run.",
+    `Run: ${clean(where, 200)}`,
+    `Tool: ${clean(tool, 80)}: ${clean(describe(resp, tool), 200)}`,
     `Held because ${BLOCK_CATEGORIES[blockCategory(resp)]}.`,
-    relief,
     `To approve within 24 hours: ${approve} ${holdId}`,
-    "The held call is not run again either way.",
+    `For the reasons: ${why} ${holdId}`,
   ].join("\n");
 }
 
@@ -185,41 +201,97 @@ export function approve(
   const id = rest.trim();
   if (!ID.test(id)) return `usage: ${cmd("approve")} <id>, with the id from Sentrook's notice (h- and 6 hex digits)`;
   const store = new Store(stateDir);
-  const taken = withFileLock(holdsFile(stateDir), () => {
+  type Outcome =
+    | { kind: "unreadable" }
+    | { kind: "missing"; expired: boolean }
+    | { kind: "kept"; reply: string }
+    | { kind: "approved"; found: Entry; reply: string; change: grants.Change | null };
+  const outcome = withFileLock(holdsFile(stateDir), (): Outcome => {
     const data = store.loadHolds();
-    if (data === null) return null;
-    const found = data.holds.find((h) => live(h, now) && (h as Entry).id === id) as Entry | undefined;
-    beforeWrite();
+    if (data === null) return { kind: "unreadable" };
     const { changed, gone } = sweepData(data, now, record);
-    if (found) data.holds = data.holds.filter((h) => h !== found);
-    if (changed || found) store.saveHolds(data);
-    return { found, gone };
-  });
-  if (taken === null) return `The holds file ${holdsFile(stateDir)} could not be read; fix or remove it first.`;
-  const { found, gone } = taken;
-  if (!found) {
-    if (gone.some((h) => h.id === id)) {
-      return `Held call ${id} expired: holds last 24 hours. Nothing was approved; the next run is scanned as before.`;
+    const found = data.holds.find((h) => (h as Entry)?.id === id) as Entry | undefined;
+    if (!found) {
+      if (changed) {
+        beforeWrite();
+        store.saveHolds(data);
+      }
+      return { kind: "missing", expired: gone.some((h) => h.id === id) };
     }
-    return `No held call ${clean(id, 40)}: the id is unknown, already answered or expired.`;
+    // The grant first: when it cannot be written, the hold stays and can be approved again.
+    const grant = grants.hintGrant(found.hint);
+    let reply = "";
+    let change: grants.Change | null = null;
+    if (grant) {
+      try {
+        ({ reply, change } = grants.addSuggested(stateDir, grant, by, now, GRANT_TTL_MS, id, beforeWrite));
+      } catch (err) {
+        if (err instanceof OwnerRefused) throw err;
+        reply = `The grants file could not be written (${clean(String(err), 160)}).`;
+      }
+      if (!change) {
+        if (changed) store.saveHolds(data);
+        return { kind: "kept", reply };
+      }
+    }
+    beforeWrite();
+    data.holds = data.holds.filter((h) => h !== found);
+    store.saveHolds(data);
+    return { kind: "approved", found, reply, change };
+  });
+  if (outcome.kind === "unreadable") return `The holds file ${holdsFile(stateDir)} could not be read; fix or remove it first.`;
+  if (outcome.kind === "missing") {
+    return outcome.expired
+      ? `Held call ${id} expired: holds last 24 hours. Nothing was approved; the next run is scanned as before.`
+      : `No held call ${clean(id, 40)}: the id is unknown, already answered or expired.`;
   }
-  const grant = grants.hintGrant(found.hint);
+  if (outcome.kind === "kept") return `Not approved: ${outcome.reply} ${id} is still waiting; approve it again once that is fixed.`;
+  const { found, reply, change } = outcome;
   const done = { kind: "resolution", request_id: found.request_id, resolution: "hold_approved", decision: "held", hold_id: id, by };
-  if (!grant) {
+  if (!change) {
     record(done);
     return (
       `Approved ${id}. Sentrook suggested no grant for this call, so nothing was set: the next run is scanned as ` +
       `before. To let it pass, add a grant with ${cmd("grant")}. The held call is not run again.`
     );
   }
-  const { reply, change } = grants.addSuggested(stateDir, grant, by, now, GRANT_TTL_MS, id, beforeWrite);
-  if (!change) {
-    record(done);
-    return `Approved ${id}, but no grant was set. ${reply}`;
-  }
   record({ kind: "grants", ...change, by });
   record({ ...done, grant_id: change.entry.id });
   return `Approved ${id}. ${reply} The held call is not run again; the next run is scanned with this grant.`;
+}
+
+/** The hold with this id while it waits; null when unknown, answered, expired or unreadable. */
+export function find(stateDir: string, id: string): Entry | null {
+  const data = new Store(stateDir).loadHolds();
+  return ((data?.holds ?? []).find((h) => h && typeof h === "object" && (h as Entry).id === id) as Entry) ?? null;
+}
+
+export const isId = (text: string) => ID.test(text);
+
+const showTime = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+
+/** `why <hold id>`: the held call's scan as `why` shows any scan, then the hold itself. */
+export function whyText(stateDir: string, log: string, id: string): string {
+  let rid: string | null = null;
+  for (const r of recordsBackward(log)) {
+    if (r.kind === "scan" && r.hold && typeof r.hold === "object" && (r.hold as Entry).id === id && typeof r.request_id === "string") {
+      rid = r.request_id;
+      break;
+    }
+  }
+  const [found] = rid ? recentScans(log, 1, (x) => x === rid) : [];
+  if (!found) return `No held call ${id} in the recent traffic log.`;
+  const lines = [formatWhy(...found)];
+  const waiting = find(stateDir, id);
+  if (waiting) {
+    const at = readTime(waiting.expires_at);
+    lines.push(`hold: waiting, until ${at ? showTime(at) : "?"}`);
+    const grant = grants.hintGrant(waiting.hint);
+    lines.push(`suggested grant: ${grant ? `${grants.describeGrant(grant)} (persistent, 30 days)` : "none"}`);
+  } else {
+    lines.push("hold: answered or expired");
+  }
+  return lines.join("\n");
 }
 
 // ---- where the notice goes ----------------------------------------------------------------------------
@@ -242,18 +314,53 @@ export interface NotifyContext {
   channel?: unknown;
   senderId?: unknown;
   from?: unknown;
+  to?: unknown;
+  sessionKey?: unknown;
   accountId?: unknown;
   messageThreadId?: unknown;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
-/** The direct-message target of the sender of a command, as OpenClaw's device-pair plugin records one. */
-export function targetOf(ctx: NotifyContext, by: Entry, now: Date): NotifyTarget | null {
+/**
+ * Whether a command came from a direct message, as far as the context says: OpenClaw names the chat in the session
+ * key and the reply address (`...:direct:...` or `user:` for one person, `...:group:...`, `channel:` and the like
+ * for many). `unknown` when neither says, as in the agent's main session.
+ */
+export function chatKindOf(ctx: NotifyContext): "direct" | "group" | "unknown" {
+  const said = [ctx.sessionKey, ctx.to, ctx.from].map(str).filter((v): v is string => v !== undefined);
+  if (said.some((v) => /(^|:)(group|channel|room|space|thread|topic)(:|$)/i.test(v))) return "group";
+  if (said.some((v) => /(^|:)(direct|dm|user)(:|$)/i.test(v))) return "direct";
+  return "unknown";
+}
+
+/** Channels whose sends take a thread id, as OpenClaw's own device-pair plugin forwards one. */
+const THREAD_CHANNELS = new Set(["telegram", "slack"]);
+
+/**
+ * The direct-message target of the sender of a command, as OpenClaw's device-pair plugin builds one (`user:<id>` on
+ * Discord); a reason it cannot be one otherwise. Only the sender counts: never the chat it was sent in, so a
+ * notice never goes to a group. A thread is kept only for a direct message on a channel that takes one.
+ */
+export function targetOf(ctx: NotifyContext, by: Entry, now: Date): NotifyTarget | string {
   const channel = str(ctx.channel);
-  const to = str(ctx.senderId) ?? str(ctx.from);
-  if (!channel || !to || ["webchat", "control-ui", "cli"].includes(channel.toLowerCase())) return null;
-  const threadId = typeof ctx.messageThreadId === "number" ? ctx.messageThreadId : str(ctx.messageThreadId);
+  if (!channel || ["webchat", "control-ui", "cli"].includes(channel.toLowerCase())) {
+    return "Run /sentrook-notify here as a direct message to the agent on a chat channel: it records that chat as where held-call notices go.";
+  }
+  const sender = str(ctx.senderId);
+  if (!sender) return "OpenClaw did not say who sent this, so there is no one to send notices to; nothing was changed.";
+  const kind = chatKindOf(ctx);
+  if (kind === "group" || sender.startsWith("channel:")) {
+    return "Run /sentrook-notify here in a direct message to the agent, not in a group or channel: notices go to you alone.";
+  }
+  const to = channel === "discord" && !sender.startsWith("user:") ? `user:${sender}` : sender;
+  const raw = ctx.messageThreadId;
+  const threadId =
+    kind === "direct" && THREAD_CHANNELS.has(channel) && raw !== undefined && raw !== null && raw !== ""
+      ? channel === "slack"
+        ? String(raw)
+        : (raw as string | number)
+      : undefined;
   return {
     channel,
     to,
@@ -290,12 +397,7 @@ export function runNotify(
   }
   if (op !== "here") return { reply: "usage: /sentrook-notify here|off|status", change: null };
   const target = targetOf(ctx, by, now);
-  if (!target) {
-    return {
-      reply: "Run /sentrook-notify here as a direct message to the agent on a chat channel: it records that chat as where held-call notices go.",
-      change: null,
-    };
-  }
+  if (typeof target === "string") return { reply: target, change: null };
   beforeWrite();
   store.saveNotify(target);
   return {

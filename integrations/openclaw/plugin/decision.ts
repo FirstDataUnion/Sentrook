@@ -70,17 +70,6 @@ function fit(desc: string, codes: string[], tail: string, limit: number): string
   return `${clip(desc, limit - end.length - 1)}.${end}`;
 }
 
-/**
- * One line for a review outside the host's approval card (the owner's notice of a held call): the same
- * description, reason codes and scores, after `Sentrook (risk N): `, within 300 characters. The Hermes
- * plugin's review message is the same text.
- */
-export function reviewMessage(resp: ScanResponse, toolName: string): string {
-  const head = `Sentrook (risk ${Math.round(resp.risk ?? 0)}): `;
-  const body = fit(describe(resp, toolName), reasonCodes(resp), scoresLine(resp), 300 - head.length);
-  return `${head}${body}`;
-}
-
 export function reviewCopy(resp: ScanResponse, toolName: string): { title: string; description: string } {
   const risk = ` (risk ${Math.round(resp.risk ?? 0)})`;
   const head = "Sentrook: review ";

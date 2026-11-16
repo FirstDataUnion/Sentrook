@@ -404,25 +404,27 @@ def add_grant(
 
 
 def hint_grant(hint: Any) -> dict[str, Any] | None:
-    """A suggested grant as a grant this file can hold (kind, pattern, allows for a file grant), or None
-    when it cannot be read as one. A suggestion never sets a session, a scope or an expiry of its own."""
+    """A suggested grant as the owner could have typed it: run through `parse_grant` with the same
+    rules as `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more
+    than the command could. Kind, pattern and allows only; the scope is always persistent and the
+    expiry is the hold's. None when it is not one the command would accept."""
     if not isinstance(hint, dict):
         return None
-    kind, pattern = hint.get("kind"), hint.get("pattern")
-    if kind not in KINDS or not isinstance(pattern, str):
+    kind, pattern, allows = hint.get("kind"), hint.get("pattern"), hint.get("allows")
+    if not isinstance(kind, str) or not isinstance(pattern, str):
         return None
-    pattern = pattern.strip()
-    if not pattern or len(pattern) > MAX_PATTERN or not pattern.isprintable():
-        return None
-    grant: dict[str, Any] = {"kind": kind, "pattern": pattern}
-    allows = hint.get("allows")
+    words = [kind, pattern.strip(), "--persistent"]
     if allows is not None:
-        if kind != "file" or not isinstance(allows, list) or not allows:
+        if not isinstance(allows, list) or not all(isinstance(a, str) for a in allows):
             return None
-        if any(a not in ALLOWS for a in allows):
-            return None
-        grant["allows"] = list(dict.fromkeys(allows))
-    return grant
+        words += ["--allows", ",".join(allows)]
+    # One word each, as typed: a kind or pattern with spaces could not have been typed either.
+    if any(not w or any(c.isspace() for c in w) for w in words[:2]):
+        return None
+    parsed = parse_grant(" ".join(words), lambda sub: sub)
+    if isinstance(parsed, str):
+        return None
+    return {k: v for k, v in parsed.items() if k in ("kind", "pattern", "allows")}
 
 
 def describe_grant(grant: dict[str, Any]) -> str:

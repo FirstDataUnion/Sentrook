@@ -197,7 +197,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | --- | --- |
 | `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls and where their notices go, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
-| `why [request_id\|last]` | One scan in detail |
+| `why [request_id\|last]` | One scan in detail; with the id from a held-call notice, also the hold and the grant Sentrook suggests |
 | `grants` | Grants in force: from config (read-only) and set by command |
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
@@ -246,11 +246,11 @@ Blocks still apply.
 Where nobody can answer a review (the runs above), the call is **held**:
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
-- You get one notice on a home channel: the job or session, the tool and what it does, why it was held (the same
-  description, reason codes and scores a review shows), and an approve id. It goes to the home channel of the
-  platform in `owner_channel` (for example `telegram`), or, when that is unset, of the only platform that has a home
-  channel (`/sethome`). With no home channel to use, or several and no `owner_channel`, nothing is sent, the call is
-  still held, and `status` and `verify` say why notices are not sent.
+- You get one notice on the home channel (`/sethome`) of the platform you name in `owner_channel`, for example
+  `telegram`. Set it: until you do, nothing is sent, the call is still held, and `status` and `verify` say notices
+  are not sent. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
+  was held, which run (a cron job by its id, and its name in quotes), the tool and its target, a broad category,
+  and the commands. Read the risk, the reasons and any grant Sentrook suggests with `/sentrook why <id>`.
 - Reply `/sentrook approve <id>` within 24 hours (from a direct message or the local terminal, like the other owner
   commands). When Sentrook suggested a grant for the call, approving sets it as a persistent grant that ends after 30
   days, so the job's next run is scanned with it. When it suggested none, approving sets nothing and the reply says
@@ -372,7 +372,7 @@ settings (see [step 2](#2-add-the-credentials-to-hermes)).
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
-| `owner_channel` | the only platform with a home channel | The platform whose home channel gets the notice of a held call, such as `telegram` |
+| `owner_channel` | | The platform whose home channel gets the notice of a held call, such as `telegram`. No notice is sent until it is set |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |

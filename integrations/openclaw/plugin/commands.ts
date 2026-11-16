@@ -99,7 +99,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   why: {
     command: "sentrook-why",
     args: "[request_id|last]",
-    description: "One scan's risk, tier scores, reason codes and entities",
+    description: "One scan's risk, tier scores, reason codes and entities; for a held call's id, also the hold and the grant Sentrook suggests",
     run: (ctx, rest) => whyText(ctx, rest),
   },
   grants: {
@@ -249,8 +249,11 @@ function historyText(ctx: CommandContext, rest: string): string {
 function whyText(ctx: CommandContext, rest: string): string {
   const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
   if (!cfg.trafficLog.enabled) return LOG_OFF;
+  if (hold.isId(rest)) return hold.whyText(cfg.stateDir, cfg.trafficLog.path, rest);
   const match = parseRef(rest);
-  if (match === null) return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history";
+  if (match === null) {
+    return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history, or the id in a held-call notice";
+  }
   const [found] = recentScans(cfg.trafficLog.path, 1, match);
   if (found) return formatWhy(...found);
   return rest === "" || rest.toLowerCase() === "last" ? NO_SCANS : `No scan ${rest} in the recent traffic log.`;
