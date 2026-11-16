@@ -17,7 +17,18 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import cli, commands, conversation, grants, history, hold, owner, skill_review, snooze
+from . import (
+    cli,
+    commands,
+    conversation,
+    grants,
+    history,
+    hold,
+    host_turns,
+    owner,
+    skill_review,
+    snooze,
+)
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
@@ -28,7 +39,7 @@ from .intent import (
     resolve_platform,
     session_facts,
 )
-from .planir import PLUGIN_VERSION, build_planir, session_ref, tool_kind
+from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import ScanFailure, scan_error_to_directive
@@ -212,35 +223,64 @@ def on_pre_llm_call(**kw: Any) -> None:
         cfg, env = _load()
         store, _t = _state(cfg)
         turn_id = kw.get("turn_id")
-        store.merge_turn(
-            turn_id,
-            {
-                "platform": kw.get("platform"),
-                "sender_id": kw.get("sender_id"),
-                "parent_session_id": kw.get("parent_session_id"),
-                "user_message": kw.get("user_message"),
-            },
-        )
-        sid = _sid(kw)
         # The curator's prompt (a fresh agent under the background-review origin) is neither a message, a
         # request nor a turn of the owner's session: its calls carry the owner's last request (`_scan_one`).
         background = skill_review.in_background_review()
+        # A turn Hermes starts itself with its own text (`host_turns`) is a turn, never an owner message; an
+        # event notice is not a request either, and its text goes as an untrusted input.
+        host = None if background else host_turns.classify(kw.get("user_message"))
+        own, content = host_turns.parts(host, kw.get("user_message")) if host else (None, None)
+        if host is None:
+            # An ordinary message behind host notes: the request is the message without them.
+            rest = host_turns.strip_notes(kw.get("user_message"))
+            if rest != host_turns.message_text(kw.get("user_message")):
+                own = rest
+        # The turn is a request (an owner's message, or a standing instruction's own words) unless the host's
+        # text is only content.
+        is_request = host is None or own is not None
+        merged = False
+        try:
+            store.merge_turn(
+                turn_id,
+                {
+                    "pre_llm_call": True,
+                    "platform": kw.get("platform"),
+                    "sender_id": kw.get("sender_id"),
+                    "parent_session_id": kw.get("parent_session_id"),
+                    "user_message": kw.get("user_message"),
+                    "host_turn": host.form if host else None,
+                    "request_text": own,
+                },
+            )
+            merged = bool(turn_id)
+        except Exception as exc:  # noqa: BLE001 - the turn's calls then read as a turn never seen
+            logger.warning("pre_llm_call could not store the turn: %s", exc)
+        sid = _sid(kw)
         with store.session_lock(sid):
             s = store.load_session(sid)
-            if turn_id and not background:
-                s["last_turn_id"] = turn_id
-                if turn_id not in s["turns"]:
+            if not background:
+                # Without a turn id, calls that name none must not fall back to the previous turn.
+                s["last_turn_id"] = turn_id or None
+                # Only a turn whose request was stored can be carried later.
+                if merged and is_request:
+                    s["last_request_turn_id"] = turn_id
+                if turn_id and turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
+                if host is not None and content is not None:
+                    _buffer_host_text(cfg, store, s, content, host.input_kind or "other")
                 store.save_session(sid, s, cfg.history_limit * 2)
             if _capturing(cfg, store) and not background:
                 facts = session_facts()
                 platform = resolve_platform(kw.get("platform"), facts, env)
+                sender = conversation_sender_of(platform, facts, kw.get("sender_id"), env)
+                if host is not None and sender["relation"] == "owner":
+                    sender = dict(host_turns.SENDER, basis=list(host_turns.SENDER["basis"]))
                 _record(
                     store,
                     sid,
                     conversation.user_entry(
                         _turn_no(s, turn_id),
-                        conversation_sender_of(platform, facts, kw.get("sender_id"), env),
+                        sender,
                         kw.get("user_message"),
                         Redactor("standard", store.salt()),
                         turn_id,
@@ -248,6 +288,29 @@ def on_pre_llm_call(**kw: Any) -> None:
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("pre_llm_call failed: %s", exc)
+
+
+def _buffer_host_text(
+    cfg: PluginConfig, store: Store, s: dict[str, Any], message: Any, kind: str
+) -> None:
+    """A host turn's text as the next scan's new input (`subagent_reply` or `other`), redacted and capped
+    like a tool result. Untrusted, like any input."""
+    text = host_turns.message_text(message)
+    redacted = Redactor("standard", store.salt()).string(text)
+    capped, truncated, _ = cap_head_tail(redacted, cfg.input_cap_bytes)
+    s["input_seq"] += 1
+    s["buffer"].append(
+        {
+            "input_seq": s["input_seq"],
+            "kind": kind,
+            "call_id": None,
+            "content_type": "text",
+            "content": capped,
+            "size_bytes": len(text.encode("utf-8")),
+            "truncated": truncated,
+            "subagent_session_ref": None,
+        }
+    )
 
 
 def on_post_api_request(**kw: Any) -> None:
@@ -326,6 +389,7 @@ def _scan_one(
 ) -> dict[str, Any] | None:
     sess = store.load_session(sid)
     turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
+    last_request = store.load_turn(request_turn_id(sess))
     facts = session_facts()
     host_cfg = hermes_config()
     tool_name = str(kw.get("tool_name") or "")
@@ -351,9 +415,8 @@ def _scan_one(
         grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid)),
         self_edit=self_edit,
         # The background review's calls serve the owner's last request, not a turn of their own.
-        request_turn=store.load_turn(sess.get("last_turn_id"))
-        if skill_review.in_background_review()
-        else None,
+        request_turn=last_request if skill_review.in_background_review() else None,
+        last_request=last_request,
     )
     planir = built["planir"]
     unattended = is_unattended(

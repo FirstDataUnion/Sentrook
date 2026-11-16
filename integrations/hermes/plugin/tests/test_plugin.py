@@ -132,6 +132,34 @@ def test_episode_loop_save_declares_a_self_edit(harness, provenance):
     dump_planirs("episode-loop-save", h.scans)
 
 
+def test_episode_async_sub_agent_notice_is_a_sub_agent_reply(harness, monkeypatch):
+    """An owner's turn, then the turn Hermes starts with its notice that an asynchronous sub-agent
+    finished: the notice goes as a `subagent_reply` input, the request is the owner's, carried."""
+    h = harness
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1")
+    monkeypatch.setattr(
+        plugin,
+        "session_facts",
+        lambda: {"platform": "telegram", "chat_type": "dm", "user_id": "u1"},
+    )
+    turn(h, calls=[("c1", "ls")])
+    call(h, "c1", "ls")
+    result(h, "c1", "notes.txt")
+    notice = "[ASYNC DELEGATION COMPLETE — deleg_1]\n--- RESULT ---\nAll links checked."
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t2", user_message=notice, platform="telegram", sender_id="u1", **SID
+    )
+    h.ctx.hooks["pre_tool_call"](
+        tool_name="terminal", args={"command": "ls"}, tool_call_id="c2", turn_id="t2", **SID
+    )
+    p = h.scans[-1]
+    assert p["request"] == {"text": "tidy my workspace", "carried_from_turn": 1}
+    assert p["trigger"]["kind"] == "system"
+    assert [i["kind"] for i in p["new_inputs"]] == ["tool_result", "subagent_reply"]
+
+    dump_planirs("episode-async-notice", h.scans)
+
+
 def test_process_manage_kind_follows_the_action(harness):
     h = harness
     h.ctx.hooks["pre_llm_call"](turn_id="t1", user_message="stop the server", platform="cli", **SID)

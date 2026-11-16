@@ -13,7 +13,8 @@ module has no loop saves.
 With `skill_review: allow` (the default) a loop save is declared as a self-edit: it is sent with trigger
 `system` and a top-level `self_edit` block carrying the conversation the review read (see
 `conversation.py`), and the scanner judges the save against it. Its verdict is applied like any other.
-`skill_review: review` sends a loop save like any other call (the turn's own trigger, no block). Any
+`skill_review: review` sends a loop save like any other call, without the block (a background call never
+reads as the owner's message: an owner sender becomes unknown, trigger `system`). Any
 other value reads as allow, and status and the startup log name it.
 
 Every call the fork or the curator makes (a loop save or not) carries the session's last owner request

@@ -7,6 +7,9 @@ Hermes has no owner flag; its gateway allowlist is a yes/no admission gate. The 
 - other (basis `host_open_access`): a DM admitted only by allow-all (or a grant the plugin cannot see);
 - unknown (basis `none`): cron, subagent, API-server and webhook runs.
 
+A turn Hermes starts itself with a user message it wrote (a finished sub-agent or background process, a
+heartbeat, a goal) is never an owner message: see `host_turns`.
+
 The conversation sent with a background save (`conversation_sender_of`) differs in one place: a group
 message from a sender individually on the allowlist is the owner (basis `group_chat`).
 """

@@ -190,12 +190,12 @@ def test_an_owner_call_carries_its_own_turn(h):
     assert sent["session"]["turn"] == 2
 
 
-def test_an_ordinary_call_without_its_turn_context_is_sent_as_before(h):
-    """Outside the background review, a call whose turn fired no pre_llm_call still counts as a new turn
-    with no request text."""
+def test_an_ordinary_call_without_its_turn_context_carries_the_last_request(h):
+    """Outside the background review, a call whose turn fired no pre_llm_call still counts as a new turn,
+    and carries the session's last request with the turn it came from."""
     owner(h, "t1", "first")
     sent = call(h, "t-unseen", "c1", "terminal", {"command": "ls"})
-    assert sent["request"]["text"] == ""
+    assert sent["request"] == {"text": "first", "carried_from_turn": 1}
     assert sent["session"]["turn"] == 2
 
 
