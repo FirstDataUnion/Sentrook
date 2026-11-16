@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from test_aira_detectors import KEY, SENS, ex, hist_step, of
+from test_aira_detectors import KEY, SENS, ex, hist_step, of, sib
 
 from sentrook.converge import load_params
 from sentrook.enums import Enforce
@@ -157,3 +157,76 @@ def test_a_download_host_the_library_vouches_for_adds_nothing():
     assert of(aira, SENS, UNVETTED_SOURCE) == []
     plain, _, _ = scan(after([f"curl -o other.whl {URL}"], f"pip install ./{WHEEL}"), seed)
     assert res.response.risk == plain.response.risk
+
+
+# --------------------------------------------------------------------------- more download and install shapes
+
+REDIRECTS = [
+    f"curl -fsSL {URL} > {WHEEL}",
+    f"curl {URL} >{WHEEL}",
+    f"curl -s {URL} >> {WHEEL}",
+    f"curl -sL {URL} | tee {WHEEL}",
+    f"wget -O- {URL} > {WHEEL}",
+    f"wget -qO {WHEEL} {URL}",
+]
+REDIRECT_IDS = ["gt", "gt-attached", "append", "tee", "wget-stdout", "wget-qO"]
+
+
+@pytest.mark.parametrize("download", REDIRECTS, ids=REDIRECT_IDS)
+def test_a_redirected_or_teed_download_in_an_earlier_step_is_charged(download):
+    assert charged(*scan(after([download], f"pip install ./{WHEEL}")))
+
+
+@pytest.mark.parametrize("download", REDIRECTS, ids=REDIRECT_IDS)
+def test_a_redirected_or_teed_download_in_the_same_command_is_charged(download):
+    assert charged(*scan(ex(f"{download} && pip install ./{WHEEL}")))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"curl -o {WHEEL} {URL} && mv {WHEEL} helper.whl && pip install ./helper.whl",
+        f"curl -o /tmp/{WHEEL} {URL} && cp /tmp/{WHEEL} ./vendor/ && pip install ./vendor/{WHEEL}",
+    ],
+    ids=["rename", "copy-into-directory"],
+)
+def test_a_download_renamed_or_copied_in_the_same_command_is_followed(command):
+    assert charged(*scan(ex(command)))
+
+
+def test_a_download_in_a_sibling_call_is_joined():
+    raw = ex(f"pip install ./{WHEEL}", siblings=[sib(f"curl -o {WHEEL} {URL}")])
+    assert charged(*scan(raw))
+
+
+def test_an_install_after_cd_is_resolved_where_it_runs():
+    assert charged(*scan(ex(f"curl -o /tmp/{WHEEL} {URL} && cd /tmp && pip install ./{WHEEL}")))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/kestrelwade/yard/releases/download/v0.2/" + WHEEL,
+        "https://objects.githubusercontent.com/release-assets/1234/" + WHEEL,
+        "https://huggingface.co/kestrelwade/yard/resolve/main/" + WHEEL,
+    ],
+    ids=["github-release", "github-objects", "huggingface"],
+)
+def test_a_download_from_a_host_serving_anyones_files_is_charged(url):
+    host = url.split("/")[2]
+    assert charged(*scan(after([f"curl -L -o {WHEEL} {url}"], f"pip install ./{WHEEL}")), host)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://files.pythonhosted.org/packages/ab/cd/{WHEEL}",
+        f"https://pypi.org/packages/ab/cd/{WHEEL}",
+        "https://registry.npmjs.org/kiln-tool/-/kiln-tool-1.0.0.tgz",
+    ],
+    ids=["pythonhosted", "pypi", "npm-registry"],
+)
+def test_a_download_from_a_package_registry_is_not_charged(url):
+    name = url.rsplit("/", 1)[-1]
+    installer = "npm" if name.endswith(".tgz") else "pip"
+    assert silent(*scan(after([f"curl -o {name} {url}"], f"{installer} install ./{name}")))

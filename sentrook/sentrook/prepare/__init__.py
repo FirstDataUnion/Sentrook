@@ -56,11 +56,11 @@ from .entities import (
     Role,
     channel_names,
     display_path,
-    downloads_in,
     extract_call,
     extract_exec,
     extract_mentions,
     host_of_url,
+    install_walk,
     is_computed_package,
     is_under,
     normalise_host,
@@ -651,6 +651,7 @@ def _find_written(
 
 def _downloaded_installs(
     pending: CanonicalCall,
+    siblings: list[CanonicalCall],
     history: list[CanonicalCall],
     not_run: frozenset[int],
     copies: CopyHistory,
@@ -660,9 +661,9 @@ def _downloaded_installs(
     ws: str,
 ) -> dict[str, list[str]]:
     """The local paths the pending command installs (path entities with the code-source role) that a
-    download saved: in an earlier segment of the same command, or in an earlier step that ran, at that
-    path or at one it was copied or moved from. Each maps to the download's hosts, less the hosts on the
-    installer list (a registry or installer the scanner already trusts to serve code)."""
+    download saved: earlier in the same command, in a sibling call of the batch, or in an earlier step
+    that ran, at that path or at one it was copied or moved from. Each maps to the download's hosts, less
+    package registries (`installers.package_registry_hosts`), which serve only published packages."""
     if pending.tool_kind is not ToolKind.EXEC:
         return {}
     installs = [
@@ -672,37 +673,32 @@ def _downloaded_installs(
     ]
     if not installs:
         return {}
-    same, _ = downloads_in(
-        pending.command or "", home=home, workspace_root=ws, cwd=pending.get("cwd")
-    )
+    walk = install_walk(pending.command or "", home=home, workspace_root=ws, cwd=pending.get("cwd"))
     earlier: dict[str, set[str]] = {}
-    for call in history:
-        if call.tool_kind is not ToolKind.EXEC or call.step is None or call.step in not_run:
+    ran = [c for c in history if c.step is not None and c.step not in not_run]
+    for call in (*siblings, *ran):
+        cmd = call.command or "" if call.tool_kind is ToolKind.EXEC else ""
+        if "curl" not in cmd and "wget" not in cmd:
             continue
-        cmd = call.command or ""
-        if not any(head in cmd for head in ("curl", "wget")):
-            continue
-        _, saved = downloads_in(cmd, home=home, workspace_root=ws, cwd=call.get("cwd"))
+        saved = install_walk(cmd, home=home, workspace_root=ws, cwd=call.get("cwd")).downloaded
         for path, hosts in saved.items():
             earlier.setdefault(path, set()).update(hosts)
-    out: dict[str, set[str]] = {p: set(h) for p, h in same.items()}
+    out: dict[str, set[str]] = {p: set(h) for p, h in walk.installed.items()}
     for path in installs:
         for origin in (path, *copies.ancestors(path, now)):
             if origin in earlier:
                 out.setdefault(path, set()).update(earlier[origin])
-    charged = {p: sorted(h for h in hosts if not _listed_installer(h)) for p, hosts in out.items()}
+    charged = {p: sorted(h for h in hosts if not _package_registry(h)) for p, hosts in out.items()}
     return {p: hosts for p, hosts in charged.items() if hosts}
 
 
-def _listed_installer(host: str) -> bool:
+def _package_registry(host: str) -> bool:
     from ..aira.lists import load_lists
 
     host = host.lower().strip(".")
+    registries = load_lists().strings("installers", "package_registry_hosts")
     return any(
-        host == listed or host.endswith("." + listed)
-        for listed in (
-            h.lower().strip(".") for h in load_lists().strings("installers", "installer_hosts")
-        )
+        host == r or host.endswith("." + r) for r in (h.lower().strip(".") for h in registries)
     )
 
 
@@ -1443,7 +1439,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     downloaded_from: dict[str, list[str]] = {}
     try:
         downloaded_from = _downloaded_installs(
-            pending, history, not_run, copies, table, planir.session.step, home, ws
+            pending, siblings, history, not_run, copies, table, planir.session.step, home, ws
         )
     except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
         coverage.append(CoverageNote("download_join_failed", f"{type(exc).__name__}: {exc}"))

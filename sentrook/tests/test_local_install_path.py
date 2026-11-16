@@ -210,3 +210,66 @@ def test_a_registry_install_keeps_its_package_and_signals(command, value, unvett
     assert any(c.subject == ent.id and c.value == 0.7 for c in oracle.contributions)
     assert [c.subject for c in of(aira, SENS, UNVETTED)] == ([ent.id] if unvetted else [])
     assert not any(Role.CODE_SOURCE in roles for roles in pending(p, EntityKind.PATH).values())
+
+
+# --------------------------------------------------------------------------- where the operand resolves
+
+
+def test_an_install_after_cd_resolves_where_it_runs():
+    p, _, _ = scan(ex("cd pkg && pip install ."))
+    assert Role.CODE_SOURCE in pending(p, EntityKind.PATH)[f"{WS}/pkg"]
+    assert Role.CODE_SOURCE not in pending(p, EntityKind.PATH)[WS]
+
+
+def test_only_go_strips_its_package_pattern():
+    p, _, _ = scan(ex("go install ./..."))
+    assert Role.CODE_SOURCE in pending(p, EntityKind.PATH)[WS]
+    p, _, _ = scan(ex("pip install /..."))
+    assert Role.CODE_SOURCE not in pending(p, EntityKind.PATH)[WS]
+
+
+# --------------------------------------------------------------------------- an index or registry flag
+
+INDEX = "idx.kestrelwade.example"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"pip install --index-url https://{INDEX}/simple .",
+        f"pip install --index-url=https://{INDEX}/simple .",
+        f"pip install --extra-index-url=https://{INDEX}/simple requests",
+        f"pip install -i https://{INDEX}/simple requests",
+        f"pip install -i=https://{INDEX}/simple requests",
+        f"pip install --find-links=https://{INDEX}/wheels/ requests",
+        f"pip install -f https://{INDEX}/wheels/ requests",
+        f"uv pip install --index-url https://{INDEX}/simple requests",
+        f"npm install --registry https://{INDEX}/ left-pad",
+        f"npm install --registry=https://{INDEX}/ left-pad",
+    ],
+    ids=[
+        "index-url",
+        "index-url-eq",
+        "extra-index-url-eq",
+        "i",
+        "i-eq",
+        "find-links-eq",
+        "f",
+        "uv",
+        "npm-registry",
+        "npm-registry-eq",
+    ],
+)
+def test_an_index_or_registry_flag_names_a_code_source_host_not_a_package(command):
+    p, oracle, _ = scan(ex(command, request="Set the project up."))
+    assert Role.CODE_SOURCE in pending(p, EntityKind.HOST)[INDEX]
+    assert not any(INDEX in v for v in pending(p, EntityKind.PACKAGE))
+    ent = p.entities.get(EntityKind.HOST, INDEX)
+    assert [c.reason for c in oracle.contributions if c.subject == ent.id] == [
+        "reputation.unknown_host_as_code_source"
+    ]
+
+
+def test_npm_force_takes_no_value():
+    p, _, _ = scan(ex("npm install -f left-pad"))
+    assert set(pending(p, EntityKind.PACKAGE)) == {"npm:left-pad"}

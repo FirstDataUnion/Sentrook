@@ -888,13 +888,22 @@ def _install_operands(text: str, start: int, spans: list[tuple[int, int]]) -> st
 _EXTRAS_RE = re.compile(r"\[[^\]]*\]\Z")
 
 
-def _local_install_operand(token: str) -> str | None:
+#: Installer options whose value is a package index or registry, by installer: where the packages come
+#: from, so a code source, never a package.
+_PIP_INDEX_FLAGS = frozenset({"-i", "--index-url", "--extra-index-url", "-f", "--find-links"})
+_INDEX_FLAGS = {
+    **dict.fromkeys(("pip", "pip3", "pipx", "uv pip"), _PIP_INDEX_FLAGS),
+    **dict.fromkeys(("npm", "pnpm", "yarn", "bun"), frozenset({"--registry"})),
+}
+
+
+def _local_install_operand(token: str, eco: str = "") -> str | None:
     """The path an installer operand names when it is on disk rather than in a registry: `.`, `..`, or a
-    path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or Go's
-    `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
+    path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or, for
+    Go, its `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
     tok = token.strip().strip("'\"")
     tok = _EXTRAS_RE.sub("", tok)
-    if tok.endswith("/..."):
+    if eco == "go" and tok.endswith("/..."):
         tok = tok[:-4] or "."
     if tok in (".", "..", "~", "$HOME") or tok.startswith(("./", "../", "/", "~/", "$HOME/")):
         return tok
@@ -905,11 +914,14 @@ def _packages_in(text: str) -> list[str]:
     return _installs_in(text)[0]
 
 
-def _installs_in(text: str) -> tuple[list[str], list[str]]:
-    """The packages installer commands in `text` name, and their operands that are local paths (as
-    written, see `_local_install_operand`). A local path installs what is on disk: it is not a package."""
+def _installs_in(text: str) -> tuple[list[str], list[str], list[str]]:
+    """The packages installer commands in `text` name, their operands that are local paths (as written,
+    see `_local_install_operand`), and the index or registry URLs their options name (`--index-url URL`,
+    `--registry=URL`). A local path installs what is on disk and an index serves packages: neither is a
+    package."""
     pkgs: list[str] = []
     local: list[str] = []
+    indexes: list[str] = []
     spans = substitution_spans(text) if ("$(" in text or "`" in text) else []
     for m in _INSTALLERS.finditer(text):
         eco_key = re.sub(r"\s+", " ", m.group("eco").lower())
@@ -919,8 +931,13 @@ def _installs_in(text: str) -> tuple[list[str], list[str]]:
             eco = _ECOSYSTEM.get(eco_key, eco_key)
         rest = _install_operands(text, m.start("rest"), spans) if spans else m.group("rest")
         tokens = rest.split()
-        skip_next = False
+        index_flags = _INDEX_FLAGS.get(eco_key, frozenset())
+        skip_next = index_next = False
         for tok in tokens:
+            if index_next:
+                indexes.append(tok.strip("'\""))
+                index_next = False
+                continue
             if skip_next:
                 skip_next = False
                 continue
@@ -928,6 +945,13 @@ def _installs_in(text: str) -> tuple[list[str], list[str]]:
                 pkgs.append(COMPUTED_PACKAGE if eco == "plugin" else f"{eco}:{COMPUTED_PACKAGE}")
                 continue
             if tok.startswith("-"):
+                flag, eq, value = tok.partition("=")
+                if flag in index_flags:
+                    if eq:
+                        indexes.append(value.strip("'\""))
+                    else:
+                        index_next = True
+                    continue
                 if tok in (
                     "-r",
                     "--requirement",
@@ -947,7 +971,7 @@ def _installs_in(text: str) -> tuple[list[str], list[str]]:
             if eco == "plugin":
                 pkgs.append(tok.strip("'\""))
                 continue
-            path = _local_install_operand(tok)
+            path = _local_install_operand(tok, eco)
             if path is not None:
                 local.append(path)
                 continue
@@ -966,7 +990,7 @@ def _installs_in(text: str) -> tuple[list[str], list[str]]:
                 .rstrip("/")
                 .removesuffix(".git")
             )
-    return list(dict.fromkeys(pkgs)), list(dict.fromkeys(local))
+    return list(dict.fromkeys(pkgs)), list(dict.fromkeys(local)), list(dict.fromkeys(indexes))
 
 
 def _is_address(value: str, platform: str | None) -> bool:
@@ -1147,10 +1171,21 @@ def shell_segments(command: str) -> list[list[str]]:
     """The simple commands of a shell string as token lists, wrappers (`sudo`, `env`, …) and leading
     variable assignments dropped. Quoting is honoured within a segment where it parses; this is a
     light split for lineage questions, not the AIRA shell parser."""
+    return [tokens for _, tokens in shell_segments_sep(command)]
+
+
+def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
+    """`shell_segments`, each with the separator before it (`|`, `&&`, `||`, `;`, a newline, or `""`
+    for the first)."""
     import shlex
 
-    out: list[list[str]] = []
-    for seg in _SEGMENT_SPLIT_RE.split(command or ""):
+    out: list[tuple[str, list[str]]] = []
+    parts = re.split("(" + _SEGMENT_SPLIT_RE.pattern + ")", command or "")
+    sep = ""
+    for i, seg in enumerate(parts):
+        if i % 2:
+            sep = seg
+            continue
         seg = seg.strip().lstrip("(").rstrip(")").strip()
         if not seg or seg.startswith("#"):
             continue
@@ -1161,7 +1196,7 @@ def shell_segments(command: str) -> list[list[str]]:
         while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
             tokens = tokens[1:]
         if tokens:
-            out.append(tokens)
+            out.append((sep, tokens))
     return out
 
 
@@ -1247,14 +1282,26 @@ def _fetch_outputs(tokens: list[str]) -> list[str]:
 
 
 _WGET_OUTPUT_FLAG = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O(?:.+)?")
+_WGET_SHORT_O = re.compile(r"-[A-Za-z]*O(.*)")
+#: A redirection of standard output to a file: `>f`, `> f`, `>>f`, `1>f`, `&>f`.
+_STDOUT_REDIRECT = re.compile(r"(?:1|&)?>>?(.*)")
 
 
 def _download_outputs(tokens: list[str]) -> list[str]:
-    """`_fetch_outputs`, plus the file wget saves to when no output flag names one: the URL's basename,
-    under `-P DIR` / `--directory-prefix DIR` when given."""
+    """`_fetch_outputs`, plus wget's combined short flags ending in `O` (`-qO FILE`, `-qOFILE`) and, when
+    no output flag names a file, the one wget saves to: the URL's basename, under `-P DIR` /
+    `--directory-prefix DIR` when given."""
     out = _fetch_outputs(tokens)
-    if tokens[0] != "wget" or any(_WGET_OUTPUT_FLAG.fullmatch(t) for t in tokens[1:]):
+    if tokens[0] != "wget":
         return out
+    for i, tok in enumerate(tokens[1:], 1):
+        m = _WGET_SHORT_O.fullmatch(tok)
+        if m and m.group(1) and m.group(1) != "-":
+            out.append(m.group(1))
+        elif m and tok != "-O" and not m.group(1) and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+    if any(_WGET_OUTPUT_FLAG.fullmatch(t) for t in tokens[1:]):
+        return [o for o in out if o != "-"]
     prefix = ""
     for i, tok in enumerate(tokens[1:], 1):
         if tok in ("-P", "--directory-prefix") and i + 1 < len(tokens):
@@ -1268,30 +1315,79 @@ def _download_outputs(tokens: list[str]) -> list[str]:
     return out
 
 
-def downloads_in(
+def _stdout_files(tokens: list[str]) -> list[str]:
+    """The files a segment's standard output is redirected to, and a `tee`'s file operands."""
+    out: list[str] = []
+    for i, tok in enumerate(tokens):
+        m = _STDOUT_REDIRECT.fullmatch(tok)
+        if m and m.group(1):
+            out.append(m.group(1))
+        elif m and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+    if tokens[0] == "tee":
+        out.extend(t for t in tokens[1:] if not t.startswith(("-", ">")) and t not in out)
+    return [o for o in out if o not in ("-", "/dev/null") and not o.startswith("&")]
+
+
+@dataclass
+class InstallWalk:
+    """What a command installs from disk and downloads, read segment by segment (`install_walk`)."""
+
+    #: Local installer operands: (as written, resolved where that segment runs).
+    local: list[tuple[str, str]] = field(default_factory=list)
+    #: Local paths an installer installs from a download earlier in the command → the download's hosts.
+    installed: dict[str, set[str]] = field(default_factory=dict)
+    #: Every file the command downloads (`curl`, `wget`, or their output redirected or teed), as a
+    #: normalised path, and where it is copied or moved to later in the command → the download's hosts.
+    downloaded: dict[str, set[str]] = field(default_factory=dict)
+
+
+def install_walk(
     command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
-) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """The files a command downloads with `curl` or `wget`, as normalised path → the hosts named in the
-    downloading segment, and the local paths an installer in a later segment of the same command
-    installs from those downloads (`curl -o x.whl URL && pip install ./x.whl`), with the same hosts.
-    Returns (installed, downloaded)."""
+) -> InstallWalk:
+    """Read a command's segments in order, tracking `cd`: the local paths its installers install, the
+    files its `curl` and `wget` segments save (with their output flags, a redirection or a `tee` later in
+    the same pipeline), carried through a later `cp` or `mv`, and which installs take a download."""
+    from .copies import _operands
+
     base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
-    downloaded: dict[str, set[str]] = {}
-    installed: dict[str, set[str]] = {}
-    for tokens in shell_segments(command):
-        if tokens[0] == "cd" and len(tokens) > 1:
-            base, _ = resolve_token(tokens[1], base, home=home, workspace_root=workspace_root)
-        elif tokens[0] in _FETCH_HEADS:
-            hosts = set(_hosts_in(" ".join(tokens)))
+    walk = InstallWalk()
+
+    def at(raw: str) -> str:
+        return resolve_token(raw, base, home=home, workspace_root=workspace_root)[0]
+
+    def save(path: str, hosts: set[str]) -> None:
+        walk.downloaded.setdefault(path, set()).update(hosts)
+
+    piped: set[str] = set()  # hosts a fetch earlier in this pipeline writes to standard output
+    for sep, tokens in shell_segments_sep(command):
+        piped = piped if sep == "|" else set()
+        head = tokens[0]
+        if head == "cd" and len(tokens) > 1:
+            base = at(tokens[1])
+            continue
+        if head in _FETCH_HEADS:
+            piped = set(_hosts_in(" ".join(tokens)))
             for raw in _download_outputs(tokens):
-                path, _ = resolve_token(raw, base, home=home, workspace_root=workspace_root)
-                downloaded.setdefault(path, set()).update(hosts)
-        elif downloaded:
-            for raw in _installs_in(" ".join(tokens))[1]:
-                path, _ = resolve_token(raw, base, home=home, workspace_root=workspace_root)
-                if path in downloaded:
-                    installed.setdefault(path, set()).update(downloaded[path])
-    return installed, downloaded
+                save(at(raw), piped)
+        if piped:
+            for raw in _stdout_files(tokens):
+                save(at(raw), piped)
+        if head in ("cp", "mv") and walk.downloaded:
+            ops = _operands(tokens[1:])
+            for src in ops[0] if ops else ():
+                hosts = walk.downloaded.get(at(src))
+                if hosts:
+                    dest = at(ops[1])
+                    save(dest, hosts)
+                    save(dest.rstrip("/") + "/" + at(src).rsplit("/", 1)[-1], hosts)
+            continue
+        for raw in _installs_in(" ".join(tokens))[1]:
+            path = at(raw)
+            walk.local.append((raw, path))
+            if path in walk.downloaded:
+                walk.installed.setdefault(path, set()).update(walk.downloaded[path])
+    return walk
 
 
 def fetched_then_run(
@@ -1748,16 +1844,13 @@ def extract_exec(
 
     # An installer operand that is a local path installs, and so runs, what is there: a code source
     # resolved against the working directory (`.` is that directory), not a registry package.
-    packages, local = _installs_in(command)
-    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
-    installed = list(
-        dict.fromkeys(
-            resolve_token(raw, base, home=home, workspace_root=workspace_root)[0] for raw in local
-        )
-    )
+    # An index or registry an installer option names serves the packages: a code source too.
+    packages, _, indexes = _installs_in(command)
+    local = install_walk(command, home=home, workspace_root=workspace_root, cwd=cwd).local
+    installed = list(dict.fromkeys(path for _, path in local))
     # The same operands as the generic path scan spells them, which the installed paths replace.
     unresolved = {
-        normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw in local
+        normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw, _ in local
     }
 
     for norm, disp in paths_in(command, home, workspace_root, cwd):
@@ -1785,6 +1878,10 @@ def extract_exec(
         found.append(Found(EntityKind.PATH, norm, disp, role))
     for norm in installed:
         found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.CODE_SOURCE))
+    for url in indexes:
+        h = host_of_url(url)
+        if h:
+            found.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
 
     for p in packages:
         kind = (
