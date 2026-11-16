@@ -415,7 +415,10 @@ def hint_grant(hint: Any) -> dict[str, Any] | None:
         return None
     words = [kind, pattern.strip(), "--persistent"]
     if allows is not None:
-        if not isinstance(allows, list) or not all(isinstance(a, str) for a in allows):
+        # Each one known verb, exactly: no spaces, commas or anything the command line would split.
+        if not isinstance(allows, list) or not all(
+            isinstance(a, str) and a in ALLOWS for a in allows
+        ):
             return None
         words += ["--allows", ",".join(allows)]
     # One word each, as typed: a kind or pattern with spaces could not have been typed either.
@@ -445,6 +448,15 @@ def add_suggested(
     hold. The reply names the new grant's id; None for the record when the file could not be read."""
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        # Once per hold: an approval retried after the holds file failed to save finds its grant.
+        for g in data["grants"]:
+            if isinstance(g, dict) and g.get("from_hold") == hold_id and not expired(g, now):
+                at = read_time(g.get("expires_at"))
+                return (
+                    f"Granted {g.get('id')}: {describe_grant(g)} (persistent, expires "
+                    f"{_show(at) if at else '?'}).",
+                    {"op": "grant", "entry": g, "existing": True},
+                )
         taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)}
         gid = f"gr-{secrets.token_hex(3)}"
         while gid in taken:

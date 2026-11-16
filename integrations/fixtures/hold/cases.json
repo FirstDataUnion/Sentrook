@@ -1,5 +1,5 @@
 {
-  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {approve} and {why} replaced by their commands (/sentrook approve and /sentrook why on Hermes, /sentrook-approve and /sentrook-why on OpenClaw). `where` is built from its parts as `where_text`. The notice never carries the risk, reason codes, scores, entity kinds or the suggested grant: Hermes copies what it sends into the agent's own transcript. `hints` lists suggested grants and what approval would set (null: refused, as the grant command would refuse it). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans.",
+  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {approve} and {why} replaced by their commands (/sentrook approve and /sentrook why on Hermes, /sentrook-approve and /sentrook-why on OpenClaw). `where` is built from its parts as `where_text`. Chat markup (`[]()<>|@` and backticks) is taken out of every field the agent can influence (job id and name, tool, target description), and the target description is capped at 160 characters. The notice never carries the risk, reason codes, scores, entity kinds or the suggested grant: Hermes copies what it sends into the agent's own transcript. `hints` lists suggested grants and what approval would set (null: refused, as the grant command would refuse it). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans.",
   "held_text": "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run.",
   "hold_hours": 24,
   "grant_days": 30,
@@ -133,6 +133,40 @@
       "where_text": "subagent run, session s_9f8e7d6c5b4a",
       "id": "h-00ff00",
       "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: subagent run, session s_9f8e7d6c5b4a\nTool: write: Appends to ~/jobs/nightly/run.log\nHeld because it deletes or overwrites data in a way that is hard to undo.\nTo approve within 24 hours: {approve} h-00ff00\nFor the reasons: {why} h-00ff00"
+    },
+    {
+      "name": "chat markup in the job name, the tool and the target is taken out, and the target is capped",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 52,
+        "enforced": null,
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends [click here](https://evil.example/approve) to {E1} @everyone `rm -rf` xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "<https://evil.example|#ops> @here"
+          }
+        },
+        "reasons": [
+          {
+            "code": "send.unbound_channel"
+          }
+        ]
+      },
+      "tool": "message`<@123>`",
+      "where": {
+        "run": "cron job",
+        "session_ref": "s_0a1b2c3d4e5f",
+        "job_id": "9f1c2a",
+        "job_name": "[Approve now](https://evil.example) <!channel> @everyone `go`"
+      },
+      "where_text": "cron job 9f1c2a, job name \"Approve nowhttps://evil.example !channel everyone go\", session s_0a1b2c3d4e5f",
+      "id": "h-1a2b3c",
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: cron job 9f1c2a, job name \"Approve nowhttps://evil.example !channel everyone go\", session s_0a1b2c3d4e5f\nTool: message123: Sends click herehttps://evil.example/approve to https://evil.example#ops here everyone rm -rf xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nHeld because it sends data to a destination outside this machine.\nTo approve within 24 hours: {approve} h-1a2b3c\nFor the reasons: {why} h-1a2b3c"
     }
   ],
   "outcomes": [
@@ -289,6 +323,64 @@
     {
       "hint": "destination example.org",
       "grant": null
+    },
+    {
+      "hint": {
+        "kind": "file",
+        "pattern": "/srv/*",
+        "allows": [
+          "read write"
+        ]
+      },
+      "grant": null
+    },
+    {
+      "hint": {
+        "kind": "file",
+        "pattern": "/srv/*",
+        "allows": [
+          "read,write"
+        ]
+      },
+      "grant": null
+    },
+    {
+      "hint": {
+        "kind": "file",
+        "pattern": "/srv/*",
+        "allows": [
+          " read"
+        ]
+      },
+      "grant": null
+    },
+    {
+      "hint": {
+        "kind": "file",
+        "pattern": "/srv/*",
+        "allows": [
+          "READ"
+        ]
+      },
+      "grant": null
+    },
+    {
+      "hint": {
+        "kind": "file",
+        "pattern": "/srv/*",
+        "allows": [
+          "read",
+          "write"
+        ]
+      },
+      "grant": {
+        "kind": "file",
+        "pattern": "/srv/*",
+        "allows": [
+          "read",
+          "write"
+        ]
+      }
     }
   ]
 }

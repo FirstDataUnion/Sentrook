@@ -69,6 +69,17 @@ function clean(s: unknown, cap = 200): string {
     .join("");
 }
 
+/**
+ * Link, mention and code markup in chat formats (Discord and Telegram `[text](url)`, Slack `<url|text>`,
+ * `@everyone`, backticks): taken out of every notice field the agent can influence.
+ */
+const MARKUP = /[[\]()<>|@`]/g;
+
+/** `s` with chat markup taken out and non-printable characters replaced, at most `cap` long. */
+export function inert(s: unknown, cap: number): string {
+  return clean(String(s).replace(MARKUP, ""), cap);
+}
+
 // ---- the text -----------------------------------------------------------------------------------------
 
 /**
@@ -78,8 +89,8 @@ function clean(s: unknown, cap = 200): string {
  */
 export function whereText(run: string, sessionRef: string, jobId?: string | null, jobName?: string | null): string {
   if (jobId) {
-    const name = jobName ? `, job name ${JSON.stringify(clean(jobName, 60))}` : "";
-    return `cron job ${clean(jobId, 40)}${name}, session ${sessionRef}`;
+    const name = jobName ? `, job name ${JSON.stringify(inert(jobName, 60))}` : "";
+    return `cron job ${inert(jobId, 40)}${name}, session ${sessionRef}`;
   }
   return `${run}, session ${sessionRef}`;
 }
@@ -101,7 +112,7 @@ export function noticeText(resp: ScanResponse, tool: string, where: string, hold
   return [
     "Sentrook held a tool call on an unattended run; it did not run.",
     `Run: ${clean(where, 200)}`,
-    `Tool: ${clean(tool, 80)}: ${clean(describe(resp, tool), 200)}`,
+    `Tool: ${inert(tool, 80)}: ${inert(describe(resp, tool), 160)}`,
     `Held because ${BLOCK_CATEGORIES[blockCategory(resp)]}.`,
     `To approve within 24 hours: ${approve} ${holdId}`,
     `For the reasons: ${why} ${holdId}`,
@@ -205,6 +216,7 @@ export function approve(
     | { kind: "unreadable" }
     | { kind: "missing"; expired: boolean }
     | { kind: "kept"; reply: string }
+    | { kind: "unsaved"; reply: string; why: string }
     | { kind: "approved"; found: Entry; reply: string; change: grants.Change | null };
   const outcome = withFileLock(holdsFile(stateDir), (): Outcome => {
     const data = store.loadHolds();
@@ -234,9 +246,14 @@ export function approve(
         return { kind: "kept", reply };
       }
     }
+    if (change && !change.existing) record({ kind: "grants", ...change, by });
     beforeWrite();
     data.holds = data.holds.filter((h) => h !== found);
-    store.saveHolds(data);
+    try {
+      store.saveHolds(data);
+    } catch (err) {
+      return { kind: "unsaved", reply, why: clean(String(err), 160) };
+    }
     return { kind: "approved", found, reply, change };
   });
   if (outcome.kind === "unreadable") return `The holds file ${holdsFile(stateDir)} could not be read; fix or remove it first.`;
@@ -246,6 +263,9 @@ export function approve(
       : `No held call ${clean(id, 40)}: the id is unknown, already answered or expired.`;
   }
   if (outcome.kind === "kept") return `Not approved: ${outcome.reply} ${id} is still waiting; approve it again once that is fixed.`;
+  if (outcome.kind === "unsaved") {
+    return `Not finished: ${outcome.reply} The hold could not be marked answered (${outcome.why}); approve ${id} again to finish.`;
+  }
   const { found, reply, change } = outcome;
   const done = { kind: "resolution", request_id: found.request_id, resolution: "hold_approved", decision: "held", hold_id: id, by };
   if (!change) {
@@ -255,7 +275,6 @@ export function approve(
       `before. To let it pass, add a grant with ${cmd("grant")}. The held call is not run again.`
     );
   }
-  record({ kind: "grants", ...change, by });
   record({ ...done, grant_id: change.entry.id });
   return `Approved ${id}. ${reply} The held call is not run again; the next run is scanned with this grant.`;
 }

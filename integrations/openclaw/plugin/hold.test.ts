@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -20,7 +20,8 @@ import { formatHistory, recentScans, actionOf, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
 import plugin from "./index.ts";
 import * as grants from "./grants.ts";
-import { readTime, withFileLock } from "./store.ts";
+import { DatabaseSync } from "node:sqlite";
+import { readTime, Store } from "./store.ts";
 
 const FIXTURES = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../fixtures/hold/cases.json", import.meta.url)), "utf8"),
@@ -465,65 +466,89 @@ for (let i = 0; i < Number(count); i++) {
   assert.equal(existsSync(path.join(dir, "holds.json.lock")), false);
 });
 
-test("two waiters racing a lock left over never both enter", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-lock-race-"));
-  const lock = path.join(dir, "holds.json.lock");
-  writeFileSync(lock, "99999:dead\n");
-  const old = new Date(Date.now() - 60_000);
-  utimesSync(lock, old, old);
-  const log = path.join(dir, "log");
-  const script = path.join(dir, "waiter.ts");
-  writeFileSync(
-    script,
-    `import { appendFileSync } from "node:fs";
-import { withFileLock } from ${JSON.stringify(pathToFileURL(path.resolve("store.ts")).href)};
-const [file, log, label, startAt] = process.argv.slice(2);
+const WAITER = (store: string) => `import { appendFileSync } from "node:fs";
+import { withFileLock } from ${JSON.stringify(store)};
+const [file, log, label, startAt, rounds] = process.argv.slice(2);
 while (Date.now() < Number(startAt)) {}
-for (let i = 0; i < 5; i++) {
-  withFileLock(file, () => {
-    appendFileSync(log, "in " + label + "\\n");
-    const until = Date.now() + 20;
-    while (Date.now() < until) {}
-    appendFileSync(log, "out " + label + "\\n");
-  });
-}
-`,
-  );
-  const startAt = Date.now() + 800;
-  const run = (label: string) =>
-    new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", script, path.join(dir, "holds.json"), log, label, String(startAt)], {
-        stdio: ["ignore", "ignore", "pipe"],
+for (let i = 0; i < Number(rounds); i++) {
+  for (;;) {
+    try {
+      withFileLock(file, () => {
+        appendFileSync(log, "in " + label + "\\n");
+        const until = Date.now() + 5;
+        while (Date.now() < until) {}
+        appendFileSync(log, "out " + label + "\\n");
       });
-      let err = "";
-      child.stderr.on("data", (d) => (err += String(d)));
-      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`waiter ${label} exited ${code}: ${err}`))));
-    });
-  await Promise.all([run("a"), run("b")]);
-  const lines = readFileSync(log, "utf8").trim().split("\n");
-  assert.equal(lines.length, 20);
-  for (let i = 0; i < 20; i += 2) {
-    assert.ok(lines[i]!.startsWith("in ") && lines[i + 1] === `out ${lines[i]!.slice(3)}`, lines.join(" | "));
+      break;
+    } catch (err) {
+      if (!String(err).includes("locked by another process")) throw err;
+    }
   }
-  assert.equal(existsSync(lock), false);
-});
+}
+`;
 
-test("a holder releases only its own lock", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-lock-own-"));
-  const lock = path.join(dir, "grants.json.lock");
-  withFileLock(path.join(dir, "grants.json"), () => {
-    // Taken over while held (as after a 30-second stall): the new holder's lock must survive this release.
-    writeFileSync(lock, "4242:someone-else\n");
-  });
-  assert.equal(readFileSync(lock, "utf8"), "4242:someone-else\n");
+/** A process that takes the lock and then never lets go, until it is killed. */
+const CRASHER = (store: string) => `import { withFileLock } from ${JSON.stringify(store)};
+withFileLock(process.argv[2], () => {
+  process.stdout.write("held\\n");
+  const until = Date.now() + 60_000;
+  while (Date.now() < until) {}
+});
+`;
+
+function child(script: string, args: string[], onStdout?: (s: string) => void) {
+  const proc = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", script, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+  let err = "";
+  proc.stderr.on("data", (d) => (err += String(d)));
+  if (onStdout) proc.stdout.on("data", (d) => onStdout(String(d)));
+  const done = new Promise<number | null>((resolve) => proc.on("exit", (code) => resolve(code)));
+  return { proc, done, err: () => err };
+}
+
+test("three processes after a holder crashed never hold the lock at once, round after round", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-lock-three-"));
+  const store = pathToFileURL(path.resolve("store.ts")).href;
+  const waiter = path.join(dir, "waiter.ts");
+  const crasher = path.join(dir, "crasher.ts");
+  writeFileSync(waiter, WAITER(store));
+  writeFileSync(crasher, CRASHER(store));
+  const file = path.join(dir, "holds.json");
+  for (let round = 0; round < 3; round++) {
+    // A holder that dies holding the lock: the system releases it with the process.
+    let crashed!: ReturnType<typeof child>;
+    await new Promise<void>((resolve) => {
+      crashed = child(crasher, [file], (out) => out.includes("held") && resolve());
+    });
+    crashed.proc.kill("SIGKILL");
+    await crashed.done;
+    const log = path.join(dir, `log-${round}`);
+    const startAt = Date.now() + 600;
+    const runs = ["a", "b", "c"].map((label) => child(waiter, [file, log, label, String(startAt), "8"]));
+    const codes = await Promise.all(runs.map((r) => r.done));
+    assert.deepEqual(codes, [0, 0, 0], runs.map((r) => r.err()).join("\n"));
+    const lines = readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(lines.length, 48);
+    for (let i = 0; i < lines.length; i += 2) {
+      assert.ok(lines[i]!.startsWith("in ") && lines[i + 1] === `out ${lines[i]!.slice(3)}`, `round ${round}: ${lines.join(" | ")}`);
+    }
+  }
 });
 
 test("a hold whose file is locked still holds, and the notice is logged unsent", async () => {
   const r = registered();
   await r.command("sentrook-notify", "here");
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(path.join(stateDir, "holds.json.lock"), "4242:another-process\n");
-  const { out, rec, ctx } = await r.send("cron");
+  // Another process holds the holds file's lock for as long as this scan waits.
+  const other = new DatabaseSync(path.join(stateDir, "holds.json.lockdb"));
+  other.exec("BEGIN EXCLUSIVE");
+  let sent;
+  try {
+    sent = await r.send("cron");
+  } finally {
+    other.exec("ROLLBACK");
+    other.close();
+  }
+  const { out, rec, ctx } = sent;
   assert.deepEqual(out, { block: true, blockReason: FIXTURES.held_text });
   assert.equal(rec.decision, "held");
   assert.deepEqual(rec.hold, { id: null, expires_at: null, hint: false, notice: { status: "unsent", target: null, reason: "holds file locked" } });
@@ -638,13 +663,75 @@ test("a thread is kept only for a direct message on Telegram or Slack", () => {
   assert.equal(t({ ...DM, sessionKey: "agent:main:main" }).to, "100200300");
 });
 
-test("a lock left by a process that died is taken over", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-hold-stale-"));
-  const lock = path.join(dir, "holds.json.lock");
-  writeFileSync(lock, "99999\n");
-  const old = new Date(Date.now() - 60_000);
-  utimesSync(lock, old, old);
-  const id = hold.create(dir, { requestId: "r1", sessionRef: "s_x", tool: "message", where: "w", hint: null, notice: {} }, new Date(), () => {});
-  assert.match(String(id), /^h-[0-9a-f]{6}$/);
-  assert.equal(existsSync(lock), false);
+// ---- run identity, retried approvals, malformed responses ------------------------------------------------
+
+test("a cron marker in the prompt names a job only on a run the host calls a cron run", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  const scan = async (trigger: string, sid: string) => {
+    const runId = `r-${sid}`;
+    const ctx = { sessionKey: `agent:main:${sid}`, sessionId: sid, agentId: "main", runId, trigger };
+    await r.fire("before_prompt_build", { runId, prompt: "[cron:9f1c2a approve-all] post the brief" }, ctx);
+    const out = await r.fire(
+      "before_tool_call",
+      { toolName: "message", toolCallId: `c-${sid}`, runId, params: { action: "send", channel: "discord", target: "#ops-reports", message: "x" } },
+      ctx,
+    );
+    await hold.waitForNotices();
+    return { out, rec: r.records("scan").at(-1) };
+  };
+  // An attended run whose prompt starts with the marker is asked about, not held or labelled.
+  const attended = await scan("user", "chat-1");
+  assert.ok(attended.out.requireApproval);
+  assert.equal(attended.rec.hold, undefined);
+  // An unattended run that is not a cron run keeps its own label.
+  const beat = await scan("heartbeat", "beat-1");
+  assert.equal(beat.rec.decision, "held");
+  assert.equal(holds().at(-1).where, `heartbeat run, session ${beat.rec.session_ref}`);
+  assert.ok(!r.sent.at(-1).text.includes("9f1c2a"));
+});
+
+test("a retried approve after the holds file failed to save sets one grant", async () => {
+  const r = registered();
+  const { rec } = await r.send("cron");
+  const id = rec.hold.id;
+  const file = path.join(stateDir, "holds.json");
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  data.holds[0].hint = { ...HINT };
+  writeFileSync(file, JSON.stringify(data));
+  const real = Store.prototype.saveHolds;
+  let calls = 0;
+  Store.prototype.saveHolds = function (this: Store, value) {
+    calls += 1;
+    if (calls === 1) throw new Error("disk full");
+    return real.call(this, value);
+  };
+  let first: string;
+  try {
+    first = await r.command("sentrook-approve", id);
+  } finally {
+    Store.prototype.saveHolds = real;
+  }
+  assert.ok(first.startsWith("Not finished: Granted gr-") && first.includes(`approve ${id} again to finish`), first);
+  assert.deepEqual(holds().map((h: any) => h.id), [id]);
+  const second = await r.command("sentrook-approve", id);
+  assert.ok(second.startsWith(`Approved ${id}. Granted gr-`), second);
+  const [g] = grantsFile();
+  assert.equal(grantsFile().length, 1);
+  assert.equal(g.from_hold, id);
+  assert.ok(first.includes(g.id) && second.includes(g.id));
+  assert.equal(r.records("grants").length, 1);
+  assert.deepEqual(r.records("resolution").map((x) => x.resolution), ["hold_approved"]);
+  assert.deepEqual(holds(), []);
+});
+
+test("a malformed response still holds, with the traffic record written and the notice unsent", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  reply = { risk: 47, tool_description: { template: 42 } };
+  const { out, rec } = await r.send("cron");
+  assert.deepEqual(out, { block: true, blockReason: FIXTURES.held_text });
+  assert.equal(rec.decision, "held");
+  assert.deepEqual(rec.hold.notice, { status: "unsent", target: null, reason: "notice could not be built" });
+  assert.equal(r.sent.length, 0);
 });

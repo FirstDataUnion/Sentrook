@@ -433,7 +433,7 @@ In short, for anyone deciding whether to install it:
   a call on your behalf. Where nobody can answer (cron jobs, subagents) a review holds the call and sends you one
   notice, through the channel you chose with `/sentrook-notify here`; that notice is the only message it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
-  command, snooze state, held calls, the notice target and the conversations above), or to the paths you set for them (`stateDir`,
+  command, snooze state, held calls and their lock files, the notice target and the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.

@@ -18,102 +18,49 @@
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
-  closeSync,
   existsSync,
-  linkSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-/** A lock file older than this is left over from a process that died holding it, and is taken over. */
-export const LOCK_STALE_MS = 30_000;
 /** How long to wait for another process's lock before giving up. Short: the gateway waits on it. */
 export const LOCK_WAIT_MS = 1_000;
-const LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 /** Another process held a state file's lock for longer than `LOCK_WAIT_MS`. */
 export class LockTimeoutError extends Error {}
 
-function readToken(file: string): string | null {
-  try {
-    return readFileSync(file, "utf8");
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Removes a lock judged stale, only if it is still the one judged (`seen`): it is renamed aside first, which only
- * one process can do, and a lock that turns out to be someone's fresh one is put back.
- */
-function takeOver(lock: string, seen: string): void {
-  const aside = `${lock}.stale.${process.pid}.${randomBytes(4).toString("hex")}`;
-  try {
-    renameSync(lock, aside);
-  } catch {
-    return; // someone else took it over or released it
-  }
-  if (readToken(aside) !== seen) {
-    try {
-      linkSync(aside, lock); // a fresh lock moved by mistake: put it back, unless another is there now
-    } catch {
-      // the path is taken again; the lock that was moved is lost to its owner's release check
-    }
-  }
-  rmSync(aside, { force: true });
-}
-
-/**
- * Runs `fn` holding `<file>.lock`, so a read-modify-write of `file` is safe across processes (the gateway and the
- * `openclaw sentrook` command line) as well as within one. The lock is a file created exclusively that holds a
- * token unique to this holder. One older than `LOCK_STALE_MS` is from a process that died holding it: it is
- * renamed aside (only one waiter can) and checked before it is removed. A holder removes the lock only while it
- * still holds its own token. Throws `LockTimeoutError` when another process holds it for longer than
- * `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
+ * Runs `fn` holding an exclusive lock for `file`, so a read-modify-write of it is safe across processes (the gateway
+ * and the `openclaw sentrook` command line) as well as within one. The lock is an exclusive transaction on a small
+ * SQLite file beside it (`<file>.lockdb`, through Node's own `node:sqlite`, which OpenClaw itself uses): SQLite
+ * takes the operating system's file lock, and the system releases it when its process dies, so a crashed holder
+ * leaves nothing to take over and no two processes ever hold it at once. Throws `LockTimeoutError` when another
+ * process holds it for longer than `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
  */
 export function withFileLock<T>(file: string, fn: () => T): T {
-  const lock = `${file}.lock`;
-  const token = `${process.pid}:${randomBytes(8).toString("hex")}\n`;
-  mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      const fd = openSync(lock, "wx", 0o600);
-      try {
-        writeSync(fd, token);
-      } finally {
-        closeSync(fd);
-      }
-      break;
-    } catch (err: any) {
-      if (err?.code !== "EEXIST") throw err;
-    }
-    const before = readToken(lock);
-    let age = 0;
-    try {
-      age = Date.now() - statSync(lock).mtimeMs;
-    } catch {
-      continue; // released between the two calls
-    }
-    if (before !== null && age > LOCK_STALE_MS && readToken(lock) === before) {
-      takeOver(lock, before);
-      continue;
-    }
-    if (Date.now() > deadline) throw new LockTimeoutError(`${lock} is held by another process`);
-    Atomics.wait(LOCK_SLEEP, 0, 0, 5);
-  }
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(`${file}.lockdb`, { timeout: LOCK_WAIT_MS });
   try {
-    return fn();
+    try {
+      db.exec("BEGIN EXCLUSIVE");
+    } catch (err: any) {
+      if (/locked|busy/i.test(String(err?.message ?? err))) throw new LockTimeoutError(`${file} is locked by another process`);
+      throw err;
+    }
+    try {
+      return fn();
+    } finally {
+      db.exec("ROLLBACK");
+    }
   } finally {
-    if (readToken(lock) === token) rmSync(lock, { force: true });
+    db.close();
   }
 }
 

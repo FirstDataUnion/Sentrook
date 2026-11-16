@@ -86,6 +86,16 @@ def _clean(s: Any, cap: int = 200) -> str:
     return "".join(c if c.isprintable() else "?" for c in str(s))[:cap]
 
 
+#: Link, mention and code markup in chat formats (Discord and Telegram `[text](url)`, Slack
+#: `<url|text>`, `@everyone`, backticks): taken out of every notice field the agent can influence.
+_MARKUP = re.compile(r"[\[\]()<>|@`]")
+
+
+def inert(s: Any, cap: int) -> str:
+    """`s` with chat markup taken out and non-printable characters replaced, at most `cap` long."""
+    return _clean(_MARKUP.sub("", str(s)), cap)
+
+
 # ---- the text ---------------------------------------------------------------------------------------
 
 
@@ -97,9 +107,9 @@ def where_text(
     an instruction), else the kind of run; then the session."""
     if job_id:
         name = (
-            f", job name {json.dumps(_clean(job_name, 60), ensure_ascii=False)}" if job_name else ""
+            f", job name {json.dumps(inert(job_name, 60), ensure_ascii=False)}" if job_name else ""
         )
-        return f"cron job {_clean(job_id, 40)}{name}, session {session_ref}"
+        return f"cron job {inert(job_id, 40)}{name}, session {session_ref}"
     return f"{run}, session {session_ref}"
 
 
@@ -114,7 +124,7 @@ def notice_text(
         (
             "Sentrook held a tool call on an unattended run; it did not run.",
             f"Run: {_clean(where, 200)}",
-            f"Tool: {_clean(tool, 80)}: {_clean(describe(resp, tool), 200)}",
+            f"Tool: {inert(tool, 80)}: {inert(describe(resp, tool), 160)}",
             f"Held because {BLOCK_CATEGORIES[block_category(resp)]}.",
             f"To approve within 24 hours: {approve} {hold_id}",
             f"For the reasons: {why} {hold_id}",
@@ -254,8 +264,16 @@ def approve(
                 if gone:
                     store.save_holds(data)
                 return f"Not approved: {reply} {hid} is still waiting; approve it again once that is fixed."
+        if change is not None and not change.get("existing"):
+            record({"kind": "grants", **change, "by": who})
         data["holds"].remove(found)
-        store.save_holds(data)
+        try:
+            store.save_holds(data)
+        except Exception as exc:  # noqa: BLE001 - the grant stands; a second approve finishes
+            return (
+                f"Not finished: {reply} The hold could not be marked answered ({_clean(exc, 160)}); "
+                f"approve {hid} again to finish."
+            )
     done = {
         "kind": "resolution",
         "request_id": found.get("request_id"),
@@ -271,7 +289,6 @@ def approve(
             f"run is scanned as before. To let it pass, add a grant with {cmd('grant')}. The held call "
             "is not run again."
         )
-    record({"kind": "grants", **change, "by": who})
     record({**done, "grant_id": change["entry"]["id"]})
     return f"Approved {hid}. {reply} The held call is not run again; the next run is scanned with this grant."
 

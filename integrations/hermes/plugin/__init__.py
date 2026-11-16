@@ -554,13 +554,14 @@ def _hold(
         logger.warning("sentrook could not store a hold: %s", exc)
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
     if hid is not None and target:
-        hold.deliver(
-            _ctx,
-            target,
-            hold.notice_text(
+        try:
+            text = hold.notice_text(
                 resp, built["tool"], where, hid, commands.CMD("approve"), commands.CMD("why")
-            ),
-        )
+            )
+            hold.deliver(_ctx, target, text)
+        except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
+            logger.warning("sentrook held a call but could not build its notice: %s", exc)
+            notice = {"status": "unsent", "target": None, "reason": "notice could not be built"}
     else:
         logger.warning("sentrook held a call but sent no notice: %s", notice.get("reason"))
     return {

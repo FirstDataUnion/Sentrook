@@ -654,11 +654,17 @@ const plugin = {
         notice = { status: "unsent", target: null, reason: locked ? "holds file locked" : "holds file not written" };
       }
       if (id !== null && target && notice.status === "queued") {
-        const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
-        const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
-          if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
-        });
-        hold.track(sent);
+        try {
+          const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
+          const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+            if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
+          });
+          hold.track(sent);
+        } catch (err) {
+          // A malformed response: still held, not announced.
+          api.logger.warn(`${LOG} held a call but could not build its notice: ${String(err)}`);
+          notice = { status: "unsent", target: null, reason: "notice could not be built" };
+        }
       } else {
         api.logger.warn(`${LOG} held a call but sent no notice: ${String(notice.reason)}`);
       }

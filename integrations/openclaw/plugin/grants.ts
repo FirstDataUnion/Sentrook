@@ -48,6 +48,8 @@ export type Entry = Record<string, any>;
 export interface Change {
   op: "grant" | "revoke" | "bind_add" | "bind_remove";
   entry: Entry;
+  /** Set when an approval found the grant its hold already set, and wrote nothing. */
+  existing?: boolean;
 }
 
 export interface ChangeResult {
@@ -396,7 +398,8 @@ export function hintGrant(hint: unknown): Entry | null {
   if (typeof kind !== "string" || typeof pattern !== "string") return null;
   const words = [kind, pattern.trim(), "--persistent"];
   if (allows !== undefined && allows !== null) {
-    if (!Array.isArray(allows) || !allows.every((a) => typeof a === "string")) return null;
+    // Each one known verb, exactly: no spaces, commas or anything the command line would split.
+    if (!Array.isArray(allows) || !allows.every((a) => typeof a === "string" && ALLOWS.includes(a))) return null;
     words.push("--allows", allows.join(","));
   }
   // One word each, as typed: a kind or pattern with spaces could not have been typed either.
@@ -429,6 +432,17 @@ export function addSuggested(
     stateDir,
     now,
     (data) => {
+      // Once per hold: an approval retried after the holds file failed to save finds its grant.
+      const prior = data.grants.find((g) => g && typeof g === "object" && (g as Entry).from_hold === holdId && !expired(g as Entry, now)) as
+        | Entry
+        | undefined;
+      if (prior) {
+        const at = readTime(prior.expires_at);
+        return {
+          reply: `Granted ${prior.id}: ${describeGrant(prior)} (persistent, expires ${at ? show(at) : "?"}).`,
+          change: { op: "grant", entry: prior, existing: true },
+        };
+      }
       const taken = new Set(data.grants.map((g) => (g as Entry)?.id));
       let id = `gr-${randomBytes(3).toString("hex")}`;
       while (taken.has(id)) id = `gr-${randomBytes(3).toString("hex")}`;
