@@ -322,9 +322,9 @@ def _tool_texts(call: CanonicalCall, lists: Lists) -> list[WrittenText]:
 
 #: Host persistence commands whose input is a cron table or a unit (read as shell).
 _HOST_JOB_CLI = re.compile(r"\b(?:crontab|systemctl|launchctl|at|batch)\b")
-#: The host's own job commands, whose quoted text is the job's prompt or message (read as instructions).
 #: A cron table read from standard input (`... | crontab -`, `crontab - <<EOF`).
 _CRONTAB_STDIN = re.compile(r"\|\s*(?:sudo\s+)?crontab\b|\bcrontab\s+-(?=\s|$|[;&|)])")
+#: The host's own job commands, whose quoted text is the job's prompt or message (read as instructions).
 _AGENT_JOB_CLI = re.compile(
     r"\b(?:openclaw|hermes)\s+(?:cron|automations?|schedules?|jobs?|heartbeats?|hooks?)\s+"
     r"(?:add|create|new|set|enable|update|edit)\b"
