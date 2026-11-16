@@ -229,7 +229,11 @@ def on_pre_llm_call(**kw: Any) -> None:
         # A turn Hermes starts itself with its own text (`host_turns`) is a turn, never an owner message; an
         # event notice is not a request either, and its text goes as an untrusted input.
         host = None if background else host_turns.classify(kw.get("user_message"))
-        event = host is not None and host.input_kind is not None
+        own, content = host_turns.parts(host, kw.get("user_message")) if host else (None, None)
+        # The turn is a request (an owner's message, or a standing instruction's own words) unless the host's
+        # text is only content.
+        is_request = host is None or own is not None
+        merged = False
         try:
             store.merge_turn(
                 turn_id,
@@ -240,8 +244,10 @@ def on_pre_llm_call(**kw: Any) -> None:
                     "parent_session_id": kw.get("parent_session_id"),
                     "user_message": kw.get("user_message"),
                     "host_turn": host.form if host else None,
+                    "request_text": own if host else None,
                 },
             )
+            merged = bool(turn_id)
         except Exception as exc:  # noqa: BLE001 - the turn's calls then read as a turn never seen
             logger.warning("pre_llm_call could not store the turn: %s", exc)
         sid = _sid(kw)
@@ -250,12 +256,13 @@ def on_pre_llm_call(**kw: Any) -> None:
             if not background:
                 # Without a turn id, calls that name none must not fall back to the previous turn.
                 s["last_turn_id"] = turn_id or None
-                if turn_id and not event:
+                # Only a turn whose request was stored can be carried later.
+                if merged and is_request:
                     s["last_request_turn_id"] = turn_id
                 if turn_id and turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
-                if event:
-                    _buffer_host_text(cfg, store, s, kw.get("user_message"), host.input_kind)
+                if host is not None and content is not None:
+                    _buffer_host_text(cfg, store, s, content, host.input_kind or "other")
                 store.save_session(sid, s, cfg.history_limit * 2)
             if _capturing(cfg, store) and not background:
                 facts = session_facts()

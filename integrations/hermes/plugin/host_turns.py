@@ -7,12 +7,15 @@ like for any message, from the chat they were delivered to, so the turn looks li
 them is the owner speaking now.
 
 Two classes:
-- **Event notices** (a sub-agent's or a process's result, a kanban event, anything with Hermes's internal
+- **Event notices** (a sub-agent's or a process's result or watch notice, a kanban event or a kanban
+  goal-mode step with the judge's reason, anything with Hermes's internal
   notification footer). The text is the host's and a sub-agent's or program's output: it goes as an untrusted
   new input (`subagent_reply` for a sub-agent, `other` for the rest), and the turn's calls carry the
   session's last request with `carried_from_turn`.
 - **Standing instructions** (a heartbeat, a `/loop` wakeup, a goal continuation). The text wraps an
-  instruction the owner set earlier, so it stays the request, as a scheduled job's prompt does.
+  instruction the owner set earlier, so it stays the request, as a scheduled job's prompt does. A goal step
+  after a failed quality gate keeps the goal and command as the request and sends the command's output as
+  content (`parts`).
 
 Either way the turn is not an owner message: when the sender reads as the owner, the trigger becomes
 `system` (`heartbeat` for a heartbeat or `/loop` wakeup) with an unknown sender. Senders can type these
@@ -38,6 +41,8 @@ class HostTurn:
     input_kind: str | None
     #: The trigger kind the turn gets in a chat when the sender reads as the owner.
     trigger: str
+    #: The text (or the part `parts` keeps) is the run's request: a standing instruction the owner set.
+    own_request: bool = False
 
 
 FORMS = {
@@ -46,10 +51,14 @@ FORMS = {
         HostTurn("async_delegation", "subagent_reply", "system"),
         HostTurn("process", "other", "system"),
         HostTurn("kanban", "other", "system"),
+        HostTurn("kanban_goal", "other", "system"),
         HostTurn("internal_notification", "other", "system"),
-        HostTurn("heartbeat", None, "heartbeat"),
-        HostTurn("loop", None, "heartbeat"),
-        HostTurn("goal", None, "system"),
+        HostTurn("heartbeat", None, "heartbeat", own_request=True),
+        HostTurn("loop", None, "heartbeat", own_request=True),
+        HostTurn("goal", None, "system", own_request=True),
+        # A goal step after a failed quality gate: the goal and command are the request, the command's
+        # output is content.
+        HostTurn("goal_gate", "other", "system", own_request=True),
     )
 }
 
@@ -67,8 +76,18 @@ _STARTS = (
         re.compile(
             r"\[IMPORTANT: Background process |\[Background process \S+ heartbeat #"
             r"|\[IMPORTANT: \d+ background process(?:es completed| results arrived)"
+            r"|\[IMPORTANT: Watch(?: patterns disabled for process |-pattern overflow)"
         ),
     ),
+    # A kanban task's wake (any locale), and a kanban goal-mode worker's next step after the judge.
+    ("kanban", re.compile(r"\[kanban\] ")),
+    (
+        "kanban_goal",
+        re.compile(
+            r"\[Continuing toward this kanban task — |\[The work looks complete, but the task is still open\]"
+        ),
+    ),
+    ("goal_gate", re.compile(r"\[Continuing toward your standing goal — a quality gate failed\]")),
     ("kanban", re.compile(r"(?:✔|⏸|✖|⏱|🔄) (?:\[[^\]\n]+\] )?(?:@\S+ )?Kanban \S")),
     ("heartbeat", re.compile(r"\[Heartbeat — recurring instruction")),
     ("loop", re.compile(r"\[/loop wakeup #")),
@@ -116,6 +135,32 @@ def classify(message: Any) -> HostTurn | None:
             if pattern.match(body):
                 return FORMS[form]
     return FORMS["internal_notification"] if _footer(text) else None
+
+
+_GATE_OUTPUT = "\nOutput (tail):\n"
+_GATE_END = "\n```\n\nFix the underlying problem"
+#: What the request of a failed-gate goal step says in place of the command's output.
+GATE_OUTPUT_NOTE = "\nOutput (tail): sent as content, not part of the request.\n"
+
+
+def parts(host: HostTurn, message: Any) -> tuple[str | None, str | None]:
+    """A host turn's request text (None when it has none of its own) and the text it sends as content."""
+    text = message_text(message)
+    if not host.own_request:
+        return None, text
+    if host.form != "goal_gate":
+        return text, None
+    start = text.find(_GATE_OUTPUT)
+    if start < 0:
+        # Not the shape expected: none of it can be told apart from the output, so all of it is content.
+        return None, text
+    end = text.rfind(_GATE_END)
+    if end <= start:
+        return text[:start] + GATE_OUTPUT_NOTE, text[start:]
+    return (
+        text[:start] + GATE_OUTPUT_NOTE + text[end + len("\n```") :],
+        text[start : end + len("\n```")],
+    )
 
 
 def is_owner(trigger: dict[str, Any]) -> bool:

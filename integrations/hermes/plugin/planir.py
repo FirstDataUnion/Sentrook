@@ -326,6 +326,11 @@ def request_turn_id(sess: dict[str, Any]) -> Any:
     return sess.get("last_turn_id")
 
 
+def _request_of(turn: dict[str, Any]) -> str:
+    """A stored turn's request: a host turn's own words when it kept some, else its message."""
+    return str(turn.get("request_text") or "") or _text(turn.get("user_message"))
+
+
 def turn_seen(turn: dict[str, Any]) -> bool:
     """The turn fired `pre_llm_call`, so its request, platform and sender are known."""
     return bool(turn.get("pre_llm_call") or turn.get("user_message") or turn.get("platform"))
@@ -397,21 +402,22 @@ def build_planir(
     )
     carried_from: int | None = None
     if request_turn is not None:
-        request_text = _text(request_turn.get("user_message"))
+        request_text = _request_of(request_turn)
         if not request_text.strip():
             request_text = LOOP_REQUEST_TEXT
         # The background review runs after the owner's turn, in whatever chat context it inherited.
         trigger = host_turns.trigger_for(trigger, "system")
-    elif host is not None and host.input_kind is None:
-        # A standing instruction the owner set earlier: the host's text is the run's request.
-        request_text = _text(turn.get("user_message"))
+    elif host is not None and turn.get("request_text"):
+        # A standing instruction the owner set earlier: the host's words are the run's request (without a
+        # failed gate's output, which went as content).
+        request_text = str(turn["request_text"])
         trigger = host_turns.trigger_for(trigger, host.trigger)
     elif host is not None or not turn_seen(turn):
         # The turn's message is the host's, or its start was never seen: the request is the session's last,
         # and only for the owner or a run that is not a chat message.
         request_text = ""
         if host_turns.carries(trigger) and req_no:
-            request_text = _text((last_request or {}).get("user_message"))
+            request_text = _request_of(last_request or {})
             carried_from = req_no if request_text.strip() else None
         if host is not None and not request_text.strip():
             request_text = host_turns.REQUEST_TEXT

@@ -316,12 +316,16 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 - the request you gave the agent in this turn, and whether it came from you, a scheduled job, a subagent, another
   sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on).
   Hermes also starts turns with its own text: when a sub-agent or a background process the agent started finishes
-  (or a process matches a watch or is still running), for a kanban event, and for your heartbeats, `/loop`
-  wakeups and standing goals. None of these is counted as your message. For a result or event, the calls carry
-  your last request and the turn it came from, and the text is sent with the other new inputs as content the agent
-  received, not as your words; a heartbeat, `/loop` wakeup or goal step is sent as the run's request, like a cron
-  job's prompt. Someone else in a chat who types one of these forms gets nothing from it: their message is still
-  theirs, and is sent as content, not as a request;
+  (or a process matches a watch, is still running or has its watch turned off), for a kanban task's update or
+  next step, and for your heartbeats, `/loop` wakeups and standing goals. None of these is counted as your
+  message. For a result or event, the calls carry your last request and the turn it came from, and the text is
+  sent with the other new inputs as content the agent received, not as your words; a heartbeat, `/loop` wakeup or
+  goal step is sent as the run's request, like a cron job's prompt, except that a failed quality gate's output is
+  sent as content. Someone else in a chat who types one of these forms gets nothing from it: they keep their own
+  sender, a result or event they type is sent as content with no earlier request in its place, and a heartbeat,
+  `/loop` or goal form they type stays their own request. Two kinds of host text are not recognised and are sent
+  as the turn's request, as before: a message another Hermes plugin injects into the chat, and a note Hermes adds
+  when it resumes an interrupted turn;
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
