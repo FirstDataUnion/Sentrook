@@ -727,8 +727,12 @@ def _add_unvetted_sensitivity(
 ) -> None:
     """Code from a host that is not a listed installer runs with the agent's own read access: its
     sensitivity is what the agent can read (`weights.yaml` `code.sensitivity_unvetted`), whatever
-    the command names. A listed installer host, or no host at all, adds nothing."""
-    if code_source is None or _is_listed_installer(code_source.value, ctx):
+    the command names. A listed installer host, or no host at all, adds nothing. A repository on a
+    multi-tenant host is never a listed installer: the list vouches for hosts, and any account
+    publishes there."""
+    if code_source is None:
+        return
+    if code_source.kind is not EntityKind.REPO and _is_listed_installer(code_source.value, ctx):
         return
     weight = ctx.weight("code", "sensitivity_unvetted")
     if weight > 0:
@@ -826,10 +830,19 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     lists = ctx.lists
     if a.kind is not ToolKind.EXEC:
         return out
+    # A repository on a multi-tenant host is the code source before any host: the host only serves it.
     code_source = next(
-        (h for h in a.hosts if Role.CODE_SOURCE in h.roles), a.hosts[0] if a.hosts else None
+        (r for r in a.repos if Role.CODE_SOURCE in r.roles),
+        next((h for h in a.hosts if Role.CODE_SOURCE in h.roles), a.hosts[0] if a.hosts else None),
     )
     host_subject = code_source.entity_id if code_source else None
+    # Each repository the command takes code from carries its own sensitivity, and so does every
+    # host it takes code from, so a grant on one never covers another; with no code source named,
+    # the fallback host does.
+    unvetted_sources = [
+        *(r for r in a.repos if Role.CODE_SOURCE in r.roles),
+        *(h for h in a.hosts if Role.CODE_SOURCE in h.roles),
+    ] or ([code_source] if code_source is not None else [])
     reach, irr = ctx.weight("code", "reach"), ctx.weight("code", "irreversibility")
     as_root = a.shape is not None and a.shape.privileged
 
@@ -867,7 +880,8 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": fetch_mech},
         )
         f.add(REACH, reach, host_subject).add(IRREVERSIBILITY, irr, host_subject)
-        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
+        for source in unvetted_sources:
+            _add_unvetted_sensitivity(f, source, source.entity_id, ctx)
         if obfuscated:
             f.detail["revealed_by"] = sorted(a.encodings)
             f.add(
@@ -881,7 +895,7 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
         # to steer the agent (below). Every host the command takes code from is checked, so a listed
         # installer fetched first does not cover a second fetch from another host.
         sources = [h for h in a.hosts if Role.CODE_SOURCE in h.roles] or (
-            [code_source] if code_source is not None else []
+            [code_source] if code_source is not None and code_source.kind is EntityKind.HOST else []
         )
         for source in sources:
             subject = source.entity_id
@@ -949,7 +963,8 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": from_url.group(0)[:80]},
         )
         f.add(REACH, reach, subject).add(IRREVERSIBILITY, irr, subject)
-        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
+        for source in unvetted_sources:
+            _add_unvetted_sensitivity(f, source, source.entity_id, ctx)
         for pkg in url_packages:
             _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
         out.append(f)

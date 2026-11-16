@@ -37,7 +37,7 @@ from .config import PluginConfig, parse_grants
 from .planir import binding_problem
 from .store import Store, read_time
 
-KINDS = ("destination", "file", "provider")
+KINDS = ("destination", "file", "provider", "repo")
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
@@ -248,7 +248,8 @@ def grant_usage(cmd: Cmd) -> str:
     return (
         f"usage: {cmd('grant')} <kind> <pattern> [--persistent | --scope session|persistent] "
         "[--session <ref>] [--allows read,write] [--expires 12h]\n"
-        "kind is destination, file or provider; --allows is for file grants; scope defaults to "
+        "kind is destination, file, provider or repo (github.com/<owner>/<repo>); --allows is for file "
+        "grants; scope defaults to "
         "session: this session only, or the one --session names (a ref from "
         f"{cmd('history')}); cron jobs, subagents and other chats need --persistent"
     )
@@ -289,7 +290,9 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
         return ""
     kind, pattern = pos[0].lower(), pos[1]
     if kind not in KINDS:
-        return f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file or provider.'
+        return (
+            f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file, provider or repo.'
+        )
     if len(pattern) > MAX_PATTERN or not pattern.isprintable():
         return f"The pattern must be at most {MAX_PATTERN} printable characters."
     scope = opts.get("scope", "session")

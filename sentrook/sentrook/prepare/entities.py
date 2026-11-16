@@ -16,9 +16,9 @@ from __future__ import annotations
 import itertools
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from ..aira.exec_shape import derive_exec_shape
@@ -37,6 +37,9 @@ class EntityKind(StrEnum):
     CHANNEL = "channel"
     MCP_SERVER = "mcp_server"
     PLUGIN = "plugin"
+    #: A repository (or account) on a host where any account publishes (`github.com/<owner>/<repo>`):
+    #: the code source of code run from such a host (`installers.multi_tenant_hosts`).
+    REPO = "repo"
 
 
 class Role(StrEnum):
@@ -1902,7 +1905,154 @@ def extract_exec(
             else EntityKind.PACKAGE
         )
         found.append(Found(kind, p, p, Role.CODE_SOURCE))
-    return found
+    return _repo_code_sources(command, found)
+
+
+# --------------------------------------------------------------------------- multi-tenant code hosts
+
+#: `git@github.com:owner/repo.git`: a git remote in scp form (no scheme, a `:` before the path).
+_SCP_REMOTE_RE = re.compile(
+    r"\A(?:[\w.-]+@)?((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24}):(?!//)(?!\d+(?:/|\Z))(\S+)\Z"
+)
+#: A token that may be a URL: what is left between shell quotes, separators and brackets.
+_URL_TOKEN_RE = re.compile(r"[^\s\"'<>`|;&()\[\]{}]+")
+
+
+class TenantRule(NamedTuple):
+    #: The name repositories are written under (`github.com` for raw.githubusercontent.com).
+    name: str
+    #: Path segments that name a repository; 0 when no path does.
+    segments: int
+    #: Leading segments kept in front of them (`spaces` on huggingface.co).
+    prefixes: frozenset[str]
+    #: Leading segments dropped before them (`repos` on api.github.com).
+    skip: frozenset[str]
+
+
+def tenant_rules() -> dict[str, TenantRule]:
+    """`installers.multi_tenant_hosts` by host."""
+    out: dict[str, TenantRule] = {}
+    for rule in load_lists().get("installers", "multi_tenant_hosts", default=[]) or []:
+        if not isinstance(rule, dict) or not rule.get("host"):
+            continue
+        host = normalise_host(str(rule["host"]))
+        out[host] = TenantRule(
+            normalise_host(str(rule.get("as") or host)),
+            int(rule.get("segments") or 0),
+            frozenset(str(p).lower() for p in rule.get("prefixes") or ()),
+            frozenset(str(p).lower() for p in rule.get("skip") or ()),
+        )
+    return out
+
+
+def tenant_rule(host: str) -> TenantRule | None:
+    """The rule for a multi-tenant host. Any other subdomain of a listed host (`cdn-lfs.huggingface.co`,
+    `user-images.githubusercontent.com`) serves the same accounts' files with no repository in a form
+    known here: it names none. None for any other host."""
+    rules = tenant_rules()
+    host = normalise_host(host)
+    if host in rules:
+        return rules[host]
+    if any(host.endswith("." + listed) for listed in rules):
+        return TenantRule(host, 0, frozenset(), frozenset())
+    return None
+
+
+def _remove_dot_segments(segs: list[str]) -> list[str]:
+    """The path as a client sends it: `.` dropped, `..` removing the segment before it."""
+    out: list[str] = []
+    for seg in segs:
+        if seg == ".":
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
+    return out
+
+
+def _tenant_split(url: str) -> tuple[str, str] | None:
+    """(host, repository) for a URL, a schemeless URL or an scp-style git remote on a multi-tenant
+    host; None for any other host."""
+    url = url.strip().strip("'\"")
+    m = None if "://" in url else _SCP_REMOTE_RE.match(url)
+    if m:
+        host, path = normalise_host(m.group(1)), m.group(2)
+    else:
+        try:
+            parts = urlsplit(url if "://" in url else "https://" + url)
+            hostname = parts.hostname
+        except ValueError:
+            return None
+        if not hostname:
+            return None
+        host, path = normalise_host(hostname), parts.path
+    rule = tenant_rule(host)
+    if rule is None:
+        return None
+    if rule.segments <= 0:
+        return host, host
+    segs = _remove_dot_segments([s for s in path.split("/") if s])
+    if segs and segs[0].lower() in rule.skip:
+        segs = segs[1:]
+    lead: list[str] = []
+    if segs and segs[0].lower() in rule.prefixes:
+        lead, segs = [segs[0]], segs[1:]
+    if len(segs) < rule.segments:
+        return host, rule.name
+    named = [*lead, *segs[: rule.segments]]
+    named[-1] = named[-1].removesuffix(".git")
+    return host, "/".join([rule.name, *named]).lower()
+
+
+def repo_of_url(url: str) -> str | None:
+    """The repository a URL on a multi-tenant host (`installers.multi_tenant_hosts`) names:
+    `github.com/<owner>/<repo>` for GitHub and its raw and archive hosts, `gist.github.com/<user>`,
+    `huggingface.co/<org>/<name>` (and `huggingface.co/spaces/<org>/<name>`), in lower case. A path that
+    names no repository gives the host's own name, and a host whose paths never do (a release-asset
+    host) gives the host: neither is a repository a grant can cover. None for any other host."""
+    split = _tenant_split(url)
+    return split[1] if split else None
+
+
+def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
+    """A multi-tenant host the command takes code from supplies anyone's files: the code source is the
+    repository each of its URLs in the command names, and the host is only read from. A fetch run by
+    substitution (`sh -c "$(curl …)"`, `bash <(curl …)`) counts, as the installers list reads it."""
+    hosts = {f.value for f in found if f.kind is EntityKind.HOST}
+    tenant = {
+        f.value
+        for f in found
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and tenant_rule(f.value)
+    }
+    if any(tenant_rule(h) for h in hosts - tenant) and any(
+        p.search(command) for p in load_lists().patterns("installers", "fetch_to_shell_patterns")
+    ):
+        tenant |= {h for h in hosts if tenant_rule(h)}
+    if not tenant:
+        return found
+    repos: dict[str, None] = {}
+    seen: set[str] = set()
+    for m in _URL_TOKEN_RE.finditer(command):
+        split = _tenant_split(m.group(0))
+        if split is not None and split[0] in tenant:
+            seen.add(split[0])
+            repos[split[1]] = None
+    for host in sorted(tenant - seen):
+        rule = tenant_rule(host)
+        repos[host if rule is None or rule.segments <= 0 else rule.name] = None
+    # A clone is already its repository as a `git+` package; the package stays its code source.
+    packaged = {f.value for f in found if f.kind is EntityKind.PACKAGE}
+    repos = {r: None for r in repos if "git+" + r not in packaged}
+    out = [
+        replace(f, role=Role.DATA_SOURCE)
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and f.value in tenant
+        else f
+        for f in found
+    ]
+    out.extend(Found(EntityKind.REPO, r, r, Role.CODE_SOURCE) for r in repos)
+    return out
 
 
 def extract_call(

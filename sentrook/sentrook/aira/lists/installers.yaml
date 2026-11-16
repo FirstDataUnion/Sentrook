@@ -2,7 +2,7 @@
 # installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
 # min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
 
-version: 5
+version: 6
 
 fetch_heads:
   - curl
@@ -334,6 +334,28 @@ installer_hosts:
   - cloudflare.com
   - vercel.com
   - netlify.com
+
+# Hosts where any account publishes (repositories, gists, models). Vouching for one of these would vouch
+# for every account's files, so code a command runs from one is taken from the repository its URL names,
+# not from the host: the first `segments` path segments after an optional `prefixes` segment (and after
+# a dropped `skip` segment), under the name `as` (www, API, raw, archive and gist hosts fold into the site
+# they serve). Dot segments are resolved first, as a client does. A path too short to name a repository
+# is the site's name, and every path on a host with `segments: 0` (a release-asset host) or on any other
+# subdomain of a host listed here is the host itself: no repo grant covers either. Listing a host here
+# does not remove it from `installer_hosts`: a look-alike of it is still a look-alike.
+multi_tenant_hosts:
+  - {host: github.com, as: github.com, segments: 2}
+  - {host: www.github.com, as: github.com, segments: 2}
+  - {host: api.github.com, as: github.com, segments: 2, skip: [repos]}
+  - {host: raw.githubusercontent.com, as: github.com, segments: 2}
+  - {host: codeload.github.com, as: github.com, segments: 2}
+  - {host: gist.github.com, as: gist.github.com, segments: 1}
+  - {host: gist.githubusercontent.com, as: gist.github.com, segments: 1}
+  - {host: githubusercontent.com, segments: 0}
+  - {host: objects.githubusercontent.com, segments: 0}
+  - {host: release-assets.githubusercontent.com, segments: 0}
+  - {host: huggingface.co, as: huggingface.co, segments: 2, prefixes: [datasets, spaces]}
+  - {host: www.huggingface.co, as: huggingface.co, segments: 2, prefixes: [datasets, spaces]}
 
 # Package registries: hosts that serve only packages published through the registry, unlike installer
 # and code hosts that serve anyone's files (a release asset, a model repository). A file downloaded
