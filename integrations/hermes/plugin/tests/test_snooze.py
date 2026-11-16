@@ -345,6 +345,38 @@ def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
     assert out["action"] == "approve" and "snoozed" not in rec
 
 
+def test_a_relaxed_prompt_never_matches_a_stored_approval(scripted):
+    """Hermes stores Session and Always answers per rule key. A review of action F keys on F, so an Always
+    stored for it must not let a relaxed block of F through, and a Session answer to a relaxed prompt must
+    not cover the next identical relaxed call: every relaxed prompt has a key of its own."""
+    approve = scripted.ctx.hooks["post_approval_response"]
+    slash(scripted, "snooze")
+    turn(scripted)
+    scripted.reply = {"risk": 55, "enforced": None, "action_fingerprint": "afp1:exec|F"}
+    slash(scripted, "snooze off")
+    review, _ = call(scripted, "run it")
+    assert review["action"] == "approve"
+    approve(pattern_key=f"plugin_rule:{review['rule_key']}", choice="always", session_id="S1")
+    slash(scripted, "snooze")
+    scripted.reply = {
+        "risk": 92,
+        "enforced": None,
+        "relaxable": True,
+        "action_fingerprint": "afp1:exec|F",
+    }
+    first, rec1 = call(scripted, "run it")
+    second, rec2 = call(scripted, "run it")
+    keys = [review["rule_key"], first["rule_key"], second["rule_key"]]
+    assert first["action"] == second["action"] == "approve"
+    assert len(set(keys)) == 3  # never the review's key, and never each other's
+    assert all(k.startswith("sentrook:relaxed:") for k in keys[1:])
+    # a Session answer to the first is recorded against that call only
+    approve(pattern_key=f"plugin_rule:{first['rule_key']}", choice="session", session_id="S1")
+    decisions = {r["request_id"]: r["decision"] for r in records(scripted, "resolution")}
+    assert decisions[rec1["request_id"]] == "approved_by_user"
+    assert rec2["request_id"] not in decisions
+
+
 def test_without_a_snooze_a_relaxable_block_still_blocks(scripted):
     turn(scripted)
     scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}

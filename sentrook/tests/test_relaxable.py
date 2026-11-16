@@ -215,6 +215,15 @@ def test_an_unavailable_oracle_is_not_marked(attack_case, params):
 
 
 @SETS
+@pytest.mark.parametrize("status", [ProbeStatus.SKIPPED, ProbeStatus.ERROR])
+def test_a_disabled_or_failed_oracle_is_not_marked(attack_case, params, status):
+    envs = [*_high_selfmod(), Envelope.failed(ProbeStep.ENTITY_ORACLE, status, "off")]
+    assert_unmarked(attack_case, envs, params)
+    res = _run(attack_case, envs, params)
+    assert "oracle_unavailable" in res.response.metadata.versions["attended_owner"]["withheld"]
+
+
+@SETS
 def test_unjudged_new_content_is_not_marked(attack_case, params):
     envs = [
         *_high_selfmod(),

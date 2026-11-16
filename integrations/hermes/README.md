@@ -216,9 +216,9 @@ If Sentrook blocks your own setup work, snooze for the duration: blocks without 
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
 marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
 or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
-granted, no floor, and the scan was complete) becomes an approval prompt that ends "Sentrook would normally block this; it is asking because a
-snooze is on." It is never allowed without asking, and the snooze does not skip that
-prompt.
+granted, no floor, and the scan was complete) becomes an approval prompt that ends "Sentrook would normally
+block this; it is asking because a snooze is on." It is never allowed without asking, and the snooze does not skip
+that prompt. The score is the same either way.
 
 A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
 webhooks, the API server): blocks still stop, and a review on an unattended run is held for you instead.
@@ -236,8 +236,8 @@ such as reading credentials and sending them off the machine, are floors that ap
 (an option for chats you attend, which the hosted scanner leaves off), the plugin asks you about a block-level score
 instead of blocking it, and a snooze never skips that review.
 
-If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
-instead; blocks with a clear attack signal still stop (see [Commands](#commands)). The score is the same either way.
+A snooze can turn a block on your own setup work into a question; see the snooze paragraph under
+[Commands](#commands).
 
 When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It
@@ -249,10 +249,12 @@ count as attended. Elsewhere, including the API server, cron, subagents and webh
 prompts, add it with `attended_platforms` (see [Settings](#settings)).
 
 With approvals switched off (`approvals.mode: off`), Hermes would approve every prompt itself, so a review holds the
-call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment. YOLO you switch on for a
-session (`/yolo` in a chat, or `hermes --yolo` / `hermes chat --yolo`, which Hermes applies to that session) is not
-visible to Sentrook, so in that session Hermes approves Sentrook's reviews the way it approves everything else there.
-Blocks still apply.
+call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment, and on those runs a
+snooze never turns a block into a question. YOLO you switch on for one session (`/yolo` in a chat, or `hermes --yolo` /
+`hermes chat --yolo`, which Hermes applies to that session) is not visible to Sentrook, so in that session Hermes
+approves Sentrook's reviews the way it approves everything else there. Blocks still apply, with one exception: if a
+snooze is on in that session, a block Sentrook marks as having no clear attack signal becomes a review (see
+[Commands](#commands)), which YOLO then approves, so the call runs. Do not snooze a session you have switched to YOLO.
 
 ### Held calls on unattended runs
 

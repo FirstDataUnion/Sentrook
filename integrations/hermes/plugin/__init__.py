@@ -145,9 +145,15 @@ def _self_edit(store: Store, sid: str, tool: str, args: Any, redactor: Redactor)
         return {"kind": kind, "store": where, "conversation": []}
 
 
-def _rule_key(fingerprint: str | None, request_id: str) -> str:
+def _rule_key(fingerprint: str | None, request_id: str, relaxed: bool = False) -> str:
     """Hermes persists Session/Always approvals per rule key. Keyed on the action fingerprint, an approval
-    covers the same action (same source and destination) again, not other calls of the same tool."""
+    covers the same action (same source and destination) again, not other calls of the same tool.
+
+    A block a snooze turned into a review (`relaxed`) must always ask, and a plugin cannot limit Hermes's
+    answers to once: its key is the request id under its own prefix, so no stored approval matches it and
+    a Session or Always answer to it never covers another call."""
+    if relaxed:
+        return "sentrook:relaxed:" + hashlib.sha256(request_id.encode()).hexdigest()[:16]
     return "sentrook:" + hashlib.sha256((fingerprint or request_id).encode()).hexdigest()[:16]
 
 
@@ -510,7 +516,7 @@ def _scan_one(
             snoozed = True
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
-            key = _rule_key(resp.get("action_fingerprint"), planir["request_id"])
+            key = _rule_key(resp.get("action_fingerprint"), planir["request_id"], relaxed)
             directive = {
                 "action": "approve",
                 "message": review_message(resp, built["tool"], relaxed),

@@ -162,7 +162,7 @@ def withheld(
     oracle = [env for env in envelopes if env.step is ProbeStep.ENTITY_ORACLE]
     if any(
         env.status is not ProbeStatus.OK or env.evidence.get("available") is False for env in oracle
-    ) or (not oracle and ProbeStep.ENTITY_ORACLE in {env.step for env in envelopes}):
+    ):
         out.append("oracle_unavailable")
     if exposure_unjudged:
         out.append("exposure_unjudged")
