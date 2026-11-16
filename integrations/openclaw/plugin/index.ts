@@ -501,7 +501,9 @@ const plugin = {
       let held: Json | null = null;
       if (result.ok) {
         const resp = result.response;
-        verdict = decide(resp, cfg);
+        // The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
+        // block to a review with it, so a lowered block is never held.
+        verdict = decide(timing.unattended ? { ...resp, ceiling: null } : resp, cfg);
         sess.token = resp.state ?? null;
         sess.buffer = [];
         entry.action_fingerprint = resp.action_fingerprint ?? null;

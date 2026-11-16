@@ -400,7 +400,11 @@ def _scan_one(
     held: dict[str, Any] | None = None
     if isinstance(result, ScanOk):
         resp = result.response
-        verdict = decide(resp, cfg.review_at, cfg.block_at)
+        # The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
+        # block to a review with it, so a lowered block is never held.
+        verdict = decide(
+            {**resp, "ceiling": None} if unattended else resp, cfg.review_at, cfg.block_at
+        )
         sess["token"] = resp.get("state")
         sess["buffer"] = []
         entry["action_fingerprint"] = resp.get("action_fingerprint")
