@@ -7,6 +7,9 @@ Hermes has no owner flag; its gateway allowlist is a yes/no admission gate. The 
 - other (basis `host_open_access`): a DM admitted only by allow-all (or a grant the plugin cannot see);
 - unknown (basis `none`): cron, subagent, API-server and webhook runs.
 
+A turn Hermes starts with its notice that an asynchronous sub-agent finished (`delegation_notice`) is not an
+owner message, whoever the chat belongs to: trigger `system` in a chat (`notice_trigger`), sender unknown.
+
 The conversation sent with a background save (`conversation_sender_of`) differs in one place: a group
 message from a sender individually on the allowlist is the owner (basis `group_chat`).
 """
@@ -203,6 +206,53 @@ def conversation_sender_of(
     if sender["basis"] == ["group_chat"] and _allowlisted(platform, facts, sender_id, env):
         return {"relation": "owner", "basis": ["group_chat"]}
     return sender
+
+
+#: How every form of Hermes's notice that an asynchronous sub-agent finished starts (complete, batch complete,
+#: task failed). Hermes starts a new turn with the notice as its user message; it carries the sub-agent's task
+#: and result, written by the host and the sub-agent, never by the owner.
+DELEGATION_NOTICE = "[ASYNC DELEGATION "
+#: The request a call on a notice turn carries when the session has no request stored.
+NOTICE_REQUEST_TEXT = (
+    "No owner request: Hermes delivered a background sub-agent's result "
+    "and the agent continued on its own."
+)
+
+
+def _message_text(message: Any) -> str:
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        return "\n".join(
+            p if isinstance(p, str) else str(p.get("text") or "")
+            for p in message
+            if isinstance(p, str | dict)
+        )
+    return ""
+
+
+def delegation_notice(message: Any) -> bool:
+    """The turn's user message is Hermes's notice that an asynchronous sub-agent finished."""
+    return _message_text(message).lstrip().startswith(DELEGATION_NOTICE)
+
+
+def notice_trigger(trigger: dict[str, Any]) -> dict[str, Any]:
+    """The trigger of a turn Hermes started with a sub-agent's notice: never an owner message. In a chat the
+    kind is `system` (the host woke the agent); a scheduled or other run keeps its kind. The sender is
+    unknown; a group chat keeps its basis."""
+    basis = trigger.get("sender", {}).get("basis")
+    return {
+        "kind": "system" if trigger.get("kind") == "message" else trigger.get("kind"),
+        "channel": trigger.get("channel"),
+        "sender": {
+            "relation": "unknown",
+            "basis": ["group_chat"] if basis == ["group_chat"] else ["none"],
+        },
+    }
+
+
+#: Who wrote a notice, in the conversation a background save is judged against.
+NOTICE_SENDER = {"relation": "unknown", "basis": ["none"]}
 
 
 def environ() -> dict[str, str]:

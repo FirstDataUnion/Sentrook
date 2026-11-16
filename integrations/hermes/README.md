@@ -314,7 +314,10 @@ would have done, such as `observed (would review)`.
 Each scan sends one request to `sentrook.firstdataunion.org`:
 
 - the request you gave the agent in this turn, and whether it came from you, a scheduled job, a subagent, another
-  sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on);
+  sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on).
+  When a sub-agent the agent started in the background finishes, Hermes starts a turn with its own notice of the
+  result. That turn is not counted as your message: its calls carry your last request and the turn it came from,
+  and the notice is sent as the sub-agent's reply, with the other new inputs;
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);

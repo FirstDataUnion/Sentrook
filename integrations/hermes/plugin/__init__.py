@@ -22,13 +22,15 @@ from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
 from .intent import (
+    NOTICE_SENDER,
     conversation_sender_of,
+    delegation_notice,
     hermes_config,
     is_unattended,
     resolve_platform,
     session_facts,
 )
-from .planir import PLUGIN_VERSION, build_planir, session_ref, tool_kind
+from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import ScanFailure, scan_error_to_directive
@@ -212,25 +214,34 @@ def on_pre_llm_call(**kw: Any) -> None:
         cfg, env = _load()
         store, _t = _state(cfg)
         turn_id = kw.get("turn_id")
+        # The curator's prompt (a fresh agent under the background-review origin) is neither a message, a
+        # request nor a turn of the owner's session: its calls carry the owner's last request (`_scan_one`).
+        background = skill_review.in_background_review()
+        # A turn Hermes starts with its notice that an asynchronous sub-agent finished is a turn, but not a
+        # request: its calls carry the session's last request, and the notice goes as a sub-agent reply.
+        notice = not background and delegation_notice(kw.get("user_message"))
         store.merge_turn(
             turn_id,
             {
+                "pre_llm_call": True,
                 "platform": kw.get("platform"),
                 "sender_id": kw.get("sender_id"),
                 "parent_session_id": kw.get("parent_session_id"),
                 "user_message": kw.get("user_message"),
+                "host_notice": "async_delegation" if notice else None,
             },
         )
         sid = _sid(kw)
-        # The curator's prompt (a fresh agent under the background-review origin) is neither a message, a
-        # request nor a turn of the owner's session: its calls carry the owner's last request (`_scan_one`).
-        background = skill_review.in_background_review()
         with store.session_lock(sid):
             s = store.load_session(sid)
             if turn_id and not background:
                 s["last_turn_id"] = turn_id
+                if not notice:
+                    s["last_request_turn_id"] = turn_id
                 if turn_id not in s["turns"]:
                     s["turns"].append(turn_id)
+                if notice:
+                    _buffer_notice(cfg, store, s, kw.get("user_message"))
                 store.save_session(sid, s, cfg.history_limit * 2)
             if _capturing(cfg, store) and not background:
                 facts = session_facts()
@@ -240,7 +251,9 @@ def on_pre_llm_call(**kw: Any) -> None:
                     sid,
                     conversation.user_entry(
                         _turn_no(s, turn_id),
-                        conversation_sender_of(platform, facts, kw.get("sender_id"), env),
+                        dict(NOTICE_SENDER)
+                        if notice
+                        else conversation_sender_of(platform, facts, kw.get("sender_id"), env),
                         kw.get("user_message"),
                         Redactor("standard", store.salt()),
                         turn_id,
@@ -248,6 +261,31 @@ def on_pre_llm_call(**kw: Any) -> None:
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("pre_llm_call failed: %s", exc)
+
+
+def _buffer_notice(cfg: PluginConfig, store: Store, s: dict[str, Any], message: Any) -> None:
+    """The sub-agent's notice as the next scan's new input: a `subagent_reply`, redacted and capped like a
+    tool result. Untrusted, as any sub-agent's reply."""
+    text = (
+        message
+        if isinstance(message, str)
+        else json.dumps(message, ensure_ascii=False, default=str)
+    )
+    redacted = Redactor("standard", store.salt()).string(text)
+    capped, truncated, _ = cap_head_tail(redacted, cfg.input_cap_bytes)
+    s["input_seq"] += 1
+    s["buffer"].append(
+        {
+            "input_seq": s["input_seq"],
+            "kind": "subagent_reply",
+            "call_id": None,
+            "content_type": "text",
+            "content": capped,
+            "size_bytes": len(text.encode("utf-8")),
+            "truncated": truncated,
+            "subagent_session_ref": None,
+        }
+    )
 
 
 def on_post_api_request(**kw: Any) -> None:
@@ -326,6 +364,7 @@ def _scan_one(
 ) -> dict[str, Any] | None:
     sess = store.load_session(sid)
     turn = store.load_turn(kw.get("turn_id") or sess.get("last_turn_id"))
+    last_request = store.load_turn(request_turn_id(sess))
     facts = session_facts()
     host_cfg = hermes_config()
     tool_name = str(kw.get("tool_name") or "")
@@ -351,9 +390,8 @@ def _scan_one(
         grants=grants.effective(cfg, store.load_grants(), datetime.now(UTC), session_ref(sid)),
         self_edit=self_edit,
         # The background review's calls serve the owner's last request, not a turn of their own.
-        request_turn=store.load_turn(sess.get("last_turn_id"))
-        if skill_review.in_background_review()
-        else None,
+        request_turn=last_request if skill_review.in_background_review() else None,
+        last_request=last_request,
     )
     planir = built["planir"]
     unattended = is_unattended(
