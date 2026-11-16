@@ -156,6 +156,7 @@ def empty_session() -> dict[str, Any]:
         "history": [],
         "buffer": [],
         "last_turn_id": None,
+        "last_request_turn_id": None,
     }
 
 

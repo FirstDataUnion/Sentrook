@@ -24,12 +24,17 @@ the library gives a distrust of its own count wherever in the batch they are. Pa
 questions (their sensitivity comes from AIRA's path classes), loopback hosts are the agent's own
 machine, and a recipient written as a self-reference (`me`, `self`, `owner`) is the account the tool
 runs as, so none of these is looked up.
+
+A provider API host the library lists only as the home of the credentials its service issues (tier
+`provider_api`) vouches for nothing else: it is scored, reported and shown to the judge as an unlisted host,
+and its credential names are kept in the evidence for the credential-home check (`prepare.credential_home`).
+Its look-alikes are still near misses of it.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..enums import Enforce, ProbeStatus, ProbeStep
 from ..oracle.client import (
@@ -44,6 +49,7 @@ from ..oracle.client import (
 )
 from ..planir.models import ToolKind
 from ..prepare import Prepared
+from ..prepare.credential_home import PROVIDER_API_TIER
 from ..prepare.entities import Entity, EntityKind, Origin, Role
 from .base import Contribution, Envelope, Floor
 
@@ -127,6 +133,20 @@ NEAR_MISS_CODE_ROLES = frozenset(
 )
 
 VIEW_VERDICTS = (VerdictKind.KNOWN_GOOD.value, VerdictKind.KNOWN_BAD.value)
+
+
+def _credential_home_only(v: Verdict) -> Verdict:
+    """A provider API host listed only as its credentials' home answers as an unlisted host, keeping the names."""
+    if v.verdict is VerdictKind.KNOWN_GOOD and v.tier == PROVIDER_API_TIER:
+        return replace(
+            v,
+            verdict=VerdictKind.UNKNOWN,
+            tier=None,
+            distrust=None,
+            match=Match.NONE,
+            near_miss=None,
+        )
+    return v
 
 
 def _near_miss(v: Verdict) -> dict | None:
@@ -227,6 +247,8 @@ class EntityOracleProbe:
         }
         if ent.recipient_domain_of:
             info["mail_domain_of"] = list(ent.recipient_domain_of)
+        if v.credential_names:
+            info["credential_names"] = list(v.credential_names)
         return info
 
     def run(self, prepared: Prepared) -> Envelope:
@@ -289,7 +311,7 @@ class EntityOracleProbe:
                 "roles": sorted(r.value for r in ent.roles),
             }
         for ent in remote:
-            v = result.get(ent.kind.value, ent.value)
+            v = _credential_home_only(result.get(ent.kind.value, ent.value))
             near = _near_miss(v)
             roles = sorted(r.value for r in ent.roles) or [Role.MENTIONED.value]
             risky_role = max(roles, key=lambda r: self.params.unknown_by_role.get(r, 0.0))

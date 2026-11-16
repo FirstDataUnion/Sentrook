@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from . import host_turns
 from .config import PluginConfig
 from .intent import (
     approvals_off,
@@ -30,7 +31,7 @@ from .redact import Redactor, cap_args
 from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
 from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.10"
+PLUGIN_VERSION = "2.0.0-beta.11"
 
 TOOL_KIND = {
     "terminal": "exec",
@@ -316,6 +317,25 @@ def _text(v: Any) -> str:
 _SENT_DECISION = {"held": "review_timed_out"}
 
 
+def request_turn_id(sess: dict[str, Any]) -> Any:
+    """The session's last turn that began with a request (an owner's message, or a run's prompt): not a turn
+    Hermes started with an event notice (`host_turns`). A session stored before this was kept falls back to
+    its last turn."""
+    if "last_request_turn_id" in sess:
+        return sess["last_request_turn_id"]
+    return sess.get("last_turn_id")
+
+
+def _request_of(turn: dict[str, Any]) -> str:
+    """A stored turn's request: a host turn's own words when it kept some, else its message."""
+    return str(turn.get("request_text") or "") or _text(turn.get("user_message"))
+
+
+def turn_seen(turn: dict[str, Any]) -> bool:
+    """The turn fired `pre_llm_call`, so its request, platform and sender are known."""
+    return bool(turn.get("pre_llm_call") or turn.get("user_message") or turn.get("platform"))
+
+
 def _sent_entry(h: dict[str, Any]) -> dict[str, Any]:
     out = {k: v for k, v in h.items() if not k.startswith("_")}
     if out.get("decision") in _SENT_DECISION:
@@ -337,6 +357,7 @@ def build_planir(
     grants: list[dict[str, Any]] | None = None,
     self_edit: dict[str, Any] | None = None,
     request_turn: dict[str, Any] | None = None,
+    last_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
 
@@ -348,7 +369,11 @@ def build_planir(
     `request_turn`: the call is made by Hermes's background review, after the owner's turn: the request
     text comes from this turn (the session's last owner turn, `{}` when none is stored; an empty request
     sends `skill_review.REQUEST_TEXT`) and the call's own turn is not counted as a new one. Narration and
-    batch siblings still come from `turn`, the fork's own."""
+    batch siblings still come from `turn`, the fork's own.
+    `last_request`: the session's last request turn (`request_turn_id`). A call on a turn Hermes started with
+    an event notice, or on a turn that fired no `pre_llm_call`, carries its request with `carried_from_turn`
+    when `host_turns.carries` allows; such a turn, and one Hermes started with a standing instruction, is
+    never an owner message (`host_turns.trigger_for`)."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -362,18 +387,46 @@ def build_planir(
         sess["seen_call_ids"].append(host_id)
     if turn_id and turn_id not in sess["turns"] and request_turn is None:
         sess["turns"].append(turn_id)
-    request_text = _text((turn if request_turn is None else request_turn).get("user_message"))
-    if request_turn is not None and not request_text.strip():
-        request_text = LOOP_REQUEST_TEXT
-    # A background call's turn is the number of the owner turn its request came from.
-    last = sess.get("last_turn_id")
-    request_turn_no = (
-        sess["turns"].index(last) + 1
-        if request_turn is not None and last in sess["turns"]
+    req_tid = request_turn_id(sess)
+    req_no = sess["turns"].index(req_tid) + 1 if req_tid in sess["turns"] else None
+    platform = resolve_platform(turn.get("platform"), facts, env)
+    trigger = {
+        "kind": trigger_kind(platform),
+        "channel": channel_of(platform),
+        "sender": sender_of(platform, facts, turn.get("sender_id"), env),
+    }
+    host = (
+        host_turns.FORMS.get(str(turn.get("host_turn")))
+        if request_turn is None and self_edit is None
         else None
     )
+    carried_from: int | None = None
+    if request_turn is not None:
+        request_text = _request_of(request_turn)
+        if not request_text.strip():
+            request_text = LOOP_REQUEST_TEXT
+        # The background review runs after the owner's turn, in whatever chat context it inherited.
+        trigger = host_turns.trigger_for(trigger, "system")
+    elif host is not None and turn.get("request_text"):
+        # A standing instruction the owner set earlier: the host's words are the run's request (without a
+        # failed gate's output, which went as content).
+        request_text = str(turn["request_text"])
+        trigger = host_turns.trigger_for(trigger, host.trigger)
+    elif host is not None or not turn_seen(turn):
+        # The turn's message is the host's, or its start was never seen: the request is the session's last,
+        # and only for the owner or a run that is not a chat message.
+        request_text = ""
+        if host_turns.carries(trigger) and req_no:
+            request_text = _request_of(last_request or {})
+            carried_from = req_no if request_text.strip() else None
+        if host is not None and not request_text.strip():
+            request_text = host_turns.REQUEST_TEXT
+        trigger = host_turns.trigger_for(trigger, host.trigger if host else "system")
+    else:
+        request_text = _request_of(turn)
+    # A background call's turn is the number of the owner turn its request came from.
+    request_turn_no = req_no if request_turn is not None else None
 
-    platform = resolve_platform(turn.get("platform"), facts, env)
     parent = turn.get("parent_session_id") or None
     is_sub = platform == "subagent" or bool(parent)
     raw_args = kw.get("args") if isinstance(kw.get("args"), dict) else {"value": kw.get("args")}
@@ -403,7 +456,9 @@ def build_planir(
     window = sess["history"][-cfg.history_limit :]
     window_ids = {h["call_id"] for h in window}
     # Every tool result must refer to a call in the history window (a scanner invariant).
-    sent_inputs = [i for i in sess["buffer"] if i["call_id"] in window_ids]
+    sent_inputs = [
+        i for i in sess["buffer"] if i.get("kind") != "tool_result" or i["call_id"] in window_ids
+    ]
     history = [_sent_entry(h) for h in window]
 
     security = host_cfg.get("security") or {}
@@ -440,16 +495,10 @@ def build_planir(
             "step": step,
             "state": sess["token"],
         },
-        "trigger": copy.deepcopy(LOOP_TRIGGER)
-        if self_edit is not None
-        else {
-            "kind": trigger_kind(platform),
-            "channel": channel_of(platform),
-            "sender": sender_of(platform, facts, turn.get("sender_id"), env),
-        },
+        "trigger": copy.deepcopy(LOOP_TRIGGER) if self_edit is not None else trigger,
         "request": {
             "text": redactor.string(request_text),
-            "carried_from_turn": None,
+            "carried_from_turn": carried_from,
         },
         "new_inputs": sent_inputs,
         "history": history,

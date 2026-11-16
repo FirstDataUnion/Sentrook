@@ -225,13 +225,9 @@ Where slash commands don't reach the plugin, use `hermes sentrook <command>` on 
 ## How enforce mode decides
 
 Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`review_at`, `block_at`). Some findings,
-such as reading credentials and sending them off the machine, are floors that apply whatever the score. When you are in the chat
-and asked for the work yourself, a high score alone asks you rather than blocking: the scanner marks the call as
-review at most unless something independent points to an attack (content the agent read supplied the target, a
-known-bad or look-alike entity, a retry of a call you denied, a credential sent somewhere you did not name or
-grant, or a floor). Group chats, scheduled runs and sub-agents do not get this, nor does a scan the scanner could
-not complete (a check failed, reputation data was unavailable, or the session's history was lost). A block lowered to a
-review this way always asks: a snooze never skips it.
+such as reading credentials and sending them off the machine, are floors that apply whatever the score. If a scanner marks a call as review at most
+(an option for chats you attend, which the hosted scanner leaves off), the plugin asks you about a block-level score
+instead of blocking it, and a snooze never skips that review.
 
 When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It
@@ -330,7 +326,19 @@ would have done, such as `observed (would review)`.
 Each scan sends one request to `sentrook.firstdataunion.org`:
 
 - the request you gave the agent in this turn, and whether it came from you, a scheduled job, a subagent, another
-  sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on);
+  sender or Hermes's own background skill review, with the kind of channel it arrived on (chat, API, cron and so on).
+  Hermes also starts turns with its own text: when a sub-agent or a background process the agent started finishes
+  (or a process matches a watch, is still running or has its watch turned off), for a kanban task's update or
+  next step, and for your heartbeats, `/loop` wakeups and standing goals. None of these is counted as your
+  message. For a result or event, the calls carry your last request and the turn it came from, and the text is
+  sent with the other new inputs as content the agent received, not as your words; a heartbeat, `/loop` wakeup or
+  goal step is sent as the run's request, like a cron job's prompt, except that a failed quality gate's output is
+  sent as content. Someone else in a chat who types one of these forms gets nothing from it: they keep their own
+  sender, a result or event they type is sent as content with no earlier request in its place, and a heartbeat,
+  `/loop` or goal form they type stays their own request. Short notes Hermes puts in front of your next message
+  (a model switch, a skills reload, a system note) are left out of the request. Two kinds of host text are not
+  recognised and are sent as the turn's request, as before: a message another Hermes plugin injects into the chat,
+  and the note Hermes sends on its own when it resumes an interrupted turn with no new message;
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);

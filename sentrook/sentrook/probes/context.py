@@ -56,7 +56,9 @@ the call, with no model and no raw text.
   with nothing to match (a raw body, a pipe), or a session whose sensitive data could not be tied to a
   file, carries the flag's weight as before; a call that takes content only from other files carries
   nothing. The parameters may waive that floor when the owner chose every off-machine party the call
-  touches (`sensitive_sent_waive_sanctioned`, off by default).
+  touches (`sensitive_sent_waive_sanctioned`, off by default). A call that takes content only from the env
+  file whose key it sends to that key's own service (`prepare.credential_home`, when the convergence parameters
+  turn it on) carries neither the sensitivity nor the floor: that is the key's normal use.
   A call that reads, runs or applies a file or table an injected result produced or came from,
   and does more with it than read or copy it, takes the `injected_content_used` floor. Neither floor
   sets an outcome; each lifts the risk past the review line.
@@ -1511,7 +1513,10 @@ class ContextProbe:
         contributions: list[Contribution] = []
         floors: list[Floor] = []
         reason = "sensitivity.session_holds_sensitive"
-        if sens.bound and has_destination:
+        if prepared.credential_home is not None and has_destination:
+            # the check found the session's sensitive data to be only the env files whose key goes to its service
+            record["holds_sensitive"] = "credential_home"
+        elif sens.bound and has_destination:
             subject = sens.subject()
             contributions.append(
                 Contribution(
