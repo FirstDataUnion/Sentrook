@@ -25,7 +25,14 @@ from ..enums import ScanStatus
 from ..scan import ScanOptions
 from .auth import verify_scan_auth, www_authenticate
 from .config import AUTH_OPEN, ServeConfig
-from .metrics import CONTENT_TYPE, endpoint_label, exposition, record_http, record_scan
+from .metrics import (
+    CONTENT_TYPE,
+    endpoint_label,
+    exposition,
+    record_http,
+    record_jev,
+    record_scan,
+)
 from .rate_limit import check_request, rate_limit_headers
 from .runtime import ServeRuntime
 
@@ -166,6 +173,9 @@ def make_handler(runtime: ServeRuntime) -> type[BaseHTTPRequestHandler]:
             if self._path in ("/health", "/healthz"):
                 self._write(200, runtime.health_payload())
             elif self._path == "/metrics":
+                record_jev(
+                    runtime.jev_health.snapshot(), key_configured=runtime.jev_health.key_configured
+                )
                 self._write(200, exposition(), content_type=CONTENT_TYPE)
             else:
                 self._write(
