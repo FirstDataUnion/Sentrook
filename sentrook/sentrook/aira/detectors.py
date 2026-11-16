@@ -836,11 +836,13 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
         next((h for h in a.hosts if Role.CODE_SOURCE in h.roles), a.hosts[0] if a.hosts else None),
     )
     host_subject = code_source.entity_id if code_source else None
-    # Each repository the command takes code from carries its own sensitivity, so a grant on one
-    # never covers another; otherwise the single code source does.
-    unvetted_sources = [r for r in a.repos if Role.CODE_SOURCE in r.roles] or (
-        [code_source] if code_source is not None else []
-    )
+    # Each repository the command takes code from carries its own sensitivity, and so does every
+    # host it takes code from, so a grant on one never covers another; with no code source named,
+    # the fallback host does.
+    unvetted_sources = [
+        *(r for r in a.repos if Role.CODE_SOURCE in r.roles),
+        *(h for h in a.hosts if Role.CODE_SOURCE in h.roles),
+    ] or ([code_source] if code_source is not None else [])
     reach, irr = ctx.weight("code", "reach"), ctx.weight("code", "irreversibility")
     as_root = a.shape is not None and a.shape.privileged
 

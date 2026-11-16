@@ -383,7 +383,7 @@ export function callCwd(args: unknown): string | null {
  * host than the one the pattern is written with (`raw.githubusercontent.com` for `github.com`, or a git remote).
  */
 function repoPath(pattern: string): string {
-  const rest = pattern.replace(/^[a-z][a-z0-9+.-]*:\/\//, "");
+  const rest = pattern.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/\/+$/, "").replace(/\.git$/, "");
   const slash = rest.indexOf("/");
   return slash < 0 ? rest : rest.slice(slash + 1);
 }

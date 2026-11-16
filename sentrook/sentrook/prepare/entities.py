@@ -18,7 +18,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from ..aira.exec_shape import derive_exec_shape
@@ -1918,19 +1918,57 @@ _SCP_REMOTE_RE = re.compile(
 _URL_TOKEN_RE = re.compile(r"[^\s\"'<>`|;&()\[\]{}]+")
 
 
-def tenant_rules() -> dict[str, tuple[str, int, frozenset[str]]]:
-    """`installers.multi_tenant_hosts` by host: (the name repositories are written under, the path
-    segments that name one, the leading segments kept in front of them)."""
-    out: dict[str, tuple[str, int, frozenset[str]]] = {}
+class TenantRule(NamedTuple):
+    #: The name repositories are written under (`github.com` for raw.githubusercontent.com).
+    name: str
+    #: Path segments that name a repository; 0 when no path does.
+    segments: int
+    #: Leading segments kept in front of them (`spaces` on huggingface.co).
+    prefixes: frozenset[str]
+    #: Leading segments dropped before them (`repos` on api.github.com).
+    skip: frozenset[str]
+
+
+def tenant_rules() -> dict[str, TenantRule]:
+    """`installers.multi_tenant_hosts` by host."""
+    out: dict[str, TenantRule] = {}
     for rule in load_lists().get("installers", "multi_tenant_hosts", default=[]) or []:
         if not isinstance(rule, dict) or not rule.get("host"):
             continue
         host = normalise_host(str(rule["host"]))
-        out[host] = (
+        out[host] = TenantRule(
             normalise_host(str(rule.get("as") or host)),
             int(rule.get("segments") or 0),
             frozenset(str(p).lower() for p in rule.get("prefixes") or ()),
+            frozenset(str(p).lower() for p in rule.get("skip") or ()),
         )
+    return out
+
+
+def tenant_rule(host: str) -> TenantRule | None:
+    """The rule for a multi-tenant host. Any other subdomain of a listed host (`cdn-lfs.huggingface.co`,
+    `user-images.githubusercontent.com`) serves the same accounts' files with no repository in a form
+    known here: it names none. None for any other host."""
+    rules = tenant_rules()
+    host = normalise_host(host)
+    if host in rules:
+        return rules[host]
+    if any(host.endswith("." + listed) for listed in rules):
+        return TenantRule(host, 0, frozenset(), frozenset())
+    return None
+
+
+def _remove_dot_segments(segs: list[str]) -> list[str]:
+    """The path as a client sends it: `.` dropped, `..` removing the segment before it."""
+    out: list[str] = []
+    for seg in segs:
+        if seg == ".":
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
     return out
 
 
@@ -1950,21 +1988,22 @@ def _tenant_split(url: str) -> tuple[str, str] | None:
         if not hostname:
             return None
         host, path = normalise_host(hostname), parts.path
-    rule = tenant_rules().get(host)
+    rule = tenant_rule(host)
     if rule is None:
         return None
-    name, segments, prefixes = rule
-    segs = [s for s in path.split("/") if s]
-    lead: list[str] = []
-    if segs and segs[0].lower() in prefixes:
-        lead, segs = [segs[0]], segs[1:]
-    if segments <= 0:
+    if rule.segments <= 0:
         return host, host
-    if len(segs) < segments:
-        return host, name
-    named = [*lead, *segs[:segments]]
+    segs = _remove_dot_segments([s for s in path.split("/") if s])
+    if segs and segs[0].lower() in rule.skip:
+        segs = segs[1:]
+    lead: list[str] = []
+    if segs and segs[0].lower() in rule.prefixes:
+        lead, segs = [segs[0]], segs[1:]
+    if len(segs) < rule.segments:
+        return host, rule.name
+    named = [*lead, *segs[: rule.segments]]
     named[-1] = named[-1].removesuffix(".git")
-    return host, "/".join([name, *named]).lower()
+    return host, "/".join([rule.name, *named]).lower()
 
 
 def repo_of_url(url: str) -> str | None:
@@ -1979,13 +2018,18 @@ def repo_of_url(url: str) -> str | None:
 
 def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
     """A multi-tenant host the command takes code from supplies anyone's files: the code source is the
-    repository each of its URLs in the command names, and the host is only read from."""
-    rules = tenant_rules()
+    repository each of its URLs in the command names, and the host is only read from. A fetch run by
+    substitution (`sh -c "$(curl …)"`, `bash <(curl …)`) counts, as the installers list reads it."""
+    hosts = {f.value for f in found if f.kind is EntityKind.HOST}
     tenant = {
         f.value
         for f in found
-        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and f.value in rules
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and tenant_rule(f.value)
     }
+    if any(tenant_rule(h) for h in hosts - tenant) and any(
+        p.search(command) for p in load_lists().patterns("installers", "fetch_to_shell_patterns")
+    ):
+        tenant |= {h for h in hosts if tenant_rule(h)}
     if not tenant:
         return found
     repos: dict[str, None] = {}
@@ -1996,7 +2040,8 @@ def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
             seen.add(split[0])
             repos[split[1]] = None
     for host in sorted(tenant - seen):
-        repos[host if rules[host][1] <= 0 else rules[host][0]] = None
+        rule = tenant_rule(host)
+        repos[host if rule is None or rule.segments <= 0 else rule.name] = None
     # A clone is already its repository as a `git+` package; the package stays its code source.
     packaged = {f.value for f in found if f.kind is EntityKind.PACKAGE}
     repos = {r: None for r in repos if "git+" + r not in packaged}

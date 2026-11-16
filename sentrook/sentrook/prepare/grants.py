@@ -59,7 +59,7 @@ from .entities import (
     normalise_remote_identity,
     resolve_token,
     shell_segments,
-    tenant_rules,
+    tenant_rule,
 )
 
 DISTRUST = "suspicion.distrust"
@@ -299,16 +299,16 @@ def _repo(pat: str, entity: Entity, host_os: OS) -> bool:
     archive host, which reads as the site it serves."""
     pat = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pat.strip().lower()).rstrip("/").removesuffix(".git")
     host, _, rest = pat.partition("/")
-    rule = tenant_rules().get(host)
-    if rule is None or _GLOB_CHARS.search(host):
+    rule = None if _GLOB_CHARS.search(host) else tenant_rule(host)
+    if rule is None or rule.segments <= 0:
         return False
-    name, segments, prefixes = rule
-    segs = rest.split("/") if rest else []
-    if segs and segs[0] in prefixes:
+    segs = [s for s in rest.split("/") if s]
+    if segs and segs[0] in rule.skip:
         segs = segs[1:]
-    if segments <= 0 or not segs or _GLOB_CHARS.search(segs[0]) or not segs[0]:
+    owner = segs[1:] if segs and segs[0] in rule.prefixes else segs
+    if not owner or _GLOB_CHARS.search(owner[0]) or owner[0] in (".", ".."):
         return False
-    return fnmatch.fnmatchcase(entity.value.lower(), "/".join([name, *rest.split("/")]))
+    return fnmatch.fnmatchcase(entity.value.lower(), "/".join([rule.name, *segs]))
 
 
 _ENTITY_MATCHERS: dict[str, Callable[[str, Entity, OS], bool]] = {

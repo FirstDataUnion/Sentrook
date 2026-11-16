@@ -254,7 +254,7 @@ def _repo_path(pattern: str) -> str:
     """The owner and repository a repo grant names, without its host: the call may fetch the repository
     from another host than the one the pattern is written with (`raw.githubusercontent.com` for
     `github.com`, or a git remote)."""
-    rest = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pattern)
+    rest = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pattern).rstrip("/").removesuffix(".git")
     return rest.split("/", 1)[1] if "/" in rest else rest
 
 
