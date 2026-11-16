@@ -99,6 +99,7 @@ from .skill_steps import skill_step_calls
 from .steering import steering_marks, steers
 from .trust import Trust, classify
 from .url_carry import CarriedText, url_carries_local
+from .written_selfmod import future_entities, written_selfmod_texts
 
 __all__ = [
     "Lineage",
@@ -1217,6 +1218,23 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             # comes back through them.
             continue
         table.add_found(f, Origin.PENDING_CALL)
+    # Self-modification content the call writes (a cron line, a hook, a skill, a job prompt) runs later: the hosts
+    # that run sends to or runs code from take those roles as future roles, never as roles of this call.
+    try:
+        written_selfmod = future_entities(
+            written_selfmod_texts(pending, home=home, workspace_root=ws),
+            home=home,
+            workspace_root=ws,
+        )
+    except Exception as exc:  # noqa: BLE001 (odd content must not fail the scan)
+        written_selfmod = []
+        coverage.append(CoverageNote("written_selfmod_failed", f"{type(exc).__name__}: {exc}"))
+    for f in written_selfmod:
+        ent = table.add(f.kind, f.value, display=f.display, origin=Origin.PENDING_CALL)
+        if not ent.roles:
+            ent.roles.add(Role.MENTIONED)
+        if f.role is not None:
+            ent.future_roles.add(f.role)
     for sib in siblings:
         for f in extract_call(sib, home=home, workspace_root=ws):
             table.add_found(f, Origin.SIBLING, sib.call_id)

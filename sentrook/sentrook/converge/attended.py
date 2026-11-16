@@ -15,7 +15,10 @@ The strong signals:
 - a credential or sensitive file leaving to a destination it does not belong to: a call that sends off the host
   and carries a sensitive source (sensitivity at least `sent_sensitivity_min`) or a file the agent wrote a secret
   into, where some destination is covered by no grant, owner request, owner configuration or library entry (or is
-  not written as an entity at all); and a push that publishes a secret or a credential file.
+  not written as an entity at all); and a push that publishes a secret or a credential file;
+- an unknown host or repository nobody named (not the owner's request, a grant or the owner's own configuration)
+  that a later run, set up by self-modification content the call writes (a cron line, a hook, a skill, a job
+  prompt), sends to or runs code from (`reputation.unknown_in_written_selfmod`).
 
 Three further strong signals are parameters, off unless a parameter set switches them on: a look-alike of a
 vouched-for entry or of a host, package or person the owner named (`lookalike`); a retry of an action the owner
@@ -64,6 +67,8 @@ STRONG_REASONS = frozenset(
         "artefact.credential_file_pushed",
     }
 )
+#: An unknown host nobody named in self-modification content the call writes, which a later run contacts.
+WRITTEN_SELFMOD_REASONS = frozenset({"reputation.unknown_in_written_selfmod"})
 KNOWN_BAD_PREFIX = "reputation.known_bad_"
 #: Look-alikes of an entry the library vouches for or of a host, package or person the owner named
 #: (`attended_owner_cap.lookalike`), including a look-alike installer host or tool provider.
@@ -256,6 +261,8 @@ def check(
         strong.append("untrusted_content")
     if any((c.reason or "").startswith(KNOWN_BAD_PREFIX) for c in claims):
         strong.append("known_bad")
+    if any((c.reason or "") in WRITTEN_SELFMOD_REASONS for c in kept):
+        strong.append("written_selfmod_host")
     relieved = {
         s for s, reason in relief_subjects if s is not None and reason in DESTINATION_RELIEF
     }

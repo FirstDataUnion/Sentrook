@@ -25,6 +25,11 @@ questions (their sensitivity comes from AIRA's path classes), loopback hosts are
 machine, and a recipient written as a self-reference (`me`, `self`, `owner`) is the account the tool
 runs as, so none of these is looked up.
 
+A host or repository that self-modification content the call writes (a cron line, a hook, a skill, a job prompt)
+sends to or runs code from in its later run (`Entity.future_roles`) is scored in that role when nobody named it (not
+the owner's request, a grant or the owner's own configuration). Unknown, it takes the unknown distrust of that role
+with the reason `reputation.unknown_in_written_selfmod`, which the attended-owner check counts as a strong signal.
+
 A provider API host the library lists only as the home of the credentials its service issues (tier
 `provider_api`) vouches for nothing else: it is scored, reported and shown to the judge as an unlisted host,
 and its credential names are kept in the evidence for the credential-home check (`prepare.credential_home`).
@@ -54,6 +59,9 @@ from ..prepare.entities import Entity, EntityKind, Origin, Role
 from .base import Contribution, Envelope, Floor
 
 PROBE_VERSION = "entity_oracle/2.0.0a1"
+#: An unknown host or repository nobody named that a later run, set up by self-modification content the call
+#: writes (a cron line, a hook, a skill, a job prompt), sends to or runs code from.
+WRITTEN_SELFMOD_REASON = "reputation.unknown_in_written_selfmod"
 
 LOOKUP_KINDS = (
     EntityKind.HOST,
@@ -233,6 +241,14 @@ class EntityOracleProbe:
         return {r.entity_id for r in refs if r.entity_id}
 
     @staticmethod
+    def _later_roles(ent: Entity) -> set[str]:
+        """The roles a later run that the call's written self-modification content sets up gives the entity, when
+        nobody named it: not the owner's request, a grant or the owner's own configuration."""
+        if not ent.future_roles or ent.sanctioned or ent.in_session_trusted:
+            return set()
+        return {r.value for r in ent.future_roles}
+
+    @staticmethod
     def _entity_info(ent: Entity, v: Verdict, roles: list[str], near: dict | None) -> dict:
         info = {
             "kind": ent.kind.value,
@@ -245,6 +261,8 @@ class EntityOracleProbe:
             "match": v.match.value if v.match else None,
             "near_miss": near,
         }
+        if ent.future_roles:
+            info["future_roles"] = sorted(r.value for r in ent.future_roles)
         if ent.recipient_domain_of:
             info["mail_domain_of"] = list(ent.recipient_domain_of)
         if v.credential_names:
@@ -314,7 +332,18 @@ class EntityOracleProbe:
             v = _credential_home_only(result.get(ent.kind.value, ent.value))
             near = _near_miss(v)
             roles = sorted(r.value for r in ent.roles) or [Role.MENTIONED.value]
-            risky_role = max(roles, key=lambda r: self.params.unknown_by_role.get(r, 0.0))
+            later = self._later_roles(ent)
+            risky_role = max(
+                sorted(set(roles) | later), key=lambda r: self.params.unknown_by_role.get(r, 0.0)
+            )
+            # the risk comes from a run the call's written self-modification content sets up
+            from_later = bool(later) and self.params.unknown_by_role.get(risky_role, 0.0) >= max(
+                self.params.unknown_by_role.get(r, 0.0) for r in roles
+            )
+            if from_later and risky_role not in later:
+                risky_role = max(
+                    sorted(later), key=lambda r: self.params.unknown_by_role.get(r, 0.0)
+                )
             if v.verdict is VerdictKind.KNOWN_BAD:
                 distrust = (
                     self.params.known_bad_distrust if v.distrust is None else float(v.distrust)
@@ -340,7 +369,11 @@ class EntityOracleProbe:
                     if v.distrust is not None
                     else self.params.unknown_by_role.get(risky_role, 0.1)
                 )
-                reason = f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                reason = (
+                    WRITTEN_SELFMOD_REASON
+                    if from_later
+                    else f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                )
                 if near is not None and risky_role in NEAR_MISS_ROLES:
                     distrust = max(distrust, self.params.near_miss_distrust)
                     reason = f"reputation.near_miss_{ent.kind.value}"

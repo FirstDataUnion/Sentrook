@@ -206,6 +206,7 @@ REASONS: dict[str, str] = {
     "reputation.unknown_mcp_server_as_tool_provider": "We have no reputation data for the tool server {subject}.",
     "reputation.unknown_mcp_server_as_data_destination": "We have no reputation data for the tool server {subject}, and it is the only place this call's data goes.",
     "reputation.unknown_plugin_as_data_destination": "We have no reputation data for the plugin {subject}, and it is the only place this call's data goes.",
+    "reputation.unknown_in_written_selfmod": "The job, hook or skill this call writes would later contact {subject}, which you did not name and we have no reputation data for.",
     "reputation.switched_provider": "This tool was served by a different provider earlier in the session, and nothing vouches for {subject}.",
     "reputation.known_bad_host": "{subject} is a known-bad host.",
     "reputation.known_bad_recipient": "{subject} is a known-bad recipient.",
