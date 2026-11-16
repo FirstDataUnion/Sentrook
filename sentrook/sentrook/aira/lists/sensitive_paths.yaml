@@ -12,7 +12,7 @@
 # An operator overlay directory (`SENTROOK_LISTS_DIR`) may carry a file of the same name; its
 # entries are merged additively (lists are appended, groups are unioned).
 
-version: 2
+version: 3
 
 # --------------------------------------------------------------------------
 # sensitive — credential, key, auth-store, browser-profile and PII material.
@@ -215,6 +215,8 @@ agent_plugins:
     - '\.openclaw/(?:plugins|extensions|skills)/'
     - '\.hermes/(?:plugins|skills)/'
     - '(?:^|[\s"''`=/])skills/'
+    # OpenClaw's Skill Workshop folder (<agent dir>/workshop-skills/): skills its own review writes and loads.
+    - '(?:^|[\s"''`=/])workshop-skills/'
 
 # agent_scheduler — the agent's own scheduler state. selfmod.scheduler (1.0).
 agent_scheduler:

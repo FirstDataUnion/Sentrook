@@ -13,6 +13,7 @@
  * `ownerCommand`; `/sentrook` and its status stay open to everyone.
  */
 
+import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
@@ -29,6 +30,7 @@ import {
 } from "./history.ts";
 import { OWNER_SCOPES, refusal } from "./owner.ts";
 import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
+import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
@@ -49,6 +51,8 @@ export interface CommandContext {
   owner?: OwnerRun;
   /** The session the command was sent from (as scans key it); unset when there is none. */
   session?: string;
+  /** The OpenClaw version the plugin runs in; unset when the host does not say. */
+  hostVersion?: string;
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
@@ -229,7 +233,7 @@ function statusText(ctx: CommandContext): string {
     resolveSecretString(ctx.pluginConfig.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
   ].filter(Boolean);
-  return [
+  const lines = [
     `Sentrook plugin: ${PLUGIN_VERSION}`,
     `mode: ${cfg.mode}`,
     `review at: ${cfg.reviewAt}, block at: ${cfg.blockAt}`,
@@ -240,5 +244,12 @@ function statusText(ctx: CommandContext): string {
     `grants: ${grantCount}`,
     `channel bindings: ${bindingCount}`,
     `snooze: ${snooze.statusLine(snooze.load(cfg.stateDir), new Date())}`,
-  ].join("\n");
+    `skill review: ${selfEdit.statusLine(
+      selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
+      cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
+    )}`,
+  ];
+  const note = timeoutBehaviorNote(cfg.approval, ctx.hostVersion);
+  if (note) lines.push(`approval: ${note}`);
+  return lines.join("\n");
 }

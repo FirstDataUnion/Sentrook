@@ -11,9 +11,10 @@ import { homedir, platform as osPlatform } from "node:os";
 
 import type { GrantConfig, PluginConfig } from "./config.ts";
 import { capArgs, type Redactor } from "./redact.ts";
+import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.6";
+export const PLUGIN_VERSION = "2.0.0-beta.8";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",
@@ -96,6 +97,36 @@ function normaliseTransport(t: unknown): string | null {
   return null;
 }
 
+/**
+ * A remote MCP server's identity: `remote:<hostname>`, the lowercase hostname without the port, the scheme or
+ * the brackets around an IPv6 literal (http and https on one host are one server). Same rule on every host.
+ */
+export function remoteIdentity(url: string): string | null {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  host = host.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
+  return host ? `remote:${host}` : null;
+}
+
+/**
+ * A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6 brackets. One with
+ * no host written (`remote:*:8200`) is left as it is, so it never widens to every server.
+ */
+export function providerPattern(pattern: string): string {
+  if (pattern.slice(0, 7).toLowerCase() !== "remote:") return pattern;
+  const raw = pattern.trim().toLowerCase();
+  let host = raw.slice(7);
+  const bracketed = /^\[([^\]]*)\]/.exec(host);
+  if (bracketed) host = bracketed[1]!;
+  else if (/^[^:]*:(?:[0-9]*|\*)$/.test(host)) host = host.slice(0, host.lastIndexOf(":"));
+  host = host.replace(/\.+$/, "");
+  return /[^*?[\]]/.test(host) ? `remote:${host}` : raw;
+}
+
 /** MCP tools are named `<server>__<tool>`; identity comes from the server's config entry. */
 export function providerFor(config: any, name: string): Provider {
   if (!name.includes("__")) return { kind: "host", name: null, identity: null, transport: null };
@@ -105,11 +136,7 @@ export function providerFor(config: any, name: string): Provider {
   let identity: string | null = null;
   const transport = normaliseTransport(cfg.transport) ?? (cfg.url ? "http" : cfg.command ? "stdio" : null);
   if (typeof cfg.url === "string") {
-    try {
-      identity = `remote:${new URL(cfg.url).host}`;
-    } catch {
-      identity = null;
-    }
+    identity = remoteIdentity(cfg.url);
   } else if (typeof cfg.command === "string") {
     const args: string[] = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
     const pkg = args.find((a) => !a.startsWith("-"));
@@ -228,12 +255,36 @@ export function senderOf(
   return { relation: "unknown", basis: ["none"] };
 }
 
+/**
+ * How OpenClaw's config says host exec runs: `exec_mode` is `allowlist` when only allowlisted commands run unasked,
+ * `full` when any command may; `approval_gating` is whether the host stops or asks before some commands.
+ *
+ * This is the global config only, not the effective gate. OpenClaw also applies its own approvals store (the stricter
+ * of the two wins), which a plugin cannot read, and per-agent overrides, which are not applied here; nothing at
+ * `before_tool_call` says whether the host will ask about this call. So `host_approval` is always sent as `unknown`.
+ */
 export function execPolicy(config: any): { exec_mode: string; approval_gating: boolean } {
   const exec = config?.tools?.exec ?? {};
-  const mode = exec.mode ?? exec.security;
-  if (mode === "full" || mode === "auto") return { exec_mode: "full", approval_gating: false };
-  if (mode === "allowlist") return { exec_mode: "allowlist", approval_gating: true };
-  if (mode === "ask") return { exec_mode: "unknown", approval_gating: true };
+  if (exec.mode !== undefined) {
+    switch (exec.mode) {
+      case "deny": // host exec is blocked
+        return { exec_mode: "unknown", approval_gating: true };
+      case "allowlist": // allowlisted commands only
+      case "ask": // allowlisted commands; ask on a miss
+      case "auto": // allowlisted commands; review a miss (allow, deny or ask)
+        return { exec_mode: "allowlist", approval_gating: true };
+      case "full":
+        return { exec_mode: "full", approval_gating: false };
+      default:
+        return { exec_mode: "unknown", approval_gating: false };
+    }
+  }
+  // Older configs: a `security` / `ask` pair instead of `mode`. `security` defaults to `full` when only `ask` is set.
+  // Under `full` the host asks for sure only with `ask: always`; `on-miss` is not taken as a gate.
+  const security = exec.security ?? (exec.ask !== undefined ? "full" : undefined);
+  if (security === "deny") return { exec_mode: "unknown", approval_gating: true };
+  if (security === "allowlist") return { exec_mode: "allowlist", approval_gating: true };
+  if (security === "full") return { exec_mode: "full", approval_gating: exec.ask === "always" };
   return { exec_mode: "unknown", approval_gating: false };
 }
 
@@ -241,17 +292,75 @@ export function execPolicy(config: any): { exec_mode: string; approval_gating: b
  * The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex, a trailing `/`
  * the folder or scope itself).
  */
-function piecesIn(pattern: string, text: string): boolean {
+function pieces(pattern: string): string[] {
   pattern = pattern.replace(/\/+$/, "");
-  const pieces = (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
-  if (pieces.reduce((n, p) => n + p.length, 0) < 3) return false;
+  return (pattern.startsWith("*.") ? pattern.slice(2) : pattern).split("*").filter(Boolean);
+}
+
+/** Shorter patterns are not worth sending: they would fit almost any call. */
+function longEnough(pattern: string): boolean {
+  return pieces(pattern).reduce((n, p) => n + p.length, 0) >= 3;
+}
+
+/**
+ * The pattern's pieces appear in `text`, in order. `shortOk`: a pattern whose literal part was already found (a
+ * platform the call names) needs no minimum length.
+ */
+function piecesIn(pattern: string, text: string, shortOk = false): boolean {
+  if (!shortOk && !longEnough(pattern)) return false;
   let at = 0;
-  for (const p of pieces) {
+  for (const p of pieces(pattern)) {
     at = text.indexOf(p, at);
     if (at < 0) return false;
     at += p.length;
   }
   return true;
+}
+
+/** The arguments the scanner reads a send's chat platform from, in its order. */
+const PLATFORM_KEYS = ["channel", "platform", "service"];
+/** The channel targets a `#name` destination names (`user:` and `dm:` are people, never a channel). */
+const CHANNEL_PREFIXES = ["channel:", "group:", "thread:"];
+
+/**
+ * The chat platform a message send names in its own argument (`discord` for `{channel: discord, target: "#x"}`),
+ * lower-cased; null for any other call.
+ */
+export function callPlatform(args: unknown, kind: string): string | null {
+  if (kind !== "message_send" || !args || typeof args !== "object") return null;
+  for (const k of PLATFORM_KEYS) {
+    const v = (args as Record<string, unknown>)[k];
+    if (typeof v === "string" && v.trim()) return v.trim().toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner reads them, each
+ * with whether it needs no minimum length: as written; without a `<platform>:` prefix when the send names that
+ * platform in its own argument; and a `#name` as the channel target `channel:name` (or `group:`, `thread:`).
+ */
+function destinationForms(pattern: string, platform: string | null): Array<[string, boolean]> {
+  const forms: Array<[string, boolean]> = [[pattern, false]];
+  const colon = pattern.indexOf(":");
+  if (platform && colon > 0 && colon < pattern.length - 1 && pattern.slice(0, colon) === platform) {
+    forms.push([pattern.slice(colon + 1), true]);
+  }
+  for (const [form, shortOk] of [...forms]) {
+    if (form.startsWith("#")) forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + form.slice(1), shortOk]));
+  }
+  return forms;
+}
+
+/** What is left of a pattern once glob characters and separators are removed; nothing left means it matches everything, and the scanner ignores it. */
+const NOT_LITERAL = /\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]/g;
+
+/** Why a channel binding can never relieve a send, as the listing and verify say it; null when it can. */
+export function bindingProblem(pattern: string): string | null {
+  pattern = pattern.trim();
+  if (!pattern.replace(NOT_LITERAL, "")) return "matches every channel, ignored";
+  if (!destinationForms(pattern.toLowerCase(), null).some(([f]) => longEnough(f))) return "too short, never sent";
+  return null;
 }
 
 /** The arguments the scanner reads a command's working directory from, in its order. */
@@ -272,19 +381,27 @@ export function callCwd(args: unknown): string | null {
 /**
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
- * call's provider identity. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
- * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
+ * call's provider identity (a `remote:` pattern without its port, as the identity is). Paths are read the way the scanner resolves them: under home in any form (`~/…`,
+ * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace. A destination is read the way the
+ * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send names
+ * `platform` (`callPlatform`).
  */
 export function relevantGrants(
   grants: GrantConfig[],
   argsText: string,
-  opts: { identity?: string | null; home?: string; workspace?: string | null; cwd?: string | null } = {},
+  opts: {
+    identity?: string | null;
+    home?: string;
+    workspace?: string | null;
+    cwd?: string | null;
+    platform?: string | null;
+  } = {},
 ): Array<Record<string, unknown>> {
   const text = argsText.toLowerCase();
   let texts = [text];
   const base = opts.cwd || opts.workspace;
   if (base) texts.push(text.replace(DOT_PATH, () => `${base.replace(/\/+$/, "").toLowerCase()}/`));
-  let pats = grants.map((g) => g.pattern.toLowerCase());
+  let pats = grants.map((g) => (g.kind === "provider" ? providerPattern(g.pattern) : g.pattern).toLowerCase());
   if (opts.home) {
     const root = opts.home.replace(/\/+$/, "").toLowerCase();
     texts = texts.map((t) => t.replaceAll("~/", `${root}/`).replaceAll("$home/", `${root}/`));
@@ -294,7 +411,9 @@ export function relevantGrants(
   grants.forEach((g, i) => {
     const hay = [...texts];
     if (g.kind === "provider" && opts.identity) hay.push(opts.identity.toLowerCase());
-    if (!hay.some((h) => piecesIn(pats[i]!, h))) return;
+    const forms: Array<[string, boolean]> =
+      g.kind === "destination" ? destinationForms(pats[i]!, opts.platform ?? null) : [[pats[i]!, false]];
+    if (!forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
     out.push({
       grant_ref: `g_${i + 1}`,
       kind: g.kind,
@@ -327,6 +446,10 @@ export interface BuildInput {
    * config grant has no session, so a session one is never sent).
    */
   grants?: GrantConfig[];
+  /** A call of OpenClaw's own background process (`selfEdit.ts`): sent with trigger `system`, not the run's own. */
+  hostProcess?: boolean;
+  /** A self-edit's `self_edit` block (`conversation.block`); sent only with `hostProcess`. */
+  selfEdit?: Record<string, unknown> | null;
 }
 
 export interface Built {
@@ -396,7 +519,7 @@ export function buildPlanir(b: BuildInput): Built {
   const sentInputs = sess.buffer.filter((i) => windowIds.has(i.call_id));
   const history = window.map(({ _host_call_id: _drop, ...h }) => h as Omit<HistoryEntry, "_host_call_id">);
 
-  const requestText = requestTextOf(run);
+  const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
@@ -426,13 +549,15 @@ export function buildPlanir(b: BuildInput): Built {
       step,
       state: sess.token,
     },
-    trigger: {
-      kind: triggerKind(run),
-      channel: isSystemAgentTurn(run)
-        ? "chat"
-        : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider)),
-      sender: senderOf(ctx.requester, run, cfg),
-    },
+    trigger: b.hostProcess
+      ? structuredClone(SELF_EDIT_TRIGGER)
+      : {
+          kind: triggerKind(run),
+          channel: isSystemAgentTurn(run)
+            ? "chat"
+            : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider)),
+          sender: senderOf(ctx.requester, run, cfg),
+        },
     request: { text: redactor.string(String(requestText)), carried_from_turn: null },
     new_inputs: sentInputs,
     history,
@@ -452,8 +577,10 @@ export function buildPlanir(b: BuildInput): Built {
       home: homedir(),
       workspace: run.workspaceDir,
       cwd: tk === "exec" ? callCwd(event.params) : null,
+      platform: callPlatform(event.params, tk),
     }),
     options: { packs: cfg.packs, redaction: redactor.level },
+    ...(b.hostProcess && b.selfEdit ? { self_edit: b.selfEdit } : {}),
   };
 
   return {

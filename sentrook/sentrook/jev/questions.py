@@ -2,7 +2,8 @@
 
 A set is a JSON file under `jev/questions/`: `name`, `state_view`, an optional `preamble` prepended to
 every question's instructions, and `questions` (each `type` noul | score | choice, `instructions`,
-`criteria`). `exposure-v1` and `call-v1` are the two halves of the frozen TestNest baseline set
+`criteria`), and optionally `mapping`, how the answers become signals (kept out of the request body). `exposure-v1` and
+`call-v1` are the two halves of the frozen TestNest baseline set
 `designed-v1-split`, word for word; their sha is recorded in every envelope so a result
 is attributable to exact wording. A wording change is a new file.
 
@@ -29,6 +30,8 @@ class QuestionSet:
     preamble: str | None
     questions: dict[str, dict[str, Any]]
     sha: str
+    #: How answers become signals, for sets that define it (the self-edit sets); never sent to Jev.
+    mapping: dict[str, Any] | None = None
 
     def levels(self, question: str) -> int:
         crit = self.questions[question]["criteria"]
@@ -64,6 +67,7 @@ def load_question_set(name: str | Path) -> QuestionSet:
         preamble=raw.get("preamble"),
         questions=raw["questions"],
         sha=hashlib.sha256(canonical_json(raw).encode("utf-8")).hexdigest(),
+        mapping=raw.get("mapping"),
     )
 
 

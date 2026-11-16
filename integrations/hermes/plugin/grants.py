@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import PluginConfig, parse_grants
+from .planir import binding_problem
 from .store import Store, read_time
 
 KINDS = ("destination", "file", "provider")
@@ -194,9 +195,18 @@ def format_grants(
     return "\n".join(lines)
 
 
+def _with_problem(pattern: str, details: list[str]) -> str:
+    """A binding's details, with why it can never apply when it cannot."""
+    problem = binding_problem(pattern)
+    return "; ".join(details + ([problem] if problem else []))
+
+
 def format_bindings(cfg: PluginConfig, data: dict[str, Any] | None) -> str:
-    rows = [(p, "config, read-only") for p in cfg.channel_bindings]
-    rows += [(b["pattern"].strip(), "; ".join(_set_by(b))) for b in _file_bindings(data)]
+    rows = [(p, _with_problem(p, ["config, read-only"])) for p in cfg.channel_bindings]
+    rows += [
+        (b["pattern"].strip(), _with_problem(b["pattern"], _set_by(b)))
+        for b in _file_bindings(data)
+    ]
     rows = [tuple(_clean(c) for c in r) for r in rows]
     lines = [
         f"Channel bindings: {len(cfg.channel_bindings)} in config, "
@@ -207,6 +217,14 @@ def format_bindings(cfg: PluginConfig, data: dict[str, Any] | None) -> str:
     if rows:
         lines += _table(("channel", "details"), rows)
     return "\n".join(lines)
+
+
+def binding_problems_summary(cfg: PluginConfig) -> str:
+    """The config bindings that can never apply and why, e.g. `ab (too short, never sent)`; "" when
+    none."""
+    return ", ".join(
+        f"{_clean(p, 60)} ({why})" for p in cfg.channel_bindings if (why := binding_problem(p))
+    )
 
 
 def unsent_summary(cfg: PluginConfig) -> str:
@@ -434,7 +452,9 @@ def bind(
                 return f"{channel} is already bound.", None
             entry = {"pattern": channel, "granted_at": _iso(now), "set_by": by}
             data["bindings"].append(entry)
-            return f"Channel binding added: {channel}.", {"op": "bind_add", "entry": entry}
+            problem = binding_problem(channel)
+            reply = f"Channel binding added: {channel}" + (f" ({problem})." if problem else ".")
+            return reply, {"op": "bind_add", "entry": entry}
         if found is None:
             return f"{channel} is not bound.", None
         entry = data["bindings"].pop(found)

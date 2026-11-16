@@ -133,7 +133,12 @@ export function runPackCheck(): void {
     version: string;
     main: string;
     files: string[];
-    openclaw?: { runtimeExtensions?: string[] };
+    openclaw?: {
+      extensions?: string[];
+      runtimeExtensions?: string[];
+      compat?: { pluginApi?: string };
+      build?: { openclawVersion?: string };
+    };
   };
 
   assert.equal(pkg.name, "@firstdataunion/sentrook-openclaw");
@@ -143,6 +148,9 @@ export function runPackCheck(): void {
     "package.json openclaw.runtimeExtensions must include ./dist/index.js",
   );
   assert.ok(pkg.files.includes("dist/"), "package.json files must include dist/");
+  // ClawHub refuses an external code plugin without these two.
+  assert.ok(pkg.openclaw?.compat?.pluginApi, "package.json needs openclaw.compat.pluginApi (ClawHub)");
+  assert.ok(pkg.openclaw?.build?.openclawVersion, "package.json needs openclaw.build.openclawVersion (ClawHub)");
   assert.ok(
     pkg.files.includes("openclaw.plugin.json"),
     "package.json files must include openclaw.plugin.json",
@@ -192,12 +200,11 @@ export function runPackCheck(): void {
   const listing = parsePackJson(packed.stdout, pkg.name);
   const packedPaths = new Set((listing.files ?? []).map((f) => f.path));
 
-  const required = [
-    "dist/index.js",
-    "openclaw.plugin.json",
-    "package.json",
-    "index.ts",
-  ] as const;
+  // Every entry OpenClaw or ClawHub may load must be in the upload.
+  const declared = [...(pkg.openclaw?.extensions ?? []), ...(pkg.openclaw?.runtimeExtensions ?? [])].map((e) =>
+    e.replace(/^\.\//, ""),
+  );
+  const required = ["dist/index.js", "openclaw.plugin.json", "package.json", "README.md", ...declared];
   for (const path of required) {
     assert.ok(packedPaths.has(path), `npm pack is missing ${path}`);
   }

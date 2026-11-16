@@ -47,6 +47,15 @@ def result(h, cid, text, status="ok"):
     )
 
 
+def dump_planirs(name, scans):
+    """Lets the scanner's own validator check these requests (`make plugin-planir-check`): each episode
+    writes its own file, so the dumps do not depend on which tests run or in what order."""
+    if os.environ.get("SENTROOK_PLANIR_DUMP_DIR"):
+        d = Path(os.environ["SENTROOK_PLANIR_DUMP_DIR"])
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.json").write_text(json.dumps(scans))
+
+
 def test_episode_allow_block_review_with_token_and_inputs(harness):
     h = harness
     turn(h, calls=[("c1", "ls"), ("c2", "curl EXFIL")])
@@ -63,7 +72,12 @@ def test_episode_allow_block_review_with_token_and_inputs(harness):
 
     blocked = call(h, "c2", "curl EXFIL")
     assert blocked["action"] == "block"
-    assert "risk 92/100: Runs a command on cl0ud-sync.io" in blocked["message"]
+    assert blocked["message"] == (
+        "Sentrook security block: this tool call did not run because it reads or sends sensitive "
+        "data, such as credentials or personal data. Do not retry it, rephrase it or try to reach the "
+        "same result another way unless the user explicitly tells you to. Tell the user what was "
+        "blocked and why, and ask how they want to proceed."
+    )
     p2 = h.scans[1]
     assert p2["session"]["state"] == "state-1"
     assert p2["history"][0]["decision"] == "allowed"
@@ -88,13 +102,34 @@ def test_episode_allow_block_review_with_token_and_inputs(harness):
     assert [x["decision"] for x in p4["history"]] == ["allowed", "blocked", "denied_by_user"]
     assert [x["step"] for x in p4["history"]] == [1, 2, 3] and p4["session"]["step"] == 4
 
-    # Lets the scanner's own validator check these requests (`make plugin-planir-check`).
-    if os.environ.get("SENTROOK_PLANIR_DUMP"):
-        Path(os.environ["SENTROOK_PLANIR_DUMP"]).write_text(json.dumps(h.scans))
+    dump_planirs("episode", h.scans)
 
     log = h.traffic()
     assert [r["kind"] for r in log] == ["scan", "scan", "scan", "resolution", "scan"]
     assert secret not in (h.dir / "sentrook" / "traffic.jsonl").read_text()
+
+
+def test_episode_loop_save_declares_a_self_edit(harness, provenance):
+    """A turn, then Hermes's background review saving memory: the save carries trigger system and the
+    conversation."""
+    h = harness
+    turn(h, calls=[("c1", "ls")])
+    call(h, "c1", "ls")
+    result(h, "c1", "notes.txt")
+    provenance["origin"] = "background_review"
+    args = {"action": "add", "target": "memory", "content": "Workspace notes live in notes.txt"}
+    assert (
+        h.ctx.hooks["pre_tool_call"](
+            tool_name="memory", args=args, tool_call_id="c2", turn_id="t-review", **SID
+        )
+        is None
+    )
+    save = h.scans[-1]
+    assert save["trigger"]["kind"] == "system"
+    assert save["self_edit"]["store"] == "memory"
+    assert [e["role"] for e in save["self_edit"]["conversation"]] == ["user", "assistant", "tool"]
+
+    dump_planirs("episode-loop-save", h.scans)
 
 
 def test_process_manage_kind_follows_the_action(harness):
@@ -135,8 +170,43 @@ def test_unattended_review_blocks(harness):
     turn(harness, platform="cron")
     r = call(harness, "c1", "rm REVIEW")
     assert r["action"] == "block"
+    # A review nobody can answer gets the same agent text as any block: no codes, no risk.
+    assert r["message"] == (
+        "Sentrook security block: this tool call did not run because it reads or sends sensitive "
+        "data, such as credentials or personal data. Do not retry it, rephrase it or try to reach the "
+        "same result another way unless the user explicitly tells you to. Tell the user what was "
+        "blocked and why, and ask how they want to proceed."
+    )
     assert harness.scans[0]["trigger"]["kind"] == "scheduled"
     assert harness.scans[0]["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
+
+
+def test_cron_delivery_goes_out_as_scheduled_with_its_channel_binding(harness):
+    """Must fire: the binding reaches the scan of the delivery to its channel, on a scheduled trigger.
+    Must stay silent: a delivery to another channel carries no binding."""
+    harness.ctx.settings["channel_bindings"] = ["C0B0QV5434G"]
+    turn(harness, platform="cron", text="Post the daily brief to the ops channel.")
+
+    # Hermes gives the agent no send tool of its own; a job posts through the owner's script.
+    def send(cid, target):
+        harness.ctx.hooks["pre_tool_call"](
+            tool_name="terminal",
+            args={"command": f"python3 ~/bin/post_brief.py --channel {target} brief.md"},
+            tool_call_id=cid,
+            turn_id="t1",
+            **SID,
+        )
+
+    send("c1", "C0B0QV5434G")
+    send("c2", "C0B0QV5434H")
+    bound, other = harness.scans
+    for p in (bound, other):
+        assert p["trigger"]["kind"] == "scheduled"
+        assert p["trigger"]["sender"] == {"relation": "unknown", "basis": ["none"]}
+    assert [(g["kind"], g["pattern"], g["scope"]) for g in bound["grants"]] == [
+        ("destination", "C0B0QV5434G", "persistent")
+    ]
+    assert other["grants"] == []
 
 
 def test_scan_error_keeps_token_and_buffer(harness):
@@ -250,7 +320,7 @@ def test_status_reports_missing_credentials_and_a_disabled_traffic_log(harness, 
     monkeypatch.delenv("SENTROOK_SCAN_CLIENT_SECRET")
     harness.ctx.settings["traffic_log"] = {"enabled": False}
     out = slash(harness, "status").splitlines()
-    assert "credentials: missing (SENTROOK_SCAN_CLIENT_ID / _SECRET)" in out
+    assert "credentials: missing SENTROOK_SCAN_CLIENT_SECRET (set in Hermes)" in out
     assert "traffic log: off" in out
 
 
@@ -304,4 +374,44 @@ def test_every_manifest_setting_is_read():
     import yaml
 
     manifest = yaml.safe_load((Path(plugin.__file__).parent / "plugin.yaml").read_text())
-    assert set(manifest["config_schema"]) <= set(plugin.SETTINGS_KEYS)
+    settings = {k for k, v in manifest["config_schema"].items() if v.get("type") != "secret"}
+    assert settings <= set(plugin.SETTINGS_KEYS)
+
+
+def test_episode_review_loop_auto_deny_on_the_terminal(loop_h, review_fork, monkeypatch):
+    """The review loop's own deny on the local terminal goes out as `blocked` in the next scan's history,
+    and that request is valid PlanIR (`make plugin-planir-check`)."""
+    import io
+    import sys
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    h = loop_h
+    monkeypatch.setattr(sys, "stdin", Tty())
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="keep replies short", platform="cli", sender_id="u1", **SID
+    )
+    h.reply.update(risk=55)
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name="skill_manage",
+        args={"action": "create", "name": "tidy", "content": "# Tidy\nSteps."},
+        tool_call_id="c1",
+        turn_id="t1",
+        **SID,
+    )
+    assert out["action"] == "approve"
+    h.ctx.hooks["post_approval_response"](
+        pattern_key=f"plugin_rule:{out['rule_key']}",
+        choice="deny",
+        surface="cli",
+        session_key="agent:main:cli:S1",
+        **SID,
+    )
+    h.reply.update(risk=5)
+    h.ctx.hooks["pre_tool_call"](
+        tool_name="read_file", args={"path": "notes.md"}, tool_call_id="c2", turn_id="t1", **SID
+    )
+    assert [x["decision"] for x in h.scans[-1]["history"]] == ["blocked"]
+    dump_planirs("review-loop-auto-deny", h.scans)

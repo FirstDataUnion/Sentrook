@@ -1,7 +1,7 @@
 # Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
 # overlay may override any scalar here. Values are 0–1 on the signal's own scale.
 
-version: 6
+version: 7
 
 # C1: credential material reached. Keyed by path group.
 sensitivity:
@@ -11,6 +11,9 @@ sensitivity:
   pii_store: 0.6
   # Sources without a path group.
   placeholder: 1.0
+  # A secret-like value the redactors left raw (prepare.secret_like): a cue word or a random value,
+  # less certain than a redactor's placeholder.
+  secret_like: 0.85
   session_holds_sensitive: 0.8
   # C10: a secret written into an artefact.
   artefact: 0.8

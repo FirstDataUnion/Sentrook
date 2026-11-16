@@ -354,6 +354,77 @@ def test_destination_and_provider_matching_still_ignores_case():
     assert grant_matches("provider", "npm:@acme/gmail-*", mcp, host_os="linux")
 
 
+@pytest.mark.parametrize(
+    ("value", "pattern", "covers"),
+    [
+        # The id or #name after a platform prefix, as an owner writes a binding.
+        ("slack:C0B0QV5434G", "C0B0QV5434G", True),
+        ("slack:C0B0QV5434G", "c0b0qv5434g", True),
+        ("Slack:C0B0QV5434G", "C0B0QV5434G", True),
+        ("discord:#bot-home", "#bot-home", True),
+        ("telegram:-1001234567890", "-1001234567890", True),
+        ("channel:ops-yard", "#ops-yard", True),
+        ("channel:ops-yard", "ops-yard", True),
+        ("channel:1498333845953712258", "1498333845953712258", True),
+        # A pattern that names the platform covers that platform only.
+        ("slack:C0B0QV5434G", "slack:C0B0QV5434G", True),
+        ("discord:C0B0QV5434G", "slack:C0B0QV5434G", False),
+        # Must stay silent: another id, a longer id, or a plain word after the platform.
+        ("slack:C0B0QV5434H", "C0B0QV5434G", False),
+        ("slack:C0B0QV5434GX", "C0B0QV5434G", False),
+        ("slack:general", "general", False),
+        ("discord:#bot-home-2", "#bot-home", False),
+        # A direct message is a person, not the bound channel, whatever its id or name.
+        ("user:ops", "#ops", False),
+        ("dm:ops", "ops", False),
+        ("user:1498333845953712258", "1498333845953712258", False),
+        ("user:1498333845953712258", "user:1498333845953712258", True),
+        # A Matrix room's part after the colon is its homeserver, not a name.
+        ("!kXbQwP:example.test", "example.test", False),
+    ],
+)
+def test_destination_grants_match_a_channel_by_the_names_an_owner_writes(value, pattern, covers):
+    ch = Entity(id="E1", kind=EntityKind.CHANNEL, value=value, display=value)
+    assert grant_matches("destination", pattern, ch, host_os="linux") is covers
+
+
+@pytest.mark.parametrize(
+    ("kind", "value", "pattern", "platform", "covers"),
+    [
+        # A pattern naming the platform the send names covers the target the send gives.
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-brief", "discord", True),
+        (EntityKind.CHANNEL, "#daily-brief", "Discord:#Daily-Brief", "discord", True),
+        (EntityKind.CHANNEL, "channel:ops-yard", "discord:#ops-yard", "discord", True),
+        (EntityKind.CHANNEL, "1498333845953712258", "discord:1498333845953712258", "discord", True),
+        (EntityKind.RECIPIENT, "general", "slack:general", "slack", True),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-*", "discord", True),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:*", "discord", True),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:*", "slack", False),
+        # Must stay silent: another platform, no platform, another channel, or a direct message.
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-brief", "slack", False),
+        (EntityKind.CHANNEL, "#daily-brief", "discord:#daily-brief", None, False),
+        (EntityKind.CHANNEL, "#daily-briefs", "discord:#daily-brief", "discord", False),
+        (EntityKind.CHANNEL, "user:ops", "discord:#ops", "discord", False),
+        (EntityKind.CHANNEL, "dm:ops", "discord:ops", "discord", False),
+        # The platform is not a glob.
+        (EntityKind.CHANNEL, "#daily-brief", "*:#daily-brief", "discord", False),
+    ],
+)
+def test_a_platform_named_pattern_covers_a_send_on_that_platform(
+    kind, value, pattern, platform, covers
+):
+    e = Entity(id="E1", kind=kind, value=value, display=value)
+    assert grant_matches("destination", pattern, e, host_os="linux", platform=platform) is covers
+
+
+def test_short_channel_names_apply_to_channels_only():
+    """A recipient with a platform prefix is an address; its part after the prefix is not a name."""
+    rec = Entity(
+        id="E1", kind=EntityKind.RECIPIENT, value="sms:5550142777", display="sms:5550142777"
+    )
+    assert not grant_matches("destination", "5550142777", rec, host_os="linux")
+
+
 # --------------------------------------------------------------------------- provider grants
 
 GMAIL = {
@@ -386,6 +457,57 @@ def test_provider_grants_match_the_identity(twin_case, pattern, covers):
     assert (Origin.GRANT in srv.origins) is covers
     expect = [(srv.id, "distrust", "relief.provider_grant")] if covers else []
     assert [(r.subject, r.effect, r.reason) for r in relief] == expect
+
+
+REMOTE = {"kind": "mcp", "name": "notes", "identity": "remote:x.test", "transport": "http"}
+
+
+@pytest.mark.parametrize(
+    ("pattern", "covers"),
+    [
+        ("remote:x.test", True),
+        ("remote:X.TEST:8200", True),
+        ("remote:x.test:*", True),
+        ("remote:*.test", True),
+        ("remote:x.test:", True),
+        ("remote:y.test:8200", False),
+        # a port is only dropped beside a written host: an all-hosts pattern scoped by port never
+        # widens to every server
+        ("remote:*:8200", False),
+        ("remote:[*]:443", False),
+    ],
+)
+def test_remote_provider_grants_match_the_hostname_whatever_the_port(pattern, covers):
+    srv = Entity(id="E1", kind=EntityKind.MCP_SERVER, value="remote:x.test", display="notes")
+    assert grant_matches("provider", pattern, srv, host_os="linux") is covers
+
+
+def test_ipv6_remote_provider_grants_match_without_brackets():
+    srv = Entity(id="E1", kind=EntityKind.MCP_SERVER, value="remote:::1", display="notes")
+    assert grant_matches("provider", "remote:[::1]:8200", srv, host_os="linux")
+    assert grant_matches("provider", "remote:::1", srv, host_os="linux")
+
+
+@pytest.mark.parametrize(
+    ("identity", "entity"),
+    [
+        ("remote:x.test", "remote:x.test"),
+        ("remote:X.Test:8200", "remote:x.test"),
+        ("remote:[::1]:8200", "remote:::1"),
+        ("remote:::1", "remote:::1"),
+    ],
+)
+def test_a_remote_identity_sent_with_a_port_is_read_as_the_hostname(twin_case, identity, entity):
+    p, relief = run(
+        twin_case,
+        [{"kind": "provider", "pattern": "remote:x.test:8200", "scope": "persistent"}],
+        tool_kind="mcp",
+        arguments={"query": "groceries"},
+        provider={**REMOTE, "identity": identity},
+    )
+    srv = p.entities.get(EntityKind.MCP_SERVER, entity)
+    assert srv is not None
+    assert (Origin.GRANT in srv.origins) is (entity == "remote:x.test")
 
 
 # --------------------------------------------------------------------------- tool grants

@@ -20,6 +20,7 @@ from sentrook.prepare.entities import (
     extract_exec,
     extract_mentions,
     normalise_path,
+    provider_counterpart,
 )
 from sentrook.prepare.fingerprint import Fingerprint
 from sentrook.prepare.trust import Trust
@@ -1038,3 +1039,24 @@ def test_lineage_sibling_staged_file_is_sent_and_sql_targets_are_recorded(attack
     assert prepare(raw, opts(_LINEAGE_SEED)).lineage.sql_targets == []
     raw["pending_call"]["arguments"] = {"command": 'psql -c "TRUNCATE audit_log" yarddb'}
     assert prepare(raw, opts(_LINEAGE_SEED)).lineage.sql_targets == ["audit_log"]
+
+
+@pytest.mark.parametrize(
+    "identity,expected",
+    [
+        ("remote:mcp.quayfern.test", ("host", "mcp.quayfern.test")),
+        ("remote:MCP.Quayfern.test:8443", ("host", "mcp.quayfern.test")),
+        ("remote:[::1]:8200", ("host", "::1")),
+        ("npm:@quayfern/runner-mcp@2.1.0", ("package", "npm:@quayfern/runner-mcp")),
+        ("npm:fold-runner-mcp@2.1.0", ("package", "npm:fold-runner-mcp")),
+        ("pypi:Fold_Runner.MCP==1.0", ("package", "pypi:fold-runner-mcp")),
+        ("remote:*:8200", None),
+        ("runner", None),
+        ("stdio:/usr/local/bin/runner", None),
+    ],
+)
+def test_provider_counterpart(identity, expected):
+    """A provider identity as the entity content or a command would name: the remote server's host or
+    the local server's package."""
+    got = provider_counterpart(identity)
+    assert (None if got is None else (got[0].value, got[1])) == expected

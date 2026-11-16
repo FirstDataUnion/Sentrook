@@ -16,6 +16,7 @@ Classes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -23,13 +24,22 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..enums import Enforce, SessionFlag
+from ..oracle.client import is_local_host
 from ..oracle.near_miss import edit_distance_le1, registrable
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
+from ..prepare.entities import (
+    EntityKind,
+    Origin,
+    Role,
+    normalise_path,
+    normalise_remote_identity,
+    resolve_token,
+)
+from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
-from ..probes.base import Contribution, Floor
+from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
 from .lists import Lists, Rule
@@ -65,6 +75,9 @@ SELFMOD_GROUPS: dict[str, tuple[str, str]] = {
     "host_scheduler": ("selfmod.scheduler", "host_scheduler"),
 }
 
+#: A declared self-edit's store, as the C4 finding it implies when no path or tool rule found one.
+SELF_EDIT_STORES = {"skills": ("selfmod.plugin", "plugin"), "memory": ("selfmod.memory", "memory")}
+
 _WRITE_KINDS = frozenset({ToolKind.FILE_WRITE, ToolKind.FILE_EDIT, ToolKind.MEMORY_WRITE})
 _DEVNULL_RE = re.compile(r"2>\s*/dev/null|&>\s*/dev/null|>\s*/dev/null\s+2>&1", re.IGNORECASE)
 _PRELOAD_EXPORT_RE = re.compile(r"\b(?:export\s+|setenv\s+)?([A-Z_][A-Z0-9_]*)=")
@@ -97,7 +110,17 @@ class Finding:
     contributions: list[Contribution] = field(default_factory=list)
     floors: list[Floor] = field(default_factory=list)
     flags: list[SessionFlag] = field(default_factory=list)
+    marks: list[SessionMark] = field(default_factory=list)
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def holds_sensitive(self, subject: str | None) -> Finding:
+        """The session now holds sensitive data, in `subject` (an entity id); None when it cannot be tied to
+        a file, which keeps the session flag's weight on every later send."""
+        if SessionFlag.HOLDS_SENSITIVE not in self.flags:
+            self.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        if not any(m.subject == subject for m in self.marks):
+            self.marks.append(SessionMark(judgement="sensitive", subject=subject))
+        return self
 
     def add(self, signal: str, value: float, subject: str | None = None, reason: str | None = None):
         self.contributions.append(
@@ -290,7 +313,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
             continue
         f = Finding(rule=f"C1.{g}", cls="C1", reason=f"path.{g}", detail={"path": p.display})
         f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
-        f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        f.holds_sensitive(p.entity_id)
         out.append(f)
         seen.add(g)
     # A bare basename after a `cd`, or a reference tokenisation lost: scored without a subject.
@@ -303,7 +326,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 detail={"mechanism": "text_match"},
             )
             f.add(SENSITIVITY, ctx.weight("sensitivity", g))
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+            f.holds_sensitive(None)
             out.append(f)
             seen.add(g)
     return out
@@ -400,20 +423,47 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     return []
 
 
-def _placeholder_paths(ctx: Context) -> set[str]:
-    """Paths written with a secret placeholder: by an earlier step, or by a sibling in the
-    pending call's batch (a file staged for the send in the same turn)."""
-    out: set[str] = set()
-    open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+def _owner_asked_for_secret(ctx: Context) -> bool:
+    """The owner's own words ask for a secret value to go with the send ("send the gate code to …",
+    "include the env value I gave you"): the lineage rule's `secret_request_terms` and
+    `secret_like_request_terms`."""
+    words = ctx.prepared.request_words or ""
+    return any(
+        rx.search(words)
+        for name in ("secret_request_terms", "secret_like_request_terms")
+        for rx in ctx.lists.patterns("lineage", name, "patterns")
+    )
+
+
+def _placeholder_paths(ctx: Context) -> dict[str, str]:
+    """Paths written with a secret, by an earlier step or by a sibling in the pending call's batch (a
+    file staged for the send in the same turn), each with why (`prepare.secret_like.secret_carried`): a
+    placeholder, a shape the second redaction pass masks, or a secret-like value the redactors leave
+    raw. A value only the secret-like detector finds does not count when the owner asked for a secret
+    to go. A later write of the same path that carries no secret does not clear an earlier one."""
+    out: dict[str, str] = {}
+    open_ = _placeholder(ctx)
+    asked = _owner_asked_for_secret(ctx)
     home, ws = ctx.prepared.home, ctx.prepared.workspace_root
+
+    def add(path: str, why: str | None) -> None:
+        if why is not None and (out.get(path) in (None, DETECTED)):
+            out[path] = why
+
     for h in ctx.prepared.history:
-        if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
-            out.add(normalise_path(h.path, home=home, workspace_root=ws))
+        if h.tool_kind in _WRITE_KINDS and h.path:
+            why = secret_carried(str(h.get("content") or ""), open_, owner_asked=asked)
+            add(normalise_path(h.path, home=home, workspace_root=ws), why)
     for s in ctx.prepared.siblings:
         for w in sibling_writes(s, home=home, workspace_root=ws):
-            if w.content is not None and open_ in w.content:
-                out.add(w.path)
+            if w.content is not None:
+                add(w.path, secret_carried(w.content, open_, owner_asked=asked))
     return out
+
+
+def _secret_weight(ctx: Context, why: str) -> float:
+    """A value only the secret-like detector finds is less certain than a redactor's placeholder."""
+    return ctx.weight("sensitivity", "secret_like" if why == DETECTED else "placeholder")
 
 
 def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
@@ -429,41 +479,66 @@ def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
             sources.append(Source(reason, ctx.weight("sensitivity", g), p.entity_id, p.display))
         elif p.value in written_with_placeholder and (p.is_source or p.value in attached):
             reason = "exfil.attachment" if p.value in attached else "exfil.placeholder_in_argv"
+            why = written_with_placeholder[p.value]
             sources.append(
                 Source(
                     reason,
-                    ctx.weight("sensitivity", "placeholder"),
+                    _secret_weight(ctx, why),
                     p.entity_id,
-                    f"{p.display} (written with a placeholder)",
+                    f"{p.display} (written with a secret: {why})",
                 )
             )
     covered = {s.reason.removeprefix("path.") for s in sources}
     for g in SENSITIVE_GROUPS:
         if g in a.text_groups and g not in covered and not any(g in p.groups for p in a.paths):
             sources.append(Source(f"path.{g}", ctx.weight("sensitivity", g), None, "text_match"))
-    if a.placeholder or (a.content and _placeholder(ctx) in a.content):
-        sources.append(
-            Source(
-                "exfil.placeholder_in_argv",
-                ctx.weight("sensitivity", "placeholder"),
-                None,
-                "placeholder",
-            )
-        )
-    if SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
-        sources.append(
-            Source(
-                "exfil.session_holds_sensitive",
-                ctx.weight("sensitivity", "session_holds_sensitive"),
-                None,
-                "session flag",
-            )
-        )
+    why = _secret_in_call(a, ctx)
+    if why is not None:
+        sources.append(Source("exfil.placeholder_in_argv", _secret_weight(ctx, why), None, why))
+    session = _session_sensitive_source(ctx)
+    if session is not None:
+        sources.append(session)
     return sources
+
+
+def _session_sensitive_source(ctx: Context) -> Source | None:
+    """The session's sensitive data as a source of this send, bound to what it is about: the file or table
+    the session judged sensitive when the call takes content from it; the bare session flag when the
+    call has nothing to match (a raw body, a pipe) or the session holds sensitive data it could not tie to
+    a file; nothing when the call takes content only from other files and tables."""
+    prepared = ctx.prepared
+    binding = prepared.session_binding.sensitive
+    weight = ctx.weight("sensitivity", "session_holds_sensitive")
+    if binding.bound:
+        return Source(
+            "exfil.session_holds_sensitive",
+            weight,
+            binding.subject(),
+            "session: " + ", ".join(binding.names()),
+        )
+    if SessionFlag.HOLDS_SENSITIVE not in prepared.state.flags:
+        return None
+    if binding.identifiable and not prepared.state.sensitive_unbound:
+        return None
+    return Source("exfil.session_holds_sensitive", weight, None, "session flag")
 
 
 def _placeholder(ctx: Context) -> str:
     return str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+
+
+def _secret_in_call(a: CallAnalysis, ctx: Context) -> str | None:
+    """Why the call's own arguments carry a secret (`prepare.secret_like.secret_carried`), or None. The
+    arguments are read as their joined text and as JSON, so a value under a key (`{"pin": "3253"}`)
+    is seen with its key."""
+    open_ = _placeholder(ctx)
+    if a.placeholder or (a.content and open_ in a.content):
+        return PLACEHOLDER
+    asked = _owner_asked_for_secret(ctx)
+    why = secret_carried(a.text, open_, owner_asked=asked)
+    if why is None and isinstance(a.call.raw, dict) and a.call.raw:
+        why = secret_carried(json.dumps(a.call.raw, ensure_ascii=False), open_, owner_asked=asked)
+    return why
 
 
 def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -491,7 +566,10 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 f.add(IRREVERSIBILITY, ctx.weight("exfil", "irreversibility"), subject)
             for src in sources:
                 f.add(SENSITIVITY, src.weight, src.subject, src.reason)
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                if src.reason != "exfil.session_holds_sensitive":
+                    f.holds_sensitive(src.subject)
+            if SessionFlag.HOLDS_SENSITIVE not in f.flags:
+                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
             out.append(f)
         return out
     for sink in sinks:
@@ -632,6 +710,60 @@ def _add_unvetted_sensitivity(
         f.add(SENSITIVITY, weight, subject, "code.unvetted_source")
 
 
+def _library_near_miss(code_source: EntityRef, ctx: Context) -> str | None:
+    """The `known_good` library entry the code source is a near miss of, when the oracle answered
+    before AIRA ran; None otherwise."""
+    info = ctx.prepared.oracle_entities.get(code_source.entity_id or "")
+    if not isinstance(info, dict) or info.get("verdict") != "unknown":
+        return None
+    near = info.get("near_miss")
+    if not isinstance(near, dict) or near.get("verdict") != "known_good" or not near.get("value"):
+        return None
+    return str(near["value"])
+
+
+def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
+    """Fetched code from a host named in content that tried to steer the agent (it asked the agent to
+    keep the action from the owner): the floor. Not when the owner
+    named or granted the host, it is a listed installer or a host the library vouches for, or it is
+    the agent's own machine. Without the library's answer (the oracle off or failing) a vouched-for
+    host cannot be told from any other, so it is floored too: fail closed, on a degraded scan."""
+    ent = ctx.prepared.entities.by_id(code_source.entity_id or "")
+    if ent is None or not ent.steered or ent.sanctioned:
+        return None
+    if _is_listed_installer(code_source.value, ctx) or is_local_host(code_source.value):
+        return None
+    info = ctx.prepared.oracle_entities.get(ent.id)
+    if isinstance(info, dict) and info.get("verdict") == "known_good":
+        return None
+    this_step = [
+        seq
+        for seq in sorted(ctx.prepared.steered_inputs)
+        if f"input:{seq}" in (ent.origins.get(Origin.UNTRUSTED_INPUT) or ())
+    ]
+    markers = sorted({m for seq in this_step for m in ctx.prepared.steered_inputs[seq]})
+    g = Finding(
+        rule="C3.steered_source",
+        cls="C3",
+        reason="code.steered_source",
+        detail={
+            "host": code_source.value,
+            "when": "this_step" if this_step else "earlier_step",
+            "markers": markers,
+        },
+    )
+    g.floors.append(
+        Floor(
+            floor="untrusted_code_execution",
+            min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
+            enforce=Enforce.BLOCK,
+            subject=ent.id,
+            reason="code.steered_source",
+        )
+    )
+    return g
+
+
 def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C3: fetch-to-shell, decode-to-shell (floor), install-from-URL, package install, running a
     file written since a fetch."""
@@ -686,32 +818,47 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 CONCEALMENT, ctx.weight("priv", "concealment"), None, "conceal.obfuscated_command"
             )
         out.append(f)
-        # Look-alike installer host: strong evidence, the floor. An unlisted host
-        # that mimics nothing is scored by consequence and the oracle's distrust, never floored.
-        if code_source is not None:
-            mimics = lookalike_of(code_source.value, lists.strings("installers", "installer_hosts"))
+        # Look-alike installer host: strong evidence, the floor. The installer list, or the entity
+        # library when the oracle answered first: a near miss of a host the library vouches for (the
+        # library vouches for code sources only). An unlisted host that mimics nothing is scored by
+        # consequence and the oracle's distrust, and floored only when it came from content that tried
+        # to steer the agent (below). Every host the command takes code from is checked, so a listed
+        # installer fetched first does not cover a second fetch from another host.
+        sources = [h for h in a.hosts if Role.CODE_SOURCE in h.roles] or (
+            [code_source] if code_source is not None else []
+        )
+        for source in sources:
+            subject = source.entity_id
+            mimics = lookalike_of(source.value, lists.strings("installers", "installer_hosts"))
+            via = "installer_list"
+            if not mimics:
+                mimics, via = _library_near_miss(source, ctx), "library"
             if mimics:
                 g = Finding(
                     rule="C3.lookalike_installer",
                     cls="C3",
                     reason="code.lookalike_installer",
-                    detail={"host": code_source.value, "mimics": mimics},
+                    detail={"host": source.value, "mimics": mimics, "via": via},
                 )
                 g.add(
                     CONCEALMENT,
                     ctx.weight("code", "lookalike_concealment", default=0.8),
-                    host_subject,
+                    subject,
                 )
                 g.floors.append(
                     Floor(
                         floor="untrusted_code_execution",
                         min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
                         enforce=Enforce.BLOCK,
-                        subject=host_subject,
+                        subject=subject,
                         reason="code.lookalike_installer",
                     )
                 )
                 out.append(g)
+            else:
+                steered = _steered_source(source, ctx)
+                if steered is not None:
+                    out.append(steered)
 
     if decode_mech:
         f = Finding(
@@ -871,7 +1018,7 @@ def detect_provider_lookalike(a: CallAnalysis, ctx: Context) -> list[Finding]:
     scored by the other classes; the look-alike is concealment."""
     out: list[Finding] = []
     known = [
-        h.provider.identity
+        normalise_remote_identity(h.provider.identity)
         for h in ctx.prepared.history
         if h.provider.kind is ProviderKind.MCP and h.provider.identity
     ]
@@ -1035,6 +1182,15 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if rule is not None:
             reason = str(rule.get("reason"))
             emit(reason, reason.split(".")[-1], None, {"mechanism": "tool_name", "tool": a.tool})
+    # A declared self-edit modifies the agent's own store by definition, whatever the tool or path form says (a
+    # host's file write may name its skill file relative to a skill folder no path rule knows). The declared store
+    # supplies the finding only when no rule above found one, so a declaration can never lower a score.
+    planir = ctx.prepared.planir
+    if not out and a.source == "pending" and planir.is_self_edit and planir.self_edit is not None:
+        store = planir.self_edit.store.value
+        if store in SELF_EDIT_STORES:
+            reason, wkey = SELF_EDIT_STORES[store]
+            emit(reason, wkey, None, {"mechanism": "self_edit_store", "store": store})
     return out
 
 
@@ -1658,7 +1814,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"path": p.display, "mechanism": mechanism},
                 )
                 f.add(SENSITIVITY, weight, p.entity_id)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(p.entity_id)
                 out.append(f)
 
     if a.kind is not ToolKind.EXEC or a.shape is None:
@@ -1686,7 +1842,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"verb": verb, "group": hit},
                 )
                 f.add(SENSITIVITY, weight, subject)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(subject)
                 out.append(f)
         elif verb == "push" and SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
             if _placeholder_paths(ctx):

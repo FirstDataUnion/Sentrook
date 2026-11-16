@@ -14,7 +14,14 @@ before any probe.
    agent-written files it reads or sends, items the agent moved or copied into a tree the call
    destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
-   introduced first is not promoted by a later echo).
+   introduced first is not promoted by a later echo). Entities from a scanned read of the agent's own
+   config or instruction files (one the agent did not write in this session, and not tainted) are the
+   owner's: they join the token's trusted set instead. Bind the pending call to the token's sensitive
+   and tainted sets (`session_sets`): the files and tables it reads, runs or applies that the sets hold,
+   and what an injected result in this request came from.
+   Mark the hosts named in an untrusted input that tries to steer the agent (it asks the agent to
+   keep the action from the owner, `steering`) as steered, and keep them in the
+   token's steered set; a host already in that set is steered on this step too.
 7. Compute the pending call's action fingerprint.
 8. Build the Jev state views: the v1 views byte-identical to the runner's `trim-v1`, and the v1.1 question-set pass's
    `trim-v2` views (`call-v2` with the turn's inputs, `exposure-v2`) after the second redaction pass
@@ -34,7 +41,7 @@ from ..planir.canonical import (
     canonical_pending,
     canonical_sibling,
 )
-from ..planir.models import InputKind, NewInput, PlanIR, ToolKind
+from ..planir.models import InputKind, NewInput, PlanIR, ProviderKind, ResultStatus, ToolKind
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
 from . import views
@@ -54,7 +61,9 @@ from .entities import (
     normalise_path,
     normalise_recipient,
     paths_in,
+    platform_targets,
     resolve_token,
+    send_platform,
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
@@ -67,12 +76,24 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
+from .own_store import memory_path_spellings, own_store_read
+from .session_sets import (
+    SessionBinding,
+    acts,
+    bind,
+    call_artefacts,
+    owner_config_path,
+    producer_artefacts,
+)
 from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
+from .skill_steps import skill_step_calls
+from .steering import steering_marks, steers
 from .trust import Trust, classify
 
 __all__ = [
     "Lineage",
     "MovedItem",
+    "PLUGIN_CUT_MARKER",
     "Prepared",
     "PrepareOptions",
     "WrittenFile",
@@ -80,9 +101,10 @@ __all__ = [
     "InvalidPlanIR",
 ]
 
-#: History arguments are capped by the plugin at about 4 KB per step. Content at or
-#: beyond this length is treated as possibly truncated when the agent-written file is re-read.
-WRITTEN_FILE_CAP_CHARS = 3900
+#: The plugins cap each history step's arguments at about 4 KB, giving every string a share of it and cutting
+#: a longer string head and tail around this marker. A written file is treated as cut when its content carries
+#: the marker; content that merely fills the cap arrived whole.
+PLUGIN_CUT_MARKER = re.compile(r"…\[sentrook: \d+ bytes cut\]…")
 _CREATING_HEADS = (
     "mkdir",
     "touch",
@@ -104,6 +126,10 @@ class PrepareOptions:
     deterministic_salt: str | None = None
     #: Test mode: a TestNest `state_seed` replaces the token.
     state_seed: dict[str, Any] | None = None
+    #: Token budgets for the call views and the self-edit view: the room the question sets that send them leave in
+    #: the model's context. None uses the default reserves in `views`.
+    call_budget_tokens: int | None = None
+    selfedit_budget_tokens: int | None = None
 
 
 @dataclass
@@ -209,6 +235,22 @@ class Prepared:
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
     prior_untrusted: frozenset[str] = frozenset()
+    #: New tool results that read the agent's own skills or memory (`own_store.own_store_read`): left out of the
+    #: exposure probe, untrusted for everything else.
+    own_store_inputs: frozenset[int] = frozenset()
+    #: Untrusted inputs that try to steer the agent: input_seq → the marker families they match.
+    steered_inputs: dict[int, list[str]] = field(default_factory=dict)
+    #: The pending call against the token's sensitive and tainted sets as they stood before this request.
+    session_binding: SessionBinding = field(default_factory=SessionBinding)
+    #: Per new tool result: hashes of the files and tables its call named. If the result is judged
+    #: injected, they join the tainted set.
+    producer_artefacts: dict[int, list[str]] = field(default_factory=dict)
+    #: Per input read from the owner's config: hashes it added to the trusted set (withdrawn if the
+    #: same scan judges that input injected).
+    trusted_by_input: dict[int, list[str]] = field(default_factory=dict)
+    #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
+    #: the oracle runs before the other probes. Empty when it did not run or failed.
+    oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
     #: What the pending call does to each path a file grant pattern matched: entity id → actions.
@@ -226,7 +268,8 @@ class Prepared:
     #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
     #: is sent. Empty until then, and for views without the block.
     oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
-    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
+    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`, `history_cut`, `history_dropped`,
+    #: `request_cut`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
     #: matchers read. Jev's views carry the full text.
@@ -337,15 +380,40 @@ def _inherit_recipient_domain(table: EntityTable) -> None:
     """The mail domain of a request-named recipient is that recipient's own component, not a
     destination the agent chose: `priya.nair@brightlane.io` named by the owner sanctions
     `brightlane.io` as the destination host of that send, even when the domain also turns up in
-    content the agent read (the owner's own organisation usually does)."""
+    content the agent read (the owner's own organisation usually does). Not when a call names the
+    host in its own right (a URL, a command target): that use is the agent's, not the owner's."""
     for ent in list(table):
         if ent.kind is not EntityKind.RECIPIENT or "@" not in ent.value:
             continue
         if Origin.REQUEST not in ent.origins:
             continue
         host = table.get(EntityKind.HOST, normalise_host(ent.value.split("@", 1)[1]))
+        if host is not None and host.named_in_own_right:
+            continue  # a call also sends to or names the host itself: naming the address is not naming it
         if host is not None and Origin.REQUEST not in host.origins:
             host.add_origin(Origin.REQUEST, "recipient_domain")
+
+
+def _named_verbatim(value: str, text: str) -> bool:
+    """`value` appears in `text` as a whole token, not as the part of an email address after its `@`."""
+    return bool(re.search(r"(?<![\w.@-])" + re.escape(value.lower()) + r"(?![\w-])", text.lower()))
+
+
+def _address_only_hosts(request_text: str, table: EntityTable) -> None:
+    """Naming an email address sanctions mail to it, not other traffic to its host. A host the request
+    reaches only through an address on it (`desk@coppicedown.net`), that a call uses in its own right (posts
+    to it, fetches from it, runs code from it), is not request-named: it keeps its own distrust and origin
+    and gets no request-named relief. It is still a host the owner named, for the look-alike check. A host
+    the owner also wrote bare, as a URL or verbatim stays request-named; so does one the call only mails
+    or merely mentions (a signature, a link in the message)."""
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or not ent.own_right_roles - {Role.MENTIONED}:
+            continue
+        refs = ent.origins.get(Origin.REQUEST)
+        if not refs or set(refs) != {"address"} or _named_verbatim(ent.value, request_text):
+            continue
+        del ent.origins[Origin.REQUEST]
+        ent.owner_named_via_address = True
 
 
 def _mark_display_named(request_text: str, table: EntityTable) -> None:
@@ -431,15 +499,53 @@ def _find_written(
             continue
         content = str(call.get("content") or "")
         if best is None or call.step > best.step:
-            truncated = len(content) >= WRITTEN_FILE_CAP_CHARS or content.rstrip().endswith(
+            truncated = bool(PLUGIN_CUT_MARKER.search(content)) or content.rstrip().endswith(
                 ("…", "[truncated]", "...")
             )
             if best is not None and call.tool_kind is ToolKind.FILE_EDIT:
-                content = (
-                    best.content + "\n" + content
-                )  # an edit after a write: both halves are visible
+                # an edit after a write: both halves are visible, and a cut in the earlier one still applies
+                content = best.content + "\n" + content
+                truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _own_store_inputs(
+    planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
+) -> frozenset[int]:
+    """The new tool results that read the agent's own skills or memory (`own_store.own_store_read`): a host tool
+    that succeeded, by both the input and its history step, with that step's arguments. A memory file the session's
+    tainted set holds, under any spelling lineage may have recorded, is not one."""
+    steps = {h.call_id: h for h in planir.history if h.call_id}
+    prior_tainted = frozenset(state.tainted)
+    platform = planir.host.platform
+    out: set[int] = set()
+    for pi in inputs:
+        item = pi.input
+        if (
+            not pi.new
+            or item.kind is not InputKind.TOOL_RESULT
+            or item.status is not ResultStatus.OK
+        ):
+            continue
+        if item.provider is None or item.provider.kind is not ProviderKind.HOST:
+            continue
+        step = steps.get(item.call_id)
+        if (
+            step is None
+            or step.provider.kind is not ProviderKind.HOST
+            or (step.result is not None and step.result.status is not ResultStatus.OK)
+        ):
+            continue
+        args = step.arguments or {}
+        kind = own_store_read(platform, item.tool, args, home=home, workspace_root=ws)
+        if kind is None:
+            continue
+        spellings = memory_path_spellings(platform, item.tool, args, home=home, workspace_root=ws)
+        if any(entity_hash(state.salt, "path", p) in prior_tainted for p in spellings):
+            continue
+        out.add(item.input_seq)
+    return frozenset(out)
 
 
 def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str, int]:
@@ -676,6 +782,35 @@ def _lineage(
     return lineage
 
 
+def _session_binding(
+    pending: CanonicalCall,
+    table: EntityTable,
+    state: SessionState,
+    lineage: Lineage,
+    *,
+    home: str,
+    workspace_root: str,
+) -> SessionBinding:
+    """The pending call against the token's sensitive and tainted sets as they stood before this request."""
+    ids = {e.value: e.id for e in table if e.kind is EntityKind.PATH}
+    arts = call_artefacts(
+        pending, state.salt, home=home, workspace_root=workspace_root, entity_ids=ids
+    )
+    sensitive, tainted = bind(
+        arts, sensitive=frozenset(state.sensitive), tainted=frozenset(state.tainted)
+    )
+    off_host = sends_off_host(pending, table.pending())
+    destroys = bool(lineage.destructive_targets or lineage.sql_targets)
+    return SessionBinding(
+        sensitive=sensitive,
+        tainted=tainted,
+        off_host=off_host,
+        acts=acts(pending, off_host, destroys, home=home, workspace_root=workspace_root),
+        takes=[a.hash for a in arts if a.takes],
+        writes=[a.hash for a in arts if a.writes and a.kind == "path"],
+    )
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -707,6 +842,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 )
             )
     prior_untrusted = frozenset(state.untrusted)
+    prior_steered = frozenset(state.steered)
 
     # 3. canonicalise
     platform = planir.host.platform
@@ -738,17 +874,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     # 5. entities
     table = EntityTable()
     for f in extract_call(pending, home=home, workspace_root=ws):
-        table.add(f.kind, f.value, display=f.display, role=f.role, origin=Origin.PENDING_CALL)
+        table.add_found(f, Origin.PENDING_CALL)
     for sib in siblings:
         for f in extract_call(sib, home=home, workspace_root=ws):
-            table.add(
-                f.kind,
-                f.value,
-                display=f.display,
-                role=f.role,
-                origin=Origin.SIBLING,
-                ref=sib.call_id,
-            )
+            table.add_found(f, Origin.SIBLING, sib.call_id)
     # What the siblings write, and the pending command read through it: the resolved command's
     # entities take the pending call's roles and the sibling's origin. A failure here leaves the
     # scan without the join rather than failing it.
@@ -764,20 +893,26 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             )
         for call in resolved:
             for f in extract_call(call, home=home, workspace_root=ws):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.SIBLING,
-                    ref=call.call_id,
-                )
+                table.add_found(f, Origin.SIBLING, call.call_id)
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
+    # A self-edit that writes a skill: the skill's commands run later with nobody asked, so they are judged now as
+    # exec calls of their own.
+    # Their entities are not added with roles: an unknown package in an ordinary skill would then read as an
+    # unvetted code source on its own; the risky-step suspicion and the self-edit questions judge them instead.
+    if planir.is_self_edit:
+        try:
+            steps = skill_step_calls(platform, pending, planir.self_edit.store.value)
+            resolved = [*resolved, *steps]
+        except Exception as exc:  # noqa: BLE001
+            coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
-        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
+        ref = None
+        if f.kind is EntityKind.HOST:
+            ref = "address" if f.domain_of is not None else "mention"
+        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST, ref=ref)
     _mark_request_named(words, table)
 
     grant_hits: dict[str, list[str]] = {}
@@ -786,6 +921,13 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     grants_lapsed: dict[str, str] = {}
     grant_reach: dict[str, frozenset[str]] = {}
     off_host = sends_off_host(pending, table.pending())
+    # The chat platform the batch's sends name in their own argument: a pattern naming it covers their
+    # channel targets (`platform_targets`), nothing else. Only when every send in the batch names the
+    # same one, so a target on one platform is never covered by a pattern naming another send's.
+    sends = [c for c in (pending, *siblings) if c.tool_kind is ToolKind.MESSAGE_SEND]
+    platforms = {send_platform(c) for c in sends}
+    platform = next(iter(platforms)) if len(platforms) == 1 else None
+    targets = {t for c in sends for t in platform_targets(c)} if platform else set()
     for grant in planir.grants:
         spec = GRANT_KINDS.get(grant.kind)
         if spec is None or (spec.local_only and off_host):
@@ -802,7 +944,13 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for ent in list(table):
             if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
-            ) or not grant_matches(grant.kind, grant.pattern, ent, host_os=planir.host.os):
+            ) or not grant_matches(
+                grant.kind,
+                grant.pattern,
+                ent,
+                host_os=planir.host.os,
+                platform=platform if (ent.kind, ent.value) in targets else None,
+            ):
                 continue
             if spec.actions:
                 if ent.id not in grant_actions:
@@ -824,11 +972,32 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             ent.add_origin(Origin.GRANT, grant.grant_ref)
             grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
 
+    # The owner's own configuration: a scanned read of an agent config or instruction file that the
+    # agent did not write in this session and that is not tainted.
+    created = _created_paths(history, home, ws)
+    hist_by_step = {c.step: c for c in history if c.step is not None}
+    prior_tainted = frozenset(state.tainted)
+    owner_config: set[int] = set()
+    for pi in inputs:
+        call = hist_by_step.get(pi.step) if pi.input.kind is InputKind.TOOL_RESULT else None
+        if call is None:
+            continue
+        cfg = owner_config_path(call, home=home, workspace_root=ws)
+        if (
+            cfg is not None
+            and cfg not in created
+            and entity_hash(state.salt, "path", cfg) not in prior_tainted
+        ):
+            owner_config.add(pi.input.input_seq)
+
     for pi in inputs:
         content = pi.input.content or ""
         if not content:
             continue
-        origin = Origin.UNTRUSTED_INPUT if pi.trust is Trust.UNTRUSTED else Origin.TRUSTED_INPUT
+        if pi.input.input_seq in owner_config:
+            origin = Origin.OWNER_CONFIG
+        else:
+            origin = Origin.UNTRUSTED_INPUT if pi.trust is Trust.UNTRUSTED else Origin.TRUSTED_INPUT
         for f in extract_mentions(content, home=home, workspace_root=ws, role=None):
             ent = table.add(
                 f.kind, f.value, display=f.display, origin=origin, ref=f"input:{pi.input.input_seq}"
@@ -859,8 +1028,6 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     else min(ent.first_history_step, call.step)
                 )
 
-    created = _created_paths(history, home, ws)
-
     written: WrittenFile | None = None
     for exe in _executed_paths(pending, table):
         written = _find_written(planir, history, exe.value, home, ws)
@@ -868,22 +1035,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
             ):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             for f in extract_mentions(written.content, home=home, workspace_root=ws, role=None):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             if written.truncated:
                 coverage.append(
                     CoverageNote(
@@ -896,9 +1050,11 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
 
     # 6. untrusted set
+    prior_trusted = frozenset(state.trusted)
     for ent in table:
         ent.hash = entity_hash(state.salt, ent.kind.value, ent.value)
         ent.in_session_untrusted = ent.hash in prior_untrusted
+        ent.in_session_trusted = ent.hash in prior_trusted or Origin.OWNER_CONFIG in ent.origins
     additions: list[str] = []
     for ent in table:
         if Origin.UNTRUSTED_INPUT not in ent.origins or ent.hash is None:
@@ -911,27 +1067,86 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         if not agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
+    trusted_by_input: dict[int, list[str]] = {}
+    for ent in table:
+        for ref in ent.origins.get(Origin.OWNER_CONFIG) or ():
+            if ent.hash is not None:
+                trusted_by_input.setdefault(int(ref.removeprefix("input:")), []).append(ent.hash)
+    state.add_trusted([h for hashes in trusted_by_input.values() for h in hashes])
+    binding = _session_binding(pending, table, state, lineage, home=home, workspace_root=ws)
+    produced = {
+        pi.input.input_seq: producer_artefacts(
+            hist_by_step[pi.step], state.salt, home=home, workspace_root=ws
+        )
+        for pi in inputs
+        if pi.new and pi.input.kind is InputKind.TOOL_RESULT and pi.step in hist_by_step
+    }
+    # The step each steering input arrived at: its history step, or now for a message or reply.
+    steered_at: dict[str, int] = {}
+    steered_inputs: dict[int, list[str]] = {}
+    for pi in inputs:
+        if pi.trust is not Trust.UNTRUSTED:
+            continue
+        marks = steering_marks(pi.input.content or "")
+        if steers(marks):
+            steered_inputs[pi.input.input_seq] = marks
+            steered_at[f"input:{pi.input.input_seq}"] = (
+                pi.step if pi.step is not None else planir.session.step
+            )
+    steered_additions: list[str] = []
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or ent.hash is None:
+            continue
+        if ent.hash in prior_steered:
+            ent.steered = True
+            continue
+        arrived = [
+            steered_at[ref]
+            for ref in ent.origins.get(Origin.UNTRUSTED_INPUT) or ()
+            if ref in steered_at
+        ]
+        if not arrived:
+            continue
+        # The agent used the host itself before the steering content named it: not steered by it.
+        if ent.first_history_step is not None and ent.first_history_step < min(arrived):
+            continue
+        ent.steered = True
+        steered_additions.append(ent.hash)
+    state.add_steered(steered_additions)
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])
     _inherit_recipient_domain(table)
+    _address_only_hosts(words, table)
 
     # 7. fingerprint
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
 
     # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
-    # sent in the common case; call: the full trimmed call view)
+    # sent in the common case, less reads of the agent's own skills and memory; call: the full trimmed call view)
+    own_store_inputs = _own_store_inputs(planir, inputs, state, home=home, ws=ws)
     untrusted_seqs = {
         i.input.input_seq
         for i in inputs
-        if i.trust is Trust.UNTRUSTED and i.new and i.input.content
+        if i.trust is Trust.UNTRUSTED
+        and i.new
+        and i.input.content
+        and i.input.input_seq not in own_store_inputs
     }
-    built = views.build_views(raw, exposure_input_seqs=untrusted_seqs)
+    built = views.build_views(
+        raw,
+        exposure_input_seqs=untrusted_seqs,
+        call_budget_tokens=options.call_budget_tokens,
+        selfedit_budget_tokens=options.selfedit_budget_tokens,
+    )
     jev_views = {name: b.state for name, b in built.items()}
     view_meta = {
         name: {
             "redactions": b.redactions,
             "inputs_truncated": b.inputs_truncated,
             "inputs_stripped": b.inputs_stripped,
+            "history_cut": b.history_cut,
+            "history_dropped": b.history_dropped,
+            "request_cut": b.request_cut,
         }
         for name, b in built.items()
     }
@@ -956,6 +1171,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,
+        steered_inputs=steered_inputs,
+        session_binding=binding,
+        producer_artefacts={k: v for k, v in produced.items() if v},
+        trusted_by_input=trusted_by_input,
         grant_hits=grant_hits,
         grant_actions=grant_actions,
         call_grants=call_grants,
@@ -968,4 +1187,5 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         ),
         view_meta=view_meta,
         request_words=words,
+        own_store_inputs=own_store_inputs,
     )

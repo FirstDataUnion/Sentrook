@@ -30,7 +30,16 @@ from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
-from .prepare.views import CALL, EXPOSURE, NEAR_MISS_VIEWS, REPUTATION, VIEW_KEYS, VIEW_VERSIONS
+from .prepare.views import (
+    CALL,
+    EXPOSURE,
+    NEAR_MISS_VIEWS,
+    REPUTATION,
+    SELFEDIT_VIEWS,
+    VIEW_KEYS,
+    VIEW_VERSIONS,
+    set_state_budget_tokens,
+)
 from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
 from .probes.jev import JevCallProbe, JevExposureProbe
@@ -125,6 +134,28 @@ def views_label(jev_views: dict[str, str]) -> str:
     return ",".join(f"{k}:{v}" for k, v in versions.items())
 
 
+def view_budgets(question_sets: Iterable[QuestionSet | None]) -> tuple[int | None, int | None]:
+    """The call-view and self-edit-view token budgets for the call question sets a scanner sends: each view is
+    built to the room its tightest set leaves in the context, from the set's measured cost where it has one
+    (`set_state_budget_tokens`; `None` for a view no set sends: the default reserve). A set that leaves no room at
+    all stops startup."""
+    call: int | None = None
+    selfedit: int | None = None
+    for qs in question_sets:
+        if qs is None:
+            continue
+        budget = set_state_budget_tokens(qs)
+        if budget <= 0:
+            raise ValueError(
+                f"question set {qs.name!r} leaves no room for the request in the context"
+            )
+        if qs.state_view in SELFEDIT_VIEWS:
+            selfedit = budget if selfedit is None else min(selfedit, budget)
+        else:
+            call = budget if call is None else min(call, budget)
+    return call, selfedit
+
+
 class Scanner:
     def __init__(self, config: ScannerConfig):
         self.config = config
@@ -136,11 +167,31 @@ class Scanner:
         self.jev_views: dict[str, str] = {
             k: qs.state_view for k, qs in self.jev_question_sets.items()
         }
+        #: The call question set for declared self-edits (the host's own background saves); None sends them to
+        #: the call set like any other call.
+        self.selfedit_question_set: QuestionSet | None = (
+            load_question_set(config.jev.selfedit_question_set)
+            if config.jev.selfedit_question_set
+            else None
+        )
+        self.call_budget_tokens, self.selfedit_budget_tokens = view_budgets(
+            [self.jev_question_sets[CALL], self.selfedit_question_set]
+        )
 
     @property
     def call_view_wants_reputation(self) -> bool:
         """The configured call view carries the entity library's verdicts (call-v3)."""
         return REPUTATION in VIEW_KEYS.get(self.jev_views.get(CALL, ""), ())
+
+    def call_set_for(self, prepared: Prepared) -> QuestionSet:
+        """The call question set for this request: the self-edit set for a declared self-edit, if configured."""
+        if self.selfedit_question_set is not None and prepared.planir.is_self_edit:
+            return self.selfedit_question_set
+        return self.jev_question_sets[CALL]
+
+    def views_for(self, prepared: Prepared) -> dict[str, str]:
+        """The view each Jev probe sends for this request."""
+        return {EXPOSURE: self.jev_views[EXPOSURE], CALL: self.call_set_for(prepared).state_view}
 
     def _probes(self, prepared: Prepared, options: ScanOptions) -> dict[ProbeStep, Probe | None]:
         cfg = self.config
@@ -155,7 +206,7 @@ class Scanner:
             )
             if cfg.decider is not None
             else None,
-            ProbeStep.JEV_CALL: JevCallProbe(cfg.decider, cfg.jev, self.jev_question_sets[CALL])
+            ProbeStep.JEV_CALL: JevCallProbe(cfg.decider, cfg.jev, self.call_set_for(prepared))
             if cfg.decider is not None
             else None,
             ProbeStep.AIRA: cfg.extra_probes[ProbeStep.AIRA](prepared, cfg)
@@ -200,6 +251,8 @@ class Scanner:
                     clock=clock,
                     deterministic_salt=salt,
                     state_seed=options.state_seed,
+                    call_budget_tokens=self.call_budget_tokens,
+                    selfedit_budget_tokens=self.selfedit_budget_tokens,
                 ),
             )
         except InvalidPlanIR as e:
@@ -223,21 +276,28 @@ class Scanner:
         enabled = tuple(options.probes_enabled or self.config.probes_enabled)
         probes = self._probes(prepared, options)
         envelopes: dict[ProbeStep, Envelope] = {}
-        # A call view that carries the entity library's verdicts needs the oracle's answer first;
-        # the oracle is deterministic and local or one short HTTP round trip, the Jev call is the
-        # long one, so it runs alone before the pool. Without the oracle (disabled or not
-        # configured) the view simply has no `reputation` block.
+        # A call view that carries the entity library's verdicts, and AIRA's look-alike and
+        # steered-host checks, need the oracle's answer first; the oracle is deterministic and local
+        # or one short HTTP round trip, the Jev call is the long one, so it runs alone before the
+        # pool. Without the oracle (disabled or not configured) the view simply has no `reputation`
+        # block and AIRA judges hosts by its own lists.
         oracle = probes.get(ProbeStep.ENTITY_ORACLE)
+        views = self.views_for(prepared)
+        wants_reputation = REPUTATION in VIEW_KEYS.get(views[CALL], ())
+        aira_on = ProbeStep.AIRA.value in enabled and probes.get(ProbeStep.AIRA) is not None
         if (
-            self.call_view_wants_reputation
+            (wants_reputation or aira_on)
             and oracle is not None
             and ProbeStep.ENTITY_ORACLE.value in enabled
         ):
             env = self._run_probe(ProbeStep.ENTITY_ORACLE, oracle, prepared, options)
             envelopes[ProbeStep.ENTITY_ORACLE] = env
-            prepared.oracle_verdicts = verdicts_for_view(
-                env, near_miss=self.jev_views.get(CALL) in NEAR_MISS_VIEWS
-            )
+            if env.status is ProbeStatus.OK:
+                prepared.oracle_entities = dict(env.evidence.get("entities") or {})
+            if wants_reputation:
+                prepared.oracle_verdicts = verdicts_for_view(
+                    env, near_miss=views[CALL] in NEAR_MISS_VIEWS
+                )
         with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
             futures = {}
             for step in ALL_PROBES:
@@ -269,14 +329,14 @@ class Scanner:
             token_key=self.config.token_key,
             started=started,
             probes_enabled=list(enabled),
-            views=views_label(self.jev_views),
+            views=views_label(views),
         )
         return ScanResult(
             response=result.response,
             envelopes=ordered,
             prepared=prepared,
             converge=result,
-            jev_views=dict(self.jev_views),
+            jev_views=views,
         )
 
 

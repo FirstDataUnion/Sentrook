@@ -37,6 +37,13 @@ SIGNALS: dict[str, Signal] = {
             "Recent untrusted input contained agent-directed instructions",
         ),
         Signal(
+            "suspicion.session_exposure",
+            "suspicion",
+            Merge.MAX,
+            True,
+            "Earlier in this session the agent read content carrying instructions aimed at it",
+        ),
+        Signal(
             "suspicion.untrusted_origin",
             "suspicion",
             Merge.MAX_OVER_SUBJECTS,
@@ -143,6 +150,7 @@ REASONS: dict[str, str] = {
     "origin.agent_created_dirty_lineage": "{subject} was created by the agent from content it read.",
     "origin.request_named": "You named {subject} in your request.",
     "origin.granted": "A grant covers {subject}.",
+    "origin.owner_config": "{subject} came from your own agent configuration.",
     "origin.lookalike_of_named_host": "{subject} imitates a host you named in your request; you did not name it.",
     # lineage (context): what the agent did earlier in the session around this call
     "lineage.moved_into_destroyed_tree": "Earlier in this session the agent moved {subject} into the directory this command deletes, so it is deleted too.",
@@ -158,6 +166,14 @@ REASONS: dict[str, str] = {
     "trigger.subagent": "This request came from another agent.",
     "trigger.hook": "This request came from a hook.",
     "trigger.system": "This request came from the system.",
+    "trigger.self_edit": "This is the agent's own background save to its memory or skills.",
+    "selfedit.not_grounded": "Part of this save is not supported by what you said or by the agent's own work.",
+    "selfedit.untrusted_directive": "This save turns content the agent read, or someone else's message, into something the agent will follow later.",
+    "selfedit.unsupported_owner_claim": "This save says you approved, allowed or decided something that nothing you said shows.",
+    "selfedit.weakens_oversight": "This save loosens a rule or confirmation step without your say-so.",
+    "selfedit.persists_secret": "This save writes a secret you did not ask the agent to keep into its memory or skills.",
+    "selfedit.concealment": "This save hides what it says or does.",
+    "selfedit.risky_step": "The saved skill tells the agent to run a risky command later, when nobody is asked.",
     "trigger.trusted_allowlist": "The sender is on your trusted list.",
     "trigger.unknown_sender": "The sender could not be identified.",
     "trigger.sender_other": "The request came from someone other than you.",
@@ -170,6 +186,7 @@ REASONS: dict[str, str] = {
     "retry.denied_consequence_carried": "The consequences of the action you denied earlier carry over to this retry.",
     # session
     "sensitivity.session_holds_sensitive": "The agent read sensitive data earlier in this session and this call sends data out.",
+    "exposure.session_injected_content": "{subject} came from content that tried to instruct the agent, and this call acts on it.",
     "escalation.consequence_rising": "Each recent step in this session had larger consequences than the one before, so this call is scored at least a step above the last.",
     # reputation (oracle)
     "reputation.local_host": "{subject} is this machine.",
@@ -206,6 +223,7 @@ REASONS: dict[str, str] = {
     "relief.tool_grant": "A grant covers running {tool}.",
     "relief.request_named_destination": "You named {subject} as the destination in your request.",
     "relief.known_good_destination": "{subject} is a known good destination.",
+    "relief.known_good_provider": "{subject} is a known good tool provider.",
     # AIRA: consequence classes (C1 to C10) and extent
     "path.credential_store": "{subject} is a credential store.",
     "path.credential_bearing_config": "{subject} is configuration that carries credentials.",
@@ -263,6 +281,7 @@ REASONS: dict[str, str] = {
     "conceal.command_in_url": "The request hides a shell command inside a URL parameter.",
     "code.param_injection": "The request sends a shell command to a local service through a URL parameter.",
     "code.registry_redirect": "The call points the package manager at {subject}; later installs would come from there.",
+    "code.steered_source": "{subject} was named in content that tried to steer the agent, and the call runs code fetched from it.",
     "code.lookalike_installer": "{subject} mimics a well-known installer host; the code being run comes from a look-alike.",
     "code.lookalike_provider": "The tool provider {subject} is one character away from a provider this session already used.",
     "selfmod.host_approvals": "The call changes the host's own approval or allowlist settings.",
@@ -271,6 +290,8 @@ REASONS: dict[str, str] = {
     "floor.guardrail_tampering": "This call tampers with the agent's guardrails. Make this change yourself through Sentrook's own controls.",
     "floor.known_bad_entity": "{subject} is known to be malicious.",
     "floor.untrusted_code_execution": "This call runs code from an untrusted source.",
+    "floor.sensitive_data_sent": "This call sends {subject}, which holds sensitive data the agent read earlier in this session, off this machine.",
+    "floor.injected_content_used": "This call acts on {subject}, which came from content that tried to instruct the agent.",
 }
 
 GENERIC_TEMPLATE = "{code}"

@@ -1,12 +1,28 @@
-# Phase 3B — gated publish of @firstdataunion/sentrook-openclaw to public npmjs.
+# Phase 3B — gated publish of @firstdataunion/sentrook-openclaw to public npmjs and, when asked, ClawHub.
 # Manual only. Merging to main / Changesets Version PRs never publish.
 #
 # Operator: bump via Changesets → merge Version PR → dispatch this workflow
 # with channel=next|latest → approve Environment release-npm.
 #
+# One artifact: the tarball is packed once; ClawHub and npm get the same bytes.
+# Every run (dry_run too) validates it with the ClawHub CLI and does a ClawHub --dry-run publish.
+# With clawhub=true it is published to ClawHub first and the job waits for ClawHub's security
+# checks; a release that is blocked, fails or is still pending at the deadline stops the job
+# before npm. Channel next goes to the ClawHub tag beta (`openclaw plugins install <name>@beta`),
+# latest to latest.
+#
 # Auth: npm Trusted Publishing (OIDC). No NPM_TOKEN.
 # Trusted Publisher on npmjs: org FirstDataUnion, repo Sentrook,
 # workflow release-plugin.yml, environment release-npm.
+# ClawHub: trusted publishing (OIDC, audience clawhub), no token. It can only be configured after one
+# manual publish under the firstdataunion owner:
+#   clawhub package trusted-publisher set @firstdataunion/sentrook-openclaw \
+#     --repository FirstDataUnion/Sentrook --workflow-filename release-plugin.yml --environment release-npm
+# Until then leave clawhub=false: without it the CLI finds no token and the job stops before npm.
+# The job also stops before npm when the ClawHub release is published but its security scan is not
+# clean or Plugin Inspector reports findings (the release is then public on ClawHub; the summary says why).
+# Re-running after ClawHub published (npm failed, or ClawHub finished after the wait): use clawhub=false,
+# since ClawHub refuses the same version twice.
 name: release-plugin
 
 on:
@@ -29,6 +45,11 @@ on:
         required: false
         type: boolean
         default: false
+      clawhub:
+        description: Also publish to ClawHub (needs its trusted publisher, set after the first manual publish)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +62,8 @@ env:
   NODE_VERSION: "24"
   NPMJS_REGISTRY: "https://registry.npmjs.org"
   PLUGIN_DIR: integrations/openclaw/plugin
+  CLAWHUB_CLI: "clawhub@0.25.1"
+  CLAWHUB_OWNER: firstdataunion
 
 jobs:
   publish:
@@ -146,26 +169,115 @@ jobs:
             echo "    enter Changesets pre mode (rc), open/merge a Version PR, then retry" >&2
             exit 1
           fi
+          clawhub_tag=latest
+          if [[ "${CHANNEL}" == "next" ]]; then
+            clawhub_tag=beta
+          fi
           {
             echo "name=${name}"
             echo "version=${version}"
             echo "tag=${CHANNEL}"
+            echo "clawhub_tag=${clawhub_tag}"
           } >> "${GITHUB_OUTPUT}"
           echo "Will publish ${name}@${version} with dist-tag ${CHANNEL}"
 
       - name: Plugin tests + pack check
         run: make plugin-test
 
+      - name: Pack the release artifact
+        id: pack
+        working-directory: ${{ env.PLUGIN_DIR }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/artifact"
+          mkdir -p "${out}"
+          npm pack --pack-destination "${out}" --loglevel=error >/dev/null
+          tgz="$(ls "${out}"/*.tgz)"
+          echo "tgz=${tgz}" >> "${GITHUB_OUTPUT}"
+          echo "Packed $(basename "${tgz}") sha256=$(sha256sum "${tgz}" | cut -d' ' -f1)"
+
+      - name: ClawHub validate
+        working-directory: ${{ env.PLUGIN_DIR }}
+        run: |
+          set -euo pipefail
+          # validate exits 0 even with findings: require none.
+          npx -y "${CLAWHUB_CLI}" package validate . --out "${RUNNER_TEMP}/inspector" --json > "${RUNNER_TEMP}/validate.out"
+          # shellcheck disable=SC2016 # the node script is JavaScript, its ${} are template literals
+          node -e '
+            const t = require("fs").readFileSync(process.argv[1], "utf8");
+            const r = JSON.parse(t.slice(t.indexOf("{")));
+            const s = r.summary || {};
+            console.log(`Plugin Inspector: ${r.status} breakages=${s.breakageCount} warnings=${s.warningCount} issues=${s.issueCount}`);
+            for (const i of r.issues || []) console.log(`- ${i.severity || ""} ${i.code || i.id || ""}: ${i.message || i.title || JSON.stringify(i)}`);
+            if (String(r.status).toLowerCase() !== "pass" || s.issueCount !== 0) process.exitCode = 1;
+          ' "${RUNNER_TEMP}/validate.out"
+
+      - name: ClawHub dry-run publish
+        env:
+          TGZ: ${{ steps.pack.outputs.tgz }}
+          CLAWHUB_TAG: ${{ steps.meta.outputs.clawhub_tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npx -y "${CLAWHUB_CLI}" package publish "${TGZ}" --dry-run \
+            --owner "${CLAWHUB_OWNER}" --tags "${CLAWHUB_TAG}" \
+            --source-repo "${{ github.repository }}" --source-commit "${SHA}" --source-path "${PLUGIN_DIR}"
+
+      - name: Publish to ClawHub
+        id: clawhub
+        if: ${{ inputs.clawhub && !inputs.dry_run }}
+        env:
+          TGZ: ${{ steps.pack.outputs.tgz }}
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          CLAWHUB_TAG: ${{ steps.meta.outputs.clawhub_tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          # Trusted publishing: the CLI mints a publish token from the job's OIDC token (id-token: write).
+          # --wait: exits non-zero on blocked / failed / expired, and on a release still pending at the deadline.
+          rc=0
+          npx -y "${CLAWHUB_CLI}" package publish "${TGZ}" \
+            --owner "${CLAWHUB_OWNER}" --tags "${CLAWHUB_TAG}" \
+            --source-repo "${{ github.repository }}" --source-commit "${SHA}" --source-path "${PLUGIN_DIR}" \
+            --wait --wait-timeout 1800 --json > "${RUNNER_TEMP}/clawhub.out" 2> "${RUNNER_TEMP}/clawhub.err" || rc=$?
+          cat "${RUNNER_TEMP}/clawhub.err" >&2
+          # The release's own security scan (clean | suspicious | malicious | pending | not-run).
+          if [[ "${rc}" == "0" ]]; then
+            npx -y "${CLAWHUB_CLI}" package inspect "${NAME}" --version "${VERSION}" --json \
+              > "${RUNNER_TEMP}/clawhub-inspect.out" 2>/dev/null || true
+          fi
+          # shellcheck disable=SC2016 # the node script is JavaScript, its ${} are template literals
+          node -e '
+            const fs = require("fs");
+            const json = (f) => { try { const t = fs.readFileSync(f, "utf8"); return JSON.parse(t.slice(t.indexOf("{"))); } catch { return null; } };
+            const r = json(process.argv[1]) || {};
+            const v = (json(process.argv[2]) || {}).version || {};
+            const err = fs.readFileSync(process.argv[3], "utf8").trim().split("\n").pop() || "";
+            const status = r.publicationStatus || (process.argv[4] === "0" ? "unknown" : "not published");
+            const scan = (v.verification || {}).scanStatus || "unknown";
+            const findings = (r.inspectorFindings || []).length;
+            console.log(`ClawHub ${process.env.NAME}@${process.env.VERSION}: ${status}, scan ${scan}, release ${r.releaseId || "none"}, inspector findings ${findings}`);
+            for (const f of r.inspectorFindings || []) console.log(`- inspector: ${JSON.stringify(f)}`);
+            const why = status !== "published" ? (err || "the release was not published")
+              : scan !== "clean" ? `security scan is ${scan}`
+              : findings > 0 ? `${findings} Plugin Inspector finding(s)` : "";
+            fs.appendFileSync(process.env.GITHUB_OUTPUT,
+              `release_id=${r.releaseId || ""}\nstatus=${status}\nscan=${scan}\nfindings=${findings}\nstopped=${why.replace(/[\r\n]+/g, " ")}\n`);
+            if (why) { console.error(`Stopping before npm: ${why}`); process.exitCode = 1; }
+          ' "${RUNNER_TEMP}/clawhub.out" "${RUNNER_TEMP}/clawhub-inspect.out" "${RUNNER_TEMP}/clawhub.err" "${rc}"
+
       - name: Publish to npmjs
         if: ${{ !inputs.dry_run }}
         working-directory: ${{ env.PLUGIN_DIR }}
         env:
           TAG: ${{ steps.meta.outputs.tag }}
+          TGZ: ${{ steps.pack.outputs.tgz }}
         run: |
           set -euo pipefail
           # OIDC Trusted Publishing — no NPM_TOKEN / NODE_AUTH_TOKEN.
           unset NODE_AUTH_TOKEN NPM_TOKEN || true
-          npm publish --access public --tag "${TAG}"
+          npm publish "${TGZ}" --access public --tag "${TAG}"
 
       - name: GitHub Release
         if: ${{ !inputs.dry_run }}
@@ -217,12 +329,21 @@ jobs:
             --target "${SHA}"
 
       - name: Summary
+        if: ${{ !cancelled() }}
         env:
           NAME: ${{ steps.meta.outputs.name }}
           VERSION: ${{ steps.meta.outputs.version }}
           TAG: ${{ steps.meta.outputs.tag }}
           DRY: ${{ inputs.dry_run }}
           SHA: ${{ github.sha }}
+          CLAWHUB: ${{ inputs.clawhub }}
+          CLAWHUB_TAG: ${{ steps.meta.outputs.clawhub_tag }}
+          CLAWHUB_RELEASE: ${{ steps.clawhub.outputs.release_id }}
+          CLAWHUB_STATUS: ${{ steps.clawhub.outputs.status }}
+          CLAWHUB_FINDINGS: ${{ steps.clawhub.outputs.findings }}
+          CLAWHUB_SCAN: ${{ steps.clawhub.outputs.scan }}
+          CLAWHUB_STOPPED: ${{ steps.clawhub.outputs.stopped }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
           {
@@ -231,10 +352,21 @@ jobs:
             echo "- Package: \`${NAME}@${VERSION}\`"
             echo "- Dist-tag: \`${TAG}\`"
             echo "- SHA: \`${SHA}\`"
+            if [[ "${JOB_STATUS}" != "success" ]]; then
+              echo "- **The release stopped early.** Steps after the failed one did not run: check npm and the GitHub Release before re-running."
+            fi
             if [[ "${DRY}" == "true" ]]; then
               echo "- Mode: **dry_run** (not published)"
             else
               echo "- Registry: ${NPMJS_REGISTRY}"
               echo "- GitHub Release: \`plugin-v${VERSION}\`"
+            fi
+            if [[ "${CLAWHUB}" == "true" && "${DRY}" != "true" ]]; then
+              echo "- ClawHub: \`${CLAWHUB_TAG}\`, ${CLAWHUB_STATUS:-not reached}, scan ${CLAWHUB_SCAN:-unknown}, release \`${CLAWHUB_RELEASE:-none}\`, Plugin Inspector findings: ${CLAWHUB_FINDINGS:-?}"
+              if [[ -n "${CLAWHUB_STOPPED}" ]]; then
+                echo "- **Stopped before npm:** ${CLAWHUB_STOPPED}"
+              fi
+            else
+              echo "- ClawHub: validated and dry-run published as \`${CLAWHUB_TAG}\`, not published"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
