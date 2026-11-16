@@ -160,19 +160,28 @@ def test_inputs_are_filled_to_the_room_most_recent_first(attack_case):
             assert entry["scanner_truncated"]["of_chars"] == 6000
 
 
-def test_the_latest_input_is_cut_at_its_head_when_it_cannot_fit_whole(attack_case):
+@pytest.mark.parametrize("name", [CALL_V3, CALL_V5])
+def test_the_latest_input_is_cut_when_it_cannot_fit_whole(attack_case, name):
+    """call-v3 keeps the head; call-v5 keeps head and tail (test_call_view_input_cap covers its shape)."""
     raw = _raw(attack_case, steps=3, inputs=[6000] * 4, pending_chars=30_000)
-    built = _view(raw)
+    built = _view(raw, name=name)
     sent = built.state["new_inputs"]
     assert est_tokens(built.state) <= BUDGET
     assert [i["content"] for i in sent[:-1]] == ["", "", ""]
     latest = raw["new_inputs"][-1]["content"]
-    assert 0 < len(sent[-1]["content"]) < 6000
-    assert latest.startswith(sent[-1]["content"])
-    assert sent[-1]["scanner_truncated"] == {
-        "kept_chars": len(sent[-1]["content"]),
-        "of_chars": 6000,
-    }
+    kept = sent[-1]["scanner_truncated"]["kept_chars"]
+    assert 0 < kept < 6000
+    if name == CALL_V3:
+        assert latest.startswith(sent[-1]["content"]) and len(sent[-1]["content"]) == kept
+        assert sent[-1]["scanner_truncated"] == {"kept_chars": kept, "of_chars": 6000}
+    else:
+        assert sent[-1]["content"].startswith(latest[: kept * 2 // 3])
+        assert sent[-1]["content"].endswith(latest[-(kept - kept * 2 // 3) :])
+        assert sent[-1]["scanner_truncated"] == {
+            "kept_chars": kept,
+            "of_chars": 6000,
+            "kept": "head_tail",
+        }
     assert not built.inputs_stripped
 
 

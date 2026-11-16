@@ -24,27 +24,48 @@ oracle first when the call view asks for it), and is absent when nothing is know
 
 `selfedit-v1` is the view for a declared self-edit (the host's own background save to memory or skills): the call-v5
 view without `request` (a self-edit has no owner request of its own) and with the `self_edit` block, which carries the
-conversation the host's process reviewed. Built only when the request has the block.
+conversation the host's process reviewed. Built only when the request has the block. `selfedit-v2` is the same view with
+the conversation's and the inputs' reads of the agent's own skill library marked `source: own_store` by the scanner
+(`own_store.py`), so the questions can tell the store as it stands from content the agent read.
 
 `trim-v4` adds `call-v5`: the call-v3 view whose `reputation` block also lists the call's unknown
 entities that are near misses of a `known_good` one (`verdict: unknown`, `near_miss`: the entry). The
 prepared state is call-v3's; only what the oracle fills in differs.
+
+`trim-v5` changes `call-v5` only: an input cut by a cap or by the over-budget fill keeps two thirds head and one third
+tail with a marker between them, as the plugins cut inputs, instead of the head alone. When nothing is cut the
+prepared state is still call-v3's.
+
+`trim-v6` changes `call-v5` only: an over-budget view cuts the request text first, to `REQUEST_KEEP_CHARS`, head and
+tail, before any history or input is cut.
+
+`trim-v7` changes `call-v5` only: the over-budget fill sends an input whole whenever the room allows it whole, instead
+of settling on a slightly smaller total that cuts it (a whole input carries no marker and no record, so it can take
+less room than the same input cut by a few characters).
+
+`trim-v8` changes `call-v5` only: a cut never splits a secret. Each cut point moves out of anything the second
+redaction pass would replace, with the context that identifies it (`redact.protected_spans`), so a secret is kept
+whole, and replaced, or cut away whole; `kept_chars` reports what was really kept.
 """
 
 from __future__ import annotations
 
 import copy
+import functools
 from dataclasses import dataclass
 from typing import Any
 
 from ..jev.chunking import BUDGET_TOKENS, est_tokens
-from .redact import second_pass
+from ..jev.questions import QuestionSet
+from .own_store import mark_own_store
+from .redact import protected_spans, redact_text, second_pass, secret_spans
 
 VIEWS_VERSION = "trim-v1"
 VIEWS_VERSION_V2 = "trim-v2"
 VIEWS_VERSION_V3 = "trim-v3"
-VIEWS_VERSION_V4 = "trim-v4"
+VIEWS_VERSION_V8 = "trim-v8"
 VIEWS_VERSION_SELFEDIT = "selfedit-v1"
+VIEWS_VERSION_SELFEDIT_V2 = "selfedit-v2"
 
 STRIP_TOP = frozenset({"request_id", "run_ref", "sent_at", "scan_kind", "origin", "options"})
 SESSION_KEEP = ("agent_ref", "agent_role", "turn", "step")
@@ -59,6 +80,9 @@ CALL_V2 = "call-v2"
 CALL_V3 = "call-v3"
 CALL_V5 = "call-v5"
 SELFEDIT_V1 = "selfedit-v1"
+SELFEDIT_V2 = "selfedit-v2"
+#: The views for a declared self-edit; each is built only when the request has the `self_edit` block.
+SELFEDIT_VIEWS = frozenset({SELFEDIT_V1, SELFEDIT_V2})
 SELF_EDIT = "self_edit"
 #: The call-v3 block of entity-library verdicts, added by the call probe once the oracle has run.
 REPUTATION = "reputation"
@@ -112,8 +136,15 @@ VIEW_KEYS[SELFEDIT_V1] = (
     "grants",
     REPUTATION,
 )
+VIEW_KEYS[SELFEDIT_V2] = VIEW_KEYS[SELFEDIT_V1]
 #: Views whose `reputation` block lists near misses as well as known verdicts.
-NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1})
+NEAR_MISS_VIEWS = frozenset({CALL_V5, SELFEDIT_V1, SELFEDIT_V2})
+#: Views whose cut inputs keep head and tail (two thirds head, one third tail, a marker between), as the plugins cut
+#: them, so the end of a long page or file still reaches the judge. The other views keep the head, as before.
+HEAD_TAIL_VIEWS = frozenset({CALL_V5})
+#: Views whose fitting cuts a long request text first, head and tail, when the view is over the budget. The other views
+#: never cut the request.
+REQUEST_FIT_VIEWS = frozenset({CALL_V5})
 #: Views version per view name.
 VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE: VIEWS_VERSION,
@@ -121,8 +152,9 @@ VIEW_VERSIONS: dict[str, str] = {
     EXPOSURE_V2: VIEWS_VERSION_V2,
     CALL_V2: VIEWS_VERSION_V2,
     CALL_V3: VIEWS_VERSION_V3,
-    CALL_V5: VIEWS_VERSION_V4,
+    CALL_V5: VIEWS_VERSION_V8,
     SELFEDIT_V1: VIEWS_VERSION_SELFEDIT,
+    SELFEDIT_V2: VIEWS_VERSION_SELFEDIT_V2,
 }
 #: Which probe a view serves.
 VIEW_KIND: dict[str, str] = {
@@ -133,6 +165,7 @@ VIEW_KIND: dict[str, str] = {
     CALL_V3: CALL,
     CALL_V5: CALL,
     SELFEDIT_V1: CALL,
+    SELFEDIT_V2: CALL,
 }
 
 #: call-v2 content caps. No suite fixture comes near them (the largest input is about 4.4k
@@ -141,14 +174,47 @@ CALL_INPUT_CAP_CHARS = 6000
 CALL_INPUTS_TOTAL_CAP_CHARS = 40_000
 #: Room left in the chunking budget for the call questions, which repeat the preamble per question, when the
 #: caller does not say which set it sends. It covers every shipped call set (a test pins it); the scanner sizes the
-#: budget from the set it is configured with instead (`state_budget_tokens`).
+#: budget from the set it is configured with instead (`set_state_budget_tokens`).
 CALL_QUESTIONS_RESERVE_TOKENS = 12_000
 CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 
 
+#: The token cost of a shipped question set as the model counts it: the questions plus Jev's own prompt. Measured on
+#: uncached TestNest bodies as the intercept of `usage.input_tokens` fitted against the state's size (call-v6: 816
+#: bodies, 7,004; selfedit-v3: 24 bodies, 8,770), rounded up to the next 100. The questions are prose and cost far
+#: less than their estimate at 2.5 characters per token (11,476 and 14,812). Keyed by the set's name and the first 12
+#: characters of its sha, so a set edited since it was measured falls back to its estimate until measured again.
+MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
+    ("call-v6", "9d3bd2610d35"): 7_100,
+    ("selfedit-v3", "82c8686c5607"): 8_800,
+}
+#: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
+MEASURED_OUTPUT_TOKENS = 255
+#: The densest a large state has measured (characters per token, states over 8,000 characters, rounded down from
+#: 2.45) and the largest residual of the fits above, in tokens. A test checks that a state at its full budget at this
+#: rate still fits the context with its set's measured cost and the longest answer. The margin is smaller than with
+#: estimated reserves: a full-budget call-v6 state reaches the context only if denser than about 2.09 characters per
+#: token (before, about 1.64), which dense base64, hex or non-Latin text can be.
+MEASURED_DENSEST_STATE_CHARS_PER_TOKEN = 2.4
+MEASURED_STATE_RESIDUAL_TOKENS = 750
+
+
 def state_budget_tokens(built_questions: dict[str, Any]) -> int:
-    """The budget for a state sent with these built questions: what they leave of the chunking budget."""
+    """The budget for a state sent with these built questions, estimated from their characters: what they leave of
+    the chunking budget."""
     return BUDGET_TOKENS - est_tokens(built_questions)
+
+
+def question_reserve_tokens(qs: QuestionSet) -> int:
+    """The room a set's questions take: its measured cost when it has one at its current sha, otherwise the estimate
+    from its characters. The state is still estimated at 2.5 characters per token."""
+    measured = MEASURED_QUESTION_TOKENS.get((qs.name, qs.sha[:12]))
+    return measured if measured is not None else est_tokens(qs.built_questions())
+
+
+def set_state_budget_tokens(qs: QuestionSet) -> int:
+    """The budget for a state sent with this set: what its questions leave of the chunking budget."""
+    return BUDGET_TOKENS - question_reserve_tokens(qs)
 
 
 def trim(raw: dict[str, Any]) -> dict[str, Any]:
@@ -207,15 +273,102 @@ class BuiltView:
     #: History steps whose long arguments were cut, and oldest steps dropped, to fit the budget.
     history_cut: int = 0
     history_dropped: int = 0
+    #: The request text was cut to fit the budget.
+    request_cut: bool = False
+    #: The view was over the budget, so it was fitted.
+    fitted: bool = False
 
     @property
     def history_trimmed(self) -> bool:
         return bool(self.history_cut or self.history_dropped)
 
 
-def _cut(entry: dict[str, Any], kept: int, of: int) -> None:
-    entry["content"] = entry["content"][:kept]
+def _cut(entry: dict[str, Any], kept: int, of: int, *, head_tail: bool = False) -> None:
+    """Cut `entry["content"]` to `kept` characters: its head, or with `head_tail` two thirds head and one third tail
+    with a marker between them (the marker is not counted in `kept`). The content must be the one that arrived, not
+    one already cut, so a head-and-tail cut never nests."""
+    content = entry["content"]
     entry["scanner_truncated"] = {"kept_chars": kept, "of_chars": of}
+    if not head_tail or kept == 0:
+        entry["content"] = content[:kept]
+        return
+    entry["content"], kept = _head_tail(content, kept, of)
+    entry["scanner_truncated"]["kept_chars"] = kept
+    if kept:
+        entry["scanner_truncated"]["kept"] = "head_tail"
+
+
+# Secret-safe cuts. The spans are found once per string (the over-budget fill cuts the same input many times); the
+# caches are cleared after each build, so no request's text outlives it here.
+@functools.lru_cache(maxsize=32)
+def _protected_spans(text: str) -> tuple[tuple[int, int], ...]:
+    return tuple(protected_spans(text))
+
+
+@functools.lru_cache(maxsize=32)
+def _secret_spans(text: str) -> tuple[tuple[int, int], ...]:
+    return tuple(secret_spans(text))
+
+
+def _safe_end(text: str, end: int) -> int:
+    """A head's end moved back out of any protected span it falls inside."""
+    return next((s for s, e in _protected_spans(text) if s < end < e), end)
+
+
+def _safe_start(text: str, start: int) -> int:
+    """A tail's start moved forward out of any protected span it falls inside."""
+    return next((e for s, e in _protected_spans(text) if s < start < e), start)
+
+
+def _marker(cut_chars: int) -> str:
+    return f"\n…[sentrook: {cut_chars} characters cut]…\n"
+
+
+def _secure_cut(text: str, end: int, start: int, of: int) -> tuple[int, int]:
+    """Cut points that keep every kept secret recognisable. Outside a secret's span, the text before it can still
+    decide whether the second pass sees it (a rule that reads the characters before its match, or a cue the cut makes
+    live whose match runs over the next one). So the cut string, `text[:end]`, the marker and `text[start:]`, is
+    redacted, and while a secret the whole text would replace is still there in clear, the cut point on its side
+    moves past it. Each move drops a secret from the kept part, so this ends."""
+    secrets = _secret_spans(text)
+    if not secrets:
+        return end, start
+    while True:
+        kept = end + len(text) - start
+        joined = text[:end] + (_marker(of - kept) if start < len(text) else "") + text[start:]
+        redacted, _ = redact_text(joined)
+        clear = next(
+            ((s, e) for s, e in secrets if (e <= end or s >= start) and text[s:e] in redacted),
+            None,
+        )
+        if clear is None:
+            return end, start
+        s, e = clear
+        spans = _protected_spans(text)
+        if e <= end:
+            end = min(s, next((ps for ps, pe in spans if ps <= s < pe), s))
+        else:
+            start = max(e, next((pe for ps, pe in spans if ps < e <= pe), e))
+
+
+def clear_cut_caches() -> None:
+    _protected_spans.cache_clear()
+    _secret_spans.cache_clear()
+
+
+def _head_tail(text: str, kept: int, of: int) -> tuple[str, int]:
+    """`text` cut to at most `kept` characters, two thirds head and one third tail, with a marker between them saying
+    how many of the `of` characters were cut, and the characters really kept. No cut leaves a kept secret
+    unrecognisable (see `_safe_end` and `_secure_cut`), so fewer than `kept` may be kept; none kept gives an empty
+    string. `0 < kept < len(text)`."""
+    head = kept * 2 // 3
+    end = _safe_end(text, head)
+    start = _safe_start(text, len(text) - (kept - head))
+    end, start = _secure_cut(text, end, start, of)
+    kept = end + len(text) - start
+    if kept == 0:
+        return "", 0
+    return text[:end] + _marker(of - kept) + text[start:], kept
 
 
 def cap_inputs(
@@ -223,12 +376,30 @@ def cap_inputs(
     *,
     per_input: int = CALL_INPUT_CAP_CHARS,
     total: int = CALL_INPUTS_TOTAL_CAP_CHARS,
+    head_tail: bool = False,
 ) -> bool:
-    """Cap each string `content` at `per_input` characters (head kept), then the sum at `total`:
+    """Cap each string `content` at `per_input` characters (head kept, or head and tail with `head_tail`; see
+    `_cut`), then the sum at `total` (counting the characters kept, not the markers):
     the most recent inputs (highest `input_seq`, such as the listing right before the pending call)
     keep their content and the earliest lose theirs first; metadata always stays. Entries without an
     integer `input_seq` count as earliest; ties keep list order. Mutates the entries; returns whether
     anything was cut."""
+    cut = False
+    remaining = total
+    for entry in _most_recent_first(inputs):
+        current = len(entry["content"])
+        kept = min(current, per_input, remaining)
+        remaining -= kept
+        if kept < current:
+            # an entry cut before keeps the size it arrived with
+            _cut(entry, kept, _prior_cut(entry).get("of_chars", current), head_tail=head_tail)
+            cut = True
+    return cut
+
+
+def _most_recent_first(inputs: list[Any]) -> list[dict[str, Any]]:
+    """The entries with string content, most recent first: highest integer `input_seq` first, entries without one last,
+    ties in reverse list order (the order the caps fill)."""
     entries = [
         (i, e)
         for i, e in enumerate(inputs)
@@ -241,17 +412,7 @@ def cap_inputs(
         has_seq = isinstance(seq, int) and not isinstance(seq, bool)
         return (has_seq, seq if has_seq else 0, i)
 
-    cut = False
-    remaining = total
-    for _, entry in sorted(entries, key=recency, reverse=True):
-        current = len(entry["content"])
-        kept = min(current, per_input, remaining)
-        remaining -= kept
-        if kept < current:
-            # an entry cut before keeps the size it arrived with
-            _cut(entry, kept, _prior_cut(entry).get("of_chars", current))
-            cut = True
-    return cut
+    return [e for _, e in sorted(entries, key=recency, reverse=True)]
 
 
 def strip_inputs(inputs: list[Any]) -> None:
@@ -304,7 +465,7 @@ def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> di
 #: Self-edit view caps: characters per conversation entry (the plugin sends less; this is the scanner's own bound), and
 #: the room left for the self-edit questions, which repeat a longer preamble than the call questions.
 SELF_EDIT_ENTRY_CAP_CHARS = 4000
-SELFEDIT_QUESTIONS_RESERVE_TOKENS = 14_000
+SELFEDIT_QUESTIONS_RESERVE_TOKENS = 15_000
 SELFEDIT_STATE_BUDGET_TOKENS = BUDGET_TOKENS - SELFEDIT_QUESTIONS_RESERVE_TOKENS
 
 
@@ -360,6 +521,29 @@ def cap_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
 #: many of the most recent steps are kept (cut, not dropped) until the inputs have been fitted.
 HISTORY_ARG_KEEP_CHARS = 400
 HISTORY_KEEP_STEPS = 3
+#: Fitting an over-budget call-v5 view: a request text longer than this is cut to it first, head and tail.
+REQUEST_KEEP_CHARS = 4000
+
+
+def cut_request_text(v: dict[str, Any]) -> bool:
+    """Cut a `request.text` longer than `REQUEST_KEEP_CHARS` to that many characters, two thirds head and one third
+    tail with a marker between them; the request carries `scanner_truncated`. A request just over the keep size is
+    left whole when the marker and the record would make it no smaller. Mutates `v`; returns whether it cut."""
+    req = v.get("request")
+    if not isinstance(req, dict) or not isinstance(req.get("text"), str):
+        return False
+    text = req["text"]
+    if len(text) <= REQUEST_KEEP_CHARS:
+        return False
+    cut = dict(req)
+    cut["text"], kept = _head_tail(text, REQUEST_KEEP_CHARS, len(text))
+    cut["scanner_truncated"] = {"kept_chars": kept, "of_chars": len(text)}
+    if kept:
+        cut["scanner_truncated"]["kept"] = "head_tail"
+    if est_tokens(cut) >= est_tokens(req):
+        return False
+    v["request"] = cut
+    return True
 
 
 def _prior_cut(entry: dict[str, Any]) -> dict[str, Any]:
@@ -367,34 +551,41 @@ def _prior_cut(entry: dict[str, Any]) -> dict[str, Any]:
     return prior if isinstance(prior, dict) else {}
 
 
-def _shorten(value: Any) -> tuple[Any, int, int]:
-    """`value` with every string longer than `HISTORY_ARG_KEEP_CHARS` cut to its head, and the characters kept and
-    the original length summed over the strings that were cut."""
+def _shorten(value: Any, secret_safe: bool = False) -> tuple[Any, int, int]:
+    """`value` with every string longer than `HISTORY_ARG_KEEP_CHARS` cut to its head (with `secret_safe`, an end that
+    does not split a secret: see `_safe_end`), and the characters kept and the original length summed over the strings
+    that were cut."""
     if isinstance(value, str):
         if len(value) > HISTORY_ARG_KEEP_CHARS:
-            return value[:HISTORY_ARG_KEEP_CHARS], HISTORY_ARG_KEEP_CHARS, len(value)
+            end = HISTORY_ARG_KEEP_CHARS
+            if secret_safe:
+                end, _ = _secure_cut(value, _safe_end(value, end), len(value), len(value))
+            return value[:end], end, len(value)
         return value, 0, 0
     kept = of = 0
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, x in value.items():
-            out[k], k_kept, k_of = _shorten(x)
+            out[k], k_kept, k_of = _shorten(x, secret_safe)
             kept, of = kept + k_kept, of + k_of
         return out, kept, of
     if isinstance(value, list):
         items = []
         for x in value:
-            y, k_kept, k_of = _shorten(x)
+            y, k_kept, k_of = _shorten(x, secret_safe)
             items.append(y)
             kept, of = kept + k_kept, of + k_of
         return items, kept, of
     return value, 0, 0
 
 
-def cut_history_arguments(v: dict[str, Any], budget_tokens: int) -> int:
+def cut_history_arguments(
+    v: dict[str, Any], budget_tokens: int, *, secret_safe: bool = False
+) -> int:
     """While the view is over the budget, cut the long argument strings of its history steps, oldest step first (the
-    step stays: tool, kind, decision and the strings' heads). A cut step carries `scanner_truncated`: the characters
-    kept and the original length, over the strings cut. Mutates `v`; returns how many steps were cut."""
+    step stays: tool, kind, decision and the strings' heads; with `secret_safe`, no cut splits a secret). A cut step
+    carries `scanner_truncated`: the characters kept and the original length, over the strings cut. Mutates `v`;
+    returns how many steps were cut."""
     history = v.get("history")
     if not isinstance(history, list):
         return 0
@@ -404,7 +595,7 @@ def cut_history_arguments(v: dict[str, Any], budget_tokens: int) -> int:
             break
         if not isinstance(step, dict) or "arguments" not in step:
             continue
-        args, kept, of = _shorten(step["arguments"])
+        args, kept, of = _shorten(step["arguments"], secret_safe)
         if of:
             step["arguments"] = args
             step["scanner_truncated"] = {"kept_chars": kept, "of_chars": of}
@@ -432,19 +623,25 @@ def drop_history(v: dict[str, Any], budget_tokens: int, *, keep: int) -> int:
     return dropped
 
 
-def fill_inputs(v: dict[str, Any], capped: list[Any], budget_tokens: int) -> tuple[bool, bool]:
-    """Set `v["new_inputs"]` to `capped` with the largest contents' total that fits the budget: the most recent inputs
-    keep their content and the earliest lose theirs first, as with the total cap. Returns whether anything was cut
-    and whether every content was emptied (the view does not fit even without them)."""
-    total = sum(
-        len(e["content"])
-        for e in capped
-        if isinstance(e, dict) and isinstance(e.get("content"), str)
+def fill_inputs(
+    v: dict[str, Any], arrived: list[Any], budget_tokens: int, *, head_tail: bool = False
+) -> tuple[bool, bool]:
+    """Set `v["new_inputs"]` to the inputs as they `arrived`, capped, with the largest contents' total that fits the
+    budget: the most recent inputs keep their content and the earliest lose theirs first, as with the total cap. Every
+    attempt cuts from what arrived, so a head-and-tail cut never nests. Returns whether anything was cut and whether
+    every content was emptied (the view does not fit even without them)."""
+    total = min(
+        CALL_INPUTS_TOTAL_CAP_CHARS,
+        sum(
+            min(len(e["content"]), CALL_INPUT_CAP_CHARS)
+            for e in arrived
+            if isinstance(e, dict) and isinstance(e.get("content"), str)
+        ),
     )
 
     def build(target: int) -> tuple[bool, bool]:
-        inputs = copy.deepcopy(capped)
-        cut = cap_inputs(inputs, total=target)
+        inputs = copy.deepcopy(arrived)
+        cut = cap_inputs(inputs, total=target, head_tail=head_tail)
         v["new_inputs"] = inputs
         return cut, est_tokens(v) <= budget_tokens
 
@@ -452,10 +649,29 @@ def fill_inputs(v: dict[str, Any], capped: list[Any], budget_tokens: int) -> tup
     if fits:
         return cut, False
     cut, fits = build(0)
-    if not fits:
+    if not fits and not head_tail:
         return cut, total > 0
-    # the view's size grows with the total, so bisect for the largest total that fits
     lo, hi = 0, total
+    if head_tail:
+        # The view shrinks where an input becomes whole (its marker and record drop out) and grows with the total
+        # between those points, so each stretch is smallest at its start. Take the largest such point that fits, then
+        # search up to the next one. Emptying every input is not always smallest (a short result such as "ok" takes
+        # less room whole than emptied with its record), so the inputs are stripped only when no point fits.
+        points: list[int] = []
+        running = 0
+        for entry in _most_recent_first(arrived):
+            running += min(len(entry["content"]), CALL_INPUT_CAP_CHARS)
+            if 0 < running < total and (not points or running > points[-1]):
+                points.append(running)
+        for point in reversed(points):
+            if build(point)[1]:
+                lo, fits = point, True
+                break
+        if not fits:
+            cut, _ = build(0)
+            return cut, total > 0
+        hi = next((p for p in points if p > lo), total)
+    # between lo (fits) and hi (does not), the view's size grows with the total: bisect
     while hi - lo > 1:
         mid = (lo + hi) // 2
         _, fits = build(mid)
@@ -470,39 +686,58 @@ class _Fitted:
     inputs_stripped: bool = False
     history_cut: int = 0
     history_dropped: int = 0
+    request_cut: bool = False
 
 
-def _fit_call_view(v: dict[str, Any], budget_tokens: int) -> _Fitted:
-    """Fit an over-budget call view, least useful first: the history steps' long arguments (oldest first), then the
-    oldest steps (keeping the last `HISTORY_KEEP_STEPS`), then the inputs' content (the most recent kept longest),
-    then the remaining steps, with the inputs refilled into any room that leaves. A view still over the budget with
-    no input content and no history is sent as it is."""
-    inputs = v.get("new_inputs")
-    capped = copy.deepcopy(inputs) if isinstance(inputs, list) else None
+def _fit_call_view(
+    v: dict[str, Any],
+    arrived: list[Any] | None,
+    budget_tokens: int,
+    *,
+    head_tail: bool = False,
+    cut_request: bool = False,
+) -> _Fitted:
+    """Fit an over-budget call view, least useful first: with `cut_request`, a long request text (see
+    `cut_request_text`); the history steps' long arguments (oldest first), then the oldest steps (keeping the last
+    `HISTORY_KEEP_STEPS`), then the inputs' content (the most recent kept longest), then the remaining steps, with the
+    inputs refilled into any room that leaves. A view still over the budget with no input content and no history is
+    sent as it is. `arrived` is the inputs before any cap."""
     cut = stripped = False
-    history_cut = cut_history_arguments(v, budget_tokens)
+    request_cut = cut_request and cut_request_text(v)
+    history_cut = cut_history_arguments(v, budget_tokens, secret_safe=head_tail)
     dropped = drop_history(v, budget_tokens, keep=HISTORY_KEEP_STEPS)
-    if capped is not None and est_tokens(v) > budget_tokens:
-        cut, stripped = fill_inputs(v, capped, budget_tokens)
+    if arrived is not None and est_tokens(v) > budget_tokens:
+        cut, stripped = fill_inputs(v, arrived, budget_tokens, head_tail=head_tail)
     if est_tokens(v) > budget_tokens:
         dropped += drop_history(v, budget_tokens, keep=0)
-        if capped is not None:
-            cut, stripped = fill_inputs(v, capped, budget_tokens)
-    return _Fitted(cut, stripped, history_cut, dropped)
+        if arrived is not None:
+            cut, stripped = fill_inputs(v, arrived, budget_tokens, head_tail=head_tail)
+    return _Fitted(cut, stripped, history_cut, dropped, request_cut)
 
 
 def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int) -> BuiltView:
-    """A call view (or the self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
-    self-edit view keeps its own fitting: its conversation goes after the inputs."""
+    """A call view (or a self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
+    self-edit views keep their own fitting: their conversation goes after the inputs."""
     v = view(trim(raw), name)
+    if name == SELFEDIT_V2:
+        mark_own_store(v)
     inputs = v.get("new_inputs")
-    truncated = stripped = False
+    truncated = stripped = over_budget = False
     fitted = _Fitted()
-    if name != SELFEDIT_V1:
+    if name not in SELFEDIT_VIEWS:
+        head_tail = name in HEAD_TAIL_VIEWS
+        arrived = copy.deepcopy(inputs) if isinstance(inputs, list) else None
         if isinstance(inputs, list):
-            truncated = cap_inputs(inputs)
+            truncated = cap_inputs(inputs, head_tail=head_tail)
         if est_tokens(v) > budget_tokens:
-            fitted = _fit_call_view(v, budget_tokens)
+            over_budget = True
+            fitted = _fit_call_view(
+                v,
+                arrived,
+                budget_tokens,
+                head_tail=head_tail,
+                cut_request=name in REQUEST_FIT_VIEWS,
+            )
             truncated = truncated or fitted.inputs_cut
             stripped = fitted.inputs_stripped
     else:
@@ -522,6 +757,8 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
         inputs_stripped=stripped,
         history_cut=fitted.history_cut,
         history_dropped=fitted.history_dropped,
+        request_cut=fitted.request_cut,
+        fitted=over_budget,
     )
 
 
@@ -533,10 +770,22 @@ def build_views(
     selfedit_budget_tokens: int | None = None,
 ) -> dict[str, BuiltView]:
     """Every named view for one request: the frozen v1 views and the v2 views (cheap, always built).
-    call-v5 is call-v3's prepared state; the reputation the oracle fills in is what differs. The call
-    views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit view to
-    `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
+    call-v5 is call-v3's prepared state except when inputs are cut (call-v5 keeps head and tail) or the view is over
+    the budget (call-v5 cuts a long request first); the reputation the oracle fills in also differs. The call views (call-v2, call-v3, call-v5) are built to `call_budget_tokens` and the self-edit views (selfedit-v1,
+    selfedit-v2) to `selfedit_budget_tokens`: the room the question set that sends them leaves, or the default
     reserves when not given."""
+    try:
+        return _build_views(raw, exposure_input_seqs, call_budget_tokens, selfedit_budget_tokens)
+    finally:
+        clear_cut_caches()
+
+
+def _build_views(
+    raw: dict[str, Any],
+    exposure_input_seqs: set[int] | None,
+    call_budget_tokens: int | None,
+    selfedit_budget_tokens: int | None,
+) -> dict[str, BuiltView]:
     call_budget = CALL_STATE_BUDGET_TOKENS if call_budget_tokens is None else call_budget_tokens
     v3 = call_view_v3(raw, budget_tokens=call_budget)
     out = {
@@ -545,14 +794,17 @@ def build_views(
         EXPOSURE_V2: exposure_view_v2(raw, only_input_seqs=exposure_input_seqs),
         CALL_V2: call_view_v2(raw, budget_tokens=call_budget),
         CALL_V3: v3,
-        CALL_V5: v3,
+        # the same state unless an input was cut or the view was fitted, which call-v5 does its own way
+        CALL_V5: _call_view_with_inputs(raw, CALL_V5, budget_tokens=call_budget)
+        if v3.inputs_truncated or v3.fitted
+        else v3,
     }
     if isinstance(raw.get(SELF_EDIT), dict):
-        out[SELFEDIT_V1] = _call_view_with_inputs(
-            raw,
-            SELFEDIT_V1,
-            budget_tokens=SELFEDIT_STATE_BUDGET_TOKENS
+        selfedit_budget = (
+            SELFEDIT_STATE_BUDGET_TOKENS
             if selfedit_budget_tokens is None
-            else selfedit_budget_tokens,
+            else selfedit_budget_tokens
         )
+        for name in (SELFEDIT_V1, SELFEDIT_V2):
+            out[name] = _call_view_with_inputs(raw, name, budget_tokens=selfedit_budget)
     return out

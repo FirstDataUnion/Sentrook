@@ -1,7 +1,7 @@
-"""Plugin configuration: endpoints, credentials, decision policy, storage and grants.
+"""Plugin configuration: endpoints, decision policy, storage and grants.
 
 Every value resolves as plugin settings (`plugins.entries.sentrook.settings` in config.yaml), then env
-(process env plus the Hermes `.env`), then the default.
+(the process env), then the default. The scan credentials are not settings: see `auth.py`.
 
 Endpoints default to the hosted service. A non-default scan, Rookery or identity URL must be https on a
 firstdataunion.org host: a scan URL the agent could redirect would send every tool call somewhere else.

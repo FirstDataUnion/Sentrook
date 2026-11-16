@@ -5,6 +5,8 @@ the call, with no model and no raw text.
   about 0.1 for a local entity the agent visibly created with clean lineage; about 0.4 when it appears
   nowhere or first in the agent's own arguments (always for off-host kinds); 1.0 when it appeared only
   in untrusted content before the agent used it (the token's untrusted set remembers across steps).
+  A host that is only the mail domain of an email recipient in the call takes that recipient's value
+  (no claim of its own) unless its own origin is untrusted or it imitates a host the owner named.
 - `suspicion.request_origin` from the trigger: owner 0, scheduled or heartbeat about 0.2, trusted by a
   plugin allowlist about 0.3, known channel with an unknown sender about 0.5 (coverage reduced), a
   sender marked `other` about 0.8, nothing known no contribution and coverage reduced.
@@ -306,6 +308,13 @@ class ContextProbe:
                 reason = "origin.written_content_untrusted"
             if ent.id in lookalikes and value < self.params.origin_untrusted:
                 value, reason = self.params.origin_untrusted, "origin.lookalike_of_named_host"
+            if ent.recipient_domain_of and value < self.params.origin_untrusted:
+                # only a recipient's mail domain: the recipient's own origin claim speaks for it
+                evidence.setdefault("origins", {})[ent.id] = {
+                    "reason": "origin.recipient_mail_domain",
+                    "mail_domain_of": list(ent.recipient_domain_of),
+                }
+                continue
             scaled = round(value * weight, 4)
             out.append(
                 Contribution(
@@ -342,7 +351,8 @@ class ContextProbe:
         named = [
             e
             for e in prepared.entities
-            if e.kind is EntityKind.HOST and Origin.REQUEST in e.origins
+            if e.kind is EntityKind.HOST
+            and (Origin.REQUEST in e.origins or e.owner_named_via_address)
         ]
         if not named:
             return {}
@@ -480,10 +490,17 @@ class ContextProbe:
             if live:
                 record["live_tables"] = live
 
-        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with.
+        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with: a
+        # placeholder, a shape the second redaction pass masks, or a secret-like value the redactors
+        # leave raw (an access code, a PIN, a passport number, a random value under a key).
+        words = prepared.request_words or ""
         asked_for_secret = any(
-            rx.search(prepared.request_words or "")
-            for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+            rx.search(words) for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+        )
+        # Naming a code, PIN or passport relieves only the values the redactors left raw.
+        asked_for_secret_like = any(
+            rx.search(words)
+            for rx in lists.patterns("lineage", "secret_like_request_terms", "patterns")
         )
         if (
             lin.sent
@@ -491,17 +508,22 @@ class ContextProbe:
             and not asked_for_secret
             and self._is_sink(prepared, lists)
         ):
-            from ..prepare.redact import redact_text
+            from ..prepare.secret_like import secret_carried
 
             placeholder = str(lists.get("egress", "placeholder", "open", default="⟦secret"))
+            carried: dict[str, str] = {}
             for sent in lin.sent:
-                if placeholder in sent.content or redact_text(sent.content)[1] > 0:
+                why = secret_carried(sent.content, placeholder, owner_asked=asked_for_secret_like)
+                if why is not None:
+                    carried[sent.path] = why
                     emit(
                         "suspicion.overreach",
                         p.lineage_secret_send_overreach,
                         path_id(sent.path),
                         "lineage.secret_carried_to_send",
                     )
+            if carried:
+                record["secrets_carried"] = carried
 
         # 4. A look-alike of a host the owner named.
         for ent_id in lookalikes:

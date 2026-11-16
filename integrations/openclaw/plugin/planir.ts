@@ -14,7 +14,7 @@ import { capArgs, type Redactor } from "./redact.ts";
 import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
-export const PLUGIN_VERSION = "2.0.0-beta.7";
+export const PLUGIN_VERSION = "2.0.0-beta.8";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",

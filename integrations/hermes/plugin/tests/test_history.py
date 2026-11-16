@@ -27,7 +27,7 @@ def log(harness, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
-    monkeypatch.setattr(owner, "gateway_engaged", lambda: bool(facts.get("platform")))
+    monkeypatch.setattr(plugin, "session_surface", lambda: "" if facts.get("platform") else "cli")
     path = harness.dir / "sentrook" / "traffic.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     for name in ("traffic.jsonl", "traffic.jsonl.1"):

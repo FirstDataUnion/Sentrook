@@ -531,7 +531,9 @@ def test_request_named_relief_display_names_and_self_copy(attack_case):
     assert Origin.UNTRUSTED_INPUT in domain.origins  # the domain was in the mail the agent read
     env = ContextProbe().run(p)
     origins = {c.subject: c for c in env.contributions if c.signal == "suspicion.untrusted_origin"}
-    assert origins[domain.id].value == 0.0 and origins[domain.id].reason == "origin.request_named"
+    # the domain is only the recipients' mail domain: their origin claims speak for it
+    assert domain.id not in origins
+    assert env.evidence["origins"][domain.id]["reason"] == "origin.recipient_mail_domain"
     r = scanner(BENIGN_ANSWERS).scan(case["fixture"], options(case)).response
     assert {x.subject for x in r.relief_applied} == {priya.id, me.id, domain.id}
     assert (

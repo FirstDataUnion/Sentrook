@@ -107,7 +107,7 @@ def test_call_v2_view_adds_the_inputs_between_history_and_pending_call(harm_case
         EXPOSURE_V2: "trim-v2",
         CALL_V2: "trim-v2",
         "call-v3": "trim-v3",
-        "call-v5": "trim-v4",
+        "call-v5": "trim-v8",
     }
 
 
@@ -182,6 +182,7 @@ def test_small_inputs_are_not_cut(harm_case):
         "inputs_stripped": False,
         "history_cut": 0,
         "history_dropped": 0,
+        "request_cut": False,
     }
 
 
@@ -331,7 +332,7 @@ def test_scan_reports_the_views_it_used(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
     assert pv["views_version"] == {"exposure": "trim-v2", "call": "trim-v2"}
     assert pv["redaction"] == {
-        "version": "redact-v5",
+        "version": "redact-v6",
         "shapes": SHAPES_VERSION,
         "count": 2,
     }
@@ -351,7 +352,7 @@ def test_scan_defaults_stay_on_trim_v1(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE, "call": CALL}
     assert pv["views_version"] == {"exposure": "trim-v1", "call": "trim-v1"}
     assert pv["redaction"] == {
-        "version": "redact-v5",
+        "version": "redact-v6",
         "shapes": SHAPES_VERSION,
         "count": 0,
     }
@@ -411,7 +412,7 @@ def test_question_set_env_round_trip_and_health():
         "exposure-v2",
         "call-v6",
     )
-    assert default.convergence == "conv-v3"
+    assert default.convergence == "conv-v4"
     # the frozen v1 sets and conv-v1 stay selectable for the Jev-only comparison
     frozen = ServeConfig.from_env(
         {
@@ -443,7 +444,7 @@ def test_question_set_env_round_trip_and_health():
     assert jev["question_sets"] == {
         "exposure": "exposure-v2",
         "call": "call-v2",
-        "self_edit": "selfedit-v2",
+        "self_edit": "selfedit-v3",
     }
     assert jev["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
 

@@ -8,19 +8,27 @@ traffic log.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from . import cli, commands, conversation, grants, history, owner, skill_review, snooze
-from .auth import env_with_hermes_dotenv, resolve_oidc_credentials
+from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
 from .decision import block_reason, decide, review_message, tiers_of
-from .intent import conversation_sender_of, is_unattended, resolve_platform, session_facts
-from .planir import PLUGIN_VERSION, build_planir, hermes_config, session_ref, tool_kind
+from .intent import (
+    conversation_sender_of,
+    hermes_config,
+    is_unattended,
+    resolve_platform,
+    session_facts,
+)
+from .planir import PLUGIN_VERSION, build_planir, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
 from .scan_error_policy import ScanFailure, scan_error_to_directive
@@ -37,8 +45,6 @@ SETTINGS_KEYS = (
     "scan_url",
     "rookery_url",
     "oidc_issuer",
-    "client_id",
-    "client_secret",
     "oidc_audience",
     "oidc_scope",
     "mode",
@@ -68,7 +74,7 @@ def _settings() -> dict[str, Any]:
 
 
 def _load() -> tuple[PluginConfig, dict[str, str]]:
-    env = env_with_hermes_dotenv()
+    env = dict(os.environ)
     return resolve_config(_settings(), env), env
 
 
@@ -135,8 +141,28 @@ def _rule_key(fingerprint: str | None, request_id: str) -> str:
 # ---- owner-only commands ----------------------------------------------------------------------------
 
 
-def owner_command(verb: str, fn: Callable[[str, dict[str, Any]], str]) -> Callable[..., str]:
-    """A slash-command handler that runs `fn` only for the owner and audits every attempt.
+def session_surface() -> str:
+    """The calling session's client or platform as Hermes reports it (`ctx.session_surface()`):
+    `cli` for the interactive terminal, "" outside a session or when it cannot be read."""
+    read = getattr(_ctx, "session_surface", None)
+    try:
+        value = read() if callable(read) else ""
+    except Exception:  # noqa: BLE001 - unreadable reads as no session
+        value = ""
+    return value if isinstance(value, str) else ""
+
+
+def owner_command(
+    verb: str,
+    fn: Callable[[str, dict[str, Any]], str],
+    *,
+    local_cli: bool = False,
+    platform: str = "",
+) -> Callable[..., str]:
+    """A command handler that runs `fn` only for the owner and audits every attempt. `local_cli` is
+    for the `hermes sentrook` command line, which only someone at the machine's shell can run.
+    `platform` is the one Hermes passes a slash-command handler, used when Hermes reports no session
+    surface (the interactive CLI runs a slash command in its own process when it has no gateway).
 
     Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
     through this. Any failure while checking the sender refuses the command. `fn` gets the raw
@@ -151,7 +177,15 @@ def owner_command(verb: str, fn: Callable[[str, dict[str, Any]], str]) -> Callab
             logger.warning("owner check for %s failed: %s", verb, exc)
             return owner.refusal(verb)
         try:
-            check = owner.gate(verb, traffic, store.salt(), facts=session_facts(), env=env)
+            check = owner.gate(
+                verb,
+                traffic,
+                store.salt(),
+                facts=session_facts(),
+                env=env,
+                surface=session_surface() or platform,
+                local_cli=local_cli,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("owner check for %s failed: %s", verb, exc)
             owner.audit(
@@ -599,7 +633,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_approval_response", on_post_approval_response)
     try:
-        cli.register_cli(ctx, _settings, owner_command)
+        cli.register_cli(ctx, _settings, functools.partial(owner_command, local_cli=True))
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin CLI commands
         logger.info("sentrook CLI not registered: %s", exc)
     try:

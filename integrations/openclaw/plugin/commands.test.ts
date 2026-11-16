@@ -125,7 +125,12 @@ test("help, no input and unknown input all return the help text", async () => {
 });
 
 /** Registers the plugin with fake host registrars and returns the slash handler and CLI actions. */
-async function registered(pluginConfig: Record<string, unknown>, registrationMode = "full", runtime?: unknown) {
+async function registered(
+  pluginConfig: Record<string, unknown>,
+  registrationMode = "full",
+  runtime?: unknown,
+  hostConfig?: unknown,
+) {
   const commands: any[] = [];
   const cliActions: Record<string, () => Promise<void> | void> = {};
   const node = (prefix: string): any => {
@@ -145,6 +150,7 @@ async function registered(pluginConfig: Record<string, unknown>, registrationMod
     pluginConfig,
     registrationMode,
     runtime,
+    config: hostConfig,
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     on: () => undefined,
     registerCli: (r: any) => {
@@ -257,4 +263,33 @@ test("status and verify stay silent with deny, on an unknown host version and on
     process.exitCode = 0;
     assert.doesNotMatch(verify, /approval:/, label);
   }
+});
+
+const DREAMING_OFF = { plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } };
+const HOOK_ON = { hooks: { internal: { entries: { "session-memory": { enabled: true } } } } };
+
+test("openclaw sentrook verify names the memory writers that are on, from OpenClaw's own config", async () => {
+  const run = async (runtime: unknown, hostConfig: unknown) => {
+    const { cliActions } = await registered(OFFLINE, "full", runtime, hostConfig);
+    process.exitCode = 0;
+    const text = await captureLog(() => cliActions["sentrook verify"]!());
+    const code = process.exitCode;
+    process.exitCode = 0;
+    return { text, code };
+  };
+  const off = await run(undefined, { ...DREAMING_OFF, hooks: { internal: { enabled: false } } });
+  assert.doesNotMatch(off.text, /dreaming:|session-memory hook:/);
+
+  // The snapshot, when the runtime is unavailable on the command line.
+  const both = await run(unavailableRuntime, HOOK_ON);
+  assert.match(both.text, /^ok   dreaming: on, and not scanned: .*dreaming\.enabled false$/m);
+  assert.match(both.text, /^ok   session-memory hook: on, and not scanned: .*openclaw hooks disable session-memory$/m);
+  assert.equal(both.code, off.code, "exit code unchanged");
+
+  // The live config wins over the load-time snapshot.
+  const live = await run({ config: { current: () => DREAMING_OFF } }, HOOK_ON);
+  assert.doesNotMatch(live.text, /dreaming:|session-memory hook:/);
+
+  const unread = await run(undefined, undefined);
+  assert.doesNotMatch(unread.text, /dreaming:|session-memory hook:/);
 });

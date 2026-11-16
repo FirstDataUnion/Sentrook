@@ -11,7 +11,8 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.10.3.
+- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5, 2026.10.3 and 2026.11.3; older releases
+  refuse to install the plugin.
 - A shell on the machine that runs the OpenClaw gateway, as the user that runs it.
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
 
@@ -44,7 +45,16 @@ Save the file, and make sure only your user can read it:
 chmod 600 ~/.openclaw/.env
 ```
 
-Keep the credentials in `.env`, not in `openclaw.json`, which the agent can read. To replace them later, edit the same
+Then point the plugin at them. These two commands store references to the two variables in `openclaw.json`, not the
+values: OpenClaw loads `.env` into its environment, and the plugin reads the variables the references name.
+
+```bash
+openclaw config set plugins.entries.sentrook.config.clientId --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_ID
+openclaw config set plugins.entries.sentrook.config.clientSecret --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_SECRET
+```
+
+Keep the values in `.env`, not in `openclaw.json`, which the agent can read. Without the references the plugin still
+finds the two lines, because it reads `.env` itself too; that works in this release. To replace the credentials later, edit the same
 two lines and restart the gateway.
 
 ## 3. Let Sentrook see your requests
@@ -86,7 +96,7 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 | Failing line | Fix |
 | --- | --- |
-| `credentials` | Check the two lines in `.env` (step 2), then restart the gateway. |
+| `credentials` | Check the two lines in `.env` and the two references (step 2), then restart the gateway. |
 | `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and replace them in `.env`. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
@@ -288,9 +298,48 @@ from what the message says. Set `skillReview` to `review` to send these runs' ca
 conversation; with nothing to judge them against, expect more saves to be reviewed or blocked. `status` counts the
 saves (allowed, blocked, asked) and the history marks them `(self-edit)`.
 
-Two of OpenClaw's own writers never make a tool call, so no plugin can see them: dreaming (the nightly promotion of
-notes into `MEMORY.md` and `DREAMS.md`) and the session-memory hook (which writes recent messages into `memory/` on
-`/new` and `/reset`). Sentrook does not scan them.
+### Memory Sentrook does not see
+
+Some of OpenClaw's memory writers work inside OpenClaw itself and never make a tool call, so no plugin, Sentrook
+included, can scan what they write. This is a known limit of this release. What they write is read back into later
+sessions as trusted context, so text that reaches it stays there unscanned. Two of them run on their own:
+
+- **Dreaming** (on by default) runs nightly. It promotes short-term notes into `MEMORY.md`, which is part of the system
+  prompt of every later session, and writes `DREAMS.md` and `memory/dreaming/`. OpenClaw counts some fetched text
+  as trusted for this promotion (the output of `curl` in a command, for example), so text from a web page can end up
+  in `MEMORY.md`.
+- **The session-memory hook** (off in a bare config; onboarding turns it on) saves the last messages of a session,
+  yours and the agent's, into `memory/YYYY-MM-DD-HHMM.md` on `/new`, `/reset` and the automatic daily or idle reset.
+
+`openclaw sentrook verify` names each one that is on, with the setting that turns it off. It never fails because of
+them.
+
+If your agent fetches content you don't trust (web pages, files from other people, output of commands that download
+things), turn dreaming off:
+
+```bash
+openclaw config set plugins.entries.memory-core.config.dreaming.enabled false
+```
+
+It takes effect at once (or send `/dreaming off` in the owner's chat). You lose the automatic nightly consolidation
+into `MEMORY.md` and the dream diary; an existing `MEMORY.md` is still read into every session, so check it for
+anything you didn't put there.
+
+To close the gap fully, also turn off the session-memory hook:
+
+```bash
+openclaw hooks disable session-memory
+```
+
+(the setting is `hooks.internal.entries.session-memory.enabled: false`; `hooks.internal.enabled: false` turns off all
+of OpenClaw's internal hooks). You lose the session notes saved on `/new` and resets, so later sessions and dreaming
+can no longer recall them.
+
+Neither setting can be set per agent. Other memory writers that no plugin sees are run by you rather than the agent:
+importing or migrating memory, the `openclaw memory` operator commands (`forget`, `promote --apply`, backfills) and
+the memory-wiki vault.
+
+### When the scan service fails
 
 When the scan service gives no usable answer the plugin asks you whether to run the call without a scan
 (`onScanError`, default `review`); unattended runs are blocked instead. Bad credentials or endpoints are never let
@@ -343,6 +392,30 @@ A local copy of each scan (the redacted request and the response) is kept in `~/
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with
 `openclaw config set plugins.entries.sentrook.config.trafficLog.enabled false`; the history and why commands then
 have nothing to show.
+
+## What the plugin does on your machine
+
+In short, for anyone deciding whether to install it:
+
+- **Network:** it calls two services run by First Data Union: the scan service (`sentrook.firstdataunion.org`), once
+  per tool call, with the redacted request described in [What is sent](#what-is-sent), and the identity service
+  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token. Nothing else, and no
+  telemetry beyond the scans themselves.
+- **OpenClaw's own saves:** with `skillReview: allow` (the default), the redacted part of the conversation goes with
+  each skill and memory save OpenClaw makes on its own, and a redacted copy is kept on disk for up to 7 days to send
+  with them. Set it to `review` to stop both.
+- **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never approves
+  a call on your behalf. Where nobody can answer (cron jobs, subagents) an unanswered review is denied.
+- **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
+  command, snooze state and the conversations above), or to the paths you set for them (`stateDir`,
+  `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
+  no shell commands and starts no background processes.
+- **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
+  The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it
+  uses only its own `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already
+  set them (the credentials, and settings such as `SENTROOK_MODE`). It reads no other credential file.
+- **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
+  `openclaw plugins disable sentrook` stops it sending anything.
 
 ## Settings
 

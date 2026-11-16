@@ -41,7 +41,7 @@ from ..planir.canonical import (
     canonical_pending,
     canonical_sibling,
 )
-from ..planir.models import InputKind, NewInput, PlanIR, ToolKind
+from ..planir.models import InputKind, NewInput, PlanIR, ProviderKind, ResultStatus, ToolKind
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
 from . import views
@@ -76,6 +76,7 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
+from .own_store import memory_path_spellings, own_store_read
 from .session_sets import (
     SessionBinding,
     acts,
@@ -92,6 +93,7 @@ from .trust import Trust, classify
 __all__ = [
     "Lineage",
     "MovedItem",
+    "PLUGIN_CUT_MARKER",
     "Prepared",
     "PrepareOptions",
     "WrittenFile",
@@ -99,9 +101,10 @@ __all__ = [
     "InvalidPlanIR",
 ]
 
-#: History arguments are capped by the plugin at about 4 KB per step. Content at or
-#: beyond this length is treated as possibly truncated when the agent-written file is re-read.
-WRITTEN_FILE_CAP_CHARS = 3900
+#: The plugins cap each history step's arguments at about 4 KB, giving every string a share of it and cutting
+#: a longer string head and tail around this marker. A written file is treated as cut when its content carries
+#: the marker; content that merely fills the cap arrived whole.
+PLUGIN_CUT_MARKER = re.compile(r"…\[sentrook: \d+ bytes cut\]…")
 _CREATING_HEADS = (
     "mkdir",
     "touch",
@@ -232,6 +235,9 @@ class Prepared:
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
     prior_untrusted: frozenset[str] = frozenset()
+    #: New tool results that read the agent's own skills or memory (`own_store.own_store_read`): left out of the
+    #: exposure probe, untrusted for everything else.
+    own_store_inputs: frozenset[int] = frozenset()
     #: Untrusted inputs that try to steer the agent: input_seq → the marker families they match.
     steered_inputs: dict[int, list[str]] = field(default_factory=dict)
     #: The pending call against the token's sensitive and tainted sets as they stood before this request.
@@ -262,7 +268,8 @@ class Prepared:
     #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
     #: is sent. Empty until then, and for views without the block.
     oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
-    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`, `history_cut`, `history_dropped`.
+    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`, `history_cut`, `history_dropped`,
+    #: `request_cut`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
     #: matchers read. Jev's views carry the full text.
@@ -373,15 +380,40 @@ def _inherit_recipient_domain(table: EntityTable) -> None:
     """The mail domain of a request-named recipient is that recipient's own component, not a
     destination the agent chose: `priya.nair@brightlane.io` named by the owner sanctions
     `brightlane.io` as the destination host of that send, even when the domain also turns up in
-    content the agent read (the owner's own organisation usually does)."""
+    content the agent read (the owner's own organisation usually does). Not when a call names the
+    host in its own right (a URL, a command target): that use is the agent's, not the owner's."""
     for ent in list(table):
         if ent.kind is not EntityKind.RECIPIENT or "@" not in ent.value:
             continue
         if Origin.REQUEST not in ent.origins:
             continue
         host = table.get(EntityKind.HOST, normalise_host(ent.value.split("@", 1)[1]))
+        if host is not None and host.named_in_own_right:
+            continue  # a call also sends to or names the host itself: naming the address is not naming it
         if host is not None and Origin.REQUEST not in host.origins:
             host.add_origin(Origin.REQUEST, "recipient_domain")
+
+
+def _named_verbatim(value: str, text: str) -> bool:
+    """`value` appears in `text` as a whole token, not as the part of an email address after its `@`."""
+    return bool(re.search(r"(?<![\w.@-])" + re.escape(value.lower()) + r"(?![\w-])", text.lower()))
+
+
+def _address_only_hosts(request_text: str, table: EntityTable) -> None:
+    """Naming an email address sanctions mail to it, not other traffic to its host. A host the request
+    reaches only through an address on it (`desk@coppicedown.net`), that a call uses in its own right (posts
+    to it, fetches from it, runs code from it), is not request-named: it keeps its own distrust and origin
+    and gets no request-named relief. It is still a host the owner named, for the look-alike check. A host
+    the owner also wrote bare, as a URL or verbatim stays request-named; so does one the call only mails
+    or merely mentions (a signature, a link in the message)."""
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or not ent.own_right_roles - {Role.MENTIONED}:
+            continue
+        refs = ent.origins.get(Origin.REQUEST)
+        if not refs or set(refs) != {"address"} or _named_verbatim(ent.value, request_text):
+            continue
+        del ent.origins[Origin.REQUEST]
+        ent.owner_named_via_address = True
 
 
 def _mark_display_named(request_text: str, table: EntityTable) -> None:
@@ -467,15 +499,53 @@ def _find_written(
             continue
         content = str(call.get("content") or "")
         if best is None or call.step > best.step:
-            truncated = len(content) >= WRITTEN_FILE_CAP_CHARS or content.rstrip().endswith(
+            truncated = bool(PLUGIN_CUT_MARKER.search(content)) or content.rstrip().endswith(
                 ("…", "[truncated]", "...")
             )
             if best is not None and call.tool_kind is ToolKind.FILE_EDIT:
-                content = (
-                    best.content + "\n" + content
-                )  # an edit after a write: both halves are visible
+                # an edit after a write: both halves are visible, and a cut in the earlier one still applies
+                content = best.content + "\n" + content
+                truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _own_store_inputs(
+    planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
+) -> frozenset[int]:
+    """The new tool results that read the agent's own skills or memory (`own_store.own_store_read`): a host tool
+    that succeeded, by both the input and its history step, with that step's arguments. A memory file the session's
+    tainted set holds, under any spelling lineage may have recorded, is not one."""
+    steps = {h.call_id: h for h in planir.history if h.call_id}
+    prior_tainted = frozenset(state.tainted)
+    platform = planir.host.platform
+    out: set[int] = set()
+    for pi in inputs:
+        item = pi.input
+        if (
+            not pi.new
+            or item.kind is not InputKind.TOOL_RESULT
+            or item.status is not ResultStatus.OK
+        ):
+            continue
+        if item.provider is None or item.provider.kind is not ProviderKind.HOST:
+            continue
+        step = steps.get(item.call_id)
+        if (
+            step is None
+            or step.provider.kind is not ProviderKind.HOST
+            or (step.result is not None and step.result.status is not ResultStatus.OK)
+        ):
+            continue
+        args = step.arguments or {}
+        kind = own_store_read(platform, item.tool, args, home=home, workspace_root=ws)
+        if kind is None:
+            continue
+        spellings = memory_path_spellings(platform, item.tool, args, home=home, workspace_root=ws)
+        if any(entity_hash(state.salt, "path", p) in prior_tainted for p in spellings):
+            continue
+        out.add(item.input_seq)
+    return frozenset(out)
 
 
 def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str, int]:
@@ -804,17 +874,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     # 5. entities
     table = EntityTable()
     for f in extract_call(pending, home=home, workspace_root=ws):
-        table.add(f.kind, f.value, display=f.display, role=f.role, origin=Origin.PENDING_CALL)
+        table.add_found(f, Origin.PENDING_CALL)
     for sib in siblings:
         for f in extract_call(sib, home=home, workspace_root=ws):
-            table.add(
-                f.kind,
-                f.value,
-                display=f.display,
-                role=f.role,
-                origin=Origin.SIBLING,
-                ref=sib.call_id,
-            )
+            table.add_found(f, Origin.SIBLING, sib.call_id)
     # What the siblings write, and the pending command read through it: the resolved command's
     # entities take the pending call's roles and the sibling's origin. A failure here leaves the
     # scan without the join rather than failing it.
@@ -830,14 +893,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             )
         for call in resolved:
             for f in extract_call(call, home=home, workspace_root=ws):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.SIBLING,
-                    ref=call.call_id,
-                )
+                table.add_found(f, Origin.SIBLING, call.call_id)
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
@@ -853,7 +909,10 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
-        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
+        ref = None
+        if f.kind is EntityKind.HOST:
+            ref = "address" if f.domain_of is not None else "mention"
+        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST, ref=ref)
     _mark_request_named(words, table)
 
     grant_hits: dict[str, list[str]] = {}
@@ -976,22 +1035,9 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
             ):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             for f in extract_mentions(written.content, home=home, workspace_root=ws, role=None):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             if written.truncated:
                 coverage.append(
                     CoverageNote(
@@ -1070,16 +1116,21 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])
     _inherit_recipient_domain(table)
+    _address_only_hosts(words, table)
 
     # 7. fingerprint
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
 
     # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
-    # sent in the common case; call: the full trimmed call view)
+    # sent in the common case, less reads of the agent's own skills and memory; call: the full trimmed call view)
+    own_store_inputs = _own_store_inputs(planir, inputs, state, home=home, ws=ws)
     untrusted_seqs = {
         i.input.input_seq
         for i in inputs
-        if i.trust is Trust.UNTRUSTED and i.new and i.input.content
+        if i.trust is Trust.UNTRUSTED
+        and i.new
+        and i.input.content
+        and i.input.input_seq not in own_store_inputs
     }
     built = views.build_views(
         raw,
@@ -1095,6 +1146,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             "inputs_stripped": b.inputs_stripped,
             "history_cut": b.history_cut,
             "history_dropped": b.history_dropped,
+            "request_cut": b.request_cut,
         }
         for name, b in built.items()
     }
@@ -1135,4 +1187,5 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         ),
         view_meta=view_meta,
         request_words=words,
+        own_store_inputs=own_store_inputs,
     )
