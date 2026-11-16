@@ -18,6 +18,7 @@ import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef,
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
+import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
@@ -498,6 +499,7 @@ const plugin = {
       let verdict: Verdict | null = null;
       let onError = false;
       let snoozed = false;
+      let failureNotice: Json | null = null;
       let held: Json | null = null;
       if (result.ok) {
         const resp = result.response;
@@ -558,6 +560,7 @@ const plugin = {
               });
         entry.decision = hook?.block || hook?.requireApproval ? "blocked_on_error" : "allowed_on_error";
         api.logger.warn(`${LOG} scan failed (${result.kind}): ${result.detail}`);
+        if (hook?.block && timing.unattended) failureNotice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run);
       }
 
       sess.history.push(entry);
@@ -574,6 +577,7 @@ const plugin = {
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
         ...(held ? { hold: held } : {}),
+        ...(failureNotice ? { notice: failureNotice } : {}),
         ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
         ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
@@ -625,9 +629,8 @@ const plugin = {
      * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
      * whatever happens here: a hold that cannot be stored only cannot be approved.
      */
-    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
-      const now = new Date();
-      const sref: string = built.planir.session.session_ref;
+    /** The unattended run a call belongs to, as the owner's notices name it: a cron job by its id, else the run. */
+    function unattendedRun(sref: string, triggerKind: string, run: any): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
         heartbeat: "heartbeat run",
@@ -635,14 +638,59 @@ const plugin = {
         subagent: "subagent run",
       };
       const job = triggerKind === "scheduled" ? hold.cronJobOf(run?.prompt) : null;
-      const where = hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name);
-      const target = store.loadNotify();
-      let outbound: hold.Outbound | undefined;
+      return { where: hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name), jobId: job?.id ?? null };
+    }
+
+    function outboundOf(): hold.Outbound | undefined {
       try {
-        outbound = api.runtime?.channel?.outbound;
+        return api.runtime?.channel?.outbound;
       } catch {
-        outbound = undefined; // the runtime throws outside full registration
+        return undefined; // the runtime throws outside full registration
       }
+    }
+
+    /**
+     * Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session) per quiet
+     * period. Returns what the scan record says about the notice. Never throws: the call is blocked whatever happens.
+     */
+    function scanFailureCall(cfg: PluginConfig, built: { planir: any }, failure: ScanFailure, tool: string, triggerKind: string, run: any): Json {
+      const sref: string = built.planir.session.session_ref;
+      const { where, jobId } = unattendedRun(sref, triggerKind, run);
+      const target = store.loadNotify();
+      const outbound = outboundOf();
+      if (!target) return { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+      if (!outbound?.loadAdapter) return { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+      const key = scanFailure.quietKey(jobId, sref);
+      let stamp: string | null;
+      try {
+        stamp = scanFailure.claim(cfg.stateDir, key, new Date());
+        if (stamp === null) return { status: "quiet" };
+      } catch (err) {
+        if (!(err instanceof hold.LockTimeoutError)) api.logger.warn(`${LOG} could not read or write scan-failure notices: ${String(err)}`);
+        return { status: "unsent", target: null, reason: err instanceof hold.LockTimeoutError ? "notice file locked" : "notice file not written" };
+      }
+      const text = scanFailure.noticeText(failure, tool, where, jobId !== null, "openclaw sentrook verify");
+      hold.track(
+        hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+          if (!why) return;
+          api.logger.warn(`${LOG} scan-failure notice not delivered: ${why}`);
+          // Not delivered: the next failure in this job is announced instead.
+          try {
+            scanFailure.release(cfg.stateDir, key, stamp!);
+          } catch (err) {
+            api.logger.warn(`${LOG} could not reopen scan-failure notices for ${key}: ${String(err)}`);
+          }
+        }),
+      );
+      return { status: "queued", target: target.channel };
+    }
+
+    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
+      const now = new Date();
+      const sref: string = built.planir.session.session_ref;
+      const { where } = unattendedRun(sref, triggerKind, run);
+      const target = store.loadNotify();
+      const outbound = outboundOf();
       let notice: Json = target
         ? { status: "queued", target: target.channel }
         : { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };

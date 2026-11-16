@@ -389,7 +389,8 @@ def status_line(state_dir: Path, owner_channel: str, now: datetime) -> str:
 _threads: list[threading.Thread] = []
 
 
-def _send(ctx: Any, platform: str, text: str) -> None:
+def _send(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None = None) -> None:
+    delivered = False
     try:
         raw = ctx.dispatch_tool(
             "send_message", {"action": "send", "target": platform, "message": text}
@@ -404,17 +405,25 @@ def _send(ctx: Any, platform: str, text: str) -> None:
             logger.warning(
                 "sentrook hold notice to %s not delivered: %s", platform, _clean(raw, 300)
             )
+        else:
+            delivered = True
     except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
         logger.warning("sentrook hold notice to %s failed: %s", platform, exc)
+    if not delivered and on_fail is not None:
+        try:
+            on_fail()
+        except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
+            logger.warning("sentrook could not undo an undelivered notice: %s", exc)
 
 
-def deliver(ctx: Any, platform: str, text: str) -> None:
+def deliver(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None = None) -> None:
     """Sends `text` to `platform`'s home channel from a worker thread with an empty context (see the
-    module note). The thread is not a daemon, so a `hermes cron run` process waits for it."""
+    module note). The thread is not a daemon, so a `hermes cron run` process waits for it. `on_fail`
+    runs on that thread when the notice was not delivered."""
     _threads[:] = [t for t in _threads if t.is_alive()]
     t = threading.Thread(
         target=contextvars.Context().run,
-        args=(_send, ctx, platform, text),
+        args=(_send, ctx, platform, text, on_fail),
         name="sentrook-hold-notice",
         daemon=False,
     )

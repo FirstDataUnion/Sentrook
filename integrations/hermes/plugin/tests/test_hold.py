@@ -22,7 +22,8 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import commands, config, grants, history, hold, store
+from plugin import commands, config, grants, history, hold, scan_failure_notice, store
+from plugin.scan_error_policy import ScanFailure
 from plugin.store import read_time
 
 from .test_plugin import dump_planirs
@@ -44,12 +45,18 @@ def h(harness, monkeypatch):
     commands run from the local terminal."""
     fake = harness
     fake.reply = {"risk": 47, "enforced": None}
+    fake.unreachable = False
+    fake.unauthorized = False
 
     def http(url, *, data=None, headers=None, timeout):
         if url != "http://scan.test/scan":
             return fake(url, data=data, headers=headers, timeout=timeout)
         p = json.loads(data)
         fake.scans.append(p)
+        if fake.unreachable:
+            raise ConnectionRefusedError(61, "Connection refused")
+        if fake.unauthorized:
+            return 401, {"error": "invalid_token"}, {}
         return 200, {**SEND["response"], **fake.reply, "request_id": p["request_id"]}, {}
 
     monkeypatch.setattr(plugin.scan_client, "http_json", http)
@@ -775,3 +782,179 @@ def test_a_malformed_response_still_holds_with_the_notice_unsent(h):
         "reason": "notice could not be built",
     }
     assert h.sent == []
+
+
+# ---- scan failures on unattended runs ---------------------------------------------------------------
+
+VERIFY = "hermes sentrook verify"
+
+
+def _failure(c):
+    return ScanFailure(ok=False, detail="secret detail", **c)
+
+
+def test_scan_failure_notice_text_reason_and_key_match_the_shared_cases():
+    assert scan_failure_notice.QUIET == timedelta(hours=FIXTURES["scan_failure_quiet_hours"])
+    for c in FIXTURES["scan_failure_reasons"]:
+        assert scan_failure_notice.reason_of(_failure(c["failure"])) == c["reason"], c["failure"]
+    for c in FIXTURES["scan_failure_notices"]:
+        w = c["where"]
+        where = hold.where_text(w["run"], w["session_ref"], w["job_id"], w["job_name"])
+        assert where == c["where_text"], c["name"]
+        assert scan_failure_notice.quiet_key(w["job_id"], w["session_ref"]) == c["quiet_key"]
+        text = scan_failure_notice.notice_text(
+            _failure(c["failure"]), c["tool"], where, w["job_id"] is not None, VERIFY
+        )
+        assert text == c["text"].replace("{verify}", VERIFY), c["name"]
+        assert "secret detail" not in text
+
+
+def _cron(h, job="9f1c2a", sid="cron-1"):
+    """A send from a run of cron job `job` (None: no cron identity) in session `sid`."""
+
+    class Run:
+        job_id = job
+        job_name = "daily-brief"
+
+    h.ctx.current_cron_execution = (lambda: Run()) if job else (lambda: None)
+    ids = {"session_id": sid, "task_id": sid}
+    turn(h, sid=ids)
+    return send(h, cid=f"c-{sid}", sid=ids)
+
+
+def test_a_scan_failure_on_an_unattended_run_tells_the_owner_once_per_job_for_6_hours(h):
+    """Must fire: the first failure in a job is announced; repeats in the same job are blocked quietly;
+    another job is announced; after the quiet period the job is announced again."""
+    h.unreachable = True
+    out, rec = _cron(h)
+    assert out["action"] == "block"
+    assert rec["decision"] == "blocked_on_error"
+    assert rec["notice"] == {"status": "queued", "target": "discord"}
+    assert len(h.sent) == 1
+    where = f'cron job 9f1c2a, job name "daily-brief", session {rec["session_ref"]}'
+    expected = scan_failure_notice.notice_text(
+        ScanFailure(ok=False, kind="network", detail=""), "send_message", where, True, VERIFY
+    )
+    assert h.sent[0]["args"] == {"action": "send", "target": "discord", "message": expected}
+    assert "approve" not in expected.lower()
+
+    out, rec = _cron(h, sid="cron-2")
+    assert out["action"] == "block"
+    assert rec["notice"] == {"status": "quiet"}
+    assert len(h.sent) == 1
+
+    _cron(h, job="7b3e1d", sid="cron-3")
+    assert len(h.sent) == 2
+
+    path = h.dir / "sentrook" / "scan-failure-notices.json"
+    data = json.loads(path.read_text())
+    old = datetime.now(UTC) - timedelta(hours=6, minutes=1)
+    data["sent"]["job:9f1c2a"] = old.strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.write_text(json.dumps(data))
+    _cron(h, sid="cron-4")
+    assert len(h.sent) == 3
+    assert not (h.dir / "sentrook" / "holds.json").exists(), "a scan failure holds nothing"
+
+
+def test_an_unattended_run_with_no_cron_job_is_quieted_by_its_session(h):
+    h.unreachable = True
+    _cron(h, job=None, sid="run-1")
+    _cron(h, job=None, sid="run-1")
+    assert len(h.sent) == 1
+    assert "in this session are not announced" in h.sent[0]["args"]["message"]
+    _cron(h, job=None, sid="run-2")
+    assert len(h.sent) == 2
+
+
+def test_with_no_owner_channel_the_failure_is_blocked_and_logged_unsent(h):
+    h.ctx.settings["owner_channel"] = ""
+    h.unreachable = True
+    out, rec = _cron(h)
+    assert out["action"] == "block"
+    assert rec["notice"] == {"status": "unsent", "target": None, "reason": hold.NO_OWNER_CHANNEL}
+    h.ctx.settings["owner_channel"] = "discord"
+    _cron(h, sid="cron-2")
+    assert len(h.sent) == 1, "an unsent notice does not start the quiet period"
+
+
+def test_scan_failures_send_no_notice_when_attended_or_when_the_scan_answers(h):
+    """Must stay silent: an attended failure asks; a usable answer is unaffected, and an unattended
+    review keeps its own hold notice."""
+    h.unreachable = True
+    ids = {"session_id": "chat-1", "task_id": "chat-1"}
+    turn(h, platform="telegram", sid=ids)
+    out, rec = send(h, sid=ids)
+    assert out["action"] == "approve"
+    assert "notice" not in rec
+    assert h.sent == []
+    h.unreachable = False
+    h.reply = {"risk": 5, "enforced": None}
+    out, rec = _cron(h, sid="cron-ok")
+    assert out is None and "notice" not in rec
+    h.reply = {"risk": 47, "enforced": None}
+    out, rec = _cron(h, sid="cron-held")
+    assert rec["decision"] == "held"
+    assert len(h.sent) == 1
+    assert h.sent[0]["args"]["message"].startswith("Sentrook held a tool call")
+
+
+def test_observe_mode_sends_no_scan_failure_notice(h, monkeypatch):
+    monkeypatch.setenv("SENTROOK_MODE", "observe")
+    h.unreachable = True
+    out, rec = _cron(h)
+    assert out is None
+    assert rec["decision"] == "allowed_on_error"
+    assert "notice" not in rec
+    assert h.sent == []
+
+
+def test_a_notice_that_cannot_be_delivered_does_not_quiet_the_job(h):
+    attempts = []
+
+    def failing(name, args, **_kw):
+        attempts.append(args)
+        return json.dumps({"error": "channel down"})
+
+    h.ctx.dispatch_tool = failing
+    h.unreachable = True
+    out, _rec = _cron(h)
+    assert out["action"] == "block"
+    _cron(h, sid="cron-2")
+    assert len(attempts) == 2, "the second failure tries again"
+
+
+def test_only_a_block_on_an_unattended_run_is_announced_whatever_the_policy(h):
+    """Must stay silent: deny in a chat blocks without a notice; allow on an unattended run lets the
+    call run; a usable block is a security block, not a scan failure. Must fire: bad credentials still
+    block under allow, and notify."""
+    h.ctx.settings["on_scan_error"] = "deny"
+    h.unreachable = True
+    ids = {"session_id": "chat-1", "task_id": "chat-1"}
+    turn(h, platform="telegram", sid=ids)
+    out, rec = send(h, sid=ids)
+    assert out["action"] == "block"
+    assert "notice" not in rec
+    h.unreachable = False
+    h.reply = {"risk": 92, "enforced": None}
+    out, rec = _cron(h, sid="cron-block")
+    assert out["action"] == "block"
+    assert rec["decision"] == "blocked"
+    assert "notice" not in rec
+    assert h.sent == []
+
+    h.ctx.settings["on_scan_error"] = "allow"
+    h.unreachable = True
+    out, rec = _cron(h, sid="cron-allow")
+    assert out is None
+    assert "notice" not in rec
+    assert h.sent == []
+    h.unreachable = False
+    h.unauthorized = True
+    out, rec = _cron(h, job="def", sid="cron-creds")
+    assert out["action"] == "block"
+    assert rec["notice"] == {"status": "queued", "target": "discord"}
+    assert len(h.sent) == 1
+    assert (
+        "Reason: Sentrook's endpoint or credentials are not configured correctly."
+        in h.sent[0]["args"]["message"].splitlines()
+    )

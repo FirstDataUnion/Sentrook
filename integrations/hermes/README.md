@@ -295,13 +295,19 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
   asked, with Hermes's approval prompt, whether to run the call without a scan. It runs only if you approve, except
   in a session where you switched on YOLO, where Hermes approves the prompt itself (see above).
 - **On unattended runs** (the API server, cron, subagents, webhooks, and anywhere Hermes approvals are switched off
-  as described above) nobody can answer, so the call is blocked. It is not held and no notice is sent. The agent is
-  told that Sentrook did not scan the call, that this is a service problem rather than a security block, and that
-  the call did not run.
+  as described above) nobody can answer, so the call is blocked. The agent is told that Sentrook did not scan the
+  call, that this is a service problem rather than a security block, and that the call did not run. The call is not
+  held, so there is nothing to approve, but you get a notice on the `owner_channel` home channel, like a held call's.
+  It names the run, the tool and the reason (the service could not be reached, did not answer in time, returned an
+  error or rate-limited the scan, or the endpoint or credentials are wrong). You get one notice per cron job (per
+  session for other runs): further failures in the same job are blocked without a notice for 6 hours, so an outage
+  sends one message per job, not one per call. The traffic log records each with `notice` `queued`, `quiet` or
+  `unsent`.
 
 A snooze does not change this. Set `on_scan_error` to `deny` to block the call everywhere, or to `allow` to run it
 without a scan everywhere. Bad credentials or endpoints are never let through silently: with `allow` the call is
-blocked, and with `review` you are asked as above. In observe mode the failure is logged and the call runs. The
+blocked, and with `review` you are asked as above. Whatever the setting, a call blocked on an unattended run because
+the scan failed sends the notice described above. In observe mode the failure is logged and the call runs. The
 traffic log records these scans with decision `blocked_on_error` or `allowed_on_error`, and `/sentrook history` shows
 them as scan errors.
 
@@ -379,10 +385,12 @@ In short, for anyone deciding whether to install it:
   them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
   call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review holds the call and
-  sends you one notice on a home channel, through Hermes's own `send_message`; that notice is the only message it
-  sends.
+  sends you one notice on a home channel, through Hermes's own `send_message`, and a call blocked because the scan
+  failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
+  only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
-  the traffic log, grants, snooze state, held calls and the conversation logs above), or to the paths you set for them
+  the traffic log, grants, snooze state, held calls, when each job last had a scan-failure notice, and the
+  conversation logs above), or to the paths you set for them
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
   secret redaction are on. It runs no shell commands and starts no background processes.
 - **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
@@ -403,7 +411,7 @@ settings (see [step 2](#2-add-the-credentials-to-hermes)).
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
-| `owner_channel` | | The platform whose home channel gets the notice of a held call, such as `telegram`. No notice is sent until it is set |
+| `owner_channel` | | The platform whose home channel gets the notices of held calls and of scan failures on unattended runs, such as `telegram`. No notice is sent until it is set |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |

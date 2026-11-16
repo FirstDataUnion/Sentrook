@@ -18,6 +18,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { clearScanTokenCache } from "./auth.ts";
 import { formatHistory, recentScans, actionOf, reviewOf } from "./history.ts";
 import * as hold from "./hold.ts";
+import * as scanFailure from "./scanFailureNotice.ts";
 import plugin from "./index.ts";
 import * as grants from "./grants.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -37,6 +38,17 @@ const FIXTURES = JSON.parse(
     text: string;
   }[];
   hints: { hint: unknown; grant: unknown }[];
+  scan_failure_quiet_hours: number;
+  scan_failure_reasons: { failure: { kind: string; status?: number }; reason: string }[];
+  scan_failure_notices: {
+    name: string;
+    failure: { kind: string; status?: number };
+    tool: string;
+    where: { run: string; session_ref: string; job_id: string | null; job_name: string | null };
+    where_text: string;
+    quiet_key: string;
+    text: string;
+  }[];
   outcomes: { name: string; risk: number; enforced: string | null; ceiling?: string | null; attended: string; unattended: string }[];
   history: { name: string; decision: string; resolution: string | null; action: string; review: string }[];
 };
@@ -58,6 +70,10 @@ const realFetch = globalThis.fetch;
 let stateDir = "";
 let scans: any[] = [];
 let reply: Record<string, unknown> = {};
+/** The scanner cannot be reached while set. */
+let unreachable = false;
+/** The scanner refuses the credentials (401) while set. */
+let unauthorized = false;
 
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -74,6 +90,8 @@ beforeEach(() => {
   stateDir = path.join(dir, "sentrook");
   scans = [];
   reply = { risk: 47, enforced: null };
+  unreachable = false;
+  unauthorized = false;
   clearScanTokenCache();
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input);
@@ -84,6 +102,8 @@ beforeEach(() => {
     if (url === "http://scan.test/scan") {
       const planir = JSON.parse(String(init?.body));
       scans.push(planir);
+      if (unreachable) throw new TypeError("fetch failed");
+      if (unauthorized) return json(401, { error: "invalid_token" });
       return json(200, { ...SEND.response, ...reply, request_id: planir.request_id, state: `state-${planir.session.step}` });
     }
     throw new Error(`unexpected fetch ${url}`);
@@ -763,4 +783,183 @@ test("a malformed response still holds, with the traffic record written and the 
   assert.equal(rec.decision, "held");
   assert.deepEqual(rec.hold.notice, { status: "unsent", target: null, reason: "notice could not be built" });
   assert.equal(r.sent.length, 0);
+});
+
+// ---- scan failures on unattended runs -------------------------------------------------------------------
+
+const VERIFY = "openclaw sentrook verify";
+
+test("scan-failure notice text, reason and quiet key match the shared cases", () => {
+  assert.equal(scanFailure.QUIET_MS, FIXTURES.scan_failure_quiet_hours * HOUR);
+  for (const c of FIXTURES.scan_failure_reasons) {
+    assert.equal(scanFailure.reasonOf({ ok: false, detail: "secret detail", ...c.failure } as any), c.reason, JSON.stringify(c.failure));
+  }
+  for (const c of FIXTURES.scan_failure_notices) {
+    const where = hold.whereText(c.where.run, c.where.session_ref, c.where.job_id, c.where.job_name);
+    assert.equal(where, c.where_text, c.name);
+    assert.equal(scanFailure.quietKey(c.where.job_id, c.where.session_ref), c.quiet_key, c.name);
+    const text = scanFailure.noticeText({ ok: false, detail: "secret detail", ...c.failure } as any, c.tool, where, c.where.job_id !== null, VERIFY);
+    assert.equal(text, c.text.replace("{verify}", VERIFY), c.name);
+    assert.ok(!text.includes("secret detail"), "the failure detail is not sent");
+  }
+});
+
+/** One send from a cron run of job `job` (or another unattended `trigger`) in session `sid`. */
+async function cronSend(r: ReturnType<typeof registered>, sid: string, job: string | null = "abc", trigger = "cron") {
+  const runId = `r-${sid}`;
+  const ctx = { sessionKey: `agent:main:cron:${sid}`, sessionId: sid, agentId: "main", runId, trigger };
+  await r.fire("before_prompt_build", { runId, prompt: job ? `[cron:${job} daily-brief] post the brief` : "post the brief" }, ctx);
+  const out = await r.fire(
+    "before_tool_call",
+    { toolName: "message", toolCallId: `c-${sid}`, runId, params: { action: "send", channel: "discord", target: "#ops-reports", message: "x" } },
+    ctx,
+  );
+  await hold.waitForNotices();
+  return { out, rec: r.records("scan").at(-1) };
+}
+
+test("a scan failure on an unattended run blocks the call and tells the owner once per job for 6 hours", async () => {
+  // Must fire: the first failure in a job is announced; repeats in the same job are blocked quietly; another job is
+  // announced; after the quiet period the job is announced again.
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  unreachable = true;
+  const first = await cronSend(r, "cron-1");
+  assert.equal(first.out.block, true);
+  assert.equal(first.rec.decision, "blocked_on_error");
+  assert.deepEqual(first.rec.notice, { status: "queued", target: "telegram" });
+  assert.equal(r.sent.length, 1);
+  const where = `cron job abc, job name "daily-brief", session ${first.rec.session_ref}`;
+  assert.equal(r.sent[0].text, scanFailure.noticeText({ ok: false, kind: "network", detail: "" }, "message", where, true, VERIFY));
+  assert.deepEqual({ channel: r.sent[0].channel, to: r.sent[0].to }, { channel: "telegram", to: "100200300" });
+  assert.match(r.sent[0].text, /not announced for 6 hours/);
+  assert.ok(!/approve/i.test(r.sent[0].text), "nothing to approve: the call was not held");
+
+  const again = await cronSend(r, "cron-2");
+  assert.equal(again.out.block, true);
+  assert.deepEqual(again.rec.notice, { status: "quiet" });
+  assert.equal(r.sent.length, 1, "the same job in its quiet period sends nothing");
+
+  await cronSend(r, "cron-3", "xyz");
+  assert.equal(r.sent.length, 2, "another job is announced");
+
+  const file = path.join(stateDir, "scan-failure-notices.json");
+  const data = JSON.parse(readFileSync(file, "utf8"));
+  data.sent["job:abc"] = new Date(Date.now() - 6 * HOUR - 60_000).toISOString();
+  writeFileSync(file, JSON.stringify(data));
+  await cronSend(r, "cron-4");
+  assert.equal(r.sent.length, 3, "after 6 hours the job is announced again");
+  assert.ok(!existsSync(path.join(stateDir, "holds.json")) || holds().length === 0, "a scan failure holds nothing");
+});
+
+test("an unattended run with no cron job is quieted by its session", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  unreachable = true;
+  await cronSend(r, "beat-1", null, "heartbeat");
+  await cronSend(r, "beat-1", null, "heartbeat");
+  assert.equal(r.sent.length, 1);
+  assert.match(r.sent[0].text, /^Run: heartbeat run, session /m);
+  assert.match(r.sent[0].text, /in this session are not announced/);
+  await cronSend(r, "beat-2", null, "heartbeat");
+  assert.equal(r.sent.length, 2, "another session is announced");
+});
+
+test("with no notify target the failure is still blocked, logged unsent, and announced once a target is set", async () => {
+  const r = registered();
+  unreachable = true;
+  const first = await cronSend(r, "cron-1");
+  assert.equal(first.out.block, true);
+  assert.deepEqual(first.rec.notice, { status: "unsent", target: null, reason: hold.NOTIFY_UNSET });
+  await r.command("sentrook-notify", "here");
+  await cronSend(r, "cron-2");
+  assert.equal(r.sent.length, 1, "an unsent notice does not start the quiet period");
+});
+
+test("scan failures send no notice when attended, in observe mode, or when the scan answers", async () => {
+  // Must stay silent: an attended failure asks; observe mode lets the call run; a usable answer is unaffected, and an
+  // unattended review keeps its own hold notice.
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  unreachable = true;
+  const chat = await r.send("user", "chat-1");
+  assert.ok(chat.out.requireApproval);
+  assert.equal(chat.rec.notice, undefined);
+  assert.equal(r.sent.length, 0);
+  unreachable = false;
+  reply = { risk: 5, enforced: null };
+  const ok = await cronSend(r, "cron-ok");
+  assert.equal(ok.out, undefined);
+  assert.equal(ok.rec.notice, undefined);
+  reply = { risk: 47, enforced: null };
+  const held = await cronSend(r, "cron-held");
+  assert.equal(held.rec.decision, "held");
+  assert.equal(r.sent.length, 1);
+  assert.match(r.sent[0].text, /^Sentrook held a tool call/);
+});
+
+test("observe mode sends no scan-failure notice", async () => {
+  process.env.SENTROOK_MODE = "observe";
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  unreachable = true;
+  const { out, rec } = await cronSend(r, "cron-1");
+  assert.equal(out, undefined);
+  assert.equal(rec.decision, "allowed_on_error");
+  assert.equal(rec.notice, undefined);
+  assert.equal(r.sent.length, 0);
+});
+
+test("a notice that cannot be delivered does not quiet the job", async () => {
+  let attempts = 0;
+  const failing = {
+    loadAdapter: async () => ({
+      sendText: async () => {
+        attempts += 1;
+        throw new Error("channel down");
+      },
+    }),
+  };
+  const r = registered({}, failing);
+  await r.command("sentrook-notify", "here");
+  unreachable = true;
+  const first = await cronSend(r, "cron-1");
+  assert.equal(first.out.block, true);
+  await cronSend(r, "cron-2");
+  assert.equal(attempts, 2, "the second failure tries again");
+  assert.ok(r.logs.some((l) => l.includes("scan-failure notice not delivered")));
+});
+
+test("only a block on an unattended run is announced, whatever the scan-error policy", async () => {
+  // Must stay silent: deny in a chat blocks without a notice; allow on an unattended run lets the call run; a usable
+  // block is a security block, not a scan failure. Must fire: bad credentials still block under allow, and notify.
+  const deny = registered({ onScanError: "deny" });
+  await deny.command("sentrook-notify", "here");
+  unreachable = true;
+  const chat = await deny.send("user", "chat-1");
+  assert.equal(chat.out.block, true);
+  assert.equal(chat.rec.notice, undefined);
+  assert.equal(deny.sent.length, 0);
+  unreachable = false;
+  reply = { risk: 92, enforced: null };
+  const blocked = await cronSend(deny, "cron-block");
+  assert.equal(blocked.out.block, true);
+  assert.equal(blocked.rec.decision, "blocked");
+  assert.equal(blocked.rec.notice, undefined);
+  assert.equal(deny.sent.length, 0);
+
+  const allow = registered({ onScanError: "allow" });
+  await allow.command("sentrook-notify", "here");
+  unreachable = true;
+  const ran = await cronSend(allow, "cron-allow");
+  assert.equal(ran.out, undefined);
+  assert.equal(ran.rec.notice, undefined);
+  assert.equal(allow.sent.length, 0);
+  unreachable = false;
+  unauthorized = true;
+  const creds = await cronSend(allow, "cron-creds", "def");
+  assert.equal(creds.out.block, true);
+  assert.deepEqual(creds.rec.notice, { status: "queued", target: "telegram" });
+  assert.equal(allow.sent.length, 1);
+  assert.match(allow.sent[0].text, /^Reason: Sentrook's endpoint or credentials are not configured correctly\.$/m);
 });

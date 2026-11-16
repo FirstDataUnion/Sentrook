@@ -337,6 +337,17 @@ export class Store {
     this.writeJson(path.join(this.dir, "holds.json"), value);
   }
 
+  /** When each job or session last had a scan-failure notice (`scan-failure-notices.json`); empty when unreadable. */
+  loadScanFailureNotices(): Record<string, unknown> {
+    const data = this.readJson<any>(path.join(this.dir, "scan-failure-notices.json"), null);
+    const sent = data && typeof data === "object" ? data.sent : null;
+    return sent && typeof sent === "object" && !Array.isArray(sent) ? sent : {};
+  }
+
+  saveScanFailureNotices(sent: Record<string, string>): void {
+    this.writeJson(path.join(this.dir, "scan-failure-notices.json"), { version: 1, sent });
+  }
+
   /** The owner's notice target from `notify.json`; null when none is set or the file cannot be read. */
   loadNotify(): NotifyTarget | null {
     const data = this.readJson<any>(path.join(this.dir, "notify.json"), null);
