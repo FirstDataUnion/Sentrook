@@ -744,8 +744,23 @@ OC_WS = f"{HOME}/.openclaw/workspace"
         # OpenClaw's own agent workspace, inside its directory: its top-level instruction files.
         (OC_WS, f"{OC_WS}/AGENTS.md", True),
         (OC_WS, f"{OC_WS}/TOOLS.md", True),
-        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/HEARTBEAT.md", True),
         (OC_WS, f"{HOME}/.openclaw/workspace-ops/AGENTS.md", True),
+        (OC_WS, f"{HOME}/.openclaw/agents/main/agent/models.json", True),
+        (OC_WS, f"{HOME}/.hermes/profiles/ops/config.yaml", True),
+        (OC_WS, "/etc/hermes/conf.d/policy.yaml", True),
+        # A workspace set to a directory inside the host's (a nested agent workspace, Hermes's own
+        # source checkout) is still a directory someone else's files can fill.
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/HEARTBEAT.md", False),
+        (f"{HOME}/.hermes/hermes-agent", f"{HOME}/.hermes/hermes-agent/AGENTS.md", False),
+        # A config-named file anywhere but where the host keeps its config: in a cloned repository,
+        # a skill or a downloaded attachment; and an agent's session transcripts.
+        (OC_WS, f"{OC_WS}/cloned-repo/openclaw.json", False),
+        (OC_WS, f"{OC_WS}/cloned-repo/.openclaw/config/intake.json", False),
+        (OC_WS, f"{OC_WS}/repo/.hermes/config.yaml", False),
+        (OC_WS, f"{HOME}/.hermes/skills/evil/openclaw.json", False),
+        (OC_WS, f"{HOME}/.openclaw/media/inbound/openclaw.json.txt", False),
+        (OC_WS, f"{HOME}/.openclaw/agents/main/sessions/abc.jsonl", False),
+        (OC_WS, "/etc/hermes/.openclaw/workspace/AGENTS.md", False),
         # A repository inside the workspace, or another agent's copy, is not the owner's.
         (OC_WS, f"{OC_WS}/cloned-repo/AGENTS.md", False),
         (OC_WS, f"{OC_WS}/sgt_harrow_backup/SOUL.md", False),

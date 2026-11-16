@@ -188,8 +188,11 @@ def _two_scans(path: str, workspace: str):
     return host, relieved, entries
 
 
-def test_a_destination_from_the_hosts_own_config_directory_keeps_its_relief():
-    host, relieved, entries = _two_scans(CONFIG, "/home/me/.openclaw/workspace")
+@pytest.mark.parametrize(
+    "path", [CONFIG, "/home/me/.openclaw/workspace/TOOLS.md", "/home/me/.hermes/SOUL.md"]
+)
+def test_a_destination_from_the_hosts_own_config_directory_keeps_its_relief(path):
+    host, relieved, entries = _two_scans(path, "/home/me/.openclaw/workspace")
     assert relieved == {host.id}
     assert entries == [{"kind": "host", "value": INTAKE, "verdict": "owner_config"}]
 
@@ -201,6 +204,8 @@ def test_a_destination_from_the_hosts_own_config_directory_keeps_its_relief():
         ("/home/me/projects/app/AGENTS.md", "/home/me/projects/app"),
         # A repository cloned into OpenClaw's own workspace.
         ("/home/me/.openclaw/workspace/app/AGENTS.md", "/home/me/.openclaw/workspace"),
+        # A config-named file a repository ships.
+        ("/home/me/.openclaw/workspace/app/openclaw.json", "/home/me/.openclaw/workspace"),
     ],
 )
 def test_a_destination_named_only_in_a_repositorys_instructions_is_not_relieved(path, workspace):
