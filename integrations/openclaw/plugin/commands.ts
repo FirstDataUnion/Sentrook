@@ -13,6 +13,7 @@
  * `ownerCommand`; `/sentrook` and its status stay open to everyone.
  */
 
+import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
@@ -50,6 +51,8 @@ export interface CommandContext {
   owner?: OwnerRun;
   /** The session the command was sent from (as scans key it); unset when there is none. */
   session?: string;
+  /** The OpenClaw version the plugin runs in; unset when the host does not say. */
+  hostVersion?: string;
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
@@ -230,7 +233,7 @@ function statusText(ctx: CommandContext): string {
     resolveSecretString(ctx.pluginConfig.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
   ].filter(Boolean);
-  return [
+  const lines = [
     `Sentrook plugin: ${PLUGIN_VERSION}`,
     `mode: ${cfg.mode}`,
     `review at: ${cfg.reviewAt}, block at: ${cfg.blockAt}`,
@@ -245,5 +248,8 @@ function statusText(ctx: CommandContext): string {
       selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
       cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
     )}`,
-  ].join("\n");
+  ];
+  const note = timeoutBehaviorNote(cfg.approval, ctx.hostVersion);
+  if (note) lines.push(`approval: ${note}`);
+  return lines.join("\n");
 }

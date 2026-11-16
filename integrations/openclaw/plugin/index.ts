@@ -37,7 +37,7 @@ interface OpenClawPluginApi {
   config?: any;
   logger: PluginLogger;
   registrationMode?: string;
-  runtime?: { version?: unknown };
+  runtime?: { version?: unknown; config?: { current?: () => unknown } };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
   registerCommand?: (def: {
@@ -118,11 +118,31 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const mode = api.registrationMode ?? "full";
+    // The runtime is a proxy that throws outside full registration, so read its version only when needed.
+    const runtimeVersion = (): string | undefined => {
+      try {
+        const v = api.runtime?.version;
+        return typeof v === "string" && v ? v : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    // OpenClaw's config as it is now. `api.config` is a snapshot taken at load, so a later `config set` (an exec
+    // mode, an MCP server) would not reach the scan; `runtime.config.current()` is the live one where the host has it.
+    const hostConfig = (): any => {
+      try {
+        const live = api.runtime?.config?.current?.();
+        if (live && typeof live === "object") return live;
+      } catch {
+        // The runtime throws outside full registration.
+      }
+      return api.config;
+    };
     if (api.registerCli && (mode === "cli-metadata" || mode === "discovery" || mode === "full")) {
       api.registerCli(
         async ({ program }) => {
           const { registerSentrookCli } = await import("./cli.ts");
-          registerSentrookCli(program, () => api.pluginConfig ?? {});
+          registerSentrookCli(program, () => api.pluginConfig ?? {}, runtimeVersion, hostConfig);
         },
         { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
@@ -136,7 +156,11 @@ const plugin = {
         description: "Sentrook plugin status and help",
         acceptsArgs: true,
         handler: async (ctx) => ({
-          text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
+          text: await runSentrookCommand(ctx?.args, {
+            pluginConfig: api.pluginConfig ?? {},
+            env: process.env,
+            hostVersion: runtimeVersion(),
+          }),
         }),
       });
     } catch (err) {
@@ -148,14 +172,7 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
-    // The runtime is a proxy that throws outside full registration.
-    let hostVersion: string | undefined;
-    try {
-      const v = api.runtime?.version;
-      if (typeof v === "string" && v) hostVersion = v;
-    } catch {
-      hostVersion = undefined;
-    }
+    const hostVersion = runtimeVersion();
     const store = new Store(boot.stateDir);
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
@@ -418,7 +435,7 @@ const plugin = {
         }
       }
       const built = buildPlanir({
-        hostConfig: api.config,
+        hostConfig: hostConfig(),
         cfg,
         redactor,
         event,
@@ -504,6 +521,7 @@ const plugin = {
               ...copy,
               severity: severity(resp),
               timeoutMs: timing.timeoutMs,
+              // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
               timeoutBehavior: timing.timeoutBehavior,
               allowedDecisions: ["allow-once", "deny"],
             },

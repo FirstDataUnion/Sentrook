@@ -62,6 +62,8 @@ class Origin(StrEnum):
     SIBLING = "sibling"
     UNTRUSTED_INPUT = "untrusted_input"
     TRUSTED_INPUT = "trusted_input"
+    #: A scanned read of the agent's own config or instruction files (`session_sets.owner_config_path`).
+    OWNER_CONFIG = "owner_config"
     HISTORY = "history"
     WRITTEN_FILE = "written_file"
     PROVIDER = "provider"
@@ -86,6 +88,18 @@ class Entity:
     #: A host named in an untrusted input that tries to steer the agent (`prepare.steering`), in this
     #: request or, through the state token, on an earlier step.
     steered: bool = False
+    #: The owner's own configuration supplied it, in this request or (through the token's trusted set) earlier.
+    in_session_trusted: bool = False
+    #: Ids of the email recipients (in the pending call, a sibling or a written file) whose mail domain this host is.
+    mail_domain_of: list[str] = field(default_factory=list)
+    #: One of those calls names the host in its own right (a URL, a command target, a mention), not only as
+    #: the domain of an address.
+    named_in_own_right: bool = False
+    #: The roles those own-right uses give the host (empty for a role-less mention).
+    own_right_roles: set[Role] = field(default_factory=set)
+    #: The owner's request reaches this host only through an email address on it, and a call uses the host in
+    #: its own right: still a host the owner named for the look-alike check, but not sanctioned.
+    owner_named_via_address: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])
@@ -94,6 +108,12 @@ class Entity:
 
     def has_origin(self, *origins: Origin) -> bool:
         return any(o in self.origins for o in origins)
+
+    @property
+    def recipient_domain_of(self) -> tuple[str, ...]:
+        """The recipients this host is part of when it is only their mail domain: such a host is scored
+        as those recipients, not as a second destination. Empty when a call names it in its own right."""
+        return () if self.named_in_own_right else tuple(self.mail_domain_of)
 
     @property
     def sanctioned(self) -> bool:
@@ -128,6 +148,22 @@ class EntityTable:
             ent.roles.add(role)
         if origin is not None:
             ent.add_origin(origin, ref)
+        return ent
+
+    def add_found(self, f: Found, origin: Origin, ref: str | None = None) -> Entity:
+        """Add an entity a call names (pending call, sibling or written file) with its role, and record
+        whether a host is there only as the mail domain of a recipient the same call names."""
+        ent = self.add(f.kind, f.value, display=f.display, role=f.role, origin=origin, ref=ref)
+        if f.kind is EntityKind.HOST:
+            recipient = (
+                self.get(EntityKind.RECIPIENT, f.domain_of) if f.domain_of is not None else None
+            )
+            if recipient is None:
+                ent.named_in_own_right = True
+                if f.role is not None:
+                    ent.own_right_roles.add(f.role)
+            elif recipient.id not in ent.mail_domain_of:
+                ent.mail_domain_of.append(recipient.id)
         return ent
 
     def get(self, kind: EntityKind, value: str) -> Entity | None:
@@ -477,6 +513,23 @@ def normalise_package(ecosystem: str, name: str) -> str | None:
     return f"{ecosystem}:{n}" if n else None
 
 
+def provider_counterpart(identity: str) -> tuple[EntityKind, str] | None:
+    """The entity a tool provider's identity is extracted as when a command or content names it: the
+    host of a remote server (`remote:mcp.x.test` is the host `mcp.x.test`) or the package a local
+    server runs (`npm:@acme/x-mcp@1.2.0` is the package `npm:@acme/x-mcp`). None for any other
+    identity, and for a remote identity with no host written."""
+    ident = normalise_remote_identity(identity.strip())
+    if ident[:7].lower() == "remote:":
+        host = ident[7:]
+        return (EntityKind.HOST, host) if host and host.strip("*?[]") == host else None
+    eco, sep, name = ident.partition(":")
+    eco = eco.lower()
+    if not sep or eco not in set(_ECOSYSTEM.values()):
+        return None
+    norm = normalise_package(eco, name)
+    return (EntityKind.PACKAGE, norm) if norm else None
+
+
 def normalise_recipient(value: str) -> str:
     v = value.strip().strip("<>\"'")
     if _EMAIL_RE.fullmatch(v):
@@ -493,6 +546,8 @@ class Found:
     value: str
     display: str
     role: Role | None = None
+    #: For a host that is the mail domain of an email recipient: that recipient's normalised address.
+    domain_of: str | None = None
 
 
 def _is_code_reference(text: str, start: int, end: int) -> bool:
@@ -627,16 +682,17 @@ def _host_arg_hosts(text: str) -> list[str]:
     return hosts
 
 
-def _hosts_in(text: str, *, inline_program: bool = False) -> list[str]:
+def _hosts_in(text: str, *, inline_program: bool = False, emails: bool = True) -> list[str]:
     """Hosts named in `text`: URLs, emails, host-taking arguments, IPv4 addresses, and bare dotted
     tokens outside code and config-key positions. With `inline_program` the whole text is program
-    source (a Hermes `execute_code` body)."""
+    source (a Hermes `execute_code` body). Without `emails`, the domains of email addresses are left
+    to the caller."""
     hosts: list[str] = []
     for m in _URL_RE.finditer(text):
         h = host_of_url(m.group(0))
         if h:
             hosts.append(h)
-    for m in _EMAIL_RE.finditer(text):
+    for m in _EMAIL_RE.finditer(text) if emails else ():
         hosts.append(normalise_host(m.group(1).split("@", 1)[1]))
     for rx in (_SSH_HOST_RE, _NC_HOST_RE, _DEV_TCP_RE):
         for m in rx.finditer(text):
@@ -803,6 +859,41 @@ def _chat_send(call: CanonicalCall) -> tuple[bool, str | None]:
     return not mail, platform
 
 
+def send_platform(call: CanonicalCall) -> str | None:
+    """The chat platform a message send names in its own argument (`discord` for OpenClaw's
+    `{channel: discord, target: "#x"}`), lower-cased; None for any other call."""
+    if call.tool_kind is not ToolKind.MESSAGE_SEND:
+        return None
+    return _chat_send(call)[1] or None
+
+
+#: A direct-message target, in any letter case and with an id of any length.
+_PERSON_PREFIX = re.compile(r"(?i)\s*(?:user|dm):")
+
+
+def platform_targets(call: CanonicalCall) -> set[tuple[EntityKind, str]]:
+    """The targets of a message send that a pattern naming the send's platform may cover: its channels and
+    chat names, as (kind, value). Never a direct message (`user:`, `dm:`), an address (an email, a phone
+    number, an `@handle`) or a target that names a platform of its own."""
+    if call.tool_kind is not ToolKind.MESSAGE_SEND:
+        return set()
+    chat, platform = _chat_send(call)
+    if not chat or not platform:
+        return set()
+    out: set[tuple[EntityKind, str]] = set()
+    for f in _recipients_in(call.recipients, chat=chat, platform=platform):
+        named = _PLATFORM_TARGET_RE.fullmatch(f.value)
+        if _PERSON_PREFIX.match(f.value) or (named and named.group(1).lower() in _CHAT_PLATFORMS):
+            continue
+        if f.kind is EntityKind.CHANNEL or (
+            f.kind is EntityKind.RECIPIENT
+            and "@" not in f.value
+            and not _is_address(f.display, platform)
+        ):
+            out.add((f.kind, f.value))
+    return out
+
+
 def _recipients_in(
     values: list[str], *, chat: bool = False, platform: str | None = None
 ) -> list[Found]:
@@ -816,14 +907,10 @@ def _recipients_in(
             continue
         if _EMAIL_RE.fullmatch(v):
             norm = normalise_recipient(v)
+            domain = normalise_host(norm.split("@", 1)[1])
             out.append(Found(EntityKind.RECIPIENT, norm, norm, Role.RECIPIENT))
             out.append(
-                Found(
-                    EntityKind.HOST,
-                    normalise_host(norm.split("@", 1)[1]),
-                    normalise_host(norm.split("@", 1)[1]),
-                    Role.DATA_DESTINATION,
-                )
+                Found(EntityKind.HOST, domain, domain, Role.DATA_DESTINATION, domain_of=norm)
             )
             continue
         out.append(Found(EntityKind.RECIPIENT, normalise_recipient(v), v, Role.RECIPIENT))
@@ -846,11 +933,13 @@ def extract_mentions(
         if "@" in value:
             text = text[:start] + " " * (end - start) + text[end:]
     found: list[Found] = []
-    for h in _hosts_in(text, inline_program=inline_program):
+    for h in _hosts_in(text, inline_program=inline_program, emails=False):
         found.append(Found(EntityKind.HOST, h, h, role))
     for m in _EMAIL_RE.finditer(text):
         norm = normalise_recipient(m.group(1))
+        domain = normalise_host(m.group(1).split("@", 1)[1])
         found.append(Found(EntityKind.RECIPIENT, norm, norm, role))
+        found.append(Found(EntityKind.HOST, domain, domain, role, domain_of=norm))
     for norm, disp in paths_in(text, home, workspace_root, None):
         found.append(Found(EntityKind.PATH, norm, disp, role))
     for p in _packages_in(text):

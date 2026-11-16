@@ -28,6 +28,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
+import { bindingProblem } from "./planir.ts";
 import { type GrantsFile, readTime, Store } from "./store.ts";
 
 export const KINDS = ["destination", "file", "provider"];
@@ -177,15 +178,31 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
   return lines.join("\n");
 }
 
+/** A binding's details, with why it can never apply when it cannot. */
+function withProblem(pattern: string, details: string[]): string {
+  const problem = bindingProblem(pattern);
+  return [...details, ...(problem ? [problem] : [])].join("; ");
+}
+
 export function formatBindings(cfg: PluginConfig, data: GrantsFile | null): string {
   const rows = [
-    ...cfg.channelBindings.map((p) => [p, "config, read-only"]),
-    ...fileBindings(data).map((b) => [b.pattern.trim(), setBy(b).join("; ")]),
+    ...cfg.channelBindings.map((p) => [p, withProblem(p, ["config, read-only"])]),
+    ...fileBindings(data).map((b) => [b.pattern.trim(), withProblem(b.pattern, setBy(b))]),
   ];
   const lines = [`Channel bindings: ${cfg.channelBindings.length} in config, ${fileBindings(data).length} by command`];
   if (data === null) lines.push("The grants file could not be read, so no bindings set by command apply.");
   if (rows.length) lines.push(...table(["channel", "details"], rows.map((r) => r.map((c) => clean(c)))));
   return lines.join("\n");
+}
+
+/** The config bindings that can never apply and why, e.g. `ab (too short, never sent)`; "" when none. */
+export function bindingProblemsSummary(cfg: PluginConfig): string {
+  return cfg.channelBindings
+    .flatMap((p) => {
+      const why = bindingProblem(p);
+      return why ? [`${clean(p, 60)} (${why})`] : [];
+    })
+    .join(", ");
 }
 
 /** The config grants that are never sent and why, e.g. `cfg-2 (no session)`; "" when none. */
@@ -417,7 +434,8 @@ export function bind(
         if (found >= 0) return { reply: `${channel} is already bound.`, change: null };
         const entry: Entry = { pattern: channel, granted_at: iso(now), set_by: by };
         data.bindings.push(entry);
-        return { reply: `Channel binding added: ${channel}.`, change: { op: "bind_add", entry } };
+        const problem = bindingProblem(channel);
+        return { reply: `Channel binding added: ${channel}${problem ? ` (${problem}).` : "."}`, change: { op: "bind_add", entry } };
       }
       if (found < 0) return { reply: `${channel} is not bound.`, change: null };
       const [entry] = data.bindings.splice(found, 1) as Entry[];

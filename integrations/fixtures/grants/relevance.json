@@ -261,6 +261,118 @@
       "identity": null,
       "arguments": { "url": "https://cl0ud-sync.io/up" },
       "sent": false
+    },
+    {
+      "case": "#name binding on a send to that channel written as channel:<name>",
+      "grant": { "kind": "destination", "pattern": "#ops-yard", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "channel:ops-yard", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "#name binding on a send to that thread written as thread:<name>",
+      "grant": { "kind": "destination", "pattern": "#ops-yard", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "thread:ops-yard", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "#name binding on a direct message to someone of that name",
+      "grant": { "kind": "destination", "pattern": "#ops", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "user:ops", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "#name binding on a dm: target of that name",
+      "grant": { "kind": "destination", "pattern": "#ops", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "dm:ops", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "platform-named binding on a send that names that platform",
+      "grant": { "kind": "destination", "pattern": "discord:#daily-brief", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "platform-named binding written in capitals on a send that names that platform",
+      "grant": { "kind": "destination", "pattern": "Discord:#Daily-Brief", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "platform-named binding on a send that names its platform as platform",
+      "grant": { "kind": "destination", "pattern": "discord:#daily-brief", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "platform": "discord", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "platform-named #name binding on a channel:<name> target on that platform",
+      "grant": { "kind": "destination", "pattern": "discord:#ops-yard", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "channel:ops-yard", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "platform-named binding on a send that names another platform",
+      "grant": { "kind": "destination", "pattern": "discord:#daily-brief", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "slack", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "platform-named binding on a send to another channel on that platform",
+      "grant": { "kind": "destination", "pattern": "discord:#daily-brief", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "#ops", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "platform-named binding on a call that is not a send",
+      "grant": { "kind": "destination", "pattern": "discord:#daily-brief", "scope": "persistent" },
+      "tool_kind": "other",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "platform-named binding on a direct message on that platform",
+      "grant": { "kind": "destination", "pattern": "discord:#ops", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "user:ops", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "platform-wide binding on a send that names that platform",
+      "grant": { "kind": "destination", "pattern": "discord:*", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "platform-wide binding on a send that names another platform",
+      "grant": { "kind": "destination", "pattern": "discord:*", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "slack", "target": "#daily-brief", "message": "Daily brief" },
+      "sent": false
     }
   ]
 }

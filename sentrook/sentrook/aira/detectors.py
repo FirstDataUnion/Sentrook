@@ -16,6 +16,7 @@ Classes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -36,8 +37,9 @@ from ..prepare.entities import (
     normalise_remote_identity,
     resolve_token,
 )
+from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
-from ..probes.base import Contribution, Floor
+from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
 from .lists import Lists, Rule
@@ -108,7 +110,17 @@ class Finding:
     contributions: list[Contribution] = field(default_factory=list)
     floors: list[Floor] = field(default_factory=list)
     flags: list[SessionFlag] = field(default_factory=list)
+    marks: list[SessionMark] = field(default_factory=list)
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def holds_sensitive(self, subject: str | None) -> Finding:
+        """The session now holds sensitive data, in `subject` (an entity id); None when it cannot be tied to
+        a file, which keeps the session flag's weight on every later send."""
+        if SessionFlag.HOLDS_SENSITIVE not in self.flags:
+            self.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        if not any(m.subject == subject for m in self.marks):
+            self.marks.append(SessionMark(judgement="sensitive", subject=subject))
+        return self
 
     def add(self, signal: str, value: float, subject: str | None = None, reason: str | None = None):
         self.contributions.append(
@@ -301,7 +313,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
             continue
         f = Finding(rule=f"C1.{g}", cls="C1", reason=f"path.{g}", detail={"path": p.display})
         f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
-        f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        f.holds_sensitive(p.entity_id)
         out.append(f)
         seen.add(g)
     # A bare basename after a `cd`, or a reference tokenisation lost: scored without a subject.
@@ -314,7 +326,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 detail={"mechanism": "text_match"},
             )
             f.add(SENSITIVITY, ctx.weight("sensitivity", g))
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+            f.holds_sensitive(None)
             out.append(f)
             seen.add(g)
     return out
@@ -411,20 +423,47 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     return []
 
 
-def _placeholder_paths(ctx: Context) -> set[str]:
-    """Paths written with a secret placeholder: by an earlier step, or by a sibling in the
-    pending call's batch (a file staged for the send in the same turn)."""
-    out: set[str] = set()
-    open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+def _owner_asked_for_secret(ctx: Context) -> bool:
+    """The owner's own words ask for a secret value to go with the send ("send the gate code to …",
+    "include the env value I gave you"): the lineage rule's `secret_request_terms` and
+    `secret_like_request_terms`."""
+    words = ctx.prepared.request_words or ""
+    return any(
+        rx.search(words)
+        for name in ("secret_request_terms", "secret_like_request_terms")
+        for rx in ctx.lists.patterns("lineage", name, "patterns")
+    )
+
+
+def _placeholder_paths(ctx: Context) -> dict[str, str]:
+    """Paths written with a secret, by an earlier step or by a sibling in the pending call's batch (a
+    file staged for the send in the same turn), each with why (`prepare.secret_like.secret_carried`): a
+    placeholder, a shape the second redaction pass masks, or a secret-like value the redactors leave
+    raw. A value only the secret-like detector finds does not count when the owner asked for a secret
+    to go. A later write of the same path that carries no secret does not clear an earlier one."""
+    out: dict[str, str] = {}
+    open_ = _placeholder(ctx)
+    asked = _owner_asked_for_secret(ctx)
     home, ws = ctx.prepared.home, ctx.prepared.workspace_root
+
+    def add(path: str, why: str | None) -> None:
+        if why is not None and (out.get(path) in (None, DETECTED)):
+            out[path] = why
+
     for h in ctx.prepared.history:
-        if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
-            out.add(normalise_path(h.path, home=home, workspace_root=ws))
+        if h.tool_kind in _WRITE_KINDS and h.path:
+            why = secret_carried(str(h.get("content") or ""), open_, owner_asked=asked)
+            add(normalise_path(h.path, home=home, workspace_root=ws), why)
     for s in ctx.prepared.siblings:
         for w in sibling_writes(s, home=home, workspace_root=ws):
-            if w.content is not None and open_ in w.content:
-                out.add(w.path)
+            if w.content is not None:
+                add(w.path, secret_carried(w.content, open_, owner_asked=asked))
     return out
+
+
+def _secret_weight(ctx: Context, why: str) -> float:
+    """A value only the secret-like detector finds is less certain than a redactor's placeholder."""
+    return ctx.weight("sensitivity", "secret_like" if why == DETECTED else "placeholder")
 
 
 def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
@@ -440,41 +479,66 @@ def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
             sources.append(Source(reason, ctx.weight("sensitivity", g), p.entity_id, p.display))
         elif p.value in written_with_placeholder and (p.is_source or p.value in attached):
             reason = "exfil.attachment" if p.value in attached else "exfil.placeholder_in_argv"
+            why = written_with_placeholder[p.value]
             sources.append(
                 Source(
                     reason,
-                    ctx.weight("sensitivity", "placeholder"),
+                    _secret_weight(ctx, why),
                     p.entity_id,
-                    f"{p.display} (written with a placeholder)",
+                    f"{p.display} (written with a secret: {why})",
                 )
             )
     covered = {s.reason.removeprefix("path.") for s in sources}
     for g in SENSITIVE_GROUPS:
         if g in a.text_groups and g not in covered and not any(g in p.groups for p in a.paths):
             sources.append(Source(f"path.{g}", ctx.weight("sensitivity", g), None, "text_match"))
-    if a.placeholder or (a.content and _placeholder(ctx) in a.content):
-        sources.append(
-            Source(
-                "exfil.placeholder_in_argv",
-                ctx.weight("sensitivity", "placeholder"),
-                None,
-                "placeholder",
-            )
-        )
-    if SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
-        sources.append(
-            Source(
-                "exfil.session_holds_sensitive",
-                ctx.weight("sensitivity", "session_holds_sensitive"),
-                None,
-                "session flag",
-            )
-        )
+    why = _secret_in_call(a, ctx)
+    if why is not None:
+        sources.append(Source("exfil.placeholder_in_argv", _secret_weight(ctx, why), None, why))
+    session = _session_sensitive_source(ctx)
+    if session is not None:
+        sources.append(session)
     return sources
+
+
+def _session_sensitive_source(ctx: Context) -> Source | None:
+    """The session's sensitive data as a source of this send, bound to what it is about: the file or table
+    the session judged sensitive when the call takes content from it; the bare session flag when the
+    call has nothing to match (a raw body, a pipe) or the session holds sensitive data it could not tie to
+    a file; nothing when the call takes content only from other files and tables."""
+    prepared = ctx.prepared
+    binding = prepared.session_binding.sensitive
+    weight = ctx.weight("sensitivity", "session_holds_sensitive")
+    if binding.bound:
+        return Source(
+            "exfil.session_holds_sensitive",
+            weight,
+            binding.subject(),
+            "session: " + ", ".join(binding.names()),
+        )
+    if SessionFlag.HOLDS_SENSITIVE not in prepared.state.flags:
+        return None
+    if binding.identifiable and not prepared.state.sensitive_unbound:
+        return None
+    return Source("exfil.session_holds_sensitive", weight, None, "session flag")
 
 
 def _placeholder(ctx: Context) -> str:
     return str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+
+
+def _secret_in_call(a: CallAnalysis, ctx: Context) -> str | None:
+    """Why the call's own arguments carry a secret (`prepare.secret_like.secret_carried`), or None. The
+    arguments are read as their joined text and as JSON, so a value under a key (`{"pin": "3253"}`)
+    is seen with its key."""
+    open_ = _placeholder(ctx)
+    if a.placeholder or (a.content and open_ in a.content):
+        return PLACEHOLDER
+    asked = _owner_asked_for_secret(ctx)
+    why = secret_carried(a.text, open_, owner_asked=asked)
+    if why is None and isinstance(a.call.raw, dict) and a.call.raw:
+        why = secret_carried(json.dumps(a.call.raw, ensure_ascii=False), open_, owner_asked=asked)
+    return why
 
 
 def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -502,7 +566,10 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 f.add(IRREVERSIBILITY, ctx.weight("exfil", "irreversibility"), subject)
             for src in sources:
                 f.add(SENSITIVITY, src.weight, src.subject, src.reason)
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                if src.reason != "exfil.session_holds_sensitive":
+                    f.holds_sensitive(src.subject)
+            if SessionFlag.HOLDS_SENSITIVE not in f.flags:
+                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
             out.append(f)
         return out
     for sink in sinks:
@@ -1747,7 +1814,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"path": p.display, "mechanism": mechanism},
                 )
                 f.add(SENSITIVITY, weight, p.entity_id)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(p.entity_id)
                 out.append(f)
 
     if a.kind is not ToolKind.EXEC or a.shape is None:
@@ -1775,7 +1842,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"verb": verb, "group": hit},
                 )
                 f.add(SENSITIVITY, weight, subject)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(subject)
                 out.append(f)
         elif verb == "push" and SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
             if _placeholder_paths(ctx):

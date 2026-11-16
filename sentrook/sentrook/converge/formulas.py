@@ -1,13 +1,14 @@
 """Tier scores and risk. Numeric inputs only.
 
-    taint_link  = untrusted_origin × max(exposure, taint_floor)
+    taint_link  = untrusted_origin × max(exposure, session_exposure, taint_floor)
     suspicion   = 1 − (1 − misalignment)(1 − concealment)(1 − overreach)(1 − distrust)
                       (1 − taint_link)(1 − request_origin)(1 − retry_after_denial)
     consequence = max(sensitivity × reach, irreversibility × reach, self_modification)       [max]
                 | max(mean(sensitivity, reach, irreversibility), self_modification)           [mean]
     agreement   = 1 − disagreeing / shared, a disagreement being one explicit value above `high` and
                   another below `low` on the same signal from different probes (a signal only one
-                  probe claims, such as the model-only overreach, is never shared)
+                  probe claims, such as the model-only overreach or the session-wide session_exposure,
+                  is never shared)
     coverage    = min(coverage contributions, probe-status penalty)
     confidence  = min(agreement, coverage, model_certainty)
     risk        = consequence × max(suspicion, u × (1 − confidence))
@@ -48,11 +49,8 @@ def _noisy_or(values: list[float]) -> float:
 
 
 def agreement(
-    merged: Merged, params: ConvergenceParams, *, self_edit: bool = False
+    merged: Merged, params: ConvergenceParams
 ) -> tuple[float, list[tuple[str, float, float]]]:
-    """For a self-edit, the context probe's sticky session-taint claim is left out: it covers the whole session,
-    while the exposure probe reads only this scan's new inputs, so the two do not measure the same thing (the
-    self-edit's own taint still reaches suspicion through `taint_link`)."""
     shared = 0
     disagreements: list[tuple[str, float, float]] = []
     for signal, claims in merged.claims.items():
@@ -61,8 +59,6 @@ def agreement(
             continue
         by_step: dict[str, float] = {}
         for c in claims:
-            if self_edit and c.reason == "exposure.session_tainted":
-                continue
             by_step[c.step] = max(by_step.get(c.step, 0.0), c.value)
         if len(by_step) < 2:
             continue
@@ -87,12 +83,12 @@ def probe_status_penalty(envelopes: list[Envelope], params: ConvergenceParams) -
     return penalty
 
 
-def compute(
-    merged: Merged, envelopes: list[Envelope], params: ConvergenceParams, *, self_edit: bool = False
-) -> Tiers:
+def compute(merged: Merged, envelopes: list[Envelope], params: ConvergenceParams) -> Tiers:
     g = merged.value_or
+    # The session's earlier exposure and this scan's new inputs are separate signals (so the two never count as
+    # a disagreement between probes) and feed taint_link the same way.
     taint_link = g("suspicion.untrusted_origin", 0.0) * max(
-        g("suspicion.exposure", 0.0), params.taint_floor
+        g("suspicion.exposure", 0.0), g("suspicion.session_exposure", 0.0), params.taint_floor
     )
     suspicion = _noisy_or(
         [
@@ -116,7 +112,7 @@ def compute(
     else:
         consequence = max(sens * reach, irr * reach, selfmod)
 
-    agree, disagreements = agreement(merged, params, self_edit=self_edit)
+    agree, disagreements = agreement(merged, params)
     coverage = min(g("confidence.coverage", 1.0), probe_status_penalty(envelopes, params))
     certainty = merged.get("confidence.model_certainty")
     confidence = min([agree, coverage] + ([certainty] if certainty is not None else []))

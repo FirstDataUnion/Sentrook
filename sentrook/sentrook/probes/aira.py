@@ -42,7 +42,7 @@ from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
 from ..prepare.entities import Role, display_path, fed_paths
 from ..prepare.skill_steps import CALL_ID_PREFIX, NEGATED_SUFFIX
-from ..probes.base import Contribution, Envelope, Floor
+from ..probes.base import Contribution, Envelope, Floor, SessionMark
 
 __all__ = ["AiraProbe", "AIRA_VERSION"]
 
@@ -121,6 +121,7 @@ class AiraProbe:
         contributions: list[Contribution] = []
         floors: list[Floor] = []
         flags: list[SessionFlag] = []
+        marks: list[SessionMark] = []
         classes: set[str] = set()
         rules: list[str] = []
         reasons: list[str] = []
@@ -201,6 +202,9 @@ class AiraProbe:
                 for flag in f.flags:
                     if flag not in flags:
                         flags.append(flag)
+                for m in f.marks:
+                    if m not in marks:
+                        marks.append(m)
             summary = a.shape.summary() if a.shape is not None else None
             call_paths = [
                 {
@@ -269,6 +273,7 @@ class AiraProbe:
             contributions=contributions,
             floors=floors,
             flags_set=flags,
+            marks=marks,
             evidence=evidence,
         )
 

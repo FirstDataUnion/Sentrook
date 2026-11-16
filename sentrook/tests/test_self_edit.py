@@ -4,8 +4,7 @@ A plugin declares one with trigger `system` and a `self_edit` block carrying the
 reviewed. The scanner then asks the self-edit questions (grounded in the conversation, directives from read content,
 loosened oversight, unsupported claims about the owner, persisted secrets, concealment) instead of whether the call
 follows from a request, takes the request origin from the conversation rather than the trigger, does not carry the
-session's escalation into the save, leaves "the agent chose it" out (the agent writes every self-edit), keeps session
-taint out of probe agreement, and judges the commands a saved skill holds as exec calls of their own.
+session's escalation into the save, leaves "the agent chose it" out (the agent writes every self-edit), and judges the commands a saved skill holds as exec calls of their own.
 
 The scenario is invented: an owner asks clawbot to list a project folder and mentions a reply preference; afterwards
 the host's background review saves the preference (memory) or a skill.
@@ -314,7 +313,10 @@ def test_history_goes_before_any_message():
     raw["new_inputs"][0]["call_id"] = "h20"
     raw["pending_call"]["call_id"] = "c21"
     raw["self_edit"]["conversation"] += [{"role": "user", "sender": OWNER, "text": "u" * 3000}] * 10
-    state = build_views(raw, exposure_input_seqs=None)[SELFEDIT_V1].state
+    # sized for this budget (the selfedit-v2 set's room), not the default reserve
+    state = build_views(
+        raw, exposure_input_seqs=None, selfedit_budget_tokens=BUDGET_TOKENS - 14_000
+    )[SELFEDIT_V1].state
     assert state["self_edit"]["scanner_dropped"].get("history")
     assert "user" not in state["self_edit"]["scanner_dropped"]
     assert sum(1 for e in state["self_edit"]["conversation"] if e["role"] == "user") == 11
@@ -494,9 +496,10 @@ def test_session_taint_is_not_a_disagreement_for_a_self_edit():
     assert "agreement.suspicion_split" not in codes(res)
     assert "exposure.session_tainted" in codes(res)  # the taint itself still counts
     assert res.response.tree.confidence.agreement == pytest.approx(1.0)
-    # an ordinary call in the same session still treats it as a split (unchanged here)
+    # nor for an ordinary call in the same session: the session's taint is its own signal
     plain, _ = scan(planir(self_edit=False), seed=seed)
-    assert "agreement.suspicion_split" in codes(plain)
+    assert "agreement.suspicion_split" not in codes(plain)
+    assert "exposure.session_tainted" in codes(plain)
 
 
 # ---- commands in a saved skill --------------------------------------------------------------------------------
@@ -772,7 +775,7 @@ def test_must_allow_a_grounded_openclaw_skill_write():
 
 
 def test_serve_config_selects_or_disables_the_self_edit_set():
-    assert ServeConfig.from_env({}).jev_selfedit_question_set == "selfedit-v2"
+    assert ServeConfig.from_env({}).jev_selfedit_question_set == "selfedit-v3"
     for off in ("none", "off", "OFF"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_SELFEDIT_QUESTIONS": off}).jev_selfedit_question_set

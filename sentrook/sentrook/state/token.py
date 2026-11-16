@@ -2,8 +2,17 @@
 
 Sentrook stays stateless: it returns a signed token holding the session flags, a bounded set of hashed
 untrusted entities, a smaller bounded set of hashed steered hosts (named in content that tried to steer the
-agent, `prepare.steering`), the hashing salt and the highest `input_seq` scanned so far. A token without the
-steered set (issued before it existed) reads as an empty one. The token is an HS256
+agent, `prepare.steering`), the hashing salt and the highest `input_seq` scanned so far. Three more bounded
+sets bind the session judgements to what they are about:
+
+- `sensitive`: files (and database tables) whose content a check judged sensitive, plus what the agent wrote
+  from them. `sensitive_unbound` records that a sensitive read could not be tied to any of them (a bare
+  basename, a secret typed into a command), so the session flag keeps its weight on every later send.
+- `tainted`: what an injected result produced or came from (the file or table its call names), plus what
+  the agent wrote from them.
+- `trusted`: entities the owner's own configuration supplied (a scanned read of the agent's config files).
+
+A token without one of these sets (issued before it existed) reads as an empty one. The token is an HS256
 JWT bound to its `session_ref` and the step it was issued at; it is accepted only when presented with
 the same `session_ref` at `session.step − 1`, so an older token cannot be replayed to shed a flag.
 
@@ -28,7 +37,12 @@ TOKEN_VERSION = 1
 ALGORITHM = "HS256"
 UNTRUSTED_CAP = 64
 STEERED_CAP = 32
+SENSITIVE_CAP = 32
+TAINTED_CAP = 32
+TRUSTED_CAP = 64
 HASH_HEX = 12
+#: Seed prefix for a database table (`table:job_records`); everything else is guessed from its shape.
+TABLE_PREFIX = "table:"
 
 
 class TokenStatus(StrEnum):
@@ -48,6 +62,14 @@ class SessionState:
     untrusted: list[str] = field(default_factory=list)  # ordered hashes, oldest first
     #: Hosts named in steering content, ordered hashes, oldest first.
     steered: list[str] = field(default_factory=list)
+    #: Files and tables judged sensitive, and what was written from them; ordered hashes, oldest first.
+    sensitive: list[str] = field(default_factory=list)
+    #: A sensitive read that could not be tied to a file or table.
+    sensitive_unbound: bool = False
+    #: Files and tables an injected result produced or came from, and what was written from them.
+    tainted: list[str] = field(default_factory=list)
+    #: Entities the owner's own configuration supplied.
+    trusted: list[str] = field(default_factory=list)
     max_input_seq: int | None = None
     deployment: str | None = None
     issued_step: int | None = None
@@ -75,12 +97,28 @@ class SessionState:
             del self.untrusted[: len(self.untrusted) - UNTRUSTED_CAP]
 
     def add_steered(self, hashes: list[str]) -> None:
-        for h in hashes:
-            if h in self.steered:
-                continue
-            self.steered.append(h)
-        if len(self.steered) > STEERED_CAP:
-            del self.steered[: len(self.steered) - STEERED_CAP]
+        _add_capped(self.steered, hashes, STEERED_CAP)
+
+    def add_sensitive(self, hashes: list[str]) -> None:
+        _add_capped(self.sensitive, hashes, SENSITIVE_CAP)
+
+    def add_tainted(self, hashes: list[str]) -> None:
+        _add_capped(self.tainted, hashes, TAINTED_CAP)
+
+    def add_trusted(self, hashes: list[str]) -> None:
+        _add_capped(self.trusted, hashes, TRUSTED_CAP)
+
+    def drop_trusted(self, hashes: list[str]) -> None:
+        self.trusted[:] = [h for h in self.trusted if h not in set(hashes)]
+
+
+def _add_capped(into: list[str], hashes: list[str], cap: int) -> None:
+    """Append new hashes in order; past the cap the oldest go first."""
+    for h in hashes:
+        if h not in into:
+            into.append(h)
+    if len(into) > cap:
+        del into[: len(into) - cap]
 
 
 def new_salt(deterministic: str | None = None) -> str:
@@ -135,6 +173,10 @@ def decode_state(
         flags=flags,
         untrusted=[str(h) for h in claims.get("unt", [])][-UNTRUSTED_CAP:],
         steered=[str(h) for h in claims.get("str", [])][-STEERED_CAP:],
+        sensitive=[str(h) for h in claims.get("sen", [])][-SENSITIVE_CAP:],
+        sensitive_unbound=claims.get("snu") is True,
+        tainted=[str(h) for h in claims.get("tnt", [])][-TAINTED_CAP:],
+        trusted=[str(h) for h in claims.get("tru", [])][-TRUSTED_CAP:],
         max_input_seq=claims.get("seq"),
         deployment=claims.get("dep") or deployment,
         issued_step=claims["step"],
@@ -159,6 +201,10 @@ def encode_state(
         "salt": state.salt,
         "unt": list(state.untrusted[-UNTRUSTED_CAP:]),
         "str": list(state.steered[-STEERED_CAP:]),
+        "sen": list(state.sensitive[-SENSITIVE_CAP:]),
+        "snu": state.sensitive_unbound,
+        "tnt": list(state.tainted[-TAINTED_CAP:]),
+        "tru": list(state.trusted[-TRUSTED_CAP:]),
     }
     return jwt.encode(claims, key, algorithm=ALGORITHM)
 
@@ -175,15 +221,32 @@ def seed_state(seed: dict, *, salt: str, deployment: str | None = None) -> Sessi
     )
     state.add_untrusted(_seed_hashes(seed.get("untrusted_entities"), salt))
     state.add_steered(_seed_hashes(seed.get("steered_entities"), salt))
+    # Absent means empty: a seed that sets holds_sensitive without naming what it is about binds it to nothing.
+    state.add_sensitive(_seed_hashes(seed.get("sensitive_entities"), salt))
+    state.sensitive_unbound = seed.get("sensitive_unbound") is True
+    state.add_tainted(_seed_hashes(seed.get("tainted_entities"), salt))
+    state.add_trusted(_seed_hashes(seed.get("trusted_entities"), salt))
     return state
 
 
 def _seed_hashes(values: list | None, salt: str) -> list[str]:
     hashes: list[str] = []
     for value in values or []:
+        if str(value).startswith(TABLE_PREFIX):
+            hashes.append(entity_hash(salt, "table", table_key(str(value)[len(TABLE_PREFIX) :])))
+            continue
         kind = _guess_kind(str(value))
         hashes.append(entity_hash(salt, kind, _normalise_seed_value(kind, str(value))))
     return hashes
+
+
+def table_key(name: str) -> str:
+    """A database table as the token keys it: quotes dropped, lower case, the last dotted part
+    (`public."Job_Records"` -> `job_records`)."""
+    bare = (
+        name.strip().strip(";").replace('"', "").replace("`", "").replace("[", "").replace("]", "")
+    )
+    return bare.rsplit(".", 1)[-1].lower()
 
 
 def _guess_kind(value: str) -> str:

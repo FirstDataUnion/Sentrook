@@ -5,6 +5,8 @@ the call, with no model and no raw text.
   about 0.1 for a local entity the agent visibly created with clean lineage; about 0.4 when it appears
   nowhere or first in the agent's own arguments (always for off-host kinds); 1.0 when it appeared only
   in untrusted content before the agent used it (the token's untrusted set remembers across steps).
+  A host that is only the mail domain of an email recipient in the call takes that recipient's value
+  (no claim of its own) unless its own origin is untrusted or it imitates a host the owner named.
 - `suspicion.request_origin` from the trigger: owner 0, scheduled or heartbeat about 0.2, trusted by a
   plugin allowlist about 0.3, known channel with an unknown sender about 0.5 (coverage reduced), a
   sender marked `other` about 0.8, nothing known no contribution and coverage reduced.
@@ -22,9 +24,21 @@ the call, with no model and no raw text.
   so it carries reach and irreversibility too). Each arm is off when its value is 0, and
   `lineage_enabled` turns them all off. A failure in the lineage arms contributes nothing and
   leaves the rest of the probe's output intact.
-- Sticky `suspicion.exposure` from `tainted`; `consequence.sensitivity` from `holds_sensitive` when
-  the call has a data destination; the `escalating` flag from the history tier scores; coverage from a
-  stale carried request, a fresh session and truncated or dropped content.
+- Sticky `suspicion.session_exposure` from `tainted`; the `escalating` flag from the history tier scores; coverage
+  from a stale carried request, a fresh session and truncated or dropped content.
+- Session judgements bound to what they are about (the token's sensitive and tainted sets,
+  `prepare.session_sets`). `consequence.sensitivity` from `holds_sensitive`, when the call has a data
+  destination, follows the binding: a call that takes content from a file or table the session judged
+  sensitive carries it, and takes the `sensitive_data_sent` floor when it sends off this machine; a call
+  with nothing to match (a raw body, a pipe), or a session whose sensitive data could not be tied to a
+  file, carries the flag's weight as before; a call that takes content only from other files carries
+  nothing. A call that reads, runs or applies a file or table an injected result produced or came from,
+  and does more with it than read or copy it, takes the `injected_content_used` floor. Neither floor
+  sets an outcome; each lifts the risk past the review line.
+- An entity the owner's own configuration supplied (a scanned read of the agent's config or
+  instruction files, kept in the token's trusted set) scores as owner-supplied rather than as the
+  agent's choice. Content the agent read still wins: an entity that also came from untrusted content
+  keeps that origin.
 - Escalation: in an escalating session (the flag set earlier, or the last few history consequence
   tiers each rising), a call that has a consequence of its own (a destination or recipient, code it
   fetches or runs, or a destructive target) carries sensitivity, reach and irreversibility at one step
@@ -50,9 +64,9 @@ from ..oracle.near_miss import fold
 from ..planir.canonical import CanonicalCall
 from ..planir.models import InputKind, SenderBasis, SenderRelation, ToolKind, TriggerKind
 from ..prepare import Prepared
-from ..prepare.entities import Entity, EntityKind, Origin, Role, extract_call
+from ..prepare.entities import Entity, EntityKind, Origin, Role, extract_call, normalise_path
 from ..prepare.fingerprint import Fingerprint, fingerprint
-from .base import Contribution, Envelope
+from .base import Contribution, Envelope, Floor
 
 PROBE_VERSION = "context/2.0.0a1"
 
@@ -70,6 +84,8 @@ class ContextParams:
     origin_visible_creation: float = 0.1
     origin_agent_generated: float = 0.4
     origin_untrusted: float = 1.0
+    #: An entity the owner's own configuration supplied (the token's trusted set).
+    origin_owner_supplied: float = 0.0
     #: Weight of untrusted_origin by the entity's strongest role.
     origin_role_weight: dict[str, float] = field(
         default_factory=lambda: {
@@ -114,6 +130,10 @@ class ContextParams:
     retry_carry_consequence: float = 0.0
     sticky_exposure: float = 0.7
     holds_sensitive_sensitivity: float = 0.8
+    #: Minimum risk when a file or table the session judged sensitive is sent off this machine (0 = off).
+    sensitive_sent_floor: float = 0.6
+    #: Minimum risk when a call acts on a file or table an injected result produced (0 = off).
+    injected_content_floor: float = 0.6
     escalation_rise: float = 0.1
     #: In an escalating session, a call with a consequence of its own carries sensitivity, reach and
     #: irreversibility at the session's last consequence tier plus this step (0 turns it off).
@@ -169,6 +189,34 @@ def _hashes(hist: Fingerprint, echoed: Fingerprint | None, *roles: Role) -> froz
     return out
 
 
+def _request_names_path(prepared: Prepared, path: str) -> bool:
+    """The owner's words name the file: its full path, its `~/` form, or its path under the workspace,
+    home or the call's working directory, as a whole token. A bare file name is not enough: another
+    file of that name may be the one the session judged sensitive."""
+    words = (prepared.request_words or "").lower()
+    if not words:
+        return False
+    forms = {path}
+    cwd = prepared.pending.get("cwd")
+    cwd = (
+        normalise_path(cwd, home=prepared.home, workspace_root=prepared.workspace_root)
+        if cwd
+        else None
+    )
+    for root, prefix in (
+        (prepared.workspace_root, ""),
+        (prepared.home, ""),
+        (prepared.home, "~/"),
+        (cwd, ""),
+    ):
+        if root and path.startswith(root.rstrip("/") + "/"):
+            forms.add(prefix + path[len(root.rstrip("/")) + 1 :])
+    return any(
+        "/" in f and re.search(r"(?<![\w./~-])" + re.escape(f.lower()) + r"(?![\w/-])", words)
+        for f in forms
+    )
+
+
 class ContextProbe:
     step = ProbeStep.CONTEXT
 
@@ -215,6 +263,9 @@ class ContextProbe:
                     return p.origin_untrusted if self._dirty_lineage(
                         ent, prepared
                     ) else p.origin_agent_generated, "origin.agent_created_dirty_lineage"
+        if ent.in_session_trusted:
+            # The owner's own config supplied it: owner-supplied rather than the agent's choice.
+            return p.origin_owner_supplied, "origin.owner_config"
         return p.origin_agent_generated, "origin.agent_generated"
 
     @staticmethod
@@ -257,6 +308,13 @@ class ContextProbe:
                 reason = "origin.written_content_untrusted"
             if ent.id in lookalikes and value < self.params.origin_untrusted:
                 value, reason = self.params.origin_untrusted, "origin.lookalike_of_named_host"
+            if ent.recipient_domain_of and value < self.params.origin_untrusted:
+                # only a recipient's mail domain: the recipient's own origin claim speaks for it
+                evidence.setdefault("origins", {})[ent.id] = {
+                    "reason": "origin.recipient_mail_domain",
+                    "mail_domain_of": list(ent.recipient_domain_of),
+                }
+                continue
             scaled = round(value * weight, 4)
             out.append(
                 Contribution(
@@ -293,7 +351,8 @@ class ContextProbe:
         named = [
             e
             for e in prepared.entities
-            if e.kind is EntityKind.HOST and Origin.REQUEST in e.origins
+            if e.kind is EntityKind.HOST
+            and (Origin.REQUEST in e.origins or e.owner_named_via_address)
         ]
         if not named:
             return {}
@@ -431,10 +490,17 @@ class ContextProbe:
             if live:
                 record["live_tables"] = live
 
-        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with.
+        # 3. Secret values carried into a send or publish the owner did not ask a secret to go with: a
+        # placeholder, a shape the second redaction pass masks, or a secret-like value the redactors
+        # leave raw (an access code, a PIN, a passport number, a random value under a key).
+        words = prepared.request_words or ""
         asked_for_secret = any(
-            rx.search(prepared.request_words or "")
-            for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+            rx.search(words) for rx in lists.patterns("lineage", "secret_request_terms", "patterns")
+        )
+        # Naming a code, PIN or passport relieves only the values the redactors left raw.
+        asked_for_secret_like = any(
+            rx.search(words)
+            for rx in lists.patterns("lineage", "secret_like_request_terms", "patterns")
         )
         if (
             lin.sent
@@ -442,17 +508,22 @@ class ContextProbe:
             and not asked_for_secret
             and self._is_sink(prepared, lists)
         ):
-            from ..prepare.redact import redact_text
+            from ..prepare.secret_like import secret_carried
 
             placeholder = str(lists.get("egress", "placeholder", "open", default="⟦secret"))
+            carried: dict[str, str] = {}
             for sent in lin.sent:
-                if placeholder in sent.content or redact_text(sent.content)[1] > 0:
+                why = secret_carried(sent.content, placeholder, owner_asked=asked_for_secret_like)
+                if why is not None:
+                    carried[sent.path] = why
                     emit(
                         "suspicion.overreach",
                         p.lineage_secret_send_overreach,
                         path_id(sent.path),
                         "lineage.secret_carried_to_send",
                     )
+            if carried:
+                record["secrets_carried"] = carried
 
         # 4. A look-alike of a host the owner named.
         for ent_id in lookalikes:
@@ -829,6 +900,88 @@ class ContextProbe:
             )
         ]
 
+    # ------------------------------------------------------------------ session sets
+
+    def _session_sets(
+        self, prepared: Prepared, prior_flags: set[SessionFlag], evidence: dict
+    ) -> tuple[list[Contribution], list[Floor]]:
+        """`holds_sensitive` and `tainted` bound to the files and tables they are about."""
+        p = self.params
+        binding = prepared.session_binding
+        sens, tnt = binding.sensitive, binding.tainted
+        has_destination = any(
+            ent.roles & {Role.DATA_DESTINATION, Role.RECIPIENT}
+            for ent in prepared.entities.pending()
+        )
+        record: dict[str, Any] = {
+            "sensitive": sens.names(),
+            "tainted": tnt.names(),
+            "identifiable": sens.identifiable,
+            "unbound": prepared.state.sensitive_unbound,
+            "off_host": binding.off_host,
+            "acts": binding.acts,
+        }
+        evidence["session_sets"] = record
+        contributions: list[Contribution] = []
+        floors: list[Floor] = []
+        reason = "sensitivity.session_holds_sensitive"
+        if sens.bound and has_destination:
+            subject = sens.subject()
+            contributions.append(
+                Contribution(
+                    signal="consequence.sensitivity",
+                    value=p.holds_sensitive_sensitivity,
+                    subject=subject,
+                    reason=reason,
+                )
+            )
+            # Not for a file the owner named in the request: the owner chose to send it.
+            unseen = [a for a in sens.matched if not self._sensitivity_visible(a, prepared)]
+            if unseen and binding.off_host and p.sensitive_sent_floor > 0:
+                subject = next((a.entity_id for a in unseen if a.entity_id), subject)
+                floors.append(
+                    Floor(
+                        floor="sensitive_data_sent",
+                        min_risk=p.sensitive_sent_floor,
+                        subject=subject,
+                        reason=reason,
+                    )
+                )
+            record["holds_sensitive"] = "bound"
+        elif SessionFlag.HOLDS_SENSITIVE in prior_flags and has_destination:
+            if sens.identifiable and not prepared.state.sensitive_unbound:
+                # The call sends only other files: not the data the session judged sensitive.
+                record["holds_sensitive"] = "unmatched"
+            else:
+                contributions.append(
+                    Contribution(
+                        signal="consequence.sensitivity",
+                        value=p.holds_sensitive_sensitivity,
+                        reason=reason,
+                    )
+                )
+                record["holds_sensitive"] = "flag"
+        if tnt.bound and binding.acts and p.injected_content_floor > 0:
+            floors.append(
+                Floor(
+                    floor="injected_content_used",
+                    min_risk=p.injected_content_floor,
+                    subject=tnt.subject(),
+                    reason="exposure.session_injected_content",
+                )
+            )
+        return contributions, floors
+
+    @staticmethod
+    def _sensitivity_visible(artefact: Any, prepared: Prepared) -> bool:
+        """The owner's request names the file."""
+        if artefact.kind != "path":
+            return False
+        ent = prepared.entities.by_id(artefact.entity_id) if artefact.entity_id else None
+        if ent is not None and Origin.REQUEST in ent.origins:
+            return True
+        return _request_names_path(prepared, artefact.value)
+
     def run(self, prepared: Prepared) -> Envelope:
         started = time.perf_counter()
         p = self.params
@@ -838,6 +991,7 @@ class ContextProbe:
             "token": prepared.state.status.value,
         }
         contributions: list[Contribution] = []
+        floors: list[Floor] = []
         flags: list[SessionFlag] = []
         try:
             lookalikes: dict[str, str] = {}
@@ -861,23 +1015,14 @@ class ContextProbe:
             if SessionFlag.TAINTED in prior_flags:
                 contributions.append(
                     Contribution(
-                        signal="suspicion.exposure",
+                        signal="suspicion.session_exposure",
                         value=p.sticky_exposure,
                         reason="exposure.session_tainted",
                     )
                 )
-            has_destination = any(
-                ent.roles & {Role.DATA_DESTINATION, Role.RECIPIENT}
-                for ent in prepared.entities.pending()
-            )
-            if SessionFlag.HOLDS_SENSITIVE in prior_flags and has_destination:
-                contributions.append(
-                    Contribution(
-                        signal="consequence.sensitivity",
-                        value=p.holds_sensitive_sensitivity,
-                        reason="sensitivity.session_holds_sensitive",
-                    )
-                )
+            sensitive, injected = self._session_sets(prepared, prior_flags, evidence)
+            contributions += sensitive
+            floors += injected
             escalating = SessionFlag.ESCALATING in prior_flags or self._escalating(prepared)
             if escalating:
                 flags.append(SessionFlag.ESCALATING)
@@ -925,6 +1070,7 @@ class ContextProbe:
             status=ProbeStatus.OK,
             latency_ms=(time.perf_counter() - started) * 1000,
             contributions=contributions,
+            floors=floors,
             flags_set=flags,
             evidence=evidence,
         )

@@ -506,6 +506,7 @@
             }
           ],
           "default": null,
+          "description": "This scan's new untrusted inputs carried agent-directed instructions",
           "title": "Exposure"
         },
         "misalignment": {
@@ -579,6 +580,21 @@
           "default": null,
           "description": "Tier 2 result",
           "title": "Score"
+        },
+        "session_exposure": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Earlier in this session the agent read content carrying instructions aimed at it",
+          "title": "Session Exposure"
         },
         "untrusted_origin": {
           "anyOf": [

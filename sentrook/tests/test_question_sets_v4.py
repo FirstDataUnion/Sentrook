@@ -25,7 +25,7 @@ def test_call_v4_is_call_v3_with_the_host_text_sentence():
 
 
 def test_call_v4_stays_selectable():
-    # call-v5 is the shipped default since the oracle reports near misses
+    # call-v6 is the shipped default (call-v5 plus the destination-grant clause)
     for name in ("call-v2", "call-v3", "call-v4"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set

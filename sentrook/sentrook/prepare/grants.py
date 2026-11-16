@@ -16,7 +16,11 @@ Every grant passes the same gates before its kind is consulted:
 Matching, by kind:
 
 - `destination`: a host, recipient or channel against a glob; `*.example.com` also covers
-  `example.com`, and a recipient is matched by its domain when the pattern has no `@`.
+  `example.com`, and a recipient is matched by its domain when the pattern has no `@`. A channel is
+  also matched by the shorter names an owner writes for it: the id or `#name` after a platform prefix
+  (`C0B0QV5434G` covers `slack:C0B0QV5434G`, `#bot-home` covers `discord:#bot-home`) and the name in
+  `channel:ops-yard`, never a direct message (`user:ops`, `dm:ops`). A pattern that names the platform
+  covers a target that carries that platform only.
 - `file`: a path against a glob (`*` matches `/` too); a pattern ending in `/` covers that directory
   and everything under it. Letter case follows the host filesystem's default: it counts on Linux
   (and when the host OS is unknown), not on macOS or Windows.
@@ -44,6 +48,7 @@ from .entities import (
     Entity,
     EntityKind,
     Role,
+    channel_names,
     is_under,
     normalise_remote_identity,
     resolve_token,
@@ -221,12 +226,29 @@ def _command_sends(command: str, depth: int) -> bool:
 _CASE_FOLDING_OS = frozenset({OS.MACOS, OS.WINDOWS})
 
 
-def _destination(pat: str, entity: Entity, host_os: OS) -> bool:
+#: A direct-message target: a person, so a channel binding's short name never covers it.
+_PERSON_TARGET = re.compile(r"(?:user|dm):")
+
+
+def _destination(pat: str, entity: Entity, host_os: OS, platform: str | None = None) -> bool:
+    """A destination pattern covers the entity as written, or by a shorter name for a channel. On a send
+    that names its chat platform in its own argument (`{channel: discord, target: "#x"}`), a pattern
+    naming that platform (`discord:#x`) covers the target as if the target were written with it."""
     pat = pat.lower()
+    head, sep, rest = pat.partition(":")
+    if platform and sep and rest and head == platform.strip().lower():
+        if _destination(rest, entity, host_os):
+            return True
     value = entity.value.lower()
     if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
         value = value.split("@", 1)[1]
     if fnmatch.fnmatch(value, pat):
+        return True
+    if (
+        entity.kind is EntityKind.CHANNEL
+        and not _PERSON_TARGET.match(value)
+        and any(fnmatch.fnmatch(name, pat) for name in channel_names(entity.value))
+    ):
         return True
     return pat.startswith("*.") and value == pat[2:]
 
@@ -256,15 +278,25 @@ _ENTITY_MATCHERS: dict[str, Callable[[str, Entity, OS], bool]] = {
 }
 
 
-def grant_matches(kind: str, pattern: str, entity: Entity, *, host_os: OS = OS.UNKNOWN) -> bool:
+def grant_matches(
+    kind: str,
+    pattern: str,
+    entity: Entity,
+    *,
+    host_os: OS = OS.UNKNOWN,
+    platform: str | None = None,
+) -> bool:
     """Does a grant of `kind` with `pattern` cover `entity` on a `host_os` host, before scope, expiry
-    and `allows`? Over-broad patterns never match."""
+    and `allows`? `platform` is the chat platform the send names in its own argument, if any. Over-broad
+    patterns never match."""
     spec = GRANT_KINDS.get(kind)
     matcher = _ENTITY_MATCHERS.get(kind)
     if spec is None or matcher is None or entity.kind not in spec.entity_kinds:
         return False
     if over_broad(pattern):
         return False
+    if matcher is _destination:
+        return _destination(pattern.strip(), entity, OS(host_os), platform)
     return matcher(pattern.strip(), entity, OS(host_os))
 
 

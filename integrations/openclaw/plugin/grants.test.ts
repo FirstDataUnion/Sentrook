@@ -12,7 +12,7 @@ import * as grants from "./grants.ts";
 import plugin from "./index.ts";
 import { refusal } from "./owner.ts";
 import { runVerify } from "./verify.ts";
-import { callCwd, providerFor, relevantGrants, sessionRef } from "./planir.ts";
+import { bindingProblem, callCwd, callPlatform, providerFor, relevantGrants, sessionRef } from "./planir.ts";
 
 /**
  * Shared with the Hermes plugin's tests: both hosts print the same text for the same state. Times are
@@ -706,10 +706,56 @@ for (const c of RELEVANCE.cases) {
       home: c.home ?? RELEVANCE.home,
       workspace: c.workspace ?? RELEVANCE.workspace,
       cwd: callCwd(c.arguments),
+      platform: callPlatform(c.arguments, c.tool_kind ?? "other"),
     });
     assert.equal(sent.length > 0, c.sent);
   });
 }
+
+/** Shared with the Hermes plugin's tests: both hosts say the same about a binding that can never apply. */
+const BINDING_PROBLEMS = JSON.parse(readFileSync(path.join(FIXTURES, "binding-problems.json"), "utf8"));
+for (const c of BINDING_PROBLEMS.cases) {
+  test(`binding problem: ${c.pattern}`, () => {
+    assert.equal(bindingProblem(c.pattern), c.problem);
+  });
+}
+
+test("a channel binding reaches the scan of a message send in the form the owner wrote it", async () => {
+  const r = await registered({ channelBindings: ["discord:#daily-brief", "#ops-yard"] });
+  const send = async (channel: string, target: string) =>
+    patterns((await r.call("message", { action: "send", channel, target, message: "Daily brief" }, "cron:daily")).grants);
+  assert.deepEqual(await send("discord", "#daily-brief"), ["discord:#daily-brief"]);
+  assert.deepEqual(await send("discord", "channel:ops-yard"), ["#ops-yard"]);
+  // Must stay silent: the same name on another platform, and a direct message to someone named ops-yard.
+  assert.deepEqual(await send("slack", "#daily-brief"), []);
+  assert.deepEqual(await send("discord", "user:ops-yard"), []);
+});
+
+test("bind list, bind add and verify flag bindings that can never apply", async () => {
+  const r = await registered({ channelBindings: ["#daily-brief", "*"] });
+  assert.equal(await run(r, "sentrook-bind", "add ab"), "Channel binding added: ab (too short, never sent).");
+  const rows = Object.fromEntries(
+    (await run(r, "sentrook-bind", "list"))
+      .split("\n")
+      .slice(2)
+      .map((l) => [l.split(/\s+/)[0], l]),
+  );
+  assert.ok(rows["#daily-brief"].endsWith("config, read-only"), rows["#daily-brief"]);
+  assert.ok(rows["*"].endsWith("config, read-only; matches every channel, ignored"), rows["*"]);
+  assert.ok(rows["ab"].endsWith("(operator.admin); too short, never sent"), rows["ab"]);
+  const noFetch = (async () => {
+    throw new Error("offline");
+  }) as unknown as typeof fetch;
+  const verify = async (cfg: Record<string, unknown>) =>
+    (await runVerify(cfg, { env: {}, fetchImpl: noFetch })).find((c) => c.name === "channel bindings");
+  // Reported, not failed: a binding that never applies only makes Sentrook stricter.
+  assert.deepEqual(await verify({ channelBindings: ["#daily-brief", "*"] }), {
+    name: "channel bindings",
+    ok: true,
+    detail: "2 in config; cannot apply: * (matches every channel, ignored)",
+  });
+  assert.deepEqual(await verify({ channelBindings: ["discord:#daily-brief"] }), { name: "channel bindings", ok: true, detail: "1 in config" });
+});
 
 test("provider and home grants reach the scan", async () => {
   const mcp = { mcp: { servers: { notes: { command: "npx", args: ["-y", "@acme/notes-mcp"] } } } };
