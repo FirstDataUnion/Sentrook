@@ -22,6 +22,7 @@ from sentrook.converge.params import PARAMS_DIR
 from sentrook.enums import Enforce, ProbeStatus, ProbeStep
 from sentrook.planir.models import PlanIR
 from sentrook.probes.base import Contribution, Envelope, Floor
+from sentrook.scan import Scanner, ScannerConfig
 from sentrook.serve.config import ServeConfig
 
 V5, V6 = load_params("conv-v5"), load_params("conv-v6")
@@ -92,7 +93,15 @@ def _credential_upload(dest: str = "E1") -> list[Envelope]:
 
 
 def _run(case: dict, envs: list[Envelope], params=V6):
+    """Converge `envs`; an exposure judgement that found nothing stands in when the test gives none, since the
+    cases bring new untrusted content that would otherwise count as unjudged."""
+    if not any(e.step is ProbeStep.JEV_EXPOSURE for e in envs):
+        envs = [*envs, Envelope(step=ProbeStep.JEV_EXPOSURE)]
     return converge(_prepared(case), envs, params=params, scanner_version="t", token_key=KEY)
+
+
+def _judged(envs: list[Envelope]) -> list[Envelope]:
+    return [*envs, Envelope(step=ProbeStep.JEV_EXPOSURE)]
 
 
 def _codes(res) -> list[str]:
@@ -209,7 +218,7 @@ def test_an_owner_asked_change_to_the_agents_setup_is_held_at_review(twin_case, 
     assert _info(res) == {
         "attended": True,
         "strong": [],
-        "probe_failed": False,
+        "withheld": [],
         "ceiling": "review",
     }
 
@@ -432,6 +441,7 @@ def test_an_enforced_block_still_blocks_whatever_the_score(attack_case):
         "reputation.near_miss_host",
         "lineage.lookalike_of_named_person",
         "lineage.lookalike_of_named_host",
+        "code.lookalike_provider",
     ],
 )
 def test_a_lookalike_entity_still_blocks(attack_case, reason):
@@ -484,17 +494,29 @@ def _strong_origin() -> list[Envelope]:
     return envs
 
 
-@pytest.mark.parametrize("step", [ProbeStep.CONTEXT, ProbeStep.AIRA, ProbeStep.JEV_CALL])
+@pytest.mark.parametrize(
+    "step",
+    [
+        ProbeStep.CONTEXT,
+        ProbeStep.AIRA,
+        ProbeStep.JEV_CALL,
+        ProbeStep.JEV_EXPOSURE,
+        ProbeStep.ENTITY_ORACLE,
+    ],
+)
 @pytest.mark.parametrize("status", [ProbeStatus.ERROR, ProbeStatus.TIMEOUT])
 def test_a_failed_probe_sets_no_ceiling(attack_case, step, status):
     """The strong signal may be in the answer that never came: with the context probe down the untrusted origin
     above is lost, and holding the call at review would let an attack through on a probe failure."""
-    envs = _strong_origin()
+    envs = _strong_origin() + [
+        Envelope(step=ProbeStep.JEV_EXPOSURE),
+        Envelope(step=ProbeStep.ENTITY_ORACLE, evidence={"available": True}),
+    ]
     idx = next(i for i, e in enumerate(envs) if e.step is step)
     envs[idx] = Envelope.failed(step, status, "down")
     res = _run(attack_case, envs)
     assert res.response.ceiling is None
-    assert _info(res)["probe_failed"] is True and _info(res)["ceiling"] is None
+    assert _info(res)["withheld"] and _info(res)["ceiling"] is None
     assert decide(res.response) == decide(_run(attack_case, envs, V5).response)
 
 
@@ -518,7 +540,104 @@ def test_an_oracle_lookup_that_fell_back_sets_no_ceiling(attack_case):
     envs = _high_selfmod()
     envs.append(Envelope(step=ProbeStep.ENTITY_ORACLE, evidence={"fallback": "null"}))
     res = _run(attack_case, envs)
-    assert res.response.ceiling is None and _info(res)["probe_failed"] is True
+    assert res.response.ceiling is None and "probe_failed" in _info(res)["withheld"]
+
+
+# ---- a degraded scan or a lost session state sets no ceiling ------------------------------------------------
+
+
+def test_an_unavailable_oracle_sets_no_ceiling(attack_case):
+    """The null oracle (or a library that is down) knows no known-bad or look-alike entity."""
+    envs = _high_selfmod()
+    envs.append(Envelope(step=ProbeStep.ENTITY_ORACLE, evidence={"available": False}))
+    res = _run(attack_case, envs)
+    assert res.response.ceiling is None and "oracle_unavailable" in _info(res)["withheld"]
+    envs[-1] = Envelope(step=ProbeStep.ENTITY_ORACLE, evidence={"available": True})
+    assert _run(attack_case, envs).response.ceiling == "review"
+
+
+def test_an_oracle_skipped_by_ablation_sets_no_ceiling(attack_case):
+    envs = _high_selfmod()
+    envs.append(Envelope.failed(ProbeStep.ENTITY_ORACLE, ProbeStatus.SKIPPED, "ablated"))
+    res = _run(attack_case, envs)
+    assert res.response.ceiling is None and "oracle_unavailable" in _info(res)["withheld"]
+
+
+def test_the_null_oracle_end_to_end_sets_no_ceiling(twin_case):
+    from sentrook.oracle.client import NullOracle
+
+    case = copy.deepcopy(twin_case)
+    case["oracle_seed"] = None
+    answers = {**ATTACK_ANSWERS, "exposure_instructions": {"type": "noul", "noul": 0.05}}
+    res = scanner(answers, params=V6, oracle=NullOracle()).scan(
+        case["fixture"], options(case, probes_enabled=None)
+    )
+    assert res.response.ceiling is None
+    assert "oracle_unavailable" in res.response.metadata.versions["attended_owner"]["withheld"]
+
+
+def test_unjudged_new_content_sets_no_ceiling(attack_case):
+    """Jev not configured or disabled: the request's new untrusted content went unread by the exposure judge."""
+    envs = _high_selfmod()
+    envs.append(Envelope.failed(ProbeStep.JEV_EXPOSURE, ProbeStatus.SKIPPED, "not configured"))
+    res = _run(attack_case, envs)  # the attack case brings a new email
+    assert res.response.ceiling is None and "exposure_unjudged" in _info(res)["withheld"]
+
+
+def test_jev_not_configured_end_to_end_sets_no_ceiling(attack_case):
+    res = Scanner(ScannerConfig(token_key=KEY, decider=None, params=V6)).scan(
+        attack_case["fixture"], options(attack_case, probes_enabled=None)
+    )
+    assert res.response.ceiling is None
+    assert res.response.metadata.versions["attended_owner"]["withheld"]
+
+
+def test_dropped_content_sets_no_ceiling(attack_case):
+    from sentrook.prepare import CoverageNote
+
+    prepared = _prepared(attack_case)
+    prepared.coverage.append(CoverageNote(code="content_dropped", detail="test"))
+    res = converge(
+        prepared, _judged(_high_selfmod()), params=V6, scanner_version="t", token_key=KEY
+    )
+    assert res.response.status.value == "degraded" and res.response.ceiling is None
+    assert "degraded" in res.response.metadata.versions["attended_owner"]["withheld"]
+
+
+@pytest.mark.parametrize("status", ["missing", "invalid", "stale", "mismatch"])
+def test_a_lost_session_state_sets_no_ceiling(attack_case, status):
+    """A fresh token loses the retry, taint and sensitive sets a strong signal may come from."""
+    from sentrook.state.token import TokenStatus
+
+    prepared = _prepared(attack_case)
+    prepared.state.status = TokenStatus(status)
+    res = converge(
+        prepared, _judged(_high_selfmod()), params=V6, scanner_version="t", token_key=KEY
+    )
+    assert res.response.ceiling is None
+    assert "state_lost" in res.response.metadata.versions["attended_owner"]["withheld"]
+
+
+def test_the_first_step_keeps_the_ceiling(attack_case):
+    from sentrook.state.token import TokenStatus
+
+    prepared = _prepared(attack_case)
+    prepared.state.status = TokenStatus.FIRST_STEP
+    res = converge(
+        prepared, _judged(_high_selfmod()), params=V6, scanner_version="t", token_key=KEY
+    )
+    assert res.response.ceiling == "review"
+
+
+def test_an_unrecognised_channel_is_not_attended(attack_case):
+    """OpenClaw's own system-agent chat (and host-marker turns on it) arrives as an owner message on channel
+    `other`, which nothing else tells apart; the fail-safe reading is not attended."""
+    case = copy.deepcopy(attack_case)
+    case["fixture"]["trigger"]["channel"] = "other"
+    assert attended_owner(PlanIR.model_validate(case["fixture"])) is False
+    for channel in ("chat", "discord", None):
+        case["fixture"]["trigger"]["channel"] = channel
+        assert attended_owner(PlanIR.model_validate(case["fixture"])) is True
 
 
 # ---- unattended runs and older parameter sets are unchanged --------------------------------------------------
@@ -544,7 +663,7 @@ def test_unattended_runs_are_unchanged(twin_case, kind, relation, role):
     assert v6.metadata.versions["attended_owner"] == {
         "attended": False,
         "strong": [],
-        "probe_failed": False,
+        "withheld": [],
         "ceiling": None,
     }
 

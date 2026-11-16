@@ -29,7 +29,7 @@ from ..response.models import (
     SuspicionTier,
 )
 from ..state.token import encode_state
-from .attended import DEFAULT_BLOCK_LINE
+from .attended import DEFAULT_BLOCK_LINE, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
@@ -269,26 +269,18 @@ def converge(
         merged = merge(claims, excluded)
         tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
-    attended: dict | None = None
-    ceiling: str | None = None
-    if params.attended_owner_cap:
-        cap = attended_check(
+    cap = (
+        attended_check(
             prepared,
             claims,
             [c for kept in merged.claims.values() for c in kept],
             [(r.subject, r.reason) for r in relief],
             [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
             params,
-            envelopes,
         )
-        if cap.applies:
-            ceiling = "review"
-        attended = {
-            "attended": cap.attended,
-            "strong": cap.strong,
-            "probe_failed": cap.probe_failed,
-            "ceiling": ceiling,
-        }
+        if params.attended_owner_cap
+        else None
+    )
 
     floors: list[FloorApplied] = []
     risk = tiers.risk
@@ -325,6 +317,28 @@ def converge(
         or prepared.state.fresh
     )
     status = ScanStatus.DEGRADED if degraded else ScanStatus.OK
+
+    attended: dict | None = None
+    ceiling: str | None = None
+    if cap is not None:
+        held_back = (
+            withheld(
+                envelopes,
+                degraded=degraded,
+                state_lost=prepared.state.fresh,
+                exposure_unjudged=unjudged,
+            )
+            if cap.attended
+            else []
+        )
+        if cap.applies and not held_back and enforced is None:
+            ceiling = "review"
+        attended = {
+            "attended": cap.attended,
+            "strong": cap.strong,
+            "withheld": held_back,
+            "ceiling": ceiling,
+        }
 
     category = None
     for env in envelopes:
@@ -364,7 +378,7 @@ def converge(
         status=status,
         risk=round(tiers.risk * 100.0, 2),
         enforced=enforced,
-        ceiling=ceiling if enforced is None else None,
+        ceiling=ceiling,
         tree=_tree(merged, tiers),
         floors_applied=floors,
         relief_applied=[

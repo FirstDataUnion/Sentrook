@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { blockCategory, blockReason, decide, describe, reviewCopy } from "./decision.ts";
+import { blockCategory, blockReason, decide, describe, reviewCopy, severity } from "./decision.ts";
 import type { ScanResponse } from "./scanClient.ts";
 
 const resp = (risk: number, enforced: ScanResponse["enforced"] = null, extra: Partial<ScanResponse> = {}): ScanResponse => ({
@@ -37,6 +37,15 @@ test("verdict ceiling: lowered to review, never raised, enforced still wins", ()
   for (const c of CEILING.cases) {
     assert.equal(decide(c.response, { reviewAt: c.lines.review_at, blockAt: c.lines.block_at }), c.verdict, c.name);
   }
+});
+
+test("severity: critical for a floor's review and for a block the ceiling lowered", () => {
+  assert.equal(severity(resp(55), lines), "warning");
+  assert.equal(severity(resp(55, null, { ceiling: "review" }), lines), "warning");
+  assert.equal(severity(resp(95, null, { ceiling: "review" }), lines), "critical");
+  assert.equal(severity(resp(10, "review"), lines), "critical");
+  // custom lines: the block line is the owner's
+  assert.equal(severity(resp(90, null, { ceiling: "review" }), { blockAt: 95 }), "warning");
 });
 
 test("tool description fills entity placeholders", () => {

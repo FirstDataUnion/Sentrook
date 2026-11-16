@@ -25,8 +25,9 @@ not to follow from the owner's request (`fresh_injection`, model judgements only
 Attended is derived from the PlanIR, not from a plugin flag: the turn is a message (not scheduled, heartbeat,
 hook, sub-agent, system or unknown), the sender is the owner outside a group chat or open host (sender basis not
 `group_chat` or `host_open_access`) and the agent is the main agent. Unattended runs, other senders, group chats and
-unknown triggers are unchanged. No ceiling is set when a probe errored, timed out or fell back, or when the context or
-rule-based probe did not answer: the strong signals come from them.
+unknown triggers are unchanged. No ceiling is set on a scan that is not fully
+informed: a probe errored, timed out or fell back, the context or rule-based probe did not answer, the entity oracle
+was unavailable, new content went unjudged, the session state was lost, or the scan is otherwise degraded.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from ..enums import ProbeStatus, ProbeStep
-from ..planir.models import AgentRole, PlanIR, SenderBasis, SenderRelation, TriggerKind
+from ..planir.models import AgentRole, Channel, PlanIR, SenderBasis, SenderRelation, TriggerKind
 from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role
 from ..prepare.grants import sends_off_host
@@ -65,8 +66,8 @@ STRONG_REASONS = frozenset(
 )
 KNOWN_BAD_PREFIX = "reputation.known_bad_"
 #: Look-alikes of an entry the library vouches for or of a host, package or person the owner named
-#: (`attended_owner_cap.lookalike`).
-LOOKALIKE_PREFIXES = ("reputation.near_miss_", "lineage.lookalike_of_named_")
+#: (`attended_owner_cap.lookalike`), including a look-alike installer host or tool provider.
+LOOKALIKE_PREFIXES = ("reputation.near_miss_", "lineage.lookalike_of_named_", "code.lookalike_")
 #: Sinks that send data off the host. The `exfil.*` sinks carry a sensitive source; `send.off_host` does not.
 EXFIL_SINKS = frozenset(
     {
@@ -114,32 +115,63 @@ def attended_owner(planir: PlanIR) -> bool:
         planir.trigger.kind is TriggerKind.MESSAGE
         and planir.trigger.sender.relation is SenderRelation.OWNER
         and not SHARED_BASIS & set(planir.trigger.sender.basis)
+        # an unrecognised channel: on OpenClaw its own system-agent chat, where host-marker turns arrive too
+        and planir.trigger.channel is not Channel.OTHER
         and planir.session.agent_role is AgentRole.MAIN
         # a self-edit block says the host's own background process made the call, whatever the trigger says
         and planir.self_edit is None
     )
 
 
-def probe_failed(envelopes: Iterable[Envelope]) -> bool:
-    """A probe errored or timed out, a lookup fell back, or a probe the strong signals come from did not answer."""
+def withheld(
+    envelopes: Iterable[Envelope],
+    *,
+    degraded: bool,
+    state_lost: bool,
+    exposure_unjudged: bool,
+) -> list[str]:
+    """Why no ceiling may be set even without a strong signal: the evidence a strong signal comes from is missing.
+
+    - `probe_failed`: a probe errored or timed out, a lookup fell back, or the context or rule-based probe did not
+      answer;
+    - `oracle_unavailable`: the entity oracle did not run or had no library (the null oracle), so no known-bad
+      or look-alike entity could be found;
+    - `exposure_unjudged`: the request brings new untrusted content and the exposure judge did not read it;
+    - `state_lost`: the session state token was missing, invalid or stale, so earlier denials and flags are gone;
+    - `degraded`: anything else that makes the scan degraded (content dropped or truncated, an argument dropped).
+    """
     envelopes = list(envelopes)
-    if any(env.status in (ProbeStatus.ERROR, ProbeStatus.TIMEOUT) for env in envelopes):
-        return True
-    if any(env.evidence.get("fallback") for env in envelopes):
-        return True
+    out: list[str] = []
     answered = {env.step for env in envelopes if env.status is ProbeStatus.OK}
-    return not all(step in answered for step in SIGNAL_PROBES)
+    if (
+        any(env.status in (ProbeStatus.ERROR, ProbeStatus.TIMEOUT) for env in envelopes)
+        or any(env.evidence.get("fallback") for env in envelopes)
+        or not all(step in answered for step in SIGNAL_PROBES)
+    ):
+        out.append("probe_failed")
+    oracle = [env for env in envelopes if env.step is ProbeStep.ENTITY_ORACLE]
+    if any(
+        env.status is not ProbeStatus.OK or env.evidence.get("available") is False for env in oracle
+    ) or (not oracle and ProbeStep.ENTITY_ORACLE in {env.step for env in envelopes}):
+        out.append("oracle_unavailable")
+    if exposure_unjudged:
+        out.append("exposure_unjudged")
+    if state_lost:
+        out.append("state_lost")
+    if degraded and not out:
+        out.append("degraded")
+    return out
 
 
 @dataclass
 class CapCheck:
     attended: bool
     strong: list[str] = field(default_factory=list)
-    probe_failed: bool = False
 
     @property
     def applies(self) -> bool:
-        return self.attended and not self.probe_failed and not self.strong
+        """Attended and no strong signal; `withheld` may still keep the ceiling off."""
+        return self.attended and not self.strong
 
 
 def _send_destinations(claims: list[Claim], prepared: Prepared) -> list[str | None] | None:
@@ -202,12 +234,11 @@ def check(
     relief_subjects: Iterable[tuple[str | None, str]],
     floors: list[str],
     params: ConvergenceParams,
-    envelopes: Iterable[Envelope] = (),
 ) -> CapCheck:
     """`claims`: every claim before relief; `kept`: the claims relief left; `relief_subjects`: (subject, reason)
     per relief applied; `floors`: the floors applied. Returns whether the call is in an attended owner session
     and which strong signals it carries (empty: the cap applies)."""
-    out = CapCheck(attended=attended_owner(prepared.planir), probe_failed=probe_failed(envelopes))
+    out = CapCheck(attended=attended_owner(prepared.planir))
     if not out.attended:
         return out
     claims, kept = list(claims), list(kept)

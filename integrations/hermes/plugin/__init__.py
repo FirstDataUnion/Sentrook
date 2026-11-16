@@ -416,7 +416,7 @@ def _scan_one(
             entry["decision"] = "held"
             directive = {"action": "block", "message": hold.HELD_TEXT}
             held = _hold(cfg, traffic, built, resp)
-        elif snooze.applies(resp) and snooze.active(
+        elif snooze.applies(resp, cfg.block_at) and snooze.active(
             store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
         ):
             # The owner snoozed reviews for this session: scanned and logged, not asked.

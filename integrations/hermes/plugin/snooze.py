@@ -96,9 +96,12 @@ def active(data: dict[str, Any] | None, ref: str, now: datetime) -> bool:
     return any(_applies_to(e, ref) for e, _ in _entries(data, now))
 
 
-def applies(resp: dict[str, Any]) -> bool:
-    """A snooze may relax this review: the scanner did not enforce it."""
-    return resp.get("enforced") not in ("review", "block")
+def applies(resp: dict[str, Any], block_at: float) -> bool:
+    """A snooze may relax this review: the scanner did not enforce it, and its score is under the block line (a
+    block the scanner's ceiling lowered to a review always asks)."""
+    if resp.get("enforced") in ("review", "block"):
+        return False
+    return float(resp.get("risk") or 0) < block_at
 
 
 # ---- status -----------------------------------------------------------------------------------------
