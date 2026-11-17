@@ -63,6 +63,7 @@ jobs:
 
   canary:
     needs: plan
+    if: needs.plan.outputs.targets != '[]'
     name: ${{ matrix.host }} ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30

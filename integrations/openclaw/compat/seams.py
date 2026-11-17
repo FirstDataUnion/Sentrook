@@ -59,6 +59,15 @@ def judge(records: list[dict]) -> list[str]:
         if bad:
             problems.append(f"before_tool_call {field} is {'/'.join(bad)}, expected {want}")
 
+    refused = [r for r in records if r.get("at") == "middleware_registered" and not r.get("ok")]
+    if refused:
+        problems.append(f"registerAgentToolResultMiddleware refused: {refused[-1].get('error')}")
+    results = [r for r in records if r.get("at") == "tool_result_middleware"]
+    if not results:
+        problems.append("the tool-result middleware never ran")
+    elif not any(r.get("toolCallId") == "string" for r in results):
+        problems.append("the tool-result middleware never saw a toolCallId")
+
     prompts = [r for r in records if r.get("at") == "before_prompt_build"]
     if not prompts:
         problems.append("before_prompt_build never reached the probe")
@@ -80,13 +89,18 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"FAIL\tno probe records: {exc}")
         return 0
-    problems = judge(records)
+    try:
+        problems = judge(records)
+    except Exception as exc:  # noqa: BLE001 - a record the judge did not expect is itself a finding
+        print(f"FAIL\tcould not judge the probe records: {exc!r}")
+        return 0
     if problems:
         print("FAIL\t" + "; ".join(problems))
     else:
-        full = [r for r in records if r.get("mode") == "full"][-1]
+        full = [r for r in records if r.get("at") == "register" and r.get("mode") == "full"][-1]
         print(
-            f"ok\tapi fields, before_tool_call and the owner marker as expected on {full['version']}"
+            "ok\tapi fields, before_tool_call, the result middleware and the owner marker "
+            f"as expected on {full['version']}"
         )
     return 0
 

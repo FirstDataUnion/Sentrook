@@ -71,9 +71,10 @@ versions; needs Node 22.6+ and `npm ci` at the repository root). It packs the pl
 7. one agent turn, `openclaw agent --local`, with the model served by the same mock: it asks for two `exec` calls,
    and the plugin's `before_tool_call` must block the first and allow the second;
 8. the seam probe (`probe/`, a test-only plugin installed next to Sentrook) checks the host fields the plugin reads
-   without a documented contract: `api.runtime.version`, `api.runtime.config.current()`, the hook and middleware
-   registration functions, the `before_tool_call` fields, and the `__openclaw.senderIsOwner` marker on the owner's
-   messages (a second turn gives `before_prompt_build` a history to carry it).
+   without a documented contract: `api.runtime.version`, `api.runtime.config.current()`, the hook and command
+   registration functions, a tool-result middleware registered as Sentrook registers it (accepted, and run on the
+   allowed call), the `before_tool_call` fields, and the `__openclaw.senderIsOwner` marker on the owner's messages
+   (a second turn gives `before_prompt_build` a history to carry it).
 
 Pre-releases are OpenClaw's betas (`YYYY.M.D-beta.N`); the canary's `main` is the `main` image on GHCR, whose build
 time stands in for a push time. OpenClaw ships two release lines at once; the blocking check follows the newest

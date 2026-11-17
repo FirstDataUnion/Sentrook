@@ -2,6 +2,19 @@
   "id": "sentrook-compat-probe",
   "name": "Sentrook compatibility probe",
   "description": "Records the shape of the host fields the Sentrook plugin reads. Test only.",
-  "activation": { "onCapabilities": ["hook"] },
-  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+  "activation": {
+    "onCapabilities": [
+      "hook"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "contracts": {
+    "agentToolResultMiddleware": [
+      "openclaw"
+    ]
+  }
 }

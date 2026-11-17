@@ -18,6 +18,7 @@ plugin=${2:-$root/integrations/openclaw/plugin}
 out=${3:-$(mktemp -d)}
 mkdir -p "$out"
 : >"$out/steps.tsv"
+rm -f "${out:?}/validate.json"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
@@ -25,16 +26,13 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/src" "$stage/pkg"
 (cd "$plugin" && tar --exclude node_modules --exclude dist -cf - .) | tar -xf - -C "$stage/src"
 # The plugin is an npm workspace of the repository root, so its build tools are in the root's node_modules.
-if [ ! -x "$root/node_modules/.bin/esbuild" ]; then
-  (cd "$root" && npm ci --no-audit --no-fund >/dev/null)
-fi
 ln -s "$root/node_modules" "$stage/src/node_modules"
-if (cd "$stage/src" && npm run --silent pack:check && npm pack --silent --pack-destination "$stage/pkg") \
-  >"$out/pack.log" 2>&1; then
-  mv "$stage/pkg"/*.tgz "$stage/pkg/sentrook.tgz"
+if { [ -x "$root/node_modules/.bin/esbuild" ] || (cd "$root" && npm ci --no-audit --no-fund); } >"$out/pack.log" 2>&1 &&
+  (cd "$stage/src" && npm run --silent pack:check && npm pack --silent --pack-destination "$stage/pkg") \
+    >>"$out/pack.log" 2>&1 && mv "$stage/pkg"/*.tgz "$stage/pkg/sentrook.tgz" 2>>"$out/pack.log"; then
   printf 'pack\tok\t%s\n' "npm run pack:check and npm pack" >>"$out/steps.tsv"
 else
-  printf 'pack\tFAIL\t%s\n' "npm run pack:check or npm pack failed (see pack.log)" >>"$out/steps.tsv"
+  printf 'pack\tFAIL\t%s\n' "npm ci, npm run pack:check or npm pack failed (see pack.log)" >>"$out/steps.tsv"
 fi
 chmod -R a+rX "$stage"
 chmod a+rwx "$out"

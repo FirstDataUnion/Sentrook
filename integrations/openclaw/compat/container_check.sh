@@ -154,6 +154,7 @@ import json, sys
 doctor = json.load(open(sys.argv[1]))
 validate = json.load(open(sys.argv[2]))
 warnings = [f"validate: {e}" for e in ((validate or {}).get("errors") or [])]
+warnings += [f"validate warning: {w}" for w in ((validate or {}).get("warnings") or [])]
 if isinstance(doctor, dict):
     for e in doctor.get("pluginErrors") or []:
         if e.get("pluginId") == "sentrook":

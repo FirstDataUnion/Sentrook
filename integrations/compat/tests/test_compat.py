@@ -384,7 +384,9 @@ def probe_records(**changes):
         {"at": "register", "mode": "discovery", "fields": {}, "extra": [], "version": None},
         register,
         {"at": "before_prompt_build", "messages": "array", "users": 0, "ownerMarked": 0},
+        {"at": "middleware_registered", "mode": "full", "ok": True},
         call,
+        {"at": "tool_result_middleware", "toolCallId": "string", "result": "object"},
         call,
         {"at": "before_prompt_build", "messages": "array", "users": 1, "ownerMarked": 1},
     ]
@@ -421,7 +423,7 @@ def test_seams_fire_when_the_owner_marker_moves():
 
 def test_seams_fire_when_a_tool_call_field_moves():
     records = probe_records()
-    records[3] = {**records[3], "toolName": "undefined", "session": None}
+    records[4] = {**records[4], "toolName": "undefined", "session": None}
     assert seams.judge(records) == [
         "before_tool_call toolName is undefined, expected string",
         "before_tool_call session is None, expected string",
@@ -432,3 +434,25 @@ def test_seams_fire_without_a_full_registration():
     assert seams.judge([r for r in probe_records() if r.get("mode") != "full"]) == [
         "the probe was never registered in full mode (no agent run loaded plugins)"
     ]
+
+
+def test_seams_fire_when_the_result_middleware_is_refused_or_silent():
+    records = [r for r in probe_records() if r["at"] != "tool_result_middleware"]
+    assert seams.judge(records) == ["the tool-result middleware never ran"]
+    records = [
+        {**r, "ok": False, "error": "Error: unknown runtime"}
+        if r["at"] == "middleware_registered"
+        else r
+        for r in probe_records()
+    ]
+    assert seams.judge(records) == [
+        "registerAgentToolResultMiddleware refused: Error: unknown runtime"
+    ]
+
+
+def test_seams_cli_reports_ok_with_the_version(tmp_path, capsys, monkeypatch):
+    path = tmp_path / "probe.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in probe_records()))
+    monkeypatch.setattr(sys, "argv", ["seams.py", str(path)])
+    assert seams.main() == 0
+    assert capsys.readouterr().out.startswith("ok\t")

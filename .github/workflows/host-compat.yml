@@ -6,7 +6,7 @@
 # next. Any failed step, or a host report not in the host's warnings-baseline.txt, fails the job.
 #
 # - Pull requests touching a plugin or this tooling: for each host whose plugin changed (every host when
-#   the shared tooling changed), the pinned versions (blocking), the check's self-test (blocking: it
+#   the shared tooling changed; OpenClaw also when the root package files, its build tools, changed), the pinned versions (blocking), the check's self-test (blocking: it
 #   proves the check still catches a broken plugin), and the newest pre-release (a Hermes release
 #   candidate, an OpenClaw beta) when it is newer than the latest stable (report-only). Pushes to main
 #   run every host.
@@ -23,6 +23,8 @@ on:
       - integrations/hermes/**
       - integrations/openclaw/**
       - integrations/compat/**
+      - package.json
+      - package-lock.json
       - .github/workflows/host-compat.yml
   push:
     branches: [main]
@@ -30,6 +32,8 @@ on:
       - integrations/hermes/**
       - integrations/openclaw/**
       - integrations/compat/**
+      - package.json
+      - package-lock.json
       - .github/workflows/host-compat.yml
   workflow_dispatch:
     inputs:
@@ -92,7 +96,10 @@ jobs:
               if ! grep -qE '^(integrations/compat/|\.github/workflows/host-compat\.yml$)' <<<"$changed"; then
                 picked=''
                 for host in $hosts; do
-                  if grep -q "^integrations/$host/" <<<"$changed"; then picked="$picked $host"; fi
+                  # The root package files hold the OpenClaw plugin's build tools (an npm workspace).
+                  pattern="^integrations/$host/"
+                  [ "$host" != openclaw ] || pattern="$pattern|^package(-lock)?\.json$"
+                  if grep -qE "$pattern" <<<"$changed"; then picked="$picked $host"; fi
                 done
                 hosts=${picked# }
               fi

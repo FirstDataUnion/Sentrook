@@ -79,6 +79,20 @@ export default {
       });
     });
 
+    // As Sentrook registers its tool-result middleware (index.ts): a host that rejects it would only cap results.
+    try {
+      api.registerAgentToolResultMiddleware(
+        (event) => {
+          record({ at: "tool_result_middleware", toolCallId: shape(event?.toolCallId), result: shape(event?.result) });
+          return undefined;
+        },
+        { runtimes: ["openclaw"] },
+      );
+      record({ at: "middleware_registered", mode, ok: true });
+    } catch (err) {
+      record({ at: "middleware_registered", mode, ok: false, error: String(err).slice(0, 200) });
+    }
+
     api.on("before_tool_call", (event, ctx) => {
       record({
         at: "before_tool_call",
