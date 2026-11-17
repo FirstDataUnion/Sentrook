@@ -93,6 +93,12 @@ def turn(h, platform="cron", sid=CRON):
     )
 
 
+def owner_run(monkeypatch):
+    """The owner's own run nobody can answer: a cron session on the local machine (its sender is the owner), where
+    a suggested grant is kept on the hold. On anyone else's turn the hold keeps none."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+
 def send(h, cid="c1", sid=CRON):
     """One send to a channel: the directive and the scan's traffic record."""
     out = h.ctx.hooks["pre_tool_call"](
@@ -243,8 +249,9 @@ def test_owner_channel_picks_the_home_channel(h, monkeypatch):
 
 
 def test_approve_sets_the_suggested_grant_persistent_for_30_days(h, monkeypatch):
-    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
-    turn(h)
+    monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
+    owner_run(monkeypatch)
+    turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
     assert rec["hold"]["hint"] is True
@@ -603,8 +610,9 @@ def test_a_hold_whose_file_is_locked_still_holds_and_logs_the_notice_unsent(h, m
 
 
 def test_approve_keeps_the_hold_when_the_grant_cannot_be_written(h, monkeypatch):
-    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
-    turn(h)
+    monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
+    owner_run(monkeypatch)
+    turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
     gfile = h.dir / "sentrook" / "grants.json"
@@ -619,9 +627,10 @@ def test_approve_keeps_the_hold_when_the_grant_cannot_be_written(h, monkeypatch)
 
 
 def test_approve_keeps_the_hold_when_the_grants_file_is_locked(h, monkeypatch):
-    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
+    monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
+    owner_run(monkeypatch)
     monkeypatch.setattr(store, "LOCK_WAIT_S", 0.05)
-    turn(h)
+    turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
     with held_elsewhere(h.dir / "sentrook" / "grants.json"):
@@ -763,8 +772,9 @@ def test_a_cron_marker_in_the_prompt_never_names_a_job(h):
 
 
 def test_a_retried_approve_after_the_holds_file_failed_sets_one_grant(h, monkeypatch):
-    monkeypatch.setattr(hold, "grant_hint", lambda _resp: dict(HINT))
-    turn(h)
+    monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
+    owner_run(monkeypatch)
+    turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
     real = store.Store.save_holds

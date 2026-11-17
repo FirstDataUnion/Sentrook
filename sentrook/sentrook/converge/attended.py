@@ -257,6 +257,20 @@ def check(
     out = CapCheck(attended=attended_owner(prepared.planir))
     if not out.attended:
         return out
+    out.strong = strong_signals(prepared, claims, kept, relief_subjects, floors, params)
+    return out
+
+
+def strong_signals(
+    prepared: Prepared,
+    claims: Iterable[Claim],
+    kept: Iterable[Claim],
+    relief_subjects: Iterable[tuple[str | None, str]],
+    floors: list[str],
+    params: ConvergenceParams,
+) -> list[str]:
+    """The independent strong signals the call carries (the module note lists them), whoever is attending.
+    Same arguments as `check`."""
     claims, kept = list(claims), list(kept)
     strong: list[str] = []
     if floors:
@@ -298,5 +312,4 @@ def check(
             and misalignment >= params.attended_owner_injection_misalignment_min
         ):
             strong.append("fresh_injection")
-    out.strong = list(dict.fromkeys(strong))
-    return out
+    return list(dict.fromkeys(strong))
