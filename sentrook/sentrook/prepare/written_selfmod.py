@@ -32,14 +32,17 @@ How the roles are read:
   hosts in its comments are not. A `hooks/` folder of the workspace's own code (a web app's hooks) is not a host
   hook.
 - what the agent runs later through its own tools (a skill's commands and scripts): a fetch-and-run is a code source
-  and a send of local data (a file, standard input, a variable's value, a copy, a raw socket) a destination. An API
-  call whose body is a literal (a query, a POST with a key in its header) is a lookup, not charged now, since each
-  command is scanned when the agent runs it.
+  and a send of local data a destination: a file or standard input, a variable's value or a command substitution in
+  a web client's arguments, an httpie file field, a copy, an `ssh` fed by a pipe, a `git push` to a URL, a raw
+  socket. An API call with a literal body (a query, a POST with a key in its header) is a lookup, not charged now,
+  since each command is scanned when the agent runs it.
 - instruction text (a skill, a job prompt, an agent instruction file): its commands (fenced or inline code) as above,
-  less those it explicitly says not to run (a warning word alone hides nothing); a sentence that tells the agent to
-  fetch and run something, or to read or load something and follow or apply it, names a code source; one that tells
-  it to post, send, upload, report or share something to a host names a destination, whether the host comes before
-  or after the verb. A link it only points to (documentation, "see ... at") takes no role.
+  less those it tells the agent not to run, where the negated verb's object is the command itself ("do not run
+  this:"); a negation of something else ("never run as root:") hides nothing. A sentence that tells the agent to
+  fetch and run something, or to read or load something and follow or apply it, names a code source; one with a
+  send verb (post, send, upload, report, share, copy, back up, sync, mail) before the host, or after it ("upload the
+  logs there"), names a destination, and a mail address after such a verb a recipient. A host something comes from,
+  and a pointer to reading matter right before the host ("see ... at", "docs at"), take no role.
 
 Whether the owner's naming, a grant or the owner's configuration sanctions a later role is decided by relief, as for
 the call's own roles (`converge.relief`): naming sanctions sending to a host, never running code from it.
@@ -57,14 +60,17 @@ from ..aira.lists import Lists, load_lists
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ToolKind
 from .entities import (
+    _EMAIL_RE,
     EntityKind,
     Found,
     Role,
     _hosts_in,
     extract_exec,
     normalise_path,
+    normalise_recipient,
     pipes_into_code,
     shell_segments,
+    shell_segments_sep,
 )
 from .skill_steps import (
     _COMMANDISH,
@@ -72,7 +78,6 @@ from .skill_steps import (
     _INLINE,
     _PROMPT,
     _fence_lines,
-    _line_before,
     patch_added_text,
     written_texts,
 )
@@ -169,7 +174,7 @@ NET_HEADS = frozenset(
 _CRON_SCHEDULE = re.compile(
     r"^\s*(?:@(?:reboot|yearly|annually|monthly|weekly|daily|midnight|hourly)|"
     r"(?:[\d*?LW#/,-]+|[A-Za-z]{3}(?:[-,][A-Za-z]{3})*)(?:\s+(?:[\d*?LW#/,-]+|[A-Za-z]{3}(?:[-,][A-Za-z]{3})*)){4})"
-    r"\s+(?:root\s+)?"
+    r"\s+"
 )
 #: A unit file's command line (`ExecStart=...`).
 _UNIT_EXEC = re.compile(r"^\s*Exec\w*\s*=\s*[-@:+!]*", re.IGNORECASE)
@@ -540,7 +545,10 @@ def _shell_lines(text: str, *, cron_user: bool = False) -> list[str]:
             if m:
                 stripped = stripped[m.end() :]
                 if cron_user:
+                    # a system cron table names the user next: exactly one field
                     stripped = stripped.split(None, 1)[1] if " " in stripped.strip() else ""
+                elif re.match(r"root\s+\S", stripped):
+                    stripped = stripped[4:].lstrip()  # a system line written into a user's table
         if stripped:
             lines.append(stripped)
     if pending.strip():
@@ -606,7 +614,7 @@ def _runs_fetched(line: str) -> bool:
 #: request body, or a file-copy or raw-socket client. A request whose body is a literal (an API query) is a lookup.
 _LOCAL_SEND = re.compile(
     r"(?:\s|^)(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?|--post-data|--body-data)"
-    r"(?:\s+|=)[^\s]*?(?:@|\$)"
+    r"(?:\s+|=)[^\s]*?(?:@|\$|<)"
     r"|(?:\s|^)(?:-T|--upload-file|--post-file|--body-file)(?:\s|=)"
     r"|(?:\s|^)<\s*[~/$.\w]"
     r"|\b(?:scp|rsync|sftp|nc|ncat|netcat|socat)\b|/dev/(?:tcp|udp)/"
@@ -615,8 +623,33 @@ _LOCAL_SEND = re.compile(
 )
 
 
+#: wget's combined short flags ending in `O` (`-qO FILE`), split so the download parser reads the file.
+_WGET_COMBINED_O = re.compile(r"\bwget\s+((?:-\S+\s+)*?)-([A-Za-z]+)O(?=\s)")
+
+
 def _sends_local(text: str) -> bool:
     return bool(_LOCAL_SEND.search(text))
+
+
+#: httpie's file fields: `file@path` (a form upload) and `key=@path` / `key:=@path` (a field read from a file).
+_HTTPIE_FILE = re.compile(r"^[\w.-]+(?::?=)?@\S")
+_HTTP_HEADS = frozenset({"curl", "wget", "http", "https", "xh", "httpie"})
+
+
+def _segment_sends_local(sep: str, tokens: list[str], seg: str) -> bool:
+    """A segment of shell text sends local data: `_sends_local`, a command substitution in a web client's arguments
+    (a header, a query or a body built from local output), an httpie file field, an `ssh` fed by a pipe, or a
+    `git push` to a remote written as a URL."""
+    head = tokens[0].rsplit("/", 1)[-1]
+    if _sends_local(seg):
+        return True
+    if head in _HTTP_HEADS and re.search(r"\$\(|`", seg):
+        return True
+    if head in ("http", "https", "xh", "httpie") and any(_HTTPIE_FILE.match(t) for t in tokens[1:]):
+        return True
+    if head == "ssh" and sep == "|":
+        return True
+    return head == "git" and "push" in tokens[1:] and bool(_hosts_in(seg, emails=False))
 
 
 def _shell_roles(
@@ -632,7 +665,10 @@ def _shell_roles(
     a copy or a raw socket). Base64 the text decodes is read too."""
     from ..aira.normalize import normalise_text
 
-    lines = _resolve_vars(_shell_lines(text, cron_user=cron_user))
+    lines = [
+        _WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)
+        for line in _resolve_vars(_shell_lines(text, cron_user=cron_user))
+    ]
     if not lines:
         return []
     decoded = [d for d in (normalise_text(line) for line in lines) if d not in lines]
@@ -662,9 +698,9 @@ def _shell_roles(
                     out.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
     contacted: set[str] = set()
     for line in lines:
-        for tokens in shell_segments(line):
+        for sep, tokens in shell_segments_sep(line):
             seg = " ".join(tokens)
-            if not contacts and not _sends_local(seg):
+            if not contacts and not _segment_sends_local(sep.strip(), tokens, seg):
                 continue
             if (
                 tokens[0].rsplit("/", 1)[-1] in NET_HEADS
@@ -688,38 +724,65 @@ _DONT = re.compile(
 )
 
 
+#: A negation whose object is the command that follows: "do not run this:", "never paste the following". Only words
+#: that point at the command may come between the verb and the end of the clause.
+_DONT_THIS = re.compile(
+    r"\b(?:never|do\s+not|don'?t|must\s+not|mustn'?t|should\s+not|shouldn'?t)\s+(?:ever\s+)?"
+    r"(?:run|execute|exec|use|type|paste|call|invoke|try|copy)"
+    r"(?:\s+(?:this|these|that|those|it|them|the|following|below|above|command|commands|line|lines|snippet|script|"
+    r"anything|like|one))*\s*:?\s*$",
+    re.I,
+)
+#: Where a clause ends for a negation: punctuation or "instead".
+_CLAUSE_BREAK = re.compile(r"[,.;!?]|\binstead\b", re.I)
+
+
+def _clause_before(text: str, at: int) -> str:
+    """The clause that introduces a command at `at`: the text before it on its line, or the last non-empty line
+    before it when the command starts its own line, cut after the last clause break."""
+    start = text.rfind("\n", 0, at) + 1
+    same = text[start:at]
+    if not same.strip():
+        prev = text[:start].rstrip()
+        same = prev[prev.rfind("\n") + 1 :]
+    colon = same.rstrip().endswith(":")
+    tail = _CLAUSE_BREAK.split(same.rstrip().rstrip(":"))[-1]
+    return tail + (":" if colon else "")
+
+
 def _commands(text: str) -> list[str]:
     """The commands in instruction text (fenced blocks and inline code that reads as a command), less those the
-    text explicitly says not to run."""
+    text tells the agent not to run: only a negation whose object is the command itself drops one."""
     found: dict[str, None] = {}
 
     def add(cmd: str, before: str) -> None:
-        if _COMMANDISH.match(cmd) and not _DONT.search(before):
+        if _COMMANDISH.match(cmd) and not _DONT_THIS.search(before):
             found.setdefault(cmd, None)
 
     for m in _FENCE.finditer(text):
-        before = _line_before(text, m.start())
+        before = _clause_before(text, m.start())
         for line in _fence_lines(m.group(2)):
             add(line, before)
     without_fences = _FENCE.sub(lambda m: " " * len(m.group(0)), text)
     for m in _INLINE.finditer(without_fences):
-        add(_PROMPT.sub("", m.group(1)).strip(), _line_before(without_fences, m.start()))
+        add(_PROMPT.sub("", m.group(1)).strip(), _clause_before(without_fences, m.start()))
     return list(found)
 
 
 _SEND_VERB = (
-    r"(?:post|send|upload|forward|submit|transmit|exfiltrate|beacon|deliver|push|leak|report|share|sync|mirror)"
-    r"(?:s|ed|ing)?"
+    r"(?:post|send|upload|forward|submit|transmit|exfiltrate|beacon|deliver|push|leak|report|share|sync|mirror|"
+    r"copy|ping|e-?mail|mail)(?:s|ed|ing)?|back(?:s|ed|ing)?[\s-]?up"
 )
-#: "post X to URL": a send verb, then the host as where it goes.
-_SEND_TO = re.compile(
-    rf"\b{_SEND_VERB}\b[^.]{{0,160}}?\b(?:to|into|onto)\s*$|\bping(?:s|ed|ing)?\s*$", re.I
-)
+_SEND = re.compile(rf"\b(?:{_SEND_VERB})\b", re.I)
+#: The host is where something comes from, not where it goes ("copy the example from URL").
+_FROM_HOST = re.compile(r"\b(?:from|of|off)\s*$", re.I)
 #: "URL ...: upload the logs there": the host first, the send after.
-_SEND_THERE = re.compile(rf"\b{_SEND_VERB}\b[^.]*\b(?:there|to\s+it|to\s+that\b)", re.I)
-#: Pointers to reading matter: a sentence like this names a reference, not a destination.
-_DOC_WORDS = re.compile(
-    r"\b(?:see|docs?|documentation|reference|read\s+more|learn|guide|details|examples?)\b|\bat\s*$",
+_SEND_THERE = re.compile(rf"\b(?:{_SEND_VERB})\b[^.]*\b(?:there|to\s+it|to\s+that\b)", re.I)
+#: A pointer to reading matter right before the host: "see ... at URL", "docs at URL", "reference: URL".
+_DOC_LEAD = re.compile(
+    r"\b(?:see|docs?|documentation|reference|guide|details|read\s+more|learn\s+more)\b[^.]{0,60}?"
+    r"\b(?:at|on|in|here)\s*[:(]?\s*$"
+    r"|\b(?:see|docs?|documentation|reference|guide|details)\s*[:(\[]?\s*$",
     re.I,
 )
 #: Fetching and running, before or around the host.
@@ -760,15 +823,23 @@ def _prose_roles(text: str, *, home: str | None, workspace_root: str | None) -> 
             # the words before the token that names the host (a URL's scheme is part of that token)
             before = re.sub(r"\S*$", "", sentence[:at])
             after = sentence[at:].split(None, 1)[1] if " " in sentence[at:] else ""
-            if _DONT.search(before):
+            if _DONT.search(_CLAUSE_BREAK.split(before)[-1]):
                 continue
             fetch_before = re.search(rf"\b{_FETCH_VERB}\b", before, re.I)
             if _RUN_FROM.search(before) or (fetch_before and _RUN_AFTER.search(after)):
                 out.append(Found(EntityKind.HOST, host, host, Role.CODE_SOURCE))
-            elif not _DOC_WORDS.search(before) and (
-                _SEND_TO.search(before) or (not before.strip() and _SEND_THERE.search(after))
+            elif (
+                not _DOC_LEAD.search(before)
+                and not _FROM_HOST.search(before)
+                and (_SEND.search(before) or (not before.strip() and _SEND_THERE.search(after)))
             ):
                 out.append(Found(EntityKind.HOST, host, host, Role.DATA_DESTINATION))
+        # mail to an address the text names: the address is a recipient of the later run
+        for m in _EMAIL_RE.finditer(sentence):
+            before = sentence[: m.start()]
+            if _SEND.search(before) and not _DONT.search(_CLAUSE_BREAK.split(before)[-1]):
+                addr = normalise_recipient(m.group(1))
+                out.append(Found(EntityKind.RECIPIENT, addr, addr, Role.RECIPIENT))
     return out
 
 
