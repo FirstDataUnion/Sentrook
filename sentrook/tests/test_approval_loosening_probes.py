@@ -18,6 +18,7 @@ import pytest
 from test_aira_detectors import ex, floor_reasons, planir, run
 
 from sentrook.aira import detectors
+from sentrook.aira.lists import load_lists
 
 BLOCK = "guardrail.approval_loosening"
 REVIEW = BLOCK + "_review"
@@ -210,3 +211,81 @@ def test_large_input_keeps_its_tier_and_the_floor_stays_fast(name, make, expect,
     monkeypatch.setattr(detectors, "_approval_loosening", timed)
     assert tier(make()) == expect
     assert spent[0] < 1.0, f"{name}: {spent[0]:.2f}s"
+
+
+# --------------------------------------------------------------------------- backtracking
+
+DELIMITERS = ["/", "|", "#", ",", ":", "@"]
+
+
+def _floor_time(raw: dict, monkeypatch) -> tuple[str, float]:
+    spent = [0.0]
+    original = detectors._approval_loosening
+
+    def timed(a, ctx):
+        start = time.perf_counter()
+        try:
+            return original(a, ctx)
+        finally:
+            spent[0] += time.perf_counter() - start
+
+    monkeypatch.setattr(detectors, "_approval_loosening", timed)
+    return tier(raw), spent[0]
+
+
+@pytest.mark.parametrize("delimiter", DELIMITERS)
+def test_an_unterminated_substitution_of_escapes_is_fast(delimiter, monkeypatch):
+    """A substitution's text alternates escapes and other characters; a long run of escapes with no
+    closing delimiter must not backtrack exponentially."""
+    escapes = "\\a" * 5000
+    start = time.perf_counter()
+    assert detectors._SED_SUBST.search("s" + delimiter + escapes) is None
+    assert time.perf_counter() - start < 0.1
+    raw = ex(f"sed -i 's{delimiter}{escapes}' ~/.openclaw/exec-approvals.json")
+    result, spent = _floor_time(raw, monkeypatch)
+    assert result == "quiet" and spent < 1.0
+
+
+@pytest.mark.parametrize(
+    "text, groups",
+    [
+        ("s/a\\/b/c/", [("/", "a\\/b")]),
+        ("s#x#y#", [("#", "x")]),
+        ("s|a\\|b|c|", [("|", "a\\|b")]),
+        ("sed -e 's/deny/full/' -e 's@on@off@'", [("/", "deny"), ("@", "on")]),
+    ],
+)
+def test_substitution_captures_are_unchanged(text, groups):
+    assert [m.groups() for m in detectors._SED_SUBST.finditer(text)] == groups
+
+
+def _fast(fn: Callable[[], object], limit: float = 0.2) -> None:
+    start = time.perf_counter()
+    fn()
+    assert time.perf_counter() - start < limit
+
+
+def test_broad_entry_patterns_do_not_backtrack():
+    rules = detectors._loosening_rules(load_lists())
+    for entry in (
+        "bash " + "--a " * 1000 + "!",
+        "s/" + "//" * 2000,
+        "/" + "a/" * 2000 + "!",
+        "x" + " | x" * 1000 + " !",
+    ):
+        _fast(lambda e=entry: detectors._broad(e, rules))
+
+
+def test_script_and_patch_patterns_do_not_backtrack():
+    _fast(lambda: list(detectors._PATCH_FILE.finditer("+++ " + "a " * 20000 + "\n")))
+    _fast(lambda: list(detectors._MEMBER_ASSIGN.finditer("a" + ".a" * 50000)))
+    _fast(lambda: detectors._heredocs("cat <<EOF\n" * 20000))
+    _fast(lambda: detectors._YAML_OPENER.match("!!a " * 20000 + "x"))
+    _fast(lambda: detectors._YAML_BLOCK_SCALAR.match("&a " * 20000 + "x"))
+    rules = detectors._loosening_rules(load_lists())
+    _fast(lambda: detectors._code_commands("subprocess.run([" + "'a', " * 20000 + "])", rules, {}))
+
+
+def test_heredoc_bodies_are_unchanged():
+    command = "cat > a <<'EOF'\nx: 1\nEOF\ncat > b <<-END\n  y: 2\n  END\necho done"
+    assert detectors._heredocs(command) == "x: 1\n  y: 2"

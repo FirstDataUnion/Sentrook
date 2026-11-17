@@ -1634,7 +1634,10 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
         any_key=_key_regex("|".join(str(s["key"]) for s in raw.get("settings") or []) or "(?!)"),
         allow_tree={str(h): _key_regex(str(k)) for h, k in tree_keys.items()},
         allow_approvals=_key_regex(str(keys["approvals"])) if keys.get("approvals") else None,
-        broad=pats("broad_entry_patterns"),
+        # Whole entries only: anchored, so no search ever tries them from every position.
+        broad=tuple(
+            re.compile(r"\A(?:" + p.pattern + r")\Z", p.flags) for p in pats("broad_entry_patterns")
+        ),
         trees=tuple(_Tree(str(t["host"]), str(t["root"])) for t in raw.get("host_trees") or ()),
         tree_exclusions=rxs("tree_exclusions"),
         approvals_files=rxs("approvals_files"),
@@ -1817,8 +1820,9 @@ def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | Non
 
 
 _YAML_KEY = re.compile(r"""(?:-\s+)?["']?([\w$.-]+)["']?\s*:(?:\s+(.*))?\Z""")
-_YAML_OPENER = re.compile(r"""(?:(?:&\w+|!!?[\w/]+)\s*)*\Z""")
-_YAML_BLOCK_SCALAR = re.compile(r"""(?:(?:&\w+|!!?[\w/]+)\s*)*[|>][+-]?\d*\s*\Z""")
+# Anchors and tags before a value; possessive, so a failed match never backtracks into them.
+_YAML_OPENER = re.compile(r"""(?:(?:&\w++|!!?[\w/]++)\s*+)*+\Z""")
+_YAML_BLOCK_SCALAR = re.compile(r"""(?:(?:&\w++|!!?[\w/]++)\s*+)*+[|>][+-]?\d*\s*\Z""")
 
 
 def _yaml_strip_comment(line: str) -> str:
@@ -2074,7 +2078,7 @@ _SUBSCRIPT_ASSIGN = re.compile(
     r"""\b[A-Za-z_]\w*(?P<path>(?:\[\s*["'][^"'\n]+["']\s*\])+)\s*=(?!=)""" + _SCRIPT_VALUE
 )
 _MEMBER_ASSIGN = re.compile(
-    r"""\b[A-Za-z_$][\w$]*(?P<path>(?:\??\.[A-Za-z_$][\w$]*)+)\s*=(?!=)""" + _SCRIPT_VALUE
+    r"""(?<![\w$.?])[A-Za-z_$][\w$]*(?P<path>(?:\??\.[A-Za-z_$][\w$]*)+)\s*=(?!=)""" + _SCRIPT_VALUE
 )
 _PATH_PART = re.compile(r"""[\w$-]+""")
 
@@ -2128,7 +2132,9 @@ def _script_hits(text: str, rules: _LooseningRules, where: _Where) -> set[Hit]:
     return set()
 
 
-_PATCH_FILE = re.compile(r"^(?:\*\*\* (?:Update|Add) File:|\+\+\+ (?:b/)?)\s*(\S.*?)\s*$", re.M)
+_PATCH_FILE = re.compile(
+    r"^(?:\*\*\* (?:Update|Add) File:|\+\+\+ (?:b/)?)[ \t]*(\S(?:.*\S)?)[ \t]*$", re.M
+)
 
 
 def _patch_sections(text: str) -> list[tuple[str, str, str]]:
@@ -2158,14 +2164,12 @@ _BATCH_ITEM = re.compile(
     r"""["']?path["']?\s*:\s*["']?([\w.\[\]-]+)["']?\s*,\s*["']?value["']?\s*:\s*"""
     r"""("[^"]*"|'[^']*'|\[[^\]]*\]|\{[^}]*\}|[^,}\s]+)"""
 )
-_SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1).)*)\1""")
+# The two branches never match the same character (a backslash only starts an escape), so the
+# loop cannot backtrack exponentially on a long run of escapes.
+_SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1)[^\\])*)\1""")
 _ASSIGNMENT = re.compile(r"""(?:\A|[;&|\n(]\s*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2""")
 _VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 _TILDE_USER = re.compile(r"\A~([A-Za-z_][\w.-]*)(?=/|\Z)")
-_HEREDOC = re.compile(
-    r"""<<-?[ \t]*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n(?P<body>.*?)\n[ \t]*(?P=tag)[ \t]*(?=\n|\Z)""",
-    re.DOTALL,
-)
 # Inline code: the home directory however it is spelled, variables, and string literals
 # (f-strings, raw strings and JavaScript template literals included).
 _CODE_HOME = re.compile(
@@ -2367,8 +2371,16 @@ def _code_commands(code: str, rules: _LooseningRules, variables: dict[str, str])
             arg = m.group("c").strip()
             if arg.startswith("[") or re.match(r"""["'][\w./-]+["']\s*,""", arg):
                 elements: list[str] = []
-                for part in re.split(r",\s*(?![^\[]*\])", arg.strip("[]")):
-                    part = part.strip().strip("[]").strip()
+                # `[a, b]`, or `'sed', [a, b]` (a program and its argument list): one level
+                # of bracket-aware splitting each.
+                parts: list[str] = []
+                for part in _call_args("(" + (arg[1:-1] if arg.startswith("[") else arg) + ")", 0):
+                    if part.startswith("[") and part.endswith("]"):
+                        parts.extend(_call_args("(" + part[1:-1] + ")", 0))
+                    else:
+                        parts.append(part)
+                for part in parts:
+                    part = part.strip()
                     if not part:
                         continue
                     lit = re.fullmatch(r"""[fr]?(["'])(.*)\1""", part)
@@ -2866,9 +2878,26 @@ def _approval_loosening(
     return out
 
 
+_HEREDOC_START = re.compile(r"""<<-?[ \t]*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n""")
+
+
 def _heredocs(command: str) -> str:
-    """The bodies of a command's heredocs, joined."""
-    return "\n".join(m.group("body") for m in _HEREDOC.finditer(command))
+    """The bodies of a command's heredocs, joined. Each body ends at a line holding only its tag;
+    the search goes on after it, so the text is read once."""
+    bodies: list[str] = []
+    pos = 0
+    while True:
+        m = _HEREDOC_START.search(command, pos)
+        if m is None:
+            break
+        end = re.compile(r"^[ \t]*" + re.escape(m.group("tag")) + r"[ \t]*$", re.M).search(
+            command, m.end()
+        )
+        if end is None:
+            break  # unterminated: nothing after it is a body
+        bodies.append(command[m.end() : max(m.end(), end.start() - 1)])
+        pos = end.end()
+    return "\n".join(bodies)
 
 
 def _render(head: str, seg: ExecSegment, heredocs: str) -> str | None:

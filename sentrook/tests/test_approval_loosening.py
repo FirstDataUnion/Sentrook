@@ -1170,3 +1170,34 @@ def test_set_keeping_the_policy_stays_silent(command):
 )
 def test_more_blind_replacements_get_the_review_tier(command):
     reviews(ex(command))
+
+
+# --------------------------------------------------------------------------- snooze relaxation
+
+
+@pytest.mark.parametrize(
+    "raw, enforce",
+    [
+        (ex("openclaw config set tools.exec.ask off"), Enforce.BLOCK),
+        (ex("cp /tmp/approvals.json ~/.openclaw/exec-approvals.json"), Enforce.REVIEW),
+    ],
+    ids=["block tier", "review tier"],
+)
+def test_either_tier_keeps_a_block_from_being_relaxed(twin_case, raw, enforce):
+    """In a chat the owner attends, a snooze relaxes a block only when no strong signal is present.
+    Each tier's floor is one, so the mark stays off."""
+    from test_attended_owner_cap import _high_selfmod, _run
+
+    from sentrook.converge import load_params
+    from sentrook.enums import ProbeStep
+
+    _, env = run(raw)
+    floors = [f for f in env.floors if f.reason in (REASON, REVIEW_REASON)]
+    assert [f.enforce for f in floors] == [enforce]
+    for params in (load_params("conv-v5"), load_params("conv-v7")):
+        envs = _high_selfmod()
+        assert envs[2].step is ProbeStep.AIRA
+        assert _run(twin_case, envs, params).response.relaxable is True  # marked without the floor
+        envs[2].floors.extend(floors)
+        res = _run(twin_case, envs, params).response
+        assert res.relaxable is None and res.enforced is enforce

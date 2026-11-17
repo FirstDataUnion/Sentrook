@@ -342,13 +342,13 @@ approval_loosening:
     - '\.\*'
     - '\*\s*:\s*\*'
     # Everything in a directory: `/usr/bin/*`, `~/**`.
-    - '(?:~|\$HOME|/)[\w./~-]*/\*{1,2}'
+    - '(?:~|\$HOME|/)(?:[\w.~-]*/)*\*{1,2}'
     # A shell, interpreter, launcher or `sudo` runs any command: bare, or with arguments that are
     # only options, wildcards or a runner verb (`bash -c *`, `python3 -c *`, `deno run *`). One with
     # a script or a named tool (`/usr/bin/python3 /opt/tools/report.py`, `npx prettier`) is narrow.
-    - '(?:[\w.~*/-]*/)?(?:(?:ba|z|da|k|fi|c|tc)?sh|pwsh|powershell|env|xargs|find|npx|bunx|sudo|doas|python(?:\d+(?:\.\d+)?)?|node(?:js|\d+)?|ruby\d*(?:\.\d+)?|perl\d*|php\d*(?:\.\d+)?|deno|bun|osascript)(?:\s+(?:-{1,2}[\w-]+|\*{1,2}|run|eval|x|exec))*'
+    - '(?:[\w.~*-]*/)*(?:(?:ba|z|da|k|fi|c|tc)?sh|pwsh|powershell|env|xargs|find|npx|bunx|sudo|doas|python(?:\d+(?:\.\d+)?)?|node(?:js|\d+)?|ruby\d*(?:\.\d+)?|perl\d*|php\d*(?:\.\d+)?|deno|bun|osascript)(?:\s+(?:-[\w-]+|\*{1,2}|run|eval|x|exec))*'
     # A download piped to a shell or an interpreter.
-    - '.*\|\s*(?:sudo\s+)?(?:[\w./-]*/)?(?:(?:ba|z|da|k)?sh|python\d*(?:\.\d+)?|node|perl|ruby)\b.*'
+    - '[^|]*(?:\|[^|]*)*?\|\s*(?:sudo\s+)?(?:[\w.-]*/)*(?:(?:ba|z|da|k)?sh|python\d*(?:\.\d+)?|node|perl|ruby)\b.*'
   # Shell writes into a host approvals or config file whose text the scan cannot read as settings
   # (`sed -i 's/deny/full/'`, inline code): the replacement text, or the whole command, gets the
   # review tier when it holds a loosening value (in a config file, also an approval key, or the
