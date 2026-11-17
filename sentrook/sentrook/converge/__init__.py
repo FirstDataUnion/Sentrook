@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
-from ..prepare import Prepared
+from ..prepare import INPUT_TOO_LARGE, Prepared
 from ..prepare.entities import EntityKind
 from ..probes.base import Envelope
 from ..response.models import (
@@ -42,9 +42,7 @@ from .relief import Relief, compute_relief
 __all__ = ["converge", "ConvergeResult", "ConvergenceParams", "load_params"]
 
 _ENFORCE_ORDER = {None: 0, Enforce.REVIEW: 1, Enforce.BLOCK: 2}
-#: A call of this request was over preparation's bounds: only its head and tail were analysed.
-INPUT_TOO_LARGE = "input_too_large"
-#: Its floor: always the owner's review, scored like the other review floor.
+#: The floor for a call of this request that was over preparation's bounds (`INPUT_TOO_LARGE`): always the owner's review, scored like the other review floor.
 INPUT_TOO_LARGE_MIN_RISK = 0.5
 
 _DEGRADING_COVERAGE = {

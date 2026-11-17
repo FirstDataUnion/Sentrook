@@ -2167,7 +2167,11 @@ _BATCH_ITEM = re.compile(
 # The two branches never match the same character (a backslash only starts an escape), so the
 # loop cannot backtrack exponentially on a long run of escapes.
 _SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1)[^\\])*)\1""")
-_ASSIGNMENT = re.compile(r"""(?:\A|[;&|\n(]\s*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2""")
+#: After a separator, whitespace other than a newline (a newline is a separator of its own), so a
+#: long run of newlines is read once.
+_ASSIGNMENT = re.compile(
+    r"""(?:\A|[;&|\n(][^\S\n]*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2"""
+)
 _VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 _TILDE_USER = re.compile(r"\A~([A-Za-z_][\w.-]*)(?=/|\Z)")
 # Inline code: the home directory however it is spelled, variables, and string literals
@@ -2176,7 +2180,7 @@ _CODE_HOME = re.compile(
     r"""Path\.home\(\)|os\.path\.expanduser\(\s*["']~["']\s*\)|"""
     r"""os\.environ\s*\[\s*["']HOME["']\s*\]|os\.environ\.get\(\s*["']HOME["'][^)]*\)|"""
     r"""os\.getenv\(\s*["']HOME["'][^)]*\)|process\.env\.HOME|process\.env\[\s*["']HOME["']\s*\]|"""
-    r"""(?:\w+|require\(\s*["']os["']\s*\))\.homedir\(\)"""
+    r"""(?:(?<!\w)\w+|require\(\s*["']os["']\s*\))\.homedir\(\)"""
 )
 _CODE_TOKEN = re.compile(
     r"""(?P<lit>[fFrRbB]{0,2}(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|`[^`]*`)|(?P<name>[A-Za-z_$][\w$]*)"""

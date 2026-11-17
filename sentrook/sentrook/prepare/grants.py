@@ -347,7 +347,8 @@ _NAVIGATION = frozenset({"cd", "pushd", "popd"})
 #: process substitution.
 _HIDDEN_COMMAND = re.compile(r"\$\(|`|<\(|>\(|(?<![&>|0-9])&(?![&>])")
 #: An output redirection: an optional descriptor or `&`, `>` or `>>`, then `&` and a target.
-_OUTPUT_REDIRECT = re.compile(r"(?:[0-9]+|&)?>>?(&?)\s*([^\s;&|]*)")
+#: The fd number is taken whole (never from inside a run of digits), so a long run is read once.
+_OUTPUT_REDIRECT = re.compile(r"(?:(?<![0-9])[0-9]+|&)?>>?(&?)\s*([^\s;&|]*)")
 
 
 def tool_covers(pattern: str, call: CanonicalCall) -> bool:

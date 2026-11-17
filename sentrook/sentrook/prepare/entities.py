@@ -246,7 +246,7 @@ class EntityTable:
 # --------------------------------------------------------------------------- normalisation
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>`|;)\]}]+", re.IGNORECASE)
-_EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
+_EMAIL_RE = re.compile(r"(?<![\w.%+-])([A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
 # A bare hostname: two or more labels, alphabetic TLD. Lookbehind excludes path components, emails and
 # scheme-prefixed forms (those are caught by _URL_RE / _EMAIL_RE); the extension list excludes files.
 # The lookahead also refuses a stop before `.label`, so `a.b.net/x` is not read as `a.b`.
@@ -896,8 +896,13 @@ def _install_operands(text: str, start: int, spans: list[tuple[int, int]]) -> st
     return "".join(out)
 
 
-#: Package extras after a local operand (`.[dev]`, `./pkg[test,docs]`).
-_EXTRAS_RE = re.compile(r"\[[^\]]*\]\Z")
+def _strip_extras(tok: str) -> str:
+    """`tok` without package extras after a local operand (`.[dev]`, `./pkg[test,docs]`): from the first
+    `[` after the last `]` before the closing one. One pass, however many brackets the token holds."""
+    if not tok.endswith("]"):
+        return tok
+    start = tok.find("[", tok.rfind("]", 0, len(tok) - 1) + 1, len(tok) - 1)
+    return tok[:start] if start >= 0 else tok
 
 
 #: Installer options whose value is a package index or registry, by installer: where the packages come
@@ -919,7 +924,7 @@ def _local_install_operand(token: str, eco: str = "") -> str | None:
     path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or, for
     Go, its `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
     tok = token.strip().strip("'\"")
-    tok = _EXTRAS_RE.sub("", tok)
+    tok = _strip_extras(tok)
     if eco == "go" and tok.endswith("/..."):
         tok = tok[:-4] or "."
     if tok in (".", "..", "~", "$HOME") or tok.startswith(("./", "../", "/", "~/", "$HOME/")):

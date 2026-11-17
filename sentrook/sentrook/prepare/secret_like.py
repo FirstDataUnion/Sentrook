@@ -141,7 +141,8 @@ _SRI = re.compile(r"(?i)sha(?:1|256|384|512)-")
 #: JSON string escapes (`\n`, `\t`, `\"`, any depth of encoding): read as the character they stand for,
 #: padded to the same length so offsets do not move, so a key on a new line of a JSON-encoded result
 #: starts its own word (`\nzip_code=` is `zip_code`, not `nzip_code`).
-_ESCAPE = re.compile(r"\\+([nrt\"'])")
+#: A run of backslashes is taken whole, from its first, so a long run is read once.
+_ESCAPE = re.compile(r"(?<!\\)\\+([nrt\"'])")
 
 
 def _unescape(text: str) -> str:
