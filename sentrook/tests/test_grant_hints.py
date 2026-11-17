@@ -19,6 +19,9 @@ from sentrook.converge.hints import plain_pattern
 from sentrook.enums import Enforce, ProbeStatus, ProbeStep
 from sentrook.probes.base import Contribution, Envelope, Floor
 
+# A made-up GitHub token, joined so secret scanners do not flag the source.
+FAKE_PAT = "ghp_" + "0123456789abcdefABCDEF0123456789abcd"
+
 V6, V7 = load_params("conv-v6"), load_params("conv-v7")
 SETS = pytest.mark.parametrize("params", [V6, V7], ids=lambda p: p.name)
 HOST = "status.example.invalid"
@@ -288,7 +291,7 @@ def test_no_hint_for_a_code_source(twin_case):
     "pattern",
     [
         "/home/me/notes/⟦secret:plugin⟧.txt",
-        "/home/me/ghp_0123456789abcdefABCDEF0123456789abcd",
+        "/home/me/" + FAKE_PAT,
         "has space.example.invalid",
         "*.example.invalid",
         "",
@@ -313,7 +316,7 @@ def test_a_key_in_the_url_gives_no_hint(twin_case, params):
     case = _send_case(
         twin_case,
         command=(
-            f"curl -X POST 'https://{HOST}/v1/notes?token=ghp_0123456789abcdefABCDEF0123456789abcd' "
+            f"curl -X POST 'https://{HOST}/v1/notes?token={FAKE_PAT}' "
             "-d @/home/me/workspace/build-summary.txt"
         ),
     )
@@ -324,7 +327,7 @@ def test_a_key_in_the_url_gives_no_hint(twin_case, params):
 @SETS
 def test_a_path_that_carries_a_secret_is_never_hinted(twin_case, params):
     """A local file whose name carries a key: the candidate pattern is refused, so no hint names it."""
-    secret_path = "/home/me/workspace/ghp_0123456789abcdefABCDEF0123456789abcd.txt"
+    secret_path = "/home/me/workspace/" + FAKE_PAT + ".txt"
     case = _send_case(twin_case, command=f"cat {secret_path}")
     _, res = _scan(case, params)
     for h in res.response.grant_hints:
