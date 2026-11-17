@@ -359,6 +359,22 @@ def _own_keys(tool_kind: ToolKind) -> frozenset[str]:
     return frozenset((*_GENERIC_URL_KEYS, *_GENERIC_PATH_KEYS, *_GENERIC_CONTENT_KEYS))
 
 
+def _taken_keys(tool_kind: ToolKind, raw: dict[str, Any]) -> frozenset[str]:
+    """The raw key canonicalisation takes for each of `tool_kind`'s own keys: the first alias present."""
+    aliases = _ALIASES.get(tool_kind)
+    groups = (
+        list(aliases.values())
+        if aliases
+        else [_GENERIC_URL_KEYS, _GENERIC_PATH_KEYS, _GENERIC_CONTENT_KEYS]
+    )
+    taken: set[str] = set()
+    for keys in groups:
+        first = next((k for k in keys if raw.get(k) not in (None, "")), None)
+        if first is not None:
+            taken.add(first)
+    return frozenset(taken)
+
+
 def _read_keys(tool_kind: ToolKind) -> frozenset[str]:
     """The raw keys canonicalisation reads for `tool_kind`: what the call is (its command, path, URL,
     content, recipients, packages), kept first when its arguments are cut to preparation's bounds."""
@@ -391,7 +407,11 @@ def canonicalise(
     step: int | None = None,
 ) -> CanonicalCall:
     arguments, too_large = bound_arguments(
-        arguments, tool_kind, _own_keys(tool_kind), _read_keys(tool_kind)
+        arguments,
+        tool_kind,
+        _own_keys(tool_kind),
+        _read_keys(tool_kind),
+        _taken_keys(tool_kind, arguments),
     )
     tool, long_name = bound_tool_name(tool)
     if long_name:

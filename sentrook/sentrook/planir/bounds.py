@@ -107,10 +107,11 @@ def bound_tool_name(name: str) -> tuple[str, str | None]:
     return name[:head] + "…" + name[len(name) - tail :], f"a tool name of {len(name):,} characters"
 
 
-#: Which values are kept first when a call is cut: the call's own values (its command, path, URL, content,
-#: under the keys canonicalisation reads for its kind), then other values canonicalisation reads (recipients,
-#: attachments, packages, edits, generic content), then everything else.
-_OWN, _READ, _OTHER = 0, 1, 2
+#: Which values are kept first when a call is cut: the ones canonicalisation takes as the call's command,
+#: cwd, path, URL or content (the first alias present for each), then the other aliases of those keys, then
+#: other values canonicalisation reads (recipients, attachments, packages, edits, generic content), then
+#: everything else.
+_TAKEN, _OWN, _READ, _OTHER = 0, 1, 2, 3
 
 
 class _Leaf:
@@ -122,7 +123,7 @@ class _Leaf:
         #: Characters of the value (a string's length, anything else one, never less than one).
         self.cost = max(1, len(value) if isinstance(value, str) else 1)
         #: Characters of the keys that leaving the value out also leaves out: its own, and for the first
-        #: value of a dict or list, the key that container sits under.
+        #: value of a dict or list, the key that container sits under and one for the container itself.
         self.key_cost = key_cost
         self.tier = tier
         #: The value to keep, or `_DROP`.
@@ -163,13 +164,17 @@ class _Walk:
     #: id of each container walked → how many of its children were walked.
     walked: dict[int, int] = field(default_factory=dict)
     key_chars: int = 0
+    #: Non-empty dicts and lists below the top level: each counts one toward the bound.
+    branches: int = 0
     complete: bool = True
     #: The same dict or list object appears more than once (only from a Python caller; JSON never
     #: shares): each appearance needs its own copy to be cut on its own.
     shared: bool = False
 
 
-def _walk(arguments: dict[str, Any], own: frozenset[str], read: frozenset[str]) -> _Walk:
+def _walk(
+    arguments: dict[str, Any], taken: frozenset[str], own: frozenset[str], read: frozenset[str]
+) -> _Walk:
     w = _Walk()
     # container, depth, tier of its values, key characters its first value carries
     queue: deque[tuple[Any, int, int, int]] = deque([(arguments, 0, _OTHER, 0)])
@@ -179,7 +184,7 @@ def _walk(arguments: dict[str, Any], own: frozenset[str], read: frozenset[str]) 
             w.shared = True
         n = 0
         for i, (k, v) in enumerate(_children(c)):
-            if len(w.order) > MAX_CALL_CHARS:
+            if len(w.order) + w.branches > MAX_CALL_CHARS:
                 w.complete = False
                 break
             key_cost = carry if n == 0 else 0
@@ -189,9 +194,19 @@ def _walk(arguments: dict[str, Any], own: frozenset[str], read: frozenset[str]) 
                 key_cost += len(str(k))
             child_tier = tier
             if depth == 0:
-                child_tier = _OWN if str(k) in own else _READ if str(k) in read else _OTHER
+                name = str(k)
+                child_tier = (
+                    _TAKEN
+                    if name in taken
+                    else _OWN
+                    if name in own
+                    else _READ
+                    if name in read
+                    else _OTHER
+                )
             if _is_branch(v):
-                queue.append((v, depth + 1, child_tier, key_cost))
+                w.branches += 1
+                queue.append((v, depth + 1, child_tier, key_cost + 1))
                 continue
             leaf = _Leaf(v, depth + 1, key_cost, child_tier)
             w.at[(id(c), i)] = leaf
@@ -264,14 +279,16 @@ def bound_arguments(
     tool_kind: ToolKind,
     own: frozenset[str] = frozenset(),
     read: frozenset[str] = frozenset(),
+    taken: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], str | None]:
     """The arguments preparation analyses, and what was over the bounds (None, with `arguments` itself, when
-    nothing was). The values under the top-level keys in `own` (the call's own command, path, URL or content)
-    are fitted first against the whole bound, then those under `read` (other keys canonicalisation reads),
-    then the rest in what is left: padding a call never pushes its own command out."""
-    w = _walk(arguments, own, read)
+    nothing was). The values under the top-level keys in `taken` (what canonicalisation takes as the call's
+    command, cwd, path, URL or content) are fitted first against the whole bound, then those under `own` (the
+    other aliases of those keys), then `read` (other keys canonicalisation reads), then the rest in what is
+    left: padding a call never pushes its own command out."""
+    w = _walk(arguments, taken, own, read)
     leaves = w.order
-    total = sum(leaf.cost for leaf in leaves) if w.complete else MAX_CALL_CHARS + 1
+    total = sum(leaf.cost for leaf in leaves) + w.branches if w.complete else MAX_CALL_CHARS + 1
     shell = tool_kind is ToolKind.EXEC
     over_segments = shell and any(
         isinstance(leaf.value, str) and segments_over(leaf.value) for leaf in leaves
@@ -283,7 +300,9 @@ def bound_arguments(
     if not w.complete:
         over.append(f"more than {MAX_CALL_CHARS:,} values")
     elif total > MAX_CALL_CHARS or w.key_chars > MAX_CALL_CHARS:
-        over.append(f"{max(total, w.key_chars):,} characters in {len(leaves):,} values")
+        over.append(
+            f"{max(total, w.key_chars):,} characters in {len(leaves) + w.branches:,} values"
+        )
     if over_segments:
         most = max(
             len(SEGMENT_SEPARATOR_RE.findall(leaf.value)) + 1
@@ -295,7 +314,7 @@ def bound_arguments(
 
     if w.shared:
         copy = json.loads(json.dumps(arguments, ensure_ascii=False, default=str))
-        w = _walk(copy, own, read)
+        w = _walk(copy, taken, own, read)
         leaves = w.order
         arguments = copy
 
@@ -305,7 +324,7 @@ def bound_arguments(
                 leaf.keep = cut_segments(leaf.value)
                 leaf.cost = max(1, len(leaf.keep))
     budget = MAX_CALL_CHARS
-    for tier in (_OWN, _READ, _OTHER):
+    for tier in (_TAKEN, _OWN, _READ, _OTHER):
         group = [leaf for leaf in leaves if leaf.tier == tier]
         _fit(group, budget)
         budget -= sum(leaf.kept_size for leaf in group)

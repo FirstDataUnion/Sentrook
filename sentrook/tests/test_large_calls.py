@@ -590,3 +590,28 @@ def test_bounded_arguments_stay_within_the_bound():
         again, over_again = bound_arguments(kept, kind, frozenset({"command", "cwd"}))
         assert over_again is None, over_again
     assert checked > 50
+
+
+def test_padding_the_other_aliases_keeps_the_command_canonicalisation_takes():
+    from sentrook.planir.canonical import _own_keys
+
+    guard = "sed -i 's/enforce/off/' ~/.openclaw/extensions/sentrook/guardrail.yaml"
+    command = "echo " + "a" * 6400 + "; " + guard + "; echo " + "b" * 3600
+    raw = ex(command)
+    for key in _own_keys(ToolKind.EXEC) - {"command", "cwd"}:
+        raw["pending_call"]["arguments"][key] = "y" * 350_000
+    res, _ = scan(raw)
+    held_for_review(res)
+    assert res.prepared.pending.command == command
+    assert res.response.enforced is Enforce.BLOCK
+
+
+def test_nested_lists_count_toward_the_bound():
+    """Each dict or list counts, so values wrapped in many lists are bounded like many values."""
+    value: object = ""
+    for _ in range(30):
+        value = [value]
+    raw = _with_args(ex("ls"), zz=[value] * 60_000)
+    res, spent = scan(raw)
+    assert spent < FAST, f"{spent:.2f}s"
+    held_for_review(res)
