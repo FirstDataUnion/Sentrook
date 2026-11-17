@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
 
+from .bounds import bound_arguments
 from .models import HistoryStep, PendingCall, Provider, Sibling, ToolKind
 
 # Alias tables: canonical key → raw keys tried in order. Shared across platforms; the platform hook
@@ -112,6 +113,9 @@ class CanonicalCall:
     analysis_text: str = ""
     #: Raw keys whose value was not kept because it was not the type the canonical key needs.
     dropped: list[str] = field(default_factory=list)
+    #: What was over preparation's bounds (`bounds.bound_arguments`) when the arguments were cut to
+    #: them; `raw`, `args` and the texts then hold the cut arguments. None when nothing was cut.
+    too_large: str | None = None
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.args.get(key, default)
@@ -341,6 +345,7 @@ def canonicalise(
     call_id: str | None = None,
     step: int | None = None,
 ) -> CanonicalCall:
+    arguments, too_large = bound_arguments(arguments, tool_kind)
     text = joined_text(arguments)
     dropped: list[str] = []
     args = canonical_arguments(platform, tool, tool_kind, arguments, dropped)
@@ -356,6 +361,7 @@ def canonicalise(
         text=text,
         analysis_text=decode_url_queries(text),
         dropped=dropped,
+        too_large=too_large,
     )
 
 

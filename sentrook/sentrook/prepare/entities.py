@@ -464,6 +464,9 @@ _EXECUTABLE_HEADS = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_EXEC_RE = re.compile(r"(?:^|[\s;&|(])((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)(?=\s|$|[;&|)])")
+#: Every separator occurrence, overlapping ones included (zero-width, so `&&&` yields two `&&`);
+#: their ends never decrease, so one forward pass finds the last one before a position.
+_DIRECT_EXEC_SEP_RE = re.compile(r"(?=(;|&&|\|))")
 _WRITE_TARGET_RE = re.compile(
     r"(?:>>?|\btee\s+(?:-a\s+)?|-o\s+|--output\s+|\bmv\s+\S+\s+|\bcp\s+\S+\s+)\s*((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)"
 )
@@ -1848,12 +1851,15 @@ def extract_exec(
                 sources.add(tok.strip("'\""))
     for m in _EXECUTABLE_HEADS.finditer(command):
         executables.add(m.group(1))
+    # A path that starts its simple command runs: the text between the last `;`, `&&`, `||` or `|`
+    # before it and the path is blank. One forward pass keeps the last separator end in hand.
+    seps = _DIRECT_EXEC_SEP_RE.finditer(command)
+    sep_end, nxt = 0, next(seps, None)
     for m in _DIRECT_EXEC_RE.finditer(command):
-        seg_start = command.rfind(";", 0, m.start()) + 1
-        for sep in ("&&", "||", "|"):
-            k = command.rfind(sep, 0, m.start())
-            seg_start = max(seg_start, k + len(sep) if k >= 0 else 0)
-        if command[seg_start : m.start(1)].strip() == "":
+        while nxt is not None and nxt.end(1) <= m.start():
+            sep_end = nxt.end(1)
+            nxt = next(seps, None)
+        if command[sep_end : m.start(1)].strip() == "":
             executables.add(m.group(1))
     for m in _WRITE_TARGET_RE.finditer(command):
         destinations.add(m.group(1))
@@ -1873,23 +1879,25 @@ def extract_exec(
         normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw, _ in local
     }
 
+    def normalised(raws: set[str]) -> set[str]:
+        return {normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) for r in raws}
+
+    # Each raw spelling is normalised once, so a call with many paths stays linear.
+    executable_paths = normalised(executables)
+    destination_paths = normalised(destinations)
+    matched_paths = normalised(sources) | destination_paths | executable_paths
+    installed_set = set(installed)
     for norm, disp in paths_in(command, home, workspace_root, cwd):
-        raw_matches = [
-            r
-            for r in sources | destinations | executables
-            if normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
-        ]
-        if (norm in installed or norm in unresolved) and not raw_matches and norm not in run_files:
+        raw_matches = norm in matched_paths
+        if (
+            (norm in installed_set or norm in unresolved)
+            and not raw_matches
+            and norm not in run_files
+        ):
             continue  # only installed: added below as a code source
-        if norm in run_files or any(
-            normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
-            for r in executables
-        ):
+        if norm in run_files or norm in executable_paths:
             role = Role.EXECUTABLE
-        elif any(
-            normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
-            for r in destinations
-        ):
+        elif norm in destination_paths:
             role = Role.DATA_DESTINATION
         elif raw_matches or not egress:
             role = Role.DATA_SOURCE

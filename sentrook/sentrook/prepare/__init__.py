@@ -1133,6 +1133,40 @@ def _session_binding(
     )
 
 
+def _as_analysed(
+    raw: dict[str, Any],
+    pending: CanonicalCall,
+    siblings: list[CanonicalCall],
+    history: list[CanonicalCall],
+) -> dict[str, Any]:
+    """The request with each call that was over preparation's bounds carrying the arguments preparation analysed
+    (its head and tail), so the views send no more of a call than was read. The request itself when no call was."""
+    if not any(c.too_large for c in (pending, *siblings, *history)):
+        return raw
+    out = dict(raw)
+    pc = dict(raw["pending_call"])
+    if pending.too_large:
+        pc["arguments"] = pending.raw
+    batch = pc.get("batch")
+    if isinstance(batch, dict) and isinstance(batch.get("siblings"), list):
+        sibs = batch["siblings"]
+        if len(sibs) == len(siblings):
+            batch = dict(batch)
+            batch["siblings"] = [
+                {**s, "arguments": c.raw} if c.too_large else s
+                for s, c in zip(sibs, siblings, strict=True)
+            ]
+            pc["batch"] = batch
+    out["pending_call"] = pc
+    steps = raw.get("history")
+    if isinstance(steps, list) and len(steps) == len(history):
+        out["history"] = [
+            {**h, "arguments": c.raw} if c.too_large else h
+            for h, c in zip(steps, history, strict=True)
+        ]
+    return out
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -1177,10 +1211,19 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     ]
     history = [canonical_history(platform, h) for h in planir.history]
     for call in (pending, *siblings, *history):
+        where = call.source if call.step is None else f"{call.source} step {call.step}"
         if call.dropped:
-            where = call.source if call.step is None else f"{call.source} step {call.step}"
             coverage.append(
                 CoverageNote("argument_dropped", f"{where} {call.tool}: {', '.join(call.dropped)}")
+            )
+        if call.too_large:
+            # Only the head and tail of the call were analysed. A history step was judged when it
+            # was the pending call, so only the calls of this request take the review floor.
+            coverage.append(
+                CoverageNote(
+                    "history_input_too_large" if call.source == "history" else "input_too_large",
+                    f"{where} {call.tool}: {call.too_large}; analysed its head and tail",
+                )
             )
 
     # 4. trust
@@ -1585,7 +1628,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         and i.input.input_seq not in own_store_inputs
     }
     built = views.build_views(
-        raw,
+        _as_analysed(raw, pending, siblings, history),
         exposure_input_seqs=untrusted_seqs,
         call_budget_tokens=options.call_budget_tokens,
         selfedit_budget_tokens=options.selfedit_budget_tokens,

@@ -225,6 +225,7 @@ REASONS: dict[str, str] = {
     "coverage.trigger_unknown": "We could not tell what started this run.",
     "coverage.context": "Part of the session context was missing or truncated.",
     "coverage.probe_failed": "One of the analysis steps failed.",
+    "coverage.input_too_large": "Only the start and end of this call were checked.",
     # cap
     "cap.attended_owner": "You are in this chat and asked for this work, and nothing independent points to an attack, so the call is held for your review rather than blocked.",
     # agreement
@@ -317,6 +318,7 @@ REASONS: dict[str, str] = {
     "floor.untrusted_code_execution": "This call runs code from an untrusted source.",
     "floor.sensitive_data_sent": "This call sends {subject}, which holds sensitive data the agent read earlier in this session, off this machine.",
     "floor.lookalike_code_source": "{subject} supplies code or tools to this call; it looks like an entry in our library but is a different one.",
+    "floor.input_too_large": "This call is too large for Sentrook to check in full, so it needs your review.",
     "floor.injected_content_used": "This call acts on {subject}, which came from content that tried to instruct the agent.",
 }
 

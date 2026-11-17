@@ -42,7 +42,13 @@ from .relief import Relief, compute_relief
 __all__ = ["converge", "ConvergeResult", "ConvergenceParams", "load_params"]
 
 _ENFORCE_ORDER = {None: 0, Enforce.REVIEW: 1, Enforce.BLOCK: 2}
+#: A call of this request was over preparation's bounds: only its head and tail were analysed.
+INPUT_TOO_LARGE = "input_too_large"
+#: Its floor: always the owner's review, scored like the other review floor.
+INPUT_TOO_LARGE_MIN_RISK = 0.5
+
 _DEGRADING_COVERAGE = {
+    INPUT_TOO_LARGE,
     "input_truncated",
     "content_dropped",
     "content_missing",
@@ -311,6 +317,22 @@ def converge(
             risk = max(risk, f.min_risk)
             if _ENFORCE_ORDER[f.enforce] > _ENFORCE_ORDER[enforced]:
                 enforced = f.enforce
+    coverage_codes = {c.code for c in prepared.coverage}
+    if INPUT_TOO_LARGE in coverage_codes:
+        # Nobody read all of the call, so the owner is asked whatever the probes found in the part
+        # that was read. Applied here, not by a probe, so it holds when a probe fails.
+        floors.append(
+            FloorApplied(
+                floor=INPUT_TOO_LARGE,
+                min_risk=INPUT_TOO_LARGE_MIN_RISK,
+                enforce=Enforce.REVIEW,
+                subject=None,
+                reason=f"coverage.{INPUT_TOO_LARGE}",
+            )
+        )
+        risk = max(risk, INPUT_TOO_LARGE_MIN_RISK)
+        if _ENFORCE_ORDER[Enforce.REVIEW] > _ENFORCE_ORDER[enforced]:
+            enforced = Enforce.REVIEW
     tiers.risk = round(risk, 6)
 
     flags = set(prepared.state.flags)
@@ -319,7 +341,6 @@ def converge(
             flags.update(env.flags_set)
 
     probe_statuses = [env.status for env in envelopes]
-    coverage_codes = {c.code for c in prepared.coverage}
     degraded = (
         any(s in (ProbeStatus.ERROR, ProbeStatus.TIMEOUT) for s in probe_statuses)
         or any(env.evidence.get("fallback") for env in envelopes)
