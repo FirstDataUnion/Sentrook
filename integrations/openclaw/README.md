@@ -237,7 +237,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `/sentrook-revoke <id>` | Remove a grant set by command |
 | `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
-| `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h |
+| `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
 | `/sentrook-notify here\|off\|status` | Where the notice of a held call goes: `here`, sent as a direct message to the agent, sends notices to you in that chat |
 | `/sentrook-approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
 
@@ -252,9 +252,16 @@ owner (a sender in `commands.ownerAllowFrom`) run them from a direct message, wh
 run `openclaw` on the machine counts as the owner. Every attempt, allowed or refused, is recorded in the traffic log
 (unless you turned it off).
 
-A snooze never relaxes a block (including a block-level score the scanner lowered to a review), a review the
-scanner marks as enforced, or an unattended run (cron jobs, subagents, webhooks): those still stop, and a review on an
-unattended run is held for you instead.
+If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
+instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
+marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
+or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
+granted, no floor, and the scan was complete) becomes an approval prompt at critical severity that ends "Sentrook would normally
+block this; it is asking because a snooze is on." It is never allowed without asking, and the snooze does not skip
+that prompt. The score is the same either way.
+
+A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
+subagents, webhooks): blocks still stop, and a review on an unattended run is held for you instead.
 
 On Mattermost, a message that starts with `/` is taken by Mattermost as one of its own slash commands. Mention the
 bot first: `@yourbot /sentrook status`.
@@ -270,6 +277,9 @@ Sentrook asks for approval at risk 45 or above and blocks at 80 or above (`revie
 such as reading credentials and sending them off the machine, are floors that apply whatever the score. If a scanner marks a call as review at most
 (an option for chats you attend, which the hosted scanner leaves off), the plugin asks you about a block-level score
 instead of blocking it, and a snooze never skips that review.
+
+A snooze can turn a block on your own setup work into a question; see the snooze paragraph under
+[Commands](#commands).
 
 When a call is blocked the agent is told it was a security block, given a broad category (for example "it reads or
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It

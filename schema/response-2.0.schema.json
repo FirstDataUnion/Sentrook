@@ -728,6 +728,20 @@
       "title": "Reasons",
       "type": "array"
     },
+    "relaxable": {
+      "anyOf": [
+        {
+          "const": true,
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "True when the owner attends the chat, the scan is fully informed, nothing independent points to an attack and nothing is `enforced`: a block here comes from the score alone. A plugin may then turn such a block into a review it always asks about, only while the owner has snoozed reviews; it never allows it silently. Null otherwise; it never changes `risk`. A plugin that ignores it still blocks.",
+      "title": "Relaxable"
+    },
     "relief_applied": {
       "items": {
         "$ref": "#/$defs/ReliefApplied"

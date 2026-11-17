@@ -181,6 +181,15 @@ class Response(_Model):
             "points to an attack; never together with `enforced`. A plugin that ignores it still blocks."
         ),
     )
+    relaxable: Literal[True] | None = Field(
+        default=None,
+        description=(
+            "True when the owner attends the chat, the scan is fully informed, nothing independent points to an "
+            "attack and nothing is `enforced`: a block here comes from the score alone. A plugin may then turn such "
+            "a block into a review it always asks about, only while the owner has snoozed reviews; it never allows "
+            "it silently. Null otherwise; it never changes `risk`. A plugin that ignores it still blocks."
+        ),
+    )
     tree: RiskTree = Field(default_factory=RiskTree)
     floors_applied: list[FloorApplied] = Field(default_factory=list)
     relief_applied: list[ReliefApplied] = Field(default_factory=list)

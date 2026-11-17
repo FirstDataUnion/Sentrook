@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { blockCategory, blockReason, decide, describe, reviewCopy, severity } from "./decision.ts";
+import { blockCategory, blockReason, decide, describe, RELAXED_NOTE, reviewCopy, severity } from "./decision.ts";
 import type { ScanResponse } from "./scanClient.ts";
 
 const resp = (risk: number, enforced: ScanResponse["enforced"] = null, extra: Partial<ScanResponse> = {}): ScanResponse => ({
@@ -14,6 +14,14 @@ const resp = (risk: number, enforced: ScanResponse["enforced"] = null, extra: Pa
   ...extra,
 });
 const lines = { reviewAt: 45, blockAt: 80 };
+
+test("a relaxed review keeps the snooze line when the description is cut", () => {
+  const long = resp(92, null, { tool_description: { template: `Sends ${"x".repeat(400)}` } });
+  const { description } = reviewCopy(long, "exec", true);
+  assert.ok(description.length <= 256);
+  assert.ok(description.endsWith(` ${RELAXED_NOTE}`));
+  assert.ok(!reviewCopy(long, "exec").description.includes(RELAXED_NOTE));
+});
 
 test("risk lines", () => {
   assert.equal(decide(resp(44.9), lines), "allow");
@@ -44,6 +52,8 @@ test("severity: critical for a floor's review and for a block the ceiling lowere
   assert.equal(severity(resp(55, null, { ceiling: "review" }), lines), "warning");
   assert.equal(severity(resp(95, null, { ceiling: "review" }), lines), "critical");
   assert.equal(severity(resp(10, "review"), lines), "critical");
+  // a block a snooze turned into a review
+  assert.equal(severity(resp(92), lines, true), "critical");
   // custom lines: the block line is the owner's
   assert.equal(severity(resp(90, null, { ceiling: "review" }), { blockAt: 95 }), "warning");
 });

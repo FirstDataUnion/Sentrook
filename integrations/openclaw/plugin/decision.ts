@@ -73,12 +73,21 @@ function fit(desc: string, codes: string[], tail: string, limit: number): string
   return `${clip(desc, limit - end.length - 1)}.${end}`;
 }
 
-export function reviewCopy(resp: ScanResponse, toolName: string): { title: string; description: string } {
+/** The last line of a review prompt for a block a snooze turned into a review; it is never cut. */
+export const RELAXED_NOTE = "Sentrook would normally block this; it is asking because a snooze is on.";
+
+/** The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`. */
+export function reviewCopy(
+  resp: ScanResponse,
+  toolName: string,
+  relaxed = false,
+): { title: string; description: string } {
   const risk = ` (risk ${Math.round(resp.risk ?? 0)})`;
   const head = "Sentrook: review ";
+  const tail = [scoresLine(resp), relaxed ? RELAXED_NOTE : ""].filter(Boolean).join(" ");
   return {
     title: `${head}${clip(toolName, 80 - head.length - risk.length)}${risk}`,
-    description: fit(describe(resp, toolName), reasonCodes(resp), scoresLine(resp), 256),
+    description: fit(describe(resp, toolName), reasonCodes(resp), tail, 256),
   };
 }
 
@@ -162,10 +171,10 @@ export function blockReason(resp: ScanResponse): string {
 }
 
 /**
- * A review forced by a scanner floor, or a block-level score the scanner's ceiling lowered to a review, is
- * critical; one from the review line is a warning.
+ * A review forced by a scanner floor, or a block-level score lowered to a review (by the scanner's ceiling, or by
+ * a snooze when `relaxed`), is critical; one from the review line is a warning.
  */
-export function severity(resp: ScanResponse, lines: { blockAt: number }): "warning" | "critical" {
-  if (resp.enforced === "review") return "critical";
+export function severity(resp: ScanResponse, lines: { blockAt: number }, relaxed = false): "warning" | "critical" {
+  if (resp.enforced === "review" || relaxed) return "critical";
   return resp.ceiling === "review" && (resp.risk ?? 0) >= lines.blockAt ? "critical" : "warning";
 }

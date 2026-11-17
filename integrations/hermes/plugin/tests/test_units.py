@@ -94,6 +94,15 @@ def _scored(**extra):
     }
 
 
+def test_a_relaxed_review_message_keeps_the_snooze_line_when_cut():
+    from plugin.decision import RELAXED_NOTE, REVIEW_MESSAGE_MAX
+
+    long = _scored(tool_description={"template": "Sends " + "x" * 400})
+    text = review_message(long, "exec", relaxed=True)
+    assert len(text) <= REVIEW_MESSAGE_MAX and text.endswith(f" {RELAXED_NOTE}")
+    assert RELAXED_NOTE not in review_message(long, "exec")
+
+
 def test_review_message_shows_the_scores():
     assert review_message(_scored(), "exec") == (
         "Sentrook (risk 90): Sends ~/.aws/credentials to cl0ud-sync.io."

@@ -48,18 +48,18 @@ class ConvergenceParams:
     owner_config_relief: bool = False
     #: In an attended owner session (a message turn from the owner, on the main agent, not in a group chat), set the
     #: response's verdict ceiling to review unless the call carries an independent strong signal (`converge.attended`).
+    #: The `relaxable` mark comes from the same check and the settings below in every parameter set, on or off.
     attended_owner_cap: bool = False
     #: A key argument's untrusted origin, as scaled by its role, that counts as a strong signal.
     attended_owner_untrusted_origin_min: float = 0.6
     #: The sensitivity of a source a send carries that counts as sensitive data leaving.
     attended_owner_sent_sensitivity_min: float = 0.6
-    #: Optional strong signals beyond the defaults, each off unless set:
-    #: a look-alike of a vouched-for entry or of a host, package or person the owner named;
-    attended_owner_lookalike: bool = False
-    #: a retry of an action the owner denied, at or above this value;
-    attended_owner_retry_min: float | None = None
-    #: this request's new untrusted content judged to instruct the agent (exposure at or above the first value)
-    #: while the call is judged not to follow from the owner's request (misalignment at or above the second).
+    #: A look-alike of a vouched-for entry or of a host, package or person the owner named is a strong signal;
+    attended_owner_lookalike: bool = True
+    #: so is a retry of an action the owner denied, at or above this value (None: not a strong signal);
+    attended_owner_retry_min: float | None = 0.8
+    #: and, off unless set, this request's new untrusted content judged to instruct the agent (exposure at or
+    #: above the first value) while the call is judged not to follow from the owner's request (misalignment at or above the second).
     attended_owner_injection_exposure_min: float | None = None
     attended_owner_injection_misalignment_min: float = 0.0
     #: The credential-home relief (`prepare.credential_home`): a key read from the agent's env file and sent only to
@@ -128,9 +128,9 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         attended_owner_cap=bool(aoc.get("enabled", False)),
         attended_owner_untrusted_origin_min=float(aoc.get("untrusted_origin_min", 0.6)),
         attended_owner_sent_sensitivity_min=float(aoc.get("sent_sensitivity_min", 0.6)),
-        attended_owner_lookalike=bool(aoc.get("lookalike", False)),
+        attended_owner_lookalike=bool(aoc.get("lookalike", True)),
         attended_owner_retry_min=(
-            None if aoc.get("retry_min") is None else float(aoc["retry_min"])
+            None if aoc.get("retry_min", 0.8) is None else float(aoc.get("retry_min", 0.8))
         ),
         attended_owner_injection_exposure_min=(
             None

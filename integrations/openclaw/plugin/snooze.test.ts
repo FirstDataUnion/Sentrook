@@ -41,6 +41,8 @@ const realFetch = globalThis.fetch;
 let stateDir = "";
 let file = "";
 let scans: any[] = [];
+/** Fields a test sets on top of the marker scanner's reply. */
+let override: Record<string, unknown> = {};
 
 /** A fake scanner: risk from markers in the command; 500 on FAIL; ENFORCE enforces a review below the line. */
 beforeEach(() => {
@@ -58,6 +60,7 @@ beforeEach(() => {
   stateDir = path.join(dir, "sentrook");
   file = path.join(stateDir, "snooze.json");
   scans = [];
+  override = {};
   clearScanTokenCache();
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input);
@@ -79,6 +82,7 @@ beforeEach(() => {
       ceiling: cmd.includes("CEILING") ? "review" : null,
       reasons: [],
       state: "s",
+      ...override,
     });
   }) as typeof fetch;
 });
@@ -387,6 +391,88 @@ test("scan errors and observe mode are not snoozed", async () => {
   const observed = await r.scan("rm REVIEW");
   assert.equal(observed.out, undefined);
   assert.equal(observed.rec.snoozed, undefined);
+});
+
+// ---- a snooze in a chat the owner attends: a relaxable block asks instead ---------------------------------
+
+const RELAX_DOC = JSON.parse(readFileSync(path.join(FIXTURES, "relax.json"), "utf8"));
+const NOTE = RELAX_DOC.relaxed_note as string;
+const RELAX = RELAX_DOC.cases as {
+  name: string;
+  response: Record<string, unknown>;
+  attended: boolean;
+  snoozed: boolean;
+  outcome: "allow" | "snoozed" | "review" | "block" | "held";
+  severity?: "warning" | "critical";
+}[];
+
+for (const c of RELAX) {
+  test(`snooze outcome: ${c.name}`, async () => {
+    const sid = c.attended ? "S1" : "C1";
+    if (c.snoozed) put(entry("session", snooze.sessionRef(sid)));
+    override = { ceiling: null, ...c.response };
+    const r = await registered();
+    const { out, rec } = await r.scan("run it", sid, c.attended ? "user" : "cron");
+    if (c.outcome === "allow") {
+      assert.equal(out, undefined);
+      assert.equal(rec.decision, "allowed");
+      assert.equal(rec.snoozed, undefined);
+    } else if (c.outcome === "snoozed") {
+      assert.equal(out, undefined);
+      assert.equal(rec.decision, "allowed");
+      assert.equal(rec.snoozed, true);
+    } else if (c.outcome === "review") {
+      assert.ok(out.requireApproval, "prompts the owner");
+      assert.deepEqual([rec.verdict, rec.decision, rec.snoozed], ["review", "review_timed_out", undefined]);
+      assert.equal(out.requireApproval.severity, c.severity);
+    } else if (c.outcome === "block") {
+      assert.equal(out.block, true);
+      assert.match(out.blockReason, /^Sentrook security block:/);
+      assert.deepEqual([rec.verdict, rec.decision], ["block", "blocked"]);
+    } else {
+      assert.equal(out.block, true);
+      assert.equal(rec.decision, "held");
+    }
+    const lowered = c.outcome === "review" && (c.response.risk as number) >= 80 && c.response.ceiling == null;
+    assert.equal(rec.relaxed, lowered ? true : undefined);
+    if (c.outcome === "review") {
+      // the owner is told why a block asks: the shared line ends the prompt, and only then
+      assert.equal(out.requireApproval.description.endsWith(` ${NOTE}`), lowered);
+      assert.equal(out.requireApproval.description.includes(NOTE), lowered);
+    }
+  });
+}
+
+test("a relaxed block asks every time and keeps its score", async () => {
+  const r = await registered();
+  await run(r, "");
+  override = { risk: 92, relaxable: true };
+  for (let i = 0; i < 2; i++) {
+    const { out, rec } = await r.scan("openclaw cron edit nightly --every 6h");
+    assert.equal(out.requireApproval.severity, "critical");
+    assert.ok(out.requireApproval.description.endsWith(` ${NOTE}`));
+    assert.deepEqual([rec.verdict, rec.relaxed, rec.snoozed, rec.response.risk], ["review", true, undefined, 92]);
+  }
+});
+
+test("observe mode relaxes nothing", async () => {
+  put(entry());
+  process.env.SENTROOK_MODE = "observe";
+  override = { risk: 92, relaxable: true };
+  const r = await registered();
+  const { out, rec } = await r.scan("run it");
+  assert.equal(out, undefined);
+  assert.equal(rec.verdict, "block");
+  assert.equal(rec.relaxed, undefined);
+});
+
+test("a run whose trigger was not recorded is never relaxed", async () => {
+  put(entry(), entry("all"));
+  override = { risk: 92, relaxable: true };
+  const r = await registered();
+  const { out, rec } = await r.scan("run it", "S1", null);
+  assert.equal(out.block, true);
+  assert.equal(rec.relaxed, undefined);
 });
 
 // ---- the commands ------------------------------------------------------------------------------------
