@@ -71,6 +71,10 @@ class ConvergenceParams:
     #: With the relief, also relieve the provider host's distrust and untrusted origin (off by default).
     credential_home_relieve_host: bool = False
     reason_min_value: float = 0.2
+    #: Grant hints (`converge.hints`): offered on a call at or above this risk (0-1; the plugins' default review
+    #: line) when a single grant would bring it below the line; at most `grant_hints_max` per call (0: none).
+    grant_hints_review_line: float = 0.45
+    grant_hints_max: int = 3
     oracle: OracleParams = field(default_factory=OracleParams)
     context: ContextParams = field(default_factory=ContextParams)
     jev_taint_threshold: float = 0.5
@@ -97,6 +101,7 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
     ocr = raw.get("owner_config_relief") or {}
     aoc = raw.get("attended_owner_cap") or {}
     chr_ = raw.get("credential_home") or {}
+    hints = raw.get("grant_hints") or {}
     oracle = _override(OracleParams(name=f"{raw['name']}/oracle"), raw.get("oracle") or {})
     context_section = dict(raw.get("context") or {})
     lineage = context_section.pop("lineage", None)
@@ -144,6 +149,8 @@ def load_params(name: str | Path = "conv-v1") -> ConvergenceParams:
         credential_home_model_sensitivity_cap=float(chr_.get("model_sensitivity_cap", 2 / 3)),
         credential_home_relieve_host=bool(chr_.get("relieve_host", False)),
         reason_min_value=float(raw.get("reason_min_value", 0.2)),
+        grant_hints_review_line=float(hints.get("review_line", 0.45)),
+        grant_hints_max=int(hints.get("max", 3)),
         oracle=oracle,
         context=context,
         jev_taint_threshold=float((raw.get("jev") or {}).get("taint_threshold", 0.5)),

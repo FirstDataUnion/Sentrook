@@ -15,6 +15,7 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 import { tiersOf } from "./decision.ts";
+import * as grants from "./grants.ts";
 import type { ScanResponse } from "./scanClient.ts";
 
 export const HISTORY_DEFAULT = 10;
@@ -257,5 +258,10 @@ export function formatWhy(scan: Rec, resolution: Rec | null): string {
     .filter((k) => entities[k] && typeof entities[k] === "object" && typeof entities[k].display === "string")
     .map((k) => `  ${text(k, 12)} ${text(entities[k].kind || "?", 20)}: ${text(entities[k].display, 200)}`);
   lines.push(...(shown.length ? ["entities:", ...shown] : ["entities: none"]));
+  // The grants the scanner found would each let the call through next time, as the owner sets them.
+  const suggested = grants.responseHints(r);
+  if (suggested.length) {
+    lines.push("grants that would allow it next time (30 days):", ...suggested.map((g) => `  ${grants.grantCommand(g, (sub) => `/sentrook-${sub}`)}`));
+  }
   return lines.join("\n");
 }

@@ -229,6 +229,91 @@
       "title": "FloorApplied",
       "type": "object"
     },
+    "GrantHint": {
+      "additionalProperties": true,
+      "description": "A grant the owner could set so that this call would not be reviewed next time. Offered only when the\nscanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds\nthe risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an\n`enforced` decision or a call with an independent strong signal.",
+      "properties": {
+        "allows": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a file grant: what the call does to the file",
+          "title": "Allows"
+        },
+        "expires_in_days": {
+          "default": 30,
+          "maximum": 365,
+          "minimum": 1,
+          "title": "Expires In Days",
+          "type": "integer"
+        },
+        "kind": {
+          "description": "The grant kind, as `/sentrook grant` takes it",
+          "enum": [
+            "destination",
+            "file",
+            "provider"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "The grant pattern: the entity's value as the scanner reads it, never a secret",
+          "title": "Pattern",
+          "type": "string"
+        },
+        "relieves": {
+          "description": "The reason codes in `reasons` the grant would remove",
+          "items": {
+            "type": "string"
+          },
+          "title": "Relieves",
+          "type": "array"
+        },
+        "risk": {
+          "description": "This call's risk with the grant applied, 0-100",
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Risk",
+          "type": "number"
+        },
+        "scope": {
+          "const": "persistent",
+          "default": "persistent",
+          "title": "Scope",
+          "type": "string"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The entity it covers (an `entities` key)",
+          "title": "Subject"
+        }
+      },
+      "required": [
+        "kind",
+        "pattern",
+        "risk"
+      ],
+      "title": "GrantHint",
+      "type": "object"
+    },
     "Metadata": {
       "additionalProperties": true,
       "properties": {
@@ -715,6 +800,14 @@
         "$ref": "#/$defs/FloorApplied"
       },
       "title": "Floors Applied",
+      "type": "array"
+    },
+    "grant_hints": {
+      "description": "Up to three grants, each of which alone would bring this call below the review line next time, lowest resulting risk first. Empty when none would, and on every call below the line.",
+      "items": {
+        "$ref": "#/$defs/GrantHint"
+      },
+      "title": "Grant Hints",
       "type": "array"
     },
     "metadata": {

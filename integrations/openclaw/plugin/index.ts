@@ -502,6 +502,8 @@ const plugin = {
       let failureNotice: Json | null = null;
       let relaxed = false;
       let held: Json | null = null;
+      /** The suggested grant "allow always" sets, when the prompt offers it. */
+      let remember: grants.Entry | null = null;
       if (result.ok) {
         const resp = result.response;
         // The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
@@ -550,7 +552,11 @@ const plugin = {
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
-          const copy = reviewCopy(resp, event.toolName, relaxed);
+          // The grant the scan suggests: the prompt shows its command, and "allow always" (offered only then) sets it
+          // where the owner is the one answering. Never for a block a snooze turned into a review.
+          const hint = hold.grantHint(resp, cfg.reviewAt);
+          remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
+          const copy = reviewCopy(resp, event.toolName, relaxed, hint ? grants.hintLine(hint, (sub) => `/sentrook-${sub}`, remember !== null) : "");
           hook = {
             requireApproval: {
               ...copy,
@@ -558,7 +564,7 @@ const plugin = {
               timeoutMs: timing.timeoutMs,
               // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
               timeoutBehavior: timing.timeoutBehavior,
-              allowedDecisions: ["allow-once", "deny"],
+              allowedDecisions: remember ? ["allow-once", "allow-always", "deny"] : ["allow-once", "deny"],
             },
           };
         }
@@ -625,6 +631,23 @@ const plugin = {
                 : decision === "timeout"
                   ? "review_timed_out"
                   : "blocked";
+          let grantId: string | null = null;
+          if (decision === "allow-always" && remember && !onError) {
+            // Approved for good: the suggested grant, persistent for 30 days, once per review. A grant that cannot be
+            // written is logged; the answer itself stands.
+            const by = { basis: ["review_always"], platform: String(built.planir.trigger?.channel ?? "") };
+            try {
+              const { reply, change } = grants.addSuggested(cfg.stateDir, remember, by, new Date(), hold.GRANT_TTL_MS, requestId, () => {}, "from_review");
+              if (change) {
+                grantId = String(change.entry.id);
+                if (!change.existing) traffic.write({ kind: "grants", ...change, by });
+              } else {
+                api.logger.warn(`${LOG} could not set the suggested grant: ${reply}`);
+              }
+            } catch (err) {
+              api.logger.warn(`${LOG} could not set the suggested grant: ${String(err)}`);
+            }
+          }
           try {
             await store.withSession(sid, () => {
               const s = store.loadSession(sid);
@@ -635,7 +658,13 @@ const plugin = {
           } catch (err) {
             api.logger.warn(`${LOG} recording review outcome failed: ${String(err)}`);
           }
-          traffic.write({ kind: "resolution", request_id: requestId, resolution: decision, decision: final });
+          traffic.write({
+            kind: "resolution",
+            request_id: requestId,
+            resolution: decision,
+            decision: final,
+            ...(grantId ? { grant_id: grantId } : {}),
+          });
         };
       }
       return hook;
@@ -713,7 +742,7 @@ const plugin = {
       if (target && !outbound?.loadAdapter) {
         notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
       }
-      const hint = hold.grantHint(resp);
+      const hint = hold.grantHint(resp, cfg.reviewAt);
       const record = (r: Record<string, unknown>) => traffic.write(r);
       let id: string | null = null;
       try {

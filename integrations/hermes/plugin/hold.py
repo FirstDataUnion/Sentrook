@@ -65,13 +65,15 @@ Cmd = Callable[[str], str]
 Record = Callable[[dict[str, Any]], None]
 
 
-def grant_hint(resp: dict[str, Any]) -> dict[str, Any] | None:
-    """The grant the scan response suggests for this call, if any.
+def grant_hint(resp: dict[str, Any], review_at: float | None = None) -> dict[str, Any] | None:
+    """The grant the scan response suggests for this call, if any: the first of its `grant_hints` that the
+    grant command would accept and (with `review_at`) that brings the call below this plugin's review line.
 
-    Grant hints are optional: the scan response does not carry one yet, so every hold is made without
-    one, and approving it sets nothing. A hold stores whatever this returns, and approval reads it with
-    `grants.hint_grant`, which refuses anything that is not a plain grant."""
-    return None
+    Grant hints are optional: a response without one makes a hold that approving sets nothing for. A hold
+    stores what this returns, and approval reads it again with `grants.hint_grant`, which refuses anything
+    that is not a plain grant."""
+    found = grants.response_hints(resp, review_at)
+    return found[0] if found else None
 
 
 def _iso(dt: datetime) -> str:

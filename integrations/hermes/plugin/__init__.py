@@ -517,13 +517,28 @@ def _scan_one(
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
             key = _rule_key(resp.get("action_fingerprint"), planir["request_id"], relaxed)
+            # The grant the scan suggests: the prompt shows its command, and approving always sets it where
+            # the owner is the one answering (never for a block a snooze turned into a review).
+            hint = hold.grant_hint(resp, cfg.review_at)
+            remember = hint is not None and not relaxed and grants.may_remember(planir)
             directive = {
                 "action": "approve",
-                "message": review_message(resp, built["tool"], relaxed),
+                "message": review_message(
+                    resp,
+                    built["tool"],
+                    relaxed,
+                    grants.hint_line(hint, commands.CMD, remember) if hint else "",
+                ),
                 "rule_key": key,
             }
             store.put_review(
-                key, {"sid": sid, "request_id": planir["request_id"], "on_error": False}
+                key,
+                {
+                    "sid": sid,
+                    "request_id": planir["request_id"],
+                    "on_error": False,
+                    **({"hint": hint, "platform": built["platform"]} if remember else {}),
+                },
             )
     else:
         logger.warning("scan failed (%s): %s", result.kind, result.detail)
@@ -670,7 +685,7 @@ def _hold(
         if target
         else {"status": "unsent", "target": None, "reason": why}
     )
-    hint = hold.grant_hint(resp)
+    hint = hold.grant_hint(resp, cfg.review_at)
     where = _where(built)
     try:
         hid = hold.create(
@@ -722,6 +737,39 @@ _APPROVED = {
     "allow-always",
     "allow_always",
 }
+#: Answers that approve for good: they also set a review's suggested grant.
+_ALWAYS = {"always", "allow-always", "allow_always"}
+
+
+def _remember(
+    cfg: PluginConfig, traffic: TrafficLog, review: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Sets the suggested grant of a review approved always, as a persistent grant ending in 30 days, once per
+    review. Returns the grants change, or None when there was nothing to set or it could not be written (logged:
+    the answer itself stands)."""
+    grant = grants.hint_grant(review.get("hint"))
+    if grant is None:
+        return None
+    by = {"basis": ["review_always"], "platform": str(review.get("platform") or "")}
+    try:
+        _reply, change = grants.add_suggested(
+            cfg.state_dir,
+            grant,
+            by,
+            datetime.now(UTC),
+            hold.GRANT_TTL,
+            str(review["request_id"]),
+            source="from_review",
+        )
+    except Exception as exc:  # noqa: BLE001 - the approval stands without the grant
+        logger.warning("sentrook could not set the suggested grant: %s", exc)
+        return None
+    if change is None:
+        logger.warning("sentrook could not set the suggested grant: %s", _reply)
+        return None
+    if not change.get("existing"):
+        traffic.write({"kind": "grants", **change, "by": by})
+    return change
 
 
 def on_post_approval_response(**kw: Any) -> None:
@@ -753,6 +801,11 @@ def on_post_approval_response(**kw: Any) -> None:
                 if choice == "timeout"
                 else "blocked"
             )
+        remembered = (
+            _remember(cfg, traffic, review)
+            if approved and choice in _ALWAYS and not review.get("on_error")
+            else None
+        )
         sid = review["sid"]
         with store.session_lock(sid):
             s = store.load_session(sid)
@@ -767,6 +820,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 "resolution": choice,
                 "decision": final,
                 **({"decided_by": history.REVIEW_LOOP} if auto else {}),
+                **({"grant_id": remembered["entry"]["id"]} if remembered else {}),
             }
         )
     except Exception as exc:  # noqa: BLE001

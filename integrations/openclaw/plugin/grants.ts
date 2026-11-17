@@ -409,6 +409,60 @@ export function hintGrant(hint: unknown): Entry | null {
   return { kind: parsed.kind, pattern: parsed.pattern, ...(parsed.allows ? { allows: parsed.allows } : {}) };
 }
 
+/** Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a review always). */
+export const HINT_DAYS = 30;
+/** The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not. */
+export const HINT_REMEMBER = "Approve always to also set this grant for 30 days: {command}";
+export const HINT_PLAIN = "To allow calls like this for 30 days: {command}";
+/** Sender bases that put a message in a room others can write to. */
+const SHARED_BASIS = new Set(["group_chat", "host_open_access"]);
+
+/**
+ * The scan response's suggested grants (`grant_hints`) that the grant command would accept, as `hintGrant` returns
+ * them, in the scanner's order. With `reviewAt`, only those whose own risk (the call's risk with the grant applied)
+ * is below this plugin's review line.
+ */
+export function responseHints(resp: unknown, reviewAt?: number): Entry[] {
+  const raw = resp && typeof resp === "object" ? (resp as Entry).grant_hints : undefined;
+  const out: Entry[] = [];
+  for (const h of Array.isArray(raw) ? raw.slice(0, 3) : []) {
+    if (!h || typeof h !== "object" || Array.isArray(h)) continue;
+    if (reviewAt !== undefined && !(typeof h.risk === "number" && h.risk < reviewAt)) continue;
+    const grant = hintGrant(h);
+    if (grant && !out.some((g) => JSON.stringify(g) === JSON.stringify(grant))) out.push(grant);
+  }
+  return out;
+}
+
+/** The command that sets `grant` (from `hintGrant`) as the owner types it: persistent, ending in 30 days. */
+export function grantCommand(grant: Entry, cmd: Cmd): string {
+  const words = [cmd("grant"), grant.kind, grant.pattern, "--persistent", "--expires", `${HINT_DAYS}d`];
+  if (Array.isArray(grant.allows) && grant.allows.length) words.push("--allows", grant.allows.join(","));
+  return clean(words.join(" "), 400);
+}
+
+export function hintLine(grant: Entry, cmd: Cmd, remember: boolean): string {
+  return (remember ? HINT_REMEMBER : HINT_PLAIN).replace("{command}", grantCommand(grant, cmd));
+}
+
+/**
+ * Approving a review always may set its suggested grant: the call came from the owner's own message on the main
+ * agent, outside a group chat or a host open to anyone. Whoever answers a review elsewhere is not known to be the
+ * owner, so there the prompt only shows the command.
+ */
+export function mayRemember(planir: Entry): boolean {
+  const trig = planir?.trigger && typeof planir.trigger === "object" ? planir.trigger : {};
+  const sender = trig.sender && typeof trig.sender === "object" ? trig.sender : {};
+  const basis: unknown[] = Array.isArray(sender.basis) ? sender.basis : [];
+  return (
+    trig.kind === "message" &&
+    sender.relation === "owner" &&
+    planir?.session?.agent_role === "main" &&
+    !basis.some((b) => typeof b === "string" && SHARED_BASIS.has(b)) &&
+    (planir?.self_edit ?? null) === null
+  );
+}
+
 /** `destination discord:#ops`, with `(allows read)` for a file grant that limits them. */
 export function describeGrant(grant: Entry): string {
   const allows = grant.allows ? ` (allows ${grant.allows.join(",")})` : "";
@@ -416,8 +470,9 @@ export function describeGrant(grant: Entry): string {
 }
 
 /**
- * Adds `grant` (from `hintGrant`) as a persistent grant ending `spanMs` from now, for an approved hold. The
- * reply names the new grant's id; no change when the file could not be read.
+ * Adds `grant` (from `hintGrant`) as a persistent grant ending `spanMs` from now, for an approved hold (`source`
+ * `from_hold`, `holdId` its id) or a review approved always (`from_review`, the scan's request id). The reply names
+ * the new grant's id; no change when the file could not be read.
  */
 export function addSuggested(
   stateDir: string,
@@ -427,13 +482,14 @@ export function addSuggested(
   spanMs: number,
   holdId: string,
   beforeWrite: () => void,
+  source: "from_hold" | "from_review" = "from_hold",
 ): ChangeResult {
   return change(
     stateDir,
     now,
     (data) => {
-      // Once per hold: an approval retried after the holds file failed to save finds its grant.
-      const prior = data.grants.find((g) => g && typeof g === "object" && (g as Entry).from_hold === holdId && !expired(g as Entry, now)) as
+      // Once per hold or review: an approval retried after a failed save finds its grant.
+      const prior = data.grants.find((g) => g && typeof g === "object" && (g as Entry)[source] === holdId && !expired(g as Entry, now)) as
         | Entry
         | undefined;
       if (prior) {
@@ -454,7 +510,7 @@ export function addSuggested(
         granted_at: iso(now),
         expires_at: iso(expires),
         set_by: by,
-        from_hold: holdId,
+        [source]: holdId,
       };
       data.grants.push(entry);
       return {

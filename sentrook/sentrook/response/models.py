@@ -117,6 +117,32 @@ class ReliefApplied(_Model):
     )
 
 
+class GrantHint(_Model):
+    """A grant the owner could set so that this call would not be reviewed next time. Offered only when the
+    scanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds
+    the risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an
+    `enforced` decision or a call with an independent strong signal."""
+
+    kind: Literal["destination", "file", "provider"] = Field(
+        description="The grant kind, as `/sentrook grant` takes it"
+    )
+    pattern: str = Field(
+        description="The grant pattern: the entity's value as the scanner reads it, never a secret"
+    )
+    allows: list[str] | None = Field(
+        default=None, description="For a file grant: what the call does to the file"
+    )
+    scope: Literal["persistent"] = "persistent"
+    expires_in_days: int = Field(default=30, ge=1, le=365)
+    subject: str | None = Field(
+        default=None, description="The entity it covers (an `entities` key)"
+    )
+    relieves: list[str] = Field(
+        default_factory=list, description="The reason codes in `reasons` the grant would remove"
+    )
+    risk: float = Field(ge=0, le=100, description="This call's risk with the grant applied, 0-100")
+
+
 class Reason(_Model):
     """`code` is a stable `domain.detail` value from the reason registry; deployment-specific
     qualifiers (a tool alias, a step number) go in `detail` so codes stay finite and countable."""
@@ -195,6 +221,13 @@ class Response(_Model):
     relief_applied: list[ReliefApplied] = Field(default_factory=list)
     reasons: list[Reason] = Field(
         default_factory=list, description="Ordered by contribution to the result"
+    )
+    grant_hints: list[GrantHint] = Field(
+        default_factory=list,
+        description=(
+            "Up to three grants, each of which alone would bring this call below the review line next time, "
+            "lowest resulting risk first. Empty when none would, and on every call below the line."
+        ),
     )
     tool_description: ToolDescription | None = None
     entities: dict[str, EntityDisplay] = Field(default_factory=dict)

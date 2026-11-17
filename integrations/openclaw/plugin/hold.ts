@@ -51,14 +51,14 @@ const holdsFile = (stateDir: string) => path.join(stateDir, "holds.json");
 export type RecordFn = (record: Record<string, unknown>) => void;
 
 /**
- * The grant the scan response suggests for this call, if any.
+ * The grant the scan response suggests for this call, if any: the first of its `grant_hints` that the grant command
+ * would accept and (with `reviewAt`) that brings the call below this plugin's review line.
  *
- * Grant hints are optional: the scan response does not carry one yet, so every hold is made without one, and
- * approving it sets nothing. A hold stores whatever this returns, and approval reads it with `grants.hintGrant`,
- * which refuses anything that is not a plain grant.
+ * Grant hints are optional: a response without one makes a hold that approving sets nothing for. A hold stores what
+ * this returns, and approval reads it again with `grants.hintGrant`, which refuses anything that is not a plain grant.
  */
-export function grantHint(_resp: ScanResponse): Entry | null {
-  return null;
+export function grantHint(resp: ScanResponse, reviewAt?: number): Entry | null {
+  return grants.responseHints(resp, reviewAt)[0] ?? null;
 }
 
 const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
