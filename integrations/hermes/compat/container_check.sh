@@ -26,6 +26,9 @@ STEP_TIMEOUT=${COMPAT_STEP_TIMEOUT:-240}
 
 : >"$OUT/steps.tsv"
 failed=0
+# The files are owned by `hermes` inside the image; on a Linux host that is a different user, and
+# run.sh appends the warnings step to steps.tsv after the container exits.
+trap 'chmod -R a+rwX "$OUT" 2>/dev/null' EXIT
 
 record() { # step ok|FAIL detail
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$OUT/steps.tsv"
