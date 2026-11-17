@@ -44,10 +44,18 @@ jobs:
           set -euo pipefail
           targets='[]'; no_rc=''
           for host in $HOSTS; do
-            m=$(python3 integrations/compat/compat.py matrix --host "$host" --set main | jq -c 'map(. + {target: "main"})')
-            r=$(python3 integrations/compat/compat.py matrix --host "$host" --set rc | jq -c 'map(. + {target: "release candidate"})')
+            # A Docker Hub lookup failure drops only that target, with a warning; it closes no issue.
+            if ! m=$(python3 integrations/compat/compat.py matrix --host "$host" --set main); then
+              echo "::warning::$host: could not look up the main build"; m='[]'
+            fi
+            if r=$(python3 integrations/compat/compat.py matrix --host "$host" --set rc); then
+              [ "$r" != '[]' ] || no_rc="$no_rc $host"
+            else
+              echo "::warning::$host: could not look up release candidates"; r='[]'
+            fi
+            m=$(jq -c 'map(. + {target: "main"})' <<<"$m")
+            r=$(jq -c 'map(. + {target: "release candidate"})' <<<"$r")
             targets=$(jq -c --argjson m "$m" --argjson r "$r" '. + $m + $r' <<<"$targets")
-            [ "$r" != '[]' ] || no_rc="$no_rc $host"
           done
           echo "targets=$targets" >>"$GITHUB_OUTPUT"
           echo "no-rc=${no_rc# }" >>"$GITHUB_OUTPUT"
@@ -158,8 +166,10 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(python3 integrations/compat/compat.py latest --host "${{ matrix.host }}")
+          # Fails the job if the tag or the install guide's "Tested on" line cannot be moved.
+          outcome=$(python3 integrations/compat/compat.py bump --host "${{ matrix.host }}" "$tag")
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          echo "changed=$([ "$(python3 integrations/compat/compat.py bump --host "${{ matrix.host }}" "$tag")" = bumped ] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+          echo "changed=$([ "$outcome" = bumped ] && echo true || echo false)" >>"$GITHUB_OUTPUT"
           git diff --stat
 
       - name: Pull request body
@@ -197,3 +207,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
           BRANCH: chore/${{ matrix.host }}-compat-${{ steps.latest.outputs.tag }}
         run: gh workflow run host-compat.yml --ref "$BRANCH" -f mode=pr
+
+      - name: Close bump pull requests for older releases
+        if: steps.latest.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREFIX: chore/${{ matrix.host }}-compat-
+          BRANCH: chore/${{ matrix.host }}-compat-${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh pr list --state open --json number,headRefName --limit 100 |
+            jq -r --arg p "$PREFIX" --arg b "$BRANCH" '.[] | select(.headRefName | startswith($p)) | select(.headRefName != $b) | .number' |
+            while read -r n; do
+              gh pr close "$n" --delete-branch --comment "Superseded by the bump to ${{ steps.latest.outputs.tag }}."
+            done

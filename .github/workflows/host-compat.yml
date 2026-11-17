@@ -142,7 +142,6 @@ jobs:
     name: ${{ matrix.host }} ${{ matrix.name }} (report-only)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -151,12 +150,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # On the steps, not the job, so a failing candidate leaves a warning rather than a red check.
       - name: Pull ${{ matrix.image }}
+        continue-on-error: true
         run: docker pull -q "${{ matrix.image }}"
 
       - name: Compatibility check
+        continue-on-error: true
         run: |
           if ! integrations/${{ matrix.host }}/compat/run.sh "${{ matrix.image }}" "" "$RUNNER_TEMP/compat"; then
             echo "::warning::${{ matrix.image }} fails the compatibility check (report-only; the next release may break the plugin)"
             exit 1
           fi
+
+  # One check with a fixed name for branch protection: the per-version job names change with each bump.
+  result:
+    needs: [plan, compat, self-test]
+    if: always()
+    name: host-compat result
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pinned versions and self-test passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          # self-test is skipped in release mode; everything else must succeed.
+          echo "$RESULTS" | jq -e '(.plan.result == "success") and (.compat.result == "success")
+            and (.["self-test"].result == "success" or .["self-test"].result == "skipped")' >/dev/null

@@ -57,13 +57,16 @@ validate_rc=$?
 python3 - "$OUT/validate.log" "$OUT/validate.json" <<'PY'
 import json, sys
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-start = text.find("{\n")
-doc = None
-while start != -1 and doc is None:
+doc, start = None, text.find("{")
+while start != -1:
     try:
-        doc, _ = json.JSONDecoder().raw_decode(text[start:])
+        obj, end = json.JSONDecoder().raw_decode(text[start:])
     except ValueError:
-        start = text.find("{\n", start + 1)
+        start = text.find("{", start + 1)
+        continue
+    if isinstance(obj, dict) and "checks" in obj:
+        doc = obj
+    start = text.find("{", start + end)
 json.dump(doc, open(sys.argv[2], "w"), indent=2)
 PY
 validator_detail=$(python3 - "$OUT/validate.json" "$validate_rc" <<'PY'
@@ -125,9 +128,11 @@ fi
 
 # 6. One agent turn through the real agent loop: the model asks for two terminal calls; Sentrook's
 # pre_tool_call must block the first and allow the second.
-run turn-config sh -c "hermes config set model.provider custom && \
+if ! run turn-config sh -c "hermes config set model.provider custom && \
   hermes config set model.base_url '$MOCK/v1' && hermes config set model.default compat-mock && \
-  hermes config set OPENAI_API_KEY compat-model-key"
+  hermes config set OPENAI_API_KEY compat-model-key"; then
+  record turn-config FAIL "could not point Hermes at the mock model (see turn-config.log)"
+fi
 rm -f "$BLOCKED_FILE" "$ALLOWED_FILE"
 (cd /tmp && run turn hermes chat -q "Run the compatibility steps." --oneshot -Q -t terminal --max-turns 6)
 turn_rc=$?

@@ -15,6 +15,10 @@ services with synthetic hosts and credentials, so it needs no secrets.
 | Nightly (`host-compat-nightly.yml`) | the host's `main` build and the newest release candidate | no: one issue per failing target, labelled `host-compat`, closed when it passes |
 | Nightly bump (`host-compat-nightly.yml`) | a new stable release | opens a PR moving `latest` and the install guide's "Tested on" line; its checks decide whether it can merge |
 
+The canary skips a `main` build older than the latest stable release, with a warning: it would only test an
+older Hermes than the blocking check does. `host-compat result` is the one check to require in branch protection;
+the per-version job names change with each bump.
+
 **Version policy:** the plugin supports its declared floor and the latest stable release. The floor is the plugin's
 declared minimum (`requires_hermes` for Hermes) and moves only with it; `make compat-test` fails if the two differ,
 or if the install guide's "Tested on" line names other versions than `versions.txt`.

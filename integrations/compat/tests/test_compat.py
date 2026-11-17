@@ -72,9 +72,6 @@ def test_matrix_sets():
         f"nousresearch/hermes-agent:{pinned['floor']}",
         f"nousresearch/hermes-agent:{pinned['latest']}",
     ]
-    assert compat.matrix(HERMES, "main") == [
-        {"host": "hermes", "name": "main", "image": "nousresearch/hermes-agent:main"}
-    ]
     assert compat.matrix(HERMES, "rc", tags=["rc.1-v0.0.1"]) == []
     assert compat.matrix(HERMES, "rc", tags=["rc.4-v99.0.0"]) == [
         {
@@ -83,6 +80,23 @@ def test_matrix_sets():
             "image": "nousresearch/hermes-agent:rc.4-v99.0.0",
         }
     ]
+
+
+def test_main_canary_runs_on_a_fresh_main_build():
+    def pushed(image, tag):
+        return {"main": "2026-11-17T04:00:00Z"}.get(tag, "2026-11-16T20:59:00Z")
+
+    assert compat.matrix(HERMES, "main", pushed_at=pushed) == [
+        {"host": "hermes", "name": "main", "image": "nousresearch/hermes-agent:main"}
+    ]
+
+
+def test_main_canary_skips_a_main_build_older_than_latest(capsys):
+    def pushed(image, tag):
+        return {"main": "2026-11-05T13:32:14Z"}.get(tag, "2026-11-16T20:59:00Z")
+
+    assert compat.matrix(HERMES, "main", pushed_at=pushed) == []
+    assert "skipping the main canary" in capsys.readouterr().err
 
 
 # --- warnings --------------------------------------------------------------------------------------

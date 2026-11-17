@@ -124,7 +124,19 @@ def docker_hub_tags(image: str, pages: int = 5) -> list[str]:
     return tags
 
 
-def matrix(host: Host, which: str, tags: Iterable[str] | None = None) -> list[dict[str, str]]:
+def docker_hub_pushed(image: str, tag: str) -> str:
+    """When a tag was last pushed, as Docker Hub's ISO timestamp (sorts as text)."""
+    url = f"https://hub.docker.com/v2/repositories/{image}/tags/{tag}"
+    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https host
+        return json.load(resp)["last_updated"]
+
+
+def matrix(
+    host: Host,
+    which: str,
+    tags: Iterable[str] | None = None,
+    pushed_at: Callable[[str, str], str] | None = None,
+) -> list[dict[str, str]]:
     """GitHub Actions matrix entries: {host, name, image}."""
     pinned = read_versions(host.compat_dir / "versions.txt")
     if which == "blocking":
@@ -148,6 +160,16 @@ def matrix(host: Host, which: str, tags: Iterable[str] | None = None) -> list[di
             [{"host": host.name, "name": f"rc {rc}", "image": f"{host.image}:{rc}"}] if rc else []
         )
     if which == "main":
+        pushed = docker_hub_pushed if pushed_at is None else pushed_at
+        main_at, latest_at = pushed(host.image, host.main_tag), pushed(host.image, pinned["latest"])
+        if main_at < latest_at:
+            # A main build older than the latest release tests nothing the blocking check does not.
+            print(
+                f"::warning::{host.image}:{host.main_tag} was last pushed {main_at}, before "
+                f"{pinned['latest']} ({latest_at}); skipping the main canary until it is rebuilt",
+                file=sys.stderr,
+            )
+            return []
         return [
             {"host": host.name, "name": host.main_tag, "image": f"{host.image}:{host.main_tag}"}
         ]
