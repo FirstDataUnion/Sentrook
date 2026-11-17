@@ -1,7 +1,10 @@
 """Serve configuration from `SENTROOK_*` environment variables.
 
 Operators configure one image through the environment. Secrets (`SENTROOK_JEV_API_KEY`,
-`SENTROOK_STATE_KEY`, `SENTROOK_ORACLE_API_KEY`) only ever come from here.
+`SENTROOK_STATE_KEY`, `SENTROOK_ORACLE_API_KEY`) only ever come from here: either the variable itself or
+`<NAME>_FILE`, a path to a file holding the value (for secrets rendered to files by a secrets agent, so
+they stay out of the process environment). Setting both is an error, and so is a `_FILE` path that
+cannot be read; the file is read once, at startup.
 
 Scan auth (`SENTROOK_SCAN_AUTH_MODE`):
 - `oidc`: every scan route needs a FIDU ID bearer token with the `sentrook.scan` scope, verified
@@ -58,6 +61,22 @@ def _int(env: Mapping[str, str], key: str, default: int) -> int:
         return int(env.get(key) or default)
     except ValueError:
         return default
+
+
+def _secret(env: Mapping[str, str], key: str) -> str:
+    """A secret from `key` or from the file named by `key_FILE` (one of them, never both); stripped."""
+    file_key = f"{key}_FILE"
+    path = (env.get(file_key) or "").strip()
+    if not path:
+        return (env.get(key) or "").strip()
+    if (env.get(key) or "").strip():
+        raise ConfigError(f"set {key} or {file_key}, not both")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError as exc:
+        # The path is not secret; the error names it but never the contents.
+        raise ConfigError(f"{file_key}: cannot read {path}: {exc.strerror or exc}") from None
 
 
 def _question_set(env: Mapping[str, str], key: str, default: str, kind: str) -> str:
@@ -158,7 +177,7 @@ class ServeConfig:
         log_content = (env.get("SENTROOK_LOG_CONTENT") or "metadata").strip().lower()
         if environment == "production":
             log_content = "metadata"
-        state_key = (env.get("SENTROOK_STATE_KEY") or "").strip()
+        state_key = _secret(env, "SENTROOK_STATE_KEY")
         if not state_key:
             # A missing key would make every token invalid across restarts; in development mint one so
             # the local loop works, but never in production.
@@ -189,7 +208,7 @@ class ServeConfig:
             state_key=state_key,
             deployment=(env.get("SENTROOK_DEPLOYMENT") or "").strip() or None,
             jev_base_url=(env.get("SENTROOK_JEV_BASE_URL") or DEFAULT_BASE_URL).strip(),
-            jev_api_key=(env.get("SENTROOK_JEV_API_KEY") or "").strip() or None,
+            jev_api_key=_secret(env, "SENTROOK_JEV_API_KEY") or None,
             jev_model=(env.get("SENTROOK_JEV_MODEL") or DEFAULT_MODEL).strip(),
             jev_timeout_s=_float(env, "SENTROOK_JEV_TIMEOUT_MS", 20_000.0) / 1000.0,
             jev_exposure_question_set=_question_set(
@@ -200,7 +219,7 @@ class ServeConfig:
                 env, "SENTROOK_JEV_CALL_QUESTIONS", "call-v8", "call"
             ),
             oracle_url=(env.get("SENTROOK_ORACLE_URL") or "").strip() or None,
-            oracle_api_key=(env.get("SENTROOK_ORACLE_API_KEY") or "").strip() or None,
+            oracle_api_key=_secret(env, "SENTROOK_ORACLE_API_KEY") or None,
             probes=tuple(p.strip() for p in probes_raw.split(",") if p.strip())
             if probes_raw
             else (),
