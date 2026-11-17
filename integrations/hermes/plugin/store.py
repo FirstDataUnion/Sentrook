@@ -3,13 +3,20 @@ the separate `hermes cron run` process.
 
 - `sessions/<sid>.json`: step counter, input sequence, state token, history, input buffer
 - `turns/<turn_id>.json`: turn context from `pre_llm_call` and `post_api_request`
+- `conversations/<sid>.json`: the session's recent messages and tool results, redacted, for a background
+  save's `self_edit` block (see `conversation`). When one is written, at most once an hour per process,
+  logs not modified in `CONVERSATION_MAX_AGE_S` are deleted and only the `CONVERSATION_KEEP` most recently
+  modified are kept
 - `reviews.json`: rule_key → (session, request id) for joining approval answers
 - `grants.json`: grants and channel bindings set by command (see `grants`)
 - `snooze.json`: snoozes set by command (see `snooze`)
+- `holds.json`: unattended reviews held for the owner's approval (see `hold`)
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
-read-modify-write; `session_lock` serialises a whole scan per session.
+read-modify-write; `session_lock` serialises a whole scan per session. `holds.json` and `grants.json`
+are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
+`hermes sentrook`) can change them at the same time.
 """
 
 from __future__ import annotations
@@ -20,7 +27,8 @@ import os
 import re
 import secrets
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +72,73 @@ def read_time(raw: Any) -> datetime | None:
         return None
 
 
+#: How long to wait for another process's lock before giving up. Short: a scan waits on it.
+LOCK_WAIT_S = 2.0
+
+try:  # POSIX
+    import fcntl as _fcntl
+
+    _msvcrt = None
+except ImportError:  # Windows
+    _fcntl = None
+    import msvcrt as _msvcrt  # type: ignore[no-redef]
+
+
+class LockTimeout(TimeoutError):
+    """Another process held a state file's lock for longer than `LOCK_WAIT_S`."""
+
+
+def _try_lock(fd: int) -> bool:
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        else:
+            os.lseek(fd, 0, os.SEEK_SET)
+            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fd: int) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+    else:
+        os.lseek(fd, 0, os.SEEK_SET)
+        _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def file_lock(path: Path) -> Iterator[None]:
+    """Holds an OS lock on `<path>.lock` for a read-modify-write of `path`, so it is safe across
+    processes (the gateway and a separate `hermes cron run` or `hermes sentrook` process), not only
+    across threads. The operating system releases the lock when its process dies, so a crash leaves
+    nothing to clean up; the lock file itself is kept. Raises `LockTimeout` when another process holds
+    it for longer than `LOCK_WAIT_S`. The write inside stays atomic (temp file, then rename)."""
+    lock = path.with_name(path.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while not _try_lock(fd):
+            if time.monotonic() > deadline:
+                raise LockTimeout(f"{lock} is held by another process")
+            time.sleep(0.005)
+        try:
+            yield
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)
+
+
+#: Conversation logs: deleted when not modified for 7 days; at most 100 kept; pruned at most hourly.
+CONVERSATION_MAX_AGE_S = 7 * 86_400
+CONVERSATION_KEEP = 100
+CONVERSATION_PRUNE_EVERY_S = 3_600
+#: When this process last pruned each state directory's conversation logs.
+_PRUNED_AT: dict[str, float] = {}
+
 _FKEY_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
 
 
@@ -81,6 +156,7 @@ def empty_session() -> dict[str, Any]:
         "history": [],
         "buffer": [],
         "last_turn_id": None,
+        "last_request_turn_id": None,
     }
 
 
@@ -158,6 +234,54 @@ class Store:
             t = self._read(self.dir / "turns" / f"{_fkey(turn_id)}.json", {})
             return t if isinstance(t, dict) else {}
 
+    def load_conversation(self, sid: str) -> list[dict[str, Any]]:
+        with self.lock:
+            data = self._read(self.dir / "conversations" / f"{_fkey(sid)}.json", None)
+        entries = data.get("entries") if isinstance(data, dict) else None
+        return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+    def update_conversation(
+        self, sid: str, change: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+    ) -> None:
+        """Read-modify-write of a session's conversation log under the store lock."""
+        with self.lock:
+            entries = change(self.load_conversation(sid))
+            self._write(
+                self.dir / "conversations" / f"{_fkey(sid)}.json",
+                {"version": 1, "entries": entries},
+            )
+            self._prune_conversations()
+
+    def _prune_conversations(self) -> None:
+        """At most once an hour per process: delete logs not modified in `CONVERSATION_MAX_AGE_S`, then
+        all but the `CONVERSATION_KEEP` most recently modified."""
+        now = time.time()
+        key = str(self.dir)
+        if now - _PRUNED_AT.get(key, float("-inf")) < CONVERSATION_PRUNE_EVERY_S:
+            return
+        _PRUNED_AT[key] = now
+        logs = []
+        for path in (self.dir / "conversations").glob("*.json"):
+            try:
+                logs.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        logs.sort(reverse=True)
+        for i, (mtime, path) in enumerate(logs):
+            if i >= CONVERSATION_KEEP or now - mtime > CONVERSATION_MAX_AGE_S:
+                path.unlink(missing_ok=True)
+
+    def delete_conversations(self) -> bool:
+        """Deletes every conversation log; True when there were any."""
+        d = self.dir / "conversations"
+        with self.lock:
+            if not d.exists():
+                return False
+            for path in d.iterdir():
+                path.unlink(missing_ok=True)
+            d.rmdir()
+            return True
+
     def put_review(self, rule_key: str, value: dict[str, Any]) -> None:
         path = self.dir / "reviews.json"
         with self.lock:
@@ -211,3 +335,30 @@ class Store:
     def save_snooze(self, value: dict[str, Any]) -> None:
         with self.lock:
             self._write(self.dir / "snooze.json", value)
+
+    def load_scan_failure_notices(self) -> dict[str, Any]:
+        """When each job or session last had a scan-failure notice; empty when absent or unreadable."""
+        with self.lock:
+            data = self._read(self.dir / "scan-failure-notices.json", None)
+        sent = data.get("sent") if isinstance(data, dict) else None
+        return sent if isinstance(sent, dict) else {}
+
+    def save_scan_failure_notices(self, sent: dict[str, str]) -> None:
+        with self.lock:
+            self._write(self.dir / "scan-failure-notices.json", {"version": 1, "sent": sent})
+
+    def load_holds(self) -> dict[str, Any] | None:
+        """`holds.json`, empty when absent; None when it exists but cannot be read."""
+        path = self.dir / "holds.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "holds": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("holds", [])
+        return data if isinstance(data["holds"], list) else None
+
+    def save_holds(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "holds.json", value)

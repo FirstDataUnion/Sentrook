@@ -12,9 +12,12 @@ A session grant is bound to one session: the one the command was sent from, or t
 names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan
 of the session sends, and is sent only on scans of that session: not in cron jobs, subagents or
 other chats. A session grant with no session (the command line without `--session`) is refused, and
-one stored without a session is never sent. Persistent grants and the plugin settings' grants are
-sent on every scan. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed on as typed:
-Sentrook itself refuses patterns too broad to relieve on.
+one stored without a session is never sent. Persistent grants are sent on every scan. A settings
+grant has no session to be bound to, so one with scope session, or with an unknown scope (read as
+session), is never sent either; the listing, status, verify and the startup log name it. A scan sends a
+session grant with its `session_ref` and a grant with an expiry with its `expires_at`, and Sentrook
+checks both. An expired grant is not sent, and is dropped from the file on the next change. Patterns
+are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
 
 Every change is written to the traffic log as a `grants` record (none when the owner has turned the
 traffic log off).
@@ -31,9 +34,10 @@ from pathlib import Path
 from typing import Any
 
 from .config import PluginConfig, parse_grants
-from .store import Store, read_time
+from .planir import binding_problem
+from .store import Store, file_lock, read_time
 
-KINDS = ("destination", "file", "provider")
+KINDS = ("destination", "file", "provider", "repo")
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
@@ -100,17 +104,21 @@ def _bound(raw: dict[str, Any]) -> str | None:
 def effective(
     cfg: PluginConfig, data: dict[str, Any] | None, now: datetime, session_ref: str
 ) -> list[dict[str, Any]]:
-    """Every grant a scan of the session `session_ref` may send: config grants, config bindings,
-    then live file entries (a session grant only in its own session)."""
-    out = [dict(g) for g in cfg.grants]
+    """Every grant a scan of the session `session_ref` may send: persistent config grants, config
+    bindings, then live file entries (a session grant only in its own session)."""
+    out = [dict(g) for g in cfg.grants if g["scope"] == "persistent"]
     out += [
         {"kind": "destination", "pattern": p, "scope": "persistent"} for p in cfg.channel_bindings
     ]
-    out += [
-        g
-        for raw, g in _file_grants(data)
-        if not expired(raw, now) and (g["scope"] != "session" or _bound(raw) == session_ref)
-    ]
+    for raw, g in _file_grants(data):
+        if expired(raw, now) or (g["scope"] == "session" and _bound(raw) != session_ref):
+            continue
+        if g["scope"] == "session":
+            g["session_ref"] = session_ref
+        at = read_time(raw.get("expires_at"))
+        if at is not None:
+            g["expires_at"] = _iso(at)
+        out.append(g)
     for b in _file_bindings(data):
         g = {"kind": "destination", "pattern": b["pattern"].strip(), "scope": "persistent"}
         if isinstance(b.get("granted_at"), str) and b["granted_at"].strip():
@@ -150,17 +158,12 @@ def format_grants(
 ) -> str:
     """The grants in force, as seen from the session `ref` (None: no current session)."""
     rows = []
-    for i, g in enumerate(cfg.grants, 1):
+    for i, g in enumerate(cfg.grants):
         details = [f"allows {','.join(g['allows'])}"] if g.get("allows") else []
-        rows.append(
-            (
-                f"cfg-{i}",
-                g["kind"],
-                g["scope"],
-                g["pattern"],
-                "; ".join([*details, "config, read-only"]),
-            )
-        )
+        details.append("config, read-only")
+        if i in cfg.unsent_grants:
+            details.append(f"{cfg.unsent_grants[i]}, never sent")
+        rows.append((f"cfg-{i + 1}", g["kind"], g["scope"], g["pattern"], "; ".join(details)))
     file_rows = _file_grants(data)
     for raw, g in file_rows:
         details = [_session_of(raw, ref)] if g["scope"] == "session" else []
@@ -192,9 +195,18 @@ def format_grants(
     return "\n".join(lines)
 
 
+def _with_problem(pattern: str, details: list[str]) -> str:
+    """A binding's details, with why it can never apply when it cannot."""
+    problem = binding_problem(pattern)
+    return "; ".join(details + ([problem] if problem else []))
+
+
 def format_bindings(cfg: PluginConfig, data: dict[str, Any] | None) -> str:
-    rows = [(p, "config, read-only") for p in cfg.channel_bindings]
-    rows += [(b["pattern"].strip(), "; ".join(_set_by(b))) for b in _file_bindings(data)]
+    rows = [(p, _with_problem(p, ["config, read-only"])) for p in cfg.channel_bindings]
+    rows += [
+        (b["pattern"].strip(), _with_problem(b["pattern"], _set_by(b)))
+        for b in _file_bindings(data)
+    ]
     rows = [tuple(_clean(c) for c in r) for r in rows]
     lines = [
         f"Channel bindings: {len(cfg.channel_bindings)} in config, "
@@ -207,10 +219,24 @@ def format_bindings(cfg: PluginConfig, data: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def binding_problems_summary(cfg: PluginConfig) -> str:
+    """The config bindings that can never apply and why, e.g. `ab (too short, never sent)`; "" when
+    none."""
+    return ", ".join(
+        f"{_clean(p, 60)} ({why})" for p in cfg.channel_bindings if (why := binding_problem(p))
+    )
+
+
+def unsent_summary(cfg: PluginConfig) -> str:
+    """The config grants that are never sent and why, e.g. `cfg-2 (no session)`; "" when none."""
+    return ", ".join(f"cfg-{i + 1} ({_clean(why, 60)})" for i, why in cfg.unsent_grants.items())
+
+
 def counts(cfg: PluginConfig, data: dict[str, Any] | None) -> tuple[str, str]:
     """The `grants:` and `channel bindings:` lines of status."""
+    unsent = f" ({len(cfg.unsent_grants)} never sent)" if cfg.unsent_grants else ""
     return (
-        f"{len(cfg.grants)} in config, {len(_file_grants(data))} by command",
+        f"{len(cfg.grants)} in config{unsent}, {len(_file_grants(data))} by command",
         f"{len(cfg.channel_bindings)} in config, {len(_file_bindings(data))} by command",
     )
 
@@ -222,7 +248,8 @@ def grant_usage(cmd: Cmd) -> str:
     return (
         f"usage: {cmd('grant')} <kind> <pattern> [--persistent | --scope session|persistent] "
         "[--session <ref>] [--allows read,write] [--expires 12h]\n"
-        "kind is destination, file or provider; --allows is for file grants; scope defaults to "
+        "kind is destination, file, provider or repo (github.com/<owner>/<repo>); --allows is for file "
+        "grants; scope defaults to "
         "session: this session only, or the one --session names (a ref from "
         f"{cmd('history')}); cron jobs, subagents and other chats need --persistent"
     )
@@ -263,7 +290,9 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
         return ""
     kind, pattern = pos[0].lower(), pos[1]
     if kind not in KINDS:
-        return f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file or provider.'
+        return (
+            f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file, provider or repo.'
+        )
     if len(pattern) > MAX_PATTERN or not pattern.isprintable():
         return f"The pattern must be at most {MAX_PATTERN} printable characters."
     scope = opts.get("scope", "session")
@@ -313,7 +342,8 @@ def _change(
     """Read the file, apply `fn` (reply, change record or None), and write it back if it changed.
     A write also drops expired grants; `fn` still sees them, so revoking one works."""
     store = Store(state_dir)
-    with _LOCK:
+    # The gateway (an approved hold) and the command line can change the file at the same time.
+    with _LOCK, file_lock(state_dir / "grants.json"):
         data = store.load_grants()
         if data is None:
             return _unreadable(state_dir), None
@@ -373,6 +403,167 @@ def add_grant(
     return _change(state_dir, now, fn)
 
 
+def hint_grant(hint: Any) -> dict[str, Any] | None:
+    """A suggested grant as the owner could have typed it: run through `parse_grant` with the same
+    rules as `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more
+    than the command could. Kind, pattern and allows only; the scope is always persistent and the
+    expiry is the hold's. None when it is not one the command would accept."""
+    if not isinstance(hint, dict):
+        return None
+    kind, pattern, allows = hint.get("kind"), hint.get("pattern"), hint.get("allows")
+    if not isinstance(kind, str) or not isinstance(pattern, str):
+        return None
+    words = [kind, pattern.strip(), "--persistent"]
+    if allows is not None:
+        # Each one known verb, exactly: no spaces, commas or anything the command line would split.
+        if not isinstance(allows, list) or not all(
+            isinstance(a, str) and a in ALLOWS for a in allows
+        ):
+            return None
+        words += ["--allows", ",".join(allows)]
+    # One word each, as typed: a kind or pattern with spaces could not have been typed either.
+    if any(not w or any(c.isspace() for c in w) for w in words[:2]):
+        return None
+    parsed = parse_grant(" ".join(words), lambda sub: sub)
+    if isinstance(parsed, str):
+        return None
+    return {k: v for k, v in parsed.items() if k in ("kind", "pattern", "allows")}
+
+
+#: Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a
+#: review always).
+HINT_DAYS = 30
+#: The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not.
+HINT_REMEMBER = "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}"
+HINT_PLAIN = "This grant would usually allow calls like this for 30 days: {command}"
+#: Sender bases that put a message in a room others can write to.
+_SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
+
+
+def response_hints(resp: Any, review_at: float | None = None) -> list[dict[str, Any]]:
+    """The scan response's suggested grants (`grant_hints`) that the grant command would accept, as `hint_grant`
+    returns them, in the scanner's order. With `review_at`, only those whose own risk (the call's risk with the
+    grant applied) is below this plugin's review line."""
+    raw = resp.get("grant_hints") if isinstance(resp, dict) else None
+    out: list[dict[str, Any]] = []
+    for h in raw[:3] if isinstance(raw, list) else []:
+        if not isinstance(h, dict):
+            continue
+        risk = h.get("risk")
+        if review_at is not None and not (
+            isinstance(risk, (int, float)) and not isinstance(risk, bool) and risk < review_at
+        ):
+            continue
+        grant = hint_grant(h)
+        if grant is not None and grant not in out:
+            out.append(grant)
+    return out
+
+
+def grant_command(grant: dict[str, Any], cmd: Cmd) -> str:
+    """The command that sets `grant` (from `hint_grant`) as the owner types it: persistent, ending in 30 days."""
+    words = [
+        cmd("grant"),
+        grant["kind"],
+        grant["pattern"],
+        "--persistent",
+        "--expires",
+        f"{HINT_DAYS}d",
+    ]
+    if grant.get("allows"):
+        words += ["--allows", ",".join(grant["allows"])]
+    return _clean(" ".join(words), 400)
+
+
+def hint_line(grant: dict[str, Any], cmd: Cmd, remember: bool) -> str:
+    return (HINT_REMEMBER if remember else HINT_PLAIN).format(command=grant_command(grant, cmd))
+
+
+#: Runs the host starts itself from a task the owner set up.
+HOST_TASK_KINDS = frozenset({"scheduled", "heartbeat"})
+#: The line `why <hold id>` adds under a suggestion from a host task run.
+HOLD_CONTEXT = "this suggestion comes from a {kind} run, not your own message: {where}"
+
+
+def owner_sender(planir: dict[str, Any]) -> bool:
+    """The owner's own turn: the sender is the owner, or the host started a scheduled or heartbeat run with no
+    sender behind it (`unknown`). A suggested grant is shown, kept on a hold and set only then: on anyone else's
+    turn (a non-owner sender, a sub-agent, a hook), whoever sent it chose what the call acts on. On a host task run
+    a suggestion reaches the owner only through a held call they approve."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    relation = sender.get("relation")
+    return relation == "owner" or (trig.get("kind") in HOST_TASK_KINDS and relation == "unknown")
+
+
+def may_remember(planir: dict[str, Any]) -> bool:
+    """Approving a review always may set its suggested grant: the call came from the owner's own message on the
+    main agent, outside a group chat or a host open to anyone. Whoever answers a review elsewhere is not known to
+    be the owner, so there the prompt only shows the command."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    session = planir.get("session") if isinstance(planir.get("session"), dict) else {}
+    basis = sender.get("basis") if isinstance(sender.get("basis"), list) else []
+    return (
+        trig.get("kind") == "message"
+        and sender.get("relation") == "owner"
+        and session.get("agent_role") == "main"
+        and not _SHARED_BASIS & set(basis)
+        and planir.get("self_edit") is None
+    )
+
+
+def describe_grant(grant: dict[str, Any]) -> str:
+    """`destination discord:#ops`, with `(allows read)` for a file grant that limits them."""
+    allows = f" (allows {','.join(grant['allows'])})" if grant.get("allows") else ""
+    return _clean(f"{grant['kind']} {grant['pattern']}{allows}", 300)
+
+
+def add_suggested(
+    state_dir: Path,
+    grant: dict[str, Any],
+    by: dict[str, Any],
+    now: datetime,
+    span: timedelta,
+    hold_id: str,
+    source: str = "from_hold",
+) -> tuple[str, dict[str, Any] | None]:
+    """Adds `grant` (from `hint_grant`) as a persistent grant ending `span` from now, for an approved
+    hold (`source` `from_hold`, `hold_id` its id) or a review approved always (`from_review`, the scan's
+    request id). The reply names the new grant's id; None for the record when the file could not be read."""
+
+    def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        # Once per hold or review: an approval retried after a failed save finds its grant.
+        for g in data["grants"]:
+            if isinstance(g, dict) and g.get(source) == hold_id and not expired(g, now):
+                at = read_time(g.get("expires_at"))
+                return (
+                    f"Granted {g.get('id')}: {describe_grant(g)} (persistent, expires "
+                    f"{_show(at) if at else '?'}).",
+                    {"op": "grant", "entry": g, "existing": True},
+                )
+        taken = {g.get("id") for g in data["grants"] if isinstance(g, dict)}
+        gid = f"gr-{secrets.token_hex(3)}"
+        while gid in taken:
+            gid = f"gr-{secrets.token_hex(3)}"
+        entry = {
+            "id": gid,
+            **grant,
+            "scope": "persistent",
+            "granted_at": _iso(now),
+            "expires_at": _iso(now + span),
+            "set_by": by,
+            source: hold_id,
+        }
+        data["grants"].append(entry)
+        return (
+            f"Granted {gid}: {describe_grant(entry)} (persistent, expires {_show(now + span)}).",
+            {"op": "grant", "entry": entry},
+        )
+
+    return _change(state_dir, now, fn)
+
+
 def revoke(
     state_dir: Path, cfg: PluginConfig, rest: str, now: datetime, cmd: Cmd
 ) -> tuple[str, dict[str, Any] | None]:
@@ -426,7 +617,9 @@ def bind(
                 return f"{channel} is already bound.", None
             entry = {"pattern": channel, "granted_at": _iso(now), "set_by": by}
             data["bindings"].append(entry)
-            return f"Channel binding added: {channel}.", {"op": "bind_add", "entry": entry}
+            problem = binding_problem(channel)
+            reply = f"Channel binding added: {channel}" + (f" ({problem})." if problem else ".")
+            return reply, {"op": "bind_add", "entry": entry}
         if found is None:
             return f"{channel} is not bound.", None
         entry = data["bindings"].pop(found)

@@ -41,9 +41,34 @@ from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
 from ..prepare.entities import Role, display_path, fed_paths
-from ..probes.base import Contribution, Envelope, Floor
+from ..prepare.skill_steps import CALL_ID_PREFIX, NEGATED_SUFFIX
+from ..probes.base import Contribution, Envelope, Floor, SessionMark
 
 __all__ = ["AiraProbe", "AIRA_VERSION"]
+
+
+#: Suspicion a rule finding on a command in a saved skill carries (the finding's reason code -> value). A skill is a
+#: procedure the agent follows later with nobody asked, so a risky step in it is suspect in itself, not only
+#: consequential; the commands come from `prepare.skill_steps` as calls with ids `skill_step:<n>`. A command the
+#: skill warns against carries `NEGATED_STEP_FACTOR` of the weight. These calls set no flag and no floor.
+SKILL_STEP_SUSPICION: dict[str, float] = {
+    "code.fetch_to_shell": 0.8,
+    "code.decode_to_shell": 0.8,
+    "code.unvetted_source": 0.6,
+    "code.install_from_url": 0.6,
+    "exfil.exec_egress": 0.85,
+    "exfil.web_post": 0.85,
+    "exfil.placeholder_in_argv": 0.85,
+    "send.off_host": 0.5,
+    "path.credential_store": 0.6,
+    "path.credential_bearing_config": 0.5,
+    "priv.sudo": 0.5,
+    "conceal.encoded_payload": 0.8,
+    "conceal.output_suppressed": 0.4,
+}
+
+
+NEGATED_STEP_FACTOR = 0.5
 
 
 class AiraProbe:
@@ -51,15 +76,25 @@ class AiraProbe:
 
     `lists`: the compiled data lists (default: `load_lists()`, honouring `SENTROOK_LISTS_DIR`).
     `enabled_packs`: overrides `planir.options.packs` when given; `tier1` is always included.
+    `unvetted_package_sensitivity`, `unvetted_package_as_root`, `unvetted_package_ecosystems`: the
+    convergence parameter set's `oracle` values of those names (0 and false = off).
     """
 
     step: ProbeStep = ProbeStep.AIRA
 
     def __init__(
-        self, lists: Lists | None = None, enabled_packs: Iterable[str] | None = None
+        self,
+        lists: Lists | None = None,
+        enabled_packs: Iterable[str] | None = None,
+        unvetted_package_sensitivity: float = 0.0,
+        unvetted_package_as_root: bool = False,
+        unvetted_package_ecosystems: tuple[str, ...] = ("npm", "pypi", "git+"),
     ) -> None:
         self._lists = lists
         self._packs = frozenset(enabled_packs) if enabled_packs is not None else None
+        self._unvetted_package_sensitivity = unvetted_package_sensitivity
+        self._unvetted_package_as_root = unvetted_package_as_root
+        self._unvetted_package_ecosystems = tuple(unvetted_package_ecosystems)
 
     @property
     def lists(self) -> Lists:
@@ -92,10 +127,18 @@ class AiraProbe:
             )
 
     def _run(self, prepared: Any, versions: dict[str, str | None], start: float) -> Envelope:
-        ctx = Context(prepared=prepared, lists=self.lists, packs=self.packs_for(prepared))
+        ctx = Context(
+            prepared=prepared,
+            lists=self.lists,
+            packs=self.packs_for(prepared),
+            unvetted_package_sensitivity=self._unvetted_package_sensitivity,
+            unvetted_package_as_root=self._unvetted_package_as_root,
+            unvetted_package_ecosystems=self._unvetted_package_ecosystems,
+        )
         contributions: list[Contribution] = []
         floors: list[Floor] = []
         flags: list[SessionFlag] = []
+        marks: list[SessionMark] = []
         classes: set[str] = set()
         rules: list[str] = []
         reasons: list[str] = []
@@ -129,6 +172,29 @@ class AiraProbe:
             feeds = is_sibling and bool(
                 fed_paths([p.value for p in a.paths if p.is_destination], pending_paths)
             )
+            skill_step = (call.call_id or "").startswith(CALL_ID_PREFIX)
+            if skill_step:
+                # A saved skill's command runs later with nobody asked: a risky finding on it is suspicion too,
+                # at half weight for a command the skill warns against.
+                negated = (call.call_id or "").endswith(NEGATED_SUFFIX)
+                for f in findings:
+                    for c in f.contributions:
+                        weight = SKILL_STEP_SUSPICION.get(c.reason or "")
+                        if weight and negated:
+                            weight = round(weight * NEGATED_STEP_FACTOR, 4)
+                        key = ("suspicion.overreach", weight, c.subject, "selfedit.risky_step")
+                        if weight and key not in seen_contributions:
+                            seen_contributions.add(key)
+                            contributions.append(
+                                Contribution(
+                                    signal="suspicion.overreach",
+                                    value=weight,
+                                    subject=c.subject,
+                                    reason="selfedit.risky_step",
+                                )
+                            )
+                            if "selfedit.risky_step" not in reasons:
+                                reasons.append("selfedit.risky_step")
             for f in findings:
                 classes.add(f.cls)
                 if f.rule not in rules:
@@ -146,10 +212,16 @@ class AiraProbe:
                         continue
                     seen_contributions.add(key)
                     contributions.append(c)
+                if skill_step:
+                    # A command a skill holds has not run: it sets no session flag and no floor.
+                    continue
                 floors.extend(f.floors)
                 for flag in f.flags:
                     if flag not in flags:
                         flags.append(flag)
+                for m in f.marks:
+                    if m not in marks:
+                        marks.append(m)
             summary = a.shape.summary() if a.shape is not None else None
             call_paths = [
                 {
@@ -218,6 +290,7 @@ class AiraProbe:
             contributions=contributions,
             floors=floors,
             flags_set=flags,
+            marks=marks,
             evidence=evidence,
         )
 

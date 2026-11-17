@@ -16,9 +16,9 @@ from __future__ import annotations
 import itertools
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from ..aira.exec_shape import derive_exec_shape
@@ -37,6 +37,9 @@ class EntityKind(StrEnum):
     CHANNEL = "channel"
     MCP_SERVER = "mcp_server"
     PLUGIN = "plugin"
+    #: A repository (or account) on a host where any account publishes (`github.com/<owner>/<repo>`):
+    #: the code source of code run from such a host (`installers.multi_tenant_hosts`).
+    REPO = "repo"
 
 
 class Role(StrEnum):
@@ -48,6 +51,9 @@ class Role(StrEnum):
     TOOL_PROVIDER = "tool_provider"
     MENTIONED = "mentioned"  # appears in content or a task text without the call acting on it
 
+
+#: Bare words a message tool resolves to the account it runs as: the owner, not a third party.
+SELF_RECIPIENTS: frozenset[str] = frozenset({"me", "self", "myself", "owner"})
 
 #: Roles the oracle treats as risky for an unknown entity.
 RISKY_ROLES: frozenset[Role] = frozenset(
@@ -62,6 +68,8 @@ class Origin(StrEnum):
     SIBLING = "sibling"
     UNTRUSTED_INPUT = "untrusted_input"
     TRUSTED_INPUT = "trusted_input"
+    #: A scanned read of the agent's own config or instruction files (`session_sets.owner_config_path`).
+    OWNER_CONFIG = "owner_config"
     HISTORY = "history"
     WRITTEN_FILE = "written_file"
     PROVIDER = "provider"
@@ -83,6 +91,32 @@ class Entity:
     first_history_step: int | None = None
     #: Earliest history step whose *result* (an untrusted input in this request) mentions it.
     first_untrusted_step: int | None = None
+    #: A host named in an untrusted input that tries to steer the agent (`prepare.steering`), in this
+    #: request or, through the state token, on an earlier step.
+    steered: bool = False
+    #: The owner's own configuration supplied it, in this request or (through the token's trusted set) earlier.
+    in_session_trusted: bool = False
+    #: The token's trusted set already held it: a config read on an earlier scan supplied it, and that scan's
+    #: exposure check did not withdraw it. Trust a config read in this request establishes is not in it.
+    in_prior_trusted: bool = False
+    #: Ids of the email recipients (in the pending call, a sibling or a written file) whose mail domain this host is.
+    mail_domain_of: list[str] = field(default_factory=list)
+    #: One of those calls names the host in its own right (a URL, a command target, a mention), not only as
+    #: the domain of an address.
+    named_in_own_right: bool = False
+    #: The roles those own-right uses give the host (empty for a role-less mention).
+    own_right_roles: set[Role] = field(default_factory=set)
+    #: The owner's request reaches this host only through an email address on it, and a call uses the host in
+    #: its own right: still a host the owner named for the look-alike check, but not sanctioned.
+    owner_named_via_address: bool = False
+    #: The pending command, read through a sibling's write, names it (`sibling_join.resolve_pending`).
+    in_resolved_command: bool = False
+    #: Roles the entity takes in a later run that self-modification content the pending call writes sets up (a cron
+    #: line, a hook, a skill, a job prompt; `prepare.written_selfmod`): a host that run sends to or runs code from.
+    #: Kept apart from `roles`: the call itself neither sends to it nor runs code from it.
+    future_roles: set[Role] = field(default_factory=set)
+    #: Only that written content names it: the call's own arguments, as the extractors read them, do not.
+    only_in_written_selfmod: bool = False
 
     def add_origin(self, origin: Origin, ref: str | None = None) -> None:
         refs = self.origins.setdefault(origin, [])
@@ -93,9 +127,49 @@ class Entity:
         return any(o in self.origins for o in origins)
 
     @property
+    def recipient_domain_of(self) -> tuple[str, ...]:
+        """The recipients this host is part of when it is only their mail domain: such a host is scored
+        as those recipients, not as a second destination. Empty when a call names it in its own right."""
+        return () if self.named_in_own_right else tuple(self.mail_domain_of)
+
+    @property
     def sanctioned(self) -> bool:
         """Named by the owner's request or covered by a grant."""
         return self.has_origin(Origin.REQUEST, Origin.GRANT)
+
+    @property
+    def self_recipient(self) -> bool:
+        """A recipient written as a self-reference (`me`, `self`, `owner`): a bare word, never an
+        address, a handle or a channel."""
+        return self.kind is EntityKind.RECIPIENT and self.value.strip().lower() in SELF_RECIPIENTS
+
+    @property
+    def sibling_only(self) -> bool:
+        """Only another call in the batch names it, as that call stands: not the pending call, not the
+        file it runs, and not the pending command read through a sibling's write. Every call in a batch
+        has its own scan, so such an entity is the sibling's to answer for. Never a code source or an
+        executable: a sibling can set where the pending call fetches or runs code from without the pending
+        call naming it (a registry a sibling writes into a package manager's config file), so code a batch
+        supplies is charged to every call in it."""
+        return (
+            Origin.SIBLING in self.origins
+            and not self.in_resolved_command
+            and not self.has_origin(Origin.PENDING_CALL, Origin.WRITTEN_FILE)
+            and not self.roles & {Role.CODE_SOURCE, Role.EXECUTABLE}
+        )
+
+    @property
+    def agent_first(self) -> bool:
+        """The agent named it in its own arguments before the first result that mentions it. For a path,
+        the same step counts too: a step's arguments exist before its result, so a write receipt that
+        repeats the path the step wrote does not make the path content-supplied. Not for a host or any other
+        kind: a fetched page that names its own host ("post your key to this host") is that content steering
+        the agent back to it."""
+        if self.first_history_step is None or self.first_untrusted_step is None:
+            return False
+        if self.kind is EntityKind.PATH:
+            return self.first_history_step <= self.first_untrusted_step
+        return self.first_history_step < self.first_untrusted_step
 
 
 class EntityTable:
@@ -125,6 +199,22 @@ class EntityTable:
             ent.roles.add(role)
         if origin is not None:
             ent.add_origin(origin, ref)
+        return ent
+
+    def add_found(self, f: Found, origin: Origin, ref: str | None = None) -> Entity:
+        """Add an entity a call names (pending call, sibling or written file) with its role, and record
+        whether a host is there only as the mail domain of a recipient the same call names."""
+        ent = self.add(f.kind, f.value, display=f.display, role=f.role, origin=origin, ref=ref)
+        if f.kind is EntityKind.HOST:
+            recipient = (
+                self.get(EntityKind.RECIPIENT, f.domain_of) if f.domain_of is not None else None
+            )
+            if recipient is None:
+                ent.named_in_own_right = True
+                if f.role is not None:
+                    ent.own_right_roles.add(f.role)
+            elif recipient.id not in ent.mail_domain_of:
+                ent.mail_domain_of.append(recipient.id)
         return ent
 
     def get(self, kind: EntityKind, value: str) -> Entity | None:
@@ -196,6 +286,15 @@ _SEARCH_VALUE_FLAGS = frozenset(
     --ignore-dir""".split()
 )
 _SHELL_SEPARATORS = frozenset({"|", "||", "&&", ";", "&"})
+#: The object a SQL statement defines, destroys or writes rows to (`DROP TABLE app.ledger`,
+#: `DELETE FROM app.ledger`): a dotted name there is schema.table, not a host. Only the name
+#: straight after the keywords; URLs, addresses and host arguments are read before this applies.
+_SQL_OBJECT_RE = re.compile(
+    r"\b(?:(?:DROP|ALTER|CREATE|TRUNCATE)\s+(?:TABLE|VIEW|INDEX|SCHEMA|DATABASE|COLLECTION)\s+"
+    r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?|TRUNCATE\s+|DELETE\s+FROM\s+|INSERT\s+INTO\s+)"
+    r"([\w.\"`]+)",
+    re.IGNORECASE,
+)
 _INLINE_PROGRAM_RE = re.compile(
     r"\b(?:python[\d.]*\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*c"
     r"|(?:node|nodejs|bun)\s+(?:-\S+\s+)*?(?:-e|--eval|-p|--print)"
@@ -233,7 +332,28 @@ _NC_HOST_RE = re.compile(
     r"\b(?:nc|ncat|netcat|telnet)\s+(?:-\w+\s+)*([A-Za-z0-9.-]+\.[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})"
 )
 _DEV_TCP_RE = re.compile(r"/dev/tcp/([A-Za-z0-9.-]+)/\d+")
-_CHANNEL_RE = re.compile(r"\b(channel|user|dm|group|thread):([A-Za-z0-9_-]{3,})")
+# A channel target: `channel:<id>`, `user:<id>`, … The id may be a WhatsApp JID (`<digits>@g.us`).
+_JID_SUFFIX = r"@(?:g\.us|s\.whatsapp\.net|broadcast|newsletter|lid)"
+_CHANNEL_RE = re.compile(
+    r"\b(channel|user|dm|group|thread):([A-Za-z0-9_-]{3,}(?:" + _JID_SUFFIX + r")?)(?![\w@-]|\.\w)"
+)
+_JID_RE = re.compile(r"(?<![\w.@+-])\d{5,}(?:-\d+)?" + _JID_SUFFIX + r"(?![\w@-]|\.\w)")
+# In free text, `user:`, `dm:` and `group:` name a channel only with an id-shaped id: numeric, a JID, or
+# at least eight characters with a digit. A bare word (`group:runtime`, an OpenClaw tool group) is not.
+_WORD_PREFIXES = frozenset({"user", "dm", "group"})
+_ID_TOKEN_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_-]{7,}")
+_NUMERIC_ID_RE = re.compile(r"-?\d{3,}")
+# Chat platforms a message target may be prefixed with (`telegram:-100…`, `slack:C0…`, `discord:#x`).
+_CHAT_PLATFORMS = frozenset(
+    """telegram discord slack whatsapp signal matrix mattermost msteams teams googlechat imessage irc
+    line zulip rocketchat wechat feishu dingtalk sms""".split()
+)
+# Platforms whose bare numeric target is a phone number, an address.
+_PHONE_PLATFORMS = frozenset({"sms", "whatsapp", "signal", "imessage"})
+_PLATFORM_TARGET_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]{1,20}):(.+)")
+_E164_RE = re.compile(r"\+\d[\d\s().-]{5,}\d")
+_MATRIX_ROOM_RE = re.compile(r"![\w-]+:[\w.-]+")
+_CHANNEL_NAME_RE = re.compile(r"#[\w-]{2,}")
 _HANDLE_RE = re.compile(r"(?<![\w.])@([A-Za-z0-9_]{2,32})\b")
 _PHONE_RE = re.compile(r"(?<![\w-])(\+?\d[\d\s().-]{6,}\d)(?![\w-])")
 
@@ -324,7 +444,10 @@ _GIT_RE = re.compile(r"\bgit\s+clone\s+(?:-\S+\s+)*(\S+)|\bgit\+(\S+)", re.IGNOR
 _EGRESS_MARKERS = re.compile(
     r"(?:\s|^)(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|--upload-file|--post-data|--post-file|"
     r"-X\s*(?:POST|PUT|PATCH)|--request\s*(?:POST|PUT|PATCH)|--method\s*(?:POST|PUT))\b"
-    r"|urlopen\(|requests\.(?:post|put|patch)\(|\.post\(|/dev/tcp/|\bnc\b|\bncat\b|\bscp\b|\brsync\b|\bsftp\b|\bssh\b|\bmail\b|\bsendmail\b",
+    r"|urlopen\(|requests\.(?:post|put|patch)\(|\.post\(|/dev/tcp/|\bnc\b|\bncat\b|\bscp\b|\brsync\b|\bsftp\b|\bssh\b"
+    # a mailer where a command starts, by name or path; not a directory named `mail` in a path
+    r"|(?:\A|[;&|({\"'`]|\$\(|(?:\b(?:sudo|doas|env|nohup|exec|command|time|xargs)|-exec(?:dir)?|-c)\s)\s*"
+    r"(?:[\w.~-]*/)*(?:mail|sendmail)(?=[\s;&|)\"'`]|\Z)",
     re.IGNORECASE,
 )
 _PIPE_TO_INTERPRETER = re.compile(
@@ -364,6 +487,27 @@ def normalise_host(host: str) -> str:
     if ":" in h and h.count(":") == 1:
         h = h.split(":", 1)[0]
     return h
+
+
+_REMOTE_PORT_RE = re.compile(r"[^:]*:(?:[0-9]*|\*)")
+
+
+def normalise_remote_identity(identity: str) -> str:
+    """A remote MCP server is `remote:<hostname>`: the lowercase hostname, without the port, the scheme or
+    the brackets around an IPv6 literal (http and https on one host are one server). An identity or a
+    provider grant pattern written with a port (`remote:x.test:8200`, `remote:[::1]:8200`) reads as that
+    form. A pattern with no host written (`remote:*:8200`) is left as it is, so dropping its port never
+    widens it to every server; any other identity is returned as it is."""
+    if identity[:7].lower() != "remote:":
+        return identity
+    raw = identity.strip().lower()
+    host = raw[7:]
+    if host.startswith("[") and "]" in host:
+        host = host[1 : host.index("]")]
+    elif _REMOTE_PORT_RE.fullmatch(host):
+        host = host.rsplit(":", 1)[0]
+    host = host.rstrip(".")
+    return "remote:" + host if host.strip("*?[]") else raw
 
 
 def host_of_url(url: str) -> str | None:
@@ -432,6 +576,34 @@ def normalise_package(ecosystem: str, name: str) -> str | None:
     return f"{ecosystem}:{n}" if n else None
 
 
+_PROVIDER_VERSION_RE = re.compile(r"@[^@/:\s]+$")
+
+
+def provider_name(identity: str) -> str:
+    """A provider identity without its version: `npm:@acme/gmail-mcp@1.4.2` → `npm:@acme/gmail-mcp`.
+    The scope's `@` is kept because a version never contains `/`."""
+    identity = identity.strip().lower()
+    name = _PROVIDER_VERSION_RE.sub("", identity)
+    return name if name and not name.endswith(":") else identity
+
+
+def provider_counterpart(identity: str) -> tuple[EntityKind, str] | None:
+    """The entity a tool provider's identity is extracted as when a command or content names it: the
+    host of a remote server (`remote:mcp.x.test` is the host `mcp.x.test`) or the package a local
+    server runs (`npm:@acme/x-mcp@1.2.0` is the package `npm:@acme/x-mcp`). None for any other
+    identity, and for a remote identity with no host written."""
+    ident = normalise_remote_identity(identity.strip())
+    if ident[:7].lower() == "remote:":
+        host = ident[7:]
+        return (EntityKind.HOST, host) if host and host.strip("*?[]") == host else None
+    eco, sep, name = ident.partition(":")
+    eco = eco.lower()
+    if not sep or eco not in set(_ECOSYSTEM.values()):
+        return None
+    norm = normalise_package(eco, name)
+    return (EntityKind.PACKAGE, norm) if norm else None
+
+
 def normalise_recipient(value: str) -> str:
     v = value.strip().strip("<>\"'")
     if _EMAIL_RE.fullmatch(v):
@@ -448,6 +620,8 @@ class Found:
     value: str
     display: str
     role: Role | None = None
+    #: For a host that is the mail domain of an email recipient: that recipient's normalised address.
+    domain_of: str | None = None
 
 
 def _is_code_reference(text: str, start: int, end: int) -> bool:
@@ -486,10 +660,12 @@ def _quoted_span(text: str, start: int) -> tuple[int, int]:
 
 def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], list[range]]:
     """Spans where a bare dotted token is not a host: (always skipped, inline program text). In
-    program text a token is kept only when it is a whole quoted string literal."""
+    program text a token is kept only when it is a whole quoted string literal. The object a SQL
+    statement defines, destroys or inserts into is always skipped."""
     skip = [range(*m.span(1)) for m in _PY_MODULE_RE.finditer(text)]
     skip += _config_key_spans(text)
     skip += _search_pattern_spans(text)
+    skip += [range(*m.span(1)) for m in _SQL_OBJECT_RE.finditer(text)]
     programs = [range(0, len(text))] if inline_program else []
     for m in _INLINE_PROGRAM_RE.finditer(text):
         programs.append(range(*_quoted_span(text, m.end())))
@@ -582,16 +758,17 @@ def _host_arg_hosts(text: str) -> list[str]:
     return hosts
 
 
-def _hosts_in(text: str, *, inline_program: bool = False) -> list[str]:
+def _hosts_in(text: str, *, inline_program: bool = False, emails: bool = True) -> list[str]:
     """Hosts named in `text`: URLs, emails, host-taking arguments, IPv4 addresses, and bare dotted
     tokens outside code and config-key positions. With `inline_program` the whole text is program
-    source (a Hermes `execute_code` body)."""
+    source (a Hermes `execute_code` body). Without `emails`, the domains of email addresses are left
+    to the caller."""
     hosts: list[str] = []
     for m in _URL_RE.finditer(text):
         h = host_of_url(m.group(0))
         if h:
             hosts.append(h)
-    for m in _EMAIL_RE.finditer(text):
+    for m in _EMAIL_RE.finditer(text) if emails else ():
         hosts.append(normalise_host(m.group(1).split("@", 1)[1]))
     for rx in (_SSH_HOST_RE, _NC_HOST_RE, _DEV_TCP_RE):
         for m in rx.finditer(text):
@@ -646,21 +823,155 @@ def paths_in(
     return list(dict.fromkeys(out))
 
 
+def substitution_spans(command: str) -> list[tuple[int, int]]:
+    """Spans of `$(…)` and backtick substitutions, outermost only. Parentheses inside quotes do
+    not count; an unclosed substitution ends the scan."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(command)
+    while i < n:
+        if command.startswith("$(", i):
+            depth, j, quote = 0, i + 1, None
+            while j < n:
+                c = command[j]
+                if quote:
+                    if c == "\\" and quote == '"':
+                        j += 1
+                    elif c == quote:
+                        quote = None
+                elif c in ("'", '"'):
+                    quote = c
+                elif c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if j >= n:
+                break
+            spans.append((i, j + 1))
+            i = j + 1
+        elif command[i] == "`":
+            j = command.find("`", i + 1)
+            if j < 0:
+                break
+            spans.append((i, j + 1))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+#: The package name of an install operand the shell computes when the command runs (`$(…)` or
+#: backticks). What it prints cannot be read off the command, so the operand is one package nobody can
+#: name, and the words inside the substitution are another command's, never package names.
+COMPUTED_PACKAGE = "$(...)"
+_COMPUTED = "\x00computed\x00"
+
+
+def is_computed_package(value: str) -> bool:
+    """`value` is the entity of an install operand computed at run time (`npm:$(...)`)."""
+    return value == COMPUTED_PACKAGE or value.endswith(":" + COMPUTED_PACKAGE)
+
+
+def _install_operands(text: str, start: int, spans: list[tuple[int, int]]) -> str:
+    """An installer's operands: the text from `start` to the end of its simple command, with each
+    command substitution among them replaced by one marker word. A separator inside a substitution
+    belongs to the substituted command and does not end the installer's."""
+    ends = {a: b for a, b in spans if a >= start}
+    out: list[str] = []
+    i = start
+    while i < len(text):
+        if i in ends:
+            out.append(_COMPUTED)
+            i = ends[i]
+        elif text[i] in ";&|\n":
+            break
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+#: Package extras after a local operand (`.[dev]`, `./pkg[test,docs]`).
+_EXTRAS_RE = re.compile(r"\[[^\]]*\]\Z")
+
+
+#: Installer options whose value is a package index or registry, by installer: where the packages come
+#: from, so a code source, never a package.
+_PIP_INDEX_FLAGS = frozenset({"-i", "--index-url", "--extra-index-url", "-f", "--find-links"})
+_INDEX_FLAGS = {
+    **dict.fromkeys(("pip", "pip3", "pipx", "uv pip"), _PIP_INDEX_FLAGS),
+    **dict.fromkeys(("npm", "pnpm", "yarn", "bun"), frozenset({"--registry"})),
+}
+
+
+#: A shell redirection among a command's words: an optional fd number (or `&`), the operator (`>`, `>>`,
+#: `>|`, `<`, `<<`, `<<<`, `>&`, `<&`, `<>`), and the target when it is glued on (`2>&1`, `>/dev/null`).
+_REDIRECTION = re.compile(r"(?:\d+|&)?(?:>>|>\||>&|>|<<<|<<-?|<&|<>|<)(.*)")
+
+
+def _local_install_operand(token: str, eco: str = "") -> str | None:
+    """The path an installer operand names when it is on disk rather than in a registry: `.`, `..`, or a
+    path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or, for
+    Go, its `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
+    tok = token.strip().strip("'\"")
+    tok = _EXTRAS_RE.sub("", tok)
+    if eco == "go" and tok.endswith("/..."):
+        tok = tok[:-4] or "."
+    if tok in (".", "..", "~", "$HOME") or tok.startswith(("./", "../", "/", "~/", "$HOME/")):
+        return tok
+    return None
+
+
 def _packages_in(text: str) -> list[str]:
+    return _installs_in(text)[0]
+
+
+def _installs_in(text: str) -> tuple[list[str], list[str], list[str]]:
+    """The packages installer commands in `text` name, their operands that are local paths (as written,
+    see `_local_install_operand`), and the index or registry URLs their options name (`--index-url URL`,
+    `--registry=URL`). A local path installs what is on disk and an index serves packages: neither is a
+    package."""
     pkgs: list[str] = []
+    local: list[str] = []
+    indexes: list[str] = []
+    spans = substitution_spans(text) if ("$(" in text or "`" in text) else []
     for m in _INSTALLERS.finditer(text):
         eco_key = re.sub(r"\s+", " ", m.group("eco").lower())
         if eco_key.startswith(("openclaw", "hermes")):
             eco = "plugin"
         else:
             eco = _ECOSYSTEM.get(eco_key, eco_key)
-        tokens = m.group("rest").split()
-        skip_next = False
+        rest = _install_operands(text, m.start("rest"), spans) if spans else m.group("rest")
+        tokens = rest.split()
+        index_flags = _INDEX_FLAGS.get(eco_key, frozenset())
+        skip_next = index_next = False
         for tok in tokens:
+            redirect = _REDIRECTION.fullmatch(tok)
+            if redirect:
+                # not an operand, nor is the target that follows a bare operator
+                skip_next = not redirect.group(1)
+                index_next = False
+                continue
+            if index_next:
+                indexes.append(tok.strip("'\""))
+                index_next = False
+                continue
             if skip_next:
                 skip_next = False
                 continue
+            if _COMPUTED in tok:
+                pkgs.append(COMPUTED_PACKAGE if eco == "plugin" else f"{eco}:{COMPUTED_PACKAGE}")
+                continue
             if tok.startswith("-"):
+                flag, eq, value = tok.partition("=")
+                if flag in index_flags:
+                    if eq:
+                        indexes.append(value.strip("'\""))
+                    else:
+                        index_next = True
+                    continue
                 if tok in (
                     "-r",
                     "--requirement",
@@ -680,6 +991,10 @@ def _packages_in(text: str) -> list[str]:
             if eco == "plugin":
                 pkgs.append(tok.strip("'\""))
                 continue
+            path = _local_install_operand(tok, eco)
+            if path is not None:
+                local.append(path)
+                continue
             p = normalise_package(eco, tok)
             if p:
                 pkgs.append(p)
@@ -695,29 +1010,121 @@ def _packages_in(text: str) -> list[str]:
                 .rstrip("/")
                 .removesuffix(".git")
             )
-    return list(dict.fromkeys(pkgs))
+    return list(dict.fromkeys(pkgs)), list(dict.fromkeys(local)), list(dict.fromkeys(indexes))
 
 
-def _recipients_in(values: list[str]) -> list[Found]:
+def _is_address(value: str, platform: str | None) -> bool:
+    """An email, a phone number or an `@handle`: a recipient, not a channel. A WhatsApp JID is
+    shaped like an email but is a chat id."""
+    if _JID_RE.fullmatch(value):
+        return False
+    if value.startswith("@") or _EMAIL_RE.fullmatch(value) or _E164_RE.fullmatch(value):
+        return True
+    if value.isdigit():
+        return platform in _PHONE_PLATFORMS
+    return bool(_PHONE_RE.fullmatch(value))
+
+
+def _is_channel_target(value: str, *, chat: bool, platform: str | None) -> bool:
+    """A message target that names a channel. Any tool's prefixed target or JID counts; a chat send's
+    target also counts when it is platform-prefixed (`telegram:-100…`, `discord:#bot-home`), a `#name`,
+    a Matrix room or id-shaped (a numeric chat id, or at least eight characters with a digit, such as a
+    Slack id) and not an address."""
+    if _CHANNEL_RE.fullmatch(value) or _JID_RE.fullmatch(value):
+        return True
+    if not chat:
+        return False
+    m = _PLATFORM_TARGET_RE.fullmatch(value)
+    if m and m.group(1).lower() in _CHAT_PLATFORMS:
+        return not _is_address(m.group(2).strip(), m.group(1).lower())
+    if _CHANNEL_NAME_RE.fullmatch(value) or _MATRIX_ROOM_RE.fullmatch(value):
+        return True
+    if _is_address(value, platform):
+        return False
+    return bool(_NUMERIC_ID_RE.fullmatch(value) or _ID_TOKEN_RE.fullmatch(value))
+
+
+def channel_names(value: str) -> set[str]:
+    """The shorter names an owner may use for a channel target, lower-cased: `ops-yard` and `#ops-yard`
+    for `channel:ops-yard`; for a platform-prefixed target, the part after the platform when it is a
+    `#name` or id-shaped (`#bot-home` for `discord:#bot-home`, not `general` for `slack:general`). A
+    Matrix room has none (the part after its `:` is the homeserver)."""
+    m = _CHANNEL_RE.fullmatch(value)
+    if m:
+        name = m.group(2).lower()
+        return {name, "#" + name}
+    m = _PLATFORM_TARGET_RE.fullmatch(value)
+    if m and m.group(1).lower() in _CHAT_PLATFORMS:
+        rest = m.group(2).strip()
+        if (
+            _CHANNEL_NAME_RE.fullmatch(rest)
+            or _NUMERIC_ID_RE.fullmatch(rest)
+            or _ID_TOKEN_RE.fullmatch(rest)
+        ):
+            return {rest.lower()}
+    return set()
+
+
+def _chat_send(call: CanonicalCall) -> tuple[bool, str | None]:
+    """Whether a message send goes to a chat (not mail), and its platform when the call names one."""
+    platform = call.get("channel")
+    platform = platform.strip().lower() if isinstance(platform, str) else None
+    mail = platform in ("email", "mail", "smtp") or "mail" in call.tool.lower()
+    return not mail, platform
+
+
+def send_platform(call: CanonicalCall) -> str | None:
+    """The chat platform a message send names in its own argument (`discord` for OpenClaw's
+    `{channel: discord, target: "#x"}`), lower-cased; None for any other call."""
+    if call.tool_kind is not ToolKind.MESSAGE_SEND:
+        return None
+    return _chat_send(call)[1] or None
+
+
+#: A direct-message target, in any letter case and with an id of any length.
+_PERSON_PREFIX = re.compile(r"(?i)\s*(?:user|dm):")
+
+
+def platform_targets(call: CanonicalCall) -> set[tuple[EntityKind, str]]:
+    """The targets of a message send that a pattern naming the send's platform may cover: its channels and
+    chat names, as (kind, value). Never a direct message (`user:`, `dm:`), an address (an email, a phone
+    number, an `@handle`) or a target that names a platform of its own."""
+    if call.tool_kind is not ToolKind.MESSAGE_SEND:
+        return set()
+    chat, platform = _chat_send(call)
+    if not chat or not platform:
+        return set()
+    out: set[tuple[EntityKind, str]] = set()
+    for f in _recipients_in(call.recipients, chat=chat, platform=platform):
+        named = _PLATFORM_TARGET_RE.fullmatch(f.value)
+        if _PERSON_PREFIX.match(f.value) or (named and named.group(1).lower() in _CHAT_PLATFORMS):
+            continue
+        if f.kind is EntityKind.CHANNEL or (
+            f.kind is EntityKind.RECIPIENT
+            and "@" not in f.value
+            and not _is_address(f.display, platform)
+        ):
+            out.add((f.kind, f.value))
+    return out
+
+
+def _recipients_in(
+    values: list[str], *, chat: bool = False, platform: str | None = None
+) -> list[Found]:
     out: list[Found] = []
     for v in values:
         v = v.strip()
         if not v:
             continue
-        m = _CHANNEL_RE.fullmatch(v)
-        if m:
+        if _is_channel_target(v, chat=chat, platform=platform):
             out.append(Found(EntityKind.CHANNEL, v, v, Role.RECIPIENT))
             continue
         if _EMAIL_RE.fullmatch(v):
             norm = normalise_recipient(v)
+            domain = normalise_host(norm.split("@", 1)[1])
             out.append(Found(EntityKind.RECIPIENT, norm, norm, Role.RECIPIENT))
             out.append(
-                Found(
-                    EntityKind.HOST,
-                    normalise_host(norm.split("@", 1)[1]),
-                    normalise_host(norm.split("@", 1)[1]),
-                    Role.DATA_DESTINATION,
-                )
+                Found(EntityKind.HOST, domain, domain, Role.DATA_DESTINATION, domain_of=norm)
             )
             continue
         out.append(Found(EntityKind.RECIPIENT, normalise_recipient(v), v, Role.RECIPIENT))
@@ -732,21 +1139,45 @@ def extract_mentions(
     role: Role | None = Role.MENTIONED,
     inline_program: bool = False,
 ) -> list[Found]:
-    """Entities named in free text (request, inputs, content): hosts, emails, paths, packages.
-    `inline_program` marks the text as program source (see `_hosts_in`)."""
+    """Entities named in free text (request, inputs, content): hosts, emails, paths, packages,
+    channels. `inline_program` marks the text as program source (see `_hosts_in`). A JID is blanked before
+    the other kinds are read, so it is not also a mailbox and a host."""
+    channels = _channels_in(text)
+    for start, end, value in channels:
+        if "@" in value:
+            text = text[:start] + " " * (end - start) + text[end:]
     found: list[Found] = []
-    for h in _hosts_in(text, inline_program=inline_program):
+    for h in _hosts_in(text, inline_program=inline_program, emails=False):
         found.append(Found(EntityKind.HOST, h, h, role))
     for m in _EMAIL_RE.finditer(text):
         norm = normalise_recipient(m.group(1))
+        domain = normalise_host(m.group(1).split("@", 1)[1])
         found.append(Found(EntityKind.RECIPIENT, norm, norm, role))
+        found.append(Found(EntityKind.HOST, domain, domain, role, domain_of=norm))
     for norm, disp in paths_in(text, home, workspace_root, None):
         found.append(Found(EntityKind.PATH, norm, disp, role))
     for p in _packages_in(text):
         found.append(Found(EntityKind.PACKAGE, p, p, role))
-    for m in _CHANNEL_RE.finditer(text):
-        found.append(Found(EntityKind.CHANNEL, m.group(0), m.group(0), role))
+    for _, _, value in channels:
+        found.append(Found(EntityKind.CHANNEL, value, value, role))
     return found
+
+
+def _channels_in(text: str) -> list[tuple[int, int, str]]:
+    """Channel tokens in free text, as (start, end, value) in text order."""
+    out: list[tuple[int, int, str]] = []
+    for m in _CHANNEL_RE.finditer(text):
+        ident = m.group(2)
+        if m.group(1) in _WORD_PREFIXES and not (
+            _NUMERIC_ID_RE.fullmatch(ident) or "@" in ident or _ID_TOKEN_RE.fullmatch(ident)
+        ):
+            continue
+        out.append((m.start(), m.end(), m.group(0)))
+    taken = [(s, e) for s, e, _ in out]
+    for m in _JID_RE.finditer(text):
+        if not any(s <= m.start() < e for s, e in taken):
+            out.append((m.start(), m.end(), m.group(0)))
+    return sorted(out)
 
 
 # --------------------------------------------------------------------------- shell segments
@@ -760,10 +1191,21 @@ def shell_segments(command: str) -> list[list[str]]:
     """The simple commands of a shell string as token lists, wrappers (`sudo`, `env`, …) and leading
     variable assignments dropped. Quoting is honoured within a segment where it parses; this is a
     light split for lineage questions, not the AIRA shell parser."""
+    return [tokens for _, tokens in shell_segments_sep(command)]
+
+
+def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
+    """`shell_segments`, each with the separator before it (`|`, `&&`, `||`, `;`, a newline, or `""`
+    for the first)."""
     import shlex
 
-    out: list[list[str]] = []
-    for seg in _SEGMENT_SPLIT_RE.split(command or ""):
+    out: list[tuple[str, list[str]]] = []
+    parts = re.split("(" + _SEGMENT_SPLIT_RE.pattern + ")", command or "")
+    sep = ""
+    for i, seg in enumerate(parts):
+        if i % 2:
+            sep = seg
+            continue
         seg = seg.strip().lstrip("(").rstrip(")").strip()
         if not seg or seg.startswith("#"):
             continue
@@ -774,7 +1216,7 @@ def shell_segments(command: str) -> list[list[str]]:
         while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
             tokens = tokens[1:]
         if tokens:
-            out.append(tokens)
+            out.append((sep, tokens))
     return out
 
 
@@ -859,6 +1301,115 @@ def _fetch_outputs(tokens: list[str]) -> list[str]:
     return [o for o in out if o and o != "-"]
 
 
+_WGET_OUTPUT_FLAG = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O(?:.+)?")
+_WGET_SHORT_O = re.compile(r"-[A-Za-z]*O(.*)")
+#: A redirection of standard output to a file: `>f`, `> f`, `>>f`, `1>f`, `&>f`.
+_STDOUT_REDIRECT = re.compile(r"(?:1|&)?>>?(.*)")
+
+
+def _download_outputs(tokens: list[str]) -> list[str]:
+    """`_fetch_outputs`, plus wget's combined short flags ending in `O` (`-qO FILE`, `-qOFILE`) and, when
+    no output flag names a file, the one wget saves to: the URL's basename, under `-P DIR` /
+    `--directory-prefix DIR` when given."""
+    out = _fetch_outputs(tokens)
+    if tokens[0] != "wget":
+        return out
+    for i, tok in enumerate(tokens[1:], 1):
+        m = _WGET_SHORT_O.fullmatch(tok)
+        if m and m.group(1) and m.group(1) != "-":
+            out.append(m.group(1))
+        elif m and tok != "-O" and not m.group(1) and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+    if any(_WGET_OUTPUT_FLAG.fullmatch(t) for t in tokens[1:]):
+        return [o for o in out if o != "-"]
+    prefix = ""
+    for i, tok in enumerate(tokens[1:], 1):
+        if tok in ("-P", "--directory-prefix") and i + 1 < len(tokens):
+            prefix = tokens[i + 1].rstrip("/") + "/"
+        elif tok.startswith("--directory-prefix="):
+            prefix = tok.split("=", 1)[1].rstrip("/") + "/"
+    for url in (t for t in tokens[1:] if _URL_RE.match(t)):
+        base = urlsplit(url).path.rsplit("/", 1)[-1]
+        if base:
+            out.append(prefix + base)
+    return out
+
+
+def _stdout_files(tokens: list[str]) -> list[str]:
+    """The files a segment's standard output is redirected to, and a `tee`'s file operands."""
+    out: list[str] = []
+    for i, tok in enumerate(tokens):
+        m = _STDOUT_REDIRECT.fullmatch(tok)
+        if m and m.group(1):
+            out.append(m.group(1))
+        elif m and i + 1 < len(tokens):
+            out.append(tokens[i + 1])
+    if tokens[0] == "tee":
+        out.extend(t for t in tokens[1:] if not t.startswith(("-", ">")) and t not in out)
+    return [o for o in out if o not in ("-", "/dev/null") and not o.startswith("&")]
+
+
+@dataclass
+class InstallWalk:
+    """What a command installs from disk and downloads, read segment by segment (`install_walk`)."""
+
+    #: Local installer operands: (as written, resolved where that segment runs).
+    local: list[tuple[str, str]] = field(default_factory=list)
+    #: Local paths an installer installs from a download earlier in the command → the download's hosts.
+    installed: dict[str, set[str]] = field(default_factory=dict)
+    #: Every file the command downloads (`curl`, `wget`, or their output redirected or teed), as a
+    #: normalised path, and where it is copied or moved to later in the command → the download's hosts.
+    downloaded: dict[str, set[str]] = field(default_factory=dict)
+
+
+def install_walk(
+    command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
+) -> InstallWalk:
+    """Read a command's segments in order, tracking `cd`: the local paths its installers install, the
+    files its `curl` and `wget` segments save (with their output flags, a redirection or a `tee` later in
+    the same pipeline), carried through a later `cp` or `mv`, and which installs take a download."""
+    from .copies import _operands
+
+    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
+    walk = InstallWalk()
+
+    def at(raw: str) -> str:
+        return resolve_token(raw, base, home=home, workspace_root=workspace_root)[0]
+
+    def save(path: str, hosts: set[str]) -> None:
+        walk.downloaded.setdefault(path, set()).update(hosts)
+
+    piped: set[str] = set()  # hosts a fetch earlier in this pipeline writes to standard output
+    for sep, tokens in shell_segments_sep(command):
+        piped = piped if sep == "|" else set()
+        head = tokens[0]
+        if head == "cd" and len(tokens) > 1:
+            base = at(tokens[1])
+            continue
+        if head in _FETCH_HEADS:
+            piped = set(_hosts_in(" ".join(tokens)))
+            for raw in _download_outputs(tokens):
+                save(at(raw), piped)
+        if piped:
+            for raw in _stdout_files(tokens):
+                save(at(raw), piped)
+        if head in ("cp", "mv") and walk.downloaded:
+            ops = _operands(tokens[1:])
+            for src in ops[0] if ops else ():
+                hosts = walk.downloaded.get(at(src))
+                if hosts:
+                    dest = at(ops[1])
+                    save(dest, hosts)
+                    save(dest.rstrip("/") + "/" + at(src).rsplit("/", 1)[-1], hosts)
+            continue
+        for raw in _installs_in(" ".join(tokens))[1]:
+            path = at(raw)
+            walk.local.append((raw, path))
+            if path in walk.downloaded:
+                walk.installed.setdefault(path, set()).update(walk.downloaded[path])
+    return walk
+
+
 def fetched_then_run(
     command: str, *, home: str | None, workspace_root: str | None, cwd: str | None
 ) -> tuple[set[str], set[str]]:
@@ -911,6 +1462,245 @@ def fetched_then_run(
     return hosts, executables
 
 
+#: Publishing commands: head → (the verb word sequences that publish, the options that name the target).
+#: The target is where the package goes, so its host is a data destination. Installing, viewing or
+#: checking with the same option reads from the host and is left alone.
+_PUBLISH_COMMANDS: dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]] = {
+    "npm": ((("publish",),), ("--registry",)),
+    "pnpm": ((("publish",),), ("--registry",)),
+    "yarn": ((("publish",), ("npm", "publish")), ("--registry",)),
+    "twine": ((("upload",),), ("--repository-url",)),
+    "uv": ((("publish",),), ("--publish-url",)),
+    "gem": ((("push",),), ("--host",)),
+    "cargo": ((("publish",),), ("--index",)),
+    "dotnet": ((("nuget", "push"),), ("--source", "-s")),
+}
+#: Environment variables that name the target instead of an option (matched without case).
+_PUBLISH_ENV = {
+    "npm": ("npm_config_registry",),
+    "pnpm": ("npm_config_registry",),
+    "yarn": ("npm_config_registry", "yarn_npm_registry_server"),
+    "twine": ("twine_repository_url",),
+    "uv": ("uv_publish_url",),
+    "gem": ("rubygems_host",),
+}
+#: Commands that push an image or chart; the target is the registry the reference names.
+_PUSH_COMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "docker": (("push",), ("image", "push")),
+    "podman": (("push",), ("image", "push")),
+    "helm": (("push",),),
+}
+#: `docker build --push` and `docker buildx build --push` publish the image they tag.
+_BUILD_PUSH_VERBS = (("buildx", "build"), ("build",), ("image", "build"))
+#: Options whose value is a separate word (global ones before the verb, and push options), per head.
+_VALUE_OPTIONS: dict[str, frozenset[str]] = {
+    "npm": frozenset(
+        {"-w", "--workspace", "--userconfig", "--tag", "--cache", "--prefix", "--otp", "--access"}
+    ),
+    "pnpm": frozenset({"-C", "--dir", "--filter", "-F", "--tag", "--otp", "--access"}),
+    "yarn": frozenset({"--cwd", "--tag", "--otp", "--access"}),
+    "twine": frozenset(
+        {"-r", "--repository", "-u", "--username", "-p", "--password", "--config-file", "--cert"}
+    ),
+    "uv": frozenset({"--directory", "--project", "--index", "--username", "--password", "--token"}),
+    "gem": frozenset({"-k", "--key", "--otp", "-p", "--http-proxy"}),
+    "cargo": frozenset({"--registry", "--token", "-p", "--package", "--manifest-path", "--target"}),
+    "dotnet": frozenset(
+        {"-k", "--api-key", "-ss", "--symbol-source", "-sk", "--symbol-api-key", "-t", "--timeout"}
+    ),
+    "docker": frozenset(
+        {
+            "-H",
+            "--host",
+            "--context",
+            "-c",
+            "--config",
+            "-l",
+            "--log-level",
+            "--platform",
+            "-t",
+            "--tag",
+            "-f",
+            "--file",
+            "--build-arg",
+            "--target",
+            "--output",
+            "-o",
+            "--builder",
+            "--cache-from",
+            "--cache-to",
+            "--label",
+            "--secret",
+            "--ssh",
+            "--progress",
+            "--iidfile",
+            "--metadata-file",
+        }
+    ),
+    "podman": frozenset(
+        {
+            "--connection",
+            "-c",
+            "--url",
+            "--identity",
+            "--authfile",
+            "--cert-dir",
+            "--creds",
+            "--digestfile",
+            "--format",
+            "-f",
+            "--sign-by",
+            "--platform",
+            "--compression-format",
+        }
+    ),
+    "helm": frozenset(
+        {
+            "--kube-context",
+            "-n",
+            "--namespace",
+            "--registry-config",
+            "--ca-file",
+            "--cert-file",
+            "--key-file",
+            "--username",
+            "--password",
+            "--repository-cache",
+            "--repository-config",
+        }
+    ),
+}
+_PUBLISH_HINT = re.compile(r"\b(?:npm|pnpm|yarn|twine|uv|gem|cargo|dotnet|docker|podman|helm)\b")
+_EXPORT_RE = re.compile(r"\bexport\s+([A-Za-z_]\w*)=(\S+)")
+_PYTHON_HEAD_RE = re.compile(r"python(?:\d+(?:\.\d+)?)?")
+#: A registry name: a dotted hostname, `localhost` or a bracketed IPv6 address, with an optional port.
+_REGISTRY_RE = re.compile(
+    r"(?:(?:[a-z0-9-]{1,63}\.)+[a-z][a-z0-9-]{1,23}|localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\])(?::\d{1,5})?",
+    re.IGNORECASE,
+)
+
+
+def _target_host(value: str) -> str | None:
+    """The host a publish target names: a URL (`sparse+https://…` too) or a bare `host[:port][/path]`;
+    None for anything else (a repository name, a local feed directory)."""
+    value = re.sub(r"^[a-z]+\+(?=[a-z]+://)", "", value.strip().strip("'\""))
+    if "://" in value:
+        return host_of_url(value)
+    head = value.split("/", 1)[0].rsplit("@", 1)[-1]
+    if not _REGISTRY_RE.fullmatch(head) or head.rsplit(".", 1)[-1].lower() in _FILE_EXTENSIONS:
+        return None
+    return normalise_host(head).strip("[]")
+
+
+def _image_registry(ref: str) -> str | None:
+    """The registry an image reference names (`reg.example.test:5000/team/app:1` → `reg.example.test`),
+    or None when it names none (`app:1`, `someuser/app`: the default registry; a local transport such
+    as `dir:` or `oci-archive:`). A `docker://` destination is read after its prefix."""
+    if ref.startswith(("oci://", "docker://")):
+        h = host_of_url(ref)
+        return h.strip("[]") if h else None
+    first, slash, _ = ref.partition("/")
+    if not slash or not _REGISTRY_RE.fullmatch(first):
+        return None
+    return normalise_host(first).strip("[]")
+
+
+def _unwrap_launcher(head: str, argv: list[str]) -> tuple[str, list[str]]:
+    """The tool a launcher runs: `python3 [-I] -m twine …`, `npx [-y] npm@10 …`, `corepack pnpm …`,
+    `uvx twine …`, `uv run twine …`, `pipx run twine …`."""
+    for _ in range(3):
+        if _PYTHON_HEAD_RE.fullmatch(head) and "-m" in argv:
+            k = argv.index("-m")
+            if k + 1 < len(argv) and all(a.startswith("-") for a in argv[:k]):
+                head, argv = argv[k + 1], argv[k + 2 :]
+                continue
+        if head in ("npx", "uvx", "corepack") or (head in ("uv", "pipx") and argv[:1] == ["run"]):
+            rest = argv[1:] if head in ("uv", "pipx") else argv
+            rest = [a for a in itertools.dropwhile(lambda a: a.startswith("-"), rest)]
+            if rest:
+                head, argv = re.sub(r"(?<=.)@[^/]*$", "", rest[0]), rest[1:]
+                continue
+        break
+    return head, argv
+
+
+def publish_targets(command: str) -> set[str]:
+    """Hosts the command publishes to: the target a publishing command names by option or
+    environment variable (`npm publish --registry URL`, `TWINE_REPOSITORY_URL=URL twine upload`,
+    an earlier `export` of one), or the registry of the image or chart it pushes (`docker push
+    reg.example.test/app`, `docker buildx build --push -t reg.example.test/app .`, `helm push chart
+    oci://reg.example.test/charts`). A publish that names no target goes to the public default, which
+    names no host here, and a `--dry-run` sends nothing. The verb must lead the command's words, so
+    `npm run publish` and an echoed command are not publishes. A command that does not parse names
+    no publish target (its hosts keep the roles the text gives them)."""
+    out: set[str] = set()
+    if not _PUBLISH_HINT.search(command):
+        return out
+    shape = derive_exec_shape(command, load_lists().path_groups)
+    # the shell parse keeps no `export` segment, so exports are read from the text
+    exported = {m.group(1).lower(): m.group(2).strip("'\"") for m in _EXPORT_RE.finditer(command)}
+    for seg in shape.segments:
+        head, argv = _unwrap_launcher(seg.head, list(seg.argv))
+        if head in _PUBLISH_COMMANDS:
+            verbs, options = _PUBLISH_COMMANDS[head]
+        elif head in _PUSH_COMMANDS:
+            verbs, options = _PUSH_COMMANDS[head], ()
+        else:
+            continue
+        valued = _VALUE_OPTIONS.get(head, frozenset())
+        words: list[str] = []
+        targets: list[str] = []
+        flags: set[str] = set()
+        i = 0
+        while i < len(argv):
+            tok = argv[i]
+            name, eq, val = tok.partition("=")
+            scoped = head in ("npm", "pnpm", "yarn") and re.fullmatch(r"--@[\w.-]+:registry", name)
+            if (tok in options or (scoped and not eq)) and i + 1 < len(argv):
+                targets.append(argv[i + 1])
+                i += 2
+                continue
+            if eq and (name in options or scoped):
+                targets.append(val)
+            elif tok in valued and i + 1 < len(argv):
+                if head == "docker" and tok in ("-t", "--tag"):
+                    targets.append("image:" + argv[i + 1])
+                i += 2
+                continue
+            elif tok.startswith("-"):
+                flags.add(name)
+            else:
+                words.append(tok)
+            i += 1
+        if "--dry-run" in flags:
+            continue
+        verb = next((v for v in verbs if tuple(words[: len(v)]) == v), None)
+        build_push = (
+            head == "docker"
+            and "--push" in flags
+            and any(tuple(words[: len(v)]) == v for v in _BUILD_PUSH_VERBS)
+        )
+        if verb is None and not build_push:
+            continue
+        env = {
+            **exported,
+            **{a.partition("=")[0].lower(): a.partition("=")[2] for a in seg.env_assignments},
+        }
+        targets += [env[n] for n in _PUBLISH_ENV.get(head, ()) if n in env]
+        hosts: list[str | None] = []
+        for t in targets:
+            if t.startswith("image:"):
+                hosts.append(_image_registry(t[6:]) if build_push else None)
+            else:
+                hosts.append(_target_host(t))
+        if verb is not None and head == "helm":
+            hosts += [_image_registry(w) for w in words[len(verb) :] if w.startswith("oci://")]
+        elif verb is not None and head in _PUSH_COMMANDS:
+            hosts += [_image_registry(w) for w in words[len(verb) : len(verb) + 2]]
+        out.update(h for h in hosts if h)
+    return out
+
+
 def pipes_into_code(command: str, *, inline_program: bool = False) -> bool:
     """Whether the command pipes something into a stage that runs it as code (`… | sh`,
     `… | python3`), or evaluates text (`source <(…)`, `eval …`).
@@ -943,6 +1733,63 @@ def pipes_into_code(command: str, *, inline_program: bool = False) -> bool:
     return any(stage_runs_stdin(s, lists) for s in stages)
 
 
+def registry_hosts(call: CanonicalCall) -> list[str]:
+    """Hosts the call points a package manager at: named on a registry line written into a
+    package-manager config file (`.npmrc`, `pip.conf`, …), or in a command that sets the registry
+    (`npm config set registry URL`). Later installs come from there, so each is a code source.
+    A host the file or the command names anywhere else is not one."""
+    lists = load_lists()
+    kind = call.tool_kind
+    if kind is ToolKind.EXEC:
+        text = call.analysis_text or ""
+        spans = [
+            text[m.start() : _command_end(text, m.end())]
+            for rx in lists.patterns("installers", "registry_cli_patterns")
+            for m in rx.finditer(text)
+        ]
+    elif kind is ToolKind.FILE_READ or not call.path:
+        return []
+    else:
+        if not any(
+            rx.search(call.path)
+            for rx in lists.patterns("installers", "registry_config_path_patterns")
+        ):
+            return []
+        edits = [e.get("new") or "" for e in call.get("edits") or [] if isinstance(e, dict)]
+        text = "\n".join(e for e in edits if e) or str(call.get("content") or "")
+        spans = [
+            text[m.start() : _setting_end(text, m.start())]
+            for rx in lists.patterns("installers", "registry_config_text_patterns")
+            for m in rx.finditer(text)
+        ]
+    return list(dict.fromkeys(h for span in spans for h in _hosts_in(span, emails=False)))
+
+
+def _setting_end(text: str, start: int) -> int:
+    """The end of the registry setting that starts at `start`: its line, and for a section header
+    (`[registries.x]`) or a list key (`channels:`) the lines under it, up to the next section
+    header, the next key at the margin or a blank line."""
+    end = _line_end(text, start)
+    line = text[start:end].strip()
+    if not (line.startswith("[") or line.endswith(":")):
+        return end
+    while end < len(text):
+        nxt = _line_end(text, end + 1)
+        body = text[end + 1 : nxt]
+        if not body.strip() or body.lstrip().startswith("["):
+            break
+        if line.endswith(":") and not body.startswith((" ", "\t", "-")):
+            break
+        end = nxt
+    return end
+
+
+def _command_end(text: str, start: int) -> int:
+    """The end of the simple command `start` lies in: the next separator or the end of the text."""
+    m = _SEGMENT_SPLIT_RE.search(text, start)
+    return m.start() if m else len(text)
+
+
 def extract_exec(
     command: str,
     *,
@@ -960,8 +1807,10 @@ def extract_exec(
     code_hosts, run_files = fetched_then_run(
         command, home=home, workspace_root=workspace_root, cwd=cwd
     )
+    published = set() if inline_program else publish_targets(command)
 
-    for h in _hosts_in(command, inline_program=inline_program):
+    named = _hosts_in(command, inline_program=inline_program)
+    for h in named + sorted(published - set(named)):
         if h in ("localhost",):
             role = Role.DATA_SOURCE
         elif h in code_hosts:
@@ -972,6 +1821,12 @@ def extract_exec(
             role = Role.CODE_SOURCE
         else:
             role = Role.DATA_SOURCE
+        if h in published and h != "localhost" and role is not Role.DATA_DESTINATION:
+            # a publish target is a destination whatever else the command does with the host
+            if role is not Role.CODE_SOURCE:
+                role = Role.DATA_DESTINATION
+            else:
+                found.append(Found(EntityKind.HOST, h, h, Role.DATA_DESTINATION))
         found.append(Found(EntityKind.HOST, h, h, role))
 
     for m in _EMAIL_RE.finditer(command):
@@ -1007,12 +1862,25 @@ def extract_exec(
             if tok.startswith(("/", "~", "./", "../", "$HOME")):
                 destinations.add(tok.strip("'\""))
 
+    # An installer operand that is a local path installs, and so runs, what is there: a code source
+    # resolved against the working directory (`.` is that directory), not a registry package.
+    # An index or registry an installer option names serves the packages: a code source too.
+    packages, _, indexes = _installs_in(command)
+    local = install_walk(command, home=home, workspace_root=workspace_root, cwd=cwd).local
+    installed = list(dict.fromkeys(path for _, path in local))
+    # The same operands as the generic path scan spells them, which the installed paths replace.
+    unresolved = {
+        normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw, _ in local
+    }
+
     for norm, disp in paths_in(command, home, workspace_root, cwd):
         raw_matches = [
             r
             for r in sources | destinations | executables
             if normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
         ]
+        if (norm in installed or norm in unresolved) and not raw_matches and norm not in run_files:
+            continue  # only installed: added below as a code source
         if norm in run_files or any(
             normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
             for r in executables
@@ -1028,8 +1896,14 @@ def extract_exec(
         else:
             role = Role.DATA_SOURCE
         found.append(Found(EntityKind.PATH, norm, disp, role))
+    for norm in installed:
+        found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.CODE_SOURCE))
+    for url in indexes:
+        h = host_of_url(url)
+        if h:
+            found.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
 
-    for p in _packages_in(command):
+    for p in packages:
         kind = (
             EntityKind.PLUGIN
             if (p.startswith("@") or (p.count("/") == 1 and ":" not in p))
@@ -1037,13 +1911,170 @@ def extract_exec(
             else EntityKind.PACKAGE
         )
         found.append(Found(kind, p, p, Role.CODE_SOURCE))
-    return found
+    return _repo_code_sources(command, found)
+
+
+# --------------------------------------------------------------------------- multi-tenant code hosts
+
+#: `git@github.com:owner/repo.git`: a git remote in scp form (no scheme, a `:` before the path).
+_SCP_REMOTE_RE = re.compile(
+    r"\A(?:[\w.-]+@)?((?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,24}):(?!//)(?!\d+(?:/|\Z))(\S+)\Z"
+)
+#: A token that may be a URL: what is left between shell quotes, separators and brackets.
+_URL_TOKEN_RE = re.compile(r"[^\s\"'<>`|;&()\[\]{}]+")
+
+
+class TenantRule(NamedTuple):
+    #: The name repositories are written under (`github.com` for raw.githubusercontent.com).
+    name: str
+    #: Path segments that name a repository; 0 when no path does.
+    segments: int
+    #: Leading segments kept in front of them (`spaces` on huggingface.co).
+    prefixes: frozenset[str]
+    #: Leading segments dropped before them (`repos` on api.github.com).
+    skip: frozenset[str]
+
+
+def tenant_rules() -> dict[str, TenantRule]:
+    """`installers.multi_tenant_hosts` by host."""
+    out: dict[str, TenantRule] = {}
+    for rule in load_lists().get("installers", "multi_tenant_hosts", default=[]) or []:
+        if not isinstance(rule, dict) or not rule.get("host"):
+            continue
+        host = normalise_host(str(rule["host"]))
+        out[host] = TenantRule(
+            normalise_host(str(rule.get("as") or host)),
+            int(rule.get("segments") or 0),
+            frozenset(str(p).lower() for p in rule.get("prefixes") or ()),
+            frozenset(str(p).lower() for p in rule.get("skip") or ()),
+        )
+    return out
+
+
+def tenant_rule(host: str) -> TenantRule | None:
+    """The rule for a multi-tenant host. Any other subdomain of a listed host (`cdn-lfs.huggingface.co`,
+    `user-images.githubusercontent.com`) serves the same accounts' files with no repository in a form
+    known here: it names none. None for any other host."""
+    rules = tenant_rules()
+    host = normalise_host(host)
+    if host in rules:
+        return rules[host]
+    if any(host.endswith("." + listed) for listed in rules):
+        return TenantRule(host, 0, frozenset(), frozenset())
+    return None
+
+
+def _remove_dot_segments(segs: list[str]) -> list[str]:
+    """The path as a client sends it: `.` dropped, `..` removing the segment before it."""
+    out: list[str] = []
+    for seg in segs:
+        if seg == ".":
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
+    return out
+
+
+def _tenant_split(url: str) -> tuple[str, str] | None:
+    """(host, repository) for a URL, a schemeless URL or an scp-style git remote on a multi-tenant
+    host; None for any other host."""
+    url = url.strip().strip("'\"")
+    m = None if "://" in url else _SCP_REMOTE_RE.match(url)
+    if m:
+        host, path = normalise_host(m.group(1)), m.group(2)
+    else:
+        try:
+            parts = urlsplit(url if "://" in url else "https://" + url)
+            hostname = parts.hostname
+        except ValueError:
+            return None
+        if not hostname:
+            return None
+        host, path = normalise_host(hostname), parts.path
+    rule = tenant_rule(host)
+    if rule is None:
+        return None
+    if rule.segments <= 0:
+        return host, host
+    segs = _remove_dot_segments([s for s in path.split("/") if s])
+    if segs and segs[0].lower() in rule.skip:
+        segs = segs[1:]
+    lead: list[str] = []
+    if segs and segs[0].lower() in rule.prefixes:
+        lead, segs = [segs[0]], segs[1:]
+    if len(segs) < rule.segments:
+        return host, rule.name
+    named = [*lead, *segs[: rule.segments]]
+    named[-1] = named[-1].removesuffix(".git")
+    return host, "/".join([rule.name, *named]).lower()
+
+
+def repo_of_url(url: str) -> str | None:
+    """The repository a URL on a multi-tenant host (`installers.multi_tenant_hosts`) names:
+    `github.com/<owner>/<repo>` for GitHub and its raw and archive hosts, `gist.github.com/<user>`,
+    `huggingface.co/<org>/<name>` (and `huggingface.co/spaces/<org>/<name>`), in lower case. A path that
+    names no repository gives the host's own name, and a host whose paths never do (a release-asset
+    host) gives the host: neither is a repository a grant can cover. None for any other host."""
+    split = _tenant_split(url)
+    return split[1] if split else None
+
+
+def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
+    """A multi-tenant host the command takes code from supplies anyone's files: the code source is the
+    repository each of its URLs in the command names, and the host is only read from. A fetch run by
+    substitution (`sh -c "$(curl …)"`, `bash <(curl …)`) counts, as the installers list reads it."""
+    hosts = {f.value for f in found if f.kind is EntityKind.HOST}
+    tenant = {
+        f.value
+        for f in found
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and tenant_rule(f.value)
+    }
+    if any(tenant_rule(h) for h in hosts - tenant) and any(
+        p.search(command) for p in load_lists().patterns("installers", "fetch_to_shell_patterns")
+    ):
+        tenant |= {h for h in hosts if tenant_rule(h)}
+    if not tenant:
+        return found
+    repos: dict[str, None] = {}
+    seen: set[str] = set()
+    for m in _URL_TOKEN_RE.finditer(command):
+        split = _tenant_split(m.group(0))
+        if split is not None and split[0] in tenant:
+            seen.add(split[0])
+            repos[split[1]] = None
+    for host in sorted(tenant - seen):
+        rule = tenant_rule(host)
+        repos[host if rule is None or rule.segments <= 0 else rule.name] = None
+    # A clone is already its repository as a `git+` package; the package stays its code source.
+    packaged = {f.value for f in found if f.kind is EntityKind.PACKAGE}
+    repos = {r: None for r in repos if "git+" + r not in packaged}
+    out = [
+        replace(f, role=Role.DATA_SOURCE)
+        if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and f.value in tenant
+        else f
+        for f in found
+    ]
+    out.extend(Found(EntityKind.REPO, r, r, Role.CODE_SOURCE) for r in repos)
+    return out
 
 
 def extract_call(
     call: CanonicalCall, *, home: str | None, workspace_root: str | None
 ) -> list[Found]:
-    """Entities of a canonical call with roles by tool kind."""
+    """Entities of a canonical call with roles by tool kind. A host the call sets as a package
+    registry is a code source as well as whatever else the call makes of it."""
+    found = _extract_call(call, home=home, workspace_root=workspace_root)
+    for h in registry_hosts(call):
+        found.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
+    return found
+
+
+def _extract_call(
+    call: CanonicalCall, *, home: str | None, workspace_root: str | None
+) -> list[Found]:
     found: list[Found] = []
     cwd = call.get("cwd")
     kind = call.tool_kind
@@ -1108,7 +2139,8 @@ def extract_call(
             extract_mentions(str(call.get("body") or ""), home=home, workspace_root=workspace_root)
         )
     elif kind is ToolKind.MESSAGE_SEND:
-        found.extend(_recipients_in(call.recipients))
+        chat, platform = _chat_send(call)
+        found.extend(_recipients_in(call.recipients, chat=chat, platform=platform))
         for a in call.get("attachments") or []:
             norm = normalise_path(a, home=home, workspace_root=workspace_root)
             found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.DATA_SOURCE))
@@ -1169,37 +2201,9 @@ def extract_call(
             if call.provider.kind is ProviderKind.PLUGIN
             else EntityKind.MCP_SERVER
         )
-        found.append(
-            Found(ekind, call.provider.identity, call.provider.identity, Role.TOOL_PROVIDER)
-        )
+        identity = normalise_remote_identity(call.provider.identity)
+        found.append(Found(ekind, identity, identity, Role.TOOL_PROVIDER))
     return found
-
-
-def grant_matches(kind: str, pattern: str, entity: Entity) -> bool:
-    """Does a grant of `kind` with glob `pattern` cover `entity`? Over-broad patterns never match."""
-    import fnmatch
-
-    if pattern.strip() in ("*", "**", "*.*", "") or pattern.strip("*") == "":
-        return False
-    pat = pattern.strip().lower()
-    if kind == "destination" and entity.kind in (
-        EntityKind.HOST,
-        EntityKind.RECIPIENT,
-        EntityKind.CHANNEL,
-    ):
-        value = entity.value.lower()
-        if entity.kind is EntityKind.RECIPIENT and "@" in value and "@" not in pat:
-            value = value.split("@", 1)[1]
-        if fnmatch.fnmatch(value, pat):
-            return True
-        if pat.startswith("*.") and value == pat[2:]:
-            return True
-        return False
-    if kind == "file" and entity.kind is EntityKind.PATH:
-        return fnmatch.fnmatch(entity.value, pat) or fnmatch.fnmatch(entity.display, pat)
-    if kind == "provider" and entity.kind in (EntityKind.MCP_SERVER, EntityKind.PLUGIN):
-        return fnmatch.fnmatch(entity.value.lower(), pat)
-    return False
 
 
 def any_text(value: Any) -> str:

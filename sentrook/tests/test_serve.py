@@ -88,7 +88,7 @@ def oidc_server(monkeypatch):
 def test_health_and_metrics(server):
     with httpx.Client(base_url=server.url) as c:
         h = c.get("/healthz").json()
-        assert h["ok"] and h["test_mode"] and "auth" not in h and h["convergence"] == "conv-v3"
+        assert h["ok"] and h["test_mode"] and "auth" not in h and h["convergence"] == "conv-v7"
         m = c.get("/metrics")
         assert m.status_code == 200 and b"http_requests_total" in m.content
         assert c.get("/nope").status_code == 404
@@ -254,6 +254,48 @@ def test_config_auth_modes():
     for retired in ("apikey", "auto"):
         with pytest.raises(ConfigError, match="SENTROOK_SCAN_AUTH_MODE"):
             ServeConfig.from_env({"SENTROOK_SCAN_AUTH_MODE": retired})
+
+
+def test_config_secrets_from_files(tmp_path):
+    prod = {"SENTROOK_ENV": "production"}
+    state = tmp_path / "state_key"
+    state.write_text("s" * 40 + "\n")
+    jev = tmp_path / "jev_api_key"
+    jev.write_text("jev-key\n")
+    oracle = tmp_path / "oracle_api_key"
+    oracle.write_text("o" * 30)
+    cfg = ServeConfig.from_env(
+        {
+            **prod,
+            "SENTROOK_STATE_KEY_FILE": str(state),
+            "SENTROOK_JEV_API_KEY_FILE": str(jev),
+            "SENTROOK_ORACLE_API_KEY_FILE": str(oracle),
+        }
+    )
+    assert (cfg.state_key, cfg.jev_api_key, cfg.oracle_api_key) == ("s" * 40, "jev-key", "o" * 30)
+    # the plain variables still work, and an empty optional key is still "not set"
+    empty = tmp_path / "empty"
+    empty.write_text("\n")
+    cfg = ServeConfig.from_env(
+        {**prod, "SENTROOK_STATE_KEY": "x" * 40, "SENTROOK_JEV_API_KEY_FILE": str(empty)}
+    )
+    assert cfg.state_key == "x" * 40 and cfg.jev_api_key is None
+    # both set, an unreadable path, or an empty state key file in production all stop startup
+    with pytest.raises(ConfigError, match="not both"):
+        ServeConfig.from_env(
+            {**prod, "SENTROOK_STATE_KEY": "x" * 40, "SENTROOK_STATE_KEY_FILE": str(state)}
+        )
+    with pytest.raises(ConfigError, match="SENTROOK_ORACLE_API_KEY_FILE") as err:
+        ServeConfig.from_env(
+            {
+                **prod,
+                "SENTROOK_STATE_KEY_FILE": str(state),
+                "SENTROOK_ORACLE_API_KEY_FILE": str(tmp_path / "missing"),
+            }
+        )
+    assert "s" * 40 not in str(err.value)
+    with pytest.raises(ConfigError, match="SENTROOK_STATE_KEY is required"):
+        ServeConfig.from_env({**prod, "SENTROOK_STATE_KEY_FILE": str(empty)})
 
 
 def test_ablation_requires_test_mode():

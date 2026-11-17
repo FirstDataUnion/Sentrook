@@ -6,6 +6,12 @@ Hermes has no owner flag; its gateway allowlist is a yes/no admission gate. The 
 - other (basis `group_chat`): any group, channel or thread message, even from a listed user;
 - other (basis `host_open_access`): a DM admitted only by allow-all (or a grant the plugin cannot see);
 - unknown (basis `none`): cron, subagent, API-server and webhook runs.
+
+A turn Hermes starts itself with a user message it wrote (a finished sub-agent or background process, a
+heartbeat, a goal) is never an owner message: see `host_turns`.
+
+The conversation sent with a background save (`conversation_sender_of`) differs in one place: a group
+message from a sender individually on the allowlist is the owner (basis `group_chat`).
 """
 
 from __future__ import annotations
@@ -76,16 +82,35 @@ def resolve_platform(turn_platform: Any, facts: dict[str, str], env: dict[str, s
     return ""
 
 
-def _approval_bypass(env: dict[str, str]) -> bool:
-    """True when Hermes would auto-approve an `approve` directive (YOLO, approvals.mode off)."""
+def hermes_config() -> dict[str, Any]:
+    """Effective config via Hermes's own loader (the plugin interpreter has no PyYAML)."""
     try:
-        from tools.approval import is_approval_bypass_active
+        from hermes_cli.config import load_config_readonly
 
-        if is_approval_bypass_active():
-            return True
+        cfg = load_config_readonly()
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:  # noqa: BLE001
-        pass
-    return env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        return {}
+
+
+def approvals_off(cfg: dict[str, Any]) -> bool:
+    """`approvals.mode` reads as off, the way Hermes reads it: YAML turns a bare `off` into False."""
+    approvals = cfg.get("approvals")
+    mode = approvals.get("mode") if isinstance(approvals, dict) else None
+    if isinstance(mode, bool):
+        return mode is False
+    return isinstance(mode, str) and mode.strip().lower() == "off"
+
+
+def _approval_bypass(env: dict[str, str]) -> bool:
+    """True when Hermes would auto-approve an `approve` directive: approvals are off in the config, or
+    the process itself runs with HERMES_YOLO_MODE (a gateway an operator started with it). YOLO the
+    owner switches on for a session (`/yolo` in a chat, `hermes chat --yolo`, which the gateway
+    applies per session) is not visible through Hermes's public API, so there the owner's YOLO
+    choice also covers Sentrook's approval prompts."""
+    if env.get("HERMES_YOLO_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return approvals_off(hermes_config())
 
 
 def is_unattended(
@@ -138,6 +163,15 @@ def _truthy(env: dict[str, str], name: str) -> bool:
     return env.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
+def _allowlisted(platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]) -> bool:
+    """The sender is individually on `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`."""
+    up = platform.upper()
+    uid = facts.get("user_id") or (str(sender_id) if sender_id else "")
+    return bool(uid) and uid in (
+        _env_set(env, f"{up}_ALLOWED_USERS") | _env_set(env, "GATEWAY_ALLOWED_USERS")
+    )
+
+
 def sender_of(
     platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
 ) -> dict[str, Any]:
@@ -150,13 +184,28 @@ def sender_of(
         return {"relation": "other", "basis": ["group_chat"]}
     if not chat_type:
         return {"relation": "unknown", "basis": ["none"]}
-    up = platform.upper()
-    uid = facts.get("user_id") or (str(sender_id) if sender_id else "")
-    if uid and uid in (
-        _env_set(env, f"{up}_ALLOWED_USERS") | _env_set(env, "GATEWAY_ALLOWED_USERS")
-    ):
+    if _allowlisted(platform, facts, sender_id, env):
         return {"relation": "owner", "basis": ["host_allowlist_dm"]}
     return {"relation": "other", "basis": ["host_open_access"]}
+
+
+def conversation_sender_of(
+    platform: str, facts: dict[str, str], sender_id: Any, env: dict[str, str]
+) -> dict[str, Any]:
+    """Who wrote a message in the conversation a background save is judged against: `sender_of`, except
+    that in a group chat a sender individually on the allowlist is the owner (basis `group_chat`). The
+    trigger keeps calling every group message `other`; this only says who wrote each message.
+
+    While Hermes's write origin is its background review (the review fork or the curator, which may run in
+    a context that still holds the owner's chat), nobody is the owner: the sender is unknown."""
+    from .skill_review import in_background_review
+
+    if in_background_review():
+        return {"relation": "unknown", "basis": ["none"]}
+    sender = sender_of(platform, facts, sender_id, env)
+    if sender["basis"] == ["group_chat"] and _allowlisted(platform, facts, sender_id, env):
+        return {"relation": "owner", "basis": ["group_chat"]}
+    return sender
 
 
 def environ() -> dict[str, str]:

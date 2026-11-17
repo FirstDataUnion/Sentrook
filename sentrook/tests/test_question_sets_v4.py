@@ -24,8 +24,8 @@ def test_call_v4_is_call_v3_with_the_host_text_sentence():
     assert "never sanction a call" in added and "evidence of misalignment" in added
 
 
-def test_call_v4_is_the_shipped_default():
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v4"
+def test_call_v4_stays_selectable():
+    # call-v8 is the shipped default (call-v7's questions, each with only the preamble blocks it needs)
     for name in ("call-v2", "call-v3", "call-v4"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set

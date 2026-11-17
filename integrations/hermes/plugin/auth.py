@@ -1,8 +1,9 @@
 """Scan auth: OIDC client_credentials against the identity service.
 
-Credentials come from plugin settings or env and, when missing, from the Hermes `.env`
-(SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET). Re-resolved on every call, so `.env` edits
-apply without a restart.
+The client id and secret come only through Hermes: `agent.secret_scope.get_secret`, which honours the
+active profile on a multiplexed gateway. The plugin never opens a `.env` file. Hermes stores the values
+(`hermes config set SENTROOK_SCAN_CLIENT_ID ...`, the install prompt, or the Desktop plugin settings) and
+loads them when it starts, so a changed credential applies after Hermes reloads its environment.
 """
 
 from __future__ import annotations
@@ -15,11 +16,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
-
-from .config import hermes_home
 
 DEFAULT_SCAN_AUDIENCE = "sentrook"
 DEFAULT_SCAN_SCOPE = "sentrook.scan"
@@ -27,6 +26,7 @@ DEFAULT_AUTH_TIMEOUT_S = 30.0
 TOKEN_EXPIRY_SKEW_S = 60
 CLIENT_ID_VAR = "SENTROOK_SCAN_CLIENT_ID"
 CLIENT_SECRET_VAR = "SENTROOK_SCAN_CLIENT_SECRET"
+CREDENTIAL_VARS = (CLIENT_ID_VAR, CLIENT_SECRET_VAR)
 
 
 @dataclass(frozen=True)
@@ -47,66 +47,55 @@ def clear_scan_token_cache() -> None:
         _cache.clear()
 
 
-def parse_dotenv_text(text: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key, value = key.strip(), value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        if key:
-            out[key] = value
-    return out
+def get_secret(name: str) -> str | None:
+    """A credential through Hermes's route, `agent.secret_scope.get_secret`; None when unset.
 
-
-def env_with_hermes_dotenv(
-    env: dict[str, str] | None = None, *, dotenv_path: str | Path | None = None
-) -> dict[str, str]:
-    """Fill missing keys from the Hermes `.env`; never overrides non-empty env values."""
-    merged = dict(os.environ if env is None else env)
-    path = Path(dotenv_path) if dotenv_path else hermes_home(merged) / ".env"
+    Outside Hermes (unit tests, tooling) the module is missing and the process env is read instead. Any
+    error from Hermes (an unscoped read on a multiplexed gateway raises) reads as unset, so the scan
+    fails closed rather than borrowing another profile's value.
+    """
     try:
-        from_file = parse_dotenv_text(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except OSError:
-        from_file = {}
-    for key, value in from_file.items():
-        if not merged.get(key, "").strip():
-            merged[key] = value
-    return merged
+        from agent.secret_scope import get_secret as hermes_get_secret
+    except ImportError:
+        value: Any = os.environ.get(name)
+    else:
+        try:
+            value = hermes_get_secret(name)
+        except Exception:  # noqa: BLE001 - UnscopedSecretError and friends: treated as unset
+            value = None
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def resolve_secret_string(
-    raw: Any, env: dict[str, str], env_fallback: str | None = None
-) -> str | None:
-    """A plain string, or an env SecretRef `{source: env, id}`, else the env fallback."""
+def missing_credentials(secret: Callable[[str], str | None] = get_secret) -> list[str]:
+    """The credential variables Hermes has no value for, in a fixed order."""
+    return [name for name in CREDENTIAL_VARS if not secret(name)]
+
+
+def _setting(raw: Any, env: dict[str, str], var: str) -> str | None:
+    """A non-secret value: the plugin setting, then the process env."""
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
-    if isinstance(raw, dict) and raw.get("source") == "env" and isinstance(raw.get("id"), str):
-        value = env.get(raw["id"], "").strip()
-        if value:
-            return value
-    if env_fallback and env.get(env_fallback, "").strip():
-        return env[env_fallback].strip()
-    return None
+    return env.get(var, "").strip() or None
 
 
 def resolve_oidc_credentials(
-    settings: dict[str, Any], env: dict[str, str], issuer: str
+    settings: dict[str, Any],
+    env: dict[str, str],
+    issuer: str,
+    secret: Callable[[str], str | None] = get_secret,
 ) -> OidcCredentials | None:
-    client_id = resolve_secret_string(settings.get("client_id"), env, CLIENT_ID_VAR)
-    client_secret = resolve_secret_string(settings.get("client_secret"), env, CLIENT_SECRET_VAR)
+    """None when either credential is missing. The audience and scope are not secrets: settings, then
+    env, then the defaults."""
+    client_id, client_secret = secret(CLIENT_ID_VAR), secret(CLIENT_SECRET_VAR)
     if not client_id or not client_secret:
         return None
     return OidcCredentials(
         client_id=client_id,
         client_secret=client_secret,
         issuer=issuer.rstrip("/"),
-        audience=resolve_secret_string(settings.get("oidc_audience"), env, "SENTROOK_OIDC_AUDIENCE")
+        audience=_setting(settings.get("oidc_audience"), env, "SENTROOK_OIDC_AUDIENCE")
         or DEFAULT_SCAN_AUDIENCE,
-        scope=resolve_secret_string(settings.get("oidc_scope"), env, "SENTROOK_OIDC_SCOPE")
+        scope=_setting(settings.get("oidc_scope"), env, "SENTROOK_OIDC_SCOPE")
         or DEFAULT_SCAN_SCOPE,
     )
 

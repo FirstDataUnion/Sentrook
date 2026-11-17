@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from . import grants
 from .decision import tiers_of
 
 HISTORY_DEFAULT = 10
@@ -34,7 +35,15 @@ NO_SCANS = "No scans in the traffic log yet."
 _APPROVED = frozenset(
     {"once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"}
 )
-_REVIEW = {"deny": "denied", "timeout": "timed out", "cancelled": "cancelled"}
+_REVIEW = {
+    "deny": "denied",
+    "timeout": "timed out",
+    "cancelled": "cancelled",
+    "hold_approved": "approved",
+    "hold_expired": "expired",
+}
+#: A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked.
+REVIEW_LOOP = "review_loop"
 _ID = re.compile(r"[0-9a-fA-F-]{4,36}")
 _SPACE = re.compile(r"\s+")
 _COUNT = re.compile(r"[0-9]{1,6}")
@@ -165,6 +174,8 @@ def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
     if verdict == "review":
         if decision == "allowed" and scan.get("snoozed") is True:
             return "allowed (snoozed)"
+        if decision == "held":
+            return "held"
         return "blocked (no reviewer)" if decision == "blocked" else "review"
     if verdict == "allow":
         return "allowed"
@@ -174,8 +185,10 @@ def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
 def review_of(action: str, resolution: dict[str, Any] | None) -> str:
     """How the review was answered; `-` when there was none."""
     if resolution is None:
-        return "no answer" if action.startswith("review") else "-"
+        return "no answer" if action.startswith(("review", "held")) else "-"
     choice = str(resolution.get("resolution") or "").strip().lower()
+    if choice == "deny" and resolution.get("decided_by") == REVIEW_LOOP:
+        return "auto-denied by the review loop"
     return "approved" if choice in _APPROVED else _REVIEW.get(choice, "not approved")
 
 
@@ -260,4 +273,9 @@ def format_why(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
         if isinstance(e, dict) and isinstance(e.get("display"), str)
     ]
     lines += ["entities:", *shown] if shown else ["entities: none"]
+    # The grants the scanner found would each let the call through next time, as the owner sets them.
+    suggested = grants.response_hints(resp)
+    if suggested:
+        lines.append("grants that would allow it next time (30 days):")
+        lines += [f"  {grants.grant_command(g, '/sentrook {}'.format)}" for g in suggested]
     return "\n".join(lines)

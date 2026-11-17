@@ -4,12 +4,17 @@
  * A snooze covers the session the command was sent from, or every session with `--all`, for a
  * duration from 1 minute to 24 hours (default 1 hour). While one applies, a review the plugin would
  * ask about is allowed instead; the call is still scanned and its traffic record says `snoozed: true`.
- * A snooze never applies to:
- * - a block;
+ * A snooze never allows:
+ * - a block, or a block it turned into a review;
  * - a review the scanner enforces (`enforced` is review or block);
  * - any run not started by a human message (cron, heartbeat, subagent, hook, or a trigger the plugin
  *   could not tell), where the review stands;
  * - a scan error, or observe mode.
+ *
+ * In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner
+ * attends, nothing independent points to an attack and nothing is enforced: the score alone blocks) into
+ * a review that always asks, at critical severity; it is never allowed silently. A block without the
+ * mark, from an older scanner too, stays a block.
  *
  * A session is named by its `session_ref`, the same hash a scan sends. A command with no current
  * session (the command line) can only snooze every session.
@@ -34,7 +39,11 @@ const MAX_MS = 24 * 3600_000;
 const MAX_ENTRIES = 200;
 const DURATION = /^(\d{1,5})([mh])$/;
 export const RULE =
-  "A snoozed review is allowed and logged; blocks, enforced reviews and unattended runs are never snoozed.";
+  "A snoozed review is allowed and logged. A block with no clear attack signal asks you instead; " +
+  "other blocks, enforced reviews and unattended runs are never snoozed.";
+/** The tail of the reply to a snooze that was set. */
+const SET_RULE =
+  "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and unattended runs are not snoozed.";
 
 /** A change to write to the traffic log, with the reply. */
 export interface SnoozeResult {
@@ -90,8 +99,21 @@ export function active(data: SnoozeFile | null, ref: string, now: Date): boolean
 }
 
 /** A snooze may relax this review: the scanner did not enforce it. */
-export function applies(resp: { enforced?: string | null }): boolean {
-  return resp.enforced !== "review" && resp.enforced !== "block";
+/**
+ * A snooze may relax this review: the scanner did not enforce it, and its score is under the block line (a block
+ * the scanner's ceiling lowered to a review always asks).
+ */
+export function applies(resp: { enforced?: string | null; risk?: number | null }, blockAt: number): boolean {
+  if (resp.enforced === "review" || resp.enforced === "block") return false;
+  return (resp.risk ?? 0) < blockAt;
+}
+
+/**
+ * A snooze in a chat the owner attends turns this block into a review that always asks: the block comes from the
+ * score and the scanner marks it `relaxable` (only a JSON true counts; an older scanner sends none).
+ */
+export function relaxes(resp: { enforced?: string | null; relaxable?: unknown }, verdict: string): boolean {
+  return verdict === "block" && resp.relaxable === true && resp.enforced !== "review" && resp.enforced !== "block";
 }
 
 // ---- status ----------------------------------------------------------------------------------------
@@ -217,7 +239,7 @@ export function run(
   return {
     reply:
       `Snoozed reviews ${where} for ${parsed.text}, until ${show(until)}. ` +
-      "Blocks, enforced reviews and unattended runs are not snoozed.",
+      SET_RULE,
     change: { op: "set", entry },
   };
 }

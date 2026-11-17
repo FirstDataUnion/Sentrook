@@ -3,7 +3,9 @@
 - `JevExposureProbe` sends the exposure view (request text plus the new untrusted inputs) with the
   `exposure-v1` questions (or `exposure-v2` on the redacted `exposure-v2` view) and contributes
   `suspicion.exposure`; above the taint threshold it sets the `tainted` session flag. It is skipped
-  when there is nothing new and untrusted to read.
+  when there is nothing new and untrusted to read. Reads of the agent's own skills and memory
+  (`prepare.own_store.own_store_read`) are left out: a skill is instructions by design and a memory note is the
+  agent's own standing context.
 - `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger; `call-v2`
   adds the turn's inputs; `call-v3` adds the entity library's verdicts for the call's own entities,
   filled from the oracle probe) with the `call-v1`, `call-v2` or `call-v3` questions and contributes misalignment,
@@ -29,8 +31,16 @@ from ..jev.chunking import chunk_exposure_state, est_tokens
 from ..jev.client import ApiError, Decider, DecisionResult, JevConfig
 from ..jev.questions import QuestionSet, build_body, load_question_set
 from ..prepare import Prepared
-from ..prepare.views import REPUTATION, VIEW_KEYS, with_reputation
-from .base import Contribution, Envelope
+from ..prepare.entities import EntityKind, Origin, Role
+from ..prepare.views import (
+    BATCH_VIEWS,
+    OWNER_CONFIG_VIEWS,
+    REPUTATION,
+    VIEW_KEYS,
+    with_reputation,
+    with_resolved,
+)
+from .base import Contribution, Envelope, SessionMark
 
 PROBE_VERSION = "jev/2.0.0a1"
 
@@ -77,6 +87,60 @@ def _usage_summary(results: list[DecisionResult]) -> dict[str, Any]:
     }
 
 
+def mapped_contributions(qs: QuestionSet, answers: dict[str, Any]) -> list[Contribution]:
+    """Contributions for a question set that defines its own `mapping` (the self-edit sets). A yes/no answer gives
+    the probability that counts against the call (`against_when`), with doubt below `knee` counted as none and the
+    rest rescaled to 0-1; a score answer gives its level on 0-1."""
+    out: list[Contribution] = []
+    mapping = qs.mapping or {}
+    for q, m in (mapping.get("noul") or {}).items():
+        if q not in answers:
+            continue
+        v = _noul(answers[q])
+        v = v if m.get("against_when", True) else 1.0 - v
+        knee = float(m.get("knee", 0.0))
+        if knee:
+            v = max(0.0, (v - knee) / (1.0 - knee))
+        out.append(Contribution(signal=m["signal"], value=v, reason=m["reason"]))
+    for q, m in (mapping.get("score") or {}).items():
+        if q in answers:
+            out.append(
+                Contribution(
+                    signal=m["signal"], value=_score(answers[q], qs.levels(q)), reason=m["reason"]
+                )
+            )
+    return out
+
+
+#: Roles in which an owner-configured entity is listed for the judge: where the call sends to, never what it runs.
+_OWNER_CONFIG_ROLES = frozenset({Role.DATA_DESTINATION, Role.RECIPIENT})
+_OWNER_CONFIG_KINDS = frozenset({EntityKind.HOST, EntityKind.RECIPIENT, EntityKind.CHANNEL})
+
+
+def owner_config_entries(
+    prepared: Prepared, verdicts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """`reputation` entries for the call's destinations and recipients that the owner's own configuration supplied
+    on an earlier scan (the token's trusted set), as `verdict: owner_config`. Trust a config read in this request
+    establishes is left out: the exposure probe, running alongside, may judge that read injected. An entity content
+    the agent read also named, one the library already has a verdict for, and anything the call runs or installs
+    from are left out too."""
+    listed = {(v.get("kind"), v.get("value")) for v in verdicts}
+    out: list[dict[str, Any]] = []
+    for ent in prepared.entities.pending():
+        if not ent.in_prior_trusted or ent.in_session_untrusted:
+            continue
+        if Origin.UNTRUSTED_INPUT in ent.origins or ent.kind not in _OWNER_CONFIG_KINDS:
+            continue
+        if not ent.roles & _OWNER_CONFIG_ROLES or ent.roles & {Role.CODE_SOURCE, Role.EXECUTABLE}:
+            continue
+        if (ent.kind.value, ent.display) in listed:
+            continue
+        out.append({"kind": ent.kind.value, "value": ent.display, "verdict": "owner_config"})
+    out.sort(key=lambda e: (str(e["kind"]), str(e["value"])))
+    return out
+
+
 class _JevProbe:
     step: ProbeStep
 
@@ -116,6 +180,9 @@ class _JevProbe:
         if self.step is ProbeStep.JEV_CALL and "new_inputs" in VIEW_KEYS.get(self.view_name, ()):
             out["inputs_truncated"] = bool(meta.get("inputs_truncated"))
             out["inputs_stripped"] = bool(meta.get("inputs_stripped"))
+            out["history_cut"] = int(meta.get("history_cut") or 0)
+            out["history_dropped"] = int(meta.get("history_dropped") or 0)
+            out["request_cut"] = bool(meta.get("request_cut"))
         if self.step is ProbeStep.JEV_CALL and REPUTATION in VIEW_KEYS.get(self.view_name, ()):
             out["reputation_entries"] = len(prepared.oracle_verdicts)
         return out
@@ -163,7 +230,9 @@ class JevExposureProbe(_JevProbe):
         """The configured exposure view with only the new untrusted inputs that carry content; None
         when there are none. Raises KeyError when the view was not prepared."""
         seqs = {
-            i.input.input_seq for i in prepared.untrusted_inputs(new_only=True) if i.input.content
+            i.input.input_seq
+            for i in prepared.untrusted_inputs(new_only=True)
+            if i.input.content and i.input.input_seq not in prepared.own_store_inputs
         }
         if not seqs:
             return None
@@ -177,9 +246,19 @@ class JevExposureProbe(_JevProbe):
         except KeyError:
             return self._no_view()
         if state is None:
-            return Envelope.skipped(
-                self.step, "no new untrusted inputs with content", self.versions
+            own = sorted(prepared.own_store_inputs)
+            env = Envelope.skipped(
+                self.step,
+                "only reads of the agent's own skills or memory"
+                if own
+                else "no new untrusted inputs with content",
+                self.versions,
             )
+            if own:
+                env.evidence["own_store_skipped"] = own
+            return env
+        # the questions' largest form: chunks are cut before each is built, so a set whose blocks depend on the
+        # state is sized as if every block were sent
         questions_tokens = est_tokens(self.qs.built_questions())
         chunks = chunk_exposure_state(state, questions_tokens)
         started = time.perf_counter()
@@ -210,6 +289,23 @@ class JevExposureProbe(_JevProbe):
         exposure = max(checks.values())
         reason = max(checks, key=checks.get)
         flags = [SessionFlag.TAINTED] if exposure >= self.config.taint_threshold else []
+        # The inputs of each chunk judged injected. Only a chunk that holds one input says which input
+        # was injected; its call's files and tables join the tainted set.
+        judged: dict[int, bool] = {}
+        for chunk, answers in zip(chunks, per_chunk, strict=True):
+            if not answers or max(answers.values()) < self.config.taint_threshold:
+                continue
+            seqs = {
+                n["input_seq"]
+                for n in chunk.get("new_inputs") or []
+                if isinstance(n.get("input_seq"), int)
+            }
+            for seq in seqs:
+                judged[seq] = judged.get(seq, False) or len(seqs) == 1
+        marks = [
+            SessionMark(judgement="tainted", input_seq=seq, attributed=one)
+            for seq, one in sorted(judged.items())
+        ]
         return Envelope(
             step=self.step,
             versions=self._versions_with_model(results),
@@ -223,6 +319,7 @@ class JevExposureProbe(_JevProbe):
                 )
             ],
             flags_set=flags,
+            marks=marks,
             evidence={
                 **self._view_evidence(prepared),
                 "state": state,
@@ -233,6 +330,11 @@ class JevExposureProbe(_JevProbe):
                 "usage": _usage_summary(results),
                 "input_seqs": sorted(
                     {n["input_seq"] for n in state.get("new_inputs") or [] if "input_seq" in n}
+                ),
+                **(
+                    {"own_store_skipped": sorted(prepared.own_store_inputs)}
+                    if prepared.own_store_inputs
+                    else {}
                 ),
             },
         )
@@ -252,7 +354,20 @@ class JevCallProbe(_JevProbe):
         known the key is absent."""
         state = prepared.views[self.view_name]
         if REPUTATION in VIEW_KEYS.get(self.view_name, ()):
-            return with_reputation(state, prepared.oracle_verdicts)
+            verdicts = list(prepared.oracle_verdicts)
+            if self.view_name in OWNER_CONFIG_VIEWS:
+                verdicts += owner_config_entries(prepared, verdicts)
+            state = with_reputation(state, verdicts)
+        if self.view_name in BATCH_VIEWS:
+            # Only a command the join changed in place: a read file's content appended to the command says nothing
+            # the sibling's own arguments do not already show.
+            pending = prepared.pending.command if isinstance(prepared.pending.command, str) else ""
+            commands = [
+                c.command
+                for c in prepared.resolved
+                if isinstance(c.command, str) and not (pending and c.command.startswith(pending))
+            ]
+            state = with_resolved(state, commands)
         return state
 
     def run(self, prepared: Prepared, *, repeat: int | None = None) -> Envelope:
@@ -280,6 +395,8 @@ class JevCallProbe(_JevProbe):
             return env
 
         contributions: list[Contribution] = []
+        if self.qs.mapping:
+            contributions += mapped_contributions(self.qs, answers)
         if "supported_by_request" in answers:
             contributions.append(
                 Contribution(
@@ -289,7 +406,7 @@ class JevCallProbe(_JevProbe):
                 )
             )
         for q, signal in CALL_SIGNALS.items():
-            if q not in answers:
+            if q not in answers or self.qs.mapping:
                 continue
             a = answers[q]
             value = _noul(a) if a.get("type") == "noul" else _score(a, self.qs.levels(q))
@@ -335,5 +452,9 @@ class JevCallProbe(_JevProbe):
                 "p_level_ge_2": split,
                 "confidences": confs,
                 "usage": _usage_summary([res]),
+                # which conditional preamble blocks the questions carried (sets built from blocks only)
+                **(
+                    {"question_blocks": self.qs.conditional_blocks(state)} if self.qs.blocks else {}
+                ),
             },
         )

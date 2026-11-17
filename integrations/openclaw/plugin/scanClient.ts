@@ -12,6 +12,13 @@ export interface ScanResponse {
   status: "ok" | "degraded" | "error";
   risk: number | null;
   enforced: "block" | "review" | null;
+  /** The highest verdict the risk may reach; only `review` is honoured, anything else is ignored. */
+  ceiling?: string | null;
+  /**
+   * The owner attends, nothing independent points to an attack and nothing is enforced: a block here comes from
+   * the score alone. Only `true` counts, and only while the owner has snoozed an attended session.
+   */
+  relaxable?: unknown;
   tree?: {
     suspicion?: { score?: number | null };
     consequence?: { score?: number | null };
@@ -20,6 +27,8 @@ export interface ScanResponse {
   floors_applied?: Array<Record<string, unknown>>;
   relief_applied?: Array<Record<string, unknown>>;
   reasons?: Array<{ code: string; signal?: string; subject?: string | null; detail?: unknown }>;
+  /** Grants that would each let the call through next time; read through `grants.responseHints`, never trusted as typed. */
+  grant_hints?: unknown;
   tool_description?: { category?: string; template?: string } | null;
   entities?: Record<string, { kind?: string; display?: string }>;
   action_fingerprint?: string | null;

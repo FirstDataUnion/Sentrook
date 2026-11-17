@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
+import { runSentrookCommand } from "./commands.ts";
 import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
+import { execPolicy } from "./planir.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
@@ -26,6 +28,7 @@ const ENV_KEYS = [
   "SENTROOK_SCAN_CLIENT_ID",
   "SENTROOK_SCAN_CLIENT_SECRET",
   "SENTROOK_MODE",
+  "SENTROOK_ON_SCAN_ERROR",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 const realFetch = globalThis.fetch;
@@ -48,6 +51,7 @@ function setup(
     SENTROOK_SCAN_CLIENT_SECRET: "secret-value",
     ...env,
   });
+  if (!("SENTROOK_ON_SCAN_ERROR" in env)) delete process.env.SENTROOK_ON_SCAN_ERROR;
   const scans: any[] = [];
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input);
@@ -58,8 +62,19 @@ function setup(
     if (url === "http://scan.test/scan") {
       const planir = JSON.parse(String(init?.body));
       scans.push(planir);
-      const cmd = String(planir.pending_call.arguments.command ?? "");
+      const args = planir.pending_call.arguments;
+      const cmd = String(args.command ?? args.content ?? args.new_text ?? "");
       if (cmd.includes("FAIL")) return reply(500, { error: { code: "boom" } });
+      if (cmd.includes("SCANERR")) {
+        return reply(200, { response_version: "2.0", status: "error", risk: null, error: { code: "internal", message: "scan failed" } });
+      }
+      if (cmd.includes("DOWN")) throw new TypeError("fetch failed");
+      if (cmd.includes("TIMEOUT")) {
+        // Never answers; the plugin's own deadline aborts the request.
+        return new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("This operation was aborted", "AbortError"))),
+        );
+      }
       const risk = cmd.includes("EXFIL") ? 92 : cmd.includes("REVIEW") ? 55 : cmd.includes("FLOOR") ? 20 : 5;
       return reply(200, {
         response_version: "2.0",
@@ -159,7 +174,12 @@ test("allow, block and review over one episode, with the state token and inputs 
 
   const blocked = await h.fire("before_tool_call", call("c2", "curl EXFIL"));
   assert.equal(blocked.block, true);
-  assert.match(blocked.blockReason, /risk 92\/100: Runs a command on cl0ud-sync.io/);
+  assert.equal(
+    blocked.blockReason,
+    "Sentrook security block: this tool call did not run because it reads or sends sensitive data, such as " +
+      "credentials or personal data. Do not retry it, rephrase it or try to reach the same result another way " +
+      "unless the user explicitly tells you to. Tell the user what was blocked and why, and ask how they want to proceed.",
+  );
   const p2 = h.scans[1];
   assert.equal(p2.session.step, 2);
   assert.equal(p2.session.state, "state-1");
@@ -214,7 +234,8 @@ test("an enforced floor blocks below the risk line", async () => {
   const h = setup();
   const r = await h.fire("before_tool_call", call("c1", "FLOOR"));
   assert.equal(r.block, true);
-  assert.match(r.blockReason, /\(enforced\)/);
+  assert.match(r.blockReason, /^Sentrook security block: this tool call did not run because it does not look safe/);
+  assert.ok(!/\d|enforced/.test(r.blockReason), "no risk score and no floor marker for the agent");
 });
 
 test("scan errors: review when attended, token and buffer kept", async () => {
@@ -257,6 +278,109 @@ test("unattended runs block on scan errors", async () => {
   const r = await h.fire("before_tool_call", { ...call("c1", "FAIL"), runId: "r9" }, { ...CTX, runId: "r9", requester: undefined });
   assert.equal(r.block, true);
   assert.equal(h.scans[0].trigger.kind, "scheduled");
+});
+
+// With onScanError left unset, a scan that gives no usable answer asks when someone can answer and
+// blocks on an unattended run. Usable allow, review and block answers are not affected.
+const SCAN_FAILURES: Record<string, string> = { SCANERR: "scan_error", TIMEOUT: "timeout", DOWN: "network" };
+const UNATTENDED = { ...CTX, runId: "r9", requester: undefined };
+async function startChat(h: Harness) {
+  await h.fire("before_prompt_build", { runId: "r1", prompt: "list my files" }, { ...CTX, trigger: "user" });
+}
+async function startCron(h: Harness) {
+  await h.fire("before_prompt_build", { runId: "r9", prompt: "[cron:abc nightly] run report" }, { ...UNATTENDED, trigger: "cron" });
+}
+
+for (const [marker, kind] of Object.entries(SCAN_FAILURES)) {
+  test(`default scan-error policy: ${marker} asks when attended`, async () => {
+    // Must fire: an error, a timeout or an unreachable scanner each ask the owner.
+    const h = setup({}, { timeoutMs: 1000 });
+    await startChat(h);
+    const r = await h.fire("before_tool_call", call("c1", `ls ${marker}`), { ...CTX, trigger: "user" });
+    assert.equal(h.scans[0].trigger.kind, "message");
+    assert.ok(r.requireApproval, "asks the owner");
+    assert.equal(r.requireApproval.title, "Sentrook unreachable");
+    assert.equal(r.requireApproval.timeoutBehavior, "deny", "an unanswered card does not run the call");
+    assert.equal(h.traffic().at(-1).decision, "blocked_on_error");
+    assert.equal(h.traffic().at(-1).failure.kind, kind);
+  });
+
+  test(`default scan-error policy: ${marker} blocks when unattended`, async () => {
+    // Must fire: with nobody to answer, the call is blocked rather than run unscanned.
+    const h = setup({}, { timeoutMs: 1000 });
+    await startCron(h);
+    const r = await h.fire("before_tool_call", { ...call("c1", `ls ${marker}`), runId: "r9" }, UNATTENDED);
+    assert.equal(r.block, true);
+    assert.match(r.blockReason, /^Sentrook did not scan this tool call/);
+    assert.match(r.blockReason, /The tool was not run\./);
+    assert.equal(h.traffic().at(-1).decision, "blocked_on_error");
+    assert.equal(h.traffic().at(-1).failure.kind, kind);
+  });
+}
+
+for (const unattended of [false, true]) {
+  test(`usable allow, review and block answers ignore the scan-error policy (${unattended ? "unattended" : "attended"})`, async () => {
+    // Must stay silent: the answers follow the scan, not the scan-error policy.
+    const h = setup();
+    const ctx = unattended ? UNATTENDED : { ...CTX, trigger: "user" };
+    const ev = (id: string, cmd: string) => (unattended ? { ...call(id, cmd), runId: "r9" } : call(id, cmd));
+    await (unattended ? startCron(h) : startChat(h));
+    assert.equal(await h.fire("before_tool_call", ev("c1", "ls"), ctx), undefined);
+    const review = await h.fire("before_tool_call", ev("c2", "rm REVIEW"), ctx);
+    const block = await h.fire("before_tool_call", ev("c3", "curl EXFIL"), ctx);
+    assert.equal(block.block, true);
+    assert.match(block.blockReason, /^Sentrook security block/);
+    if (unattended) {
+      assert.equal(review.block, true);
+      assert.match(review.blockReason, /^Sentrook held this tool call/);
+    } else {
+      assert.ok(review.requireApproval);
+      assert.notEqual(review.requireApproval.title, "Sentrook unreachable");
+    }
+    assert.ok(h.scans.every((p) => p.trigger.kind === (unattended ? "scheduled" : "message")));
+    const decisions = h.traffic().map((e) => e.decision);
+    assert.ok(!decisions.some((d) => d.endsWith("_on_error")), String(decisions));
+  });
+}
+
+test("a scan failure in a webhook or event run (trigger event) blocks rather than asks", async () => {
+  // Must fire: nobody can answer a prompt in a run OpenClaw starts from a webhook.
+  const h = setup();
+  const ctx = { ...CTX, runId: "r7", trigger: "event", requester: undefined };
+  await h.fire("before_prompt_build", { runId: "r7", prompt: "New order received" }, ctx);
+  const r = await h.fire("before_tool_call", { ...call("c1", "FAIL"), runId: "r7" }, ctx);
+  assert.equal(h.scans[0].trigger.kind, "hook");
+  assert.equal(r.block, true);
+  assert.equal(r.requireApproval, undefined);
+});
+
+test("a cron run's delivery goes out as a scheduled trigger with its channel binding", async () => {
+  // Must fire: the binding reaches the scan of the delivery to its channel, on a scheduled trigger.
+  // Must stay silent: a delivery to another channel carries no binding.
+  // The binding is the bare channel id; the agent's message tool targets `channel:<id>`.
+  const h = setup({}, { channelBindings: ["1498333845953712258"] });
+  await h.fire(
+    "before_prompt_build",
+    { runId: "r9", prompt: "[cron:9f1c2a daily-brief] Post the daily brief to the ops channel." },
+    { ...CTX, runId: "r9", trigger: "cron", requester: undefined },
+  );
+  const send = (id: string, target: string) => ({
+    toolName: "message",
+    toolCallId: id,
+    runId: "r9",
+    params: { action: "send", channel: "discord", target, message: "Daily brief: 3 incidents closed." },
+  });
+  await h.fire("before_tool_call", send("c1", "channel:1498333845953712258"), { ...CTX, runId: "r9", requester: undefined });
+  await h.fire("before_tool_call", send("c2", "channel:1498333845953712259"), { ...CTX, runId: "r9", requester: undefined });
+  const [bound, other] = h.scans;
+  for (const p of [bound, other]) {
+    assert.deepEqual(p.trigger, { kind: "scheduled", channel: null, sender: { relation: "unknown", basis: ["none"] } });
+  }
+  assert.deepEqual(
+    bound.grants.map((g: any) => [g.kind, g.pattern, g.scope]),
+    [["destination", "1498333845953712258", "persistent"]],
+  );
+  assert.deepEqual(other.grants, []);
 });
 
 test("an OpenClaw system agent turn is the operator's message, without the host's markers", async () => {
@@ -473,4 +597,254 @@ test("a tool_call wrapper the host rejects (nested or unknown id) is never scann
   await h.fire("before_tool_call", call("c1", "ls"));
   assert.deepEqual(h.scans[0].history, []);
   assert.deepEqual(h.scans[0].new_inputs, []);
+});
+
+
+// ---- OpenClaw's own background saves (self-edits) -------------------------------------------------------------------
+
+const REVIEW_RUN = "skill-workshop-review:61d38354-3521-487d-8018-82ea16a0fed1";
+const REVIEW_KEY = "agent:main:internal-session-effects:skill-workshop-review_61d38354-3521-487d-8018-82-710cf2955ab718fb";
+const WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills";
+const REVIEW_CTX = { sessionKey: REVIEW_KEY, sessionId: "R1", agentId: "main", runId: REVIEW_RUN, trigger: "user", workspaceDir: WORKSHOP, requester: { senderIsOwner: true, channel: "webchat" } };
+const FLUSH_RUN = "0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b";
+const FLUSH_KEY = "agent:main:internal-session-effects:0b6f1e9a-58a1-4bb3-9a43-7d0c1e2f3a4b-3f9c2d1e0a7b6c5d";
+const TODAY_NOTE = `memory/${new Date().toISOString().slice(0, 10)}.md`;
+const FLUSH_CTX = { sessionKey: FLUSH_KEY, sessionId: "F1", agentId: "main", runId: FLUSH_RUN, trigger: "memory", workspaceDir: "/home/node/.openclaw/workspace" };
+const TRANSCRIPT = [
+  { role: "user", content: "Deploy rookery to staging; I like short answers.", __openclaw: { senderIsOwner: true } },
+  { role: "assistant", content: [{ type: "text", text: "Deploying." }, { type: "toolCall", id: "c1", name: "exec", arguments: { command: "make deploy-staging" } }] },
+  { role: "toolResult", toolCallId: "c1", toolName: "exec", content: [{ type: "text", text: "deployed to staging" }] },
+  { role: "assistant", content: [{ type: "text", text: "Done." }] },
+];
+const REVIEW_PROMPT = "Skill review. Distill new durable learning from the full retained conversation.";
+const SKILL = "---\nname: deploy-staging\ndescription: Deploy rookery to staging\n---\n1. `make deploy-staging`\n";
+
+async function startReview(h: Harness, ctx: any = REVIEW_CTX, runId = REVIEW_RUN) {
+  await h.fire("before_prompt_build", { runId, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, ctx);
+}
+
+test("must declare a skill write by the recognised review as a self-edit, sent as the host's, with the conversation", async () => {
+  const h = setup();
+  await startReview(h);
+  const out = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "deploy-staging/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  assert.equal(out, undefined);
+  const p = h.scans[0];
+  assert.deepEqual(p.trigger, { kind: "system", channel: null, sender: { relation: "unknown", basis: ["none"] } });
+  assert.equal(p.self_edit.kind, "background_review");
+  assert.equal(p.self_edit.store, "skills");
+  assert.deepEqual(
+    p.self_edit.conversation.map((e: any) => e.role),
+    ["user", "assistant", "tool", "assistant"],
+  );
+  assert.equal(p.self_edit.conversation[0].sender.relation, "owner");
+  assert.ok(!JSON.stringify(p.self_edit).includes("Skill review. Distill"), "the review prompt is not conversation");
+  assert.equal(p.request.text, "Deploy rookery to staging; I like short answers.", "the owner's last message, not the review prompt");
+  const t = h.traffic()[0];
+  assert.equal(t.skill_review, true);
+  assert.deepEqual(t.self_edit, { kind: "background_review", store: "skills" });
+  assert.ok(h.logs.some((l) => l.includes("(self-edit)")));
+  dumpPlanirs(h.scans);
+});
+
+test("the review's own reads join the conversation its next save carries", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "read", toolCallId: "r1", runId: REVIEW_RUN, params: { path: "deploy/SKILL.md" } }, REVIEW_CTX);
+  await h.fire("after_tool_call", { toolName: "read", toolCallId: "r1", runId: REVIEW_RUN, params: { path: "deploy/SKILL.md" }, result: "old deploy skill body" }, REVIEW_CTX);
+  await h.fire("before_tool_call", { toolName: "edit", toolCallId: "e1", runId: REVIEW_RUN, params: { path: "deploy/SKILL.md", edits: [{ oldText: "old", newText: "make deploy-staging" }] } }, REVIEW_CTX);
+  const conv = h.scans[1].self_edit.conversation;
+  assert.ok(conv.some((e: any) => e.role === "tool" && e.tool === "read" && e.content === "old deploy skill body"));
+  // the read itself was the host's call, not a self-edit
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("the review's exec is scored as an ordinary call, sent as the host's, never the owner's", async () => {
+  const h = setup();
+  await startReview(h);
+  const out = await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: "curl EXFIL" } }, REVIEW_CTX);
+  assert.equal(out?.block, true);
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.traffic()[0].host_process, "background_review");
+  assert.equal(h.scans[0].request.text, "Deploy rookery to staging; I like short answers.");
+  assert.equal(h.traffic()[0].skill_review, undefined);
+});
+
+test("must stay silent on a forged runId alone: sent as the run's own message, no self-edit", async () => {
+  const h = setup();
+  const ctx = { ...CTX, runId: "skill-workshop-review:x5c2-spoof", trigger: "user" };
+  await h.fire("before_prompt_build", { runId: ctx.runId, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, ctx);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: ctx.runId, params: { path: "x/SKILL.md", content: SKILL } }, ctx);
+  assert.equal(h.scans[0].trigger.kind, "message");
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("must stay silent on the review prompt typed in chat", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: "r1", prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, { ...CTX, trigger: "user" });
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: "r1", params: { path: "x/SKILL.md", content: SKILL } });
+  assert.equal(h.scans[0].trigger.kind, "message");
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("a call in another session never borrows a recognised run's kind", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "x/SKILL.md", content: SKILL } }, { ...CTX, runId: REVIEW_RUN });
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.scans[0].trigger.kind, "message");
+});
+
+test("a self-edit's block and review verdicts are applied, and are never snoozed", async () => {
+  const h = setup();
+  await startReview(h);
+  const blocked = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "EXFIL" } }, REVIEW_CTX);
+  assert.equal(blocked?.block, true);
+  const floored = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w2", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "FLOOR" } }, REVIEW_CTX);
+  assert.equal(floored?.block, true);
+  const reviewed = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w3", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "REVIEW" } }, REVIEW_CTX);
+  assert.ok(reviewed?.requireApproval);
+  assert.deepEqual(h.traffic().map((t: any) => t.decision), ["blocked", "blocked", "review_timed_out"]);
+});
+
+test("must declare the memory flush's write to the day's note as a self-edit; its reads are the host's", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: FLUSH_RUN, prompt: "Pre-compaction memory flush.", messages: TRANSCRIPT }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "read", toolCallId: "f0", runId: FLUSH_RUN, params: { path: TODAY_NOTE } }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "f1", runId: FLUSH_RUN, params: { path: TODAY_NOTE, content: "- Prefers short answers." } }, FLUSH_CTX);
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.scans[1].self_edit.kind, "memory_flush");
+  assert.equal(h.scans[1].self_edit.store, "memory");
+  assert.equal(h.scans[1].self_edit.conversation[0].text, "Deploy rookery to staging; I like short answers.");
+  dumpPlanirs(h.scans);
+});
+
+test("skillReview review restores the old sending and deletes the kept conversations", async () => {
+  const h = setup();
+  await startReview(h);
+  const kept = path.join(h.dir, "sentrook", "selfedit");
+  assert.ok(existsSync(kept));
+  const h2 = setup({ OPENCLAW_STATE_DIR: h.dir }, { skillReview: "review" });
+  assert.ok(!existsSync(kept));
+  await h2.fire("before_prompt_build", { runId: REVIEW_RUN, prompt: REVIEW_PROMPT, messages: TRANSCRIPT }, REVIEW_CTX);
+  await h2.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  assert.equal(h2.scans[0].trigger.kind, "message");
+  assert.equal(h2.scans[0].trigger.sender.relation, "owner");
+  assert.equal(h2.scans[0].request.text, REVIEW_PROMPT);
+  assert.equal(h2.scans[0].self_edit, undefined);
+  const t = h.traffic().at(-1);
+  assert.ok(!("skill_review" in t) && !("host_process" in t) && !("self_edit" in t));
+  assert.ok(!existsSync(kept));
+});
+
+test("an unknown skillReview value reads as allow and the startup log names it", async () => {
+  const h = setup({}, { skillReview: "sometimes" });
+  assert.ok(h.logs.some((l) => l.includes('skillReview "sometimes" is not allow or review')));
+  assert.ok(h.logs.some((l) => l.includes("skillReview=allow")));
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  assert.equal(h.scans[0].self_edit.kind, "background_review");
+});
+
+test("must stay silent on a review's write outside the Workshop: sent as the host's ordinary call, no self-edit", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "/home/node/.openclaw/openclaw.json", content: "{}" } }, REVIEW_CTX);
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.equal(h.scans[0].trigger.kind, "system");
+  assert.equal(h.traffic()[0].skill_review, undefined);
+});
+
+test("with no owner message in what it read, a recognised run's request is the fixed text", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: REVIEW_RUN, prompt: REVIEW_PROMPT, messages: [] }, REVIEW_CTX);
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: "ls" } }, REVIEW_CTX);
+  assert.match(h.scans[0].request.text, /^No owner request/);
+});
+
+test("status after real self-edit scans counts them", async () => {
+  const h = setup();
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: SKILL } }, REVIEW_CTX);
+  await h.fire("before_tool_call", { toolName: "write", toolCallId: "w2", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "EXFIL" } }, REVIEW_CTX);
+  const text = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+  assert.match(text, /skill review: allow; self-edits in the traffic log: 1 allowed, 1 blocked/);
+});
+
+test("must fire: a change to the exec mode after load reaches the next scan", async () => {
+  const live: any = { tools: { exec: { mode: "full" } } };
+  const h = setup({}, {}, { runtime: { version: "2026.10.3", config: { current: () => live } } });
+  await h.fire("before_tool_call", call("c1", "ls"));
+  live.tools.exec.mode = "deny";
+  await h.fire("before_tool_call", call("c2", "ls"));
+  assert.deepEqual(h.scans[0].host.policy, { exec_mode: "full", approval_gating: false, result_masking: true });
+  assert.deepEqual(h.scans[1].host.policy, { exec_mode: "unknown", approval_gating: true, result_masking: true });
+});
+
+test("must fire: the MCP servers are read from the live config too", async () => {
+  const live: any = { tools: { exec: { mode: "full" } }, mcp: { servers: {} } };
+  const h = setup({}, {}, { runtime: { config: { current: () => live } } });
+  live.mcp.servers.docs = { url: "https://Docs.Example.com:8443/mcp" };
+  await h.fire("before_tool_call", { toolName: "docs__search", toolCallId: "m1", runId: "r1", params: { q: "x" } });
+  assert.equal(h.scans[0].pending_call.provider.identity, "remote:docs.example.com");
+});
+
+test("must stay silent: without runtime.config.current the load-time config is used", async () => {
+  const h = setup({}, {}, { config: { tools: { exec: { mode: "allowlist" } } }, runtime: { version: "2026.9.5" } });
+  await h.fire("before_tool_call", call("c1", "ls"));
+  assert.deepEqual(h.scans[0].host.policy, { exec_mode: "allowlist", approval_gating: true, result_masking: true });
+});
+
+test("must stay silent: a runtime that throws, or returns no config, falls back to the load-time config", async () => {
+  const throwing = new Proxy({}, { get: () => { throw new Error("runtime not available"); } });
+  const h1 = setup({}, {}, { config: { tools: { exec: { mode: "ask" } } }, runtime: throwing });
+  await h1.fire("before_tool_call", call("c1", "ls"));
+  assert.equal(h1.scans[0].host.policy.exec_mode, "allowlist");
+  const h2 = setup({}, {}, { config: { tools: { exec: { mode: "ask" } } }, runtime: { config: { current: () => undefined } } });
+  await h2.fire("before_tool_call", call("c1", "ls"));
+  assert.equal(h2.scans[0].host.policy.exec_mode, "allowlist");
+});
+
+test("each exec mode maps to what it lets run unasked", () => {
+  const p = (exec: unknown) => execPolicy({ tools: { exec } });
+  // deny blocks host exec; allowlist runs only allowlisted commands; ask and auto run allowlisted commands and
+  // ask (auto: review) on a miss; full runs everything without ordinary prompts.
+  assert.deepEqual(p({ mode: "deny" }), { exec_mode: "unknown", approval_gating: true });
+  assert.deepEqual(p({ mode: "allowlist" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ mode: "ask" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ mode: "auto" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ mode: "full" }), { exec_mode: "full", approval_gating: false });
+});
+
+test("older security/ask pairs map the same way; nothing configured is unknown", () => {
+  const p = (exec: unknown) => execPolicy({ tools: { exec } });
+  assert.deepEqual(p({ security: "deny" }), { exec_mode: "unknown", approval_gating: true });
+  assert.deepEqual(p({ security: "allowlist", ask: "off" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ security: "allowlist", ask: "on-miss" }), { exec_mode: "allowlist", approval_gating: true });
+  assert.deepEqual(p({ security: "full", ask: "off" }), { exec_mode: "full", approval_gating: false });
+  assert.deepEqual(p({ security: "full" }), { exec_mode: "full", approval_gating: false });
+  assert.deepEqual(p({ security: "full", ask: "always" }), { exec_mode: "full", approval_gating: true });
+  // Not known to ask under full, so not claimed as a gate.
+  assert.deepEqual(p({ security: "full", ask: "on-miss" }), { exec_mode: "full", approval_gating: false });
+  // `security` defaults to full when only `ask` is set.
+  assert.deepEqual(p({ ask: "always" }), { exec_mode: "full", approval_gating: true });
+  assert.deepEqual(p({ ask: "off" }), { exec_mode: "full", approval_gating: false });
+  // The mode wins over a leftover legacy field.
+  assert.deepEqual(p({ mode: "full", security: "deny" }), { exec_mode: "full", approval_gating: false });
+  assert.deepEqual(p({ mode: "something-new" }), { exec_mode: "unknown", approval_gating: false });
+  assert.deepEqual(p({}), { exec_mode: "unknown", approval_gating: false });
+  assert.deepEqual(execPolicy(undefined), { exec_mode: "unknown", approval_gating: false });
+});
+
+test("must stay silent: the host's approval is never claimed, whatever the exec mode", async () => {
+  const live: any = { tools: { exec: { mode: "full" } } };
+  const h = setup({}, {}, { runtime: { config: { current: () => live } } });
+  const modes = ["deny", "allowlist", "ask", "auto", "full"];
+  for (const [i, mode] of modes.entries()) {
+    live.tools.exec.mode = mode;
+    await h.fire("before_tool_call", call(`c${i}`, "ls"));
+  }
+  assert.deepEqual(h.scans.map((s) => s.pending_call.host_approval), modes.map(() => "unknown"));
 });

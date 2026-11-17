@@ -1,12 +1,16 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v4`; `redact-v3` took the
-plugins' text rules but their command-line flag rule, `redact-v2` moved the vendor shapes to data,
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v6`; `redact-v5` kept a key's trailing
+punctuation in its value and missed a value restated in a second clause, `redact-v4` took the plugins'
+command-line flag rule but not their object-key rule, `redact-v3` took the plugins' text rules but their
+command-line flag rule, `redact-v2` moved the vendor shapes to data,
 `redact-v1` came with the v1.1 question-set pass).
 
 The plugin redacts secrets before a PlanIR leaves the host (`options.redaction`, usually `standard`).
 This pass catches secrets that slipped through (an older plugin, redaction `off`, another client), so a
 model never sees a live key in a view Sentrook builds. Its text rules are the Hermes plugin's
 (`integrations/hermes/plugin/redact.py`), kept as a copy with a parity test, plus the vendor shapes in
-`redact_shapes.yaml`. Command-line password flags count (`--password X`, `mysql -pX`, `sshpass -p X`),
+`redact_shapes.yaml`. In a parsed object (a call's `arguments`) a value under a key that names a
+credential (`{"password": X}`, `{"env": {"DB_PASS": X}}`) is replaced whole, as the plugins do; a URL
+or an environment variable name there goes through the text rules instead. Command-line password flags count (`--password X`, `mysql -pX`, `sshpass -p X`),
 but a path or URL after a flag stays (`--secret-file PATH`). It is deliberately conservative: recipients, names, hosts and email addresses stay, because
 Jev needs them to judge alignment (a URL loses only its password). A replaced value becomes
 `⟦secret:scanner⟧`; the preamble already tells Jev that a placeholder still marks a real secret.
@@ -25,7 +29,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v4"
+REDACTION_VERSION = "redact-v6"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -61,6 +65,9 @@ _CREDENTIAL_KEY = (
 
 #: Words that introduce a secret in prose: "the database password is X", "gateway token X".
 _PROSE_CUES = r"password|passwd|passphrase|token|secret|api[ _-]?key|bearer"
+#: The last character of a value: sentence punctuation after a value is not part of it (`password: X.`,
+#: `(token=X)`).
+_VALUE_END = r"[^\s\"'&,;<>`\\.:!?)\]]"
 #: A prose value: up to 200 characters without spaces or quotes; trailing punctuation is not part of it.
 _PROSE_VALUE = (
     r"[\"'`]?(?![0-9]{1,5}(?![0-9A-Za-z]))"
@@ -81,6 +88,14 @@ _NAMED_THING = re.compile(
     r"|^(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$"
 )
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
+
+#: Object keys whose whole value is a credential: any key that ends in a credential word (`password`,
+#: `secretAccessKey`, `logintoken`). `pass`, `tok` and `credentials` count only as a whole word, so
+#: `compass` and `passage` stay.
+_CREDENTIAL_FIELD = re.compile(
+    r"(?i)^(?:.*[_-])?(?:pass|tok|credentials?)\Z|(?:token|password|passwd|passphrase|secret|api[_-]?key"
+    r"|apikey|access[_-]?key|secret[_-]?key|auth[_-]?token|bearer|private[_-]?key|client[_-]?secret)\Z"
+)
 
 
 def _is_ordinary(v: str) -> bool:
@@ -217,11 +232,23 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
     ),
     # `GITHUB_TOKEN=x`, `"api_key": "x"`, `?token=x`. Values that are variable references or masks stay.
     # Quotes may be escaped (JSON inside a JSON-encoded result), and a value ends at a backslash; a port
-    # after a host (`x.token:8443/`) is not a value.
+    # after a host (`x.token:8443/`) is not a value. Trailing punctuation stays outside.
     (
         re.compile(
             r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\](?:[^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r"|[^\s\"'&,;<>`\\]{5}"
+            + _VALUE_END
+            + r"(?=[.:!?)\]])))"
+        ),
+        _key_value,
+    ),
+    # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included.
+    (
+        re.compile(
+            r"(?i)" + _CREDENTIAL_KEY + r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]{1,5}(?![0-9A-Za-z]))(?P<v>[^\s\"'⟦$*{\[<%&,;`\\][^\s\"'&,;<>`\\]{7,})(?=\\?[\"'])"
         ),
         _key_value,
     ),
@@ -240,7 +267,9 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
             r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
-            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{7,})"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
         ),
         _inner_key_value,
     ),
@@ -253,6 +282,18 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
             + _PROSE_CUES
             + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
             r"(?:\s(?:is|was)(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+|:[ \t]*)"
+            + _PROSE_VALUE
+        ),
+        _stated_value,
+    ),
+    # "the password changed, it's now X", "the token was rotated and it is now X": a second clause of the
+    # sentence states the value.
+    (
+        re.compile(
+            r"(?i)(?<![A-Za-z0-9_/.⟦-])(?:"
+            + _PROSE_CUES
+            + r")(?![A-Za-z0-9_])[^\n:.;=\"'`⟦]{0,40}?"
+            r"(?:,|\s+and)\s+it(?:(?:['’]|\\{1,8}u2019)s|\s+(?:is|was))(?:\s+(?:now|still|currently|set\s+to|changed\s+to))?\s+"
             + _PROSE_VALUE
         ),
         _stated_value,
@@ -281,17 +322,55 @@ def _spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def redact_text(text: str) -> tuple[str, int]:
-    """Replace every secret in `text`; overlapping matches merge into one placeholder that covers them
-    all, so no part of a secret survives a shorter, earlier match."""
+#: Characters past a context rule's match that a cut must keep with it: a value's closing quote, optionally escaped,
+#: which some rules require after the value.
+_CONTEXT_TRAIL_CHARS = 2
+
+
+def protected_spans(text: str) -> list[tuple[int, int]]:
+    """The stretches of `text` a cut must not split, merged, sorted and disjoint: every secret `redact_text` would
+    replace, widened by what identifies it. A value found by its context keeps the cue word or key before it and its
+    closing quote after it, so a cut that keeps the value keeps what makes it recognisable."""
     if len(text) < 8:
-        return text, 0
+        return []
+    spans = [m.span() for m in _PRIVATE_KEY.finditer(text)]
+    for m in _JWT_HEAD.finditer(text):
+        tail = _JWT_TAIL.match(text, m.end())
+        if tail is not None:
+            spans.append((m.start(), tail.end()))
+    for shape in load_shapes().shapes:
+        spans.extend(shape_spans(shape.compiled, text))
+    for pattern, check in _CONTEXT:
+        for m in pattern.finditer(text):
+            s, e = m.span("v")
+            if e > s and (check is None or check(text[s:e])):
+                spans.append((m.start(), min(len(text), max(e, m.end()) + _CONTEXT_TRAIL_CHARS)))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def secret_spans(text: str) -> list[tuple[int, int]]:
+    """The stretches `redact_text` replaces: every secret's span, overlapping ones merged, sorted."""
+    if len(text) < 8:
+        return []
     merged: list[list[int]] = []
     for start, end in sorted(_spans(text), key=lambda s: (s[0], -s[1])):
         if merged and start < merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], end)
         else:
             merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def redact_text(text: str) -> tuple[str, int]:
+    """Replace every secret in `text`; overlapping matches merge into one placeholder that covers them
+    all, so no part of a secret survives a shorter, earlier match."""
+    merged = secret_spans(text)
     if not merged:
         return text, 0
     out: list[str] = []
@@ -304,16 +383,32 @@ def redact_text(text: str) -> tuple[str, int]:
     return "".join(out), len(merged)
 
 
+def _credential_value(key: Any, value: Any) -> bool:
+    """A value replaced whole: a non-empty string under a credential key that is not already a
+    placeholder, a URL or an environment variable name."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not value.startswith("⟦")
+        and _key_value(value)
+        and _CREDENTIAL_FIELD.search(str(key)) is not None
+    )
+
+
 def second_pass(obj: Any) -> tuple[Any, int]:
-    """Walk dicts, lists and strings; return a redacted copy and the number of replacements. Dict keys
-    and non-string scalars are left as they are; `obj` is never mutated."""
+    """Walk dicts, lists and strings; return a redacted copy and the number of replacements. A string
+    under a credential key is replaced whole; other dict values go through the text rules. Dict keys and
+    non-string scalars are left as they are; `obj` is never mutated."""
     if isinstance(obj, str):
         return redact_text(obj)
     if isinstance(obj, dict):
         total = 0
         out: dict[Any, Any] = {}
         for k, v in obj.items():
-            out[k], n = second_pass(v)
+            if _credential_value(k, v):
+                out[k], n = PLACEHOLDER, 1
+            else:
+                out[k], n = second_pass(v)
             total += n
         return out, total
     if isinstance(obj, list):

@@ -7,20 +7,31 @@ both joined by `turn_id`.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import platform as _platform
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from . import host_turns
 from .config import PluginConfig
-from .intent import channel_of, resolve_platform, sender_of, trigger_kind
+from .intent import (
+    approvals_off,
+    channel_of,
+    resolve_platform,
+    sender_of,
+    trigger_kind,
+)
 from .redact import Redactor, cap_args
+from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
+from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.5"
+PLUGIN_VERSION = "2.0.0-beta.13"
 
 TOOL_KIND = {
     "terminal": "exec",
@@ -66,17 +77,6 @@ def tool_kind(name: str, args: Any = None) -> str:
     return "other"
 
 
-def hermes_config() -> dict[str, Any]:
-    """Effective config via Hermes's own loader (the plugin interpreter has no PyYAML)."""
-    try:
-        from hermes_cli.config import load_config_readonly
-
-        cfg = load_config_readonly()
-        return cfg if isinstance(cfg, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
-
-
 def hermes_version() -> str:
     try:
         import hermes_cli
@@ -84,6 +84,45 @@ def hermes_version() -> str:
         return str(getattr(hermes_cli, "__version__", None) or "unknown")
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def remote_identity(url: str) -> str | None:
+    """A remote MCP server's identity: `remote:<hostname>`, the lowercase hostname without the port, the
+    scheme or the brackets around an IPv6 literal (http and https on one host are one server). Same rule
+    on every host."""
+    from urllib.parse import urlsplit
+
+    try:
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return None
+    host = (host or "").rstrip(".")
+    if not host.isascii():
+        # Punycode, as a URL parser gives it (`bücher.example` → `xn--bcher-kva.example`).
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+    return f"remote:{host}" if host else None
+
+
+_REMOTE_PORT = re.compile(r"[^:]*:(?:[0-9]*|\*)")
+
+
+def provider_pattern(pattern: str) -> str:
+    """A provider grant's pattern read as identities are: a `remote:` one loses its port and IPv6
+    brackets. One with no host written (`remote:*:8200`) is left as it is, so it never widens to
+    every server."""
+    if pattern[:7].lower() != "remote:":
+        return pattern
+    raw = pattern.strip().lower()
+    host = raw[7:]
+    if host.startswith("[") and "]" in host:
+        host = host[1 : host.index("]")]
+    elif _REMOTE_PORT.fullmatch(host):
+        host = host.rsplit(":", 1)[0]
+    host = host.rstrip(".")
+    return "remote:" + host if host.strip("*?[]") else raw
 
 
 def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -106,9 +145,7 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "mcp", "name": server, "identity": None, "transport": None}
     identity, transport = None, None
     if cfg.get("url"):
-        from urllib.parse import urlsplit
-
-        identity, transport = f"remote:{urlsplit(str(cfg['url'])).hostname}", "http"
+        identity, transport = remote_identity(str(cfg["url"])), "http"
     elif cfg.get("command"):
         cmd = str(cfg["command"])
         args = [str(a) for a in cfg.get("args") or []]
@@ -123,12 +160,25 @@ def provider_for(name: str, host_cfg: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "mcp", "name": server, "identity": identity, "transport": transport}
 
 
-def _pieces_in(pattern: str, text: str) -> bool:
-    """The pattern's pieces between `*`s appear in `text`, in order (a leading `*.` also matches the apex)."""
-    pieces = [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
-    if sum(map(len, pieces)) < 3:
+def _pieces(pattern: str) -> list[str]:
+    """The pattern's literal pieces between `*`s (a leading `*.` also matches the apex, a trailing `/`
+    the folder or scope itself)."""
+    pattern = pattern.rstrip("/")
+    return [p for p in (pattern[2:] if pattern.startswith("*.") else pattern).split("*") if p]
+
+
+def _long_enough(pattern: str) -> bool:
+    """Shorter patterns are not worth sending: they would fit almost any call."""
+    return sum(map(len, _pieces(pattern))) >= 3
+
+
+def _pieces_in(pattern: str, text: str, *, short_ok: bool = False) -> bool:
+    """The pattern's pieces appear in `text`, in order. `short_ok`: a pattern whose literal part was
+    already found (a platform the call names) needs no minimum length."""
+    if not short_ok and not _long_enough(pattern):
         return False
     at = 0
+    pieces = _pieces(pattern)
     for p in pieces:
         at = text.find(p, at)
         if at < 0:
@@ -137,28 +187,119 @@ def _pieces_in(pattern: str, text: str) -> bool:
     return True
 
 
+#: The arguments the scanner reads a command's working directory from, in its order.
+_CWD_KEYS = ("cwd", "dir", "working_directory", "workdir")
+#: A path that starts with `./`, where the scanner finds one (also after a JSON-escaped newline or tab).
+_DOT_PATH = re.compile(r"(?:(?<![\w.:-])|(?<=\\[ntr]))\./")
+
+
+#: The arguments the scanner reads a send's chat platform from, in its order.
+_PLATFORM_KEYS = ("channel", "platform", "service")
+#: The channel targets a `#name` destination names (`user:` and `dm:` are people, never a channel).
+_CHANNEL_PREFIXES = ("channel:", "group:", "thread:")
+
+
+def call_platform(args: Any, kind: str) -> str | None:
+    """The chat platform a message send names in its own argument (`discord` for `{channel: discord,
+    target: "#x"}`), lower-cased; None for any other call."""
+    if kind != "message_send" or not isinstance(args, dict):
+        return None
+    for k in _PLATFORM_KEYS:
+        v = args.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip().lower()
+    return None
+
+
+def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bool]]:
+    """The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner
+    reads them, each with whether it needs no minimum length: as written; without a `<platform>:` prefix
+    when the send names that platform in its own argument; and a `#name` as the channel target
+    `channel:name` (or `group:`, `thread:`)."""
+    forms = [(pattern, False)]
+    head, sep, rest = pattern.partition(":")
+    if platform and sep and rest and head == platform:
+        forms.append((rest, True))
+    for form, short_ok in list(forms):
+        if form.startswith("#"):
+            forms += [(prefix + form[1:], short_ok) for prefix in _CHANNEL_PREFIXES]
+    return forms
+
+
+#: What is left of a pattern once glob characters and separators are removed; nothing left means it
+#: matches everything, and the scanner ignores it.
+_NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
+
+
+def binding_problem(pattern: str) -> str | None:
+    """Why a channel binding can never relieve a send, as the listing and verify say it; None when it
+    can."""
+    pattern = pattern.strip()
+    if not _NOT_LITERAL.sub("", pattern):
+        return "matches every channel, ignored"
+    if not any(_long_enough(f) for f, _ in _destination_forms(pattern.lower(), None)):
+        return "too short, never sent"
+    return None
+
+
+def call_cwd(args: Any) -> str | None:
+    """The working directory a command names for itself, if any. The scanner reads it for exec calls only."""
+    if isinstance(args, dict):
+        for k in _CWD_KEYS:
+            if isinstance(args.get(k), str) and args[k]:
+                return args[k]
+    return None
+
+
+def _repo_path(pattern: str) -> str:
+    """The owner and repository a repo grant names, without its host: the call may fetch the repository
+    from another host than the one the pattern is written with (`raw.githubusercontent.com` for
+    `github.com`, or a git remote)."""
+    rest = re.sub(r"^[a-z][a-z0-9+.-]*://", "", pattern).rstrip("/").removesuffix(".git")
+    return rest.split("/", 1)[1] if "/" in rest else rest
+
+
 def relevant_grants(
     grants: list[dict[str, Any]],
     args_text: str,
     *,
     identity: str | None = None,
     home: str | None = None,
+    workspace: str | None = None,
+    cwd: str | None = None,
+    platform: str | None = None,
 ) -> list[dict[str, Any]]:
     """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
     the owner's other grants out of the request, so it errs towards sending. A provider grant is also
-    matched against the call's provider identity, and paths under home match in either form (`~/…` or full)."""
+    matched against the call's provider identity (a `remote:` pattern without its port, as the identity
+    is), and a repo grant by its owner and repository alone. Paths are read the way the scanner resolves them: under
+    home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
+    A destination is read the way the scanner reads a channel: a `#name` as `channel:name`, and a
+    `<platform>:` prefix as met when the send names `platform` (`call_platform`)."""
     text = args_text.lower()
-    pats = [g["pattern"].lower() for g in grants]
+    texts = [text]
+    if base := cwd or workspace:
+        texts.append(_DOT_PATH.sub(lambda _: base.rstrip("/").lower() + "/", text))
+    pats = [
+        (provider_pattern(g["pattern"]) if g["kind"] == "provider" else g["pattern"]).lower()
+        for g in grants
+    ]
     if home:
         root = home.rstrip("/").lower()
-        text = text.replace("~/", root + "/")
+        texts = [t.replace("~/", root + "/").replace("$home/", root + "/") for t in texts]
         pats = [root + p[1:] if p.startswith("~/") else p for p in pats]
     out = []
     for i, (g, pat) in enumerate(zip(grants, pats, strict=True)):
-        hay = [text]
+        hay = list(texts)
         if g["kind"] == "provider" and identity:
             hay.append(identity.lower())
-        if any(_pieces_in(pat, h) for h in hay):
+        if g["kind"] == "destination":
+            forms = _destination_forms(pat, platform)
+        elif g["kind"] == "repo":
+            forms = [(_repo_path(pat), False)]
+        else:
+            forms = [(pat, False)]
+        if any(_pieces_in(f, h, short_ok=ok) for f, ok in forms for h in hay):
             out.append({"grant_ref": f"g_{i + 1}", **g})
     return out
 
@@ -169,6 +310,37 @@ def _text(v: Any) -> str:
     if isinstance(v, list):
         return "\n".join(p if isinstance(p, str) else str((p or {}).get("text", "")) for p in v)
     return "" if v is None else json.dumps(v, default=str)
+
+
+#: History decisions the plugin keeps that PlanIR has no word for, and the word it sends instead. A held
+#: call is a review nobody has answered yet: it did not run, and a retry of it is a retry after a review.
+_SENT_DECISION = {"held": "review_timed_out"}
+
+
+def request_turn_id(sess: dict[str, Any]) -> Any:
+    """The session's last turn that began with a request (an owner's message, or a run's prompt): not a turn
+    Hermes started with an event notice (`host_turns`). A session stored before this was kept falls back to
+    its last turn."""
+    if "last_request_turn_id" in sess:
+        return sess["last_request_turn_id"]
+    return sess.get("last_turn_id")
+
+
+def _request_of(turn: dict[str, Any]) -> str:
+    """A stored turn's request: a host turn's own words when it kept some, else its message."""
+    return str(turn.get("request_text") or "") or _text(turn.get("user_message"))
+
+
+def turn_seen(turn: dict[str, Any]) -> bool:
+    """The turn fired `pre_llm_call`, so its request, platform and sender are known."""
+    return bool(turn.get("pre_llm_call") or turn.get("user_message") or turn.get("platform"))
+
+
+def _sent_entry(h: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in h.items() if not k.startswith("_")}
+    if out.get("decision") in _SENT_DECISION:
+        out["decision"] = _SENT_DECISION[out["decision"]]
+    return out
 
 
 def build_planir(
@@ -183,10 +355,25 @@ def build_planir(
     env: dict[str, str],
     host_cfg: dict[str, Any],
     grants: list[dict[str, Any]] | None = None,
+    self_edit: dict[str, Any] | None = None,
+    request_turn: dict[str, Any] | None = None,
+    last_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Returns the PlanIR plus bookkeeping; mutates `sess` (step, turns, seen call ids).
 
-    `grants`: every grant in force (`grants.effective`); the config grants alone when not given."""
+    `grants`: every grant in force (`grants.effective`); the persistent config grants alone when not
+    given (a config grant has no session, so a session one is never sent).
+    `self_edit`: the call is a save by Hermes's own self-improvement loop, declared as a self-edit: sent
+    with trigger `system` (instead of the chat the loop's fork inherited) and this top-level block, the
+    conversation the review read (`conversation.block`).
+    `request_turn`: the call is made by Hermes's background review, after the owner's turn: the request
+    text comes from this turn (the session's last owner turn, `{}` when none is stored; an empty request
+    sends `skill_review.REQUEST_TEXT`) and the call's own turn is not counted as a new one. Narration and
+    batch siblings still come from `turn`, the fork's own.
+    `last_request`: the session's last request turn (`request_turn_id`). A call on a turn Hermes started with
+    an event notice, or on a turn that fired no `pre_llm_call`, carries its request with `carried_from_turn`
+    when `host_turns.carries` allows; such a turn, and one Hermes started with a standing instruction, is
+    never an owner message (`host_turns.trigger_for`)."""
     turn_id = kw.get("turn_id") or sess.get("last_turn_id")
     tool = str(kw.get("tool_name") or "unknown")
     host_id = kw.get("tool_call_id")
@@ -198,10 +385,48 @@ def build_planir(
         call_id = f"{turn_id}:{host_id}"
     if host_id:
         sess["seen_call_ids"].append(host_id)
-    if turn_id and turn_id not in sess["turns"]:
+    if turn_id and turn_id not in sess["turns"] and request_turn is None:
         sess["turns"].append(turn_id)
-
+    req_tid = request_turn_id(sess)
+    req_no = sess["turns"].index(req_tid) + 1 if req_tid in sess["turns"] else None
     platform = resolve_platform(turn.get("platform"), facts, env)
+    trigger = {
+        "kind": trigger_kind(platform),
+        "channel": channel_of(platform),
+        "sender": sender_of(platform, facts, turn.get("sender_id"), env),
+    }
+    host = (
+        host_turns.FORMS.get(str(turn.get("host_turn")))
+        if request_turn is None and self_edit is None
+        else None
+    )
+    carried_from: int | None = None
+    if request_turn is not None:
+        request_text = _request_of(request_turn)
+        if not request_text.strip():
+            request_text = LOOP_REQUEST_TEXT
+        # The background review runs after the owner's turn, in whatever chat context it inherited.
+        trigger = host_turns.trigger_for(trigger, "system")
+    elif host is not None and turn.get("request_text"):
+        # A standing instruction the owner set earlier: the host's words are the run's request (without a
+        # failed gate's output, which went as content).
+        request_text = str(turn["request_text"])
+        trigger = host_turns.trigger_for(trigger, host.trigger)
+    elif host is not None or not turn_seen(turn):
+        # The turn's message is the host's, or its start was never seen: the request is the session's last,
+        # and only for the owner or a run that is not a chat message.
+        request_text = ""
+        if host_turns.carries(trigger) and req_no:
+            request_text = _request_of(last_request or {})
+            carried_from = req_no if request_text.strip() else None
+        if host is not None and not request_text.strip():
+            request_text = host_turns.REQUEST_TEXT
+        trigger = host_turns.trigger_for(trigger, host.trigger if host else "system")
+    else:
+        request_text = _request_of(turn)
+    # A background call's turn is the number of the owner turn its request came from.
+    request_turn_no = req_no if request_turn is not None else None
+
     parent = turn.get("parent_session_id") or None
     is_sub = platform == "subagent" or bool(parent)
     raw_args = kw.get("args") if isinstance(kw.get("args"), dict) else {"value": kw.get("args")}
@@ -231,10 +456,11 @@ def build_planir(
     window = sess["history"][-cfg.history_limit :]
     window_ids = {h["call_id"] for h in window}
     # Every tool result must refer to a call in the history window (a scanner invariant).
-    sent_inputs = [i for i in sess["buffer"] if i["call_id"] in window_ids]
-    history = [{k: v for k, v in h.items() if not k.startswith("_")} for h in window]
+    sent_inputs = [
+        i for i in sess["buffer"] if i.get("kind") != "tool_result" or i["call_id"] in window_ids
+    ]
+    history = [_sent_entry(h) for h in window]
 
-    approvals = host_cfg.get("approvals") or {}
     security = host_cfg.get("security") or {}
     narration = (turn.get("assistant_text") or "").strip()
     routing = facts.get("key") or None
@@ -255,7 +481,7 @@ def build_planir(
             "os": {"Darwin": "macos", "Windows": "windows"}.get(_platform.system(), "linux"),
             "policy": {
                 "exec_mode": "unknown",
-                "approval_gating": approvals.get("mode") not in ("off", None),
+                "approval_gating": not approvals_off(host_cfg),
                 "result_masking": bool(security.get("redact_secrets", True)),
             },
         },
@@ -265,18 +491,14 @@ def build_planir(
             "agent_ref": "a_main",
             "agent_role": "subagent" if is_sub else "main",
             "parent_session_ref": f"s_{_h(parent)}" if parent else None,
-            "turn": max(1, len(sess["turns"])),
+            "turn": request_turn_no if request_turn_no is not None else max(1, len(sess["turns"])),
             "step": step,
             "state": sess["token"],
         },
-        "trigger": {
-            "kind": trigger_kind(platform),
-            "channel": channel_of(platform),
-            "sender": sender_of(platform, facts, turn.get("sender_id"), env),
-        },
+        "trigger": copy.deepcopy(LOOP_TRIGGER) if self_edit is not None else trigger,
         "request": {
-            "text": redactor.string(_text(turn.get("user_message"))),
-            "carried_from_turn": None,
+            "text": redactor.string(request_text),
+            "carried_from_turn": carried_from,
         },
         "new_inputs": sent_inputs,
         "history": history,
@@ -292,11 +514,15 @@ def build_planir(
             "batch": {"siblings": siblings},
         },
         "grants": relevant_grants(
-            cfg.grants if grants is None else grants,
+            [g for g in cfg.grants if g["scope"] == "persistent"] if grants is None else grants,
             json.dumps(raw_args, default=str, ensure_ascii=False),
             identity=prv["identity"],
             home=str(Path.home()),
+            workspace=os.getcwd(),
+            cwd=call_cwd(raw_args) if tk == "exec" else None,
+            platform=call_platform(raw_args, tk),
         ),
+        **({"self_edit": self_edit} if self_edit is not None else {}),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
     }
     return {

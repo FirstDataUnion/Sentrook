@@ -1,17 +1,19 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
-Order: merge → tier scores → risk → relief (recompute) → floors → reasons → tool description → flags
+Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
+→ floors → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
 from ..prepare import Prepared
+from ..prepare.entities import EntityKind
 from ..probes.base import Envelope
 from ..response.models import (
     ConfidenceTier,
@@ -27,9 +29,12 @@ from ..response.models import (
     SuspicionTier,
 )
 from ..state.token import encode_state
+from .attended import DEFAULT_BLOCK_LINE, relaxable, withheld
+from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
-from .merge import Merged, collect, merge
+from .hints import grant_hints
+from .merge import Claim, Merged, collect, merge
 from .params import ConvergenceParams, load_params
 from .registry import SIGNALS
 from .relief import Relief, compute_relief
@@ -63,6 +68,7 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
         suspicion=SuspicionTier(
             score=tiers.suspicion,
             exposure=g("suspicion.exposure"),
+            session_exposure=g("suspicion.session_exposure"),
             untrusted_origin=g("suspicion.untrusted_origin"),
             misalignment=g("suspicion.misalignment"),
             concealment=g("suspicion.concealment"),
@@ -85,6 +91,42 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
             model_certainty=tiers.model_certainty,
         ),
     )
+
+
+def _mint_session_sets(prepared: Prepared, envelopes: list[Envelope]) -> None:
+    """Add what this scan's judgements are about to the token's sets: the files a sensitive judgement
+    names (or the unbound marker when it names none), the files and tables an injected result's call
+    produced (when the judgement was about that input alone), moving anything an injected input added to
+    the trusted set into the untrusted set, and the local files the call writes from a file already in a
+    set."""
+    state = prepared.state
+    for env in envelopes:
+        if env.status is not ProbeStatus.OK:
+            continue
+        for m in env.marks:
+            if m.judgement == "sensitive":
+                ent = prepared.entities.by_id(m.subject) if m.subject else None
+                if m.subject is None:
+                    state.sensitive_unbound = True
+                elif ent is not None and ent.hash and ent.kind is EntityKind.PATH:
+                    state.add_sensitive([ent.hash])
+            elif m.input_seq is not None:
+                if m.attributed:
+                    state.add_tainted(prepared.producer_artefacts.get(m.input_seq, []))
+                # Config content judged injected is not the owner's: what it supplied is untrusted.
+                withdrawn = prepared.trusted_by_input.get(m.input_seq, [])
+                state.drop_trusted(withdrawn)
+                state.add_untrusted(withdrawn)
+            elif m.subject is not None:
+                ent = prepared.entities.by_id(m.subject)
+                if ent is not None and ent.hash and ent.kind is EntityKind.PATH:
+                    state.add_tainted([ent.hash])
+    binding = prepared.session_binding
+    if binding.writes:
+        if any(h in state.sensitive for h in binding.takes):
+            state.add_sensitive(binding.writes)
+        if any(h in state.tainted for h in binding.takes):
+            state.add_tainted(binding.writes)
 
 
 def _reasons(
@@ -160,6 +202,31 @@ def _reasons(
     return [r for _, r in scored]
 
 
+def cap_model_sensitivity(claims: list[Claim], cap: float) -> list[Claim]:
+    """The model's call-level sensitivity held to `cap`: with the credential-home relief the call's credential no
+    longer counts, so what the call moves is at most the level below credentials."""
+    return [
+        replace(c, value=min(c.value, cap))
+        if c.signal == "consequence.sensitivity" and c.step == ProbeStep.JEV_CALL.value
+        else c
+        for c in claims
+    ]
+
+
+def exposure_unjudged(prepared: Prepared, envelopes: list[Envelope]) -> bool:
+    """The request brings new untrusted content the exposure probe would judge (not only reads of the agent's own
+    skills or memory), and no exposure envelope came back OK: the probe failed, timed out or did not run, so nobody
+    looked at that content. A probe skipped because there was nothing new to read is not this."""
+    if not any(
+        i.input.content and i.input.input_seq not in prepared.own_store_inputs
+        for i in prepared.untrusted_inputs(new_only=True)
+    ):
+        return False
+    return not any(
+        env.step is ProbeStep.JEV_EXPOSURE and env.status is ProbeStatus.OK for env in envelopes
+    )
+
+
 def converge(
     prepared: Prepared,
     envelopes: list[Envelope],
@@ -172,8 +239,11 @@ def converge(
     views: str = "trim-v1",
 ) -> ConvergeResult:
     claims = collect(envelopes)
+    if params.credential_home and prepared.credential_home is not None:
+        claims = cap_model_sensitivity(claims, params.credential_home_model_sensitivity_cap)
     merged = merge(claims)
-    tiers = compute(merged, envelopes, params)
+    unjudged = exposure_unjudged(prepared, envelopes)
+    tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
     known_good = [
         eid
@@ -182,11 +252,45 @@ def converge(
         for eid, info in (env.evidence.get("entities") or {}).items()
         if isinstance(info, dict) and info.get("verdict") == "known_good"
     ]
-    relief = compute_relief(prepared, params, known_good)
+    # What a config read supplied is not the owner's when this scan judges that read injected.
+    withdrawn_trust = {
+        h
+        for env in envelopes
+        if env.status is ProbeStatus.OK
+        for m in env.marks
+        if m.judgement != "sensitive" and m.input_seq is not None
+        for h in prepared.trusted_by_input.get(m.input_seq, [])
+    }
+    known_good_exact = [
+        eid
+        for env in envelopes
+        if env.step is ProbeStep.ENTITY_ORACLE and env.status is ProbeStatus.OK
+        for eid, info in (env.evidence.get("entities") or {}).items()
+        if isinstance(info, dict)
+        and info.get("verdict") == "known_good"
+        and info.get("match") == "exact"
+    ]
+    relief = compute_relief(
+        prepared,
+        params,
+        known_good,
+        withdrawn_trust,
+        known_good_exact=known_good_exact,
+        exposure=merged.get("suspicion.exposure"),
+    )
     if relief:
         excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
-        tiers = compute(merged, envelopes, params)
+        tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
+
+    cap = attended_check(
+        prepared,
+        claims,
+        [c for kept in merged.claims.values() for c in kept],
+        [(r.subject, r.reason) for r in relief],
+        [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
+        params,
+    )
 
     floors: list[FloorApplied] = []
     risk = tiers.risk
@@ -224,6 +328,27 @@ def converge(
     )
     status = ScanStatus.DEGRADED if degraded else ScanStatus.OK
 
+    held_back = (
+        withheld(
+            envelopes,
+            degraded=degraded,
+            state_lost=prepared.state.fresh,
+            exposure_unjudged=unjudged,
+        )
+        if cap.attended
+        else []
+    )
+    # One check: the mark in every parameter set, the ceiling only where the parameters turn it on.
+    relax = relaxable(cap, held_back, enforced)
+    ceiling: str | None = "review" if relax and params.attended_owner_cap else None
+    attended = {
+        "attended": cap.attended,
+        "strong": cap.strong,
+        "withheld": held_back,
+        "relaxable": relax,
+        "ceiling": ceiling,
+    }
+
     category = None
     for env in envelopes:
         if env.step.value == "jev_call" and env.status is ProbeStatus.OK:
@@ -232,6 +357,7 @@ def converge(
     state = prepared.state
     state.flags = flags
     state.max_input_seq = prepared.scanned_max_seq
+    _mint_session_sets(prepared, envelopes)
     token = encode_state(
         state,
         key=token_key,
@@ -243,7 +369,29 @@ def converge(
     latency = None if started is None else round((time.perf_counter() - started) * 1000, 1)
     entities: dict[str, EntityDisplay] = entity_table(prepared)
     reasons = _reasons(merged, tiers, floors, relief, params, params.u)
-    for r in reasons:  # make sure every entity a reason names is displayable
+    if ceiling is not None:
+        # why the call is held for review rather than blocked: first when the risk reaches the default block line
+        cap_reason = Reason(code="cap.attended_owner", detail={"ceiling": ceiling})
+        if tiers.risk >= DEFAULT_BLOCK_LINE:
+            reasons.insert(0, cap_reason)
+        else:
+            reasons.append(cap_reason)
+    hints = grant_hints(
+        prepared,
+        claims,
+        envelopes,
+        relief,
+        reasons,
+        params,
+        risk=tiers.risk,
+        enforced=enforced,
+        floors=[f.floor for f in floors],
+        degraded=degraded,
+        exposure_unjudged=unjudged,
+        flags=flags,
+    )
+    # make sure every entity a reason or a hint names is displayable
+    for r in [*reasons, *hints]:
         if r.subject and r.subject not in entities:
             ent = prepared.entities.by_id(r.subject)
             if ent is not None:
@@ -254,12 +402,15 @@ def converge(
         status=status,
         risk=round(tiers.risk * 100.0, 2),
         enforced=enforced,
+        ceiling=ceiling,
+        relaxable=True if relax else None,
         tree=_tree(merged, tiers),
         floors_applied=floors,
         relief_applied=[
             ReliefApplied(grant_ref=r.grant_ref, subject=r.subject, effect=r.effect) for r in relief
         ],
         reasons=reasons,
+        grant_hints=hints,
         tool_description=describe(prepared, category),
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),
@@ -284,6 +435,7 @@ def converge(
                 "flags": sorted(f.value for f in flags),
                 "token_status": prepared.state.status.value,
                 "coverage_notes": sorted(coverage_codes),
+                "attended_owner": attended,
             },
         ),
     )

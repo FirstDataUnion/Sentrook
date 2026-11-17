@@ -77,6 +77,8 @@ class JevConfig:
     provider: dict[str, Any] = field(default_factory=lambda: dict(PROVIDER_PREFS))
     exposure_question_set: str = "exposure-v1"
     call_question_set: str = "call-v1"
+    #: The call question set for declared self-edits; None sends them to `call_question_set`.
+    selfedit_question_set: str | None = None
     #: Exposure above this sets the `tainted` session flag.
     taint_threshold: float = 0.5
 

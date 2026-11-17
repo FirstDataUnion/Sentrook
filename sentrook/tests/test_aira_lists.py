@@ -78,7 +78,11 @@ def test_overlay_merges_additively(tmp_path: Path):
     base = load_lists_from(LISTS_DIR, None)
     over = load_lists_from(LISTS_DIR, tmp_path)
     weights_base = base.raw["weights"]["version"]
-    assert "sensitive_paths=2+9" in over.version and f"weights={weights_base}+2" in over.version
+    paths_base = base.raw["sensitive_paths"]["version"]
+    assert (
+        f"sensitive_paths={paths_base}+9" in over.version
+        and f"weights={weights_base}+2" in over.version
+    )
     guardrail_base = base.raw["guardrail"]["version"]
     assert f"guardrail={guardrail_base};" in over.version  # untouched lists keep their version
     assert over.path_groups["credential_store"].search("/srv/vault.tok")

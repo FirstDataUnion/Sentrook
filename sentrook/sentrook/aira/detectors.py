@@ -16,19 +16,34 @@ Classes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shlex
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..enums import Enforce, SessionFlag
+from ..oracle.client import is_local_host
+from ..oracle.near_miss import edit_distance_le1, registrable
 from ..planir.canonical import CanonicalCall
 from ..planir.models import HostApproval, ProviderKind, ToolKind
 from ..prepare import Prepared
-from ..prepare.entities import EntityKind, Role, normalise_path, resolve_token
+from ..prepare.entities import (
+    EntityKind,
+    Origin,
+    Role,
+    display_path,
+    is_computed_package,
+    normalise_path,
+    normalise_remote_identity,
+    provider_name,
+    resolve_token,
+)
+from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
-from ..probes.base import Contribution, Floor
+from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
 from .lists import Lists, Rule
@@ -64,6 +79,9 @@ SELFMOD_GROUPS: dict[str, tuple[str, str]] = {
     "host_scheduler": ("selfmod.scheduler", "host_scheduler"),
 }
 
+#: A declared self-edit's store, as the C4 finding it implies when no path or tool rule found one.
+SELF_EDIT_STORES = {"skills": ("selfmod.plugin", "plugin"), "memory": ("selfmod.memory", "memory")}
+
 _WRITE_KINDS = frozenset({ToolKind.FILE_WRITE, ToolKind.FILE_EDIT, ToolKind.MEMORY_WRITE})
 _DEVNULL_RE = re.compile(r"2>\s*/dev/null|&>\s*/dev/null|>\s*/dev/null\s+2>&1", re.IGNORECASE)
 _PRELOAD_EXPORT_RE = re.compile(r"\b(?:export\s+|setenv\s+)?([A-Z_][A-Z0-9_]*)=")
@@ -75,6 +93,13 @@ class Context:
     prepared: Prepared
     lists: Lists
     packs: frozenset[str]
+    #: Sensitivity of installing a package nothing vouches for (the convergence parameter set's
+    #: `oracle.unvetted_package_sensitivity`; 0 = off).
+    unvetted_package_sensitivity: float = 0.0
+    #: Carry it for an owner-named package too when the install runs as root.
+    unvetted_package_as_root: bool = False
+    #: Ecosystems (the entity value's prefix, or `git+` for a URL install) the rule applies to.
+    unvetted_package_ecosystems: tuple[str, ...] = ("npm", "pypi", "git+")
 
     @property
     def groups(self):
@@ -96,7 +121,17 @@ class Finding:
     contributions: list[Contribution] = field(default_factory=list)
     floors: list[Floor] = field(default_factory=list)
     flags: list[SessionFlag] = field(default_factory=list)
+    marks: list[SessionMark] = field(default_factory=list)
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def holds_sensitive(self, subject: str | None) -> Finding:
+        """The session now holds sensitive data, in `subject` (an entity id); None when it cannot be tied to
+        a file, which keeps the session flag's weight on every later send."""
+        if SessionFlag.HOLDS_SENSITIVE not in self.flags:
+            self.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        if not any(m.subject == subject for m in self.marks):
+            self.marks.append(SessionMark(judgement="sensitive", subject=subject))
+        return self
 
     def add(self, signal: str, value: float, subject: str | None = None, reason: str | None = None):
         self.contributions.append(
@@ -269,9 +304,19 @@ def _reaching(a: CallAnalysis, ctx: Context) -> bool:
     return _match_any(lists.patterns("egress", "file_arg_patterns"), a.scan_text) is not None
 
 
+def _credential_home_file(ctx: Context, p: PathRef) -> bool:
+    """The env file whose keys the call sends only to their own service (`prepare.credential_home`): read for that,
+    it is not credential material leaving the machine."""
+    home = getattr(ctx.prepared, "credential_home", None)
+    if home is None:
+        return False
+    return (p.entity_id is not None and p.entity_id in home.env_files) or p.value in home.env_paths
+
+
 def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C1: credential material reached — a sensitive path with a reading head, a `file_read`, a
-    listing of a credential directory, or an `@file` form."""
+    listing of a credential directory, or an `@file` form. An env file read for a key the call sends only to its
+    own service (`prepare.credential_home`) carries no sensitivity; it still joins the session's sensitive set."""
     if a.kind is ToolKind.EXEC:
         if not _reaching(a, ctx):
             return []
@@ -288,8 +333,11 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if g is None:
             continue
         f = Finding(rule=f"C1.{g}", cls="C1", reason=f"path.{g}", detail={"path": p.display})
-        f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
-        f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+        if _credential_home_file(ctx, p):
+            f.detail["credential_home"] = True
+        else:
+            f.add(SENSITIVITY, ctx.weight("sensitivity", g), p.entity_id)
+        f.holds_sensitive(p.entity_id)
         out.append(f)
         seen.add(g)
     # A bare basename after a `cd`, or a reference tokenisation lost: scored without a subject.
@@ -302,7 +350,7 @@ def detect_credentials(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 detail={"mechanism": "text_match"},
             )
             f.add(SENSITIVITY, ctx.weight("sensitivity", g))
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+            f.holds_sensitive(None)
             out.append(f)
             seen.add(g)
     return out
@@ -386,6 +434,9 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
         method = str(a.call.get("method") or "GET").upper()
         if method in lists.strings("egress", "web_body_methods") or a.call.get("body"):
             return [Sink("exfil.web_post", a.destination_hosts(), "body")]
+        if a.call is ctx.prepared.pending and ctx.prepared.url_carries:
+            # No body, but the URL reproduces a local read: the query and path reach the server too.
+            return [Sink("exfil.web_query", a.destination_hosts(), "url")]
         return []
     if a.kind in (ToolKind.MCP, ToolKind.OTHER, ToolKind.SUBAGENT_SPAWN):
         if a.kind is ToolKind.SUBAGENT_SPAWN:
@@ -399,20 +450,60 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     return []
 
 
-def _placeholder_paths(ctx: Context) -> set[str]:
-    """Paths written with a secret placeholder: by an earlier step, or by a sibling in the
-    pending call's batch (a file staged for the send in the same turn)."""
-    out: set[str] = set()
-    open_ = str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+def sole_destination_providers(a: CallAnalysis, lists: Lists) -> list[EntityRef]:
+    """The MCP servers or plugins a send tool hands its data to when the call names no recipient, channel
+    or host: the provider is then the only known destination of the send (the same reading `_sinks`
+    makes). Empty for every other call."""
+    if a.kind not in (ToolKind.MCP, ToolKind.OTHER):
+        return []
+    if _tool_matches(a, lists, "egress", "send_tool_name_patterns") is None:
+        return []
+    if a.recipients or a.channels or a.destination_hosts():
+        return []
+    return list(a.providers)
+
+
+def _owner_asked_for_secret(ctx: Context) -> bool:
+    """The owner's own words ask for a secret value to go with the send ("send the gate code to …",
+    "include the env value I gave you"): the lineage rule's `secret_request_terms` and
+    `secret_like_request_terms`."""
+    words = ctx.prepared.request_words or ""
+    return any(
+        rx.search(words)
+        for name in ("secret_request_terms", "secret_like_request_terms")
+        for rx in ctx.lists.patterns("lineage", name, "patterns")
+    )
+
+
+def _placeholder_paths(ctx: Context) -> dict[str, str]:
+    """Paths written with a secret, by an earlier step or by a sibling in the pending call's batch (a
+    file staged for the send in the same turn), each with why (`prepare.secret_like.secret_carried`): a
+    placeholder, a shape the second redaction pass masks, or a secret-like value the redactors leave
+    raw. A value only the secret-like detector finds does not count when the owner asked for a secret
+    to go. A later write of the same path that carries no secret does not clear an earlier one."""
+    out: dict[str, str] = {}
+    open_ = _placeholder(ctx)
+    asked = _owner_asked_for_secret(ctx)
     home, ws = ctx.prepared.home, ctx.prepared.workspace_root
+
+    def add(path: str, why: str | None) -> None:
+        if why is not None and (out.get(path) in (None, DETECTED)):
+            out[path] = why
+
     for h in ctx.prepared.history:
-        if h.tool_kind in _WRITE_KINDS and h.path and open_ in str(h.get("content") or ""):
-            out.add(normalise_path(h.path, home=home, workspace_root=ws))
+        if h.tool_kind in _WRITE_KINDS and h.path:
+            why = secret_carried(str(h.get("content") or ""), open_, owner_asked=asked)
+            add(normalise_path(h.path, home=home, workspace_root=ws), why)
     for s in ctx.prepared.siblings:
         for w in sibling_writes(s, home=home, workspace_root=ws):
-            if w.content is not None and open_ in w.content:
-                out.add(w.path)
+            if w.content is not None:
+                add(w.path, secret_carried(w.content, open_, owner_asked=asked))
     return out
+
+
+def _secret_weight(ctx: Context, why: str) -> float:
+    """A value only the secret-like detector finds is less certain than a redactor's placeholder."""
+    return ctx.weight("sensitivity", "secret_like" if why == DETECTED else "placeholder")
 
 
 def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
@@ -423,46 +514,76 @@ def _sources(a: CallAnalysis, ctx: Context) -> list[Source]:
         if a.kind is ToolKind.EXEC and p.is_destination and not p.is_source:
             continue
         g = _top_sensitive_group(p.groups)
+        if g is not None and _credential_home_file(ctx, p):
+            continue  # its key goes only to its own service
         if g is not None:
             reason = "exfil.attachment" if p.value in attached else f"path.{g}"
             sources.append(Source(reason, ctx.weight("sensitivity", g), p.entity_id, p.display))
         elif p.value in written_with_placeholder and (p.is_source or p.value in attached):
             reason = "exfil.attachment" if p.value in attached else "exfil.placeholder_in_argv"
+            why = written_with_placeholder[p.value]
             sources.append(
                 Source(
                     reason,
-                    ctx.weight("sensitivity", "placeholder"),
+                    _secret_weight(ctx, why),
                     p.entity_id,
-                    f"{p.display} (written with a placeholder)",
+                    f"{p.display} (written with a secret: {why})",
                 )
             )
     covered = {s.reason.removeprefix("path.") for s in sources}
     for g in SENSITIVE_GROUPS:
         if g in a.text_groups and g not in covered and not any(g in p.groups for p in a.paths):
             sources.append(Source(f"path.{g}", ctx.weight("sensitivity", g), None, "text_match"))
-    if a.placeholder or (a.content and _placeholder(ctx) in a.content):
-        sources.append(
-            Source(
-                "exfil.placeholder_in_argv",
-                ctx.weight("sensitivity", "placeholder"),
-                None,
-                "placeholder",
-            )
-        )
-    if SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
-        sources.append(
-            Source(
-                "exfil.session_holds_sensitive",
-                ctx.weight("sensitivity", "session_holds_sensitive"),
-                None,
-                "session flag",
-            )
-        )
+    why = _secret_in_call(a, ctx)
+    if why is not None:
+        sources.append(Source("exfil.placeholder_in_argv", _secret_weight(ctx, why), None, why))
+    session = _session_sensitive_source(ctx)
+    if session is not None:
+        sources.append(session)
     return sources
+
+
+def _session_sensitive_source(ctx: Context) -> Source | None:
+    """The session's sensitive data as a source of this send, bound to what it is about: the file or table
+    the session judged sensitive when the call takes content from it; the bare session flag when the
+    call has nothing to match (a raw body, a pipe) or the session holds sensitive data it could not tie to
+    a file; nothing when the call takes content only from other files and tables."""
+    prepared = ctx.prepared
+    binding = prepared.session_binding.sensitive
+    weight = ctx.weight("sensitivity", "session_holds_sensitive")
+    if getattr(prepared, "credential_home", None) is not None:
+        # the check found the session's sensitive data to be only the env files whose key goes to its own service
+        return None
+    if binding.bound:
+        return Source(
+            "exfil.session_holds_sensitive",
+            weight,
+            binding.subject(),
+            "session: " + ", ".join(binding.names()),
+        )
+    if SessionFlag.HOLDS_SENSITIVE not in prepared.state.flags:
+        return None
+    if binding.identifiable and not prepared.state.sensitive_unbound:
+        return None
+    return Source("exfil.session_holds_sensitive", weight, None, "session flag")
 
 
 def _placeholder(ctx: Context) -> str:
     return str(ctx.lists.get("egress", "placeholder", "open", default="⟦secret"))
+
+
+def _secret_in_call(a: CallAnalysis, ctx: Context) -> str | None:
+    """Why the call's own arguments carry a secret (`prepare.secret_like.secret_carried`), or None. The
+    arguments are read as their joined text and as JSON, so a value under a key (`{"pin": "3253"}`)
+    is seen with its key."""
+    open_ = _placeholder(ctx)
+    if a.placeholder or (a.content and open_ in a.content):
+        return PLACEHOLDER
+    asked = _owner_asked_for_secret(ctx)
+    why = secret_carried(a.text, open_, owner_asked=asked)
+    if why is None and isinstance(a.call.raw, dict) and a.call.raw:
+        why = secret_carried(json.dumps(a.call.raw, ensure_ascii=False), open_, owner_asked=asked)
+    return why
 
 
 def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -471,6 +592,12 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
     if not sinks:
         return []
     sources = _sources(a, ctx)
+    # An env file whose key the call sends only to its own service is no source, but the session still holds it.
+    home_files = [
+        p.entity_id
+        for p in a.paths
+        if _top_sensitive_group(p.groups) is not None and _credential_home_file(ctx, p)
+    ]
     out: list[Finding] = []
     if sources:
         for sink in sinks:
@@ -490,7 +617,10 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 f.add(IRREVERSIBILITY, ctx.weight("exfil", "irreversibility"), subject)
             for src in sources:
                 f.add(SENSITIVITY, src.weight, src.subject, src.reason)
-            f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                if src.reason != "exfil.session_holds_sensitive":
+                    f.holds_sensitive(src.subject)
+            if SessionFlag.HOLDS_SENSITIVE not in f.flags:
+                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
             out.append(f)
         return out
     for sink in sinks:
@@ -507,6 +637,8 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
             subject = dest.entity_id if dest is not None else None
             f.add(REACH, ctx.weight("send", "reach"), subject)
             f.add(IRREVERSIBILITY, ctx.weight("send", "irreversibility"), subject)
+        for subject in home_files:
+            f.holds_sensitive(subject)
         out.append(f)
     return out
 
@@ -623,12 +755,100 @@ def _add_unvetted_sensitivity(
 ) -> None:
     """Code from a host that is not a listed installer runs with the agent's own read access: its
     sensitivity is what the agent can read (`weights.yaml` `code.sensitivity_unvetted`), whatever
-    the command names. A listed installer host, or no host at all, adds nothing."""
-    if code_source is None or _is_listed_installer(code_source.value, ctx):
+    the command names. A listed installer host, or no host at all, adds nothing. A repository on a
+    multi-tenant host is never a listed installer: the list vouches for hosts, and any account
+    publishes there."""
+    if code_source is None:
+        return
+    if code_source.kind is not EntityKind.REPO and _is_listed_installer(code_source.value, ctx):
         return
     weight = ctx.weight("code", "sensitivity_unvetted")
     if weight > 0:
         f.add(SENSITIVITY, weight, subject, "code.unvetted_source")
+
+
+def _add_unvetted_package_sensitivity(
+    f: Finding, pkg: EntityRef, ctx: Context, *, as_root: bool = False
+) -> None:
+    """A package's install scripts run with the agent's own read access. When the entity library
+    does not know the package and neither the owner's request nor a grant names it, nobody vouched
+    for that code: the install carries the unvetted-package sensitivity. A package the library
+    knows, or one the owner named or granted, adds nothing (the owner's word is the vouching);
+    with `unvetted_package_as_root` on, an owner-named package the library does not know carries it
+    all the same when the install runs as root (`as_root`). Only in the ecosystems the library
+    covers with known-good packages, and for installs from a URL: for a system package manager the
+    library has no list of, "unknown" means not covered, not unvetted. An operand computed at run
+    time counts in every ecosystem: no list could know it.
+    Without the library's answer (the oracle off or failing) no package is known: fail closed."""
+    weight = ctx.unvetted_package_sensitivity
+    ent = ctx.prepared.entities.by_id(pkg.entity_id or "")
+    if weight <= 0 or ent is None:
+        return
+    root_named = ent.sanctioned and as_root and ctx.unvetted_package_as_root
+    if ent.sanctioned and not root_named:
+        return
+    ecosystem = "git+" if ent.value.startswith("git+") else ent.value.split(":", 1)[0]
+    covered = ecosystem in ctx.unvetted_package_ecosystems or is_computed_package(ent.value)
+    if not covered and not root_named:
+        return
+    info = ctx.prepared.oracle_entities.get(ent.id)
+    if isinstance(info, dict) and info.get("verdict") != "unknown":
+        return
+    f.add(SENSITIVITY, weight, ent.id, "code.unvetted_package")
+
+
+def _library_near_miss(code_source: EntityRef, ctx: Context) -> str | None:
+    """The `known_good` library entry the code source is a near miss of, when the oracle answered
+    before AIRA ran; None otherwise."""
+    info = ctx.prepared.oracle_entities.get(code_source.entity_id or "")
+    if not isinstance(info, dict) or info.get("verdict") != "unknown":
+        return None
+    near = info.get("near_miss")
+    if not isinstance(near, dict) or near.get("verdict") != "known_good" or not near.get("value"):
+        return None
+    return str(near["value"])
+
+
+def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
+    """Fetched code from a host named in content that tried to steer the agent (it asked the agent to
+    keep the action from the owner): the floor. Not when the owner
+    named or granted the host, it is a listed installer or a host the library vouches for, or it is
+    the agent's own machine. Without the library's answer (the oracle off or failing) a vouched-for
+    host cannot be told from any other, so it is floored too: fail closed, on a degraded scan."""
+    ent = ctx.prepared.entities.by_id(code_source.entity_id or "")
+    if ent is None or not ent.steered or ent.sanctioned:
+        return None
+    if _is_listed_installer(code_source.value, ctx) or is_local_host(code_source.value):
+        return None
+    info = ctx.prepared.oracle_entities.get(ent.id)
+    if isinstance(info, dict) and info.get("verdict") == "known_good":
+        return None
+    this_step = [
+        seq
+        for seq in sorted(ctx.prepared.steered_inputs)
+        if f"input:{seq}" in (ent.origins.get(Origin.UNTRUSTED_INPUT) or ())
+    ]
+    markers = sorted({m for seq in this_step for m in ctx.prepared.steered_inputs[seq]})
+    g = Finding(
+        rule="C3.steered_source",
+        cls="C3",
+        reason="code.steered_source",
+        detail={
+            "host": code_source.value,
+            "when": "this_step" if this_step else "earlier_step",
+            "markers": markers,
+        },
+    )
+    g.floors.append(
+        Floor(
+            floor="untrusted_code_execution",
+            min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
+            enforce=Enforce.BLOCK,
+            subject=ent.id,
+            reason="code.steered_source",
+        )
+    )
+    return g
 
 
 def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -638,11 +858,21 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     lists = ctx.lists
     if a.kind is not ToolKind.EXEC:
         return out
+    # A repository on a multi-tenant host is the code source before any host: the host only serves it.
     code_source = next(
-        (h for h in a.hosts if Role.CODE_SOURCE in h.roles), a.hosts[0] if a.hosts else None
+        (r for r in a.repos if Role.CODE_SOURCE in r.roles),
+        next((h for h in a.hosts if Role.CODE_SOURCE in h.roles), a.hosts[0] if a.hosts else None),
     )
     host_subject = code_source.entity_id if code_source else None
+    # Each repository the command takes code from carries its own sensitivity, and so does every
+    # host it takes code from, so a grant on one never covers another; with no code source named,
+    # the fallback host does.
+    unvetted_sources = [
+        *(r for r in a.repos if Role.CODE_SOURCE in r.roles),
+        *(h for h in a.hosts if Role.CODE_SOURCE in h.roles),
+    ] or ([code_source] if code_source is not None else [])
     reach, irr = ctx.weight("code", "reach"), ctx.weight("code", "irreversibility")
+    as_root = a.shape is not None and a.shape.privileged
 
     # What the command does as written, and what it does once decoding is undone.
     raw_fetch = _fetch_to_shell(a.shape, ctx)
@@ -678,39 +908,55 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": fetch_mech},
         )
         f.add(REACH, reach, host_subject).add(IRREVERSIBILITY, irr, host_subject)
-        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
+        for source in unvetted_sources:
+            _add_unvetted_sensitivity(f, source, source.entity_id, ctx)
         if obfuscated:
             f.detail["revealed_by"] = sorted(a.encodings)
             f.add(
                 CONCEALMENT, ctx.weight("priv", "concealment"), None, "conceal.obfuscated_command"
             )
         out.append(f)
-        # Look-alike installer host: strong evidence, the floor. An unlisted host
-        # that mimics nothing is scored by consequence and the oracle's distrust, never floored.
-        if code_source is not None:
-            mimics = lookalike_of(code_source.value, lists.strings("installers", "installer_hosts"))
+        # Look-alike installer host: strong evidence, the floor. The installer list, or the entity
+        # library when the oracle answered first: a near miss of a host the library vouches for (the
+        # library vouches for code sources only). An unlisted host that mimics nothing is scored by
+        # consequence and the oracle's distrust, and floored only when it came from content that tried
+        # to steer the agent (below). Every host the command takes code from is checked, so a listed
+        # installer fetched first does not cover a second fetch from another host.
+        sources = [h for h in a.hosts if Role.CODE_SOURCE in h.roles] or (
+            [code_source] if code_source is not None and code_source.kind is EntityKind.HOST else []
+        )
+        for source in sources:
+            subject = source.entity_id
+            mimics = lookalike_of(source.value, lists.strings("installers", "installer_hosts"))
+            via = "installer_list"
+            if not mimics:
+                mimics, via = _library_near_miss(source, ctx), "library"
             if mimics:
                 g = Finding(
                     rule="C3.lookalike_installer",
                     cls="C3",
                     reason="code.lookalike_installer",
-                    detail={"host": code_source.value, "mimics": mimics},
+                    detail={"host": source.value, "mimics": mimics, "via": via},
                 )
                 g.add(
                     CONCEALMENT,
                     ctx.weight("code", "lookalike_concealment", default=0.8),
-                    host_subject,
+                    subject,
                 )
                 g.floors.append(
                     Floor(
                         floor="untrusted_code_execution",
                         min_risk=ctx.weight("code", "decode_floor_min_risk", default=0.9),
                         enforce=Enforce.BLOCK,
-                        subject=host_subject,
+                        subject=subject,
                         reason="code.lookalike_installer",
                     )
                 )
                 out.append(g)
+            else:
+                steered = _steered_source(source, ctx)
+                if steered is not None:
+                    out.append(steered)
 
     if decode_mech:
         f = Finding(
@@ -745,7 +991,10 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             detail={"mechanism": from_url.group(0)[:80]},
         )
         f.add(REACH, reach, subject).add(IRREVERSIBILITY, irr, subject)
-        _add_unvetted_sensitivity(f, code_source, host_subject, ctx)
+        for source in unvetted_sources:
+            _add_unvetted_sensitivity(f, source, source.entity_id, ctx)
+        for pkg in url_packages:
+            _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
         out.append(f)
 
     install_heads = set(lists.strings("installers", "package_install_heads"))
@@ -767,6 +1016,37 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(REACH, reach, pkg.entity_id).add(
                 IRREVERSIBILITY, ctx.weight("code", "package_irreversibility"), pkg.entity_id
             )
+            _add_unvetted_package_sensitivity(f, pkg, ctx, as_root=as_root)
+            out.append(f)
+        for path in a.paths:
+            # A local path an installer installs (`pip install -e .`): still an install, but of what is
+            # on disk, which no registry serves and no library could vouch for.
+            if Role.CODE_SOURCE not in path.roles:
+                continue
+            f = Finding(
+                rule="C3.package_install",
+                cls="C3",
+                reason="code.package_install",
+                detail={"path": path.display},
+            )
+            f.add(REACH, reach, path.entity_id).add(
+                IRREVERSIBILITY, ctx.weight("code", "package_irreversibility"), path.entity_id
+            )
+            if a.source == "pending":
+                # A file the session downloaded: the host it came from supplies the code, as for an
+                # install from that URL, unless the library vouches for it. Installer hosts are not
+                # exempt here (a release asset is anyone's file); package registries never get this far.
+                unvetted = ctx.weight("code", "sensitivity_unvetted")
+                for host in ctx.prepared.downloaded_from.get(path.value, ()):
+                    ent = ctx.prepared.entities.get(EntityKind.HOST, host)
+                    info = ctx.prepared.oracle_entities.get(ent.id) if ent else None
+                    if ent is None or (
+                        isinstance(info, dict) and info.get("verdict") == "known_good"
+                    ):
+                        continue
+                    f.detail.setdefault("downloaded_from", []).append(host)
+                    if unvetted > 0:
+                        f.add(SENSITIVITY, unvetted, ent.id, "code.unvetted_source")
             out.append(f)
 
     written = ctx.prepared.written_file
@@ -799,40 +1079,13 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
     return out
 
 
-_TLDS_2 = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
-
-
 def _registrable_label(host: str) -> str:
     """The label a person reads as the brand: `get.docker.com` → `docker`, `astral-sh.dev` →
     `astral-sh`, `foo.co.uk` → `foo`."""
-    parts = host.lower().strip(".").split(".")
-    if len(parts) >= 3 and parts[-2] in _TLDS_2 and len(parts[-1]) == 2:
-        return parts[-3]
-    return parts[-2] if len(parts) >= 2 else parts[0]
+    return registrable(host)[0]
 
 
-def _edit_distance_le1(a: str, b: str) -> bool:
-    if a == b:
-        return True
-    if abs(len(a) - len(b)) > 1:
-        return False
-    i = j = edits = 0
-    while i < len(a) and j < len(b):
-        if a[i] == b[j]:
-            i += 1
-            j += 1
-            continue
-        edits += 1
-        if edits > 1:
-            return False
-        if len(a) > len(b):
-            i += 1
-        elif len(b) > len(a):
-            j += 1
-        else:
-            i += 1
-            j += 1
-    return edits + (len(a) - i) + (len(b) - j) <= 1
+_edit_distance_le1 = edit_distance_le1
 
 
 def lookalike_of(host: str, listed_hosts: Iterable[str]) -> str | None:
@@ -864,29 +1117,18 @@ def lookalike_of(host: str, listed_hosts: Iterable[str]) -> str | None:
     return None
 
 
-_PROVIDER_VERSION_RE = re.compile(r"@[^@/:\s]+$")
-
-
-def _provider_name(identity: str) -> str:
-    """A provider identity without its version: `npm:@acme/gmail-mcp@1.4.2` → `npm:@acme/gmail-mcp`.
-    The scope's `@` is kept because a version never contains `/`."""
-    identity = identity.strip().lower()
-    name = _PROVIDER_VERSION_RE.sub("", identity)
-    return name if name and not name.endswith(":") else identity
-
-
 def provider_lookalike_of(identity: str, known: Iterable[str]) -> str | None:
     """The known provider identity `identity` mimics, or None: its package name is one edit from a
     known one's. The same name under another version (a patch bump) is that provider, not a
     look-alike, and so is any identity whose name is known."""
-    name = _provider_name(identity)
+    name = provider_name(identity)
     known = [k for k in known if k]
-    if any(_provider_name(k) == name for k in known):
+    if any(provider_name(k) == name for k in known):
         return None
     if len(name.rsplit("/", 1)[-1].split(":")[-1]) < 5:
         return None
     for k in known:
-        if _edit_distance_le1(name, _provider_name(k)):
+        if _edit_distance_le1(name, provider_name(k)):
             return k
     return None
 
@@ -897,7 +1139,7 @@ def detect_provider_lookalike(a: CallAnalysis, ctx: Context) -> list[Finding]:
     scored by the other classes; the look-alike is concealment."""
     out: list[Finding] = []
     known = [
-        h.provider.identity
+        normalise_remote_identity(h.provider.identity)
         for h in ctx.prepared.history
         if h.provider.kind is ProviderKind.MCP and h.provider.identity
     ]
@@ -987,7 +1229,9 @@ def detect_registry_redirect(a: CallAnalysis, ctx: Context) -> list[Finding]:
         hit = _match_any(lists.patterns("installers", "registry_cli_patterns"), a.scan_text)
     if hit is None:
         return out
-    host = next((h for h in a.hosts if h.value not in ("registry.npmjs.org", "pypi.org")), None)
+    # The host the call sets as the registry (a code source), else the first host it names.
+    others = [h for h in a.hosts if h.value not in ("registry.npmjs.org", "pypi.org")]
+    host = next((h for h in others if Role.CODE_SOURCE in h.roles), others[0] if others else None)
     subject = host.entity_id if host else None
     f = Finding(
         rule="C3.registry_redirect",
@@ -997,6 +1241,10 @@ def detect_registry_redirect(a: CallAnalysis, ctx: Context) -> list[Finding]:
     )
     f.add(REACH, ctx.weight("code", "reach"), subject)
     f.add(IRREVERSIBILITY, ctx.weight("code", "registry_irreversibility", default=0.6), subject)
+    # Packages served by a registry that is not a listed installer run with the agent's own access.
+    _add_unvetted_sensitivity(
+        f, host if host and Role.CODE_SOURCE in host.roles else None, subject, ctx
+    )
     out.append(f)
     return out
 
@@ -1061,6 +1309,15 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if rule is not None:
             reason = str(rule.get("reason"))
             emit(reason, reason.split(".")[-1], None, {"mechanism": "tool_name", "tool": a.tool})
+    # A declared self-edit modifies the agent's own store by definition, whatever the tool or path form says (a
+    # host's file write may name its skill file relative to a skill folder no path rule knows). The declared store
+    # supplies the finding only when no rule above found one, so a declaration can never lower a score.
+    planir = ctx.prepared.planir
+    if not out and a.source == "pending" and planir.is_self_edit and planir.self_edit is not None:
+        store = planir.self_edit.store.value
+        if store in SELF_EDIT_STORES:
+            reason, wkey = SELF_EDIT_STORES[store]
+            emit(reason, wkey, None, {"mechanism": "self_edit_store", "store": store})
     return out
 
 
@@ -1249,6 +1506,1427 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
     return [_program_name(tokens[0]), *tokens[1:]]
 
 
+# ------------------------------------------------------------------ C4*: approval loosening
+#
+# Two tiers. A known approval setting changed to a looser value in a host file or command, or a
+# broad allowlist entry, takes the block floor (`guardrail.approval_loosening`). What the scan
+# can only infer (a script's loose words, a host file replaced blind, an `$include` file, an edit
+# fragment whose section cannot be decided, code whose write target cannot be resolved) takes a
+# review floor (`guardrail.approval_loosening_review`): the owner is always asked, and the floor
+# never blocks.
+
+BLOCK, REVIEW = "block", "review"
+
+
+@dataclass(frozen=True)
+class _Setting:
+    #: Finds `key: value` with the key in group `k` and the value in group `v`.
+    rx: re.Pattern[str]
+    #: The same key in a launchd plist (`<key>K</key><string>V</string>`).
+    plist: re.Pattern[str]
+    keys: re.Pattern[str]
+    value: re.Pattern[str]
+    where: str  # env | tree | config
+    host: str | None
+    parents: re.Pattern[str] | None
+    old_values: re.Pattern[str] | None
+    bare: bool
+    ambiguous: bool
+
+
+@dataclass(frozen=True)
+class _Tree:
+    host: str
+    root: str  # regex source with `{home}`
+
+
+@dataclass(frozen=True)
+class _LooseningRules:
+    """`guardrail.approval_loosening`, compiled."""
+
+    settings: tuple[_Setting, ...]
+    #: Every setting's key at once: one pass finds where a setting can start.
+    any_key: re.Pattern[str]
+    allow_tree: dict[str, re.Pattern[str]]
+    allow_approvals: re.Pattern[str] | None
+    broad: tuple[re.Pattern[str], ...]
+    trees: tuple[_Tree, ...]
+    tree_exclusions: tuple[re.Pattern[str], ...]
+    approvals_files: tuple[re.Pattern[str], ...]
+    main_config_files: dict[str, re.Pattern[str]]
+    include_files: dict[str, re.Pattern[str]]
+    env_files: tuple[re.Pattern[str], ...]
+    doc_files: tuple[re.Pattern[str], ...]
+    loose_values: tuple[re.Pattern[str], ...]
+    approval_keys: tuple[re.Pattern[str], ...]
+    inplace_heads: frozenset[str]
+    code_sinks: tuple[
+        tuple[re.Pattern[str], str, int, bool], ...
+    ]  # (regex, call|method, arg, mode)
+    code_commands: tuple[re.Pattern[str], ...]
+    replace_heads: frozenset[str]
+    cd_heads: frozenset[str]
+    blind_heads: frozenset[str]
+    download_flags: frozenset[str]
+    download_letters: dict[str, str]
+    unset_paths: tuple[re.Pattern[str], ...]
+    replaced_objects: tuple[re.Pattern[str], ...]
+    approvals_cli: tuple[dict[str, Any], ...]
+    launch_flags: dict[str, frozenset[str]]
+    env: tuple[re.Pattern[str], ...]
+
+
+_LOOSENING_CACHE: dict[int, tuple[Any, _LooseningRules]] = {}
+_VALUE = r"""[ \t]*[:=][ \t]*(?:&\w+[ \t]+|!!?\w+[ \t]+)*["']?(?P<v>[^\s"',;}\]#)/\\<]+)"""
+
+
+def _key_regex(keys: str) -> re.Pattern[str]:
+    # Keys are case-sensitive in JSON, YAML and the environment, and a case-sensitive pattern
+    # lets the engine scan for its literal prefix: a large body stays fast.
+    return re.compile(r"""(?<![\w-])["']?(?:""" + keys + r""")["']?[ \t]*[:=][ \t]*""")
+
+
+def _loosening_rules(lists: Lists) -> _LooseningRules:
+    raw = lists.get("guardrail", "approval_loosening", default={}) or {}
+    cached = _LOOSENING_CACHE.get(id(raw))
+    if cached is not None and cached[0] is raw:
+        return cached[1]
+
+    def rx(source: Any) -> re.Pattern[str] | None:
+        return re.compile(str(source), re.IGNORECASE) if source else None
+
+    def rxs(key: str) -> tuple[re.Pattern[str], ...]:
+        return tuple(re.compile(str(p), re.IGNORECASE) for p in raw.get(key) or ())
+
+    def by_host(key: str) -> dict[str, re.Pattern[str]]:
+        return {str(h): re.compile(str(p), re.IGNORECASE) for h, p in (raw.get(key) or {}).items()}
+
+    settings = []
+    for s in raw.get("settings") or []:
+        keys = str(s["key"])
+        settings.append(
+            _Setting(
+                rx=re.compile(r"""(?<![\w-])["']?(?P<k>""" + keys + r""")["']?""" + _VALUE),
+                plist=re.compile(
+                    r"<key>\s*(?P<k>"
+                    + keys
+                    + r")\s*</key>\s*<string>\s*(?P<v>[^<\s]+)\s*</string>",
+                    re.IGNORECASE,
+                ),
+                keys=re.compile(keys),
+                value=re.compile(str(s["value"]), re.IGNORECASE),
+                where=str(s.get("where", "config")),
+                host=str(s["host"]) if s.get("host") else None,
+                parents=rx(s.get("parents")),
+                old_values=rx(s.get("old_values")),
+                bare=bool(s.get("bare")),
+                ambiguous=bool(s.get("ambiguous")),
+            )
+        )
+    keys = raw.get("allowlist_keys") or {}
+    tree_keys = keys.get("tree") or {}
+
+    def pats(key: str) -> tuple[re.Pattern[str], ...]:
+        return lists.patterns("guardrail", "approval_loosening", key)
+
+    rules = _LooseningRules(
+        settings=tuple(settings),
+        any_key=_key_regex("|".join(str(s["key"]) for s in raw.get("settings") or []) or "(?!)"),
+        allow_tree={str(h): _key_regex(str(k)) for h, k in tree_keys.items()},
+        allow_approvals=_key_regex(str(keys["approvals"])) if keys.get("approvals") else None,
+        # Whole entries only: anchored, so no search ever tries them from every position.
+        broad=tuple(
+            re.compile(r"\A(?:" + p.pattern + r")\Z", p.flags) for p in pats("broad_entry_patterns")
+        ),
+        trees=tuple(_Tree(str(t["host"]), str(t["root"])) for t in raw.get("host_trees") or ()),
+        tree_exclusions=rxs("tree_exclusions"),
+        approvals_files=rxs("approvals_files"),
+        main_config_files=by_host("main_config_files"),
+        include_files=by_host("include_files"),
+        env_files=rxs("env_files"),
+        doc_files=rxs("doc_files"),
+        loose_values=pats("loosening_value_patterns"),
+        approval_keys=pats("approval_key_patterns"),
+        inplace_heads=frozenset(str(h) for h in raw.get("inplace_heads") or ()),
+        code_sinks=tuple(
+            (
+                re.compile(
+                    r"(?:" + str(c["call"]) + r")\s*\("
+                    if c.get("call")
+                    else r"\.(?:" + str(c["method"]) + r")\s*\("
+                ),
+                "call" if c.get("call") else "method",
+                int(c.get("arg", 1)),
+                bool(c.get("mode")),
+            )
+            for c in raw.get("code_sinks") or ()
+        ),
+        code_commands=pats("code_command_patterns"),
+        replace_heads=frozenset(str(h) for h in raw.get("replace_heads") or ()),
+        cd_heads=frozenset(str(h) for h in raw.get("cd_heads") or ()),
+        blind_heads=frozenset(str(h) for h in raw.get("blind_output_heads") or ()),
+        download_flags=frozenset(str(f) for f in raw.get("download_output_flags") or ()),
+        download_letters={
+            str(h): str(c) for h, c in (raw.get("download_output_letters") or {}).items()
+        },
+        unset_paths=rxs("unset_paths"),
+        replaced_objects=rxs("replaced_objects"),
+        approvals_cli=tuple(raw.get("approvals_cli") or ()),
+        launch_flags={
+            str(head).lower(): frozenset(str(f) for f in flags or ())
+            for head, flags in (raw.get("launch_flags") or {}).items()
+        },
+        env=pats("env_assignment_patterns"),
+    )
+    _LOOSENING_CACHE[id(raw)] = (raw, rules)
+    return rules
+
+
+@dataclass(frozen=True)
+class _Where:
+    """Where a file or command sits for this floor."""
+
+    classes: frozenset[str]  # tree, env, approvals, main, include
+    host: str | None = None
+    fmt: str = "auto"  # json | yaml | auto
+    #: Code or content the host does not read as settings (`skills/`, `node_modules/`, …).
+    excluded: bool = False
+
+    def __bool__(self) -> bool:
+        return bool(self.classes)
+
+
+def _host_where(value: str, rules: _LooseningRules, ctx: Context) -> _Where:
+    """`tree` (a host tree), `approvals`, `main` and `include` (host files at a tree root), and
+    `env` (a file that sets the environment a host starts with, or a host tree). Documentation is
+    none of them."""
+    if _match_any(rules.doc_files, value):
+        return _Where(frozenset())
+    home = re.escape(ctx.prepared.home.rstrip("/"))
+    ws = ctx.prepared.workspace_root.rstrip("/")
+    # A case-insensitive file system names one file however the case is written.
+    flags = re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
+    classes: set[str] = set()
+    host: str | None = None
+    excluded = False
+    for tree in rules.trees:
+        root = tree.root.replace("{home}", home)
+        m = re.match(r"(?:" + root + r")/(?P<rel>.+)\Z", value, flags)
+        if m is None:
+            continue
+        # The workspace excludes its files only when it sits strictly inside this tree.
+        ws_in = re.match(r"(?:" + root + r")/.+\Z", ws, flags) if ws else None
+        if ws_in and (value == ws or value.startswith(ws + "/")):
+            continue
+        rel = m.group("rel")
+        host = tree.host
+        excluded = _match_any(rules.tree_exclusions, rel) is not None
+        classes |= {"tree"} if excluded else {"tree", "env"}
+        if any(p.fullmatch(rel) for p in rules.approvals_files):
+            classes.add("approvals")
+        main = rules.main_config_files.get(tree.host)
+        if main is not None and main.fullmatch(rel):
+            classes.add("main")
+        include = rules.include_files.get(tree.host)
+        if include is not None and include.fullmatch(rel) and not classes & {"main", "approvals"}:
+            classes.add("include")
+        break
+    if _match_any(rules.env_files, value):
+        classes.add("env")
+    ext = os.path.splitext(value)[1].lower()
+    fmt = "yaml" if ext in (".yaml", ".yml") else "json" if ext in (".json", ".json5") else "auto"
+    return _Where(frozenset(classes), host, fmt, excluded)
+
+
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _decode(text: str) -> str:
+    """`\\uXXXX` escapes decoded, so `"\\u006dode"` reads as `"mode"`."""
+    if "\\u" not in text:
+        return text
+    return _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+_IDENT = re.compile(r"[A-Za-z_$][\w$-]*")
+#: A position inside a string or a comment: not a setting.
+_INSIDE = None
+
+
+def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | None]:
+    """The keys enclosing each position (nearest first) in JSON or JSON5, one forward pass:
+    strings, `//` and `/* */` comments skipped, unquoted keys read. A container with no key (a
+    list item) adds nothing. A position inside a string or a comment maps to `None`."""
+    out: dict[int, list[str] | None] = {}
+    want = sorted(set(positions))
+    w = 0
+    stack: list[str | None] = []
+    last: str | None = None  # the last string or identifier, a key if `:` follows
+    pending: str | None = None  # the key whose value comes next
+    i, n = 0, len(text)
+
+    def skip_to(j: int) -> None:
+        nonlocal w
+        while w < len(want) and want[w] < j:
+            out[want[w]] = _INSIDE
+            w += 1
+
+    while i < n and w < len(want):
+        while w < len(want) and want[w] <= i:
+            out[want[w]] = [k for k in reversed(stack) if k]
+            w += 1
+        ch = text[i]
+        if ch in "\"'":
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            last = text[i + 1 : j]
+            skip_to(j + 1)
+            i = j + 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            skip_to(j)
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            skip_to(j)
+            i = j
+            continue
+        if ch == ":":
+            pending, last = last, None
+        elif ch in "{[":
+            stack.append(pending)
+            pending = last = None
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            pending = last = None
+        elif ch == ",":
+            pending = last = None
+        elif not ch.isspace():
+            m = _IDENT.match(text, i)
+            if m:
+                last = m.group(0)
+                i = m.end()
+                continue
+        i += 1
+    for p in want[w:]:
+        out[p] = [k for k in reversed(stack) if k]
+    return out
+
+
+_YAML_KEY = re.compile(r"""(?:-\s+)?["']?([\w$.-]+)["']?\s*:(?:\s+(.*))?\Z""")
+# Anchors and tags before a value; possessive, so a failed match never backtracks into them.
+_YAML_OPENER = re.compile(r"""(?:(?:&\w++|!!?[\w/]++)\s*+)*+\Z""")
+_YAML_BLOCK_SCALAR = re.compile(r"""(?:(?:&\w++|!!?[\w/]++)\s*+)*+[|>][+-]?\d*\s*\Z""")
+
+
+def _yaml_strip_comment(line: str) -> str:
+    """The line without a `#` comment (outside quotes), the same length."""
+    if "#" not in line:
+        return line
+    quote = ""
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i] + " " * (len(line) - i)
+    return line
+
+
+def _yaml_contexts(text: str, positions: list[int]) -> dict[int, list[str] | None]:
+    """The keys enclosing each position by YAML indentation (nearest first), one forward pass;
+    comments, anchors (`&a`) and tags (`!!map`) skipped. A position inside a comment or a block
+    scalar (`|`, `>`) maps to `None`."""
+    out: dict[int, list[str] | None] = {}
+    want = sorted(set(positions))
+    w = 0
+    stack: list[tuple[int, str]] = []
+    scalar_indent: int | None = None  # inside a block scalar opened at this indent
+    offset = 0
+    for raw_line in text.split("\n"):
+        if w >= len(want):
+            break
+        end = offset + len(raw_line)
+        line = _yaml_strip_comment(raw_line)
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" \t"))
+        if scalar_indent is not None and (not stripped or indent > scalar_indent):
+            while w < len(want) and want[w] <= end:
+                out[want[w]] = _INSIDE
+                w += 1
+            offset = end + 1
+            continue
+        scalar_indent = None
+        if stripped:
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            code_end = offset + len(line.rstrip())
+            while w < len(want) and want[w] <= end:
+                out[want[w]] = [k for _, k in reversed(stack)] if want[w] < code_end else _INSIDE
+                w += 1
+            m = _YAML_KEY.match(stripped)
+            if m:
+                rest = (m.group(2) or "").strip()
+                if _YAML_BLOCK_SCALAR.match(rest):
+                    scalar_indent = indent
+                elif _YAML_OPENER.match(rest):
+                    stack.append((indent, m.group(1)))
+        else:
+            while w < len(want) and want[w] <= end:
+                out[want[w]] = [k for _, k in reversed(stack)]
+                w += 1
+        offset = end + 1
+    for p in want[w:]:
+        out[p] = []
+    return out
+
+
+def _contexts(text: str, positions: list[int], fmt: str) -> dict[int, list[str] | None]:
+    if not positions:
+        return {}
+    if fmt == "json":
+        return _json_contexts(text, positions)
+    lines = _yaml_contexts(text, positions)
+    if fmt == "yaml" and "{" not in text:
+        return lines
+    # YAML may carry flow maps (`approvals: {mode: off}`): braces count once comments are gone.
+    # Quotes are YAML's own here (an apostrophe in a plain scalar is not a string), so only the
+    # keys come from the brace pass.
+    stripped = "\n".join(_yaml_strip_comment(line) for line in text.split("\n"))
+    braces = _json_contexts(stripped, positions)
+    out: dict[int, list[str] | None] = {}
+    for p in positions:
+        if lines.get(p) is _INSIDE and fmt == "yaml":
+            out[p] = _INSIDE
+        else:
+            out[p] = braces.get(p) or lines.get(p) or []
+    return out
+
+
+def _brackets(text: str) -> dict[int, int]:
+    """Each `[` mapped to its closing `]`, one pass (an unclosed one is left out)."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for i, ch in enumerate(text):
+        if ch == "[":
+            stack.append(i)
+        elif ch == "]" and stack:
+            pairs[stack.pop()] = i
+    return pairs
+
+
+_LIST_BUDGET = 4000  # characters read per list value
+_LIST_MATCHES = 200  # allowlist keys read per text
+
+
+def _list_value(text: str, start: int, brackets: dict[int, int]) -> str:
+    """The value that starts at `start`: a bracketed list (to its closing bracket), a YAML block
+    list on the following lines, or one scalar; at most `_LIST_BUDGET` characters."""
+    if text.startswith("[", start):
+        end = brackets.get(start)
+        stop = start + _LIST_BUDGET if end is None else min(end + 1, start + _LIST_BUDGET)
+        return text[start:stop]
+    rest = text[start : start + _LIST_BUDGET]
+    line, _, after = rest.partition("\n")
+    if line.strip() and not line.strip().startswith("#"):
+        return line
+    items: list[str] = []
+    for item in after.splitlines():
+        if not item.strip():
+            continue
+        if not item.lstrip().startswith("-"):
+            break
+        items.append(item)
+    return "\n".join(items)
+
+
+def _entries(value: str) -> list[str]:
+    """The entries of a list value: quoted strings, comma-separated words and YAML items."""
+    out = [m.group(1) or m.group(2) for m in re.finditer(r'"([^"]*)"|\'([^\']*)\'', value)]
+    for part in re.split(r"[,\n]", value):
+        word = part.strip().lstrip("-").strip().strip("[]{}").strip().strip("\"'").strip()
+        if word:
+            out.append(word)
+    return out
+
+
+def _broad(entry: str, rules: _LooseningRules) -> bool:
+    return any(b.fullmatch(entry.strip()) for b in rules.broad)
+
+
+Hit = tuple[str, str, str]  # (key, value, tier)
+
+
+def _loosening_hits(
+    text: str,
+    old: str,
+    rules: _LooseningRules,
+    where: _Where,
+    *,
+    parents: list[str] | None = None,
+    fragment: bool = False,
+) -> set[Hit]:
+    """The loosening settings `text` holds where a file or command sits, as (key, value, tier).
+    `old` is the text it replaces (for `old_values`); `parents` stands in for the enclosing keys
+    when the text shows none (a config command's path); `fragment` marks an edit's text, whose
+    top level is not the file's."""
+    hits: set[Hit] = set()
+    if not text or not where:
+        return hits
+    classes = where.classes
+    found: list[tuple[_Setting, str, str, int]] = []
+    active = [
+        s
+        for s in rules.settings
+        if not (s.host is not None and where.host is not None and s.host != where.host)
+        and not (s.where == "env" and "env" not in classes)
+        and not (s.where == "tree" and ("tree" not in classes or where.excluded))
+        and not (s.where == "config" and not classes & {"approvals", "main", "include"})
+    ]
+    if active:
+        for start in rules.any_key.finditer(text):
+            for s in active:
+                m = s.rx.match(text, start.start())
+                if m and s.value.fullmatch(m.group("v")):
+                    found.append((s, m.group("k"), m.group("v"), m.start()))
+        if "<key>" in text:
+            for s in active:
+                if s.where == "env":
+                    for m in s.plist.finditer(text):
+                        if s.value.fullmatch(m.group("v")):
+                            found.append((s, m.group("k"), m.group("v"), m.start()))
+    contexts = _contexts(text, [at for _, _, _, at in found], where.fmt) if found else {}
+    # An `$include` file's top level is wherever the config includes it: a fragment.
+    fragment = fragment or "include" in classes
+    for s, key, value, at in found:
+        enclosing = contexts.get(at, [])
+        if enclosing is _INSIDE:
+            continue  # inside a string, a comment or a block scalar
+        tier = REVIEW if "include" in classes and s.where == "config" else BLOCK
+        if s.where == "config" and "approvals" not in classes:
+            enclosing = enclosing or (parents or [])
+            if enclosing:
+                if s.parents is None or not s.parents.fullmatch(enclosing[0]):
+                    continue
+            elif s.bare and "main" in classes:
+                pass
+            elif s.old_values is not None and any(
+                m.group("k").lower() == key.lower() and s.old_values.fullmatch(m.group("v"))
+                for m in s.rx.finditer(old)
+            ):
+                pass
+            elif fragment and not s.ambiguous:
+                tier = REVIEW  # a fragment that cannot be decided: ask, do not stay silent
+            else:
+                continue  # the top level of a whole file, or a key both hosts use elsewhere
+        hits.add((key, value.lower(), tier))
+    key_rxs: list[re.Pattern[str]] = []
+    if "tree" in classes and not where.excluded:
+        key_rxs += [k for h, k in rules.allow_tree.items() if where.host in (None, h)]
+    if "approvals" in classes and rules.allow_approvals is not None:
+        key_rxs.append(rules.allow_approvals)
+    if key_rxs:
+        brackets: dict[int, int] | None = None
+        seen = 0
+        for key_rx in key_rxs:
+            for m in key_rx.finditer(text):
+                seen += 1
+                if seen > _LIST_MATCHES:
+                    break
+                if brackets is None:
+                    brackets = _brackets(text)
+                for entry in _entries(_list_value(text, m.end(), brackets)):
+                    if _broad(entry, rules):
+                        hits.add((m.group(0).strip(" \t:=\"'"), entry.strip(), BLOCK))
+    return hits
+
+
+def _loosened(
+    pairs: list[tuple[str, str]], rules: _LooseningRules, where: _Where, *, fragment: bool
+) -> set[Hit]:
+    """The loosening settings the new text of each (old, new) pair holds and its old text does
+    not (compared without the tier)."""
+    out: set[Hit] = set()
+    for old, new in pairs:
+        old, new = _decode(old), _decode(new)
+        before = {
+            (k.lower(), v) for k, v, _ in _loosening_hits(old, "", rules, where, fragment=fragment)
+        }
+        out |= {
+            h
+            for h in _loosening_hits(new, old, rules, where, fragment=fragment)
+            if (h[0].lower(), h[1]) not in before
+        }
+    return out
+
+
+# A key path assigned a value in a script: `jq`/`yq` (`.tools.exec.mode = "full"`), Python
+# subscripts (`d['defaults']['ask'] = 'off'`), JavaScript members (`c.tools.exec.mode = 'full'`).
+_SCRIPT_VALUE = r"""\s*(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<bare>[\w.-]+))"""
+_JQ_ASSIGN = re.compile(
+    r"""(?<![\w\]\)])\.(?P<path>[\w$-]+(?:\.[\w$-]+|\["[^"\n]+"\])*)\s*\|?=(?!=)""" + _SCRIPT_VALUE
+)
+_SUBSCRIPT_ASSIGN = re.compile(
+    r"""\b[A-Za-z_]\w*(?P<path>(?:\[\s*["'][^"'\n]+["']\s*\])+)\s*=(?!=)""" + _SCRIPT_VALUE
+)
+_MEMBER_ASSIGN = re.compile(
+    r"""(?<![\w$.?])[A-Za-z_$][\w$]*(?P<path>(?:\??\.[A-Za-z_$][\w$]*)+)\s*=(?!=)""" + _SCRIPT_VALUE
+)
+_PATH_PART = re.compile(r"""[\w$-]+""")
+
+
+def _script_assignments(text: str) -> list[tuple[list[str], str]]:
+    """(key path, value) of each assignment the script makes."""
+    out: list[tuple[list[str], str]] = []
+    for rx in (_JQ_ASSIGN, _SUBSCRIPT_ASSIGN, _MEMBER_ASSIGN):
+        for m in rx.finditer(text):
+            parts = _PATH_PART.findall(m.group("path"))
+            value = m.group("dq") if m.group("dq") is not None else m.group("sq")
+            value = value if value is not None else m.group("bare")
+            if parts and value is not None:
+                out.append((parts, value))
+    return out
+
+
+def _assignment_hits(text: str, rules: _LooseningRules, where: _Where) -> tuple[set[Hit], bool]:
+    """Block-tier hits from the script's assignments read as config paths, and whether any
+    assignment names an approval key (then the script is decided and the loose-word check
+    does not apply)."""
+    hits: set[Hit] = set()
+    decided = False
+    for parts, value in _script_assignments(text):
+        leaf = parts[-1]
+        if _match_any(rules.approval_keys, leaf) or any(
+            s.keys.fullmatch(leaf) for s in rules.settings
+        ):
+            decided = True
+        hits |= _loosening_hits(f"{leaf}: {value}", "", rules, where, parents=parts[-2::-1])
+    return {(k, v, BLOCK) for k, v, _ in hits}, decided
+
+
+def _script_hits(text: str, rules: _LooseningRules, where: _Where) -> set[Hit]:
+    """Review tier: a script writes a host approvals or config file and its text is not settings
+    the scan can read (`s/deny/full/`, `.replace('mode: smart', 'mode: off')`). A loosening value
+    counts anywhere in an approvals file; in a config file next to an approval key, or after the
+    same key with an approvals value."""
+    if not where.classes & {"approvals", "main", "include"}:
+        return set()
+    # Text in settings syntax (`"mode": "full"`) was read by the precise check; what it decided
+    # stands.
+    for s in rules.settings:
+        if any(s.value.fullmatch(m.group("v")) for m in s.rx.finditer(text)):
+            return set()
+    loose = _match_any(rules.loose_values, text)
+    if loose is None:
+        return set()
+    if "approvals" in where.classes or _match_any(rules.approval_keys, text):
+        return {("script", loose.group(0).strip("'\""), REVIEW)}
+    return set()
+
+
+_PATCH_FILE = re.compile(
+    r"^(?:\*\*\* (?:Update|Add) File:|\+\+\+ (?:b/)?)[ \t]*(\S(?:.*\S)?)[ \t]*$", re.M
+)
+
+
+def _patch_sections(text: str) -> list[tuple[str, str, str]]:
+    """(path, removed text, added text) per file of a patch (`*** Begin Patch` or unified diff)."""
+    out: list[tuple[str, str, str]] = []
+    heads = list(_PATCH_FILE.finditer(text))
+    for i, m in enumerate(heads):
+        body = text[m.end() : heads[i + 1].start() if i + 1 < len(heads) else len(text)]
+        old, new = [], []
+        for line in body.splitlines():
+            if line.startswith(("+++", "---", "***")):
+                continue
+            if line.startswith("+"):
+                new.append(line[1:])
+            elif line.startswith("-"):
+                old.append(line[1:])
+            elif line.startswith(" "):
+                # Context lines tie a setting to its section; they are in both texts.
+                old.append(line[1:])
+                new.append(line[1:])
+        out.append((m.group(1), "\n".join(old), "\n".join(new)))
+    return out
+
+
+# One `{"path": …, "value": …}` item of `config set --batch-json`, quotes optional.
+_BATCH_ITEM = re.compile(
+    r"""["']?path["']?\s*:\s*["']?([\w.\[\]-]+)["']?\s*,\s*["']?value["']?\s*:\s*"""
+    r"""("[^"]*"|'[^']*'|\[[^\]]*\]|\{[^}]*\}|[^,}\s]+)"""
+)
+# The two branches never match the same character (a backslash only starts an escape), so the
+# loop cannot backtrack exponentially on a long run of escapes.
+_SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1)[^\\])*)\1""")
+_ASSIGNMENT = re.compile(r"""(?:\A|[;&|\n(]\s*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2""")
+_VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+_TILDE_USER = re.compile(r"\A~([A-Za-z_][\w.-]*)(?=/|\Z)")
+# Inline code: the home directory however it is spelled, variables, and string literals
+# (f-strings, raw strings and JavaScript template literals included).
+_CODE_HOME = re.compile(
+    r"""Path\.home\(\)|os\.path\.expanduser\(\s*["']~["']\s*\)|"""
+    r"""os\.environ\s*\[\s*["']HOME["']\s*\]|os\.environ\.get\(\s*["']HOME["'][^)]*\)|"""
+    r"""os\.getenv\(\s*["']HOME["'][^)]*\)|process\.env\.HOME|process\.env\[\s*["']HOME["']\s*\]|"""
+    r"""(?:\w+|require\(\s*["']os["']\s*\))\.homedir\(\)"""
+)
+_CODE_TOKEN = re.compile(
+    r"""(?P<lit>[fFrRbB]{0,2}(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|`[^`]*`)|(?P<name>[A-Za-z_$][\w$]*)"""
+)
+_CODE_ASSIGN = re.compile(
+    r"""(?:^|[;\n{])[ \t]*(?:const[ \t]+|let[ \t]+|var[ \t]+)?(?P<name>[A-Za-z_$][\w$]*)[ \t]*=(?!=)(?P<expr>[^;\n]*)""",
+    re.M,
+)
+_PLACEHOLDER = re.compile(r"""\$?\{([^{}]*)\}""")
+_HOME_MARK = "\x00HOME\x00"
+_CODE_KEYWORDS = frozenset(
+    {"True", "False", "None", "true", "false", "null", "undefined", "new", "await", "with", "as"}
+)
+_CODE_IGNORED = frozenset({"w", "a", "x", "r", "wb", "ab", "w+", "a+", "utf8", "utf-8", "HOME"})
+
+
+def _sed_split(text: str) -> tuple[str, str]:
+    """(old, new) text of a command with `s/…/…/` substitutions (`sed`, `perl`): the search
+    patterns are the old text; the rest of the command is the new text."""
+    old = [m.group(2) for m in _SED_SUBST.finditer(text)]
+    return "\n".join(old), _SED_SUBST.sub(lambda m: "s" + m.group(1), text)
+
+
+_REPLACE_CALL = re.compile(
+    r"""\.replace(?:All)?\(\s*(?P<old>"[^"\n]*"|'[^'\n]*')\s*,\s*(?P<new>"[^"\n]*"|'[^'\n]*')\s*\)"""
+)
+
+
+def _split_script(text: str) -> tuple[str, str]:
+    """(old, new) text of a script: `s/…/…/` search patterns and `.replace(a, b)` first
+    arguments are the old text; the rest of the script, with them taken out, is the new text."""
+    old_sed, text = _sed_split(text)
+    olds = [old_sed] if old_sed else []
+    olds += [m.group("old")[1:-1] for m in _REPLACE_CALL.finditer(text)]
+    text = _REPLACE_CALL.sub(lambda m: ".replace(" + m.group("new") + ")", text)
+    return "\n".join(olds), text
+
+
+def _unescape(text: str) -> str:
+    """Backslash escapes as `printf` and `echo -e` read them."""
+    table = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'", "0": ""}
+    return re.sub(r"\\(.)", lambda m: table.get(m.group(1), "\\" + m.group(1)), text)
+
+
+_WRITE_MODE = re.compile(r"""(?:mode\s*=\s*)?[fbrFBR]?["'][wax]\+?[bt]?["']""")
+_SCAN_BUDGET = 2000  # characters read per call or receiver
+_SINK_MATCHES = 200  # sink calls read per script
+
+
+def _call_args(text: str, open_paren: int) -> list[str]:
+    """The top-level arguments of the call whose `(` is at `open_paren` (strings and nested
+    brackets skipped), at most `_SCAN_BUDGET` characters."""
+    args: list[str] = []
+    depth = 0
+    quote = ""
+    start = i = open_paren + 1
+    end = min(len(text), open_paren + _SCAN_BUDGET)
+    while i < end:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                args.append(text[start:i].strip())
+                return [a for a in args if a]
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    return [a for a in args if a]
+
+
+def _receiver(text: str, end: int) -> str:
+    """The expression that ends at `end` (a method's receiver): a bracketed group with the
+    name before it (`Path(...)`, `(Path.home() / 'x')`), or a dotted name."""
+    if end > 0 and text[end - 1] == ")":
+        depth = 0
+        j = end - 1
+        while j >= 0 and end - j < _SCAN_BUDGET:
+            if text[j] == ")":
+                depth += 1
+            elif text[j] == "(":
+                depth -= 1
+                if depth == 0:
+                    break
+            j -= 1
+        name = re.search(r"[\w.]*\Z", text[max(0, j - 200) : j])
+        return text[j - (len(name.group(0)) if name else 0) : end]
+    name = re.search(r"[\w.]+\Z", text[max(0, end - 200) : end])
+    return name.group(0) if name else ""
+
+
+def _code_sink_targets(text: str, rules: _LooseningRules) -> list[str]:
+    """The expression each write sink in inline code names as its file."""
+    out: list[str] = []
+    for rx, kind, argn, needs_mode in rules.code_sinks:
+        for n, m in enumerate(rx.finditer(text)):
+            if n >= _SINK_MATCHES:
+                break
+            args = _call_args(text, m.end() - 1)
+            if needs_mode and not any(
+                _WRITE_MODE.fullmatch(a) for a in args[(1 if kind == "call" else 0) :]
+            ):
+                continue
+            if kind == "call":
+                if len(args) >= argn:
+                    out.append(args[argn - 1])
+            else:
+                receiver = _receiver(text, m.start())
+                if receiver:
+                    out.append(receiver)
+    return out
+
+
+def _code_path(expr: str, variables: dict[str, str]) -> str | None:
+    """The path a code expression names, or None when it cannot be told: string literals
+    joined in order (`Path.home() / '.openclaw' / 'x.json'`, `os.path.join(d, 'x.json')`,
+    `f"{os.environ['HOME']}/.hermes/config.yaml"`, `` `${process.env.HOME}/x` ``), the home
+    directory however it is spelled, and variables assigned earlier."""
+    expr = _CODE_HOME.sub(lambda m: "'" + _HOME_MARK + "'", expr.strip())
+    parts: list[str] = []
+    for m in _CODE_TOKEN.finditer(expr):
+        if m.group("name") is not None:
+            name = m.group("name")
+            after = expr[m.end() :].lstrip()[:1]
+            before = expr[: m.start()].rstrip()[-1:]
+            if after in ("(", ".", "=") or before == "." or name in _CODE_KEYWORDS:
+                continue
+            if name not in variables:
+                return None  # a value the scan cannot see
+            parts.append(variables[name])
+            continue
+        if m.group("lit"):
+            lit = m.group("lit").lstrip("fFrRbB")[1:-1]
+
+            def fill(p: re.Match[str]) -> str:
+                inner = p.group(1).strip()
+                if _HOME_MARK in inner:
+                    return _HOME_MARK
+                return variables.get(inner, "\x00?\x00")
+
+            lit = _PLACEHOLDER.sub(fill, lit)
+            if "\x00?\x00" in lit:
+                return None
+            if lit in _CODE_IGNORED or not lit:
+                continue
+            parts.append(lit)
+    if not parts:
+        return None
+    joined = "/".join(p.strip("/") if i else p.rstrip("/") for i, p in enumerate(parts))
+    return joined.replace(_HOME_MARK, "~") or None
+
+
+def _code_variables(code: str) -> dict[str, str]:
+    """Variables the code assigns a path, a path part or the home directory."""
+    variables: dict[str, str] = {}
+    for m in _CODE_ASSIGN.finditer(code):
+        expr = m.group("expr").strip()
+        if not expr:
+            continue
+        home = _CODE_HOME.fullmatch(expr)
+        if home:
+            variables[m.group("name")] = "~"
+            continue
+        path = _code_path(expr, variables)
+        if path:
+            variables[m.group("name")] = path
+            continue
+        lit = re.fullmatch(r"""[fr]?(["'])([\w.~/-]+)\1""", expr)
+        if lit:
+            variables[m.group("name")] = lit.group(2)
+    return variables
+
+
+def _code_commands(code: str, rules: _LooseningRules, variables: dict[str, str]) -> list[str]:
+    """Commands inline code runs (`os.system`, `subprocess.*`, `child_process.exec*`), as text.
+    A list's elements are literals or paths the code builds."""
+    out: list[str] = []
+    for rx in rules.code_commands:
+        for n, m in enumerate(rx.finditer(code)):
+            if n >= _SINK_MATCHES:
+                break
+            arg = m.group("c").strip()
+            if arg.startswith("[") or re.match(r"""["'][\w./-]+["']\s*,""", arg):
+                elements: list[str] = []
+                # `[a, b]`, or `'sed', [a, b]` (a program and its argument list): one level
+                # of bracket-aware splitting each.
+                parts: list[str] = []
+                for part in _call_args("(" + (arg[1:-1] if arg.startswith("[") else arg) + ")", 0):
+                    if part.startswith("[") and part.endswith("]"):
+                        parts.extend(_call_args("(" + part[1:-1] + ")", 0))
+                    else:
+                        parts.append(part)
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
+                    lit = re.fullmatch(r"""[fr]?(["'])(.*)\1""", part)
+                    if lit and "{" not in lit.group(2):
+                        elements.append(lit.group(2))
+                    else:
+                        elements.append(_code_path(part, variables) or part)
+                out.append(" ".join(shlex.quote(e) for e in elements))
+            else:
+                lit = re.fullmatch(r"""[fr]?(["'`])(.*)\1""", arg, re.DOTALL)
+                if lit:
+                    out.append(lit.group(2))
+    return out
+
+
+def _approval_loosening(
+    a: CallAnalysis, ctx: Context
+) -> list[tuple[str, str | None, dict[str, Any]]]:
+    """Changes that loosen the host's approval or allowlist policy, as (tier, subject, detail)."""
+    lists = ctx.lists
+    rules = _loosening_rules(lists)
+    if not rules.settings and not rules.allow_tree:
+        return []
+    out: list[tuple[str, str | None, dict[str, Any]]] = []
+    home = ctx.prepared.home.rstrip("/")
+    ws = ctx.prepared.workspace_root
+
+    def report(hits: set[Hit], subject: str | None, detail: dict[str, Any]) -> None:
+        if not hits:
+            return
+        tier = BLOCK if any(t == BLOCK for _, _, t in hits) else REVIEW
+        settings = sorted(f"{k}={v}" for k, v, t in hits if t == tier)
+        out.append((tier, subject, {**detail, "settings": settings[:4]}))
+
+    def resolve(path: str, cwd: str | None = None) -> str:
+        path = path.strip().strip("'\"")
+        path = path.replace("${HOME}", "~").replace("$HOME", "~")
+        m = _TILDE_USER.match(path)
+        if m:
+            user = m.group(1)
+            base = home if os.path.basename(home) == user else os.path.dirname(home) + "/" + user
+            path = base + path[m.end() :]
+        base = cwd or a.cwd or ws
+        if path and not path.startswith(("/", "~", "$")):
+            # `normalise_path` keeps a bare or `../` relative path as it is; this floor anchors on
+            # the host trees, so it resolves one against the cwd (or the workspace) first.
+            base_abs = normalise_path(base, home=home, workspace_root=ws, cwd=None)
+            path = os.path.join(base_abs, path)
+        value = normalise_path(path, home=home, workspace_root=ws, cwd=base)
+        return os.path.normpath(value) if value.startswith("/") else value
+
+    def display(value: str) -> str:
+        return display_path(value, home)
+
+    # 1. File tools: write, edit, patch (also MCP and other tools that name the path).
+    if a.kind in _WRITE_KINDS | {ToolKind.MCP, ToolKind.OTHER}:
+        raw = a.call.raw if isinstance(a.call.raw, dict) else {}
+        patch = next(
+            (
+                raw[k]
+                for k in ("input", "patch", "diff")
+                if isinstance(raw.get(k), str) and _PATCH_FILE.search(raw[k])
+            ),
+            None,
+        )
+        if patch is not None:
+            for path, old, new in _patch_sections(patch):
+                value = resolve(path)
+                p = a.path(value)
+                where = _host_where(value, rules, ctx)
+                report(
+                    _loosened([(old, new)], rules, where, fragment=True),
+                    p.entity_id if p else None,
+                    {"path": display(value), "mechanism": "patch"},
+                )
+        edits = [e for e in a.call.get("edits") or [] if isinstance(e, dict)]
+        if edits:
+            pairs = [(str(e.get("old") or ""), str(e.get("new") or "")) for e in edits]
+        else:
+            # A write replaces the whole file and the call does not show what it held, so a
+            # loosening setting the file already had (`"exec": {"mode": "full"}` in openclaw.json,
+            # also OpenClaw's gateway default) fires again on a rewrite. Accepted for now: an agent
+            # rewriting the host's config whole is rare, and telling an unchanged setting from a
+            # new one would need the file's earlier content.
+            pairs = [("", a.content)]
+        raw_path = a.call.get("path")
+        targets = {resolve(p.value): (p.entity_id, p.display, m) for p, m in _written_paths(a, ctx)}
+        if isinstance(raw_path, str) and raw_path:
+            value = resolve(raw_path)
+            targets.setdefault(value, (None, display(value), a.kind.value))
+        for value, (subject, shown, mechanism) in targets.items():
+            where = _host_where(value, rules, ctx)
+            report(
+                _loosened(pairs, rules, where, fragment=bool(edits)),
+                subject,
+                {"path": shown, "mechanism": mechanism},
+            )
+        return out
+
+    if a.kind is not ToolKind.EXEC or not a.command:
+        return out
+
+    config_cli = lists.get("guardrail", "config_cli", default=[]) or []
+    cli_heads = {str(e.get("head")).lower() for e in config_cli}
+    cli_heads |= {str(e.get("head")).lower() for e in rules.approvals_cli}
+    cli_heads |= set(rules.launch_flags)
+    shells = set(lists.strings("installers", "shell_heads"))
+    writing = {h.lower() for h in lists.strings("guardrail", "writing_heads")} - {"echo", "printf"}
+
+    def judge(
+        value: str,
+        mechanism: str,
+        *,
+        content: str | None,
+        old: str = "",
+        script: str | None = None,
+    ) -> None:
+        """One file a command writes. `content` is what it writes when the scan can read it
+        (an `echo`, `printf` or heredoc, a substitution's replacement); `script` is the text of
+        a writer whose output the scan cannot read (`jq`, inline code), for the script checks."""
+        where = _host_where(value, rules, ctx)
+        if not where:
+            return
+        hits: set[Hit] = set()
+        if content is not None:
+            hits = _loosened([(old, content)], rules, where, fragment=False)
+        if not hits and script is not None:
+            old_s, new_s = _split_script(_decode(script))
+            hits = _loosened([(old_s, new_s)], rules, where, fragment=False)
+            if not hits:
+                # The text a script writes as string literals (`.write('approvals:\\n  mode: off')`).
+                literals = "\n".join(
+                    _unescape(t.group("lit").lstrip("fFrRbB")[1:-1])
+                    for t in _CODE_TOKEN.finditer(new_s)
+                    if t.group("lit")
+                )
+                hits = _loosened([(old_s, literals)], rules, where, fragment=False)
+            decided = False
+            if not hits:
+                hits, decided = _assignment_hits(new_s, rules, where)
+            if not hits and not decided:
+                hits = _script_hits(new_s, rules, where)
+        report(hits, None, {"path": display(value), "mechanism": mechanism})
+
+    def cli_where(head: str, *extra: str) -> _Where:
+        return _Where(frozenset({"tree", "env", "main", *extra}), head, "auto")
+
+    def cli_hit(line: str, mechanism: str, hits: set[Hit]) -> None:
+        report(hits, None, {"match": line[:120], "mechanism": mechanism})
+
+    def set_value(head: str, path: str, value: str) -> set[Hit]:
+        """`<path> <value>` of a config command, read as `<last segment>: <value>` with the
+        path's other segments as the enclosing keys."""
+        if value.startswith("@"):
+            return set()  # read from a file the call does not show
+        segments = [s.strip("'\"") for s in path.split(".") if s.strip("'\"")]
+        if not segments:
+            return set()
+        text = f"{segments[-1]}: {value}"
+        return _loosening_hits(text, "", rules, cli_where(head), parents=segments[-2::-1])
+
+    def drops_policy(path: str, value: str, merge: bool) -> bool:
+        """`config set` of the exec settings that leaves OpenClaw on its looser defaults."""
+        path = path.strip("'\"")
+        if value.strip().lower() == "null" and _match_any(rules.unset_paths, path):
+            return True
+        if merge or not _match_any(rules.replaced_objects, path):
+            return False
+        if not value.lstrip().startswith("{"):
+            return False
+        names = {w.lower() for w in re.findall(r"[A-Za-z]+", value)}
+        if path.strip() == "tools" and "exec" not in names:
+            return True
+        return "mode" not in names and not {"security", "ask"} <= names
+
+    def cli(tokens: list[str], line: str, command: str) -> None:
+        """The host CLIs: config commands, approvals commands, launch flags."""
+        head = tokens[0]
+        flags = rules.launch_flags.get(head, frozenset())
+        if flags and any(t in flags for t in tokens[1:]):
+            cli_hit(line, "launch_flag", {(t, "on", BLOCK) for t in tokens[1:] if t in flags})
+        for at in _after_options(tokens, 1):
+            sub = tokens[at].lower()
+            verbs = [(v, tokens[v].lower()) for v in _after_options(tokens, at + 1)]
+            for entry in config_cli:
+                if head != entry.get("head") or sub != entry.get("subcommand"):
+                    continue
+                for v, verb in verbs:
+                    if verb not in {str(x).lower() for x in entry.get("mutating_verbs", [])}:
+                        continue
+                    args = tokens[v + 1 :]
+                    positional = [t for t in args if not t.startswith("-")]
+                    hits: set[Hit] = set()
+                    removes = verb in ("unset", "rm", "remove", "delete", "del")
+                    if removes and head == "openclaw":
+                        hits = {
+                            (path, "unset", BLOCK)
+                            for path in positional[:1]
+                            if _match_any(rules.unset_paths, path.strip("'\""))
+                        }
+                    if verb == "patch":
+                        hits |= _loosening_hits(
+                            _heredocs(command) or command, "", rules, cli_where(head)
+                        )
+                    if any(t.split("=", 1)[0] == "--batch-json" for t in args):
+                        for m in _BATCH_ITEM.finditer(command):
+                            hits |= set_value(head, m.group(1), m.group(2).strip("'\""))
+                    if not removes and len(positional) >= 2:
+                        hits |= set_value(head, positional[0], positional[1])
+                        if head == "openclaw" and drops_policy(
+                            positional[0], positional[1], "--merge" in args
+                        ):
+                            hits.add((positional[0], "policy dropped", BLOCK))
+                    elif not removes and len(positional) == 1 and "=" in positional[0]:
+                        path, _, value = positional[0].partition("=")
+                        hits |= set_value(head, path, value)
+                    if hits:
+                        cli_hit(line, f"{head} {sub} {verb}", hits)
+            for entry in rules.approvals_cli:
+                if head != entry.get("head") or sub != entry.get("subcommand"):
+                    continue
+                for v, verb in verbs:
+                    if verb != entry.get("verb"):
+                        continue
+                    args = tokens[v + 1 :]
+                    mech = f"{head} {sub} {verb}"
+                    presets = {str(p).lower() for p in entry.get("presets") or []}
+                    if presets and any(t.lower() in presets for t in args):
+                        cli_hit(
+                            line, mech, {("preset", t, BLOCK) for t in args if t.lower() in presets}
+                        )
+                    flag_rx = entry.get("flags") or {}
+                    found: set[Hit] = set()
+                    for i, t in enumerate(args):
+                        name, eq, val = t.partition("=")
+                        if name in flag_rx:
+                            val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
+                            if re.fullmatch(str(flag_rx[name]), val, re.IGNORECASE):
+                                found.add((name, val, BLOCK))
+                    if found:
+                        cli_hit(line, mech, found)
+                    if entry.get("content"):
+                        doc = _heredocs(command) or command
+                        hits = _loosening_hits(doc, "", rules, cli_where(head, "approvals"))
+                        if hits:
+                            cli_hit(line, mech, hits)
+                    file_flag = entry.get("file_flag")
+                    for i, t in enumerate(args):
+                        name, eq, val = t.partition("=")
+                        if file_flag and name == file_flag:
+                            val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
+                            src = resolve(val)
+                            if val and not _host_where(src, rules, ctx).classes & {"approvals"}:
+                                cli_hit(line, mech, {("read from", display(src), REVIEW)})
+                    add = entry.get("allowlist_add")
+                    if add and args and args[0].lower() == str(add):
+                        # Entries: the words after the options; an option's value is skipped.
+                        entries: list[str] = []
+                        skip = False
+                        for t in args[1:]:
+                            if skip:
+                                skip = False
+                            elif t.startswith("-"):
+                                skip = "=" not in t
+                            else:
+                                entries.append(t)
+                        broad = {("allowlist", e, BLOCK) for e in entries if _broad(e, rules)}
+                        if broad:
+                            cli_hit(line, mech, broad)
+
+    def code(text: str, cwd: str, depth: int) -> None:
+        """Inline code (`python -c`, `node -e`, Hermes `execute_code`, a script in a heredoc):
+        each write sink's target, the commands it runs, and the review backstop for a target
+        the scan cannot resolve in code that names a host approvals or main config file."""
+        variables = _code_variables(text)
+        unresolved = False
+        for target in _code_sink_targets(text, rules):
+            path = _code_path(target, variables)
+            if path is None:
+                unresolved = True
+                continue
+            judge(resolve(path, cwd), "inline_code", content=None, script=text)
+        if depth < 3:
+            for command in _code_commands(text, rules, variables):
+                shell(command, cwd, depth + 1)
+        if unresolved and not any(t == BLOCK for t, _, _ in out):
+            named = _CODE_HOME.sub("~", text)
+            for m in re.finditer(r"""\.(?:openclaw|hermes)[\w.-]*['"/ ,+]""", named):
+                tail = named[m.start() : m.start() + 200]
+                host_file = re.search(
+                    r"""exec-approvals\.json|openclaw\.json|config\.ya?ml""", tail
+                )
+                if host_file:
+                    report(
+                        {("unresolved write", host_file.group(0), REVIEW)},
+                        None,
+                        {"mechanism": "inline_code", "match": tail[:80]},
+                    )
+                    break
+
+    def shell(command: str, cwd: str, depth: int) -> None:
+        """A shell command: what each segment writes, the host CLIs it runs, and the scripts
+        and inline code it carries. `cd`/`pushd` move the cwd; `bash -c` scripts recurse."""
+        command = _decode(command)
+        shape = derive_exec_shape(command, lists.path_groups, workspace_root=ws, home=home)
+        variables = {m.group(1): m.group(3) for m in _ASSIGNMENT.finditer(command)}
+        links: dict[str, str] = {}
+
+        def expand(token: str) -> str:
+            def var(m: re.Match[str]) -> str:
+                name = m.group(1) or m.group(2)
+                return "~" if name == "HOME" else variables.get(name, m.group(0))
+
+            token = _VAR_REF.sub(var, token)
+            for alias, target in links.items():
+                if token == alias or token.startswith(alias + "/"):
+                    token = target + token[len(alias) :]
+            return token
+
+        heredocs = _heredocs(command)
+        produced: list[str] = []  # what earlier `echo`/`printf` segments printed (a pipe source)
+        previous = ""  # the text of the segment before (a pipe's writer)
+        written_content: dict[str, str | None] = {}
+        written_script: dict[str, str] = {}  # the writer's text, when its output is not read
+        written_blind: set[str] = set()  # written from content the scan cannot read
+        segments = shape.segments if shape.parse_ok else []
+        for seg in segments:
+            head = seg.head
+            words = [head, *[expand(w) for w in seg.argv]]
+            line = " ".join(words)
+            args = [expand(t) for t in seg.positional]
+            if head in rules.cd_heads:
+                if args:
+                    cwd = resolve(args[0], cwd)
+                continue
+            script = _shell_script([_shell_word(w) for w in words], shells)
+            if script is not None and depth < 3:
+                shell(script, cwd, depth + 1)
+            rendered = _render(head, seg, heredocs)
+            if head == "ln" and args and len(args) >= 2 and (seg.has_flag_letter("s")):
+                links[args[-1].rstrip("/")] = args[-2].rstrip("/")
+            # Redirects: an `echo`/`printf`/heredoc is read; a blind head is a replacement.
+            for target in seg.redirects:
+                value = resolve(expand(target), cwd)
+                sources = [t for t in args if not t.startswith("-")]
+                piped_in = "\n".join(produced) if produced else None
+                if head == "cat" and not sources and rendered is None:
+                    judge(value, "redirect", content=piped_in, script=previous or None)
+                    written_content[value] = piped_in
+                elif head in rules.blind_heads and rendered is None:
+                    # A file, a download or decoded input the scan cannot read.
+                    src = (
+                        resolve(sources[0], cwd) if sources and head not in ("curl", "wget") else ""
+                    )
+                    if src and src in written_content and src not in written_blind:
+                        judge(
+                            value,
+                            "redirect",
+                            content=written_content[src],
+                            script=written_script.get(src),
+                        )
+                    else:
+                        blind(value, sources[0] if src else "unreadable input")
+                        written_blind.add(value)
+                    written_content[value] = None
+                else:
+                    judge(
+                        value,
+                        "redirect",
+                        content=rendered,
+                        script=None if rendered is not None else line,
+                    )
+                    written_content[value] = rendered
+                written_script[value] = line
+            # Pipe writers: `tee`, `sponge`, `dd of=`.
+            piped = "\n".join(produced) if produced else None
+            if head in ("tee", "sponge"):
+                for tok in args:
+                    value = resolve(tok, cwd)
+                    judge(value, f"head:{head}", content=rendered or piped, script=previous or None)
+                    written_content[value] = rendered or piped
+            elif head == "dd":
+                for tok in args:
+                    if tok.startswith("of="):
+                        value = resolve(tok[3:], cwd)
+                        judge(value, "head:dd", content=piped, script=previous or None)
+            elif head in rules.inplace_heads and (
+                seg.has_flag_letter("i") or "--in-place" in seg.flags or "--inplace" in seg.flags
+            ):
+                old, new = _sed_split(line)
+                for tok in args:
+                    if _SED_SUBST.search(tok) or re.search(r"[\s=]", tok) or tok.startswith("."):
+                        continue
+                    judge(resolve(tok, cwd), f"in_place:{head}", content=new, old=old, script=line)
+            elif head in writing and head not in rules.replace_heads and head != "dd":
+                for tok in args:
+                    judge(resolve(tok, cwd), f"head:{head}", content=None, script=line)
+            if head in rules.replace_heads:
+                replace(seg, args, cwd, written_content, written_script, written_blind)
+            if head in ("curl", "wget"):
+                letter = rules.download_letters.get(head, "")
+                for i, f in enumerate(seg.argv):
+                    name, eq, val = f.partition("=")
+                    takes = name in rules.download_flags or (
+                        letter
+                        and f.startswith("-")
+                        and not f.startswith("--")
+                        and f.endswith(letter)
+                    )
+                    if takes and not eq:
+                        val = seg.argv[i + 1] if i + 1 < len(seg.argv) else ""
+                    if takes and val and val != "-":
+                        blind(resolve(expand(val), cwd), "a download")
+            tokens = _cli_tokens([_shell_word(w) for w in words], cli_heads, lists)
+            if tokens and tokens[0] in cli_heads:
+                cli(tokens, line, command)
+            if rendered is not None:
+                produced.append(rendered)
+            previous = line
+        # Inline code anywhere in the command (`python3 -c`, `node -e`, a heredoc script).
+        code(command, cwd, depth)
+        env = _match_any(rules.env, command)
+        if env:
+            cli_hit(
+                env.group(0).strip(), "environment", {("environment", env.group(0).strip(), BLOCK)}
+            )
+
+    def blind(value: str, source: str) -> None:
+        if _host_where(value, rules, ctx).classes & {"approvals", "main"}:
+            shown = (
+                source if source in ("a download", "unreadable input") else display(resolve(source))
+            )
+            report(
+                {("replaced from", shown, REVIEW)},
+                None,
+                {"path": display(value), "mechanism": "replace"},
+            )
+
+    def replace(
+        seg: ExecSegment,
+        args: list[str],
+        cwd: str,
+        written_content: dict[str, str | None],
+        written_script: dict[str, str],
+        written_blind: set[str],
+    ) -> None:
+        """`cp`, `mv`, `install`, `rsync`, `ln` onto a host approvals or main config file."""
+        target_dir = None
+        for i, f in enumerate(seg.argv):
+            if f in ("-t", "--target-directory") and i + 1 < len(seg.argv):
+                target_dir = seg.argv[i + 1]
+            elif f.startswith("--target-directory="):
+                target_dir = f.split("=", 1)[1]
+        # Option values are not files: `install -m 600`, `-o user`, `-g group`, `-S .bak`.
+        valued = {"-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix", "-t"}
+        skip = {seg.argv[i + 1] for i, f in enumerate(seg.argv[:-1]) if f in valued}
+        words = [t for t in args if t != target_dir and t not in skip]
+        if target_dir is not None:
+            sources, dests = words, [target_dir.rstrip("/") + "/"] * len(words)
+        elif len(words) >= 2:
+            sources, dests = words[:-1], [words[-1]] * (len(words) - 1)
+        else:
+            return
+        for src, dest in zip(sources, dests, strict=True):
+            src_value = resolve(src, cwd)
+            dest_value = resolve(dest.replace("${HOME}", "~").replace("$HOME", "~"), cwd)
+            if dest.endswith("/") or not os.path.splitext(dest_value)[1]:
+                dest_value = dest_value.rstrip("/") + "/" + os.path.basename(src_value)
+            if src_value in written_blind:
+                blind(dest_value, src)
+                continue
+            if src_value in written_content:
+                # Written by this command: judge what it wrote (or the writer's script).
+                content = written_content[src_value]
+                judge(
+                    dest_value,
+                    f"head:{seg.head}",
+                    content=content,
+                    script=written_script.get(src_value) if content is None else None,
+                )
+                continue
+            if _host_where(src_value, rules, ctx).classes & {"approvals", "main", "include"}:
+                continue  # another host config or approvals file
+            blind(dest_value, src)
+
+    if a.inline_code:
+        code(_decode(a.command), a.cwd or ws, 0)
+        env = _match_any(rules.env, a.command)
+        if env:
+            report(
+                {("environment", env.group(0).strip(), BLOCK)}, None, {"mechanism": "environment"}
+            )
+    else:
+        shell(a.command, a.cwd or ws, 0)
+    return out
+
+
+_HEREDOC_START = re.compile(r"""<<-?[ \t]*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n""")
+
+
+def _heredocs(command: str) -> str:
+    """The bodies of a command's heredocs, joined. Each body ends at a line holding only its tag;
+    the search goes on after it, so the text is read once."""
+    bodies: list[str] = []
+    pos = 0
+    while True:
+        m = _HEREDOC_START.search(command, pos)
+        if m is None:
+            break
+        end = re.compile(r"^[ \t]*" + re.escape(m.group("tag")) + r"[ \t]*$", re.M).search(
+            command, m.end()
+        )
+        if end is None:
+            break  # unterminated: nothing after it is a body
+        bodies.append(command[m.end() : max(m.end(), end.start() - 1)])
+        pos = end.end()
+    return "\n".join(bodies)
+
+
+def _render(head: str, seg: ExecSegment, heredocs: str) -> str | None:
+    """What a segment prints, when the scan can read it: `echo` (`-e` escapes), `printf` (its
+    format with escapes and `%s` filled), or a heredoc read by `cat`/`tee`."""
+    if head == "echo":
+        # Double-quoted words keep the shell's escapes in the parse (`"{\\"a\\": 1}"`).
+        words = [re.sub(r'\\(["\\$`])', r"\1", w) for w in seg.argv]
+        escapes = False
+        while words and re.fullmatch(r"-[neE]+", words[0]):
+            escapes = escapes or "e" in words[0]
+            words.pop(0)
+        text = " ".join(words)
+        return _unescape(text) if escapes else text
+    if head == "printf":
+        words = [w for w in seg.argv if w != "--"]
+        if not words:
+            return None
+        fmt, rest = _unescape(words[0]), iter(words[1:])
+        return re.sub(r"%[sb%]", lambda m: "%" if m.group(0) == "%%" else next(rest, ""), fmt)
+    if (
+        head in ("cat", "tee")
+        and heredocs
+        and not [t for t in seg.positional if not t.startswith("-") and head == "cat"]
+    ):
+        return heredocs
+    return None
+
+
 def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C4*: guardrail tampering per `guardrail.yaml`. Never fires on reads, lists, restart or
     reload."""
@@ -1261,6 +2939,22 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if key in seen:
             return
         seen.add(key)
+        if reason == "guardrail.approval_loosening_review":
+            # The review tier: the owner is always asked; the floor adds no score and never blocks.
+            f = Finding(
+                rule="C4star.approval_loosening_review", cls="C4*", reason=reason, detail=detail
+            )
+            f.floors.append(
+                Floor(
+                    floor="guardrail_tampering",
+                    min_risk=ctx.weight("guardrail", "review_floor_min_risk", default=0.5),
+                    enforce=Enforce.REVIEW,
+                    subject=subject,
+                    reason=reason,
+                )
+            )
+            out.append(f)
+            return
         if reason == "guardrail.host_approvals":
             # Changing the host's own approval or allowlist settings is scored, not floored: the
             # floor covers Sentrook's state, its plugin entry and the gateway.
@@ -1316,6 +3010,18 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     p.entity_id,
                     {"path": p.display, "mechanism": "edit_text_match"},
                 )
+
+    # Loosening the host's approval or allowlist policy, by any route.
+    # One finding per call, however many routes and settings it takes: the block tier when any
+    # route is precise, else the review tier.
+    loosening = _approval_loosening(a, ctx)
+    if loosening:
+        tier = BLOCK if any(t == BLOCK for t, _, _ in loosening) else REVIEW
+        chosen = [(subject, detail) for t, subject, detail in loosening if t == tier]
+        subject, detail = chosen[0]
+        settings = sorted({s for _, d in chosen for s in d.get("settings", [])})
+        reason = "guardrail.approval_loosening" + ("" if tier == BLOCK else "_review")
+        emit(reason, subject, {**detail, "settings": settings[:6]})
 
     if a.kind is not ToolKind.EXEC:
         return out
@@ -1533,8 +3239,29 @@ def detect_sql_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
 # =========================================================================== C8
 
 
+def _privileged_group_switches(a: CallAnalysis, lists: Lists) -> list[str]:
+    """The root-equivalent groups the command switches into with `sg` or `newgrp`: the group is the first
+    word after the head that is not `-` or a flag (`sg docker -c cmd`, `newgrp - docker`). A group the
+    command does not write out (a substitution, a variable) is not read here; the command resolved
+    through a sibling's write is analysed as a call of its own."""
+    heads = set(lists.strings("privilege", "group_switch_heads"))
+    privileged = {g.lower() for g in lists.strings("privilege", "root_equivalent_groups")}
+    out: list[str] = []
+    for shape in (a.shape, a.decoded_shape):
+        if shape is None or not shape.parse_ok:
+            continue
+        for seg in shape.segments:
+            if seg.head not in heads:
+                continue
+            group = next((t for t in seg.argv if not t.startswith("-")), None)
+            if group is not None and group.lower() in privileged and group.lower() not in out:
+                out.append(group.lower())
+    return out
+
+
 def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
-    """C8: sudo/doas/su (pack `host_gated`), setuid/setcap, loader preload and PATH shadowing."""
+    """C8: sudo/doas/su (pack `host_gated`), a switch into a root-equivalent group, setuid/setcap,
+    loader preload and PATH shadowing."""
     out: list[Finding] = []
     if a.kind is not ToolKind.EXEC:
         return out
@@ -1554,6 +3281,17 @@ def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
             f.add(REACH, reach)
         else:
             f.detail["skipped"] = "pack host_gated not enabled"
+        out.append(f)
+    groups = _privileged_group_switches(a, lists)
+    if groups:
+        # A member switches group with no password, so the host does not gate this as it gates sudo.
+        f = Finding(
+            rule="C8.group_switch",
+            cls="C8",
+            reason="priv.group_switch",
+            detail={"groups": groups},
+        )
+        f.add(REACH, reach)
         out.append(f)
     if _match_any(lists.patterns("privilege", "setuid_patterns"), a.scan_text):
         f = Finding(rule="C8.setuid", cls="C8", reason="priv.setuid")
@@ -1684,7 +3422,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"path": p.display, "mechanism": mechanism},
                 )
                 f.add(SENSITIVITY, weight, p.entity_id)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(p.entity_id)
                 out.append(f)
 
     if a.kind is not ToolKind.EXEC or a.shape is None:
@@ -1712,7 +3450,7 @@ def detect_artefact(a: CallAnalysis, ctx: Context) -> list[Finding]:
                     detail={"verb": verb, "group": hit},
                 )
                 f.add(SENSITIVITY, weight, subject)
-                f.flags.append(SessionFlag.HOLDS_SENSITIVE)
+                f.holds_sensitive(subject)
                 out.append(f)
         elif verb == "push" and SessionFlag.HOLDS_SENSITIVE in ctx.prepared.state.flags:
             if _placeholder_paths(ctx):

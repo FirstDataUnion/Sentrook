@@ -56,16 +56,17 @@ cli:
   # Cloud IAM grants: a role, policy, key or secret handed to a principal on a remote
   # system outlives the session and is not undone from the host. Only privileged roles count for
   # the role-binding verbs (an `owner`, `admin` or `editor` grant; a `reader` grant stays silent);
-  # key creation, inline policies and secret writes count whatever their content.
-  - pattern: '\biam\s+(?:add-roles?|grant(?:-role)?|bind(?:-role)?|set-role)\b[^;&|\n]*--roles?[=\s]+["'']?(?:roles/)?[\w./-]*?(?:owner|admin|administrator|editor|root|superuser)\b'
+  # key creation, inline policies and secret writes count whatever their content. The `role` group
+  # is the privileged role granted; the context probe checks the owner's request names it.
+  - pattern: '\biam\s+(?:add-roles?|grant(?:-role)?|bind(?:-role)?|set-role)\b[^;&|\n]*--roles?[=\s]+["'']?(?:roles/)?[\w./-]*?(?P<role>owner|admin|administrator|editor|root|superuser)\b'
     reason: remote.grant
-  - pattern: '\badd-iam-policy-binding\b[^;&|\n]*--role[=\s]+["'']?(?:roles/)?[\w./-]*?(?:owner|editor|admin)\b'
+  - pattern: '\badd-iam-policy-binding\b[^;&|\n]*--role[=\s]+["'']?(?:roles/)?[\w./-]*?(?P<role>owner|editor|admin)\b'
     reason: remote.grant
   - pattern: '\bgcloud\s+iam\s+service-accounts\s+keys\s+create\b'
     reason: remote.grant
-  - pattern: '\baws\s+iam\s+(?:(?:put-(?:user|role|group)-policy|create-access-key|create-login-profile|update-assume-role-policy|add-user-to-group|create-policy-version)\b|attach-(?:user|role|group)-policy\b[^;&|\n]*(?:administrator|admin|fullaccess|poweruser))'
+  - pattern: '\baws\s+iam\s+(?:(?:put-(?:user|role|group)-policy|create-access-key|create-login-profile|update-assume-role-policy|add-user-to-group|create-policy-version)\b|attach-(?:user|role|group)-policy\b[^;&|\n]*(?P<role>administrator|admin|fullaccess|poweruser))'
     reason: remote.grant
-  - pattern: '\baz\s+role\s+assignment\s+create\b[^;&|\n]*--role[=\s]+["'']?[\w\s-]*?(?:owner|contributor|administrator|admin)\b'
+  - pattern: '\baz\s+role\s+assignment\s+create\b[^;&|\n]*--role[=\s]+["'']?[\w\s-]*?(?P<role>owner|contributor|administrator|admin)\b'
     reason: remote.grant
   - pattern: '\bgh\s+(?:secret|variable)\s+set\b'
     reason: remote.grant

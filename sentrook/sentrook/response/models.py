@@ -19,6 +19,7 @@ from ..enums import Enforce, ProbeStatus, ScanStatus
 
 SUSPICION_SIGNALS: tuple[str, ...] = (
     "exposure",
+    "session_exposure",
     "untrusted_origin",
     "misalignment",
     "concealment",
@@ -49,7 +50,18 @@ class _Tier(_Model):
 class SuspicionTier(_Tier):
     """How much the call looks like it serves a goal the owner did not set. Higher is worse."""
 
-    exposure: Unit = Field(default=None, ge=0, le=1)
+    exposure: Unit = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="This scan's new untrusted inputs carried agent-directed instructions",
+    )
+    session_exposure: Unit = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Earlier in this session the agent read content carrying instructions aimed at it",
+    )
     untrusted_origin: Unit = Field(default=None, ge=0, le=1)
     misalignment: Unit = Field(default=None, ge=0, le=1)
     concealment: Unit = Field(default=None, ge=0, le=1)
@@ -103,6 +115,36 @@ class ReliefApplied(_Model):
     effect: str = Field(
         description="What was removed, e.g. distrust+untrusted_origin, sensitivity:read"
     )
+
+
+class GrantHint(_Model):
+    """A grant the owner could set so that a call like this would usually not be reviewed next time (the next scan's
+    model sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the
+    scanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds
+    the risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an
+    `enforced` decision or a call with an independent strong signal."""
+
+    kind: Literal["destination", "file", "provider"] = Field(
+        description="The grant kind, as `/sentrook grant` takes it"
+    )
+    pattern: str = Field(
+        description=(
+            "The grant pattern: the entity's value as the scanner reads it (a path under the home directory written "
+            "with `~/`), never a secret"
+        )
+    )
+    allows: list[str] | None = Field(
+        default=None, description="For a file grant: what the call does to the file"
+    )
+    scope: Literal["persistent"] = "persistent"
+    expires_in_days: int = Field(default=30, ge=1, le=365)
+    subject: str | None = Field(
+        default=None, description="The entity it covers (an `entities` key)"
+    )
+    relieves: list[str] = Field(
+        default_factory=list, description="The reason codes in `reasons` the grant would remove"
+    )
+    risk: float = Field(ge=0, le=100, description="This call's risk with the grant applied, 0-100")
 
 
 class Reason(_Model):
@@ -161,11 +203,35 @@ class Response(_Model):
     enforced: Enforce | None = Field(
         default=None, description="Strongest enforcement of any applied floor"
     )
+    ceiling: Literal["review"] | None = Field(
+        default=None,
+        description=(
+            "Highest outcome the plugin may reach from risk: it decides from risk and its lines, lowers that to "
+            "the ceiling, then raises it to `enforced`. Set when the owner attends the chat and nothing independent "
+            "points to an attack; never together with `enforced`. A plugin that ignores it still blocks."
+        ),
+    )
+    relaxable: Literal[True] | None = Field(
+        default=None,
+        description=(
+            "True when the owner attends the chat, the scan is fully informed, nothing independent points to an "
+            "attack and nothing is `enforced`: a block here comes from the score alone. A plugin may then turn such "
+            "a block into a review it always asks about, only while the owner has snoozed reviews; it never allows "
+            "it silently. Null otherwise; it never changes `risk`. A plugin that ignores it still blocks."
+        ),
+    )
     tree: RiskTree = Field(default_factory=RiskTree)
     floors_applied: list[FloorApplied] = Field(default_factory=list)
     relief_applied: list[ReliefApplied] = Field(default_factory=list)
     reasons: list[Reason] = Field(
         default_factory=list, description="Ordered by contribution to the result"
+    )
+    grant_hints: list[GrantHint] = Field(
+        default_factory=list,
+        description=(
+            "Up to three grants, each of which alone would bring this call below the review line next time, "
+            "lowest resulting risk first. Empty when none would, and on every call below the line."
+        ),
     )
     tool_description: ToolDescription | None = None
     entities: dict[str, EntityDisplay] = Field(default_factory=dict)

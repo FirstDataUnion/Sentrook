@@ -13,9 +13,12 @@
  * names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan of
  * the session sends, and is sent only on scans of that session: not in cron jobs, subagents or other
  * chats. A session grant with no session (the command line without `--session`) is refused, and one
- * stored without a session is never sent. Persistent grants and the plugin config's grants are sent on
- * every scan. An expired grant is not sent, and is dropped from the file on the next change. Patterns are passed
- * on as typed: Sentrook itself refuses patterns too broad to relieve on.
+ * stored without a session is never sent. Persistent grants are sent on every scan. A config grant has
+ * no session to be bound to, so one with scope session, or with an unknown scope (read as session), is
+ * never sent either; the listing, status, verify and the startup log name it. A scan sends a session
+ * grant with its `session_ref` and a grant with an expiry with its `expires_at`, and Sentrook checks
+ * both. An expired grant is not sent, and is dropped from the file on the next change. Patterns are
+ * passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
  *
  * Every change is written to the traffic log as a `grants` record (none when the owner has turned the
  * traffic log off). The Hermes plugin keeps the same file format and prints the same text.
@@ -25,9 +28,10 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
-import { type GrantsFile, readTime, Store } from "./store.ts";
+import { bindingProblem } from "./planir.ts";
+import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
-export const KINDS = ["destination", "file", "provider"];
+export const KINDS = ["destination", "file", "provider", "repo"];
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
 const SESSION_REF = /^s_[0-9a-f]{12}$/;
@@ -44,6 +48,8 @@ export type Entry = Record<string, any>;
 export interface Change {
   op: "grant" | "revoke" | "bind_add" | "bind_remove";
   entry: Entry;
+  /** Set when an approval found the grant its hold already set, and wrote nothing. */
+  existing?: boolean;
 }
 
 export interface ChangeResult {
@@ -103,10 +109,14 @@ function bound(raw: Entry): string | null {
  * file entries (a session grant only in its own session).
  */
 export function effective(cfg: PluginConfig, data: GrantsFile | null, now: Date, sessionRef: string): GrantConfig[] {
-  const out: GrantConfig[] = cfg.grants.map((g) => ({ ...g }));
+  const out: GrantConfig[] = cfg.grants.filter((g) => g.scope === "persistent").map((g) => ({ ...g }));
   for (const pattern of cfg.channelBindings) out.push({ kind: "destination", pattern, scope: "persistent" });
   for (const [raw, g] of fileGrants(data)) {
-    if (!expired(raw, now) && (g.scope !== "session" || bound(raw) === sessionRef)) out.push(g);
+    if (expired(raw, now) || (g.scope === "session" && bound(raw) !== sessionRef)) continue;
+    if (g.scope === "session") g.session_ref = sessionRef;
+    const at = readTime(raw.expires_at);
+    if (at !== null) g.expires_at = iso(at);
+    out.push(g);
   }
   for (const b of fileBindings(data)) {
     const g: GrantConfig = { kind: "destination", pattern: b.pattern.trim(), scope: "persistent" };
@@ -145,7 +155,11 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
     g.kind,
     g.scope ?? "persistent",
     g.pattern,
-    [...(g.allows?.length ? [`allows ${g.allows.join(",")}`] : []), "config, read-only"].join("; "),
+    [
+      ...(g.allows?.length ? [`allows ${g.allows.join(",")}`] : []),
+      "config, read-only",
+      ...(i in cfg.unsentGrants ? [`${cfg.unsentGrants[i]}, never sent`] : []),
+    ].join("; "),
   ]);
   const file = fileGrants(data);
   for (const [raw, g] of file) {
@@ -166,10 +180,16 @@ export function formatGrants(cfg: PluginConfig, data: GrantsFile | null, now: Da
   return lines.join("\n");
 }
 
+/** A binding's details, with why it can never apply when it cannot. */
+function withProblem(pattern: string, details: string[]): string {
+  const problem = bindingProblem(pattern);
+  return [...details, ...(problem ? [problem] : [])].join("; ");
+}
+
 export function formatBindings(cfg: PluginConfig, data: GrantsFile | null): string {
   const rows = [
-    ...cfg.channelBindings.map((p) => [p, "config, read-only"]),
-    ...fileBindings(data).map((b) => [b.pattern.trim(), setBy(b).join("; ")]),
+    ...cfg.channelBindings.map((p) => [p, withProblem(p, ["config, read-only"])]),
+    ...fileBindings(data).map((b) => [b.pattern.trim(), withProblem(b.pattern, setBy(b))]),
   ];
   const lines = [`Channel bindings: ${cfg.channelBindings.length} in config, ${fileBindings(data).length} by command`];
   if (data === null) lines.push("The grants file could not be read, so no bindings set by command apply.");
@@ -177,10 +197,28 @@ export function formatBindings(cfg: PluginConfig, data: GrantsFile | null): stri
   return lines.join("\n");
 }
 
+/** The config bindings that can never apply and why, e.g. `ab (too short, never sent)`; "" when none. */
+export function bindingProblemsSummary(cfg: PluginConfig): string {
+  return cfg.channelBindings
+    .flatMap((p) => {
+      const why = bindingProblem(p);
+      return why ? [`${clean(p, 60)} (${why})`] : [];
+    })
+    .join(", ");
+}
+
+/** The config grants that are never sent and why, e.g. `cfg-2 (no session)`; "" when none. */
+export function unsentSummary(cfg: PluginConfig): string {
+  return Object.entries(cfg.unsentGrants)
+    .map(([i, why]) => `cfg-${Number(i) + 1} (${clean(why, 60)})`)
+    .join(", ");
+}
+
 /** The `grants:` and `channel bindings:` lines of status. */
 export function counts(cfg: PluginConfig, data: GrantsFile | null): [string, string] {
+  const unsent = Object.keys(cfg.unsentGrants).length;
   return [
-    `${cfg.grants.length} in config, ${fileGrants(data).length} by command`,
+    `${cfg.grants.length} in config${unsent ? ` (${unsent} never sent)` : ""}, ${fileGrants(data).length} by command`,
     `${cfg.channelBindings.length} in config, ${fileBindings(data).length} by command`,
   ];
 }
@@ -191,7 +229,7 @@ export function grantUsage(cmd: Cmd): string {
   return (
     `usage: ${cmd("grant")} <kind> <pattern> [--persistent | --scope session|persistent] ` +
     "[--session <ref>] [--allows read,write] [--expires 12h]\n" +
-    "kind is destination, file or provider; --allows is for file grants; scope defaults to " +
+    "kind is destination, file, provider or repo (github.com/<owner>/<repo>); --allows is for file grants; scope defaults to " +
     "session: this session only, or the one --session names (a ref from " +
     `${cmd("history")}); cron jobs, subagents and other chats need --persistent`
   );
@@ -241,7 +279,7 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
   if (pos.length !== 2) return "";
   const kind = pos[0]!.toLowerCase();
   const pattern = pos[1]!;
-  if (!KINDS.includes(kind)) return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file or provider.`;
+  if (!KINDS.includes(kind)) return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file, provider or repo.`;
   if (pattern.length > MAX_PATTERN || !printable(pattern)) {
     return `The pattern must be at most ${MAX_PATTERN} printable characters.`;
   }
@@ -280,6 +318,11 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
  * also drops expired grants; `fn` still sees them, so revoking one works.
  */
 function change(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
+  // The gateway (an approved hold) and the command line can change the file at the same time.
+  return withFileLock(path.join(stateDir, "grants.json"), () => changeLocked(stateDir, now, fn, beforeWrite));
+}
+
+function changeLocked(stateDir: string, now: Date, fn: (data: GrantsFile) => ChangeResult, beforeWrite: () => void): ChangeResult {
   const store = new Store(stateDir);
   const data = store.loadGrants();
   if (data === null) {
@@ -343,6 +386,158 @@ export function addGrant(
   );
 }
 
+/**
+ * A suggested grant as the owner could have typed it: run through `parseGrant` with the same rules as
+ * `grant <kind> <pattern> --persistent [--allows ...]`, so a suggestion can never set more than the command could.
+ * Kind, pattern and allows only; the scope is always persistent and the expiry is the hold's. Null when it is not
+ * one the command would accept.
+ */
+export function hintGrant(hint: unknown): Entry | null {
+  if (!hint || typeof hint !== "object" || Array.isArray(hint)) return null;
+  const { kind, pattern, allows } = hint as Entry;
+  if (typeof kind !== "string" || typeof pattern !== "string") return null;
+  const words = [kind, pattern.trim(), "--persistent"];
+  if (allows !== undefined && allows !== null) {
+    // Each one known verb, exactly: no spaces, commas or anything the command line would split.
+    if (!Array.isArray(allows) || !allows.every((a) => typeof a === "string" && ALLOWS.includes(a))) return null;
+    words.push("--allows", allows.join(","));
+  }
+  // One word each, as typed: a kind or pattern with spaces could not have been typed either.
+  if (words.slice(0, 2).some((w) => !w || /\s/u.test(w))) return null;
+  const parsed = parseGrant(words.join(" "), (sub) => sub);
+  if (typeof parsed === "string") return null;
+  return { kind: parsed.kind, pattern: parsed.pattern, ...(parsed.allows ? { allows: parsed.allows } : {}) };
+}
+
+/** Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a review always). */
+export const HINT_DAYS = 30;
+/** The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not. */
+export const HINT_REMEMBER = "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}";
+export const HINT_PLAIN = "This grant would usually allow calls like this for 30 days: {command}";
+/** Sender bases that put a message in a room others can write to. */
+const SHARED_BASIS = new Set(["group_chat", "host_open_access"]);
+
+/**
+ * The scan response's suggested grants (`grant_hints`) that the grant command would accept, as `hintGrant` returns
+ * them, in the scanner's order. With `reviewAt`, only those whose own risk (the call's risk with the grant applied)
+ * is below this plugin's review line.
+ */
+export function responseHints(resp: unknown, reviewAt?: number): Entry[] {
+  const raw = resp && typeof resp === "object" ? (resp as Entry).grant_hints : undefined;
+  const out: Entry[] = [];
+  for (const h of Array.isArray(raw) ? raw.slice(0, 3) : []) {
+    if (!h || typeof h !== "object" || Array.isArray(h)) continue;
+    if (reviewAt !== undefined && !(typeof h.risk === "number" && h.risk < reviewAt)) continue;
+    const grant = hintGrant(h);
+    if (grant && !out.some((g) => JSON.stringify(g) === JSON.stringify(grant))) out.push(grant);
+  }
+  return out;
+}
+
+/** The command that sets `grant` (from `hintGrant`) as the owner types it: persistent, ending in 30 days. */
+export function grantCommand(grant: Entry, cmd: Cmd): string {
+  const words = [cmd("grant"), grant.kind, grant.pattern, "--persistent", "--expires", `${HINT_DAYS}d`];
+  if (Array.isArray(grant.allows) && grant.allows.length) words.push("--allows", grant.allows.join(","));
+  return clean(words.join(" "), 400);
+}
+
+export function hintLine(grant: Entry, cmd: Cmd, remember: boolean): string {
+  return (remember ? HINT_REMEMBER : HINT_PLAIN).replace("{command}", grantCommand(grant, cmd));
+}
+
+/** Runs the host starts itself from a task the owner set up. */
+export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
+/** The line `/sentrook-why <hold id>` adds under a suggestion from a host task run. */
+export const HOLD_CONTEXT = "this suggestion comes from a {kind} run, not your own message: {where}";
+
+/**
+ * The owner's own turn: the sender is the owner, or the host started a scheduled or heartbeat run with no sender
+ * behind it (`unknown`). A suggested grant is shown, kept on a hold and set only then: on anyone else's turn (a
+ * non-owner sender, a sub-agent, a hook), whoever sent it chose what the call acts on. On a host task run a
+ * suggestion reaches the owner only through a held call they approve.
+ */
+export function ownerSender(planir: Entry): boolean {
+  const relation = planir?.trigger?.sender?.relation;
+  return relation === "owner" || (HOST_TASK_KINDS.has(planir?.trigger?.kind) && relation === "unknown");
+}
+
+/**
+ * Approving a review always may set its suggested grant: the call came from the owner's own message on the main
+ * agent, outside a group chat or a host open to anyone. Whoever answers a review elsewhere is not known to be the
+ * owner, so there the prompt only shows the command.
+ */
+export function mayRemember(planir: Entry): boolean {
+  const trig = planir?.trigger && typeof planir.trigger === "object" ? planir.trigger : {};
+  const sender = trig.sender && typeof trig.sender === "object" ? trig.sender : {};
+  const basis: unknown[] = Array.isArray(sender.basis) ? sender.basis : [];
+  return (
+    trig.kind === "message" &&
+    sender.relation === "owner" &&
+    planir?.session?.agent_role === "main" &&
+    !basis.some((b) => typeof b === "string" && SHARED_BASIS.has(b)) &&
+    (planir?.self_edit ?? null) === null
+  );
+}
+
+/** `destination discord:#ops`, with `(allows read)` for a file grant that limits them. */
+export function describeGrant(grant: Entry): string {
+  const allows = grant.allows ? ` (allows ${grant.allows.join(",")})` : "";
+  return clean(`${grant.kind} ${grant.pattern}${allows}`, 300);
+}
+
+/**
+ * Adds `grant` (from `hintGrant`) as a persistent grant ending `spanMs` from now, for an approved hold (`source`
+ * `from_hold`, `holdId` its id) or a review approved always (`from_review`, the scan's request id). The reply names
+ * the new grant's id; no change when the file could not be read.
+ */
+export function addSuggested(
+  stateDir: string,
+  grant: Entry,
+  by: Entry,
+  now: Date,
+  spanMs: number,
+  holdId: string,
+  beforeWrite: () => void,
+  source: "from_hold" | "from_review" = "from_hold",
+): ChangeResult {
+  return change(
+    stateDir,
+    now,
+    (data) => {
+      // Once per hold or review: an approval retried after a failed save finds its grant.
+      const prior = data.grants.find((g) => g && typeof g === "object" && (g as Entry)[source] === holdId && !expired(g as Entry, now)) as
+        | Entry
+        | undefined;
+      if (prior) {
+        const at = readTime(prior.expires_at);
+        return {
+          reply: `Granted ${prior.id}: ${describeGrant(prior)} (persistent, expires ${at ? show(at) : "?"}).`,
+          change: { op: "grant", entry: prior, existing: true },
+        };
+      }
+      const taken = new Set(data.grants.map((g) => (g as Entry)?.id));
+      let id = `gr-${randomBytes(3).toString("hex")}`;
+      while (taken.has(id)) id = `gr-${randomBytes(3).toString("hex")}`;
+      const expires = new Date(now.getTime() + spanMs);
+      const entry: Entry = {
+        id,
+        ...grant,
+        scope: "persistent",
+        granted_at: iso(now),
+        expires_at: iso(expires),
+        set_by: by,
+        [source]: holdId,
+      };
+      data.grants.push(entry);
+      return {
+        reply: `Granted ${id}: ${describeGrant(entry)} (persistent, expires ${show(expires)}).`,
+        change: { op: "grant", entry },
+      };
+    },
+    beforeWrite,
+  );
+}
+
 export function revoke(stateDir: string, cfg: PluginConfig, rest: string, now: Date, cmd: Cmd, beforeWrite: () => void): ChangeResult {
   const words = rest.split(/\s+/).filter(Boolean);
   if (words.length !== 1) return { reply: `usage: ${cmd("revoke")} <id>, with an id from ${cmd("grants")}`, change: null };
@@ -398,7 +593,8 @@ export function bind(
         if (found >= 0) return { reply: `${channel} is already bound.`, change: null };
         const entry: Entry = { pattern: channel, granted_at: iso(now), set_by: by };
         data.bindings.push(entry);
-        return { reply: `Channel binding added: ${channel}.`, change: { op: "bind_add", entry } };
+        const problem = bindingProblem(channel);
+        return { reply: `Channel binding added: ${channel}${problem ? ` (${problem}).` : "."}`, change: { op: "bind_add", entry } };
       }
       if (found < 0) return { reply: `${channel} is not bound.`, change: null };
       const [entry] = data.bindings.splice(found, 1) as Entry[];

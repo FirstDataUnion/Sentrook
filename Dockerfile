@@ -21,6 +21,11 @@ COPY sentrook/sentrook sentrook/sentrook
 RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim
+# Debian's security fixes reach the archive before the python image is rebuilt with them; the release scan fails on
+# any fixed HIGH or CRITICAL finding, so the runtime stage takes them at build time.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 sentrook \
     && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sentrook
 COPY --from=build /opt/venv /opt/venv

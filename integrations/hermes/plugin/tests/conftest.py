@@ -32,6 +32,7 @@ class FakeScanner:
                 return 500, {"error": {"code": "boom"}}, {}
             risk = 92 if "EXFIL" in cmd else 55 if "REVIEW" in cmd else 5
             enforced = "review" if "FLOOR" in cmd else None
+            ceiling = "review" if "CEILING" in cmd else None
             step = p["session"]["step"]
             return (
                 200,
@@ -41,6 +42,7 @@ class FakeScanner:
                     "status": "ok",
                     "risk": risk,
                     "enforced": enforced,
+                    "ceiling": ceiling,
                     "tree": {
                         "suspicion": {"score": risk / 100},
                         "consequence": {"score": 0.5},
@@ -68,7 +70,7 @@ def harness(tmp_path, monkeypatch):
         "SENTROOK_SCAN_CLIENT_SECRET": "secret-value",
     }.items():
         monkeypatch.setenv(k, v)
-    for k in ("SENTROOK_MODE", "HERMES_CRON_SESSION", "HERMES_YOLO_MODE"):
+    for k in ("SENTROOK_MODE", "SENTROOK_ON_SCAN_ERROR", "HERMES_CRON_SESSION", "HERMES_YOLO_MODE"):
         monkeypatch.delenv(k, raising=False)
     fake = FakeScanner()
     monkeypatch.setattr(auth, "http_json", fake)
@@ -109,3 +111,100 @@ def harness(tmp_path, monkeypatch):
         json.loads(x) for x in (tmp_path / "sentrook" / "traffic.jsonl").read_text().splitlines()
     ]
     return fake
+
+
+@pytest.fixture
+def provenance(monkeypatch):
+    """Hermes's write origin (`tools.skill_provenance`) under test control; an owner's turn by default."""
+    import types
+
+    prov = {"origin": "assistant_tool", "attended": False}
+    mod = types.ModuleType("tools.skill_provenance")
+    mod.get_current_write_origin = lambda: prov["origin"]
+    mod.is_unattended_review = lambda: (
+        prov["origin"] == "background_review" and not prov["attended"]
+    )
+    pkg = types.ModuleType("tools")
+    pkg.__path__ = []
+    pkg.skill_provenance = mod
+    monkeypatch.setitem(sys.modules, "tools", pkg)
+    monkeypatch.setitem(sys.modules, "tools.skill_provenance", mod)
+    return prov
+
+
+@pytest.fixture
+def loop_h(harness, provenance, monkeypatch):
+    """The harness with a scanner whose reply each test sets (`.reply`), Hermes's write origin under test
+    control (`.prov`, the background review by default), no terminal, and no gateway session facts
+    unless a test sets `.facts`."""
+    import io
+
+    fake = harness
+    reply = {"risk": 5, "enforced": None, "reasons": [{"code": "selfmod.plugin"}]}
+
+    def http(url, *, data=None, headers=None, timeout):
+        if url != "http://scan.test/scan":
+            return fake(url, data=data, headers=headers, timeout=timeout)
+        p = json.loads(data)
+        fake.scans.append(p)
+        return (
+            200,
+            {
+                "response_version": "2.0",
+                "request_id": p["request_id"],
+                "status": "ok",
+                "entities": {},
+                "tool_description": {"template": "Saves a skill"},
+                "action_fingerprint": f"afp1:x|step:{p['session']['step']}",
+                "state": "tok",
+                **reply,
+            },
+            {},
+        )
+
+    monkeypatch.setattr(auth, "http_json", http)
+    monkeypatch.setattr(scan_client, "http_json", http)
+    provenance["origin"] = "background_review"
+    # Not a terminal: platforms outside the chat list are unattended unless a test says otherwise.
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    for k in ("HERMES_SESSION_PLATFORM", "HERMES_PLATFORM", "SENTROOK_SKILL_REVIEW"):
+        monkeypatch.delenv(k, raising=False)
+    fake.facts = {}
+    monkeypatch.setattr(plugin, "session_facts", lambda: dict(fake.facts))
+
+    fake.reply = reply
+    fake.prov = provenance
+    return fake
+
+
+@pytest.fixture
+def review_fork(provenance, monkeypatch):
+    """Hermes's approval plumbing as the review fork's thread sees it on the local terminal: its approval
+    callback is the review's auto-deny and no gateway notifier is registered. Tests change `.callback`
+    ("auto", None or "other") and `.notifiers` (session keys with a gateway notifier)."""
+    import types
+
+    def _bg_review_auto_deny(command, description, **kwargs):
+        return "deny"
+
+    state = types.SimpleNamespace(callback="auto", notifiers=set())
+    callbacks = {"auto": _bg_review_auto_deny, None: None, "other": lambda *a, **k: "deny"}
+    review = types.ModuleType("agent.background_review")
+    review._bg_review_auto_deny = _bg_review_auto_deny
+    agent = types.ModuleType("agent")
+    agent.__path__ = []
+    agent.background_review = review
+    approval = types.ModuleType("tools.approval")
+    approval._gateway_notify_cb = lambda key: (lambda *_a: None) if key in state.notifiers else None
+    terminal = types.ModuleType("tools.terminal_tool")
+    terminal._get_approval_callback = lambda: callbacks[state.callback]
+    tools = sys.modules["tools"]
+    tools.approval, tools.terminal_tool = approval, terminal
+    for name, mod in {
+        "agent": agent,
+        "agent.background_review": review,
+        "tools.approval": approval,
+        "tools.terminal_tool": terminal,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    return state

@@ -1,13 +1,16 @@
 """Tier scores and risk. Numeric inputs only.
 
-    taint_link  = untrusted_origin × max(exposure, taint_floor)
+    taint_link  = untrusted_origin × max(exposure, session_exposure, taint_floor)
+                  (taint_floor_unjudged in place of taint_floor, when set, if the request brings new untrusted
+                  content and no exposure judgement came back)
     suspicion   = 1 − (1 − misalignment)(1 − concealment)(1 − overreach)(1 − distrust)
                       (1 − taint_link)(1 − request_origin)(1 − retry_after_denial)
     consequence = max(sensitivity × reach, irreversibility × reach, self_modification)       [max]
                 | max(mean(sensitivity, reach, irreversibility), self_modification)           [mean]
     agreement   = 1 − disagreeing / shared, a disagreement being one explicit value above `high` and
                   another below `low` on the same signal from different probes (a signal only one
-                  probe claims, such as the model-only overreach, is never shared)
+                  probe claims, such as the model-only overreach or the session-wide session_exposure,
+                  is never shared)
     coverage    = min(coverage contributions, probe-status penalty)
     confidence  = min(agreement, coverage, model_certainty)
     risk        = consequence × max(suspicion, u × (1 − confidence))
@@ -82,10 +85,22 @@ def probe_status_penalty(envelopes: list[Envelope], params: ConvergenceParams) -
     return penalty
 
 
-def compute(merged: Merged, envelopes: list[Envelope], params: ConvergenceParams) -> Tiers:
+def compute(
+    merged: Merged,
+    envelopes: list[Envelope],
+    params: ConvergenceParams,
+    *,
+    exposure_unjudged: bool = False,
+) -> Tiers:
+    """`exposure_unjudged`: the request brings new untrusted content and no exposure judgement came back."""
     g = merged.value_or
+    floor = params.taint_floor
+    if exposure_unjudged and params.taint_floor_unjudged is not None:
+        floor = params.taint_floor_unjudged
+    # The session's earlier exposure and this scan's new inputs are separate signals (so the two never count as
+    # a disagreement between probes) and feed taint_link the same way.
     taint_link = g("suspicion.untrusted_origin", 0.0) * max(
-        g("suspicion.exposure", 0.0), params.taint_floor
+        g("suspicion.exposure", 0.0), g("suspicion.session_exposure", 0.0), floor
     )
     suspicion = _noisy_or(
         [

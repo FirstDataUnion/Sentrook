@@ -15,6 +15,7 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 import { tiersOf } from "./decision.ts";
+import * as grants from "./grants.ts";
 import type { ScanResponse } from "./scanClient.ts";
 
 export const HISTORY_DEFAULT = 10;
@@ -29,7 +30,15 @@ type Rec = Record<string, any>;
 export type ScanWithResolution = [scan: Rec, resolution: Rec | null];
 
 const APPROVED = new Set(["once", "session", "always", "allow-once", "allow_once", "allow-always", "allow_always"]);
-const REVIEW: Record<string, string> = { deny: "denied", timeout: "timed out", cancelled: "cancelled" };
+const REVIEW: Record<string, string> = {
+  deny: "denied",
+  timeout: "timed out",
+  cancelled: "cancelled",
+  hold_approved: "approved",
+  hold_expired: "expired",
+};
+/** A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked. */
+const REVIEW_LOOP = "review_loop";
 const ID = /^[0-9a-fA-F-]{4,36}$/;
 
 function* linesBackward(file: string, budget: { left: number }): Generator<Buffer> {
@@ -152,8 +161,14 @@ function time(ts: unknown): string {
   return typeof ts === "string" && ts.length >= 19 ? `${ts.slice(0, 10)} ${ts.slice(11, 19)}` : "?";
 }
 
-/** What the plugin did with the call. */
+/** What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`. */
 export function actionOf(scan: Rec, resolution: Rec | null): string {
+  const action = baseAction(scan, resolution);
+  if (scan.skill_review !== true || responseOf(scan) === null) return action;
+  return action.endsWith(")") ? `${action.slice(0, -1)}, self-edit)` : `${action} (self-edit)`;
+}
+
+function baseAction(scan: Rec, resolution: Rec | null): string {
   const { verdict, decision } = scan;
   if (responseOf(scan) === null) {
     if (resolution !== null) return "review (scan error)";
@@ -163,6 +178,7 @@ export function actionOf(scan: Rec, resolution: Rec | null): string {
   if (verdict === "block") return "blocked";
   if (verdict === "review") {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";
+    if (decision === "held") return "held";
     return decision === "blocked" ? "blocked (no reviewer)" : "review";
   }
   if (verdict === "allow") return "allowed";
@@ -171,8 +187,9 @@ export function actionOf(scan: Rec, resolution: Rec | null): string {
 
 /** How the review was answered; `-` when there was none. */
 export function reviewOf(action: string, resolution: Rec | null): string {
-  if (resolution === null) return action.startsWith("review") ? "no answer" : "-";
+  if (resolution === null) return action.startsWith("review") || action.startsWith("held") ? "no answer" : "-";
   const choice = String(resolution.resolution ?? "").trim().toLowerCase();
+  if (choice === "deny" && resolution.decided_by === REVIEW_LOOP) return "auto-denied by the review loop";
   return APPROVED.has(choice) ? "approved" : (REVIEW[choice] ?? "not approved");
 }
 
@@ -241,5 +258,10 @@ export function formatWhy(scan: Rec, resolution: Rec | null): string {
     .filter((k) => entities[k] && typeof entities[k] === "object" && typeof entities[k].display === "string")
     .map((k) => `  ${text(k, 12)} ${text(entities[k].kind || "?", 20)}: ${text(entities[k].display, 200)}`);
   lines.push(...(shown.length ? ["entities:", ...shown] : ["entities: none"]));
+  // The grants the scanner found would each let the call through next time, as the owner sets them.
+  const suggested = grants.responseHints(r);
+  if (suggested.length) {
+    lines.push("grants that would allow it next time (30 days):", ...suggested.map((g) => `  ${grants.grantCommand(g, (sub) => `/sentrook-${sub}`)}`));
+  }
   return lines.join("\n");
 }

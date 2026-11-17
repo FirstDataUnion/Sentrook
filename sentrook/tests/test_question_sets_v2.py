@@ -31,6 +31,7 @@ from sentrook.prepare.views import (
     call_view_v2,
     cap_inputs,
     exposure_view,
+    state_budget_tokens,
 )
 from sentrook.probes.base import Contribution, Envelope
 from sentrook.probes.jev import JevCallProbe, JevExposureProbe
@@ -106,6 +107,8 @@ def test_call_v2_view_adds_the_inputs_between_history_and_pending_call(harm_case
         EXPOSURE_V2: "trim-v2",
         CALL_V2: "trim-v2",
         "call-v3": "trim-v3",
+        "call-v5": "trim-v8",
+        "call-v7": "trim-v9",
     }
 
 
@@ -133,7 +136,9 @@ def _inputs_raw(attack_case, sizes: list[int]) -> dict:
 
 def test_call_v2_caps_each_input_and_the_total(attack_case):
     sizes = [100, 6000, 6000, 6000, 6000, 6000, 6000, 6000, 7000, 50]
-    built = call_view_v2(_inputs_raw(attack_case, sizes))
+    # the room call-v2's own questions leave: the capped inputs fit it, so nothing is stripped
+    room = state_budget_tokens(load_question_set("call-v2").built_questions())
+    built = call_view_v2(_inputs_raw(attack_case, sizes), budget_tokens=room)
     inputs = built.state["new_inputs"]
     assert built.inputs_truncated and not built.inputs_stripped
     assert inputs[8]["scanner_truncated"] == {"kept_chars": CALL_INPUT_CAP_CHARS, "of_chars": 7000}
@@ -176,6 +181,9 @@ def test_small_inputs_are_not_cut(harm_case):
         "redactions": 1,
         "inputs_truncated": False,
         "inputs_stripped": False,
+        "history_cut": 0,
+        "history_dropped": 0,
+        "request_cut": False,
     }
 
 
@@ -325,7 +333,7 @@ def test_scan_reports_the_views_it_used(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
     assert pv["views_version"] == {"exposure": "trim-v2", "call": "trim-v2"}
     assert pv["redaction"] == {
-        "version": "redact-v4",
+        "version": "redact-v6",
         "shapes": SHAPES_VERSION,
         "count": 2,
     }
@@ -345,7 +353,7 @@ def test_scan_defaults_stay_on_trim_v1(harm_case):
     assert pv["views"] == {"exposure": EXPOSURE, "call": CALL}
     assert pv["views_version"] == {"exposure": "trim-v1", "call": "trim-v1"}
     assert pv["redaction"] == {
-        "version": "redact-v4",
+        "version": "redact-v6",
         "shapes": SHAPES_VERSION,
         "count": 0,
     }
@@ -403,9 +411,9 @@ def test_question_set_env_round_trip_and_health():
     default = ServeConfig.from_env({})
     assert (default.jev_exposure_question_set, default.jev_call_question_set) == (
         "exposure-v2",
-        "call-v4",
+        "call-v8",
     )
-    assert default.convergence == "conv-v3"
+    assert default.convergence == "conv-v7"
     # the frozen v1 sets and conv-v1 stay selectable for the Jev-only comparison
     frozen = ServeConfig.from_env(
         {
@@ -434,7 +442,11 @@ def test_question_set_env_round_trip_and_health():
         jev = httpx.get(srv.url + "/healthz").json()["jev"]
     finally:
         srv.stop()
-    assert jev["question_sets"] == {"exposure": "exposure-v2", "call": "call-v2"}
+    assert jev["question_sets"] == {
+        "exposure": "exposure-v2",
+        "call": "call-v2",
+        "self_edit": "selfedit-v3",
+    }
     assert jev["views"] == {"exposure": EXPOSURE_V2, "call": CALL_V2}
 
 

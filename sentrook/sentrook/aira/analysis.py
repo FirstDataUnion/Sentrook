@@ -91,6 +91,8 @@ class CallAnalysis:
     recipients: list[EntityRef]
     channels: list[EntityRef]
     packages: list[EntityRef]
+    #: Repositories on a multi-tenant host the call takes code from (`EntityKind.REPO`).
+    repos: list[EntityRef]
     providers: list[EntityRef]
     attachments: list[PathRef]
     content: str
@@ -200,6 +202,7 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
     recipients: dict[str, EntityRef] = {}
     channels: dict[str, EntityRef] = {}
     packages: dict[str, EntityRef] = {}
+    repos: dict[str, EntityRef] = {}
     providers: dict[str, EntityRef] = {}
     for f in found:
         if f.kind is EntityKind.PATH:
@@ -225,6 +228,7 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
             EntityKind.CHANNEL: channels,
             EntityKind.PACKAGE: packages,
             EntityKind.PLUGIN: packages,
+            EntityKind.REPO: repos,
             EntityKind.MCP_SERVER: providers,
         }.get(f.kind)
         if bucket is None:
@@ -294,6 +298,7 @@ def analyse(call: CanonicalCall, prepared: Prepared, lists: Lists) -> CallAnalys
         recipients=list(recipients.values()),
         channels=list(channels.values()),
         packages=list(packages.values()),
+        repos=list(repos.values()),
         providers=list(providers.values()),
         attachments=attachments,
         content=content,

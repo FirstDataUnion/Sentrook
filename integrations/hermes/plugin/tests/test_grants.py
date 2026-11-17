@@ -11,7 +11,14 @@ import pytest
 import plugin
 from plugin import grants, owner
 from plugin.config import resolve_config
-from plugin.planir import relevant_grants, session_ref
+from plugin.planir import (
+    binding_problem,
+    call_cwd,
+    call_platform,
+    provider_for,
+    relevant_grants,
+    session_ref,
+)
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
 #: Times are read at NOW; the listing is seen from session `S1`, which `gr-1a2b3c` is bound to.
@@ -34,7 +41,7 @@ def term(harness, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     facts = {}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
-    monkeypatch.setattr(owner, "gateway_engaged", lambda: bool(facts.get("platform")))
+    monkeypatch.setattr(plugin, "session_surface", lambda: "" if facts.get("platform") else "cli")
     harness.facts = facts
     harness.file = harness.dir / "sentrook" / "grants.json"
     return harness
@@ -114,11 +121,23 @@ def test_a_grant_round_trips_through_the_file_and_into_scans(term):
             "pattern": "#ops",
             "scope": "session",
             "granted_at": g["granted_at"],
+            "session_ref": S1,
         }
     ]
     assert slash(term, f"revoke {g['id']}") == f"Revoked {g['id']}: destination #ops."
     assert stored(term)["grants"] == []
     assert scan_grants(term, "post to #ops") == []
+
+
+def test_scans_send_the_expiry_and_bind_session_grants(term):
+    slash(term, "grant file /srv/reports/* --persistent --allows write --expires 12h")
+    slash(term, "grant destination #ops")
+    persistent, session = stored(term)["grants"]
+    sent = scan_grants(term, "cp a /srv/reports/today.md && post to #ops")
+    assert [(g["pattern"], g.get("expires_at"), g.get("session_ref")) for g in sent] == [
+        ("/srv/reports/*", persistent["expires_at"], None),
+        ("#ops", None, session["session_ref"]),
+    ]
 
 
 def test_options_scope_allows_and_expiry(term):
@@ -135,6 +154,9 @@ def test_options_scope_allows_and_expiry(term):
     assert stored(term)["grants"][1]["scope"] == "persistent"
     slash(term, "grant destination #ops --scope session")
     assert stored(term)["grants"][2]["scope"] == "session"
+    slash(term, "grant repo github.com/kestrelwade/yard-helper --persistent")
+    g = stored(term)["grants"][3]
+    assert (g["kind"], g["pattern"]) == ("repo", "github.com/kestrelwade/yard-helper")
 
 
 @pytest.mark.parametrize(
@@ -151,7 +173,7 @@ def test_options_scope_allows_and_expiry(term):
         ("grant destination #ops --persistant", "Unknown option --persistant."),
         (
             "grant destinaton #ops",
-            'Unknown grant kind "destinaton": use destination, file or provider.',
+            'Unknown grant kind "destinaton": use destination, file, provider or repo.',
         ),
         (
             "grant file /x --allows read,wrte",
@@ -211,6 +233,75 @@ def test_config_scope_is_strict():
         "session",
         "session",
     ]
+    assert cfg.unsent_grants == {
+        2: "no session",
+        3: 'unknown scope "persistant"',
+        4: 'unknown scope "Persistent"',
+        5: "unknown scope true",
+    }
+
+
+# ---- config grants: a session scope names no session, so they are never sent -------------------------
+
+#: An entry the parser drops (no pattern), two config grants that never apply (scope session, a scope
+#: typo) and two that apply everywhere. The dropped entry takes no cfg-N.
+UNSENT_CONFIG = [
+    {"kind": "destination", "scope": "session"},
+    {"kind": "destination", "pattern": "#ops", "scope": "session"},
+    {"kind": "destination", "pattern": "#standup", "scope": "persistant"},
+    {"kind": "destination", "pattern": "#daily"},
+    {"kind": "destination", "pattern": "#weekly", "scope": "persistent"},
+]
+UNSENT_SUMMARY = 'cfg-1 (no session), cfg-2 (unknown scope "persistant")'
+
+
+def test_a_config_session_grant_is_never_sent(term):
+    """Must stay silent in two sessions, a cron run and a subagent; persistent ones go everywhere."""
+    term.ctx.settings["grants"] = UNSENT_CONFIG
+    cmd = "post to #ops #standup #daily #weekly"
+    for kw in (
+        {},
+        {"sid": "S2"},
+        {"sid": "cron_daily_20261029"},
+        {"sid": "sub-1", "parent_session_id": "S1"},
+    ):
+        sent = scan_grants(term, cmd, **kw)
+        assert [(g["pattern"], g["scope"]) for g in sent] == [
+            ("#daily", "persistent"),
+            ("#weekly", "persistent"),
+        ]
+
+
+def test_listing_status_and_verify_flag_config_grants_never_sent(term, monkeypatch):
+    term.ctx.settings["grants"] = UNSENT_CONFIG
+    rows = {line.split()[0]: line for line in slash(term, "grants").splitlines()[2:6]}
+    assert rows["cfg-1"].endswith("config, read-only; no session, never sent")
+    assert rows["cfg-2"].endswith('config, read-only; unknown scope "persistant", never sent')
+    assert rows["cfg-3"].endswith("config, read-only")
+    assert rows["cfg-4"].endswith("config, read-only")
+    assert "grants: 4 in config (2 never sent), 0 by command" in slash(term, "status").splitlines()
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    monkeypatch.setattr(plugin.cli, "get_scan_access_token", lambda *a, **k: "tok")
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    # Reported, not failed: a grant that is never sent only makes Sentrook stricter.
+    assert report["config grants"] == (True, f"4 in config; never sent: {UNSENT_SUMMARY}")
+    term.ctx.settings["grants"] = UNSENT_CONFIG[3:]
+    assert "grants: 2 in config, 0 by command" in slash(term, "status").splitlines()
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    assert report["config grants"] == (True, "2 in config")
+
+
+def test_startup_warns_about_config_grants_never_sent(term, caplog):
+    term.ctx.settings["grants"] = UNSENT_CONFIG
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        plugin.register(term.ctx)
+    [warning] = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert UNSENT_SUMMARY in warning and "/sentrook grants" in warning
+    caplog.clear()
+    term.ctx.settings["grants"] = UNSENT_CONFIG[3:]
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        plugin.register(term.ctx)
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
 
 
 @pytest.mark.parametrize(
@@ -397,7 +488,7 @@ def test_the_cli_forms_match_the_slash_forms(term, capsys):
 def test_status_counts_grants_from_both_sources(term):
     fixture_state(term)
     out = slash(term, "status").splitlines()
-    assert "grants: 2 in config, 8 by command" in out
+    assert "grants: 2 in config (1 never sent), 8 by command" in out
     assert "channel bindings: 1 in config, 1 by command" in out
 
 
@@ -497,6 +588,18 @@ def test_persistent_and_config_grants_are_sent_in_every_session(term):
 
 
 RELEVANCE = json.loads((FIXTURES / "relevance.json").read_text())
+REMOTE = json.loads((FIXTURES.parent / "provider" / "remote-identity.json").read_text())
+
+
+def remote_identity(url):
+    """The identity Hermes gives a remote MCP server configured at `url`."""
+    return provider_for("mcp__srv__tool", {"mcp_servers": {"srv": {"url": url}}})["identity"]
+
+
+@pytest.mark.parametrize("c", REMOTE["cases"], ids=lambda c: c["url"])
+def test_a_remote_server_gets_the_same_identity_on_both_hosts(c):
+    """Shared with the OpenClaw plugin's tests."""
+    assert remote_identity(c["url"]) == c["identity"]
 
 
 @pytest.mark.parametrize("c", RELEVANCE["cases"], ids=lambda c: c["case"])
@@ -505,10 +608,42 @@ def test_a_grant_is_sent_when_the_call_could_be_covered_by_it(c):
     sent = relevant_grants(
         [c["grant"]],
         json.dumps(c["arguments"], ensure_ascii=False),
-        identity=c["identity"],
+        identity=remote_identity(c["url"]) if "url" in c else c["identity"],
         home=c.get("home", RELEVANCE["home"]),
+        workspace=c.get("workspace", RELEVANCE["workspace"]),
+        cwd=call_cwd(c["arguments"]),
+        platform=call_platform(c["arguments"], c.get("tool_kind", "other")),
     )
     assert bool(sent) is c["sent"]
+
+
+BINDING_PROBLEMS = json.loads((FIXTURES / "binding-problems.json").read_text())
+
+
+@pytest.mark.parametrize("c", BINDING_PROBLEMS["cases"], ids=lambda c: c["pattern"])
+def test_a_binding_that_can_never_apply_says_why(c):
+    """Shared with the OpenClaw plugin's tests."""
+    assert binding_problem(c["pattern"]) == c["problem"]
+
+
+def test_bind_list_add_and_verify_flag_bindings_that_can_never_apply(term, monkeypatch):
+    term.ctx.settings["channel_bindings"] = ["#daily-brief", "*"]
+    assert slash(term, "bind add ab") == "Channel binding added: ab (too short, never sent)."
+    rows = {line.split()[0]: line for line in slash(term, "bind list").splitlines()[2:]}
+    assert rows["#daily-brief"].endswith("config, read-only")
+    assert rows["*"].endswith("config, read-only; matches every channel, ignored")
+    assert rows["ab"].endswith("(local_terminal); too short, never sent")
+    monkeypatch.setattr(plugin.cli, "http_json", lambda *a, **k: (200, {"version": "t"}, {}))
+    monkeypatch.setattr(plugin.cli, "get_scan_access_token", lambda *a, **k: "tok")
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    # Reported, not failed: a binding that never applies only makes Sentrook stricter.
+    assert report["channel bindings"] == (
+        True,
+        "2 in config; cannot apply: * (matches every channel, ignored)",
+    )
+    term.ctx.settings["channel_bindings"] = ["discord:#daily-brief"]
+    report = {n: (ok, d) for n, ok, d in plugin.cli.run_verify(plugin._settings(), env={})}
+    assert report["channel bindings"] == (True, "1 in config")
 
 
 def test_provider_and_home_grants_reach_the_scan(term, monkeypatch):
@@ -527,3 +662,17 @@ def test_provider_and_home_grants_reach_the_scan(term, monkeypatch):
     scan = term.scans[-1]
     assert scan["pending_call"]["provider"]["identity"] == "npm:@acme/notes-mcp"
     assert [g["pattern"] for g in scan["grants"]] == ["npm:@acme/notes-mcp", "~/notes/*"]
+
+
+def test_dot_paths_reach_the_scan_from_the_call_cwd_and_the_workspace(term, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    term.ctx.settings["grants"] = [
+        {"kind": "file", "pattern": "~/notes/*", "allows": ["read"]},
+        {"kind": "file", "pattern": f"{tmp_path}/src/*", "allows": ["read"]},
+    ]
+    hook = term.ctx.hooks["pre_tool_call"]
+    run_from_home = {"command": "cat ./notes/a.md", "workdir": str(Path.home())}
+    hook(tool_name="terminal", args=run_from_home, tool_call_id="c0", session_id="S1")
+    assert [g["pattern"] for g in term.scans[-1]["grants"]] == ["~/notes/*"]
+    hook(tool_name="read_file", args={"path": "./src/a.py"}, tool_call_id="c1", session_id="S1")
+    assert [g["pattern"] for g in term.scans[-1]["grants"]] == [f"{tmp_path}/src/*"]
