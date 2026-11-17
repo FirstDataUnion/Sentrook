@@ -13,13 +13,19 @@ Which entities may be hinted:
   before the agent did), and not one such content tried to steer the agent to;
 - not a code source or an executable, now or in a later run the call sets up: a grant to send somewhere never
   sanctions running code from it;
+- for a tool provider, only in a chat the owner attends (`attended.attended_owner`), and never one the session
+  switched a tool to: a provider grant trusts code that runs inside the agent, so it is suggested only when the
+  owner asked for the work in front of them, and never for what may be an impersonating server;
 - a kind the owner can grant by command and that relief honours: `destination` (a host, recipient or
   channel), `file` (a path, with what the call does to it, never for a call that also sends off the host) and
   `provider` (an MCP server or plugin);
 - a pattern that matches the entity exactly as the grant matcher reads it: no glob characters, no whitespace,
   not over-broad, at most 256 printable characters, and nothing that reads as a secret.
 
-No hints at all for a call with an `enforced` decision or any floor, with an independent strong signal
+No hints at all for a call that sends one of the machine's files off the host in a session that has read content
+trying to instruct the agent (the session's `tainted` flag): that is what an injected instruction to upload a file
+looks like, and a grant there would let the next one through. None for a fetch whose address carries text the
+session read from a local file (`prepare.url_carry`): data leaving in a URL. Nor for a call with an `enforced` decision or any floor, with an independent strong signal
 (`attended.strong_signals`, whoever attends), or for a scan that is not fully informed (`attended.withheld`:
 a probe failed, the oracle was unavailable, new content went unjudged, the session state was lost, or the
 scan is otherwise degraded).
@@ -37,7 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..enums import Enforce, ProbeStatus, ProbeStep
+from ..enums import Enforce, ProbeStatus, ProbeStep, SessionFlag
 from ..planir.models import OS
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role, display_path
@@ -45,7 +51,13 @@ from ..prepare.grants import GRANT_KINDS, grant_matches, path_actions, sends_off
 from ..prepare.secret_like import secret_carried
 from ..probes.base import Envelope
 from ..response.models import GrantHint, Reason
-from .attended import KNOWN_BAD_PREFIX, LOOKALIKE_PREFIXES, strong_signals, withheld
+from .attended import (
+    KNOWN_BAD_PREFIX,
+    LOOKALIKE_PREFIXES,
+    attended_owner,
+    strong_signals,
+    withheld,
+)
 from .formulas import compute
 from .merge import Claim, merge
 from .params import ConvergenceParams
@@ -65,6 +77,8 @@ MAX_PATTERN = 256
 EXPIRES_IN_DAYS = 30
 _CODE_ROLES = frozenset({Role.CODE_SOURCE, Role.EXECUTABLE})
 _GLOB = frozenset("*?[]")
+#: A provider the session switched a tool to: it may be impersonating the one the tool came from before.
+_SWITCHED_PROVIDER = frozenset({"origin.switched_provider", "reputation.switched_provider"})
 #: Opening of a redaction placeholder, the plugins' and the scanner's own.
 _PLACEHOLDER_OPEN = "⟦"
 
@@ -83,7 +97,10 @@ def _unhintable(prepared: Prepared, claims: list[Claim], envelopes: list[Envelop
         c.subject
         for c in claims
         if c.subject is not None
-        and (c.reason or "").startswith((KNOWN_BAD_PREFIX, *LOOKALIKE_PREFIXES))
+        and (
+            (c.reason or "").startswith((KNOWN_BAD_PREFIX, *LOOKALIKE_PREFIXES))
+            or c.reason in _SWITCHED_PROVIDER
+        )
     }
     for env in envelopes:
         if env.step is not ProbeStep.ENTITY_ORACLE or env.status is not ProbeStatus.OK:
@@ -137,9 +154,12 @@ def _actions(prepared: Prepared, ent: Entity) -> tuple[frozenset[str], frozenset
 
 def _candidates(prepared: Prepared, unhintable: set[str], off_host: bool) -> list[_Candidate]:
     out: list[_Candidate] = []
+    attended = attended_owner(prepared.planir)
     for ent in prepared.entities:
         kind = HINT_KIND.get(ent.kind)
         if kind is None or ent.id in unhintable:
+            continue
+        if kind == "provider" and not attended:
             continue
         if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING) or ent.sibling_only:
             continue
@@ -163,6 +183,17 @@ def _candidates(prepared: Prepared, unhintable: set[str], off_host: bool) -> lis
             allows = tuple(sorted(actions))
         out.append(_Candidate(kind, pattern, allows, ent.id))
     return out
+
+
+def _sends_a_file(prepared: Prepared) -> bool:
+    """The call takes data from a file on this machine: a path the pending call (or a batch sibling, or the file it
+    runs) reads as a data source."""
+    return any(
+        ent.kind is EntityKind.PATH
+        and Role.DATA_SOURCE in ent.roles
+        and ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE)
+        for ent in prepared.entities
+    )
 
 
 def _relieved_pairs(prepared: Prepared, cand: _Candidate) -> set[tuple[str, str | None]]:
@@ -229,6 +260,10 @@ def grant_hints(
     ):
         return []
     off_host = sends_off_host(prepared.pending, prepared.entities.pending())
+    if off_host and SessionFlag.TAINTED in prepared.state.flags and _sends_a_file(prepared):
+        return []
+    if prepared.url_carries:
+        return []  # a fetch whose address carries text from a local read: data leaving in a URL
     found: dict[tuple[str, str, tuple[str, ...] | None], GrantHint] = {}
     for cand in _candidates(prepared, _unhintable(prepared, claims, envelopes), off_host):
         key = (cand.kind, cand.pattern, cand.allows)

