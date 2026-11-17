@@ -1,0 +1,224 @@
+# Nightly, report-only: each host plugin against the host's main build and its newest release
+# candidate (when newer than the latest stable release), with the same check as host-compat.yml.
+# A failing target opens one issue labelled host-compat, comments on it while it keeps failing and
+# closes it on the first pass; it never opens a second issue for the same target.
+#
+# The bump job moves `latest` in integrations/<host>/compat/versions.txt (and the "Tested on" line of
+# the host's install guide) to each new stable release, on the pull request chore/<host>-compat-<tag>.
+# Pull requests opened with the default GITHUB_TOKEN do not trigger other workflows, so the job starts
+# host-compat.yml on the branch itself; its checks show on the pull request. The guide claims a
+# version only once that run is green and the pull request is merged. Setting the HOST_COMPAT_PR_TOKEN
+# secret (a fine-grained token with contents and pull-requests write on this repository) makes the
+# pull request trigger CI directly.
+name: host-compat-nightly
+
+on:
+  schedule:
+    - cron: "23 4 * * *" # daily 04:23 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: host-compat-nightly
+  cancel-in-progress: false
+
+env:
+  HOSTS: hermes
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+      no-rc: ${{ steps.plan.outputs.no-rc }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Targets
+        id: plan
+        run: |
+          set -euo pipefail
+          targets='[]'; no_rc=''
+          for host in $HOSTS; do
+            # A Docker Hub lookup failure drops only that target, with a warning; it closes no issue.
+            if ! m=$(python3 integrations/compat/compat.py matrix --host "$host" --set main); then
+              echo "::warning::$host: could not look up the main build"; m='[]'
+            fi
+            if r=$(python3 integrations/compat/compat.py matrix --host "$host" --set rc); then
+              [ "$r" != '[]' ] || no_rc="$no_rc $host"
+            else
+              echo "::warning::$host: could not look up release candidates"; r='[]'
+            fi
+            m=$(jq -c 'map(. + {target: "main"})' <<<"$m")
+            r=$(jq -c 'map(. + {target: "release candidate"})' <<<"$r")
+            targets=$(jq -c --argjson m "$m" --argjson r "$r" '. + $m + $r' <<<"$targets")
+          done
+          echo "targets=$targets" >>"$GITHUB_OUTPUT"
+          echo "no-rc=${no_rc# }" >>"$GITHUB_OUTPUT"
+          echo "targets: $targets"; echo "hosts with no newer release candidate: ${no_rc:-none}"
+
+  canary:
+    needs: plan
+    name: ${{ matrix.host }} ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compatibility check
+        id: check
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          docker pull -q "${{ matrix.image }}"
+          out="$RUNNER_TEMP/compat"
+          if integrations/${{ matrix.host }}/compat/run.sh "${{ matrix.image }}" "" "$out"; then
+            exit 0
+          fi
+          {
+            echo "detail<<EOF"
+            echo "Image: \`${{ matrix.image }}\` ($(docker image inspect -f '{{index .RepoDigests 0}}' "${{ matrix.image }}" 2>/dev/null || echo 'digest unknown'))"
+            echo
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+            awk -F'\t' '{ gsub(/\|/, "\\|", $3); printf "| %s | %s | %s |\n", $1, $2, $3 }' "$out/steps.tsv" 2>/dev/null
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: canary-${{ matrix.host }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/compat
+          retention-days: 14
+
+      - name: Tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ steps.check.outcome }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 integrations/compat/compat.py canary-issue --host "${{ matrix.host }}" \
+            --target "${{ matrix.target }}" --result "$RESULT" --run-url "$RUN_URL" --detail "$DETAIL"
+          if [ "$RESULT" != success ]; then
+            echo "::warning::${{ matrix.image }} fails the compatibility check (report-only)"
+          fi
+
+  # A release candidate that became a release is tested by host-compat.yml once the bump lands; its
+  # canary issue has nothing left to track.
+  close-rc-issue:
+    needs: plan
+    if: needs.plan.outputs.no-rc != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Close the release-candidate issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NO_RC: ${{ needs.plan.outputs.no-rc }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for host in $NO_RC; do
+            python3 integrations/compat/compat.py canary-issue --host "$host" --target "release candidate" \
+              --result success --run-url "$RUN_URL" \
+              --detail "No release candidate is newer than the latest stable release any more."
+          done
+
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [hermes]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Newest stable release
+        id: latest
+        run: |
+          set -euo pipefail
+          tag=$(python3 integrations/compat/compat.py latest --host "${{ matrix.host }}")
+          # Fails the job if the tag or the install guide's "Tested on" line cannot be moved.
+          outcome=$(python3 integrations/compat/compat.py bump --host "${{ matrix.host }}" "$tag")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "changed=$([ "$outcome" = bumped ] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+          git diff --stat
+
+      - name: Pull request body
+        if: steps.latest.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          {
+            echo "Moves the latest stable ${{ matrix.host }} release the compatibility check runs on to \`$TAG\`, and the install guide's \"Tested on\" line with it."
+            echo
+            echo "The \`host-compat\` checks on this pull request run the plugin on \`$TAG\` and on the declared floor. Merge only when they are green: the guide then truthfully says the plugin is tested on \`$TAG\`. If they fail, the plugin needs a fix for \`$TAG\` first."
+            echo
+            echo "Opened by \`.github/workflows/host-compat-nightly.yml\`."
+          } >"$RUNNER_TEMP/body.md"
+
+      - name: Open or update the pull request
+        id: pr
+        if: steps.latest.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8 # v8.1.2
+        with:
+          token: ${{ secrets.HOST_COMPAT_PR_TOKEN || github.token }}
+          branch: chore/${{ matrix.host }}-compat-${{ steps.latest.outputs.tag }}
+          delete-branch: true
+          add-paths: |
+            integrations/${{ matrix.host }}/compat/versions.txt
+            integrations/${{ matrix.host }}/README.md
+          commit-message: "Compatibility: test the ${{ matrix.host }} plugin on ${{ steps.latest.outputs.tag }}"
+          title: "Compatibility: test the ${{ matrix.host }} plugin on ${{ steps.latest.outputs.tag }}"
+          body-path: ${{ runner.temp }}/body.md
+
+      - name: Run the compatibility check on the pull request
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: chore/${{ matrix.host }}-compat-${{ steps.latest.outputs.tag }}
+        run: gh workflow run host-compat.yml --ref "$BRANCH" -f mode=pr
+
+      - name: Close bump pull requests for older releases
+        if: steps.latest.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PREFIX: chore/${{ matrix.host }}-compat-
+          BRANCH: chore/${{ matrix.host }}-compat-${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh pr list --state open --json number,headRefName --limit 100 |
+            jq -r --arg p "$PREFIX" --arg b "$BRANCH" '.[] | select(.headRefName | startswith($p)) | select(.headRefName != $b) | .number' |
+            while read -r n; do
+              gh pr close "$n" --delete-branch --comment "Superseded by the bump to ${{ steps.latest.outputs.tag }}."
+            done

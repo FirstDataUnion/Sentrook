@@ -1,7 +1,7 @@
 # Sentrook 2.0 scanner.
 # Everything runs through uv; `make install` creates .venv with the dev extras.
 .PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check \
-	plugin-test hermes-plugin-test plugin-planir-check
+	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat
 
 help:
 	@echo "install       uv sync with dev extras"
@@ -16,6 +16,9 @@ help:
 	@echo "plugin-test   OpenClaw plugin: unit tests, typecheck, build and npm pack check (needs npm ci)"
 	@echo "hermes-plugin-test   Hermes plugin unit tests"
 	@echo "plugin-planir-check  validate both plugins' PlanIR requests with the scanner's models"
+	@echo "compat-test   unit tests of the host compatibility CI helpers (integrations/compat)"
+	@echo "hermes-compat the Hermes plugin on real Hermes images (needs Docker): the pinned floor and"
+	@echo "              latest, or HERMES_IMAGE=<image>"
 
 # The gitleaks release the vendor key shapes of the second redaction pass are generated from.
 # Also the gitleaks image security.yml scans with. CI checks the file against it;
@@ -72,3 +75,11 @@ plugin-planir-check:
 	raws = [r for f in ['tmp/openclaw-planirs.json', *hermes] for r in json.load(open(f))]; \
 	[check(PlanIR.model_validate(r), r.get('scan_kind')) for r in raws]; \
 	print(f'{len(raws)} plugin PlanIRs valid ({len(hermes)} Hermes dumps)')"
+
+compat-test:
+	uv run python -m pytest integrations/compat/tests -q
+
+# The blocking set by default; HERMES_IMAGE=nousresearch/hermes-agent:main for any other image.
+HERMES_IMAGE ?= $(shell python3 integrations/compat/compat.py images --host hermes)
+hermes-compat:
+	for image in $(HERMES_IMAGE); do integrations/hermes/compat/run.sh "$$image" || exit 1; done
