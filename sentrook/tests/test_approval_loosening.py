@@ -82,8 +82,8 @@ def test_reason_has_owner_text():
     assert REASON in REASONS and REVIEW_REASON in REASONS
 
 
-def test_a_setting_written_with_escaped_newlines_gets_the_review_tier():
-    reviews(ex("printf 'approvals:\\n  mode: off\\n' >> ~/.hermes/config.yaml"))
+def test_printf_text_is_read_with_its_escapes():
+    fires(ex("printf 'approvals:\\n  mode: off\\n' >> ~/.hermes/config.yaml"))
 
 
 # --------------------------------------------------------------------------- must fire
@@ -176,9 +176,7 @@ def test_hermes_commands_fire(command):
             '"mode": "full",\n      "approvals": "off",',
         ),
         # Approval fallback and allowlist keys in any config file.
-        oc_edit(
-            "~/.openclaw/gate/confirm.json", '"askFallback": "deny"\n', '"askFallback": "allow"\n'
-        ),
+        oc_edit(APPROVALS, '"main": {"askFallback": "deny"}', '"main": {"askFallback": "allow"}'),
         oc_edit("~/.openclaw/exec-policy.json", '"allowlist": []\n', '"allowlist": ["*"]\n'),
         oc_edit(
             "~/.openclaw/extensions/gate/index.ts",
@@ -214,7 +212,7 @@ def test_hermes_commands_fire(command):
         "config exec mode full",
         "config legacy security and ask",
         "config approvals off",
-        "host-dir askFallback allow",
+        "agent askFallback allow",
         "allowlist star",
         "timeoutBehavior allow",
         "apply_patch config",
@@ -741,18 +739,28 @@ def test_in_place_writers_fire(command):
     "command",
     [
         "sed -i 's/deny/full/' ~/.openclaw/exec-approvals.json",
-        "python3 -c \"import json,os;p=os.path.expanduser('~/.openclaw/exec-approvals.json');"
-        "d=json.load(open(p));d['defaults']['askFallback']='full';json.dump(d,open(p,'w'))\"",
-        "yq -i '.approvals.mode = \"off\"' ~/.hermes/config.yaml",
         "python3 -c \"import pathlib;p=pathlib.Path.home()/'.openclaw'/'exec-approvals.json';"
         "p.write_text(p.read_text().replace('deny','full'))\"",
         "python3 -c \"import os;p=os.path.join(os.environ['HOME'],'.openclaw','exec-approvals.json');"
         "s=open(p).read().replace('deny','full');open(p,'w').write(s)\"",
     ],
-    ids=["sed bare value", "python -c", "yq -i", "Path.home()", "os.path.join HOME"],
+    ids=["sed bare value", "Path.home()", "os.path.join HOME"],
 )
 def test_in_place_scripts_get_the_review_tier(command):
     reviews(ex(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 -c \"import json,os;p=os.path.expanduser('~/.openclaw/exec-approvals.json');"
+        "d=json.load(open(p));d['defaults']['askFallback']='full';json.dump(d,open(p,'w'))\"",
+        "yq -i '.approvals.mode = \"off\"' ~/.hermes/config.yaml",
+    ],
+    ids=["python -c", "yq -i"],
+)
+def test_script_assignments_to_a_setting_fire(command):
+    fires(ex(command))
 
 
 @pytest.mark.parametrize(
@@ -930,8 +938,8 @@ def _execute_code(code: str) -> dict:
     return planir("execute_code", "exec", {"code": code}, platform="hermes")
 
 
-def test_hermes_execute_code_writing_the_config_gets_the_review_tier():
-    reviews(
+def test_hermes_execute_code_writing_the_config_fires():
+    fires(
         _execute_code(
             "import os, pathlib\n"
             "p = pathlib.Path(os.path.expanduser('~/.hermes/config.yaml'))\n"
@@ -956,7 +964,7 @@ def test_hermes_execute_code_tightening_the_config_stays_silent():
     )
 
 
-# --------------------------------------------------------------------------- second review round
+# --------------------------------------------------------------------------- tiers, workspace, relative paths and parsing
 
 
 def with_ws(raw: dict, ws: str) -> dict:
@@ -1067,7 +1075,13 @@ def test_enclosing_key_parser_evasions_fire(raw):
 
 def test_an_undecidable_fragment_gets_the_review_tier():
     # No enclosing key, no old value of the same key: the review tier, not silence.
-    reviews(h_patch(H_CONFIG, "  mode: x", "  mode: off"))
+    reviews(oc_edit(OC_CONFIG, '"approvals": "on"', '"approvals": "off"'))
+
+
+def test_an_undecidable_mode_fragment_stays_quiet():
+    # Both hosts have other `mode` keys: without a section or an approvals value, no floor.
+    stays_silent(h_patch(H_CONFIG, "  mode: x", "  mode: off"))
+    stays_silent(oc_edit(OC_CONFIG, '"mode": "minimal"', '"mode": "full"'))
 
 
 def test_a_full_write_with_mode_off_under_another_key_stays_silent():
