@@ -1,0 +1,5 @@
+# Hermes versions the blocking compatibility check runs on (integrations/compat/compat.py).
+# floor: the oldest Hermes the plugin declares (requires_hermes in plugin/plugin.yaml); move both together.
+# latest: the newest stable Hermes release; the host-compat workflow's bump job opens a PR to move it.
+floor v0.23.0
+latest v0.23.2

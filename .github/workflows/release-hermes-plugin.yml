@@ -36,7 +36,17 @@ env:
   MIRROR_REPO: FirstDataUnion/Sentrook-hermes
 
 jobs:
+  # The plugin on real Hermes (the declared floor and the latest stable release) before anything is
+  # promoted; see host-compat.yml.
+  compat:
+    uses: ./.github/workflows/host-compat.yml
+    permissions:
+      contents: read
+    with:
+      mode: release
+
   promote:
+    needs: compat
     runs-on: ubuntu-latest
     environment: release-hermes
     permissions:

@@ -1,0 +1,162 @@
+# Host plugins against real host releases. For each host (today: Hermes) and each pinned version in
+# integrations/<host>/compat/versions.txt (the plugin's declared floor and the latest stable release),
+# integrations/<host>/compat/run.sh runs the host's own plugin validator, installs the plugin as a user
+# would, sets the scan credentials through the host, runs verify and status against mock identity and
+# scan services, and drives one agent turn in which the plugin must block one tool call and allow the
+# next. Any failed step, or a validator warning not in the host's warnings-baseline.txt, fails the job.
+#
+# - Pull requests and pushes touching a plugin or this tooling: the pinned versions (blocking), the
+#   check's self-test (blocking: it proves the check still catches a broken plugin), and the newest
+#   release candidate when it is newer than the latest stable (report-only).
+# - The release workflows call it with mode `release`: the pinned versions only, blocking.
+# - The nightly canary against the host's main build, and the bump to each new stable release, are in
+#   host-compat-nightly.yml.
+#
+# Runs on the public repo without secrets: the mock services use synthetic hosts and credentials.
+name: host-compat
+
+on:
+  pull_request:
+    paths:
+      - integrations/hermes/**
+      - integrations/compat/**
+      - .github/workflows/host-compat.yml
+  push:
+    branches: [main]
+    paths:
+      - integrations/hermes/**
+      - integrations/compat/**
+      - .github/workflows/host-compat.yml
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pr: pinned versions, self-test and release candidate; release: pinned versions only"
+        type: choice
+        options: [pr, release]
+        default: pr
+  workflow_call:
+    inputs:
+      mode:
+        description: "pr or release (see workflow_dispatch)"
+        type: string
+        default: release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-compat-${{ inputs.mode || 'pr' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HOSTS: hermes
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      blocking: ${{ steps.plan.outputs.blocking }}
+      latest: ${{ steps.plan.outputs.latest }}
+      rc: ${{ steps.plan.outputs.rc }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Versions under test
+        id: plan
+        env:
+          MODE: ${{ inputs.mode || 'pr' }}
+        run: |
+          set -euo pipefail
+          blocking='[]'; latest='[]'; rc='[]'
+          for host in $HOSTS; do
+            b=$(python3 integrations/compat/compat.py matrix --host "$host" --set blocking)
+            blocking=$(jq -c --argjson b "$b" '. + $b' <<<"$blocking")
+            latest=$(jq -c --argjson b "$b" '. + [$b[-1]]' <<<"$latest")
+            if [ "$MODE" = pr ]; then
+              # Report-only: a Docker Hub outage must not fail the pull request.
+              r=$(python3 integrations/compat/compat.py matrix --host "$host" --set rc || echo '[]')
+              rc=$(jq -c --argjson r "$r" '. + $r' <<<"$rc")
+            fi
+          done
+          [ "$MODE" = pr ] || latest='[]'
+          {
+            echo "blocking=$blocking"
+            echo "latest=$latest"
+            echo "rc=$rc"
+          } >>"$GITHUB_OUTPUT"
+          echo "blocking: $blocking"; echo "self-test: $latest"; echo "release candidate: $rc"
+
+  compat:
+    needs: plan
+    name: ${{ matrix.host }} ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.blocking) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Pull ${{ matrix.image }}
+        run: docker pull -q "${{ matrix.image }}"
+
+      - name: Compatibility check
+        run: integrations/${{ matrix.host }}/compat/run.sh "${{ matrix.image }}" "" "$RUNNER_TEMP/compat"
+
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compat-${{ matrix.host }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/compat
+          retention-days: 14
+
+  # The check must still fail on a broken plugin: a declared hook never registered, an unknown
+  # config type, and a refused token mint.
+  self-test:
+    needs: plan
+    if: needs.plan.outputs.latest != '[]'
+    name: ${{ matrix.host }} self-test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.latest) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Pull ${{ matrix.image }}
+        run: docker pull -q "${{ matrix.image }}"
+
+      - name: The check fails where it should
+        run: integrations/${{ matrix.host }}/compat/selftest.sh "${{ matrix.image }}"
+
+  release-candidate:
+    needs: plan
+    if: needs.plan.outputs.rc != '[]'
+    name: ${{ matrix.host }} ${{ matrix.name }} (report-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.rc) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Pull ${{ matrix.image }}
+        run: docker pull -q "${{ matrix.image }}"
+
+      - name: Compatibility check
+        run: |
+          if ! integrations/${{ matrix.host }}/compat/run.sh "${{ matrix.image }}" "" "$RUNNER_TEMP/compat"; then
+            echo "::warning::${{ matrix.image }} fails the compatibility check (report-only; the next release may break the plugin)"
+            exit 1
+          fi
