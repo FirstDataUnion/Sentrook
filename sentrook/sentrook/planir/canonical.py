@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
 
-from .bounds import bound_arguments
+from .bounds import bound_arguments, bound_tool_name
 from .models import HistoryStep, PendingCall, Provider, Sibling, ToolKind
 
 # Alias tables: canonical key → raw keys tried in order. Shared across platforms; the platform hook
@@ -334,6 +334,41 @@ def canonical_arguments(
     return args
 
 
+_EDIT_KEYS = (
+    "edits",
+    "old_string",
+    "old_str",
+    "oldText",
+    "old",
+    "new_string",
+    "new_str",
+    "newText",
+    "new",
+    "input",
+    "operations",
+)
+
+
+def _read_keys(tool_kind: ToolKind) -> frozenset[str]:
+    """The raw keys canonicalisation reads for `tool_kind`: what the call is (its command, path, URL,
+    content, recipients, packages), kept first when its arguments are cut to preparation's bounds."""
+    keys = {k for aliases in _ALIASES.get(tool_kind, {}).values() for k in aliases}
+    for group in (
+        ("action",),
+        _RECIPIENT_KEYS,
+        _CC_KEYS,
+        _BCC_KEYS,
+        _ATTACHMENT_KEYS,
+        _GENERIC_URL_KEYS,
+        _GENERIC_PATH_KEYS,
+        _GENERIC_CONTENT_KEYS,
+        _GENERIC_PACKAGE_KEYS,
+        _EDIT_KEYS,
+    ):
+        keys.update(group)
+    return frozenset(keys)
+
+
 def canonicalise(
     platform: str,
     *,
@@ -345,7 +380,10 @@ def canonicalise(
     call_id: str | None = None,
     step: int | None = None,
 ) -> CanonicalCall:
-    arguments, too_large = bound_arguments(arguments, tool_kind)
+    arguments, too_large = bound_arguments(arguments, tool_kind, _read_keys(tool_kind))
+    tool, long_name = bound_tool_name(tool)
+    if long_name:
+        too_large = f"{too_large}, {long_name}" if too_large else long_name
     text = joined_text(arguments)
     dropped: list[str] = []
     args = canonical_arguments(platform, tool, tool_kind, arguments, dropped)

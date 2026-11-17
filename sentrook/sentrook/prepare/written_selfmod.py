@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -178,7 +179,90 @@ _CRON_SCHEDULE = re.compile(
 )
 #: A unit file's command line (`ExecStart=...`).
 _UNIT_EXEC = re.compile(r"^\s*Exec\w*\s*=\s*[-@:+!]*", re.IGNORECASE)
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
+#: A heredoc opener: `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`.
+_HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+_WORD = re.compile(r"\w+")
+
+
+def _heredocs(text: str) -> list[tuple[int, int, str]]:
+    """Each heredoc in `text` as (start, end, body): what
+    `<<-?\\s*(['"]?)(\\w+)\\1[^\\n]*\\n(.*?)\\n\\s*\\2\\s*(?:\\n|$)` (dot matching newlines) finds with
+    `finditer`, in one pass. The body runs from the line after the opener to the first line that holds only the word
+    (blank lines before it are not part of the body); an unquoted word with no such line falls back to its longest
+    prefix that has one. The heredoc ends after the last newline before the next non-blank line."""
+    if "<<" not in text:
+        return []
+    lines = text.split("\n")
+    starts: list[int] = []
+    at = 0
+    for line in lines:
+        starts.append(at)
+        at += len(line) + 1
+    blank = [not line.strip() for line in lines]
+    prev_text: list[int] = []
+    last = -1
+    for i, empty in enumerate(blank):
+        prev_text.append(last)
+        if not empty:
+            last = i
+    next_text = [len(lines)] * len(lines)
+    following = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        next_text[i] = following
+        if not blank[i]:
+            following = i
+    ends: dict[str, list[int]] = {}
+    for i, line in enumerate(lines):
+        word = line.strip()
+        if word and _WORD.fullmatch(word):
+            ends.setdefault(word, []).append(i)
+    lengths = sorted({len(w) for w in ends}, reverse=True)
+
+    out: list[tuple[int, int, str]] = []
+    pos = 0
+    newline = -1
+    while True:
+        m = _HEREDOC_OPEN.search(text, pos)
+        if m is None:
+            break
+        if newline < m.end():
+            newline = text.find("\n", m.end())
+        if newline < 0:
+            break  # no line after this opener, nor after any later one
+        first = bisect_left(starts, newline + 1)  # the body's first line
+        quote, word = m.group(1), m.group(2)
+        words = [word] if quote else [word[:n] for n in lengths if n <= len(word)]
+        found: int | None = None
+        for w in words:
+            rows = ends.get(w)
+            if rows:
+                i = bisect_right(rows, first)
+                if i < len(rows):
+                    found = rows[i]
+                    break
+        if found is None:
+            pos = m.start() + 1
+            continue
+        cut = max(prev_text[found], first)  # the body ends at the newline closing this line
+        body = text[newline + 1 : starts[cut] + len(lines[cut])]
+        after = next_text[found]
+        end = len(text) if after >= len(lines) else starts[after]
+        out.append((m.start(), end, body))
+        pos = end
+    return out
+
+
+def _without_heredocs(text: str) -> str:
+    parts: list[str] = []
+    at = 0
+    for start, end, _ in _heredocs(text):
+        parts.append(text[at:start])
+        parts.append(" ")
+        at = end
+    parts.append(text[at:])
+    return "".join(parts)
+
+
 _QUOTED = re.compile(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"", re.S)
 
 _CODE = re.compile(r"(?ms)^[ \t]*(```|~~~)[^\n]*\n.*?^[ \t]*\1[ \t]*$|`[^`\n]+`")
@@ -406,7 +490,7 @@ def _exec_texts(
     if not command.strip():
         return []
     form: Form | None = None
-    rest = _HEREDOC.sub(" ", command)
+    rest = _without_heredocs(command)
     cli = [str(r.get("reason")) for r in lists.rules("selfmod", "cli") if r.regex.search(rest)]
     if _AGENT_JOB_CLI.search(rest):
         form = Form.PROSE
@@ -423,7 +507,7 @@ def _exec_texts(
                 break
     if form is None:
         return []
-    bodies = [m.group(3) for m in _HEREDOC.finditer(command)]
+    bodies = [body for _, _, body in _heredocs(command)]
     for m in _QUOTED.finditer(rest):
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body and _hosts_in(body):

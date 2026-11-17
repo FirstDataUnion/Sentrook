@@ -2,7 +2,7 @@
 # installs. Only the obfuscated decode-to-shell arm takes a floor here (`untrusted_code_execution`,
 # min_risk 0.9, block); the oracle-dependent floor cases are handled in convergence.
 
-version: 6
+version: 7
 
 fetch_heads:
   - curl
@@ -235,7 +235,9 @@ local_host_patterns:
   - '^[a-z0-9.-]+\.(?:local|internal|localhost|lan|home\.arpa)(?::\d+)?$'
   - '^host\.docker\.internal(?::\d+)?$'
 param_injection_patterns:
-  - '(?:^|[=&])[^&]*;\s*[a-z_][\w.-]*'
+  # From the start or an `&` only: a match from an `=` inside the same parameter always matches from
+  # there too, and each parameter is then read once.
+  - '(?:^|&)[^&]*;\s*[a-z_][\w.-]*'
   - '\|\s*(?:sudo\s+)?(?:ba|z|da|k|a|fi)?sh\b'
   - '\$\([^)]*\)'
   - '`[^`]+`'
@@ -259,13 +261,13 @@ registry_config_path_patterns:
   - '(?:^|/)pnpm-workspace\.yaml$'
   - '(?:^|/)\.pnpmfile\.cjs$'
 registry_config_text_patterns:
-  - '(?im)^\s*(?:@[\w-]+:)?registry\s*=\s*https?://'
-  - '(?im)^\s*(?:index-url|extra-index-url|index_url|extra_index_url)\s*=\s*https?://'
-  - '(?im)^\s*repository\s*=\s*https?://'
-  - '(?im)^\s*\[(?:source|registries)\.[^\]]+\]'
-  - '(?im)^\s*replace-with\s*='
-  - '(?im)^\s*(?:npmRegistryServer|registry)\s*:\s*["'']?https?://'
-  - '(?im)^\s*channels?\s*:'
+  - '(?im)^[^\S\n]*(?:@[\w-]+:)?registry\s*=\s*https?://'
+  - '(?im)^[^\S\n]*(?:index-url|extra-index-url|index_url|extra_index_url)\s*=\s*https?://'
+  - '(?im)^[^\S\n]*repository\s*=\s*https?://'
+  - '(?im)^[^\S\n]*\[(?:source|registries)\.[^\]]+\]'
+  - '(?im)^[^\S\n]*replace-with\s*='
+  - '(?im)^[^\S\n]*(?:npmRegistryServer|registry)\s*:\s*["'']?https?://'
+  - '(?im)^[^\S\n]*channels?\s*:'
 registry_cli_patterns:
   - '\bnpm\s+config\s+set\s+(?:@[\w-]+:)?registry\s+'
   - '\bnpm\s+set\s+(?:@[\w-]+:)?registry\s+'

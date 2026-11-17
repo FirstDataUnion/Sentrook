@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import lru_cache
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
@@ -1205,9 +1206,16 @@ def shell_segments(command: str) -> list[list[str]]:
 def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
     """`shell_segments`, each with the separator before it (`|`, `&&`, `||`, `;`, a newline, or `""`
     for the first)."""
+    return [(sep, list(tokens)) for sep, tokens in _segments_of(command or "")]
+
+
+@lru_cache(maxsize=64)
+def _segments_of(command: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """`shell_segments_sep` for one command, parsed once: preparation and every probe split the same
+    commands many times over."""
     import shlex
 
-    out: list[tuple[str, list[str]]] = []
+    out: list[tuple[str, tuple[str, ...]]] = []
     parts = re.split("(" + _SEGMENT_SPLIT_RE.pattern + ")", command or "")
     sep = ""
     for i, seg in enumerate(parts):
@@ -1224,8 +1232,8 @@ def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
         while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
             tokens = tokens[1:]
         if tokens:
-            out.append((sep, tokens))
-    return out
+            out.append((sep, tuple(tokens)))
+    return tuple(out)
 
 
 def resolve_token(

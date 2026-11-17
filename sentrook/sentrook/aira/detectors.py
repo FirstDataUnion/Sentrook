@@ -1324,17 +1324,23 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
 # =========================================================================== C4*
 
 
+#: The longest file name a filesystem takes (bytes on most; characters are never more).
+_MAX_NAME = 255
+
+
 def _guardrail_path_reason(value: str, head: str | None, ctx: Context) -> str | None:
     lists = ctx.lists
     base = os.path.basename(value.rstrip("/"))
+    # A name longer than any filesystem takes is no log file (and the log patterns are not read over it).
+    log_name = len(base) <= _MAX_NAME
     for seg in lists.strings("guardrail", "state_dir_segments"):
         if re.search(r"(?:\A|/)" + re.escape(seg) + r"(?:/|\Z)", value, re.IGNORECASE):
-            if _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
+            if log_name and _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
                 return "guardrail.log_tamper"
             return "guardrail.state_dir_write"
     for name in lists.strings("guardrail", "legacy_basenames"):
         if re.search(basename_pattern(name), value, re.IGNORECASE):
-            if _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
+            if log_name and _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
                 return "guardrail.log_tamper"
             return "guardrail.state_dir_write"
     if _match_any(lists.patterns("guardrail", "host_guardrail_path_patterns"), value):

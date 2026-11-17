@@ -172,12 +172,10 @@ def _bounded(written: WrittenFile | None) -> WrittenFile | None:
     return None if written is None else _bounded_file(written)
 
 
-def _bounded_file(written: WrittenFile) -> WrittenFile:
-    """`written` with its content cut to preparation's bounds, read as a shell script (a file the
-    agent assembled from several history writes and edits can be far larger than any one step)."""
-    content, over = bound_text(
-        written.content, shell=True, max_chars=MAX_CALL_CHARS - _WRAPPER_ROOM
-    )
+def _bounded_file(written: WrittenFile, room: int = _WRAPPER_ROOM) -> WrittenFile:
+    """`written` with its content cut to preparation's bounds less `room`, read as a shell script (a file
+    the agent assembled from several history writes and edits can be far larger than any one step)."""
+    content, over = bound_text(written.content, shell=True, max_chars=MAX_CALL_CHARS - room)
     if over is None:
         return written
     return WrittenFile(
@@ -1516,6 +1514,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     for exe_path, exe_display, required in _run_targets(pending, table, home):
         written = _find_executed(planir, history, copies, exe_path, home, ws)
         if written is not None:
+            # AIRA reads the file as the command of a call with the pending call's cwd: leave room for it.
+            written = _bounded_file(written, _WRAPPER_ROOM + len(str(pending.get("cwd") or "")))
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
             ):
@@ -1552,7 +1552,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     content="\n".join(w.content for w in parts),
                     truncated=any(w.truncated for w in parts),
                     too_large=next((w.too_large for w in parts if w.too_large), None),
-                )
+                ),
+                _WRAPPER_ROOM + len(str(pending.get("cwd") or "")),
             )
             for w in parts:
                 table.add(

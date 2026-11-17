@@ -31,6 +31,9 @@ MAX_CALL_CHARS = 100_000
 #: newline, as the entity extractor splits them): over a hundred times the most seen in real use.
 MAX_COMMAND_SEGMENTS = 10_000
 
+#: Characters of a tool name analysed: real names are a few dozen; the host or a tool server sets them.
+MAX_TOOL_NAME_CHARS = 256
+
 SEGMENT_SEPARATOR_RE = re.compile(r"&&|\|\||[;|\n]")
 #: The plugins' own cut marker (`cap_head_tail`), so a cut file read back later is known to be partial.
 _MARKER = "\n…[sentrook: {n} bytes cut]…\n"
@@ -94,15 +97,35 @@ def bound_text(
     return text, ", ".join(over) or None
 
 
-class _Leaf:
-    __slots__ = ("cost", "depth", "keep", "value")
+def bound_tool_name(name: str) -> tuple[str, str | None]:
+    """A tool name cut to `MAX_TOOL_NAME_CHARS` (two thirds head, one third tail, so a server prefix and an
+    action suffix both stay), and what was over (None, with `name` itself, when nothing was)."""
+    if len(name) <= MAX_TOOL_NAME_CHARS:
+        return name, None
+    head = (MAX_TOOL_NAME_CHARS - 1) * 2 // 3
+    tail = MAX_TOOL_NAME_CHARS - 1 - head
+    return name[:head] + "…" + name[len(name) - tail :], f"a tool name of {len(name):,} characters"
 
-    def __init__(self, value: Any, depth: int, cost: int):
+
+class _Leaf:
+    __slots__ = ("cost", "depth", "keep", "key_cost", "priority", "value")
+
+    def __init__(self, value: Any, depth: int, key: Any, priority: bool):
         self.value = value
         self.depth = depth
-        self.cost = cost
+        #: Characters of the value (a string's length, anything else one, never less than one).
+        self.cost = max(1, len(value) if isinstance(value, str) else 1)
+        #: Characters of the key it sits under, which leaving the value out also leaves out.
+        self.key_cost = len(str(key)) if key is not None else 0
+        #: Under a key canonicalisation reads (the call's command, path, URL, content, recipients):
+        #: kept before anything else.
+        self.priority = priority
         #: The value to keep, or `_DROP`.
         self.keep: Any = value
+
+    @property
+    def size(self) -> int:
+        return self.cost + self.key_cost
 
 
 _DROP = object()
@@ -118,9 +141,9 @@ def _children(c: dict[str, Any] | list[Any] | tuple[Any, ...]) -> Iterator[tuple
 
 @dataclass
 class _Walk:
-    """The values of a call's arguments: strings, scalars and empty containers. A string costs its
-    length, anything else one. Walked breadth first, so a call's own top-level values come before the
-    items of a long list, and stopped once more values were seen than the bound could ever keep."""
+    """The values of a call's arguments: strings, scalars and empty containers. Walked breadth first,
+    so a call's own top-level values come before the items of a long list, and stopped once more values
+    were seen than the bound could ever keep."""
 
     order: list[_Leaf] = field(default_factory=list)
     #: (id of the containing dict or list, child position) → the value there.
@@ -128,26 +151,37 @@ class _Walk:
     #: id of each container walked → how many of its children were walked.
     walked: dict[int, int] = field(default_factory=dict)
     key_chars: int = 0
+    #: Characters of the keys of nested dicts and lists, which leaving values out never removes.
+    branch_key_chars: int = 0
     complete: bool = True
+    #: The same dict or list object appears more than once (only from a Python caller; JSON never
+    #: shares): each appearance needs its own copy to be cut on its own.
+    shared: bool = False
 
 
-def _walk(arguments: dict[str, Any]) -> _Walk:
+def _walk(arguments: dict[str, Any], priority: frozenset[str]) -> _Walk:
     w = _Walk()
-    queue: deque[tuple[Any, int]] = deque([(arguments, 0)])
+    queue: deque[tuple[Any, int, bool]] = deque([(arguments, 0, False)])
     while queue and w.complete:
-        c, depth = queue.popleft()
+        c, depth, inherited = queue.popleft()
+        if id(c) in w.walked:
+            w.shared = True
         n = 0
         for i, (k, v) in enumerate(_children(c)):
             if len(w.order) > MAX_CALL_CHARS:
                 w.complete = False
                 break
             n += 1
-            if isinstance(c, dict):
-                w.key_chars += len(str(k))
+            key = k if isinstance(c, dict) else None
+            if key is not None:
+                w.key_chars += len(str(key))
+            first = inherited or (depth == 0 and str(k) in priority)
             if _is_branch(v):
-                queue.append((v, depth + 1))
+                if key is not None:
+                    w.branch_key_chars += len(str(key))
+                queue.append((v, depth + 1, first))
                 continue
-            leaf = _Leaf(v, depth + 1, max(1, len(v) if isinstance(v, str) else 1))
+            leaf = _Leaf(v, depth + 1, key, first)
             w.at[(id(c), i)] = leaf
             w.order.append(leaf)
         w.walked[id(c)] = max(w.walked.get(id(c), 0), n)
@@ -171,10 +205,10 @@ def _rebuild(c: Any, w: _Walk) -> Any:
     return [v for _, v in kept]
 
 
-def _share(costs: list[int], budget: int) -> int:
-    """The largest per-value limit `L` with sum(min(cost, L)) within `budget`."""
+def _share(sizes: list[int], budget: int) -> int:
+    """The largest per-value limit `L` with sum(min(size, L)) within `budget`."""
     remaining = budget
-    ordered = sorted(costs)
+    ordered = sorted(sizes)
     for i, n in enumerate(ordered):
         share = remaining // (len(ordered) - i)
         if n > share:
@@ -183,27 +217,59 @@ def _share(costs: list[int], budget: int) -> int:
     return max(ordered, default=0)
 
 
+def _cut_leaf(leaf: _Leaf, room: int) -> None:
+    """Keep what of `leaf` fits in `room` characters (its key included), or leave it out."""
+    keep = room - leaf.key_cost - _MARKER_ROOM
+    if isinstance(leaf.keep, str) and keep >= _MARKER_ROOM:
+        leaf.keep = cut_head_tail(leaf.keep, keep)
+    else:
+        leaf.keep = _DROP
+
+
+def _fit(leaves: list[_Leaf], budget: int) -> None:
+    """Cut `leaves` to `budget` characters: each gets an even share of what the shorter ones leave;
+    when that share is too small to be worth keeping, the shallowest and shortest are kept whole, the
+    first that does not fit is cut if a useful part of it does, and the rest are left out."""
+    if sum(leaf.size for leaf in leaves) <= budget:
+        return
+    share = _share([leaf.size for leaf in leaves], budget)
+    if share >= _MIN_SHARE:
+        for leaf in leaves:
+            if leaf.size > share:
+                _cut_leaf(leaf, share)
+        return
+    remaining = budget
+    for leaf in sorted(leaves, key=lambda x: (x.depth, x.size)):
+        if leaf.size <= remaining:
+            remaining -= leaf.size
+        elif remaining >= _MIN_SHARE:
+            _cut_leaf(leaf, remaining)
+            remaining = 0
+        else:
+            leaf.keep = _DROP
+
+
 def bound_arguments(
-    arguments: dict[str, Any], tool_kind: ToolKind
+    arguments: dict[str, Any], tool_kind: ToolKind, priority: frozenset[str] = frozenset()
 ) -> tuple[dict[str, Any], str | None]:
     """The arguments preparation analyses, and what was over the bounds (None, with `arguments`
-    itself, when nothing was)."""
-    w = _walk(arguments)
+    itself, when nothing was). Values under a top-level key in `priority` (the keys canonicalisation
+    reads for this kind of call) are kept first, so padding a call never pushes its own command out."""
+    w = _walk(arguments, priority)
     leaves = w.order
-    key_chars = w.key_chars
     total = sum(leaf.cost for leaf in leaves) if w.complete else MAX_CALL_CHARS + 1
     shell = tool_kind is ToolKind.EXEC
     over_segments = shell and any(
         isinstance(leaf.value, str) and segments_over(leaf.value) for leaf in leaves
     )
-    if total <= MAX_CALL_CHARS and key_chars <= MAX_CALL_CHARS and not over_segments:
+    if total <= MAX_CALL_CHARS and w.key_chars <= MAX_CALL_CHARS and not over_segments:
         return arguments, None
 
     over: list[str] = []
     if not w.complete:
         over.append(f"more than {MAX_CALL_CHARS:,} values")
-    elif total > MAX_CALL_CHARS or key_chars > MAX_CALL_CHARS:
-        over.append(f"{max(total, key_chars):,} characters in {len(leaves):,} values")
+    elif total > MAX_CALL_CHARS or w.key_chars > MAX_CALL_CHARS:
+        over.append(f"{max(total, w.key_chars):,} characters in {len(leaves):,} values")
     if over_segments:
         most = max(
             len(SEGMENT_SEPARATOR_RE.findall(leaf.value)) + 1
@@ -213,34 +279,30 @@ def bound_arguments(
         over.append(f"{most:,} simple commands")
     detail = ", ".join(over)
 
-    if key_chars > MAX_CALL_CHARS:
+    if w.branch_key_chars > MAX_CALL_CHARS:
         # Keys this long are no tool's arguments: keep the head and tail of the JSON.
         dumped = json.dumps(arguments, ensure_ascii=False, default=str)
         return {"_truncated": cut_head_tail(dumped, MAX_CALL_CHARS - _MARKER_ROOM)}, detail
+    if w.shared:
+        copy = json.loads(json.dumps(arguments, ensure_ascii=False, default=str))
+        w = _walk(copy, priority)
+        leaves = w.order
+        arguments = copy
 
     if over_segments:
         for leaf in leaves:
             if isinstance(leaf.value, str) and segments_over(leaf.value):
                 leaf.keep = cut_segments(leaf.value)
-                leaf.cost = max(1, leaf.cost - len(leaf.value) + len(leaf.keep))
-    total = sum(leaf.cost for leaf in leaves)
-    if total > MAX_CALL_CHARS:
-        share = _share([leaf.cost for leaf in leaves], MAX_CALL_CHARS)
-        if share >= _MIN_SHARE:
-            for leaf in leaves:
-                if leaf.cost > share:
-                    leaf.keep = cut_head_tail(leaf.keep, share - _MARKER_ROOM)
-        else:
-            # Too many values to share the budget: keep the shallowest and shortest whole, cut the
-            # first that does not fit if a useful part of it does, and leave the rest out.
-            remaining = MAX_CALL_CHARS
-            for leaf in sorted(leaves, key=lambda x: (x.depth, x.cost)):
-                if leaf.cost <= remaining:
-                    remaining -= leaf.cost
-                elif isinstance(leaf.keep, str) and remaining >= _MIN_SHARE:
-                    leaf.keep = cut_head_tail(leaf.keep, remaining - _MARKER_ROOM)
-                    remaining = 0
-                else:
-                    leaf.keep = _DROP
+                leaf.cost = max(1, len(leaf.keep))
+    first = [leaf for leaf in leaves if leaf.priority]
+    rest = [leaf for leaf in leaves if not leaf.priority]
+    budget = MAX_CALL_CHARS - w.branch_key_chars
+    used = sum(leaf.size for leaf in first)
+    if used > budget:
+        _fit(first, budget)
+        for leaf in rest:
+            leaf.keep = _DROP
+    else:
+        _fit(rest, budget - used)
     kept = _rebuild(arguments, w)
     return (kept if isinstance(kept, dict) else {}), detail

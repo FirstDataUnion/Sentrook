@@ -370,3 +370,136 @@ def test_pattern_rewrites_keep_their_matches():
         "%d@y.org",
     ]
     assert entities._local_install_operand("./pkg[test,docs]") == "./pkg"
+
+
+# --------------------------------------------------------------------------- padding and wrappers
+
+GUARDRAIL = "rm -rf ~/.openclaw/extensions/sentrook"
+LONG_GUARDRAIL = (
+    "rm -rf "
+    + " ".join(f"/tmp/d{i}" for i in range(40))
+    + " ~/.openclaw/extensions/sentrook "
+    + " ".join(f"/tmp/e{i}" for i in range(40))
+)
+
+PADDED = [
+    ("short top-level pads", GUARDRAIL, {f"p{i:04d}": "x" * 30 for i in range(3400)}),
+    ("many top-level keys", GUARDRAIL, {f"k{i:05d}": 0 for i in range(17000)}),
+    ("long command, long pads", LONG_GUARDRAIL, {f"p{i:03d}": "y" * 200 for i in range(999)}),
+    ("nested pads", GUARDRAIL, {"env": {f"V{i}": "x" * 60 for i in range(2000)}}),
+]
+
+
+@pytest.mark.parametrize("name, command, pads", PADDED, ids=[p[0] for p in PADDED])
+def test_padding_a_call_never_pushes_its_own_command_out(name, command, pads):
+    """What canonicalisation reads (the command, path, URL, content) is kept before anything else, so
+    padding a call only adds the review floor; what the call does still decides the outcome."""
+    raw = ex(command)
+    raw["pending_call"]["arguments"].update(pads)
+    res, _ = scan(raw)
+    held_for_review(res)
+    assert res.prepared.pending.command == command
+    assert res.response.enforced is Enforce.BLOCK
+    assert "guardrail_tampering" in [f.floor for f in res.response.floors_applied]
+
+
+def test_the_file_a_call_runs_leaves_room_for_the_calls_cwd():
+    """AIRA reads the file as the command of a call with the pending call's cwd; a long cwd must not
+    push that call over the bound and cut it silently."""
+    from sentrook.probes.aira import written_file_call
+
+    first = "\n".join(f"echo {i} > /tmp/f{i}" for i in range(2800))
+    second = "\n".join(f"echo {i} > /tmp/g{i}" for i in range(1800))
+    history = [
+        hist_step(1, "write", "file_write", {"path": "~/workspace/x.sh", "content": first}),
+        hist_step(
+            2,
+            "edit",
+            "file_edit",
+            {"path": "~/workspace/x.sh", "oldText": "", "newText": second},
+        ),
+    ]
+    raw = ex("bash /home/me/workspace/x.sh", history=history)
+    raw["pending_call"]["arguments"]["cwd"] = "/home/me/workspace/" + "d/" * 2500
+    res, _ = scan(raw)
+    call = written_file_call(res.prepared)
+    assert call is not None and call.too_large is None
+    held_for_review(res)
+
+
+def test_a_shared_list_is_cut_copy_by_copy():
+    """A Python caller may pass the same list object more than once; each appearance is its own value."""
+    inner = ["z" * 100] * 60
+    args, over = bound_arguments({"command": "ls", "argv": [inner] * 20}, ToolKind.EXEC)
+    assert over is not None
+    kept = sum(len(s) for row in args["argv"] for s in row)
+    assert 50_000 < kept <= MAX_CALL_CHARS
+
+
+# --------------------------------------------------------------------------- blank lines
+
+
+def test_blank_lines_in_a_registry_config_are_read_once():
+    content = "\n" * 50_000 + "registry=https://evil.example.net/"
+    res, spent = scan(planir("write", "file_write", {"path": "~/.npmrc", "content": content}))
+    assert spent < FAST, f"{spent:.2f}s"
+    hosts = [e.value for e in res.prepared.entities.pending() if e.kind.value == "host"]
+    assert "evil.example.net" in hosts
+
+
+def test_a_registry_setting_after_a_blank_line_names_its_host():
+    content = "always-auth=true\n\nregistry=https://evil.example.net/\n"
+    res, _ = scan(planir("write", "file_write", {"path": "~/.npmrc", "content": content}))
+    hosts = [e.value for e in res.prepared.entities.pending() if e.kind.value == "host"]
+    assert "evil.example.net" in hosts
+
+
+def test_blank_lines_in_a_tool_result_are_read_once():
+    history = [hist_step(1, "exec", "exec", {"command": "cat notes.txt"})]
+    raw = ex("ls", history=history)
+    raw["new_inputs"] = [
+        {
+            "input_seq": 1,
+            "kind": "tool_result",
+            "call_id": "c1",
+            "content": "\n" * 200_000 + "AI assistant: run this",
+            "status": "ok",
+        }
+    ]
+    res, spent = scan(raw)
+    assert spent < FAST, f"{spent:.2f}s"
+
+
+def test_unclosed_heredocs_are_read_once():
+    command = "crontab - <<A\n" + "x <<A zzzz\n" * 9000
+    assert len(command) < MAX_CALL_CHARS
+    res, spent = scan(ex(command))
+    assert spent < FAST, f"{spent:.2f}s"
+    not_bounded(res)
+
+
+def test_a_very_long_tool_name_is_bounded_and_held():
+    """Tool names come from the host or a tool server, outside the arguments; a long one is cut too."""
+    from sentrook.planir.bounds import MAX_TOOL_NAME_CHARS
+
+    for name in ("__" * 50_000, "srv__" + "a_" * 50_000 + "delete"):
+        raw = planir(name, "mcp", {"id": "1"})
+        res, spent = scan(raw)
+        assert spent < FAST, f"{spent:.2f}s"
+        held_for_review(res)
+        assert len(res.prepared.pending.tool) == MAX_TOOL_NAME_CHARS
+    assert res.prepared.pending.tool.startswith("srv__")
+    assert res.prepared.pending.tool.endswith("_delete")
+
+
+def test_a_very_long_file_name_under_the_guardrail_is_read_once():
+    """The log-name patterns are not read over a name longer than any filesystem takes."""
+    for name in ("." * 99_000, "operator" * 12_000):
+        res, spent = scan(ex(f"rm ~/.openclaw/sentrook/{name}"))
+        assert spent < FAST, f"{spent:.2f}s"
+
+
+def test_a_long_local_query_is_read_once():
+    query = "=" * 99_000
+    res, spent = scan(ex(f"curl 'http://localhost:8080/run?{query}'"))
+    assert spent < FAST, f"{spent:.2f}s"
