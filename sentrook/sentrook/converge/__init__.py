@@ -1,7 +1,7 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
 Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
-→ floors → reasons → tool description → flags
+→ floors → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
@@ -33,6 +33,7 @@ from .attended import DEFAULT_BLOCK_LINE, relaxable, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
+from .hints import grant_hints
 from .merge import Claim, Merged, collect, merge
 from .params import ConvergenceParams, load_params
 from .registry import SIGNALS
@@ -375,7 +376,22 @@ def converge(
             reasons.insert(0, cap_reason)
         else:
             reasons.append(cap_reason)
-    for r in reasons:  # make sure every entity a reason names is displayable
+    hints = grant_hints(
+        prepared,
+        claims,
+        envelopes,
+        relief,
+        reasons,
+        params,
+        risk=tiers.risk,
+        enforced=enforced,
+        floors=[f.floor for f in floors],
+        degraded=degraded,
+        exposure_unjudged=unjudged,
+        flags=flags,
+    )
+    # make sure every entity a reason or a hint names is displayable
+    for r in [*reasons, *hints]:
         if r.subject and r.subject not in entities:
             ent = prepared.entities.by_id(r.subject)
             if ent is not None:
@@ -394,6 +410,7 @@ def converge(
             ReliefApplied(grant_ref=r.grant_ref, subject=r.subject, effect=r.effect) for r in relief
         ],
         reasons=reasons,
+        grant_hints=hints,
         tool_description=describe(prepared, category),
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),

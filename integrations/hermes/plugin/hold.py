@@ -65,13 +65,15 @@ Cmd = Callable[[str], str]
 Record = Callable[[dict[str, Any]], None]
 
 
-def grant_hint(resp: dict[str, Any]) -> dict[str, Any] | None:
-    """The grant the scan response suggests for this call, if any.
+def grant_hint(resp: dict[str, Any], review_at: float | None = None) -> dict[str, Any] | None:
+    """The grant the scan response suggests for this call, if any: the first of its `grant_hints` that the
+    grant command would accept and (with `review_at`) that brings the call below this plugin's review line.
 
-    Grant hints are optional: the scan response does not carry one yet, so every hold is made without
-    one, and approving it sets nothing. A hold stores whatever this returns, and approval reads it with
-    `grants.hint_grant`, which refuses anything that is not a plain grant."""
-    return None
+    Grant hints are optional: a response without one makes a hold that approving sets nothing for. A hold
+    stores what this returns, and approval reads it again with `grants.hint_grant`, which refuses anything
+    that is not a plain grant."""
+    found = grants.response_hints(resp, review_at)
+    return found[0] if found else None
 
 
 def _iso(dt: datetime) -> str:
@@ -337,6 +339,14 @@ def why_text(state_dir: Path, log: Path, hold_id: str, now: datetime) -> str:
             "suggested grant: "
             + (f"{grants.describe_grant(grant)} (persistent, 30 days)" if grant else "none")
         )
+        trig = ((found[0][0].get("planir") or {}).get("trigger") or {}) if found else {}
+        if grant and trig.get("kind") in grants.HOST_TASK_KINDS:
+            # nobody asked for this in a chat: say which run did, before the owner approves it
+            lines.append(
+                grants.HOLD_CONTEXT.format(
+                    kind=trig["kind"], where=_clean(waiting.get("where") or "?", 200)
+                )
+            )
     else:
         lines.append("hold: answered or expired")
     return "\n".join(lines)
