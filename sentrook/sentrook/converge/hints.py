@@ -22,8 +22,8 @@ Which entities may be hinted:
 - a pattern that matches the entity exactly as the grant matcher reads it: no glob characters, no whitespace,
   not over-broad, at most 256 printable characters, and nothing that reads as a secret.
 
-No hints at all on a turn whose sender is not the owner (`owner_turn`), whatever the run: someone else chose what
-the call acts on. None for a host that is only a recipient's mail domain, and none whose pattern would cover any
+No hints at all unless the turn is the owner's (`owner_turn`): their own message, or a scheduled or heartbeat run
+the host started with no sender behind it. On anyone else's turn someone else chose what the call acts on. None for a host that is only a recipient's mail domain, and none whose pattern would cover any
 entity of the call but the one it names. No hints at all for a call that sends one of the machine's files off the host in a session that has read content
 trying to instruct the agent (the session's `tainted` flag): that is what an injected instruction to upload a file
 looks like, and a grant there would let the next one through. None for a fetch whose address carries text the
@@ -46,7 +46,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..enums import Enforce, ProbeStatus, ProbeStep, SessionFlag
-from ..planir.models import OS, SenderRelation
+from ..planir.models import OS, SenderRelation, TriggerKind
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role, display_path
 from ..prepare.grants import GRANT_KINDS, grant_matches, path_actions, sends_off_host
@@ -85,11 +85,19 @@ _SWITCHED_PROVIDER = frozenset({"origin.switched_provider", "reputation.switched
 _PLACEHOLDER_OPEN = "⟦"
 
 
+#: Runs the host starts itself from a task the owner set up: a scheduled job or a heartbeat.
+_HOST_TASK = frozenset({TriggerKind.SCHEDULED, TriggerKind.HEARTBEAT})
+
+
 def owner_turn(prepared: Prepared) -> bool:
-    """The trigger's sender is the owner. Anyone else (a stranger, a trusted contact, a sender the host could not
-    name, the text of a job nobody is known to have written) chose what the call acts on, so no grant is suggested
-    for it, on any run."""
-    return prepared.planir.trigger.sender.relation is SenderRelation.OWNER
+    """The owner's own turn: the sender is the owner, or the host started the run itself from a scheduled job or a
+    heartbeat with no sender behind it (`unknown`). Anyone else (a stranger, a trusted contact, any non-owner on a
+    message turn, a sub-agent, a hook) chose what the call acts on, so no grant is suggested for it. A hint on a
+    host task run reaches the owner only through a held call they approve themselves."""
+    sender = prepared.planir.trigger.sender.relation
+    if sender is SenderRelation.OWNER:
+        return True
+    return prepared.planir.trigger.kind in _HOST_TASK and sender is SenderRelation.UNKNOWN
 
 
 def rank_key(hint: GrantHint, entity_kind: EntityKind | None) -> tuple:

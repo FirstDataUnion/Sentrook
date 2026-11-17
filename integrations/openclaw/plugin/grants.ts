@@ -445,12 +445,20 @@ export function hintLine(grant: Entry, cmd: Cmd, remember: boolean): string {
   return (remember ? HINT_REMEMBER : HINT_PLAIN).replace("{command}", grantCommand(grant, cmd));
 }
 
+/** Runs the host starts itself from a task the owner set up. */
+export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
+/** The line `/sentrook-why <hold id>` adds under a suggestion from a host task run. */
+export const HOLD_CONTEXT = "this suggestion comes from a {kind} run, not your own message: {where}";
+
 /**
- * The turn's sender is the owner. A suggested grant is shown, kept on a hold and set only then: on anyone else's
- * turn, whoever sent it chose what the call acts on.
+ * The owner's own turn: the sender is the owner, or the host started a scheduled or heartbeat run with no sender
+ * behind it (`unknown`). A suggested grant is shown, kept on a hold and set only then: on anyone else's turn (a
+ * non-owner sender, a sub-agent, a hook), whoever sent it chose what the call acts on. On a host task run a
+ * suggestion reaches the owner only through a held call they approve.
  */
 export function ownerSender(planir: Entry): boolean {
-  return planir?.trigger?.sender?.relation === "owner";
+  const relation = planir?.trigger?.sender?.relation;
+  return relation === "owner" || (HOST_TASK_KINDS.has(planir?.trigger?.kind) && relation === "unknown");
 }
 
 /**

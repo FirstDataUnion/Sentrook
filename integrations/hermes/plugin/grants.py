@@ -479,12 +479,21 @@ def hint_line(grant: dict[str, Any], cmd: Cmd, remember: bool) -> str:
     return (HINT_REMEMBER if remember else HINT_PLAIN).format(command=grant_command(grant, cmd))
 
 
+#: Runs the host starts itself from a task the owner set up.
+HOST_TASK_KINDS = frozenset({"scheduled", "heartbeat"})
+#: The line `why <hold id>` adds under a suggestion from a host task run.
+HOLD_CONTEXT = "this suggestion comes from a {kind} run, not your own message: {where}"
+
+
 def owner_sender(planir: dict[str, Any]) -> bool:
-    """The turn's sender is the owner. A suggested grant is shown, kept on a hold and set only then: on anyone
-    else's turn, whoever sent it chose what the call acts on."""
+    """The owner's own turn: the sender is the owner, or the host started a scheduled or heartbeat run with no
+    sender behind it (`unknown`). A suggested grant is shown, kept on a hold and set only then: on anyone else's
+    turn (a non-owner sender, a sub-agent, a hook), whoever sent it chose what the call acts on. On a host task run
+    a suggestion reaches the owner only through a held call they approve."""
     trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
     sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
-    return sender.get("relation") == "owner"
+    relation = sender.get("relation")
+    return relation == "owner" or (trig.get("kind") in HOST_TASK_KINDS and relation == "unknown")
 
 
 def may_remember(planir: dict[str, Any]) -> bool:

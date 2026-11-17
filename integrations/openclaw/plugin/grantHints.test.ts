@@ -166,9 +166,17 @@ function registered(pluginConfig: Record<string, unknown> = {}) {
     );
   };
   /** One send to a channel from a cron run; `owner` marks the run as the owner's (`senderIsOwner`). */
-  const cron = async (owner = true) => {
-    const ctx = { sessionKey: "agent:main:cron:cron-1", sessionId: "cron-1", agentId: "main", runId: "r-cron", trigger: "cron" };
-    await fire("before_prompt_build", { runId: "r-cron", prompt: "[cron:abc daily-brief] post the brief" }, ctx);
+  const cron = async (owner = true, trigger = "cron", requester?: Record<string, unknown>) => {
+    const ctx = {
+      sessionKey: `agent:main:${trigger}:cron-1`,
+      sessionId: "cron-1",
+      agentId: "main",
+      runId: "r-cron",
+      trigger,
+      ...(requester ? { requester } : {}),
+    };
+    const prompt = trigger === "cron" ? "[cron:abc daily-brief] post the brief" : "post the brief";
+    await fire("before_prompt_build", { runId: "r-cron", prompt }, ctx);
     if (owner) await fire("before_agent_run", { runId: "r-cron", senderIsOwner: true }, ctx);
     await fire(
       "before_tool_call",
@@ -316,18 +324,44 @@ test("a held call approved sets the hinted grant", async () => {
   assert.deepEqual([g.kind, g.pattern, g.from_hold], ["destination", "discord:#ops-reports", id]);
 });
 
-test("a held call on a run nobody is known to have started keeps no hint, and approving it sets nothing", async () => {
-  hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
-  extra = { risk: 47 };
-  const r = registered();
-  const rec = await r.cron(false);
-  assert.notEqual(rec.planir.trigger.sender.relation, "owner");
-  assert.equal(rec.decision, "held");
-  assert.equal(rec.hold.hint, false);
-  const answer = await r.command("sentrook-approve", rec.hold.id);
-  assert.ok(answer.startsWith(`Approved ${rec.hold.id}. Sentrook suggested no grant`), answer);
-  assert.deepEqual(grantsFile(), []);
-});
+for (const kind of ["cron", "heartbeat"]) {
+  test(`a ${kind} run with no sender keeps its hint on the hold, why says where it came from, approve sets it`, async () => {
+    hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
+    extra = { risk: 47 };
+    const r = registered();
+    const rec = await r.cron(false, kind);
+    const trig = rec.planir.trigger;
+    assert.deepEqual([trig.kind, trig.sender.relation], [kind === "cron" ? "scheduled" : "heartbeat", "unknown"]);
+    assert.equal(rec.decision, "held");
+    assert.equal(rec.hold.hint, true);
+    const id = rec.hold.id;
+    const lines = (await r.command("sentrook-why", id)).split("\n");
+    const i = lines.indexOf("suggested grant: destination discord:#ops-reports (persistent, 30 days)");
+    assert.ok(i > 0, lines.join("\n"));
+    const where = JSON.parse(readFileSync(path.join(stateDir, "holds.json"), "utf8")).holds[0].where;
+    assert.equal(lines[i + 1], CASES.hold_context.replace("{kind}", trig.kind).replace("{where}", where));
+    const answer = await r.command("sentrook-approve", id);
+    assert.ok(answer.startsWith(`Approved ${id}. Granted gr-`), answer);
+    const [g] = grantsFile();
+    assert.deepEqual([g.pattern, g.from_hold], ["discord:#ops-reports", id]);
+  });
+}
+
+for (const who of ["other", "hook"]) {
+  test(`a held call on ${who === "other" ? "a scheduled run someone else sent" : "a hook run"} keeps no hint`, async () => {
+    hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
+    extra = { risk: 47 };
+    const r = registered();
+    const rec = who === "other" ? await r.cron(false, "cron", { senderIsOwner: false, channel: "discord" }) : await r.cron(false, "event");
+    assert.notEqual(rec.planir.trigger.sender.relation, "owner");
+    assert.ok(rec.planir.trigger.sender.relation === "other" || !["scheduled", "heartbeat"].includes(rec.planir.trigger.kind));
+    assert.equal(rec.decision, "held");
+    assert.equal(rec.hold.hint, false);
+    const answer = await r.command("sentrook-approve", rec.hold.id);
+    assert.ok(answer.startsWith(`Approved ${rec.hold.id}. Sentrook suggested no grant`), answer);
+    assert.deepEqual(grantsFile(), []);
+  });
+}
 
 test("a held call whose hint does not clear this plugin's line sets nothing", async () => {
   hints = [{ ...HINT, risk: 12 }];

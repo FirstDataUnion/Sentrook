@@ -327,15 +327,39 @@ def test_a_held_call_whose_hint_does_not_clear_this_line_sets_nothing(h, monkeyp
     assert rec["hold"]["hint"] is False
 
 
-@pytest.mark.parametrize("platform", ["cron", "telegram"])
+def test_a_cron_jobs_held_call_keeps_its_hint_and_why_says_where_it_came_from(h):  # noqa: F811
+    """A scheduled run Hermes started with no sender behind it: the hint is kept on the hold, `why` says which run
+    it comes from, and approving the hold sets it. There is no approve-always prompt on such a run."""
+    h.reply = {"risk": 47, "grant_hints": [{**HINT, "pattern": "discord:#ops-reports", "risk": 12}]}
+    cron_turn(h)
+    _out, rec = send(h)
+    trig = rec["planir"]["trigger"]
+    assert (trig["kind"], trig["sender"]["relation"]) == ("scheduled", "unknown")
+    assert rec["decision"] == "held" and rec["hold"]["hint"] is True
+    hid = rec["hold"]["id"]
+    why = h.ctx.commands["sentrook"]["handler"](f"why {hid}", session_id="")
+    lines = why.splitlines()
+    i = lines.index("suggested grant: destination discord:#ops-reports (persistent, 30 days)")
+    context = CASES["hold_context"].format(kind="scheduled", where=holds(h)[0]["where"])
+    assert lines[i + 1] == context
+    reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")
+    assert reply.startswith(f"Approved {hid}. Granted gr-")
+    [g] = grants.load(h.dir / "sentrook")["grants"]
+    assert (g["pattern"], g["from_hold"]) == ("discord:#ops-reports", hid)
+
+
+@pytest.mark.parametrize("platform", ["subagent", "telegram"])
 def test_a_held_call_on_someone_elses_turn_keeps_no_hint(h, platform, monkeypatch):  # noqa: F811
-    """A cron job's text (no known sender) or a stranger's message chose the destination: the hold keeps no hint,
-    and approving it sets nothing."""
+    """A sub-agent's run, or a stranger's message, chose the destination: the hold keeps no hint, and approving it
+    sets nothing."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     h.reply = {"risk": 47, "grant_hints": [{**HINT, "pattern": "discord:#ops-reports", "risk": 12}]}
     cron_turn(h, platform=platform)
     _out, rec = send(h)
     assert rec["planir"]["trigger"]["sender"]["relation"] != "owner"
+    assert rec["planir"]["trigger"]["kind"] not in ("scheduled", "heartbeat") or (
+        rec["planir"]["trigger"]["sender"]["relation"] == "other"
+    )
     assert rec["decision"] == "held" and rec["hold"]["hint"] is False
     hid = rec["hold"]["id"]
     reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")

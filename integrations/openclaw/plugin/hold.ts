@@ -307,6 +307,11 @@ export function whyText(stateDir: string, log: string, id: string): string {
     lines.push(`hold: waiting, until ${at ? showTime(at) : "?"}`);
     const grant = grants.hintGrant(waiting.hint);
     lines.push(`suggested grant: ${grant ? `${grants.describeGrant(grant)} (persistent, 30 days)` : "none"}`);
+    const trig = (found[0] as Entry)?.planir?.trigger ?? {};
+    if (grant && grants.HOST_TASK_KINDS.has(trig.kind)) {
+      // nobody asked for this in a chat: say which run did, before the owner approves it
+      lines.push(grants.HOLD_CONTEXT.replace("{kind}", trig.kind).replace("{where}", clean(waiting.where ?? "?", 200)));
+    }
   } else {
     lines.push("hold: answered or expired");
   }

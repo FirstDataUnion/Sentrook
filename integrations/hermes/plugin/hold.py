@@ -339,6 +339,14 @@ def why_text(state_dir: Path, log: Path, hold_id: str, now: datetime) -> str:
             "suggested grant: "
             + (f"{grants.describe_grant(grant)} (persistent, 30 days)" if grant else "none")
         )
+        trig = ((found[0][0].get("planir") or {}).get("trigger") or {}) if found else {}
+        if grant and trig.get("kind") in grants.HOST_TASK_KINDS:
+            # nobody asked for this in a chat: say which run did, before the owner approves it
+            lines.append(
+                grants.HOLD_CONTEXT.format(
+                    kind=trig["kind"], where=_clean(waiting.get("where") or "?", 200)
+                )
+            )
     else:
         lines.append("hold: answered or expired")
     return "\n".join(lines)

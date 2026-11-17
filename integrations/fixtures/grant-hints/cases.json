@@ -1,5 +1,5 @@
 {
-  "_comment": "Grant hints: the grants a scan response suggests (`grant_hints`), each of which alone would let the call through next time. Both plugins must pick the same hints (`selection`: with `review_at` set, only hints whose own `risk` is below it; `all` without a line; at most the first three are read; a hint the grant command would refuse is skipped), print the same command for each (`commands`, with {grant} replaced by /sentrook grant on Hermes and /sentrook-grant on OpenClaw), and end a review prompt with the first chosen hint's line (`lines`: `remember` when approving always sets the grant, which needs the owner's own message on the main agent outside a group chat or open host; `plain` otherwise, the command only). Hints are shown, stored on a hold and set only on a turn whose sender is the owner (`trigger.sender.relation` owner); on any other turn the plugin ignores them. `why` lists every hint under `why_header`, one command per line indented by two spaces. A remembered grant is persistent and ends after `grant_days`.",
+  "_comment": "Grant hints: the grants a scan response suggests (`grant_hints`), each of which alone would let the call through next time. Both plugins must pick the same hints (`selection`: with `review_at` set, only hints whose own `risk` is below it; `all` without a line; at most the first three are read; a hint the grant command would refuse is skipped), print the same command for each (`commands`, with {grant} replaced by /sentrook grant on Hermes and /sentrook-grant on OpenClaw), and end a review prompt with the first chosen hint's line (`lines`: `remember` when approving always sets the grant, which needs the owner's own message on the main agent outside a group chat or open host; `plain` otherwise, the command only). Hints are shown, stored on a hold and set only on the owner's own turn: sender relation `owner`, or a `scheduled` or `heartbeat` run with sender `unknown` (the host started it from a task the owner set up); on any other turn the plugin ignores them. On such a host task run a hint is used only through a held call the owner approves, and `why <hold id>` adds `hold_context` under the suggested grant, with {kind} the trigger kind and {where} the hold's run as its notice names it. `why` lists every hint under `why_header`, one command per line indented by two spaces. A remembered grant is persistent and ends after `grant_days`.",
   "grant_days": 30,
   "lines": {
     "remember": "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}",
@@ -280,5 +280,6 @@
       "chosen": [],
       "all": []
     }
-  ]
+  ],
+  "hold_context": "this suggestion comes from a {kind} run, not your own message: {where}"
 }

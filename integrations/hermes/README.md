@@ -111,8 +111,9 @@ suggests a grant after checking that, with it, the same call would score below t
 one for a known-bad or look-alike host, for something that content the agent read put in front of it, for a file
 being sent out of a session that has read content trying to instruct the agent, or for a call with a clear attack
 signal, and it suggests trusting a new tool provider only when you asked for the work in your own chat. It suggests
-a grant only for a call that came from your own message: a group chat, someone else's message, or a job whose text
-nobody is known to have written gets none. A suggestion is a good guess, not a promise: Sentrook's judge sees the
+a grant only for a call that came from your own message or from a cron job Hermes started itself; a group chat,
+someone else's message, a subagent or a webhook gets none. A cron job's suggestion reaches you only through its held
+call: `/sentrook why <id>` names the grant and the job it came from, and `/sentrook approve <id>` sets it. A suggestion is a good guess, not a promise: Sentrook's judge sees the
 grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), answering
 **Always** also sets that grant, persistent for 30 days. `/sentrook why` lists every grant Sentrook suggested for a
 scan.
