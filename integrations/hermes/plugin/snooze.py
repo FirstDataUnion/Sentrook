@@ -3,11 +3,15 @@
 A snooze covers the session the command was sent from, or every session with `--all`, for a
 duration from 1 minute to 24 hours (default 1 hour). While one applies, a review the plugin would
 ask about is allowed instead; the call is still scanned and its traffic record says `snoozed: true`.
-A snooze never applies to:
-- a block;
+A snooze never allows:
+- a block, or a block it turned into a review;
 - a review the scanner enforces (`enforced` is review or block);
 - an unattended run, where a review stays a block;
 - a scan error, or observe mode.
+
+In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner attends,
+nothing independent points to an attack and nothing is enforced: the score alone blocks) into a review that
+always asks; it is never allowed silently. A block without the mark, from an older scanner too, stays a block.
 
 A session is named by its `session_ref`, the same hash a scan sends. A command with no current
 session (the command line) can only snooze every session.
@@ -37,8 +41,13 @@ MAX = timedelta(hours=24)
 MAX_ENTRIES = 200
 _DURATION = re.compile(r"([0-9]{1,5})([mh])")
 RULE = (
-    "A snoozed review is allowed and logged; blocks, enforced reviews and unattended runs are "
-    "never snoozed."
+    "A snoozed review is allowed and logged. A block with no clear attack signal asks you instead; "
+    "other blocks, enforced reviews and unattended runs are never snoozed."
+)
+#: The tail of the reply to a snooze that was set.
+SET_RULE = (
+    "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and "
+    "unattended runs are not snoozed."
 )
 #: Serialises read-modify-write of the file within this process; writes are atomic across processes.
 _LOCK = threading.Lock()
@@ -96,9 +105,22 @@ def active(data: dict[str, Any] | None, ref: str, now: datetime) -> bool:
     return any(_applies_to(e, ref) for e, _ in _entries(data, now))
 
 
-def applies(resp: dict[str, Any]) -> bool:
-    """A snooze may relax this review: the scanner did not enforce it."""
-    return resp.get("enforced") not in ("review", "block")
+def applies(resp: dict[str, Any], block_at: float) -> bool:
+    """A snooze may relax this review: the scanner did not enforce it, and its score is under the block line (a
+    block the scanner's ceiling lowered to a review always asks)."""
+    if resp.get("enforced") in ("review", "block"):
+        return False
+    return float(resp.get("risk") or 0) < block_at
+
+
+def relaxes(resp: dict[str, Any], verdict: str) -> bool:
+    """A snooze in a chat the owner attends turns this block into a review that always asks: the block comes from
+    the score and the scanner marks it `relaxable` (only a JSON true counts; an older scanner sends none)."""
+    return (
+        verdict == "block"
+        and resp.get("relaxable") is True
+        and resp.get("enforced") not in ("review", "block")
+    )
 
 
 # ---- status -----------------------------------------------------------------------------------------
@@ -238,5 +260,5 @@ def run(
     where = "in every session" if parsed["all"] else "in this session"
     return (
         f"Snoozed reviews {where} for {parsed['text']}, until {_show(now + parsed['span'])}. "
-        "Blocks, enforced reviews and unattended runs are not snoozed."
+        f"{SET_RULE}"
     ), {"op": "set", "entry": e}

@@ -8,24 +8,27 @@ as the owner.
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Callable
 from typing import Any
 
+from . import hold
 from .auth import (
     clear_scan_token_cache,
-    env_with_hermes_dotenv,
     get_scan_access_token,
     http_json,
+    missing_credentials,
     resolve_oidc_credentials,
 )
 from .commands import COMMANDS, OwnerGate, dispatch
 from .config import resolve_config
+from .grants import binding_problems_summary, unsent_summary
 
 
 def run_verify(
     settings: dict[str, Any], env: dict[str, str] | None = None, timeout: float = 8.0
 ) -> list[tuple[str, bool, str]]:
-    env = env_with_hermes_dotenv(env)
+    env = dict(os.environ) if env is None else env
     cfg = resolve_config(settings, env)
     ep = cfg.endpoints
     checks: list[tuple[str, bool, str]] = []
@@ -34,15 +37,14 @@ def run_verify(
             (name, e.ok, (e.url + (" (dev endpoints)" if ep.dev else "")) if e.ok else e.reason)
         )
     oidc = resolve_oidc_credentials(settings, env, ep.issuer.url) if ep.issuer.ok else None
-    checks.append(
-        (
-            "credentials",
-            oidc is not None,
-            f"client {oidc.client_id}, audience {oidc.audience}"
-            if oidc
-            else "SENTROOK_SCAN_CLIENT_ID / _SECRET not set",
-        )
-    )
+    missing = missing_credentials()
+    if missing:
+        creds = f"{' and '.join(missing)} not set in Hermes (hermes config set <NAME> <value>, then restart Hermes)"
+    elif oidc:
+        creds = f"client {oidc.client_id}, audience {oidc.audience}"
+    else:
+        creds = "set in Hermes; not used until the OIDC issuer is valid"
+    checks.append(("credentials", not missing, creds))
     if ep.scan.ok:
         try:
             status, body, _ = http_json(f"{ep.scan.url}/healthz", timeout=timeout)
@@ -72,6 +74,33 @@ def run_verify(
     )
     checks.append(
         ("traffic log", True, str(cfg.traffic_log_path) if cfg.traffic_log_enabled else "off")
+    )
+    # Reported, not failed: a config grant that is never sent only makes Sentrook stricter.
+    unsent = unsent_summary(cfg)
+    checks.append(
+        (
+            "config grants",
+            True,
+            f"{len(cfg.grants)} in config" + (f"; never sent: {unsent}" if unsent else ""),
+        )
+    )
+    problems = binding_problems_summary(cfg)
+    checks.append(
+        (
+            "channel bindings",
+            True,
+            f"{len(cfg.channel_bindings)} in config"
+            + (f"; cannot apply: {problems}" if problems else ""),
+        )
+    )
+    # Reported, not failed: without a notice target a held call still waits; the owner is just not told.
+    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
+    checks.append(
+        (
+            "held-call notices",
+            True,
+            f"to the {target} home channel" if target else f"not sent: {why}",
+        )
     )
     return checks
 

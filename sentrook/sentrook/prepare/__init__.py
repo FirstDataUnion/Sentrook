@@ -9,12 +9,20 @@ before any probe.
 3. Canonicalise tool arguments (pending call, siblings, history).
 4. Classify each new input as trusted or untrusted from its source facts.
 5. Extract entities with roles from the pending call, siblings, untrusted inputs, the request, grants,
-   history and, when the call executes a file the agent wrote earlier, that file's content; assign
+   history and, when the call executes a file the agent wrote earlier (or a copy of one, `copies`)
+   or is a scheduler tool call naming such a file as the job's script, that file's content; assign
    opaque IDs. Record the call's lineage in the history: the agent-written file it runs, the
    agent-written files it reads or sends, items the agent moved or copied into a tree the call
    destroys, and the agent's own saved listings of that tree.
 6. Add entities found in untrusted content to the session's untrusted-entity set (an entity the agent
-   introduced first is not promoted by a later echo).
+   introduced first is not promoted by a later echo, nor a path by the receipt of the step that wrote it). Entities from a scanned read of the agent's own
+   config or instruction files (one the agent did not write in this session, and not tainted) are the
+   owner's: they join the token's trusted set instead. Bind the pending call to the token's sensitive
+   and tainted sets (`session_sets`): the files and tables it reads, runs or applies that the sets hold,
+   and what an injected result in this request came from.
+   Mark the hosts named in an untrusted input that tries to steer the agent (it asks the agent to
+   keep the action from the owner, `steering`) as steered, and keep them in the
+   token's steered set; a host already in that set is steered on this step too.
 7. Compute the pending call's action fingerprint.
 8. Build the Jev state views: the v1 views byte-identical to the runner's `trim-v1`, and the v1.1 question-set pass's
    `trim-v2` views (`call-v2` with the turn's inputs, `exposure-v2`) after the second redaction pass
@@ -34,47 +42,81 @@ from ..planir.canonical import (
     canonical_pending,
     canonical_sibling,
 )
-from ..planir.models import InputKind, NewInput, PlanIR, ToolKind
+from ..planir.models import InputKind, NewInput, PlanIR, ProviderKind, ResultStatus, ToolKind
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
 from . import views
+from .copies import CopyHistory, copy_history
 from .entities import (
     Entity,
     EntityKind,
     EntityTable,
+    Found,
     Origin,
     Role,
+    channel_names,
     display_path,
     extract_call,
     extract_exec,
     extract_mentions,
-    grant_matches,
+    host_of_url,
+    install_walk,
+    is_computed_package,
     is_under,
     normalise_host,
     normalise_path,
     normalise_recipient,
+    normalise_remote_identity,
     paths_in,
+    platform_targets,
+    provider_counterpart,
+    provider_name,
     resolve_token,
+    send_platform,
     shell_segments,
 )
 from .fingerprint import Fingerprint, fingerprint
+from .grants import (
+    GRANT_KINDS,
+    grant_matches,
+    lapse,
+    path_actions,
+    sends_off_host,
+    tool_covers,
+)
 from .host_text import owner_words
-from .sibling_join import SiblingWrite, resolve_pending, sibling_writes
+from .own_store import memory_path_spellings, own_store_read
+from .session_sets import (
+    SessionBinding,
+    acts,
+    bind,
+    call_artefacts,
+    owner_config_path,
+    producer_artefacts,
+)
+from .sibling_join import Resolution, SiblingWrite, resolve_pending, sibling_writes
+from .skill_steps import skill_step_calls
+from .steering import steering_marks, steers
 from .trust import Trust, classify
+from .url_carry import CarriedText, url_carries_local
+from .written_selfmod import future_entities, written_selfmod_texts
 
 __all__ = [
     "Lineage",
     "MovedItem",
+    "PLUGIN_CUT_MARKER",
     "Prepared",
     "PrepareOptions",
     "WrittenFile",
     "prepare",
+    "sql_targets",
     "InvalidPlanIR",
 ]
 
-#: History arguments are capped by the plugin at about 4 KB per step. Content at or
-#: beyond this length is treated as possibly truncated when the agent-written file is re-read.
-WRITTEN_FILE_CAP_CHARS = 3900
+#: The plugins cap each history step's arguments at about 4 KB, giving every string a share of it and cutting
+#: a longer string head and tail around this marker. A written file is treated as cut when its content carries
+#: the marker; content that merely fills the cap arrived whole.
+PLUGIN_CUT_MARKER = re.compile(r"…\[sentrook: \d+ bytes cut\]…")
 _CREATING_HEADS = (
     "mkdir",
     "touch",
@@ -96,6 +138,10 @@ class PrepareOptions:
     deterministic_salt: str | None = None
     #: Test mode: a TestNest `state_seed` replaces the token.
     state_seed: dict[str, Any] | None = None
+    #: Token budgets for the call views and the self-edit view: the room the question sets that send them leave in
+    #: the model's context. None uses the default reserves in `views`.
+    call_budget_tokens: int | None = None
+    selfedit_budget_tokens: int | None = None
 
 
 @dataclass
@@ -197,12 +243,45 @@ class Prepared:
     #: synthetic exec calls, source `resolved`. Empty when no sibling write reaches the command.
     resolved: list[CanonicalCall] = field(default_factory=list)
     lineage: Lineage = field(default_factory=Lineage)
+    #: The history's copies and moves (`copies.copy_history`): which file a path is a copy of.
+    copies: CopyHistory = field(default_factory=CopyHistory)
     coverage: list[CoverageNote] = field(default_factory=list)
     warnings: list[Warning_] = field(default_factory=list)
     #: Hashes present in the token's untrusted set before this request added anything.
     prior_untrusted: frozenset[str] = frozenset()
+    #: New tool results that read the agent's own skills or memory (`own_store.own_store_read`): left out of the
+    #: exposure probe, untrusted for everything else.
+    own_store_inputs: frozenset[int] = frozenset()
+    #: Untrusted inputs that try to steer the agent: input_seq → the marker families they match.
+    steered_inputs: dict[int, list[str]] = field(default_factory=dict)
+    #: The pending call against the token's sensitive and tainted sets as they stood before this request.
+    session_binding: SessionBinding = field(default_factory=SessionBinding)
+    #: Per new tool result: hashes of the files and tables its call named. If the result is judged
+    #: injected, they join the tainted set.
+    producer_artefacts: dict[int, list[str]] = field(default_factory=dict)
+    #: Per input read from the owner's config: hashes it added to the trusted set (withdrawn if the
+    #: same scan judges that input injected).
+    trusted_by_input: dict[int, list[str]] = field(default_factory=dict)
+    #: Local paths the pending call installs that a download in this command or an earlier step that ran
+    #: saved (or a copy or move of one): normalised path → the download's hosts, each a code source of
+    #: the call (`_downloaded_installs`).
+    downloaded_from: dict[str, list[str]] = field(default_factory=dict)
+    #: The entity oracle's answer per entity id (`verdict`, `near_miss`, ...), set by the scan when
+    #: the oracle runs before the other probes. Empty when it did not run or failed.
+    oracle_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The credential-home check (`credential_home.check`): set by the scan after the oracle runs when the convergence
+    #: parameters turn the relief on. None: the check did not run or did not hold (`credential_home_check` says why).
+    credential_home: Any = None
+    credential_home_check: str | None = None
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
+    #: What the pending call does to each path a file grant pattern matched: entity id → actions.
+    grant_actions: dict[str, frozenset[str]] = field(default_factory=dict)
+    #: Grants that cover the whole call (a `tool` grant covering every command it runs).
+    call_grants: list[str] = field(default_factory=list)
+    #: Grants that do not apply to this request: grant_ref → `expired`, `unbound_session` or
+    #: `other_session` (`grants.lapse`).
+    grants_lapsed: dict[str, str] = field(default_factory=dict)
     #: Views version per view name (`trim-v1` for `exposure`/`call`, `trim-v2` for the v2 views).
     views_version: dict[str, str] = field(default_factory=dict)
     #: Second-pass redactions over the v2 views.
@@ -211,11 +290,20 @@ class Prepared:
     #: `tier`), set by the scan from the oracle probe before a call view that carries `reputation`
     #: is sent. Empty until then, and for views without the block.
     oracle_verdicts: list[dict[str, Any]] = field(default_factory=list)
-    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`.
+    #: Per view name: `redactions`, `inputs_truncated`, `inputs_stripped`, `history_cut`, `history_dropped`,
+    #: `request_cut`.
     view_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: `request.text` without the host-written parts (`host_text.owner_words`): what the rule-side
     #: matchers read. Jev's views carry the full text.
     request_words: str = ""
+    #: The parts of the pending fetch's URL that reproduce a local read in this request (`url_carry`): a fetch
+    #: with no body that carries local data out all the same. Empty for every other call.
+    url_carries: list[CarriedText] = field(default_factory=list)
+    #: The values the sibling join put in place of the pending command's substitutions
+    #: (`Resolution.values`). Empty when nothing was substituted.
+    sibling_values: tuple[str, ...] = ()
+    #: New inputs read from the owner's own configuration: owner-supplied, not untrusted content.
+    owner_config_inputs: frozenset[int] = frozenset()
 
     @property
     def platform(self) -> str:
@@ -243,6 +331,45 @@ class Prepared:
             return prior
         return max(seqs) if prior is None else max(prior, max(seqs))
 
+    def provider_from_untrusted(self, ent: Entity) -> bool:
+        """The provider's identity reached the agent through content it read: the provider entity, or the
+        host or package its identity names, is in the session's untrusted set from earlier steps or came
+        in through this request's untrusted inputs. The earlier set is read as it was before this request
+        added to it, so a request full of untrusted entities cannot push the counterpart out of it."""
+        if ent.in_session_untrusted or Origin.UNTRUSTED_INPUT in ent.origins:
+            return True
+        counterpart = provider_counterpart(ent.value)
+        if counterpart is None:
+            return False
+        kind, value = counterpart
+        other = self.entities.get(kind, value)
+        if other is not None and (
+            other.in_session_untrusted or Origin.UNTRUSTED_INPUT in other.origins
+        ):
+            return True
+        return entity_hash(self.state.salt, kind.value, value) in self.prior_untrusted
+
+    def provider_switched_from(self, ent: Entity) -> str | None:
+        """The provider an earlier step of this session called the pending call's tool through, when the
+        pending call routes the same tool name through `ent`, a different MCP server or plugin. Another
+        version of the same package is the same provider. None when no earlier step called that tool, or
+        every one that did went through `ent`."""
+        prov = self.pending.provider
+        if prov.kind not in (ProviderKind.MCP, ProviderKind.PLUGIN) or not prov.identity:
+            return None
+        if ent.kind not in (EntityKind.MCP_SERVER, EntityKind.PLUGIN):
+            return None  # another kind of entity that happens to share the provider's name
+        if normalise_remote_identity(prov.identity) != ent.value:
+            return None  # not the pending call's own provider
+        here = (prov.kind, provider_name(ent.value))
+        for h in self.history:
+            if h.tool != self.pending.tool or not h.provider.identity:
+                continue
+            earlier = normalise_remote_identity(h.provider.identity)
+            if (h.provider.kind, provider_name(earlier)) != here:
+                return earlier
+        return None
+
     def denied_steps(self) -> list[CanonicalCall]:
         denied = {"denied_by_user", "blocked", "review_timed_out"}
         by_step = {h.step: h for h in self.planir.history}
@@ -253,12 +380,16 @@ class Prepared:
         ]
 
 
-def _mark_request_named(request_text: str, table: EntityTable) -> None:
+def _mark_request_named(
+    request_text: str, table: EntityTable, roots: tuple[str | None, ...] = ()
+) -> None:
     """An owner may name a recipient, channel, account or host in a form the mention extractor does not
     produce on its own: a person's name (`Pay Mara Quill`), an account number, `#ops-yard` for a channel
     target, or a host that only the pending call spells out. A pending-call entity whose value appears
     verbatim in the request (case-insensitive, whole token) is request-named. A PyPI name is folded on
-    extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does."""
+    extraction, so the request may spell each `-` of it as any run of `-`, `_` and `.`, as PyPI does.
+    A local path an installer installs (`pip install /work/wheels/x.whl`) is also named by its path under
+    one of `roots` (the workspace, home, the call's working directory), as an owner writes it."""
     text = request_text.lower()
     if not text:
         return
@@ -268,7 +399,8 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
             or Origin.REQUEST in ent.origins
         ):
             continue
-        if ent.kind not in (
+        installed = ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles
+        if not installed and ent.kind not in (
             EntityKind.RECIPIENT,
             EntityKind.CHANNEL,
             EntityKind.HOST,
@@ -276,20 +408,81 @@ def _mark_request_named(request_text: str, table: EntityTable) -> None:
             EntityKind.PLUGIN,
         ):
             continue
-        candidates = {ent.value.lower()}
-        if ent.kind is EntityKind.CHANNEL and ":" in ent.value:
-            name = ent.value.split(":", 1)[1].lower()
-            candidates.update({name, "#" + name})
-        if ent.kind is EntityKind.PACKAGE and ":" in ent.value:
-            candidates.add(ent.value.split(":", 1)[1].lower())
-        pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
-        for cand in candidates:
-            if len(cand) < 3:
+        if _value_named(ent, text, roots):
+            ent.add_origin(Origin.REQUEST, "verbatim")
+
+
+def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> bool:
+    """The entity's value appears in the lower-cased `text` as a whole token: verbatim, a channel by
+    its shorter names, a package also without its ecosystem prefix (a PyPI name spelt as PyPI allows),
+    a package installed from a URL by that URL's host and path. A path is named by its path under one
+    of `roots`, or its `~/` form; a bare file name is not enough, since another file may carry it."""
+    if ent.kind is EntityKind.PATH:
+        name = ent.value.lower()
+        relative: set[str] = set()
+        for i, root in enumerate(roots):
+            prefix = (root or "").lower().rstrip("/") + "/"
+            if len(prefix) > 1 and name.startswith(prefix) and "/" in name[len(prefix) :]:
+                relative.add(name[len(prefix) :])
+            if i == 1 and len(prefix) > 1 and name.startswith(prefix):
+                relative.add("~/" + name[len(prefix) :])
+        # A relative path is named only as a whole path, not as the tail of a longer one.
+        return any(
+            re.search(r"(?<![\w./~-])" + re.escape(rel) + r"(?![\w/-])", text) for rel in relative
+        )
+    candidates = {ent.value.lower()}
+    if ent.kind is EntityKind.CHANNEL:
+        candidates.update(channel_names(ent.value))
+    if ent.kind is EntityKind.PACKAGE and ent.value.startswith("git+"):
+        # Installed from a URL: named by that URL, whatever scheme the owner wrote before the host.
+        candidates.add(ent.value[4:].lower())
+    elif ent.kind is EntityKind.PACKAGE and ":" in ent.value:
+        candidates.add(ent.value.split(":", 1)[1].lower())
+    pypi = ent.kind is EntityKind.PACKAGE and ent.value.startswith("pypi:")
+    for cand in candidates:
+        if len(cand) < 3:
+            continue
+        body = "[-_.]+".join(map(re.escape, cand.split("-"))) if pypi else re.escape(cand)
+        if re.search(r"(?<![\w.@-])" + body + r"(?![\w-])", text):
+            return True
+    return False
+
+
+def _mark_packages_named_in_content(
+    inputs: list[PreparedInput], owner_config: set[int], table: EntityTable, now: int
+) -> None:
+    """A document can name a package without an installer command the extractor reads: in a sentence
+    ("Install kiln-rowcount."), a list, or a command inside backticks. A package the pending call, a
+    sibling or the script it runs installs, whose name appears as a whole token in an untrusted input,
+    came from that input. Not when the agent's own call named the package at or before the step
+    that produced the input: a result that names it back (an install's own output) echoes the
+    agent's choice. An operand computed at run time has no name to find."""
+    for pi in inputs:
+        content = pi.input.content or ""
+        if not content or pi.trust is not Trust.UNTRUSTED or pi.input.input_seq in owner_config:
+            continue
+        text = content.lower()
+        ref = f"input:{pi.input.input_seq}"
+        arrived = pi.step if pi.step is not None else now
+        for ent in table:
+            if ent.kind not in (EntityKind.PACKAGE, EntityKind.PLUGIN):
                 continue
-            body = "[-_.]+".join(map(re.escape, cand.split("-"))) if pypi else re.escape(cand)
-            if re.search(r"(?<![\w.@-])" + body + r"(?![\w-])", text):
-                ent.add_origin(Origin.REQUEST, "verbatim")
-                break
+            if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
+                continue
+            if ref in (ent.origins.get(Origin.UNTRUSTED_INPUT) or ()):
+                continue
+            if is_computed_package(ent.value):
+                continue
+            if ent.first_history_step is not None and ent.first_history_step <= arrived:
+                continue
+            if not _value_named(ent, text):
+                continue
+            ent.add_origin(Origin.UNTRUSTED_INPUT, ref)
+            ent.first_untrusted_step = (
+                arrived
+                if ent.first_untrusted_step is None
+                else min(ent.first_untrusted_step, arrived)
+            )
 
 
 #: Local parts that are roles rather than names; a capitalised "Team" or "Info" in the request is not a
@@ -311,27 +504,49 @@ _SELF_COPY_RE = re.compile(
 
 def _came_from_untrusted_content(ent: Entity) -> bool:
     """The address reached the agent through content it read, not through the owner."""
-    agent_first = (
-        ent.first_history_step is not None
-        and ent.first_untrusted_step is not None
-        and ent.first_history_step < ent.first_untrusted_step
+    return ent.in_session_untrusted or (
+        Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first
     )
-    return ent.in_session_untrusted or (Origin.UNTRUSTED_INPUT in ent.origins and not agent_first)
 
 
 def _inherit_recipient_domain(table: EntityTable) -> None:
     """The mail domain of a request-named recipient is that recipient's own component, not a
     destination the agent chose: `priya.nair@brightlane.io` named by the owner sanctions
     `brightlane.io` as the destination host of that send, even when the domain also turns up in
-    content the agent read (the owner's own organisation usually does)."""
+    content the agent read (the owner's own organisation usually does). Not when a call names the
+    host in its own right (a URL, a command target): that use is the agent's, not the owner's."""
     for ent in list(table):
         if ent.kind is not EntityKind.RECIPIENT or "@" not in ent.value:
             continue
         if Origin.REQUEST not in ent.origins:
             continue
         host = table.get(EntityKind.HOST, normalise_host(ent.value.split("@", 1)[1]))
+        if host is not None and host.named_in_own_right:
+            continue  # a call also sends to or names the host itself: naming the address is not naming it
         if host is not None and Origin.REQUEST not in host.origins:
             host.add_origin(Origin.REQUEST, "recipient_domain")
+
+
+def _named_verbatim(value: str, text: str) -> bool:
+    """`value` appears in `text` as a whole token, not as the part of an email address after its `@`."""
+    return bool(re.search(r"(?<![\w.@-])" + re.escape(value.lower()) + r"(?![\w-])", text.lower()))
+
+
+def _address_only_hosts(request_text: str, table: EntityTable) -> None:
+    """Naming an email address sanctions mail to it, not other traffic to its host. A host the request
+    reaches only through an address on it (`desk@coppicedown.net`), that a call uses in its own right (posts
+    to it, fetches from it, runs code from it), is not request-named: it keeps its own distrust and origin
+    and gets no request-named relief. It is still a host the owner named, for the look-alike check. A host
+    the owner also wrote bare, as a URL or verbatim stays request-named; so does one the call only mails
+    or merely mentions (a signature, a link in the message)."""
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or not ent.own_right_roles - {Role.MENTIONED}:
+            continue
+        refs = ent.origins.get(Origin.REQUEST)
+        if not refs or set(refs) != {"address"} or _named_verbatim(ent.value, request_text):
+            continue
+        del ent.origins[Origin.REQUEST]
+        ent.owner_named_via_address = True
 
 
 def _mark_display_named(request_text: str, table: EntityTable) -> None:
@@ -402,9 +617,39 @@ def _executed_paths(pending: CanonicalCall, table: EntityTable) -> list[Entity]:
     return [e for e in table.pending() if e.kind is EntityKind.PATH and Role.EXECUTABLE in e.roles]
 
 
+#: The build manifests an install of a local directory runs: a Python build's `setup.py` (or the build
+#: its `pyproject.toml` or `setup.cfg` names) and an npm package's `package.json` scripts.
+_BUILD_MANIFESTS = ("setup.py", "pyproject.toml", "setup.cfg", "package.json")
+
+
+def _run_targets(
+    pending: CanonicalCall, table: EntityTable, home: str
+) -> list[tuple[str, str, bool]]:
+    """The files the pending command runs whose content an agent's write may show, as (path, display,
+    whether a missing write is a coverage gap): the executables it names, then the build manifests of
+    each local directory an installer installs, which run only when they exist."""
+    targets = [(e.value, e.display, True) for e in _executed_paths(pending, table)]
+    if pending.tool_kind is ToolKind.EXEC:
+        for ent in table.pending():
+            if ent.kind is EntityKind.PATH and Role.CODE_SOURCE in ent.roles:
+                for name in _BUILD_MANIFESTS:
+                    path = ent.value.rstrip("/") + "/" + name
+                    targets.append((path, display_path(path, home), False))
+    return targets
+
+
 def _find_written(
-    planir: PlanIR, history: list[CanonicalCall], path: str, home: str, ws: str
+    planir: PlanIR,
+    history: list[CanonicalCall],
+    path: str,
+    home: str,
+    ws: str,
+    *,
+    after: int | None = None,
+    before: int | None = None,
 ) -> WrittenFile | None:
+    """The agent's own writes and edits of `path` in the history (optionally only the steps after
+    `after` and before `before`), as one file."""
     best: WrittenFile | None = None
     for call in history:
         if (
@@ -413,19 +658,216 @@ def _find_written(
             or call.step is None
         ):
             continue
+        if (after is not None and call.step <= after) or (
+            before is not None and call.step >= before
+        ):
+            continue
         if normalise_path(call.path, home=home, workspace_root=ws) != path:
             continue
         content = str(call.get("content") or "")
         if best is None or call.step > best.step:
-            truncated = len(content) >= WRITTEN_FILE_CAP_CHARS or content.rstrip().endswith(
+            truncated = bool(PLUGIN_CUT_MARKER.search(content)) or content.rstrip().endswith(
                 ("…", "[truncated]", "...")
             )
             if best is not None and call.tool_kind is ToolKind.FILE_EDIT:
-                content = (
-                    best.content + "\n" + content
-                )  # an edit after a write: both halves are visible
+                # an edit after a write: both halves are visible, and a cut in the earlier one still applies
+                content = best.content + "\n" + content
+                truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
     return best
+
+
+def _downloaded_installs(
+    pending: CanonicalCall,
+    siblings: list[CanonicalCall],
+    history: list[CanonicalCall],
+    not_run: frozenset[int],
+    copies: CopyHistory,
+    table: EntityTable,
+    now: int,
+    home: str,
+    ws: str,
+) -> dict[str, list[str]]:
+    """The local paths the pending command installs (path entities with the code-source role) that a
+    download saved: earlier in the same command, in a sibling call of the batch, or in an earlier step
+    that ran, at that path or at one it was copied or moved from. Each maps to the download's hosts, less
+    package registries (`installers.package_registry_hosts`), which serve only published packages."""
+    if pending.tool_kind is not ToolKind.EXEC:
+        return {}
+    installs = [
+        e.value
+        for e in table.pending()
+        if e.kind is EntityKind.PATH and Role.CODE_SOURCE in e.roles
+    ]
+    if not installs:
+        return {}
+    walk = install_walk(pending.command or "", home=home, workspace_root=ws, cwd=pending.get("cwd"))
+    earlier: dict[str, set[str]] = {}
+    ran = [c for c in history if c.step is not None and c.step not in not_run]
+    for call in (*siblings, *ran):
+        cmd = call.command or "" if call.tool_kind is ToolKind.EXEC else ""
+        if "curl" not in cmd and "wget" not in cmd:
+            continue
+        saved = install_walk(cmd, home=home, workspace_root=ws, cwd=call.get("cwd")).downloaded
+        for path, hosts in saved.items():
+            earlier.setdefault(path, set()).update(hosts)
+    out: dict[str, set[str]] = {p: set(h) for p, h in walk.installed.items()}
+    for path in installs:
+        for origin in (path, *copies.ancestors(path, now)):
+            if origin in earlier:
+                out.setdefault(path, set()).update(earlier[origin])
+    charged = {p: sorted(h for h in hosts if not _package_registry(h)) for p, hosts in out.items()}
+    return {p: hosts for p, hosts in charged.items() if hosts}
+
+
+def _package_registry(host: str) -> bool:
+    from ..aira.lists import load_lists
+
+    host = host.lower().strip(".")
+    registries = load_lists().strings("installers", "package_registry_hosts")
+    return any(
+        host == r or host.endswith("." + r) for r in (h.lower().strip(".") for h in registries)
+    )
+
+
+#: Arguments of a scheduler tool that name what the job runs.
+_SCHEDULED_SCRIPT_KEYS = ("script", "script_path")
+_SCHEDULED_COMMAND_KEYS = ("command", "cmd")
+
+
+def _scheduled_scripts(
+    pending: CanonicalCall, history: list[CanonicalCall], home: str, ws: str
+) -> list[str]:
+    """The agent-written files a scheduler tool call names as what the job runs (its `script` or
+    `command` argument), in the order they were last written. The job runs later with nobody
+    asked, so creating it is running the file. A path names its file; a bare name (the host looks
+    it up in its own scripts directory) names every file of that name written this session. Empty
+    for other tools, for a read-only action and for a name no step wrote."""
+    if pending.tool_kind not in (ToolKind.OTHER, ToolKind.MCP):
+        return []
+    from ..aira.lists import load_lists
+
+    lists = load_lists()
+    prefix = str(lists.get("selfmod", "tool_name_prefix", default=r"(?:\A|__|[.:/])"))
+    if not any(
+        rule.get("reason") == "selfmod.scheduler"
+        and re.search(prefix + rule.regex.pattern, pending.tool or "", re.IGNORECASE)
+        for rule in lists.rules("selfmod", "tool_names")
+    ):
+        return []
+    action = pending.raw.get("action")
+    if isinstance(action, str) and action.strip().lower() in {
+        a.lower() for a in lists.strings("selfmod", "read_actions")
+    }:
+        return []
+    written: dict[str, int] = {}
+    for call in history:
+        if (
+            call.tool_kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT)
+            and call.path
+            and call.step is not None
+        ):
+            written[normalise_path(call.path, home=home, workspace_root=ws)] = call.step
+    if not written:
+        return []
+    found: list[str] = []
+    for keys, is_command in ((_SCHEDULED_SCRIPT_KEYS, False), (_SCHEDULED_COMMAND_KEYS, True)):
+        for key in keys:
+            value = pending.raw.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            for tokens in shell_segments(value):
+                for tok in tokens:
+                    if tok.startswith("-"):
+                        continue
+                    if tok.startswith(("/", "~", "$HOME")):
+                        path = normalise_path(tok, home=home, workspace_root=ws)
+                        matches = [path] if path in written else []
+                    else:
+                        name = tok.removeprefix("./")
+                        if is_command and "/" not in name and "." not in name:
+                            continue  # a command word (`sh`, `echo`), not a file
+                        matches = [w for w in written if w.endswith("/" + name)]
+                    found.extend(m for m in matches if m not in found)
+    return sorted(found, key=lambda path: written[path])
+
+
+def _find_executed(
+    planir: PlanIR,
+    history: list[CanonicalCall],
+    copies: CopyHistory,
+    path: str,
+    home: str,
+    ws: str,
+) -> WrittenFile | None:
+    """The content of the file at `path` as the agent made it: its own writes, or, when the file
+    was copied or moved there, the writes of the file it was copied from (as they stood at the
+    copy) followed by any edits made to the copy. None when no step shows the content."""
+    now = planir.session.step
+    link = copies.onto(path, now)
+    if link is None:
+        return _find_written(planir, history, path, home, ws)
+    later = _find_written(planir, history, path, home, ws, after=link.step)
+    source: WrittenFile | None = None
+    at = link.step
+    for origin in (link.source, *copies.ancestors(link.source, link.step + 1)):
+        behind = copies.onto(origin, at + 1)
+        source = _find_written(
+            planir, history, origin, home, ws, after=behind.step if behind else None, before=at + 1
+        )
+        if source is not None or behind is None:
+            break
+        at = behind.step
+    if source is None:
+        return later  # a copy of a file no step wrote: only the edits made to the copy are visible
+    if later is None:
+        return WrittenFile(
+            path=path, step=source.step, content=source.content, truncated=source.truncated
+        )
+    return WrittenFile(
+        path=path,
+        step=later.step,
+        content=source.content + "\n" + later.content,
+        truncated=source.truncated or later.truncated,
+    )
+
+
+def _own_store_inputs(
+    planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
+) -> frozenset[int]:
+    """The new tool results that read the agent's own skills or memory (`own_store.own_store_read`): a host tool
+    that succeeded, by both the input and its history step, with that step's arguments. A memory file the session's
+    tainted set holds, under any spelling lineage may have recorded, is not one."""
+    steps = {h.call_id: h for h in planir.history if h.call_id}
+    prior_tainted = frozenset(state.tainted)
+    platform = planir.host.platform
+    out: set[int] = set()
+    for pi in inputs:
+        item = pi.input
+        if (
+            not pi.new
+            or item.kind is not InputKind.TOOL_RESULT
+            or item.status is not ResultStatus.OK
+        ):
+            continue
+        if item.provider is None or item.provider.kind is not ProviderKind.HOST:
+            continue
+        step = steps.get(item.call_id)
+        if (
+            step is None
+            or step.provider.kind is not ProviderKind.HOST
+            or (step.result is not None and step.result.status is not ResultStatus.OK)
+        ):
+            continue
+        args = step.arguments or {}
+        kind = own_store_read(platform, item.tool, args, home=home, workspace_root=ws)
+        if kind is None:
+            continue
+        spellings = memory_path_spellings(platform, item.tool, args, home=home, workspace_root=ws)
+        if any(entity_hash(state.salt, "path", p) in prior_tainted for p in spellings):
+            continue
+        out.add(item.input_seq)
+    return frozenset(out)
 
 
 def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str, int]:
@@ -572,8 +1014,8 @@ def _moved_in(
     return out
 
 
-def _sql_targets(pending: CanonicalCall) -> list[str]:
-    """Database objects the pending call destroys: the object named by a destructive SQL
+def sql_targets(pending: CanonicalCall) -> list[str]:
+    """Database objects a call destroys: the object named by a destructive SQL
     statement (`destructive.yaml` `sql_patterns`) in an exec command or a query argument."""
     text = pending.command if pending.tool_kind is ToolKind.EXEC else pending.get("content")
     if not isinstance(text, str) or not text:
@@ -601,7 +1043,7 @@ def _lineage(
 ) -> Lineage:
     lineage = Lineage(executed=written)
     lineage.destructive_targets = _destructive_targets(pending, home, ws)
-    lineage.sql_targets = _sql_targets(pending)
+    lineage.sql_targets = sql_targets(pending)
 
     written_paths = {
         normalise_path(c.path, home=home, workspace_root=ws)
@@ -662,6 +1104,35 @@ def _lineage(
     return lineage
 
 
+def _session_binding(
+    pending: CanonicalCall,
+    table: EntityTable,
+    state: SessionState,
+    lineage: Lineage,
+    *,
+    home: str,
+    workspace_root: str,
+) -> SessionBinding:
+    """The pending call against the token's sensitive and tainted sets as they stood before this request."""
+    ids = {e.value: e.id for e in table if e.kind is EntityKind.PATH}
+    arts = call_artefacts(
+        pending, state.salt, home=home, workspace_root=workspace_root, entity_ids=ids
+    )
+    sensitive, tainted = bind(
+        arts, sensitive=frozenset(state.sensitive), tainted=frozenset(state.tainted)
+    )
+    off_host = sends_off_host(pending, table.pending())
+    destroys = bool(lineage.destructive_targets or lineage.sql_targets)
+    return SessionBinding(
+        sensitive=sensitive,
+        tainted=tainted,
+        off_host=off_host,
+        acts=acts(pending, off_host, destroys, home=home, workspace_root=workspace_root),
+        takes=[a.hash for a in arts if a.takes],
+        writes=[a.hash for a in arts if a.writes and a.kind == "path"],
+    )
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -693,6 +1164,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                 )
             )
     prior_untrusted = frozenset(state.untrusted)
+    prior_steered = frozenset(state.steered)
 
     # 3. canonicalise
     platform = planir.host.platform
@@ -723,23 +1195,12 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
 
     # 5. entities
     table = EntityTable()
-    for f in extract_call(pending, home=home, workspace_root=ws):
-        table.add(f.kind, f.value, display=f.display, role=f.role, origin=Origin.PENDING_CALL)
-    for sib in siblings:
-        for f in extract_call(sib, home=home, workspace_root=ws):
-            table.add(
-                f.kind,
-                f.value,
-                display=f.display,
-                role=f.role,
-                origin=Origin.SIBLING,
-                ref=sib.call_id,
-            )
     # What the siblings write, and the pending command read through it: the resolved command's
     # entities take the pending call's roles and the sibling's origin. A failure here leaves the
     # scan without the join rather than failing it.
     writes: list[SiblingWrite] = []
     resolved: list[CanonicalCall] = []
+    resolution = Resolution()
     try:
         writes = [w for s in siblings for w in sibling_writes(s, home=home, workspace_root=ws)]
         resolution = resolve_pending(platform, pending, writes, home=home, workspace_root=ws)
@@ -748,38 +1209,172 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             coverage.append(
                 CoverageNote("sibling_join_truncated", f"first {len(resolved)} resolved commands")
             )
+    except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
+        writes, resolved, resolution = [], [], Resolution()
+        coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
+    for f in extract_call(pending, home=home, workspace_root=ws):
+        if resolution.substituted and is_computed_package(f.value):
+            # The resolved commands name what this operand computes; one they leave computed
+            # comes back through them.
+            continue
+        table.add_found(f, Origin.PENDING_CALL)
+    # Self-modification content the call writes (a cron line, a hook, a skill, a job prompt) runs later: the hosts
+    # that run sends to or runs code from take those roles as future roles, never as roles of this call.
+    try:
+        written_selfmod = future_entities(
+            written_selfmod_texts(pending, home=home, workspace_root=ws),
+            home=home,
+            workspace_root=ws,
+        )
+    except Exception as exc:  # noqa: BLE001 (odd content must not fail the scan)
+        written_selfmod = []
+        coverage.append(CoverageNote("written_selfmod_failed", f"{type(exc).__name__}: {exc}"))
+    for f in written_selfmod:
+        new = table.get(f.kind, f.value) is None
+        ent = table.add(f.kind, f.value, display=f.display, origin=Origin.PENDING_CALL)
+        if new:
+            ent.roles.add(Role.MENTIONED)
+            ent.only_in_written_selfmod = True
+        if f.role is not None:
+            ent.future_roles.add(f.role)
+    for sib in siblings:
+        for f in extract_call(sib, home=home, workspace_root=ws):
+            table.add_found(f, Origin.SIBLING, sib.call_id)
+    try:
         for call in resolved:
             for f in extract_call(call, home=home, workspace_root=ws):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.SIBLING,
-                    ref=call.call_id,
-                )
+                table.add_found(f, Origin.SIBLING, call.call_id).in_resolved_command = True
     except Exception as exc:  # noqa: BLE001 (an odd sibling must not fail the scan)
         writes, resolved = [], []
         coverage.append(CoverageNote("sibling_join_failed", f"{type(exc).__name__}: {exc}"))
+    # A self-edit that writes a skill: the skill's commands run later with nobody asked, so they are judged now as
+    # exec calls of their own.
+    # Their entities are not added with roles: an unknown package in an ordinary skill would then read as an
+    # unvetted code source on its own; the risky-step suspicion and the self-edit questions judge them instead.
+    if planir.is_self_edit:
+        try:
+            steps = skill_step_calls(platform, pending, planir.self_edit.store.value)
+            resolved = [*resolved, *steps]
+        except Exception as exc:  # noqa: BLE001
+            coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
     words = owner_words(planir.request.text)
+    # A fetch whose URL reproduces a local read sends that text whatever its method: the host it names
+    # receives data. A failure here leaves the call a read rather than failing the scan.
+    url_carries: list[CarriedText] = []
+    try:
+        url_carries = url_carries_local(
+            pending, inputs, {c.step: c for c in history if c.step is not None}, words
+        )
+    except Exception as exc:  # noqa: BLE001
+        coverage.append(CoverageNote("url_carry_failed", f"{type(exc).__name__}: {exc}"))
+    if url_carries:
+        carried_to = host_of_url(str(pending.get("url") or ""))
+        if carried_to:
+            table.add_found(
+                Found(EntityKind.HOST, carried_to, carried_to, Role.DATA_DESTINATION),
+                Origin.PENDING_CALL,
+            )
     for f in extract_mentions(words, home=home, workspace_root=ws, role=None):
-        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST)
-    _mark_request_named(words, table)
+        ref = None
+        if f.kind is EntityKind.HOST:
+            ref = "address" if f.domain_of is not None else "mention"
+        table.add(f.kind, f.value, display=f.display, origin=Origin.REQUEST, ref=ref)
+    pending_cwd = pending.get("cwd")
+    _mark_request_named(
+        words,
+        table,
+        (
+            ws,
+            home,
+            normalise_path(pending_cwd, home=home, workspace_root=ws)
+            if isinstance(pending_cwd, str) and pending_cwd
+            else None,
+        ),
+    )
 
     grant_hits: dict[str, list[str]] = {}
+    call_grants: list[str] = []
+    grant_actions: dict[str, frozenset[str]] = {}
+    grants_lapsed: dict[str, str] = {}
+    grant_reach: dict[str, frozenset[str]] = {}
+    off_host = sends_off_host(pending, table.pending())
+    # The chat platform the batch's sends name in their own argument: a pattern naming it covers their
+    # channel targets (`platform_targets`), nothing else. Only when every send in the batch names the
+    # same one, so a target on one platform is never covered by a pattern naming another send's.
+    sends = [c for c in (pending, *siblings) if c.tool_kind is ToolKind.MESSAGE_SEND]
+    platforms = {send_platform(c) for c in sends}
+    platform = next(iter(platforms)) if len(platforms) == 1 else None
+    targets = {t for c in sends for t in platform_targets(c)} if platform else set()
     for grant in planir.grants:
+        spec = GRANT_KINDS.get(grant.kind)
+        if spec is None or (spec.local_only and off_host):
+            continue  # a file grant sanctions access, never sending the data off the host
+        why = lapse(grant, planir)
+        if why is not None:
+            grants_lapsed[grant.grant_ref] = why
+            continue
+        allowed = spec.allows(grant)
+        if spec.actions and not spec.entity_kinds:
+            if "exec" in allowed and tool_covers(grant.pattern, pending):
+                call_grants.append(grant.grant_ref)
+            continue
         for ent in list(table):
-            if (
+            if not (
                 Origin.PENDING_CALL in ent.origins or Origin.SIBLING in ent.origins
-            ) and grant_matches(grant.kind, grant.pattern, ent):
-                ent.add_origin(Origin.GRANT, grant.grant_ref)
-                grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
+            ) or not grant_matches(
+                grant.kind,
+                grant.pattern,
+                ent,
+                host_os=planir.host.os,
+                platform=platform if (ent.kind, ent.value) in targets else None,
+            ):
+                continue
+            if spec.actions:
+                if ent.id not in grant_actions:
+                    grant_actions[ent.id], grant_reach[ent.id] = path_actions(
+                        pending, ent, home=home, workspace_root=ws, host_os=planir.host.os
+                    )
+                if not grant_actions[ent.id] <= allowed:
+                    continue
+                if not all(
+                    grant_matches(
+                        grant.kind,
+                        grant.pattern,
+                        Entity("", EntityKind.PATH, g, display_path(g, home)),
+                        host_os=planir.host.os,
+                    )
+                    for g in grant_reach[ent.id]
+                ):
+                    continue  # a wildcard in the call reaches beyond what the grant covers
+            ent.add_origin(Origin.GRANT, grant.grant_ref)
+            grant_hits.setdefault(grant.grant_ref, []).append(ent.id)
+
+    # The owner's own configuration: a scanned read of an agent config or instruction file that the
+    # agent did not write in this session and that is not tainted.
+    created = _created_paths(history, home, ws)
+    hist_by_step = {c.step: c for c in history if c.step is not None}
+    prior_tainted = frozenset(state.tainted)
+    owner_config: set[int] = set()
+    for pi in inputs:
+        call = hist_by_step.get(pi.step) if pi.input.kind is InputKind.TOOL_RESULT else None
+        if call is None:
+            continue
+        cfg = owner_config_path(call, home=home, workspace_root=ws)
+        if (
+            cfg is not None
+            and cfg not in created
+            and entity_hash(state.salt, "path", cfg) not in prior_tainted
+        ):
+            owner_config.add(pi.input.input_seq)
 
     for pi in inputs:
         content = pi.input.content or ""
         if not content:
             continue
-        origin = Origin.UNTRUSTED_INPUT if pi.trust is Trust.UNTRUSTED else Origin.TRUSTED_INPUT
+        if pi.input.input_seq in owner_config:
+            origin = Origin.OWNER_CONFIG
+        else:
+            origin = Origin.UNTRUSTED_INPUT if pi.trust is Trust.UNTRUSTED else Origin.TRUSTED_INPUT
         for f in extract_mentions(content, home=home, workspace_root=ws, role=None):
             ent = table.add(
                 f.kind, f.value, display=f.display, origin=origin, ref=f"input:{pi.input.input_seq}"
@@ -810,79 +1405,200 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     else min(ent.first_history_step, call.step)
                 )
 
-    created = _created_paths(history, home, ws)
+    # Copies and moves that ran: a denied or blocked step copied nothing.
+    not_run = frozenset(
+        h.step
+        for h in planir.history
+        if h.decision.value in ("denied_by_user", "blocked", "review_timed_out", "blocked_on_error")
+    )
+    copies = CopyHistory()
+    try:
+        copies = copy_history(history, not_run, home=home, workspace_root=ws)
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("copy_history_failed", f"{type(exc).__name__}: {exc}"))
 
     written: WrittenFile | None = None
-    for exe in _executed_paths(pending, table):
-        written = _find_written(planir, history, exe.value, home, ws)
+    for exe_path, exe_display, required in _run_targets(pending, table, home):
+        written = _find_executed(planir, history, copies, exe_path, home, ws)
         if written is not None:
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
             ):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    role=f.role,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             for f in extract_mentions(written.content, home=home, workspace_root=ws, role=None):
-                table.add(
-                    f.kind,
-                    f.value,
-                    display=f.display,
-                    origin=Origin.WRITTEN_FILE,
-                    ref=f"step:{written.step}",
-                )
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
             if written.truncated:
                 coverage.append(
                     CoverageNote(
-                        "written_file_truncated", f"{exe.display} from step {written.step}"
+                        "written_file_truncated", f"{exe_display} from step {written.step}"
                     )
                 )
             break
-        coverage.append(CoverageNote("written_file_not_visible", exe.display))
+        if required:
+            coverage.append(CoverageNote("written_file_not_visible", exe_display))
+    if written is None:
+        # A scheduler tool call that names a script the agent wrote: the job runs that file later,
+        # so its content is read as the content of a file the call runs.
+        try:
+            scheduled = _scheduled_scripts(pending, history, home, ws)
+        except Exception as exc:  # noqa: BLE001 (an odd argument must not fail the scan)
+            scheduled = []
+            coverage.append(CoverageNote("scheduled_script_failed", f"{type(exc).__name__}: {exc}"))
+        parts = [
+            w
+            for w in (_find_executed(planir, history, copies, s, home, ws) for s in scheduled)
+            if w is not None
+        ]
+        if parts:
+            written = WrittenFile(
+                path=parts[-1].path,
+                step=max(w.step for w in parts),
+                content="\n".join(w.content for w in parts),
+                truncated=any(w.truncated for w in parts),
+            )
+            for w in parts:
+                table.add(
+                    EntityKind.PATH,
+                    w.path,
+                    display=display_path(w.path, home),
+                    role=Role.EXECUTABLE,
+                    origin=Origin.PENDING_CALL,
+                )
+            for f in extract_exec(written.content, home=home, workspace_root=ws, cwd=None):
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
+            for f in extract_mentions(written.content, home=home, workspace_root=ws, role=None):
+                table.add_found(f, Origin.WRITTEN_FILE, f"step:{written.step}")
+            if written.truncated:
+                coverage.append(
+                    CoverageNote(
+                        "written_file_truncated",
+                        f"{display_path(written.path, home)} from step {written.step}",
+                    )
+                )
+            if len(parts) > 1:
+                # A bare name several written files share: all of them are read.
+                coverage.append(
+                    CoverageNote(
+                        "scheduled_script_ambiguous",
+                        ", ".join(display_path(w.path, home) for w in parts),
+                    )
+                )
+
+    downloaded_from: dict[str, list[str]] = {}
+    try:
+        downloaded_from = _downloaded_installs(
+            pending, siblings, history, not_run, copies, table, planir.session.step, home, ws
+        )
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("download_join_failed", f"{type(exc).__name__}: {exc}"))
+    for path, hosts in downloaded_from.items():
+        for h in hosts:
+            table.add(
+                EntityKind.HOST,
+                h,
+                display=h,
+                role=Role.CODE_SOURCE,
+                origin=Origin.PENDING_CALL,
+                ref=f"download:{display_path(path, home)}",
+            )
 
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
+    _mark_packages_named_in_content(inputs, owner_config, table, planir.session.step)
 
     # 6. untrusted set
+    prior_trusted = frozenset(state.trusted)
     for ent in table:
         ent.hash = entity_hash(state.salt, ent.kind.value, ent.value)
         ent.in_session_untrusted = ent.hash in prior_untrusted
+        ent.in_prior_trusted = ent.hash in prior_trusted
+        ent.in_session_trusted = ent.in_prior_trusted or Origin.OWNER_CONFIG in ent.origins
     additions: list[str] = []
     for ent in table:
         if Origin.UNTRUSTED_INPUT not in ent.origins or ent.hash is None:
             continue
-        agent_first = (
-            ent.first_history_step is not None
-            and ent.first_untrusted_step is not None
-            and ent.first_history_step < ent.first_untrusted_step
-        )
-        if not agent_first:
+        if not ent.agent_first:
             additions.append(ent.hash)
     state.add_untrusted(additions)
+    trusted_by_input: dict[int, list[str]] = {}
+    for ent in table:
+        for ref in ent.origins.get(Origin.OWNER_CONFIG) or ():
+            if ent.hash is not None:
+                trusted_by_input.setdefault(int(ref.removeprefix("input:")), []).append(ent.hash)
+    state.add_trusted([h for hashes in trusted_by_input.values() for h in hashes])
+    binding = _session_binding(pending, table, state, lineage, home=home, workspace_root=ws)
+    produced = {
+        pi.input.input_seq: producer_artefacts(
+            hist_by_step[pi.step], state.salt, home=home, workspace_root=ws
+        )
+        for pi in inputs
+        if pi.new and pi.input.kind is InputKind.TOOL_RESULT and pi.step in hist_by_step
+    }
+    # The step each steering input arrived at: its history step, or now for a message or reply.
+    steered_at: dict[str, int] = {}
+    steered_inputs: dict[int, list[str]] = {}
+    for pi in inputs:
+        if pi.trust is not Trust.UNTRUSTED:
+            continue
+        marks = steering_marks(pi.input.content or "")
+        if steers(marks):
+            steered_inputs[pi.input.input_seq] = marks
+            steered_at[f"input:{pi.input.input_seq}"] = (
+                pi.step if pi.step is not None else planir.session.step
+            )
+    steered_additions: list[str] = []
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or ent.hash is None:
+            continue
+        if ent.hash in prior_steered:
+            ent.steered = True
+            continue
+        arrived = [
+            steered_at[ref]
+            for ref in ent.origins.get(Origin.UNTRUSTED_INPUT) or ()
+            if ref in steered_at
+        ]
+        if not arrived:
+            continue
+        # The agent used the host itself before the steering content named it: not steered by it.
+        if ent.first_history_step is not None and ent.first_history_step < min(arrived):
+            continue
+        ent.steered = True
+        steered_additions.append(ent.hash)
+    state.add_steered(steered_additions)
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])
     _inherit_recipient_domain(table)
+    _address_only_hosts(words, table)
 
     # 7. fingerprint
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
 
     # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
-    # sent in the common case; call: the full trimmed call view)
+    # sent in the common case, less reads of the agent's own skills and memory; call: the full trimmed call view)
+    own_store_inputs = _own_store_inputs(planir, inputs, state, home=home, ws=ws)
     untrusted_seqs = {
         i.input.input_seq
         for i in inputs
-        if i.trust is Trust.UNTRUSTED and i.new and i.input.content
+        if i.trust is Trust.UNTRUSTED
+        and i.new
+        and i.input.content
+        and i.input.input_seq not in own_store_inputs
     }
-    built = views.build_views(raw, exposure_input_seqs=untrusted_seqs)
+    built = views.build_views(
+        raw,
+        exposure_input_seqs=untrusted_seqs,
+        call_budget_tokens=options.call_budget_tokens,
+        selfedit_budget_tokens=options.selfedit_budget_tokens,
+    )
     jev_views = {name: b.state for name, b in built.items()}
     view_meta = {
         name: {
             "redactions": b.redactions,
             "inputs_truncated": b.inputs_truncated,
             "inputs_stripped": b.inputs_stripped,
+            "history_cut": b.history_cut,
+            "history_dropped": b.history_dropped,
+            "request_cut": b.request_cut,
         }
         for name, b in built.items()
     }
@@ -904,10 +1620,19 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         written_file=written,
         resolved=resolved,
         lineage=lineage,
+        copies=copies,
+        downloaded_from=downloaded_from,
         coverage=coverage,
         warnings=warns,
         prior_untrusted=prior_untrusted,
+        steered_inputs=steered_inputs,
+        session_binding=binding,
+        producer_artefacts={k: v for k, v in produced.items() if v},
+        trusted_by_input=trusted_by_input,
         grant_hits=grant_hits,
+        grant_actions=grant_actions,
+        call_grants=call_grants,
+        grants_lapsed=grants_lapsed,
         views_version={name: views.VIEW_VERSIONS[name] for name in built},
         # call-v3 is call-v2's content with a block the probe adds later, so its redactions are
         # call-v2's and are not counted twice.
@@ -916,4 +1641,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         ),
         view_meta=view_meta,
         request_words=words,
+        own_store_inputs=own_store_inputs,
+        url_carries=url_carries,
+        sibling_values=resolution.values,
+        owner_config_inputs=frozenset(owner_config),
     )

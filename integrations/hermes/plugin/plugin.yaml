@@ -1,8 +1,10 @@
 name: sentrook
-version: 2.0.0-beta.5
+version: 2.0.0-beta.13
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
+# Oldest Hermes the plugin is tested on. Also declared in the catalog entry; older Hermes skips the plugin.
+requires_hermes: ">=0.23.0"
 description: >
   Scans agent tool calls with Sentrook and allows, escalates to Hermes's native approval, or blocks them.
 author: First Data Union
@@ -17,8 +19,24 @@ provides_hooks:
   - pre_tool_call
   - post_tool_call
   - post_approval_response
-# Credentials live in ~/.hermes/.env (SENTROOK_SCAN_CLIENT_ID / SENTROOK_SCAN_CLIENT_SECRET), never here.
+# The scan credentials. `hermes plugins install` asks for them; Hermes stores them, never config.yaml,
+# and the plugin reads them only through Hermes (agent.secret_scope.get_secret).
+requires_env:
+  - name: SENTROOK_SCAN_CLIENT_ID
+    description: Sentrook scan client ID (identity service, Sentrook tab)
+    url: https://identity.firstdataunion.org
+  - name: SENTROOK_SCAN_CLIENT_SECRET
+    description: Sentrook scan client secret
+    secret: true
 config_schema:
+  client_id:
+    type: secret
+    env: SENTROOK_SCAN_CLIENT_ID
+    description: Scan client ID from the identity service. Kept by Hermes, never in config.yaml.
+  client_secret:
+    type: secret
+    env: SENTROOK_SCAN_CLIENT_SECRET
+    description: Scan client secret from the identity service. Kept by Hermes, never in config.yaml.
   scan_url:
     type: str
     description: Sentrook scan service base URL. Non-default values must be https on a firstdataunion.org host unless SENTROOK_DEV_ENDPOINTS=1. Env SENTROOK_SCAN_URL.
@@ -50,7 +68,25 @@ config_schema:
     type: list
     description: >
       Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
-      Hermes approval prompts). Elsewhere outside chat platforms, reviews block. Env SENTROOK_ATTENDED_PLATFORMS.
+      Hermes approval prompts). Elsewhere outside chat platforms, a review holds the call for the owner's
+      `/sentrook approve`. Env SENTROOK_ATTENDED_PLATFORMS.
+  owner_channel:
+    type: str
+    description: >
+      The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run,
+      and of a call blocked there because the scan failed (at most once per job, or per session for other
+      runs, every 6 hours). Until it is set no notice is sent (status and verify say so); the call is still
+      held or blocked. Env
+      SENTROOK_OWNER_CHANNEL.
+  skill_review:
+    type: str
+    default: allow
+    description: >
+      allow | review. allow declares Hermes's own background skill and memory saves (the self-improvement
+      review and the curator) to Sentrook and sends the recent conversation, redacted, so the save is judged
+      against what was said; Sentrook's verdict applies as for any call. review sends them like any other
+      call, without the conversation, and deletes the kept conversations. false (off, no) reads as review and
+      true as allow; any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
     type: int
     default: 30000
@@ -63,6 +99,7 @@ config_schema:
   grants:
     type: list
     description: >
-      Owner grants: [{kind: destination|file|provider, pattern, allows?, scope?}]. scope is
-      persistent when absent; any value other than session or persistent reads as session.
+      Owner grants: [{kind: destination|file|provider, pattern, allows?}], applied in every session.
+      A grant here has no session, so one with scope session (or any scope other than persistent) is
+      never sent; status and verify flag it.
       `/sentrook grant` adds more without editing this (kept in the state dir's grants.json).

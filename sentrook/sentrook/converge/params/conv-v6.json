@@ -1,0 +1,82 @@
+{
+  "name": "conv-v6",
+  "notes": "2026-11-16: conv-v5 with the attended-owner cap. In a chat the owner is attending (a message turn from the owner outside a group chat, on the main agent), the response carries a verdict ceiling of review (the risk stays as scored; the plugin lowers its verdict to the ceiling, then raises it to any enforced floor) unless the call carries an independent strong signal: a floor (which covers every enforced decision), a key argument that came only from content the agent read on an entity that acts (scaled origin at least 0.6: a destination, recipient, code source, executable or tool provider), a code source named in steering content, a known-bad entity, or a credential or sensitive file (sensitivity at least 0.6) sent to a destination no grant, owner request, owner configuration or library entry covers; a look-alike of a vouched-for entry or of a host, package or person the owner named; or a retry of an action the owner denied (retry_after_denial at least 0.8). A fresh injection judged by the model alone stays off: it is the model's doubt, not an independent signal. The owner can approve a review; a block leaves them no way to approve a change they asked for. No ceiling when a probe errored, timed out or fell back. Unattended runs, other senders, group chats and unknown triggers are unchanged. Everything else as conv-v5, which stays selectable.",
+  "u": 0.5,
+  "certainty": "mean",
+  "consequence": "mean",
+  "taint_floor": 0.15,
+  "taint_floor_unjudged": 0.3,
+  "agreement": {
+    "high": 0.6,
+    "low": 0.3
+  },
+  "coverage_penalty": {
+    "error": 0.5,
+    "timeout": 0.6,
+    "skipped": 1.0
+  },
+  "request_named_relief": {
+    "enabled": true,
+    "owner_only": true,
+    "roles": [
+      "data_destination",
+      "recipient"
+    ],
+    "trigger_kinds": [
+      "scheduled"
+    ]
+  },
+  "reason_min_value": 0.2,
+  "oracle": {
+    "unknown_by_role": {
+      "data_destination": 0.2,
+      "recipient": 0.15,
+      "code_source": 0.7,
+      "executable": 0.7,
+      "tool_provider": 0.1,
+      "data_source": 0.15,
+      "mentioned": 0.05
+    },
+    "coverage_unknown_risky": 0.85,
+    "unvetted_package_sensitivity": 0.67,
+    "unvetted_package_ecosystems": [
+      "npm",
+      "pypi",
+      "git+"
+    ],
+    "unvetted_package_as_root": false,
+    "near_miss_floor": 0.6,
+    "unknown_sole_destination_provider": 0.5,
+    "unknown_switched_provider": 0.3
+  },
+  "context": {
+    "retry_carry_consequence": 1.0,
+    "origin_agent_data_path_owner_turn": 0.0,
+    "escalation_min_tiers": 3,
+    "lineage": {
+      "filter_overreach": 0.8,
+      "filter_sensitivity": 0.8,
+      "filter_reach": 0.8,
+      "filter_irreversibility": 0.8,
+      "unnamed_role_overreach": 0.6,
+      "pushed_credential_overreach": 0.8,
+      "lookalike_package_concealment": 0.9,
+      "lookalike_name_overreach": 0.9
+    },
+    "hidden_spawn_reach": 0.75,
+    "hidden_spawn_irreversibility": 0.6
+  },
+  "jev": {
+    "taint_threshold": 0.5
+  },
+  "owner_config_relief": {
+    "enabled": true
+  },
+  "attended_owner_cap": {
+    "enabled": true,
+    "untrusted_origin_min": 0.6,
+    "sent_sensitivity_min": 0.6,
+    "lookalike": true,
+    "retry_min": 0.8
+  }
+}

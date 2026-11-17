@@ -157,6 +157,66 @@ test("one value gets one tag whichever rule or encoding found it", () => {
   assert.match(r.string(`password: postgres://app:${pw}@db.test/x`), /^password: postgres:\/\/app:⟦secret:credential:[0-9a-f]{4}⟧@db\.test\/x$/);
 });
 
+test("a value restated in a second clause is redacted", () => {
+  for (const text of [
+    `the NAS admin password changed, it's now ${pw}. Remember it`,
+    `the token was rotated, it's now ${pw}`,
+    `the password changed and it’s now ${pw}`,
+    `the secret was reset, it is now ${pw}`,
+    `the api key changed, it was set to ${pw} yesterday`,
+  ]) {
+    // ASCII-escaped, as Python's json.dumps writes it: `’` arrives as `\u2019`.
+    const escaped = asResult(text).replace(/’/g, "\\u2019");
+    for (const out of [r.string(text), r.string(asResult(text)), r.string(escaped)]) {
+      assert.ok(!out.includes(pw) && tags(out).length === 1, out);
+    }
+  }
+  oneTag([`the token was rotated, it's now ${pw}`, `the token is ${pw}`, `TOKEN=${pw}`]);
+  for (const text of [
+    "the password changed, it's now in the vault",
+    "it's now 4096 tokens",
+    "the token limit changed, it's now 4096 tokens",
+    "the token expired, it's now useless",
+    "the password was rotated, it's now stored in the vault",
+    "the secret changed, it's now at ~/.config/app/secret.txt",
+    "the token moved, it's now in vault-prod-secrets",
+    "password: see ~/.pgpass.",
+  ]) {
+    assert.equal(r.string(text), text);
+    assert.equal(r.string(asResult(text)), asResult(text));
+  }
+});
+
+test("trailing punctuation is not part of a value", () => {
+  const tag = r.string(`password: ${pw} (give it`).slice("password: ".length).split(" ")[0];
+  assert.match(tag, /^⟦secret:credential:[0-9a-f]{4}⟧$/);
+  for (const [text, rest] of [
+    [`password: ${pw}. Give it`, ". Give it"],
+    [`password: ${pw}.`, "."],
+    [`password is now ${pw}. Remember`, ". Remember"],
+    [`(password: ${pw})`, ")"],
+    [`GITHUB_TOKEN=${pw}.`, "."],
+    [`token=${pw}!`, "!"],
+    [`SENTROOK_SECRET_MARKERS=${pw}?`, "?"],
+  ]) {
+    const out = r.string(text);
+    assert.ok(out.endsWith(tag + rest), out);
+    assert.equal(r.string(asResult(text)), asResult(out));
+  }
+  oneTag([`password: ${pw}.`, `password: ${pw} (`, `password is now ${pw}.`, `DB_PASSWORD=${pw}.`]);
+  assert.equal((r.value({ password: pw }) as any).password, tag);
+  // Seven characters before the punctuation still count, as when the punctuation was part of the value.
+  for (const text of [`DB_PASSWORD=${pw.slice(0, 7)}!`, `token=${pw.slice(0, 7)}.`]) {
+    const out = r.string(text);
+    assert.ok(!out.includes(pw.slice(0, 7)) && out.endsWith(`⟧${text.slice(-1)}`), out);
+  }
+  assert.equal(r.string("token=refresh"), "token=refresh");
+  // A quoted value is all of what is between its quotes, as in a JSON pair or an object.
+  const quoted = `${pw}!`;
+  oneTag([`DB_PASSWORD="${quoted}"`, `DB_PASSWORD='${quoted}'`, `"password": "${quoted}"`]);
+  assert.equal(r.string(`DB_PASSWORD="${quoted}"`), `DB_PASSWORD="${(r.value({ password: quoted }) as any).password}"`);
+});
+
 test("password flags keep the flag, and JSON around a value stays JSON", () => {
   const tag = "⟦secret:credential:[0-9a-f]{4}⟧";
   assert.match(r.string(`mysql -u app --password ${pw} -h db.test`), new RegExp(`^mysql -u app --password ${tag} -h db\\.test$`));
@@ -272,6 +332,11 @@ test("long inputs stay fast", () => {
     `${"mysql ".repeat(30)}-p"${"a".repeat(1_000_000)}`,
     "sshpass -e ".repeat(100_000),
     "--password ".repeat(100_000),
+    `token=${"a".repeat(8)}${".".repeat(1_000_000)}`,
+    `token="${"-token=".repeat(140_000)}`,
+    `SECRET_X=${"a".repeat(12)}${")".repeat(1_000_000)}`,
+    "the password changed, it's now ".repeat(30_000),
+    "the token was rotated and".repeat(40_000),
   ]) {
     const t0 = performance.now();
     r.string(long);

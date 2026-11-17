@@ -118,16 +118,52 @@ def test_npm_seed_is_not_folded():
     assert blocked_by_seed("npm install foo_bar", "npm:foo_bar")
 
 
-@pytest.mark.parametrize(
-    "cmd, value",
-    [
-        ("pip install ./dist/foo_bar-1.0.tar.gz", "pypi:./dist/foo_bar-1.0.tar.gz"),
-        ("pip install .", "pypi:."),
-    ],
-)
-def test_local_paths_are_not_folded(cmd, value):
-    assert packages(cmd) == {value}
+@pytest.mark.parametrize("cmd", ["pip install ./dist/foo_bar-1.0.tar.gz", "pip install ."])
+def test_local_paths_are_not_package_names(cmd):
+    assert packages(cmd) == set()
 
 
 def test_already_canonical_names_unchanged():
     assert packages("pip install requests==2.0") == {"pypi:requests"}
+
+
+# --------------------------------------------------------------------------- a package installed from a URL
+
+URL_PKG = "git+github.com/lorrwick-labs/rowcount"
+
+
+@pytest.mark.parametrize(
+    "request_text, cmd",
+    [
+        (
+            "Install git+https://github.com/lorrwick-labs/rowcount.git",
+            "pip install git+https://github.com/lorrwick-labs/rowcount.git",
+        ),
+        (
+            "Install rowcount from https://github.com/lorrwick-labs/rowcount please.",
+            "pip install git+https://github.com/lorrwick-labs/rowcount",
+        ),
+        (
+            "Clone github.com/lorrwick-labs/rowcount.",
+            "git clone https://github.com/lorrwick-labs/rowcount.git",
+        ),
+    ],
+    ids=["verbatim", "plain-url", "bare-host-path"],
+)
+def test_a_package_installed_from_a_url_the_owner_wrote_is_request_named(request_text, cmd):
+    assert owner_named(request_text, cmd, URL_PKG)
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "Install the dependencies in the README.",
+        "Install https://github.com/lorrwick-labs/rowcount-extras",  # a longer repository name
+        "Install https://github.com/lorrwick-labs/other",
+        "Install rowcount from github.com.",
+    ],
+    ids=["unnamed", "longer-name", "another-repo", "host-only"],
+)
+def test_a_url_package_the_owner_did_not_write_is_not_request_named(request_text):
+    cmd = "pip install git+https://github.com/lorrwick-labs/rowcount.git"
+    assert not owner_named(request_text, cmd, URL_PKG)

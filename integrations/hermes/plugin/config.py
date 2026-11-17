@@ -1,7 +1,7 @@
-"""Plugin configuration: endpoints, credentials, decision policy, storage and grants.
+"""Plugin configuration: endpoints, decision policy, storage and grants.
 
 Every value resolves as plugin settings (`plugins.entries.sentrook.settings` in config.yaml), then env
-(process env plus the Hermes `.env`), then the default.
+(the process env), then the default. The scan credentials are not settings: see `auth.py`.
 
 Endpoints default to the hosted service. A non-default scan, Rookery or identity URL must be https on a
 firstdataunion.org host: a scan URL the agent could redirect would send every tool call somewhere else.
@@ -11,6 +11,7 @@ fails these checks is a configuration error and scans fail closed.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ DEFAULT_HISTORY_ARGS_CAP_BYTES = 4 * 1024
 DEFAULT_TRAFFIC_LOG_MAX_BYTES = 50 * 1024 * 1024
 
 ON_SCAN_ERROR = ("allow", "deny", "review")
+SKILL_REVIEW = ("allow", "review")
 
 
 @dataclass(frozen=True)
@@ -65,9 +67,20 @@ class PluginConfig:
     history_args_cap_bytes: int
     packs: list[str]
     attended_platforms: frozenset[str] = frozenset()
+    #: Hermes's self-improvement loop: `allow` declares its background skill and memory saves as self-edits,
+    #: judged against the conversation the review read (see `skill_review.py`); `review` sends them like any
+    #: other call.
+    skill_review: str = "allow"
+    #: The `skill_review` value as typed when it was neither allow nor review (it reads as allow).
+    skill_review_unknown: str | None = None
     #: Grants from the settings; a scan also sends the bindings and the grants set by command.
     grants: list[dict[str, Any]] = field(default_factory=list)
+    #: Settings grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`).
+    unsent_grants: dict[int, str] = field(default_factory=dict)
     channel_bindings: list[str] = field(default_factory=list)
+    #: The platform whose home channel gets the notice of a held call ("" for the only platform with a
+    #: home channel); see `hold`.
+    owner_channel: str = ""
 
 
 def hermes_home(env: dict[str, str]) -> Path:
@@ -88,6 +101,25 @@ def resolve_state_dir(env: dict[str, str], override: Any = None) -> Path:
 
 def _str(raw: Any) -> str | None:
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def resolve_skill_review(setting: Any, env_value: Any) -> tuple[str, str | None]:
+    """`skill_review` as (allow | review, the value as given when it was not understood).
+
+    Unset (or a blank string) falls back to the environment, then to allow. YAML reads `off`, `no` and
+    `false` as False, which is review, and `on`, `yes` and `true` as True, which is allow. Any other value,
+    string or not, reads as allow, so a typo never stops Hermes's self-improvement loop; status and the
+    startup log name it. A setting of any type wins over the environment.
+    """
+    raw: Any = setting
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = _str(env_value) or "allow"
+    if isinstance(raw, bool):
+        return ("allow" if raw else "review"), None
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        return (value, None) if value in SKILL_REVIEW else ("allow", raw.strip()[:40])
+    return "allow", str(raw)[:40]
 
 
 def _bool(raw: Any, fallback: bool) -> bool:
@@ -181,6 +213,17 @@ def _scope(raw: Any) -> str:
     return raw if raw in ("session", "persistent") else "session"
 
 
+def _unsent(raw: Any) -> str | None:
+    """Why a settings grant with this scope is never sent: a settings grant names no session to bind a
+    session grant to, and an unknown scope reads as session."""
+    if raw is None or raw == "persistent":
+        return None
+    if raw == "session":
+        return "no session"
+    typed = json.dumps(raw, ensure_ascii=False, separators=(",", ":"), default=str)
+    return f"unknown scope {typed}"
+
+
 def parse_grants(raw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for g in raw if isinstance(raw, list) else []:
@@ -199,6 +242,20 @@ def parse_grants(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def parse_config_grants(raw: Any) -> tuple[list[dict[str, Any]], dict[int, str]]:
+    """The settings' grants, and why each one that is never sent is not (see `PluginConfig`)."""
+    grants: list[dict[str, Any]] = []
+    unsent: dict[int, str] = {}
+    for g in raw if isinstance(raw, list) else []:
+        parsed = parse_grants([g])
+        if not parsed:
+            continue
+        if why := _unsent(g.get("scope")):
+            unsent[len(grants)] = why
+        grants.append(parsed[0])
+    return grants, unsent
+
+
 def resolve_config(
     settings: dict[str, Any] | None, env: dict[str, str] | None = None
 ) -> PluginConfig:
@@ -215,6 +272,10 @@ def resolve_config(
     ).lower()
     traffic = cfg.get("traffic_log") if isinstance(cfg.get("traffic_log"), dict) else {}
     traffic_path = _str(traffic.get("path")) or _str(env.get("SENTROOK_TRAFFIC_LOG"))
+    grants, unsent = parse_config_grants(cfg.get("grants"))
+    skill_review, skill_review_unknown = resolve_skill_review(
+        cfg.get("skill_review"), env.get("SENTROOK_SKILL_REVIEW")
+    )
     return PluginConfig(
         endpoints=resolve_endpoints(cfg, env),
         mode="observe" if mode == "observe" else "enforce",
@@ -246,6 +307,12 @@ def resolve_config(
             p.lower()
             for p in _list(cfg.get("attended_platforms") or env.get("SENTROOK_ATTENDED_PLATFORMS"))
         ),
-        grants=parse_grants(cfg.get("grants")),
+        skill_review=skill_review,
+        skill_review_unknown=skill_review_unknown,
+        grants=grants,
+        unsent_grants=unsent,
         channel_bindings=_list(cfg.get("channel_bindings")),
+        owner_channel=(
+            _str(cfg.get("owner_channel")) or _str(env.get("SENTROOK_OWNER_CHANNEL")) or ""
+        ).lower(),
     )

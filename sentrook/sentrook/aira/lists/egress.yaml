@@ -3,7 +3,7 @@
 # backup of credentials to the owner's host carries the same consequence as an attack, and relief
 # comes from grants in convergence.
 
-version: 1
+version: 2
 
 # Exec egress markers. Regex over one shell segment; `reason` is the sink reason code. `head`
 # narrows the marker to segments with that head (a `-d` on `ls` is not egress). `requires_pipe`
@@ -32,7 +32,9 @@ exec_markers:
     reason: exfil.raw_socket
   - pattern: 'requests\.(?:post|put|patch)\(|urllib\.request\.(?:urlopen|Request)\(|\burlopen\(|http\.client\.HTTPS?Connection\(|\.post\(|fetch\([^)]*method\s*:\s*["''](?:POST|PUT|PATCH)'
     reason: exfil.web_post
-  - pattern: '\b(?:mail|mailx|sendmail|mutt|msmtp|swaks)\b'
+  # A mailer where a command starts (the head of a segment, after a wrapper, a pipe, an opening
+  # quote or a shell's `-c`), by name or by path. A directory or file of that name in a path (`~/mail/x`) is not one.
+  - pattern: '(?:\A|[;&|({"''`]|\$\(|(?:\b(?:sudo|doas|env|nohup|exec|command|time|xargs)|-exec(?:dir)?|-c)\s)\s*(?:[\w.~-]*/)*(?:mail|mailx|sendmail|mutt|msmtp|swaks)(?=[\s;&|)"''`]|\Z)'
     reason: exfil.message_send
   - pattern: '\baws\s+s3\s+(?:cp|sync|mv)\b[^;&|\n]*\ss3://'
     reason: exfil.exec_egress

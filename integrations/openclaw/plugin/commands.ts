@@ -5,17 +5,20 @@
  * plugin can see locally and never print credential values.
  *
  * `history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
- * grants and channel bindings set by command, and `snooze` relaxes review prompts, so only the owner
- * may run them. `snooze` and a session `grant` cover the session the command was sent from; the
+ * grants and channel bindings set by command, `snooze` relaxes review prompts, `approve` answers a call
+ * held on an unattended run and `notify` says where the notice of one goes (see `hold.ts`), so only the
+ * owner may run them. `snooze` and a session `grant` cover the session the command was sent from; the
  * command line has none, so there a snooze needs `--all` and a session grant `--session`. OpenClaw tells a
  * command handler who the owner is only when the whole command requires a gateway scope, so they are
  * commands of their own (`/sentrook-history`, `/sentrook-grant`, ...), registered through
  * `ownerCommand`; `/sentrook` and its status stay open to everyone.
  */
 
+import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
+import * as hold from "./hold.ts";
 import {
   formatHistory,
   formatWhy,
@@ -29,7 +32,9 @@ import {
 } from "./history.ts";
 import { OWNER_SCOPES, refusal } from "./owner.ts";
 import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
+import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
+import { Store } from "./store.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
 export interface OwnerRun {
@@ -49,6 +54,10 @@ export interface CommandContext {
   owner?: OwnerRun;
   /** The session the command was sent from (as scans key it); unset when there is none. */
   session?: string;
+  /** The OpenClaw version the plugin runs in; unset when the host does not say. */
+  hostVersion?: string;
+  /** The chat the command came from (channel, sender, account, thread); unset on the command line. */
+  chat?: hold.NotifyContext;
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
@@ -62,7 +71,7 @@ export interface Subcommand {
 
 export const SUBCOMMANDS: Record<string, Subcommand> = {
   status: {
-    description: "Plugin version, policy, scan host and whether credentials are set",
+    description: "Plugin version, policy, scan host, whether credentials are set, held calls and where their notices go",
     run: (ctx) => statusText(ctx),
   },
   help: {
@@ -90,7 +99,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   why: {
     command: "sentrook-why",
     args: "[request_id|last]",
-    description: "One scan's risk, tier scores, reason codes and entities",
+    description: "One scan's risk, tier scores, reason codes and entities; for a held call's id, also the hold and the grant Sentrook suggests",
     run: (ctx, rest) => whyText(ctx, rest),
   },
   grants: {
@@ -106,7 +115,7 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     command: "sentrook-grant",
     args: "<kind> <pattern> [flags]",
     description:
-      "Add a grant: kind destination|file|provider; flags --persistent (default: this session only, " +
+      "Add a grant: kind destination|file|provider|repo; flags --persistent (default: this session only, " +
       "not cron jobs, subagents or other chats), --session <ref> (from history), --allows read,write (file only), --expires 12h",
     cliRest: true,
     run: (ctx, rest) =>
@@ -133,7 +142,8 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     args: "[duration|off|status] [--all]",
     description:
       "Allow review prompts in this session (--all: every session) for a duration, default 1h, at most 24h; " +
-      "never blocks, enforced reviews or unattended runs; off; status",
+      "blocks with no clear attack signal ask instead; never other blocks, enforced reviews or unattended runs; " +
+      "off; status",
     cliRest: true,
     run: (ctx, rest) =>
       changed(
@@ -150,6 +160,34 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
             o.beforeWrite,
           ),
         "snooze",
+      ),
+  },
+  approve: {
+    command: "sentrook-approve",
+    args: "<id>",
+    description:
+      "Approve a call held on an unattended run, by the id in Sentrook's notice, within 24h: sets the grant " +
+      "Sentrook suggested (persistent, 30 days); the held call is not run again",
+    cliRest: true,
+    run: (ctx, rest) => {
+      if (!ctx.owner) return refusal("approve");
+      const o = ctx.owner;
+      return hold.approve(configOf(ctx).stateDir, rest, o.by, new Date(), CMD, o.record, o.beforeWrite);
+    },
+  },
+  notify: {
+    command: "sentrook-notify",
+    args: "here|off|status",
+    description:
+      "Where the notice of a held call goes: here (run it as a direct message to the agent; notices come to you " +
+      "there), off, or status",
+    cliRest: true,
+    run: (ctx, rest) =>
+      changed(
+        ctx,
+        "notify",
+        (cfg, o) => hold.runNotify(cfg.stateDir, rest, ctx.chat ?? {}, o.by, new Date(), o.beforeWrite),
+        "notify",
       ),
   },
 };
@@ -212,8 +250,11 @@ function historyText(ctx: CommandContext, rest: string): string {
 function whyText(ctx: CommandContext, rest: string): string {
   const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
   if (!cfg.trafficLog.enabled) return LOG_OFF;
+  if (hold.isId(rest)) return hold.whyText(cfg.stateDir, cfg.trafficLog.path, rest);
   const match = parseRef(rest);
-  if (match === null) return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history";
+  if (match === null) {
+    return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history, or the id in a held-call notice";
+  }
   const [found] = recentScans(cfg.trafficLog.path, 1, match);
   if (found) return formatWhy(...found);
   return rest === "" || rest.toLowerCase() === "last" ? NO_SCANS : `No scan ${rest} in the recent traffic log.`;
@@ -229,7 +270,7 @@ function statusText(ctx: CommandContext): string {
     resolveSecretString(ctx.pluginConfig.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
   ].filter(Boolean);
-  return [
+  const lines = [
     `Sentrook plugin: ${PLUGIN_VERSION}`,
     `mode: ${cfg.mode}`,
     `review at: ${cfg.reviewAt}, block at: ${cfg.blockAt}`,
@@ -240,5 +281,13 @@ function statusText(ctx: CommandContext): string {
     `grants: ${grantCount}`,
     `channel bindings: ${bindingCount}`,
     `snooze: ${snooze.statusLine(snooze.load(cfg.stateDir), new Date())}`,
-  ].join("\n");
+    `held calls: ${hold.statusLine(cfg.stateDir, new Store(cfg.stateDir).loadNotify(), new Date())}`,
+    `skill review: ${selfEdit.statusLine(
+      selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
+      cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
+    )}`,
+  ];
+  const note = timeoutBehaviorNote(cfg.approval, ctx.hostVersion);
+  if (note) lines.push(`approval: ${note}`);
+  return lines.join("\n");
 }

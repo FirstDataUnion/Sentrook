@@ -33,6 +33,8 @@ How the pending command is resolved (exec calls only):
 - the link path, or a path inside it, is replaced by the link target;
 - the archive path is replaced by each input in turn (one resolved command per input).
 At most `MAX_RESOLVED` resolved commands come out; `Resolution.truncated` says when more would have.
+`Resolution.values` lists the values put in place of command substitutions, so a value that is no
+entity (a group, a role, a scope) can still be traced to where it came from.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from .entities import (
     is_under,
     normalise_path,
     resolve_token,
+    substitution_spans,
 )
 
 #: Resolved commands from one pending call at most (an archive fans out per input).
@@ -88,6 +91,12 @@ class Resolution:
     calls: list[CanonicalCall] = field(default_factory=list)
     #: More resolved commands than `MAX_RESOLVED` would have come out; the rest were dropped.
     truncated: bool = False
+    #: A command substitution in the pending command was replaced by the value a sibling writes: the
+    #: resolved commands spell out what the pending command leaves to the shell.
+    substituted: bool = False
+    #: The values those substitutions put in place of the command text, as the written files supply
+    #: them (before quoting), in order and without repeats.
+    values: tuple[str, ...] = ()
 
 
 def sibling_writes(
@@ -158,11 +167,14 @@ def resolve_pending(
     scripts: list[tuple[str, str | None, str | None]] = []
     used: list[str] = []
     truncated = False
+    substituted = False
+    values: list[str] = []
     for w in writes:
         names = _names(w.path, cwd=cwd, home=home)
         inside = w.content is None  # a link or an archive is followed into, a file is not
         if w.content is not None and _substituted(command, names):
-            variants = [_substitute(v, names, w.content) for v in variants]
+            variants = [_substitute(v, names, w.content, values) for v in variants]
+            substituted = True
         else:
             uses = _uses(
                 command, w.path, names, inside=inside, cwd=cwd, home=home, ws=workspace_root
@@ -211,7 +223,10 @@ def resolve_pending(
             out.append(synthetic(content, interpreter, [call_id] if call_id else []))
     if len(out) > MAX_RESOLVED:
         out, truncated = out[:MAX_RESOLVED], True
-    return Resolution(out, truncated)
+    substituted = substituted and any(c.command != command for c in out)
+    return Resolution(
+        out, truncated, substituted, tuple(dict.fromkeys(values)) if substituted else ()
+    )
 
 
 def _interpreter_for(path: str) -> str | None:
@@ -320,7 +335,7 @@ def _uses(
         return False
 
     stripped = command
-    for start, end in reversed(_substitutions(command)):
+    for start, end in reversed(substitution_spans(command)):
         stripped = stripped[:start] + _SUB + stripped[end:]
     uses: set[str] = set()
     for seg in _segments(stripped):
@@ -363,57 +378,23 @@ def _uses(
     return uses
 
 
-def _substitutions(command: str) -> list[tuple[int, int]]:
-    """Spans of `$(…)` and backtick substitutions, outermost only. Parentheses inside quotes do
-    not count; an unclosed substitution ends the scan."""
-    spans: list[tuple[int, int]] = []
-    i, n = 0, len(command)
-    while i < n:
-        if command.startswith("$(", i):
-            depth, j, quote = 0, i + 1, None
-            while j < n:
-                c = command[j]
-                if quote:
-                    if c == "\\" and quote == '"':
-                        j += 1
-                    elif c == quote:
-                        quote = None
-                elif c in ("'", '"'):
-                    quote = c
-                elif c == "(":
-                    depth += 1
-                elif c == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                j += 1
-            if j >= n:
-                break
-            spans.append((i, j + 1))
-            i = j + 1
-        elif command[i] == "`":
-            j = command.find("`", i + 1)
-            if j < 0:
-                break
-            spans.append((i, j + 1))
-            i = j + 1
-        else:
-            i += 1
-    return spans
-
-
 def _substituted(command: str, names: list[str]) -> bool:
-    return any(_mentions(command[a:b], names) for a, b in _substitutions(command))
+    return any(_mentions(command[a:b], names) for a, b in substitution_spans(command))
 
 
-def _substitute(command: str, names: list[str], content: str) -> str:
-    """Replace each substitution that names the file with the written value."""
+def _substitute(
+    command: str, names: list[str], content: str, values: list[str] | None = None
+) -> str:
+    """Replace each substitution that names the file with the written value; each value put in
+    is appended to `values`."""
     out, last = [], 0
-    for start, end in _substitutions(command):
+    for start, end in substitution_spans(command):
         span = command[start:end]
         if not _mentions(span, names):
             continue
         value = _value(content, span)
+        if values is not None:
+            values.append(value)
         if command[start - 1 : start] == '"' and command[end : end + 1] == '"':
             # `"$(cat f)"` becomes the value, quoted only if it needs quoting, as it would be typed.
             start, end, value = start - 1, end + 1, shlex.quote(value)

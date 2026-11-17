@@ -1,9 +1,15 @@
 /**
- * `openclaw sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works.
+ * `openclaw sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works; notes on
+ * settings that leave something unscanned.
  */
 
+import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
+import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
+import { NOTIFY_UNSET, targetText } from "./hold.ts";
+import { memoryWriterChecks } from "./memoryWriters.ts";
+import { Store } from "./store.ts";
 
 export interface VerifyCheck {
   name: string;
@@ -13,7 +19,14 @@ export interface VerifyCheck {
 
 export async function runVerify(
   pluginConfig: Record<string, unknown>,
-  opts: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    hostVersion?: string;
+    /** OpenClaw's own config; undefined when it cannot be read. */
+    hostConfig?: unknown;
+  } = {},
 ): Promise<VerifyCheck[]> {
   const env = envWithOpenclawDotenv(opts.env ?? process.env);
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -64,6 +77,28 @@ export async function runVerify(
     ok: true,
     detail: cfg.trafficLog.enabled ? cfg.trafficLog.path : "off",
   });
+  // Reported, not failed: a config grant that is never sent only makes Sentrook stricter.
+  const unsent = unsentSummary(cfg);
+  checks.push({
+    name: "config grants",
+    ok: true,
+    detail: `${cfg.grants.length} in config${unsent ? `; never sent: ${unsent}` : ""}`,
+  });
+  // Reported, not failed: a binding that never applies only makes Sentrook stricter.
+  const problems = bindingProblemsSummary(cfg);
+  checks.push({
+    name: "channel bindings",
+    ok: true,
+    detail: `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}`,
+  });
+  // Reported, not failed: on a host that ignores it, the setting only leaves unattended reviews denied.
+  const note = timeoutBehaviorNote(cfg.approval, opts.hostVersion);
+  if (note) checks.push({ name: "approval", ok: true, detail: note });
+  // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
+  const target = new Store(cfg.stateDir).loadNotify();
+  checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
+  // Reported, not failed: OpenClaw's own memory writers that no plugin sees, with the setting that turns each off.
+  checks.push(...memoryWriterChecks(opts.hostConfig));
   return checks;
 }
 

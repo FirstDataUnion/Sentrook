@@ -1,11 +1,19 @@
 import json
 import re
 import time
+from pathlib import Path
 
 import pytest
 
 from plugin.config import parse_endpoint, resolve_config
-from plugin.decision import REVIEW_MESSAGE_MAX, decide, review_message
+from plugin.decision import (
+    REVIEW_MESSAGE_MAX,
+    block_category,
+    block_reason,
+    decide,
+    describe,
+    review_message,
+)
 from plugin.intent import sender_of
 from plugin.planir import tool_kind
 from plugin.redact import Redactor, cap_args, cap_head_tail
@@ -57,6 +65,17 @@ def test_decide():
     assert decide(r(90, "review"), 45, 80) == "block"
 
 
+CEILING = json.loads(
+    (Path(__file__).resolve().parents[3] / "fixtures" / "ceiling" / "cases.json").read_text()
+)["cases"]
+
+
+@pytest.mark.parametrize("case", CEILING, ids=[c["name"] for c in CEILING])
+def test_verdict_ceiling_lowers_to_review_and_never_raises(case):
+    lines = case["lines"]
+    assert decide(case["response"], lines["review_at"], lines["block_at"]) == case["verdict"]
+
+
 def _scored(**extra):
     return {
         "risk": 90,
@@ -73,6 +92,15 @@ def _scored(**extra):
         "reasons": [{"code": "exfil.exec_egress"}, {"code": "path.cloud_credentials"}],
         **extra,
     }
+
+
+def test_a_relaxed_review_message_keeps_the_snooze_line_when_cut():
+    from plugin.decision import RELAXED_NOTE, REVIEW_MESSAGE_MAX
+
+    long = _scored(tool_description={"template": "Sends " + "x" * 400})
+    text = review_message(long, "exec", relaxed=True)
+    assert len(text) <= REVIEW_MESSAGE_MAX and text.endswith(f" {RELAXED_NOTE}")
+    assert RELAXED_NOTE not in review_message(long, "exec")
 
 
 def test_review_message_shows_the_scores():
@@ -375,6 +403,67 @@ def test_one_value_gets_one_tag_whichever_rule_or_encoding_found_it():
     )
 
 
+def test_a_value_restated_in_a_second_clause_is_redacted():
+    r = Redactor("standard", "test-salt")
+    for text in (
+        f"the NAS admin password changed, it's now {PW}. Remember it",
+        f"the token was rotated, it's now {PW}",
+        f"the password changed and it’s now {PW}",
+        f"the secret was reset, it is now {PW}",
+        f"the api key changed, it was set to {PW} yesterday",
+    ):
+        escaped = json.dumps({"output": text})  # ASCII-escaped: `’` arrives as `\u2019`
+        for out in (r.string(text), r.string(_as_result(text)), r.string(escaped)):
+            assert PW not in out and len(_tags(out)) == 1, out
+    _one_tag(r, [f"the token was rotated, it's now {PW}", f"the token is {PW}", f"TOKEN={PW}"])
+    for text in (
+        "the password changed, it's now in the vault",
+        "it's now 4096 tokens",
+        "the token limit changed, it's now 4096 tokens",
+        "the token expired, it's now useless",
+        "the password was rotated, it's now stored in the vault",
+        "the secret changed, it's now at ~/.config/app/secret.txt",
+        "the token moved, it's now in vault-prod-secrets",
+        "password: see ~/.pgpass.",
+    ):
+        assert r.string(text) == text
+        assert r.string(_as_result(text)) == _as_result(text)
+
+
+def test_trailing_punctuation_is_not_part_of_a_value():
+    r = Redactor("standard", "test-salt")
+    tag = r.string(f"password: {PW} (give it")[len("password: ") :].split(" ")[0]
+    assert re.fullmatch(r"⟦secret:credential:[0-9a-f]{4}⟧", tag)
+    for text, rest in (
+        (f"password: {PW}. Give it", ". Give it"),
+        (f"password: {PW}.", "."),
+        (f"password is now {PW}. Remember", ". Remember"),
+        (f"(password: {PW})", ")"),
+        (f"GITHUB_TOKEN={PW}.", "."),
+        (f"token={PW}!", "!"),
+        (f"SENTROOK_SECRET_MARKERS={PW}?", "?"),
+    ):
+        out = r.string(text)
+        assert out.endswith(tag + rest), out
+        assert r.string(_as_result(text)) == _as_result(out)
+    _one_tag(
+        r, [f"password: {PW}.", f"password: {PW} (", f"password is now {PW}.", f"DB_PASSWORD={PW}."]
+    )
+    assert r.value({"password": PW})["password"] == tag
+    # Seven characters before the punctuation still count, as when the punctuation was part of the value.
+    for text in (f"DB_PASSWORD={PW[:7]}!", f"token={PW[:7]}."):
+        out = r.string(text)
+        assert PW[:7] not in out and out.endswith("⟧" + text[-1]), out
+    assert r.string("token=refresh") == "token=refresh"
+    # A quoted value is all of what is between its quotes, as in a JSON pair or an object.
+    quoted = PW + "!"
+    _one_tag(r, [f'DB_PASSWORD="{quoted}"', f"DB_PASSWORD='{quoted}'", f'"password": "{quoted}"'])
+    assert (
+        r.string(f'DB_PASSWORD="{quoted}"')
+        == f'DB_PASSWORD="{r.value({"password": quoted})["password"]}"'
+    )
+
+
 def test_password_flags_keep_the_flag_and_json_stays_json():
     r = Redactor("standard", "test-salt")
     tag = r"⟦secret:credential:[0-9a-f]{4}⟧"
@@ -514,6 +603,11 @@ def test_camel_case_credential_keys_in_objects_are_replaced_whole():
         "sshpass -e " * 100_000,
         "--password " * 100_000,
         "--token-x " * 100_000,
+        "token=" + "a" * 8 + "." * 1_000_000,
+        'token="' + "-token=" * 140_000,
+        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
+        "the password changed, it's now " * 30_000,
+        "the token was rotated and" * 40_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
@@ -528,3 +622,37 @@ def test_caps():
     assert truncated and size == 10_008 and text.startswith("HEAD") and text.endswith("TAIL")
     capped = cap_args({"command": "a" * 10_000, "cwd": "/w"}, 4096)
     assert capped["cwd"] == "/w" and len(str(capped)) < 6000
+
+
+BLOCK_TEXT = json.loads(
+    (Path(__file__).resolve().parents[3] / "fixtures" / "block-text" / "cases.json").read_text()
+)["cases"]
+
+
+@pytest.mark.parametrize("case", BLOCK_TEXT, ids=[c["name"] for c in BLOCK_TEXT])
+def test_block_text_is_the_agreed_agent_text(case):
+    assert block_category(case["response"]) == case["category"]
+    assert block_reason(case["response"]) == case["text"]
+
+
+@pytest.mark.parametrize("case", BLOCK_TEXT, ids=[c["name"] for c in BLOCK_TEXT])
+def test_block_text_names_no_code_risk_entity_or_description(case):
+    resp = case["response"]
+    text = block_reason(resp)
+    for r in resp.get("reasons") or []:
+        code = r.get("code") if isinstance(r, dict) else None
+        if isinstance(code, str) and code:
+            assert code not in text
+    for e in (resp.get("entities") or {}).values():
+        assert e["display"] not in text
+    assert not re.search(r"\d", text)
+    assert describe(resp, "exec") not in text
+    assert "enforced" not in text
+
+
+def test_the_review_prompt_still_shows_the_reasons_the_block_text_leaves_out():
+    resp = BLOCK_TEXT[1]["response"]
+    assert review_message(resp, "exec") == (
+        "Sentrook (risk 90): Sends ~/.aws/credentials to cl0ud-sync.io. "
+        "Why: exfil.exec_egress, path.credential_store."
+    )

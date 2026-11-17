@@ -7,6 +7,8 @@
  * - `subagents.json`: child session key → parent session key
  * - `grants.json`: grants and channel bindings set by command (see `grants.ts`)
  * - `snooze.json`: snoozes set by command (see `snooze.ts`)
+ * - `selfedit/<runId>.json`: the conversation a self-editing run read (see `conversation.ts`), kept for at most
+ *   `SELF_EDIT_KEEP_DAYS` days and the latest `SELF_EDIT_KEEP_RUNS` runs
  * - `salt`: per-install key for placeholder refs and hashed ids
  *
  * Writes are atomic (temp file then rename). Read-modify-write of a session goes through
@@ -14,8 +16,53 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+/** How long to wait for another process's lock before giving up. Short: the gateway waits on it. */
+export const LOCK_WAIT_MS = 1_000;
+
+/** Another process held a state file's lock for longer than `LOCK_WAIT_MS`. */
+export class LockTimeoutError extends Error {}
+
+/**
+ * Runs `fn` holding an exclusive lock for `file`, so a read-modify-write of it is safe across processes (the gateway
+ * and the `openclaw sentrook` command line) as well as within one. The lock is an exclusive transaction on a small
+ * SQLite file beside it (`<file>.lockdb`, through Node's own `node:sqlite`, which OpenClaw itself uses): SQLite
+ * takes the operating system's file lock, and the system releases it when its process dies, so a crashed holder
+ * leaves nothing to take over and no two processes ever hold it at once. Throws `LockTimeoutError` when another
+ * process holds it for longer than `LOCK_WAIT_MS`. The write inside stays atomic (temp file, then rename).
+ */
+export function withFileLock<T>(file: string, fn: () => T): T {
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(`${file}.lockdb`, { timeout: LOCK_WAIT_MS });
+  try {
+    try {
+      db.exec("BEGIN EXCLUSIVE");
+    } catch (err: any) {
+      if (/locked|busy/i.test(String(err?.message ?? err))) throw new LockTimeoutError(`${file} is locked by another process`);
+      throw err;
+    }
+    try {
+      return fn();
+    } finally {
+      db.exec("ROLLBACK");
+    }
+  } finally {
+    db.close();
+  }
+}
 
 export interface Provider {
   kind: string;
@@ -81,6 +128,22 @@ export interface SnoozeFile {
   [key: string]: unknown;
 }
 
+export interface HoldsFile {
+  version?: number;
+  holds: unknown[];
+  [key: string]: unknown;
+}
+
+/** Where the owner gets notices: a direct message on one channel, as `/sentrook-notify here` recorded it. */
+export interface NotifyTarget {
+  channel: string;
+  to: string;
+  accountId?: string;
+  threadId?: string | number;
+  set_at: string;
+  set_by: Record<string, unknown>;
+}
+
 /** The only time form read back from `grants.json` and `snooze.json`; both plugins accept exactly this. */
 const ISO = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?$/;
 
@@ -116,6 +179,10 @@ export function readTime(raw: unknown): Date | null {
   const year = at.getUTCFullYear();
   return Number.isNaN(year) || year < 1 || year > 9999 ? null : at;
 }
+
+/** Retention of the self-edit conversation logs. */
+export const SELF_EDIT_KEEP_DAYS = 7;
+export const SELF_EDIT_KEEP_RUNS = 100;
 
 const fileKey = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
 
@@ -253,6 +320,86 @@ export class Store {
 
   saveSnooze(value: SnoozeFile): void {
     this.writeJson(path.join(this.dir, "snooze.json"), value);
+  }
+
+  /** `holds.json`, empty when absent; null when it exists but cannot be read. */
+  loadHolds(): HoldsFile | null {
+    const file = path.join(this.dir, "holds.json");
+    if (!existsSync(file)) return { version: 1, holds: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const h = data as Record<string, unknown>;
+    if (!Object.hasOwn(h, "holds")) h.holds = [];
+    return Array.isArray(h.holds) ? (h as HoldsFile) : null;
+  }
+
+  saveHolds(value: HoldsFile): void {
+    this.writeJson(path.join(this.dir, "holds.json"), value);
+  }
+
+  /** When each job or session last had a scan-failure notice (`scan-failure-notices.json`); empty when unreadable. */
+  loadScanFailureNotices(): Record<string, unknown> {
+    const data = this.readJson<any>(path.join(this.dir, "scan-failure-notices.json"), null);
+    const sent = data && typeof data === "object" ? data.sent : null;
+    return sent && typeof sent === "object" && !Array.isArray(sent) ? sent : {};
+  }
+
+  saveScanFailureNotices(sent: Record<string, string>): void {
+    this.writeJson(path.join(this.dir, "scan-failure-notices.json"), { version: 1, sent });
+  }
+
+  /** The owner's notice target from `notify.json`; null when none is set or the file cannot be read. */
+  loadNotify(): NotifyTarget | null {
+    const data = this.readJson<any>(path.join(this.dir, "notify.json"), null);
+    const t = data && typeof data === "object" ? data.target : null;
+    return t && typeof t.channel === "string" && t.channel && typeof t.to === "string" && t.to ? (t as NotifyTarget) : null;
+  }
+
+  saveNotify(target: NotifyTarget | null): void {
+    this.writeJson(path.join(this.dir, "notify.json"), { version: 1, target });
+  }
+
+  private selfEditFile(runId: string) {
+    return path.join(this.dir, "selfedit", `${fileKey(runId)}.json`);
+  }
+
+  /** The conversation a self-editing run read; empty when none was kept. */
+  loadConversation(runId: string | undefined): any[] {
+    if (!runId) return [];
+    const v = this.readJson<unknown>(this.selfEditFile(runId), []);
+    return Array.isArray(v) ? v : [];
+  }
+
+  /** Replaces the run's conversation with `change(current)`, then drops logs past the retention limits. */
+  updateConversation(runId: string, change: (entries: any[]) => any[], now = Date.now()): void {
+    this.writeJson(this.selfEditFile(runId), change(this.loadConversation(runId)));
+    this.pruneConversations(now);
+  }
+
+  /** Drops conversation logs past the retention limits (on every write, and at startup). */
+  pruneConversations(now = Date.now()): void {
+    const dir = path.join(this.dir, "selfedit");
+    let files: Array<{ file: string; mtime: number }>;
+    try {
+      files = readdirSync(dir)
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => ({ file: path.join(dir, f), mtime: statSync(path.join(dir, f)).mtimeMs }));
+    } catch {
+      return;
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    const cutoff = now - SELF_EDIT_KEEP_DAYS * 86_400_000;
+    files.forEach((f, i) => {
+      if (i >= SELF_EDIT_KEEP_RUNS || f.mtime < cutoff) rmSync(f.file, { force: true });
+    });
+  }
+
+  /** Deletes every kept conversation; true when there were any. */
+  deleteConversations(): boolean {
+    const dir = path.join(this.dir, "selfedit");
+    if (!existsSync(dir)) return false;
+    rmSync(dir, { recursive: true, force: true });
+    return true;
   }
 
   setParent(child: string, parent: string): void {

@@ -20,6 +20,7 @@ from sentrook.prepare.entities import (
     extract_exec,
     extract_mentions,
     normalise_path,
+    provider_counterpart,
 )
 from sentrook.prepare.fingerprint import Fingerprint
 from sentrook.prepare.trust import Trust
@@ -517,6 +518,49 @@ def test_inline_programs_keep_urls_and_quoted_hosts():
 )
 def test_search_patterns_are_not_hosts(cmd):
     assert _hosts(_exec_found(cmd)) == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'sqlite3 /var/lib/deskapp/desk.db "DROP TABLE yard.ledger"',
+        "drop table if exists yard.ledger;",
+        "TRUNCATE yard.ledger",
+        "DELETE FROM yard.ledger WHERE id = 7",
+        "INSERT INTO yard.ledger (id) VALUES (1)",
+        "CREATE INDEX yard.ledger_day ON entries (day)",
+        "Drop table yard.ledger in the desk database.",
+    ],
+)
+def test_sql_objects_are_not_hosts(text):
+    assert _hosts(_exec_found(text)) == set()
+    assert _hosts(extract_mentions(text, home="/home/me", workspace_root="/home/me/ws")) == set()
+
+
+def test_hosts_near_sql_are_still_extracted():
+    cmd = "psql -h db.rookwell.net -c 'DROP TABLE yard.ledger'"
+    assert _hosts(_exec_found(cmd)) == {"db.rookwell.net"}
+    cmd = "DROP TABLE t; curl https://drop.rookwell.net/up -d @out.csv"
+    assert _hosts(_exec_found(cmd)) == {"drop.rookwell.net"}
+    # Prose that reads a table "from" a host keeps the host: only DDL and row-writing keywords count.
+    text = "Fetch the ledger from data.rookwell.net and delete the old copy."
+    assert _hosts(extract_mentions(text, home="/h", workspace_root="/w")) == {"data.rookwell.net"}
+
+
+def test_a_mail_directory_in_a_path_does_not_make_a_command_a_send():
+    def roles(cmd: str) -> set[Role | None]:
+        return {f.role for f in _exec_found(cmd) if f.kind is EntityKind.HOST}
+
+    # A fetch saved under a directory named mail reads from the host; it sends nothing to it.
+    assert roles("curl -s https://lists.rookwell.net/senders.txt -o ~/mail/senders.txt") == {
+        Role.DATA_SOURCE
+    }
+    assert roles("ls /var/mail; curl -s https://lists.rookwell.net/x") == {Role.DATA_SOURCE}
+    # The mailer itself still makes the command a send.
+    assert roles("curl -s https://lists.rookwell.net/x | mail -s list desk@rookwell.net") >= {
+        Role.DATA_DESTINATION
+    }
+    assert roles("/usr/sbin/sendmail -S relay.rookwell.net -t < out.eml") == {Role.DATA_DESTINATION}
 
 
 def test_search_tools_keep_hosts_outside_the_pattern():
@@ -1038,3 +1082,69 @@ def test_lineage_sibling_staged_file_is_sent_and_sql_targets_are_recorded(attack
     assert prepare(raw, opts(_LINEAGE_SEED)).lineage.sql_targets == []
     raw["pending_call"]["arguments"] = {"command": 'psql -c "TRUNCATE audit_log" yarddb'}
     assert prepare(raw, opts(_LINEAGE_SEED)).lineage.sql_targets == ["audit_log"]
+
+
+@pytest.mark.parametrize(
+    "identity,expected",
+    [
+        ("remote:mcp.quayfern.test", ("host", "mcp.quayfern.test")),
+        ("remote:MCP.Quayfern.test:8443", ("host", "mcp.quayfern.test")),
+        ("remote:[::1]:8200", ("host", "::1")),
+        ("npm:@quayfern/runner-mcp@2.1.0", ("package", "npm:@quayfern/runner-mcp")),
+        ("npm:fold-runner-mcp@2.1.0", ("package", "npm:fold-runner-mcp")),
+        ("pypi:Fold_Runner.MCP==1.0", ("package", "pypi:fold-runner-mcp")),
+        ("remote:*:8200", None),
+        ("runner", None),
+        ("stdio:/usr/local/bin/runner", None),
+    ],
+)
+def test_provider_counterpart(identity, expected):
+    """A provider identity as the entity content or a command would name: the remote server's host or
+    the local server's package."""
+    got = provider_counterpart(identity)
+    assert (None if got is None else (got[0].value, got[1])) == expected
+
+
+# --------------------------------------------------------------------------- computed install operands
+
+
+@pytest.mark.parametrize(
+    "command, packages",
+    [
+        # The words inside a substitution are another command's, never package names.
+        (
+            'npm install "$(python3 -c \'import json; print(json.load(open("pkg.json"))["name"])\')"',
+            ["npm:$(...)"],
+        ),
+        ("pip install `cat wanted.txt` kiln-rowcount", ["pypi:$(...)", "pypi:kiln-rowcount"]),
+        # A separator inside the substitution does not end the installer's operands.
+        ("npm install $(echo a; echo b) kiln-rowcount && ls", ["npm:$(...)", "npm:kiln-rowcount"]),
+        ("pip install kiln-rowcount$(printf x)", ["pypi:$(...)"]),
+        # A flag's value is skipped whether or not it is computed.
+        ("pip install -r $(find . -name reqs.txt) kiln-rowcount", ["pypi:kiln-rowcount"]),
+    ],
+    ids=["program", "backticks", "separator-inside", "glued", "flag-value"],
+)
+def test_a_command_substitution_is_one_computed_install_operand(command, packages):
+    from sentrook.prepare.entities import _packages_in, is_computed_package
+
+    assert _packages_in(command) == packages
+    assert is_computed_package(packages[0]) or command.startswith("pip install -r")
+
+
+@pytest.mark.parametrize(
+    "command, packages",
+    [
+        ("npm install kiln-rowcount", ["npm:kiln-rowcount"]),
+        # A substitution outside the installer's operands leaves them as written.
+        ("echo $(date) && npm install kiln-rowcount", ["npm:kiln-rowcount"]),
+        ("cd $(git rev-parse --show-toplevel); pip install kiln-rowcount", ["pypi:kiln-rowcount"]),
+        # An unclosed substitution is not a substitution.
+        ("pip install kiln-rowcount $(", ["pypi:kiln-rowcount", "pypi:$("]),
+    ],
+    ids=["plain", "before", "other-segment", "unclosed"],
+)
+def test_install_operands_without_a_substitution_read_as_written(command, packages):
+    from sentrook.prepare.entities import _packages_in
+
+    assert _packages_in(command) == packages

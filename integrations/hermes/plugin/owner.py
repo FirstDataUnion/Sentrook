@@ -4,13 +4,13 @@ Hermes passes a command handler nothing but its raw arguments, so the sender com
 gateway's session context, as for scans. The owner is:
 - a direct message from a sender individually on `<PLATFORM>_ALLOWED_USERS` or
   `GATEWAY_ALLOWED_USERS` (the same rule as `intent.sender_of`);
-- the local CLI or TUI. Inside a command handler an empty platform can only be the local terminal:
-  the API server sends slash commands to the model as text, and cron and webhook runs do not
-  dispatch them. Recheck this on every Hermes upgrade.
+- the local terminal: the `hermes sentrook` CLI, or a slash command whose session Hermes reports
+  (`ctx.session_surface()`) as the CLI, TUI or desktop app. The API server sends slash commands to
+  the model as text, and cron and webhook runs do not dispatch them. Recheck this on every Hermes
+  upgrade.
 
-An empty platform also results when the session context cannot be read, so it counts as the local
-terminal only in a process where the gateway has never bound a chat session. When that cannot be
-established the command is refused.
+An empty platform is also what an unreadable session context looks like, so a slash command with no
+platform and no local session surface is refused.
 
 Hermes's own `allow_admin_from` is not used: it is off by default and, once set, refuses every slash
 command except /help and /whoami to everyone else.
@@ -29,20 +29,14 @@ from .intent import LOCAL_PLATFORMS, resolve_platform, sender_of
 from .traffic import TrafficLog
 
 
-def gateway_engaged() -> bool | None:
-    """Whether the gateway has bound a chat session in this process; None when that cannot be read."""
-    try:
-        from gateway.session_context import session_context_engaged
-
-        return bool(session_context_engaged())
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def owner_of(facts: dict[str, str], env: dict[str, str], *, engaged: bool | None) -> dict[str, Any]:
+def owner_of(
+    facts: dict[str, str], env: dict[str, str], *, surface: str = "", local_cli: bool = False
+) -> dict[str, Any]:
+    """`surface` is Hermes's report of the calling session's client (`ctx.session_surface()`, "" when
+    unknown); `local_cli` is set only by the `hermes sentrook` command line."""
     platform = resolve_platform(None, facts, env)
     if not platform:
-        if engaged is False:
+        if local_cli or surface.strip().lower() in LOCAL_PLATFORMS:
             return {"owner": True, "basis": ["local_terminal"], "platform": ""}
         return {"owner": False, "basis": ["none"], "platform": ""}
     if platform in LOCAL_PLATFORMS:
@@ -79,11 +73,18 @@ def audit(
 
 
 def gate(
-    verb: str, traffic: TrafficLog, salt: str, *, facts: dict[str, str], env: dict[str, str]
+    verb: str,
+    traffic: TrafficLog,
+    salt: str,
+    *,
+    facts: dict[str, str],
+    env: dict[str, str],
+    surface: str = "",
+    local_cli: bool = False,
 ) -> dict[str, Any]:
     """Decide whether this command may run and audit the decision. The result also carries the
     hashed sender (`sender_ref`), for commands that record who made a change."""
-    check = owner_of(facts, env, engaged=gateway_engaged())
+    check = owner_of(facts, env, surface=surface, local_cli=local_cli)
     ref = sender_ref(facts.get("user_id") or "", salt)
     audit(traffic, verb, check, ref=ref)
     return {**check, "sender_ref": ref}

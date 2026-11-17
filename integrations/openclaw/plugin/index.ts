@@ -10,13 +10,17 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
+import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
+import * as hold from "./hold.ts";
 import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
+import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
+import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
 import { type HistoryEntry, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
@@ -35,7 +39,7 @@ interface OpenClawPluginApi {
   config?: any;
   logger: PluginLogger;
   registrationMode?: string;
-  runtime?: { version?: unknown };
+  runtime?: { version?: unknown; config?: { current?: () => unknown }; channel?: { outbound?: hold.Outbound } };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
   registerCommand?: (def: {
@@ -69,7 +73,7 @@ export interface BeforeToolCallResult {
 const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", TOOL_CALL]);
 
 /** History decisions after which the tool did not run. */
-const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error"]);
+const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held"]);
 
 const LOG = "[sentrook]";
 
@@ -116,11 +120,31 @@ const plugin = {
 
   register(api: OpenClawPluginApi) {
     const mode = api.registrationMode ?? "full";
+    // The runtime is a proxy that throws outside full registration, so read its version only when needed.
+    const runtimeVersion = (): string | undefined => {
+      try {
+        const v = api.runtime?.version;
+        return typeof v === "string" && v ? v : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    // OpenClaw's config as it is now. `api.config` is a snapshot taken at load, so a later `config set` (an exec
+    // mode, an MCP server) would not reach the scan; `runtime.config.current()` is the live one where the host has it.
+    const hostConfig = (): any => {
+      try {
+        const live = api.runtime?.config?.current?.();
+        if (live && typeof live === "object") return live;
+      } catch {
+        // The runtime throws outside full registration.
+      }
+      return api.config;
+    };
     if (api.registerCli && (mode === "cli-metadata" || mode === "discovery" || mode === "full")) {
       api.registerCli(
         async ({ program }) => {
           const { registerSentrookCli } = await import("./cli.ts");
-          registerSentrookCli(program, () => api.pluginConfig ?? {});
+          registerSentrookCli(program, () => api.pluginConfig ?? {}, runtimeVersion, hostConfig);
         },
         { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
@@ -134,7 +158,11 @@ const plugin = {
         description: "Sentrook plugin status and help",
         acceptsArgs: true,
         handler: async (ctx) => ({
-          text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
+          text: await runSentrookCommand(ctx?.args, {
+            pluginConfig: api.pluginConfig ?? {},
+            env: process.env,
+            hostVersion: runtimeVersion(),
+          }),
         }),
       });
     } catch (err) {
@@ -146,14 +174,7 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
-    // The runtime is a proxy that throws outside full registration.
-    let hostVersion: string | undefined;
-    try {
-      const v = api.runtime?.version;
-      if (typeof v === "string" && v) hostVersion = v;
-    } catch {
-      hostVersion = undefined;
-    }
+    const hostVersion = runtimeVersion();
     const store = new Store(boot.stateDir);
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
@@ -183,6 +204,15 @@ const plugin = {
                       record: (record) => traffic.write(record),
                     },
                     session: commandSessionOf(ctx),
+                    chat: {
+                      channel: ctx.channel,
+                      senderId: ctx.senderId,
+                      from: (ctx as any).from,
+                      to: (ctx as any).to,
+                      sessionKey: ctx.sessionKey,
+                      accountId: (ctx as any).accountId,
+                      messageThreadId: (ctx as any).messageThreadId,
+                    },
                   },
                   (ctx.args ?? "").trim(),
                 ),
@@ -219,14 +249,44 @@ const plugin = {
       }
     };
 
+    /**
+     * The conversation logs are kept only while self-edits are declared; once the setting reads as review, they are
+     * deleted (by the first hook that sees it) and nothing is kept.
+     */
+    const capturing = (cfg: PluginConfig): boolean => {
+      if (cfg.skillReview === "allow") return true;
+      try {
+        if (store.deleteConversations()) api.logger.info(`${LOG} skillReview is review: self-edit conversation logs deleted`);
+      } catch (err) {
+        api.logger.warn(`${LOG} deleting self-edit conversation logs failed: ${String(err)}`);
+      }
+      return false;
+    };
+    safely("startup", () => {
+      if (capturing(boot)) store.pruneConversations();
+    });
+
     // ---- context joins -------------------------------------------------------------------------
     api.on("before_prompt_build", (event: any, ctx: any) =>
-      safely("before_prompt_build", () =>
-        remember(event?.runId ?? ctx?.runId, ctx, {
-          currentUserMessage: event?.currentUserMessage,
-          prompt: event?.prompt,
-        }),
-      ),
+      safely("before_prompt_build", () => {
+        const runId = event?.runId ?? ctx?.runId;
+        const patch: Json = { currentUserMessage: event?.currentUserMessage, prompt: event?.prompt };
+        // OpenClaw's own background process (selfEdit.ts): recognised here, where raw model runs never arrive.
+        const kind = selfEdit.runKindOf(runId, ctx, event?.prompt);
+        if (kind) {
+          Object.assign(patch, {
+            selfEdit: kind,
+            selfEditSessionKey: ctx.sessionKey,
+            ownerRequest: selfEdit.lastOwnerMessage(event?.messages),
+          });
+        }
+        remember(runId, ctx, patch);
+        if (!kind || !runId || !capturing(loadConfig().cfg)) return;
+        // What the process reads: its copy of the conversation, then (after_tool_call) its own tool results.
+        const redactor = createRedactor("standard", store.salt());
+        const read = conversation.fromMessages(event?.messages, redactor);
+        store.updateConversation(runId, (prior) => conversation.trim([...read, ...prior.filter((e) => e._own)]));
+      }),
     );
     api.on("before_agent_run", (event: any, ctx: any) =>
       safely("before_agent_run", () => {
@@ -309,7 +369,19 @@ const plugin = {
           entry.result = { status: event?.error || !ran ? "error" : "ok", size_bytes: ran ? sizeBytes : 0 };
           if (ran) {
             const redactor = createRedactor("standard", store.salt());
-            const capped = capHeadTail(redactor.string(text), cfg.inputCapBytes);
+            const redacted = redactor.string(text);
+            const runId = event?.runId ?? ctx?.runId;
+            if (runId && selfEdit.kindAtCall(store.loadRun(runId), ctx) && capturing(cfg)) {
+              // A review's or curator's own reads are what its save draws on.
+              safely("self-edit conversation", () =>
+                store.updateConversation(runId, (prior) => {
+                  const turn = Math.max(1, ...prior.map((e) => Number(e.turn) || 1));
+                  const own = conversation.toolEntry(turn, entry.tool, event?.params ?? entry.arguments, redacted, redactor);
+                  return conversation.trim([...prior, { ...own, _own: true }]);
+                }),
+              );
+            }
+            const capped = capHeadTail(redacted, cfg.inputCapBytes);
             sess.inputSeq += 1;
             sess.buffer.push({
               input_seq: sess.inputSeq,
@@ -358,10 +430,23 @@ const plugin = {
       ctx: any,
     ): Promise<BeforeToolCallResult | undefined> {
       const sess = store.loadSession(sid);
-      const run = store.loadRun(event?.runId ?? ctx?.runId);
+      const runId = event?.runId ?? ctx?.runId;
+      const run = store.loadRun(runId);
       const redactor = createRedactor("standard", store.salt());
+      // OpenClaw's own background process: sent as the host's, and its saves as self-edits (selfEdit.ts).
+      const hostKind = cfg.skillReview === "allow" ? selfEdit.kindAtCall(run, ctx) : null;
+      const saveStore = hostKind ? selfEdit.saveStoreOf(hostKind, event.toolName, event?.params, run) : null;
+      let selfEditBlock: Json | null = null;
+      if (hostKind && saveStore) {
+        try {
+          selfEditBlock = conversation.block(hostKind, saveStore, store.loadConversation(runId), redactor.value(event?.params ?? {}));
+        } catch (err) {
+          api.logger.warn(`${LOG} self-edit conversation failed: ${String(err)}`);
+          selfEditBlock = { kind: hostKind, store: saveStore, conversation: [] };
+        }
+      }
       const built = buildPlanir({
-        hostConfig: api.config,
+        hostConfig: hostConfig(),
         cfg,
         redactor,
         event,
@@ -373,6 +458,8 @@ const plugin = {
         parents: store.parents(),
         grants: grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
         hostVersion,
+        hostProcess: hostKind !== null,
+        selfEdit: selfEditBlock,
       });
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
@@ -412,9 +499,29 @@ const plugin = {
       let verdict: Verdict | null = null;
       let onError = false;
       let snoozed = false;
+      let failureNotice: Json | null = null;
+      let relaxed = false;
+      let held: Json | null = null;
+      /** The suggested grant "allow always" sets, when the prompt offers it. */
+      let remember: grants.Entry | null = null;
       if (result.ok) {
         const resp = result.response;
-        verdict = decide(resp, cfg);
+        // The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
+        // block to a review with it, so a lowered block is never held.
+        verdict = decide(timing.unattended ? { ...resp, ceiling: null } : resp, cfg);
+        if (
+          // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
+          cfg.mode !== "observe" &&
+          triggerKind === "message" &&
+          !timing.unattended &&
+          snooze.relaxes(resp, verdict) &&
+          snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
+        ) {
+          // The owner snoozed this attended session and nothing independent points to an attack: the block asks
+          // instead, at critical severity. It is never allowed silently.
+          verdict = "review";
+          relaxed = true;
+        }
         sess.token = resp.state ?? null;
         sess.buffer = [];
         entry.action_fingerprint = resp.action_fingerprint ?? null;
@@ -424,29 +531,40 @@ const plugin = {
           entry.decision = "allowed";
         } else if (verdict === "block") {
           entry.decision = "blocked";
-          hook = { block: true, blockReason: blockReason(resp, event.toolName) };
+          hook = { block: true, blockReason: blockReason(resp) };
         } else if (
           // Only a human's message: a run whose trigger is unknown or not a message is never snoozed,
           // whatever the approval timeout policy calls attended.
+          !relaxed &&
           triggerKind === "message" &&
           !timing.unattended &&
-          snooze.applies(resp) &&
+          snooze.applies(resp, cfg.blockAt) &&
           snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
         ) {
           // The owner snoozed reviews for this session: scanned and logged, not asked.
           entry.decision = "allowed";
           snoozed = true;
+        } else if (timing.unattended) {
+          // Nobody can answer a review here: the call waits for the owner (hold.ts).
+          entry.decision = "held";
+          hook = { block: true, blockReason: hold.HELD_TEXT };
+          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
-          const copy = reviewCopy(resp, event.toolName);
+          // The grant the scan suggests: the prompt shows its command, and "allow always" (offered only then) sets it
+          // where the owner is the one answering. Never for a block a snooze turned into a review.
+          const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
+          remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
+          const copy = reviewCopy(resp, event.toolName, relaxed, hint ? grants.hintLine(hint, (sub) => `/sentrook-${sub}`, remember !== null) : "");
           hook = {
             requireApproval: {
               ...copy,
-              severity: severity(resp),
+              severity: severity(resp, cfg, relaxed),
               timeoutMs: timing.timeoutMs,
+              // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
               timeoutBehavior: timing.timeoutBehavior,
-              allowedDecisions: ["allow-once", "deny"],
+              allowedDecisions: remember ? ["allow-once", "allow-always", "deny"] : ["allow-once", "deny"],
             },
           };
         }
@@ -463,6 +581,7 @@ const plugin = {
               });
         entry.decision = hook?.block || hook?.requireApproval ? "blocked_on_error" : "allowed_on_error";
         api.logger.warn(`${LOG} scan failed (${result.kind}): ${result.detail}`);
+        if (hook?.block && timing.unattended) failureNotice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run);
       }
 
       sess.history.push(entry);
@@ -478,6 +597,11 @@ const plugin = {
         verdict,
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
+        ...(relaxed ? { relaxed: true } : {}),
+        ...(held ? { hold: held } : {}),
+        ...(failureNotice ? { notice: failureNotice } : {}),
+        ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
+        ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
         host_labels: hostLabels(run, ctx),
         planir: built.planir,
@@ -487,7 +611,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );
@@ -507,6 +631,23 @@ const plugin = {
                 : decision === "timeout"
                   ? "review_timed_out"
                   : "blocked";
+          let grantId: string | null = null;
+          if (decision === "allow-always" && remember && !onError) {
+            // Approved for good: the suggested grant, persistent for 30 days, once per review. A grant that cannot be
+            // written is logged; the answer itself stands.
+            const by = { basis: ["review_always"], platform: String(built.planir.trigger?.channel ?? "") };
+            try {
+              const { reply, change } = grants.addSuggested(cfg.stateDir, remember, by, new Date(), hold.GRANT_TTL_MS, requestId, () => {}, "from_review");
+              if (change) {
+                grantId = String(change.entry.id);
+                if (!change.existing) traffic.write({ kind: "grants", ...change, by });
+              } else {
+                api.logger.warn(`${LOG} could not set the suggested grant: ${reply}`);
+              }
+            } catch (err) {
+              api.logger.warn(`${LOG} could not set the suggested grant: ${String(err)}`);
+            }
+          }
           try {
             await store.withSession(sid, () => {
               const s = store.loadSession(sid);
@@ -517,10 +658,122 @@ const plugin = {
           } catch (err) {
             api.logger.warn(`${LOG} recording review outcome failed: ${String(err)}`);
           }
-          traffic.write({ kind: "resolution", request_id: requestId, resolution: decision, decision: final });
+          traffic.write({
+            kind: "resolution",
+            request_id: requestId,
+            resolution: decision,
+            decision: final,
+            ...(grantId ? { grant_id: grantId } : {}),
+          });
         };
       }
       return hook;
+    }
+
+    /**
+     * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
+     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     */
+    /** The unattended run a call belongs to, as the owner's notices name it: a cron job by its id, else the run. */
+    function unattendedRun(sref: string, triggerKind: string, run: any): { where: string; jobId: string | null } {
+      const label: Record<string, string> = {
+        scheduled: "scheduled run",
+        heartbeat: "heartbeat run",
+        hook: "webhook or event run",
+        subagent: "subagent run",
+      };
+      const job = triggerKind === "scheduled" ? hold.cronJobOf(run?.prompt) : null;
+      return { where: hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name), jobId: job?.id ?? null };
+    }
+
+    function outboundOf(): hold.Outbound | undefined {
+      try {
+        return api.runtime?.channel?.outbound;
+      } catch {
+        return undefined; // the runtime throws outside full registration
+      }
+    }
+
+    /**
+     * Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session) per quiet
+     * period. Returns what the scan record says about the notice. Never throws: the call is blocked whatever happens.
+     */
+    function scanFailureCall(cfg: PluginConfig, built: { planir: any }, failure: ScanFailure, tool: string, triggerKind: string, run: any): Json {
+      const sref: string = built.planir.session.session_ref;
+      const { where, jobId } = unattendedRun(sref, triggerKind, run);
+      const target = store.loadNotify();
+      const outbound = outboundOf();
+      if (!target) return { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+      if (!outbound?.loadAdapter) return { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+      const key = scanFailure.quietKey(jobId, sref);
+      let stamp: string | null;
+      try {
+        stamp = scanFailure.claim(cfg.stateDir, key, new Date());
+        if (stamp === null) return { status: "quiet" };
+      } catch (err) {
+        if (!(err instanceof hold.LockTimeoutError)) api.logger.warn(`${LOG} could not read or write scan-failure notices: ${String(err)}`);
+        return { status: "unsent", target: null, reason: err instanceof hold.LockTimeoutError ? "notice file locked" : "notice file not written" };
+      }
+      const text = scanFailure.noticeText(failure, tool, where, jobId !== null, "openclaw sentrook verify");
+      hold.track(
+        hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+          if (!why) return;
+          api.logger.warn(`${LOG} scan-failure notice not delivered: ${why}`);
+          // Not delivered: the next failure in this job is announced instead.
+          try {
+            scanFailure.release(cfg.stateDir, key, stamp!);
+          } catch (err) {
+            api.logger.warn(`${LOG} could not reopen scan-failure notices for ${key}: ${String(err)}`);
+          }
+        }),
+      );
+      return { status: "queued", target: target.channel };
+    }
+
+    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
+      const now = new Date();
+      const sref: string = built.planir.session.session_ref;
+      const { where } = unattendedRun(sref, triggerKind, run);
+      const target = store.loadNotify();
+      const outbound = outboundOf();
+      let notice: Json = target
+        ? { status: "queued", target: target.channel }
+        : { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
+      if (target && !outbound?.loadAdapter) {
+        notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
+      }
+      const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
+      const record = (r: Record<string, unknown>) => traffic.write(r);
+      let id: string | null = null;
+      try {
+        id = hold.create(cfg.stateDir, { requestId: built.planir.request_id, sessionRef: sref, tool, where, hint, notice }, now, record);
+        if (id === null) notice = { status: "unsent", target: null, reason: "holds file unreadable" };
+      } catch (err) {
+        const locked = err instanceof hold.LockTimeoutError;
+        if (!locked) api.logger.warn(`${LOG} could not store a hold: ${String(err)}`);
+        notice = { status: "unsent", target: null, reason: locked ? "holds file locked" : "holds file not written" };
+      }
+      if (id !== null && target && notice.status === "queued") {
+        try {
+          const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
+          const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+            if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
+          });
+          hold.track(sent);
+        } catch (err) {
+          // A malformed response: still held, not announced.
+          api.logger.warn(`${LOG} held a call but could not build its notice: ${String(err)}`);
+          notice = { status: "unsent", target: null, reason: "notice could not be built" };
+        }
+      } else {
+        api.logger.warn(`${LOG} held a call but sent no notice: ${String(notice.reason)}`);
+      }
+      return {
+        id,
+        expires_at: id ? `${new Date(now.getTime() + hold.HOLD_TTL_MS).toISOString().slice(0, 19)}Z` : null,
+        hint: hint !== null,
+        notice,
+      };
     }
 
     const ep = boot.endpoints;
@@ -528,10 +781,21 @@ const plugin = {
     api.logger.info(
       `${LOG} ${PLUGIN_VERSION} registered: scan=${show(ep.scan)} issuer=${show(ep.issuer)}` +
         `${ep.dev ? " (dev endpoints)" : ""} mode=${boot.mode} review>=${boot.reviewAt} block>=${boot.blockAt} ` +
-        `onScanError=${boot.onScanError} traffic=${boot.trafficLog.enabled ? boot.trafficLog.path : "off"}`,
+        `onScanError=${boot.onScanError} skillReview=${boot.skillReview} ` +
+        `traffic=${boot.trafficLog.enabled ? boot.trafficLog.path : "off"}`,
     );
+    if (boot.skillReviewUnknown !== null) {
+      api.logger.warn(`${LOG} skillReview ${JSON.stringify(boot.skillReviewUnknown)} is not allow or review; reading it as allow`);
+    }
     if (!ep.scan.ok || !ep.issuer.ok) {
       api.logger.error(`${LOG} endpoint configuration is invalid; every tool call will fail closed until fixed`);
+    }
+    const unsent = grants.unsentSummary(boot);
+    if (unsent) {
+      api.logger.warn(
+        `${LOG} config grants never sent: ${unsent}. A config grant has no session: drop its scope to apply it in ` +
+          "every session, or use /sentrook-grant for one session; see /sentrook-grants",
+      );
     }
   },
 };
