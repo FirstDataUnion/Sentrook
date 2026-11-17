@@ -1,14 +1,16 @@
-# Host plugins against real host releases. For each host (today: Hermes) and each pinned version in
+# Host plugins against real host releases. For each host (Hermes, OpenClaw) and each pinned version in
 # integrations/<host>/compat/versions.txt (the plugin's declared floor and the latest stable release),
-# integrations/<host>/compat/run.sh runs the host's own plugin validator, installs the plugin as a user
+# integrations/<host>/compat/run.sh runs the host's own plugin checks, installs the plugin as a user
 # would, sets the scan credentials through the host, runs verify and status against mock identity and
 # scan services, and drives one agent turn in which the plugin must block one tool call and allow the
-# next. Any failed step, or a validator warning not in the host's warnings-baseline.txt, fails the job.
+# next. Any failed step, or a host report not in the host's warnings-baseline.txt, fails the job.
 #
-# - Pull requests and pushes touching a plugin or this tooling: the pinned versions (blocking), the
-#   check's self-test (blocking: it proves the check still catches a broken plugin), and the newest
-#   release candidate when it is newer than the latest stable (report-only).
-# - The release workflows call it with mode `release`: the pinned versions only, blocking.
+# - Pull requests touching a plugin or this tooling: for each host whose plugin changed (every host when
+#   the shared tooling changed), the pinned versions (blocking), the check's self-test (blocking: it
+#   proves the check still catches a broken plugin), and the newest pre-release (a Hermes release
+#   candidate, an OpenClaw beta) when it is newer than the latest stable (report-only). Pushes to main
+#   run every host.
+# - The release workflows call it with mode `release` and their host: the pinned versions only, blocking.
 # - The nightly canary against the host's main build, and the bump to each new stable release, are in
 #   host-compat-nightly.yml.
 #
@@ -19,37 +21,47 @@ on:
   pull_request:
     paths:
       - integrations/hermes/**
+      - integrations/openclaw/**
       - integrations/compat/**
       - .github/workflows/host-compat.yml
   push:
     branches: [main]
     paths:
       - integrations/hermes/**
+      - integrations/openclaw/**
       - integrations/compat/**
       - .github/workflows/host-compat.yml
   workflow_dispatch:
     inputs:
       mode:
-        description: "pr: pinned versions, self-test and release candidate; release: pinned versions only"
+        description: "pr: pinned versions, self-test and pre-release; release: pinned versions only"
         type: choice
         options: [pr, release]
         default: pr
+      hosts:
+        description: "hosts to check, space-separated (empty: all)"
+        type: string
+        default: ""
   workflow_call:
     inputs:
       mode:
         description: "pr or release (see workflow_dispatch)"
         type: string
         default: release
+      hosts:
+        description: "hosts to check, space-separated (empty: all)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: host-compat-${{ inputs.mode || 'pr' }}-${{ github.event.pull_request.number || github.ref }}
+  group: host-compat-${{ inputs.mode || 'pr' }}-${{ inputs.hosts }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  HOSTS: hermes
+  HOSTS: hermes openclaw
 
 jobs:
   plan:
@@ -61,20 +73,41 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A pull request is checked out as its merge commit: parent 1 is the base branch.
+          fetch-depth: 2
 
       - name: Versions under test
         id: plan
         env:
           MODE: ${{ inputs.mode || 'pr' }}
+          ONLY: ${{ inputs.hosts }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          hosts=${ONLY:-$HOSTS}
+          # A pull request checks only the hosts whose plugin it changes, unless it changes the shared tooling.
+          if [ "$EVENT" = pull_request ]; then
+            if changed=$(git diff --name-only HEAD^1 HEAD); then
+              if ! grep -qE '^(integrations/compat/|\.github/workflows/host-compat\.yml$)' <<<"$changed"; then
+                picked=''
+                for host in $hosts; do
+                  if grep -q "^integrations/$host/" <<<"$changed"; then picked="$picked $host"; fi
+                done
+                hosts=${picked# }
+              fi
+            else
+              echo "::warning::could not list the pull request's changes; checking every host"
+            fi
+          fi
+          echo "hosts: ${hosts:-none}"
           blocking='[]'; latest='[]'; rc='[]'
-          for host in $HOSTS; do
+          for host in $hosts; do
             b=$(python3 integrations/compat/compat.py matrix --host "$host" --set blocking)
             blocking=$(jq -c --argjson b "$b" '. + $b' <<<"$blocking")
             latest=$(jq -c --argjson b "$b" '. + [$b[-1]]' <<<"$latest")
             if [ "$MODE" = pr ]; then
-              # Report-only: a Docker Hub outage must not fail the pull request.
+              # Report-only: a registry outage must not fail the pull request.
               r=$(python3 integrations/compat/compat.py matrix --host "$host" --set rc || echo '[]')
               rc=$(jq -c --argjson r "$r" '. + $r' <<<"$rc")
             fi
@@ -85,10 +118,11 @@ jobs:
             echo "latest=$latest"
             echo "rc=$rc"
           } >>"$GITHUB_OUTPUT"
-          echo "blocking: $blocking"; echo "self-test: $latest"; echo "release candidate: $rc"
+          echo "blocking: $blocking"; echo "self-test: $latest"; echo "pre-release: $rc"
 
   compat:
     needs: plan
+    if: needs.plan.outputs.blocking != '[]'
     name: ${{ matrix.host }} ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -99,6 +133,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        if: matrix.host == 'openclaw'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
 
       - name: Pull ${{ matrix.image }}
         run: docker pull -q "${{ matrix.image }}"
@@ -114,8 +155,9 @@ jobs:
           path: ${{ runner.temp }}/compat
           retention-days: 14
 
-  # The check must still fail on a broken plugin: a declared hook never registered, an unknown
-  # config type, and a refused token mint.
+  # The check must still fail on a broken plugin (see each host's selftest.sh): for Hermes a declared hook
+  # never registered, an unknown config type and a refused token mint; for OpenClaw an unknown hook name, a
+  # refused token mint and a missing host field.
   self-test:
     needs: plan
     if: needs.plan.outputs.latest != '[]'
@@ -129,6 +171,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        if: matrix.host == 'openclaw'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
 
       - name: Pull ${{ matrix.image }}
         run: docker pull -q "${{ matrix.image }}"
@@ -150,7 +199,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # On the steps, not the job, so a failing candidate leaves a warning rather than a red check.
+      - name: Set up Node
+        if: matrix.host == 'openclaw'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      # On the steps, not the job, so a failing pre-release leaves a warning rather than a red check.
       - name: Pull ${{ matrix.image }}
         continue-on-error: true
         run: docker pull -q "${{ matrix.image }}"
@@ -175,6 +231,9 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # self-test is skipped in release mode; everything else must succeed.
-          echo "$RESULTS" | jq -e '(.plan.result == "success") and (.compat.result == "success")
+          # self-test is skipped in release mode, and both are skipped when no host's plugin changed;
+          # everything that ran must succeed.
+          echo "$RESULTS" | jq -e '(.plan.result == "success")
+            and ((.compat.result == "success")
+              or (.compat.result == "skipped" and .plan.outputs.blocking == "[]"))
             and (.["self-test"].result == "success" or .["self-test"].result == "skipped")' >/dev/null

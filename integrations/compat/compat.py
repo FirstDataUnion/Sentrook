@@ -1,6 +1,6 @@
 """Host compatibility CI helpers, shared by every host plugin. Stdlib only.
 
-Each host has a directory (for Hermes, `integrations/hermes/compat/`) with:
+Each host (today Hermes and OpenClaw) has a directory, `integrations/<host>/compat/`, with:
 
 - `versions.txt`: the pinned versions the blocking check runs on, one `<role> <tag>` per line. `floor`
   is the oldest host version the plugin declares; `latest` is the newest stable release. The bump job
@@ -12,10 +12,11 @@ Each host has a directory (for Hermes, `integrations/hermes/compat/`) with:
 Subcommands (`python3 integrations/compat/compat.py <cmd> --help`):
 
 - `matrix`: the GitHub Actions matrix for the blocking set (floor, latest) or the canary set (main,
-  and the newest release candidate when it is newer than latest).
+  and the newest pre-release, a release candidate or beta, when it is newer than latest).
 - `warnings`: compare a validator report's warnings with the baseline.
 - `latest` / `bump`: the newest stable release; move `latest` and the install guide's "Tested on" line.
 - `canary-issue`: open, update or close the one issue that tracks a failing canary target.
+- `prerelease`: what the host calls its pre-releases, the canary target's name.
 """
 
 from __future__ import annotations
@@ -40,10 +41,18 @@ class Host:
     name: str
     title: str
     image: str
+    #: Where the images are published: "dockerhub" or "ghcr".
+    registry: str
     compat_dir: Path
     readme: Path
+    #: Named groups major, minor, patch.
     stable_tag: re.Pattern[str]
+    #: Named groups major, minor, patch (the release it leads to) and n (its number).
     rc_tag: re.Pattern[str]
+    #: What the host calls its pre-releases: the report-only job's and the canary issue's target.
+    prerelease: str
+    #: Its short form, in job names.
+    prerelease_short: str
     main_tag: str
 
 
@@ -52,18 +61,37 @@ HOSTS = {
         name="hermes",
         title="Hermes",
         image="nousresearch/hermes-agent",
+        registry="dockerhub",
         compat_dir=REPO_ROOT / "integrations/hermes/compat",
         readme=REPO_ROOT / "integrations/hermes/README.md",
         # Release images are vX.Y.Z; release candidates rc.N-vX.Y.Z, named for the release they lead to.
         # Arch and -desktop variants carry a suffix and are skipped.
-        stable_tag=re.compile(r"^v(\d+)\.(\d+)\.(\d+)$"),
-        rc_tag=re.compile(r"^rc\.(\d+)-v(\d+)\.(\d+)\.(\d+)$"),
+        stable_tag=re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
+        rc_tag=re.compile(r"^rc\.(?P<n>\d+)-v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
+        prerelease="release candidate",
+        prerelease_short="rc",
+        main_tag="main",
+    ),
+    "openclaw": Host(
+        name="openclaw",
+        title="OpenClaw",
+        image="ghcr.io/openclaw/openclaw",
+        registry="ghcr",
+        compat_dir=REPO_ROOT / "integrations/openclaw/compat",
+        readme=REPO_ROOT / "integrations/openclaw/README.md",
+        # Releases are YYYY.M.D (two lines at once: the older extended-stable line sorts below the
+        # newest); betas YYYY.M.D-beta.N, named for the release they lead to. -slim, -browser, arch
+        # and alpha tags are skipped.
+        stable_tag=re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
+        rc_tag=re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)-beta\.(?P<n>\d+)$"),
+        prerelease="beta",
+        prerelease_short="beta",
         main_tag="main",
     ),
 }
 
 #: The install guide's tested-versions sentence; the bump keeps it equal to versions.txt.
-TESTED_ON = re.compile(r"Tested on (v\d+\.\d+\.\d+) and (v\d+\.\d+\.\d+)\.")
+TESTED_ON = re.compile(r"Tested on (v?\d+\.\d+\.\d+) and (v?\d+\.\d+\.\d+)\.")
 
 
 # --- versions ---------------------------------------------------------------------------------------
@@ -71,13 +99,13 @@ TESTED_ON = re.compile(r"Tested on (v\d+\.\d+\.\d+) and (v\d+\.\d+\.\d+)\.")
 
 def stable_version(host: Host, tag: str) -> Version | None:
     m = host.stable_tag.match(tag)
-    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+    return (int(m["major"]), int(m["minor"]), int(m["patch"])) if m else None
 
 
 def rc_version(host: Host, tag: str) -> tuple[Version, int] | None:
-    """(the release it leads to, the rc number)."""
+    """(the release it leads to, the pre-release number)."""
     m = host.rc_tag.match(tag)
-    return ((int(m[2]), int(m[3]), int(m[4])), int(m[1])) if m else None
+    return ((int(m["major"]), int(m["minor"]), int(m["patch"])), int(m["n"])) if m else None
 
 
 def read_versions(path: Path) -> dict[str, str]:
@@ -100,7 +128,7 @@ def newest_stable(host: Host, tags: Iterable[str]) -> str | None:
 
 
 def newest_rc(host: Host, tags: Iterable[str], latest: str) -> str | None:
-    """The newest release candidate for a release newer than `latest`, or None."""
+    """The newest pre-release (release candidate, beta) for a release newer than `latest`, or None."""
     floor = stable_version(host, latest)
     if floor is None:
         raise ValueError(f"latest is not a release tag: {latest}")
@@ -131,13 +159,86 @@ def docker_hub_pushed(image: str, tag: str) -> str:
         return json.load(resp)["last_updated"]
 
 
+_GHCR_ACCEPT = ",".join(
+    [
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ]
+)
+
+
+def _ghcr_repo(image: str) -> str:
+    return image.removeprefix("ghcr.io/")
+
+
+def _ghcr_token(repo: str) -> str:
+    """An anonymous pull token: the images are public."""
+    url = f"https://ghcr.io/token?scope=repository:{repo}:pull"
+    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - fixed https host
+        return json.load(resp)["token"]
+
+
+def _ghcr_getter(image: str) -> Callable[[str], dict]:
+    repo = _ghcr_repo(image)
+    token = _ghcr_token(repo)
+
+    def get(path: str) -> dict:
+        req = urllib.request.Request(
+            f"https://ghcr.io/v2/{repo}/{path}",
+            headers={"Authorization": f"Bearer {token}", "Accept": _GHCR_ACCEPT},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed https host
+            return json.load(resp)
+
+    return get
+
+
+def ghcr_tags(image: str, pages: int = 20) -> list[str]:
+    """All tags of a public GHCR image (the registry lists them by name, not by date)."""
+    repo = _ghcr_repo(image)
+    token = _ghcr_token(repo)
+    url: str | None = f"https://ghcr.io/v2/{repo}/tags/list?n=1000"
+    tags: list[str] = []
+    for _ in range(pages):
+        if not url:
+            break
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed https host
+            tags += json.load(resp).get("tags") or []
+            link = re.search(r"<([^>]+)>", resp.headers.get("Link") or "")
+        url = f"https://ghcr.io{link[1]}" if link else None
+    return tags
+
+
+def ghcr_created(image: str, tag: str, get: Callable[[str], dict] | None = None) -> str:
+    """When a tag's linux/amd64 image was built, as the image config's ISO timestamp (sorts as text).
+    GHCR keeps no push time in the registry API; the build time serves the same purpose."""
+    get = _ghcr_getter(image) if get is None else get
+    doc = get(f"manifests/{tag}")
+    for entry in doc.get("manifests") or []:
+        if (entry.get("platform") or {}).get("architecture") == "amd64":
+            doc = get(f"manifests/{entry['digest']}")
+            break
+    return get(f"blobs/{doc['config']['digest']}")["created"]
+
+
+def registry_tags(host: Host) -> list[str]:
+    return ghcr_tags(host.image) if host.registry == "ghcr" else docker_hub_tags(host.image)
+
+
+def registry_pushed(host: Host) -> Callable[[str, str], str]:
+    return ghcr_created if host.registry == "ghcr" else docker_hub_pushed
+
+
 def matrix(
     host: Host,
     which: str,
     tags: Iterable[str] | None = None,
     pushed_at: Callable[[str, str], str] | None = None,
 ) -> list[dict[str, str]]:
-    """GitHub Actions matrix entries: {host, name, image}."""
+    """GitHub Actions matrix entries: {host, name, image, target}."""
     pinned = read_versions(host.compat_dir / "versions.txt")
     if which == "blocking":
         return [
@@ -145,22 +246,31 @@ def matrix(
                 "host": host.name,
                 "name": f"floor {pinned['floor']}",
                 "image": f"{host.image}:{pinned['floor']}",
+                "target": "floor",
             },
             {
                 "host": host.name,
                 "name": f"latest {pinned['latest']}",
                 "image": f"{host.image}:{pinned['latest']}",
+                "target": "latest",
             },
         ]
     if which == "rc":
-        rc = newest_rc(
-            host, docker_hub_tags(host.image) if tags is None else tags, pinned["latest"]
-        )
+        rc = newest_rc(host, registry_tags(host) if tags is None else tags, pinned["latest"])
         return (
-            [{"host": host.name, "name": f"rc {rc}", "image": f"{host.image}:{rc}"}] if rc else []
+            [
+                {
+                    "host": host.name,
+                    "name": f"{host.prerelease_short} {rc}",
+                    "image": f"{host.image}:{rc}",
+                    "target": host.prerelease,
+                }
+            ]
+            if rc
+            else []
         )
     if which == "main":
-        pushed = docker_hub_pushed if pushed_at is None else pushed_at
+        pushed = registry_pushed(host) if pushed_at is None else pushed_at
         main_at, latest_at = pushed(host.image, host.main_tag), pushed(host.image, pinned["latest"])
         if main_at < latest_at:
             # A main build older than the latest release tests nothing the blocking check does not.
@@ -171,14 +281,19 @@ def matrix(
             )
             return []
         return [
-            {"host": host.name, "name": host.main_tag, "image": f"{host.image}:{host.main_tag}"}
+            {
+                "host": host.name,
+                "name": host.main_tag,
+                "image": f"{host.image}:{host.main_tag}",
+                "target": "main",
+            }
         ]
     raise ValueError(f"unknown set: {which}")
 
 
 # --- validator warnings -----------------------------------------------------------------------------
 
-_LINE_NO = re.compile(r"(\.py):\d+\b")
+_LINE_NO = re.compile(r"(\.(?:py|[cm]?[jt]s)):\d+(?::\d+)?\b")
 
 
 def normalize_warning(text: str) -> str:
@@ -228,7 +343,7 @@ ISSUE_LABEL = "host-compat"
 
 
 def issue_title(host: Host, target: str) -> str:
-    """One issue per host and canary target. The rc tag is left out so each new rc reuses it."""
+    """One issue per host and canary target. The pre-release tag is left out so each new one reuses it."""
     return f"{host.title} compatibility canary failing: {target}"
 
 
@@ -339,10 +454,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("canary-issue", help="open, update or close the canary's tracking issue")
     p.add_argument("--host", choices=HOSTS, required=True)
-    p.add_argument("--target", required=True, help="main or release candidate")
+    p.add_argument("--target", required=True, help="main, or the host's prerelease name")
     p.add_argument("--result", choices=("success", "failure"), required=True)
     p.add_argument("--run-url", required=True)
     p.add_argument("--detail", default="")
+
+    p = sub.add_parser("prerelease", help="print what the host calls its pre-releases")
+    p.add_argument("--host", choices=HOSTS, required=True)
 
     args = ap.parse_args(argv)
     host = HOSTS[args.host]
@@ -368,11 +486,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ok   {len(warnings)} validator warnings, all in the baseline")
         return 1 if new else 0
     elif args.cmd == "latest":
-        tag = newest_stable(host, docker_hub_tags(host.image))
+        tag = newest_stable(host, registry_tags(host))
         if not tag:
             print("no stable release tag found", file=sys.stderr)
             return 1
         print(tag)
+    elif args.cmd == "prerelease":
+        print(host.prerelease)
     elif args.cmd == "bump":
         print("bumped" if bump(host, args.tag) else "current")
     elif args.cmd == "canary-issue":

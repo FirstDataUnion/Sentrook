@@ -78,6 +78,7 @@ def test_matrix_sets():
             "host": "hermes",
             "name": "rc rc.4-v99.0.0",
             "image": "nousresearch/hermes-agent:rc.4-v99.0.0",
+            "target": "release candidate",
         }
     ]
 
@@ -87,7 +88,12 @@ def test_main_canary_runs_on_a_fresh_main_build():
         return {"main": "2026-11-17T04:00:00Z"}.get(tag, "2026-11-16T20:59:00Z")
 
     assert compat.matrix(HERMES, "main", pushed_at=pushed) == [
-        {"host": "hermes", "name": "main", "image": "nousresearch/hermes-agent:main"}
+        {
+            "host": "hermes",
+            "name": "main",
+            "image": "nousresearch/hermes-agent:main",
+            "target": "main",
+        }
     ]
 
 
@@ -228,3 +234,201 @@ def test_each_canary_target_has_its_own_issue():
     run_canary(gh, failed=True, target="main")
     run_canary(gh, failed=True, target="release candidate")
     assert len(gh.open) == 2
+
+
+# --- OpenClaw --------------------------------------------------------------------------------------
+
+OPENCLAW = compat.HOSTS["openclaw"]
+
+OPENCLAW_TAGS = [
+    "main",
+    "latest",
+    "main-slim",
+    "main-14e2e10794-amd64",
+    "2026.11.5",
+    "2026.11.5-browser",
+    "2026.11.5-slim-amd64",
+    "2026.11.5-beta.4",
+    "2026.11.5-beta.4-browser",
+    "2026.9.37",
+    "2026.5.23-alpha.1",
+    "sha256-405dcc682726f",
+]
+
+
+def test_openclaw_floor_is_the_plugins_declared_minimum():
+    pkg = json.loads((compat.REPO_ROOT / "integrations/openclaw/plugin/package.json").read_text())
+    declared = re.fullmatch(r">=\s*([\d.]+)", pkg["openclaw"]["compat"]["pluginApi"])
+    assert declared, "package.json openclaw.compat.pluginApi is not >= floor"
+    floor = compat.read_versions(OPENCLAW.compat_dir / "versions.txt")["floor"]
+    assert floor == declared[1] == pkg["openclaw"]["build"]["openclawVersion"]
+
+
+def test_openclaw_install_guide_names_the_tested_versions():
+    pinned = compat.read_versions(OPENCLAW.compat_dir / "versions.txt")
+    found = compat.TESTED_ON.findall(OPENCLAW.readme.read_text())
+    assert found == [(pinned["floor"], pinned["latest"])]
+
+
+def test_openclaw_baseline_reads_without_comments():
+    baseline = compat.read_baseline(OPENCLAW.compat_dir / "warnings-baseline.txt")
+    assert baseline and not any(line.startswith("#") for line in baseline)
+
+
+def test_openclaw_newest_stable_skips_variants_and_the_older_line():
+    assert compat.newest_stable(OPENCLAW, OPENCLAW_TAGS) == "2026.11.5"
+    assert compat.newest_stable(OPENCLAW, ["2026.9.37", "2026.10.10"]) == "2026.10.10"
+
+
+def test_openclaw_beta_only_when_newer_than_latest():
+    assert compat.newest_rc(OPENCLAW, OPENCLAW_TAGS, "2026.11.5") is None
+    newer = [*OPENCLAW_TAGS, "2026.11.6-beta.2", "2026.11.6-beta.10", "2026.11.6-beta.10-browser"]
+    assert compat.newest_rc(OPENCLAW, newer, "2026.11.5") == "2026.11.6-beta.10"
+    assert (
+        compat.newest_rc(OPENCLAW, [*newer, "2026.12.1-beta.1"], "2026.11.5") == "2026.12.1-beta.1"
+    )
+
+
+def test_openclaw_matrix_sets():
+    pinned = compat.read_versions(OPENCLAW.compat_dir / "versions.txt")
+    assert [m["image"] for m in compat.matrix(OPENCLAW, "blocking")] == [
+        f"ghcr.io/openclaw/openclaw:{pinned['floor']}",
+        f"ghcr.io/openclaw/openclaw:{pinned['latest']}",
+    ]
+    assert compat.matrix(OPENCLAW, "rc", tags=["2099.1.1-beta.3"]) == [
+        {
+            "host": "openclaw",
+            "name": "beta 2099.1.1-beta.3",
+            "image": "ghcr.io/openclaw/openclaw:2099.1.1-beta.3",
+            "target": "beta",
+        }
+    ]
+
+
+def test_openclaw_main_canary_skips_a_stale_main_build(capsys):
+    def stale(image, tag):
+        return {"main": "2026-11-01T00:00:00Z"}.get(tag, "2026-11-17T03:41:55Z")
+
+    assert compat.matrix(OPENCLAW, "main", pushed_at=stale) == []
+    assert "skipping the main canary" in capsys.readouterr().err
+
+
+def test_canary_targets_are_named_per_host():
+    assert compat.issue_title(HERMES, HERMES.prerelease) == (
+        "Hermes compatibility canary failing: release candidate"
+    )
+    assert compat.issue_title(OPENCLAW, OPENCLAW.prerelease) == (
+        "OpenClaw compatibility canary failing: beta"
+    )
+
+
+def test_bump_moves_an_openclaw_guide(tmp_path):
+    (tmp_path / "compat").mkdir()
+    (tmp_path / "compat/versions.txt").write_text("floor 2026.9.5\nlatest 2026.11.5\n")
+    (tmp_path / "README.md").write_text(
+        "Tested on 2026.9.5 and 2026.11.5. Older releases refuse.\n"
+    )
+    host = dataclasses.replace(
+        OPENCLAW, compat_dir=tmp_path / "compat", readme=tmp_path / "README.md"
+    )
+    assert compat.bump(host, "2026.11.12") is True
+    assert "Tested on 2026.9.5 and 2026.11.12." in host.readme.read_text()
+    assert compat.bump(host, "2026.9.38") is False
+    with pytest.raises(ValueError):
+        compat.bump(host, "2026.12.1-beta.1")
+
+
+def test_ghcr_build_time_reads_the_amd64_image_config():
+    index = {
+        "manifests": [
+            {"digest": "sha256:arm", "mediaType": "m", "platform": {"architecture": "arm64"}},
+            {"digest": "sha256:amd", "mediaType": "m", "platform": {"architecture": "amd64"}},
+        ]
+    }
+    docs = {
+        "manifests/main": index,
+        "manifests/sha256:amd": {"config": {"digest": "sha256:cfg"}},
+        "blobs/sha256:cfg": {"created": "2026-11-17T03:41:55.2Z"},
+    }
+    assert compat.ghcr_created("ghcr.io/openclaw/openclaw", "main", get=lambda p: docs[p]) == (
+        "2026-11-17T03:41:55.2Z"
+    )
+
+
+# --- OpenClaw seam probe ---------------------------------------------------------------------------
+
+sys.path.insert(0, str(compat.REPO_ROOT / "integrations/openclaw/compat"))
+
+import seams  # noqa: E402
+
+
+def probe_records(**changes):
+    """What the probe records on a compatible OpenClaw, with `changes` merged into the full registration."""
+    fields = dict.fromkeys(seams.API_FIELDS, "function")
+    fields["runtime.version"] = "string"
+    register = {
+        "at": "register",
+        "mode": "full",
+        "fields": fields,
+        "extra": [],
+        "version": "2026.11.5",
+        "current": "object",
+    }
+    for key, value in changes.items():
+        if key == "fields":
+            fields.update(value)
+        else:
+            register[key] = value
+    call = {"at": "before_tool_call", **{f: s for f, s in seams.TOOL_CALL_FIELDS.items()}}
+    return [
+        {"at": "register", "mode": "discovery", "fields": {}, "extra": [], "version": None},
+        register,
+        {"at": "before_prompt_build", "messages": "array", "users": 0, "ownerMarked": 0},
+        call,
+        call,
+        {"at": "before_prompt_build", "messages": "array", "users": 1, "ownerMarked": 1},
+    ]
+
+
+def test_seams_silent_on_a_compatible_host():
+    assert seams.judge(probe_records()) == []
+
+
+def test_seams_fire_when_a_probed_field_is_missing():
+    problems = seams.judge(probe_records(fields={"runtime.config.current": "undefined"}))
+    assert problems == ["api.runtime.config.current is undefined, expected function"]
+    extra = probe_records(
+        extra=["runtime.compatNoSuchField"], fields={"runtime.compatNoSuchField": "undefined"}
+    )
+    assert seams.judge(extra) == ["api.runtime.compatNoSuchField is missing (undefined)"]
+
+
+def test_seams_fire_when_the_owner_marker_moves():
+    records = [r for r in probe_records() if r["at"] != "before_prompt_build"]
+    records.append(
+        {
+            "at": "before_prompt_build",
+            "messages": "array",
+            "users": 1,
+            "ownerMarked": 0,
+            "markerShapes": ["undefined"],
+        }
+    )
+    assert seams.judge(records) == [
+        "no user message carried __openclaw.senderIsOwner === true (found: undefined)"
+    ]
+
+
+def test_seams_fire_when_a_tool_call_field_moves():
+    records = probe_records()
+    records[3] = {**records[3], "toolName": "undefined", "session": None}
+    assert seams.judge(records) == [
+        "before_tool_call toolName is undefined, expected string",
+        "before_tool_call session is None, expected string",
+    ]
+
+
+def test_seams_fire_without_a_full_registration():
+    assert seams.judge([r for r in probe_records() if r.get("mode") != "full"]) == [
+        "the probe was never registered in full mode (no agent run loaded plugins)"
+    ]

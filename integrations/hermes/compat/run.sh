@@ -30,7 +30,7 @@ echo "== $image"
 status=0
 docker run --rm --init --user hermes \
   -e COMPAT_CLIENT_SECRET="${COMPAT_CLIENT_SECRET:-}" \
-  -v "$stage/sentrook:/plugin:ro" -v "$here:/compat:ro" -v "$out:/out" \
+  -v "$stage/sentrook:/plugin:ro" -v "$here:/compat:ro" -v "$root/integrations/compat:/shared:ro" -v "$out:/out" \
   --entrypoint bash "$image" /compat/container_check.sh || status=1
 
 # The validator reports some contract breaks (a declared hook never registered, a private import) only

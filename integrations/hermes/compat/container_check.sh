@@ -3,6 +3,7 @@
 #
 #   /plugin   the plugin as a user would get it (no tests), read-only
 #   /compat   this directory, read-only
+#   /shared   integrations/compat (the mock services), read-only
 #   /out      results: steps.tsv (step, ok|FAIL, detail), validate.json, the logs of each step
 #
 # Steps: the catalog validator, install from a git URL with --enable, the scan credentials set through
@@ -106,7 +107,7 @@ else
 fi
 
 # The mock identity service, scanner and model.
-python3 /compat/mock_services.py --port "$MOCK_PORT" --log "$OUT/mock.jsonl" \
+python3 /shared/mock_services.py --port "$MOCK_PORT" --log "$OUT/mock.jsonl" \
   --client-id "$CLIENT_ID" --client-secret "$CLIENT_SECRET" &
 for _ in $(seq 50); do
   python3 -c "import urllib.request; urllib.request.urlopen('$MOCK/healthz', timeout=1)" 2>/dev/null && break
