@@ -26,9 +26,11 @@ machine, and a recipient written as a self-reference (`me`, `self`, `owner`) is 
 runs as, so none of these is looked up.
 
 A host or repository that self-modification content the call writes (a cron line, a hook, a skill, a job prompt)
-sends to or runs code from in its later run (`Entity.future_roles`) is scored in that role when nobody named it (not
-the owner's request, a grant or the owner's own configuration). Unknown, it takes the unknown distrust of that role
-with the reason `reputation.unknown_in_written_selfmod`, which the attended-owner check counts as a strong signal.
+sends to or runs code from in its later run (`Entity.future_roles`) is scored in that role. Unknown, it takes the
+unknown distrust of that role with the reason `reputation.unknown_in_written_selfmod`, which the attended-owner check
+counts as a strong signal; a look-alike keeps that claim beside its near-miss one, and its later code role counts for
+the `lookalike_code_source` floor. Relief decides whether the owner's naming, a grant or configuration sanctions the
+role, as for the call's own roles: sending, never running code.
 
 A provider API host the library lists only as the home of the credentials its service issues (tier
 `provider_api`) vouches for nothing else: it is scored, reported and shown to the judge as an unlisted host,
@@ -244,10 +246,9 @@ class EntityOracleProbe:
 
     @staticmethod
     def _later_roles(ent: Entity) -> set[str]:
-        """The roles a later run that the call's written self-modification content sets up gives the entity, when
-        nobody named it: not the owner's request, a grant or the owner's own configuration."""
-        if not ent.future_roles or ent.sanctioned or ent.in_session_trusted:
-            return set()
+        """The roles a later run that the call's written self-modification content sets up gives the entity. Whether
+        the owner's naming, a grant or the owner's configuration sanctions a role is relief's to decide
+        (`converge.relief`): naming sanctions sending to a host, never running code from it."""
         return {r.value for r in ent.future_roles}
 
     @staticmethod
@@ -335,6 +336,7 @@ class EntityOracleProbe:
         for ent in remote:
             v = _credential_home_only(result.get(ent.kind.value, ent.value))
             near = _near_miss(v)
+            later_near = False
             roles = sorted(r.value for r in ent.roles) or [Role.MENTIONED.value]
             later = self._later_roles(ent)
             risky_role = max(
@@ -381,9 +383,11 @@ class EntityOracleProbe:
                 if near is not None and risky_role in NEAR_MISS_ROLES:
                     distrust = max(distrust, self.params.near_miss_distrust)
                     reason = f"reputation.near_miss_{ent.kind.value}"
+                    # a look-alike the written content plants keeps the written-content claim beside its own
+                    later_near = from_later
                     if (
                         self.params.near_miss_floor > 0
-                        and NEAR_MISS_CODE_ROLES & set(roles)
+                        and NEAR_MISS_CODE_ROLES & (set(roles) | later)
                         and Origin.GRANT not in ent.origins
                     ):
                         floors.append(
@@ -438,6 +442,15 @@ class EntityOracleProbe:
                     reason=reason,
                 )
             )
+            if later_near:
+                contributions.append(
+                    Contribution(
+                        signal="suspicion.distrust",
+                        value=min(1.0, max(0.0, distrust)),
+                        subject=ent.id,
+                        reason=WRITTEN_SELFMOD_REASON,
+                    )
+                )
             per_entity[ent.id] = self._entity_info(ent, v, roles, near)
         if not result.available:
             coverage = min(coverage, self.params.coverage_unavailable)

@@ -40,6 +40,10 @@ expiry) that cover what the call does (`allows`):
   credentials, and reports the relief on the provider host. Nothing on the suspicion side changes, unless
   `credential_home.relieve_host` (off by default) also relieves the provider host of its distrust and untrusted
   origin, as a matched destination grant would.
+- **Later roles**: the roles a later run, set up by self-modification content the call writes, gives an entity
+  (`Entity.future_roles`) count with its own roles in every rule above: naming, configuration and reputation
+  sanction sending to the host in that run, never running code from it, and a grant of a kind that does not cover
+  code (any but `repo`) does not relieve a host that run takes code from.
 - Grants sanction access, never what happens to the data afterwards: relief never clears session flags
   and never lowers a floor (floors are applied after relief).
 """
@@ -56,6 +60,17 @@ from ..prepare.entities import Entity, Origin, Role
 from ..prepare.grants import GRANT_KINDS, sends_off_host
 from .merge import ANY_SUBJECT
 from .params import ConvergenceParams
+
+
+def _acting_roles(ent: Entity) -> set[str]:
+    """The entity's roles, with those a later run that self-modification content the call writes gives it: naming,
+    configuring or vouching for a host sanctions sending to it in that run too, never running code from it."""
+    return {r.value for r in ent.roles | ent.future_roles}
+
+
+#: Grant kinds that sanction taking code from what they cover.
+_CODE_GRANT_KINDS = frozenset({"repo"})
+_CODE_ROLES = frozenset({Role.CODE_SOURCE, Role.EXECUTABLE})
 
 
 @dataclass(frozen=True)
@@ -127,8 +142,11 @@ def compute_relief(
         if spec.local_only and off_host:
             continue  # a grant sanctions access, never sending the data off the host
         for eid in entity_ids:
-            if prepared.entities.by_id(eid) is None:
+            ent = prepared.entities.by_id(eid)
+            if ent is None:
                 continue
+            if grant.kind not in _CODE_GRANT_KINDS and ent.future_roles & _CODE_ROLES:
+                continue  # a later run takes code from it: a grant to send there does not sanction that
             effect = "+".join(s.split(".", 1)[1] for s in spec.relieves)
             if spec.actions:
                 effect += ":" + "+".join(sorted(prepared.grant_actions.get(eid, ())))
@@ -172,7 +190,7 @@ def compute_relief(
                     or (Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first)
                 ):
                     continue  # a task text is not the owner's word against content that supplied it
-                roles = {r.value for r in ent.roles}
+                roles = _acting_roles(ent)
                 if not roles & set(params.request_named_roles):
                     continue
                 if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
@@ -199,7 +217,7 @@ def compute_relief(
                 Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first
             ):
                 continue  # content the agent read wins over the owner's config
-            roles = {r.value for r in ent.roles}
+            roles = _acting_roles(ent)
             if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
                 continue  # a configured host sanctions sending to it, never running code from it
             if not roles & set(params.request_named_roles):
@@ -250,7 +268,7 @@ def compute_relief(
                 continue
             if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
                 continue
-            roles = {r.value for r in ent.roles}
+            roles = _acting_roles(ent)
             if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
                 continue  # reputation sanctions sending to a host, never running code from it
             if Role.TOOL_PROVIDER.value in roles:

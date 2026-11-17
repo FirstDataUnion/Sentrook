@@ -8,29 +8,41 @@ the oracle and the context probe score them as the roles of a run the call sched
 
 What counts as written self-modification content:
 
-- a file write or edit into the agent's scheduler, skill, hook or config folders, or into a host scheduler or
-  startup file (the `agent_scheduler`, `agent_plugins`, `hooks`, `agent_config`, `host_scheduler` and `startup`
-  path groups); only the text the call writes, never the text an edit replaces;
-- a scheduler, skill or config tool (the self-modification tool names) with a changing action: its command and
-  script fields as shell, its prompt, message, content and instruction fields as instructions;
+- a file write or edit into the agent's scheduler, skill, hook or config folders, a repository hook folder
+  (`.git/hooks`, `.husky`, `.githooks`), or a host scheduler or startup file (the `agent_scheduler`, `agent_plugins`,
+  `hooks`, `agent_config`, `host_scheduler` and `startup` path groups); a JSON or YAML file is read by key (command
+  keys as shell, prompt and message keys as instructions); a `package.json` by its install lifecycle scripts; only
+  the text the call writes, never the text an edit replaces;
+- a scheduler, skill or config tool (the self-modification tool names) with a changing action: its command, script
+  and argv fields as shell, its prompt, message, content and instruction fields as instructions;
 - a shell command that installs a crontab, a systemd or launchd job, or writes into one of those files (a redirect,
-  `tee`), or that adds a job with the host's own cron or automation command: its quoted strings and heredoc bodies.
+  `tee`, an in-place `sed`), or that adds a job with the host's own cron or automation command: its quoted strings,
+  heredoc bodies and unquoted `echo` text.
 
 How the roles are read:
 
 - shell text the host or the shell runs (a cron line, a hook or startup script, a unit, a job's command): a host the
-  text fetches code from and runs (piped to a shell, downloaded then run, cloned then built) is a code source; any
-  other host a network client in the text contacts (`curl`, `wget`, `ssh`, `nc`, ...) is a destination. Nobody scans
-  that run, so a plain request to a host counts. Cron schedule fields are dropped first and comments are ignored.
-- program text the host runs (a hook written in another language): every host it names is a destination. A
-  `hooks/` folder of the workspace's own code (a web app's hooks) is not a host hook.
+  text fetches code from and runs (piped to a shell, downloaded then run, cloned then built, run through a command
+  or process substitution, an inline `python -c` or `node -e` program that fetches and evaluates, PowerShell's
+  download-and-invoke, or base64 decoded into a shell) is a code source; any other host a network client contacts
+  (`curl`, `wget`, `ssh`, `nc`, ...) is a destination. Nobody scans that run, so a plain request counts. Cron
+  schedule fields (and a system cron table's user field) are dropped first, comments are ignored, and a variable
+  an earlier line sets is read where it is used.
+- program text the host runs (a hook written in another language): every host its code names is a destination;
+  hosts in its comments are not. A `hooks/` folder of the workspace's own code (a web app's hooks) is not a host
+  hook.
 - what the agent runs later through its own tools (a skill's commands and scripts): a fetch-and-run is a code source
-  and a send (an upload, a POST, a raw socket) a destination; a plain lookup is not charged now, since each command
-  is scanned when the agent runs it.
+  and a send of local data (a file, standard input, a variable's value, a copy, a raw socket) a destination. An API
+  call whose body is a literal (a query, a POST with a key in its header) is a lookup, not charged now, since each
+  command is scanned when the agent runs it.
 - instruction text (a skill, a job prompt, an agent instruction file): its commands (fenced or inline code) as above,
-  except those the text warns against; a sentence that tells the agent to fetch and run something names a code
-  source, and one that tells it to post, send or upload something names a destination. A link the text only
-  mentions (documentation, a reference) takes no role.
+  less those it explicitly says not to run (a warning word alone hides nothing); a sentence that tells the agent to
+  fetch and run something, or to read or load something and follow or apply it, names a code source; one that tells
+  it to post, send, upload, report or share something to a host names a destination, whether the host comes before
+  or after the verb. A link it only points to (documentation, "see ... at") takes no role.
+
+Whether the owner's naming, a grant or the owner's configuration sanctions a later role is decided by relief, as for
+the call's own roles (`converge.relief`): naming sanctions sending to a host, never running code from it.
 """
 
 from __future__ import annotations
@@ -45,16 +57,25 @@ from ..aira.lists import Lists, load_lists
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ToolKind
 from .entities import (
-    _EGRESS_MARKERS,
     EntityKind,
     Found,
     Role,
     _hosts_in,
     extract_exec,
     normalise_path,
+    pipes_into_code,
     shell_segments,
 )
-from .skill_steps import _NEGATION, patch_added_text, steps_in, written_texts
+from .skill_steps import (
+    _COMMANDISH,
+    _FENCE,
+    _INLINE,
+    _PROMPT,
+    _fence_lines,
+    _line_before,
+    patch_added_text,
+    written_texts,
+)
 
 
 class Form(StrEnum):
@@ -72,6 +93,8 @@ class WrittenText:
     #: through its tools) only a fetch-and-run is a code source and only a send (an upload, a POST, a raw socket) a
     #: destination.
     host_run: bool = True
+    #: A system cron table (`/etc/crontab`, `/etc/cron.d/*`): each line names the user it runs as after the schedule.
+    cron_user: bool = False
 
 
 #: Path groups whose files hold content that runs or is followed later.
@@ -103,9 +126,16 @@ _PROGRAM_SUFFIXES = (
 )
 #: Suffixes of structured files whose string values are walked.
 _STRUCTURED_SUFFIXES = (".json", ".jsonl", ".json5")
+_YAML_SUFFIXES = (".yaml", ".yml")
+#: System cron tables, whose lines carry a user field.
+_SYSTEM_CRON = re.compile(r"^/etc/(?:crontab$|cron\.d/)")
+#: Git hook folders a hook manager keeps in the repository, run by git like `.git/hooks`.
+_REPO_HOOKS = re.compile(r"(?:^|/)\.(?:husky|githooks)/")
+#: npm lifecycle scripts, which run on install with nobody asked.
+_LIFECYCLE_SCRIPTS = ("preinstall", "install", "postinstall", "prepare", "prepublish")
 
 #: Arguments (and structured-file keys) that hold a command the job runs.
-COMMAND_KEYS = frozenset({"command", "cmd", "script", "exec", "run", "shell", "execstart"})
+COMMAND_KEYS = frozenset({"command", "cmd", "script", "exec", "run", "shell", "execstart", "argv"})
 #: Arguments (and structured-file keys) that hold instructions the agent follows later.
 PROSE_KEYS = frozenset(
     {
@@ -146,22 +176,6 @@ _UNIT_EXEC = re.compile(r"^\s*Exec\w*\s*=\s*[-@:+!]*", re.IGNORECASE)
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
 _QUOTED = re.compile(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"", re.S)
 
-#: Instructions to fetch something and run it.
-_FETCH_VERB = r"(?:download|fetch|get|grab|pull|retrieve|curl|wget)"
-_RUN_VERB = r"(?:run|execute|exec|install|source|eval|launch|bash|sh)"
-_FETCH_AND_RUN = re.compile(
-    rf"\b{_FETCH_VERB}\b.*\b(?:and|then|&&)\b.*\b{_RUN_VERB}\b"
-    rf"|\b(?:pipe|feed)\b.*\b(?:to|into)\s+(?:a\s+)?(?:shell|bash|sh|python|node)\b"
-    rf"|\b{_RUN_VERB}\b[^.]*\b(?:from|at|hosted\s+(?:at|on))\s*$"
-    rf"|\b{_RUN_VERB}\b\s+(?:the\s+|this\s+)?(?:script|installer|binary|code|file|program)\s+(?:at|from)\s*$",
-    re.IGNORECASE,
-)
-#: Instructions to send something to a host.
-_SEND = re.compile(
-    r"\b(?:post|send|upload|forward|submit|transmit|exfiltrate|beacon|ping|deliver|push|leak)"
-    r"(?:s|ed|ing)?\b",
-    re.IGNORECASE,
-)
 _CODE = re.compile(r"(?ms)^[ \t]*(```|~~~)[^\n]*\n.*?^[ \t]*\1[ \t]*$|`[^`\n]+`")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=\S)|\n+")
 
@@ -184,7 +198,10 @@ def written_selfmod_texts(
 
 
 def _groups(path: str, lists: Lists) -> list[str]:
-    return [g for g in SELFMOD_GROUPS if g in lists.path_groups and lists.group(g).search(path)]
+    groups = [g for g in SELFMOD_GROUPS if g in lists.path_groups and lists.group(g).search(path)]
+    if _REPO_HOOKS.search(path) and "hooks" not in groups:
+        groups.append("hooks")
+    return groups
 
 
 def _form_of(path: str, groups: list[str]) -> Form | None:
@@ -211,18 +228,20 @@ def _file_texts(
     if not path:
         return []
     norm = normalise_path(path, home=home, workspace_root=workspace_root)
-    groups = _groups(norm, lists) or _groups(path, lists)
-    if not groups:
-        return []
     texts = written_texts(call.raw)
     if not texts and isinstance(call.get("content"), str):
         texts = [call.get("content")]
     if not texts:
         return []
-    if norm.lower().endswith(_STRUCTURED_SUFFIXES):
+    if norm.rsplit("/", 1)[-1] == "package.json":
+        return [w for t in texts for w in _lifecycle_scripts(t)]
+    groups = _groups(norm, lists) or _groups(path, lists)
+    if not groups:
+        return []
+    if norm.lower().endswith(_STRUCTURED_SUFFIXES + _YAML_SUFFIXES):
         out: list[WrittenText] = []
         for text in texts:
-            out.extend(_structured(text))
+            out.extend(_structured(text, yaml_text=norm.lower().endswith(_YAML_SUFFIXES)))
         return out
     form = _form_of(norm, groups)
     if form is None:
@@ -234,7 +253,24 @@ def _file_texts(
     ):
         return []  # a `hooks/` folder of a project's own code (a web app's hooks), not a host hook
     host_run = bool(_SHELL_GROUPS & set(groups))
-    return [WrittenText(t, form, host_run) for t in texts if t.strip()]
+    cron_user = bool(_SYSTEM_CRON.search(norm))
+    return [WrittenText(t, form, host_run, cron_user) for t in texts if t.strip()]
+
+
+def _lifecycle_scripts(text: str) -> list[WrittenText]:
+    """npm lifecycle scripts a `package.json` sets: they run on the next install, as shell."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return []
+    scripts = doc.get("scripts") if isinstance(doc, dict) else None
+    if not isinstance(scripts, dict):
+        return []
+    return [
+        WrittenText(v, Form.SHELL)
+        for k in _LIFECYCLE_SCRIPTS
+        if isinstance(v := scripts.get(k), str) and v.strip()
+    ]
 
 
 def _project_file(path: str, home: str | None, workspace_root: str | None) -> bool:
@@ -245,12 +281,17 @@ def _project_file(path: str, home: str | None, workspace_root: str | None) -> bo
     return bool(ws) and path.startswith(ws.rstrip("/") + "/")
 
 
-def _structured(text: str) -> list[WrittenText]:
-    """The string values of a JSON document: command keys as shell, instruction keys as prose. A document that
-    does not parse is read as instructions."""
+def _structured(text: str, *, yaml_text: bool = False) -> list[WrittenText]:
+    """The string values of a JSON or YAML document: command keys as shell, instruction keys as prose. A document
+    that does not parse is read as instructions."""
     try:
-        doc = json.loads(text)
-    except ValueError:
+        if yaml_text:
+            import yaml
+
+            doc = yaml.safe_load(text)
+        else:
+            doc = json.loads(text)
+    except Exception:  # noqa: BLE001 (a fragment or a broken file is still text)
         return [WrittenText(text, Form.PROSE)] if text.strip() else []
     out: list[WrittenText] = []
     _walk(doc, None, out)
@@ -262,6 +303,13 @@ def _walk(node: Any, key: str | None, out: list[WrittenText]) -> None:
         for k, v in node.items():
             _walk(v, str(k), out)
     elif isinstance(node, list):
+        if (
+            key is not None
+            and key.lower() in COMMAND_KEYS
+            and all(isinstance(v, str) for v in node)
+        ):
+            out.append(WrittenText(_join_argv(node), Form.SHELL))
+            return
         for v in node:
             _walk(v, key, out)
     elif isinstance(node, str) and node.strip() and key is not None:
@@ -270,6 +318,19 @@ def _walk(node: Any, key: str | None, out: list[WrittenText]) -> None:
             out.append(WrittenText(node, Form.SHELL))
         elif k in PROSE_KEYS:
             out.append(WrittenText(node, Form.PROSE))
+
+
+def _join_argv(argv: list[str]) -> str:
+    """An argument vector as one shell command; `sh -c CODE` is the code it runs."""
+    import shlex
+
+    if (
+        len(argv) >= 3
+        and argv[0].rsplit("/", 1)[-1] in ("sh", "bash", "zsh", "dash")
+        and argv[1] == "-c"
+    ):
+        return argv[2]
+    return shlex.join(argv)
 
 
 def _tool_reason(call: CanonicalCall, lists: Lists) -> str | None:
@@ -311,6 +372,9 @@ def _tool_texts(call: CanonicalCall, lists: Lists) -> list[WrittenText]:
             elif isinstance(v, dict):
                 take(v)
             elif isinstance(v, list):
+                if key in COMMAND_KEYS and v and all(isinstance(i, str) for i in v):
+                    add(_join_argv(v), Form.SHELL)
+                    continue
                 for item in v:
                     take(item)
 
@@ -358,20 +422,38 @@ def _exec_texts(
     for m in _QUOTED.finditer(rest):
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body and _hosts_in(body):
-            bodies.append(body.replace('\\"', '"'))
-    return [WrittenText(b, form, host_run) for b in dict.fromkeys(bodies) if b.strip()]
+            bodies.append(_SED_APPEND.sub("", body.replace('\\"', '"'), count=1))
+    for m in _UNQUOTED_ECHO.finditer(rest):
+        if _hosts_in(m.group(1)):
+            bodies.append(m.group(1))
+    cron_user = any(_SYSTEM_CRON.search(t) for t in _write_targets(rest))
+    return [WrittenText(b, form, host_run, cron_user) for b in dict.fromkeys(bodies) if b.strip()]
+
+
+#: A sed script that appends or inserts a line (`$a text`, `1i\ text`): the line is the text.
+_SED_APPEND = re.compile(r"^\s*(?:(?:\$|\d+|/[^/]*/)\s*[aic]\\?\s*|[aic]\\\s*)")
+#: An unquoted `echo` or `printf` redirected into a file: what it writes.
+_UNQUOTED_ECHO = re.compile(r"\b(?:echo|printf)\s+(?:-[neE]+\s+)?([^'\"<>|;&\n]+?)\s*>>?\s*\S+")
 
 
 _REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\s*([^\s;&|<>]+)")
 
 
 def _write_targets(command: str) -> list[str]:
-    """Files a command writes by redirect or `tee`."""
+    """Files a command writes by redirect, `tee` or an in-place `sed`."""
     out = [m.group(1).strip("'\"") for m in _REDIRECT.finditer(command)]
     for tokens in shell_segments(command):
         if tokens[0] == "tee":
             out.extend(t for t in tokens[1:] if not t.startswith("-"))
+    for m in _SED_IN_PLACE.finditer(command):
+        # the file is the last word of the command: the script before it may hold a `|` the split above cuts at
+        out.append(m.group(1).strip("'\""))
     return out
+
+
+_SED_IN_PLACE = re.compile(
+    r"\bsed\s+(?:-\w+\s+)*(?:-i\S*|--in-place\S*)\s.*\s(\S+)\s*(?:$|[;&])", re.S
+)
 
 
 # --------------------------------------------------------------------------- roles
@@ -393,14 +475,17 @@ def future_entities(
         if wt.form is Form.SHELL:
             add(
                 _shell_roles(
-                    wt.text, home=home, workspace_root=workspace_root, contacts=wt.host_run
+                    wt.text,
+                    home=home,
+                    workspace_root=workspace_root,
+                    contacts=wt.host_run,
+                    cron_user=wt.cron_user,
                 )
             )
         elif wt.form is Form.PROGRAM:
+            code = _strip_comments(wt.text)
             program_lines = (
-                [wt.text]
-                if wt.host_run
-                else [line for line in wt.text.splitlines() if _EGRESS_MARKERS.search(line)]
+                [code] if wt.host_run else [ln for ln in code.splitlines() if _sends_local(ln)]
             )
             add(
                 [
@@ -421,7 +506,15 @@ def _local(host: str) -> bool:
     return is_local_host(host)
 
 
-def _shell_lines(text: str) -> list[str]:
+_COMMENTS = re.compile(r"/\*.*?\*/|(?:^|(?<=\s))(?://|#(?!!))[^\n]*", re.S | re.M)
+
+
+def _strip_comments(code: str) -> str:
+    """Program text without its comments (`/* */`, `//` and `#` to the end of a line; never a `://` in a URL)."""
+    return _COMMENTS.sub(" ", code)
+
+
+def _shell_lines(text: str, *, cron_user: bool = False) -> list[str]:
     lines: list[str] = []
     pending = ""
     for raw in text.splitlines():
@@ -439,10 +532,15 @@ def _shell_lines(text: str) -> list[str]:
         elif (
             re.match(r"^[A-Z_][A-Z0-9_]*=", stripped)
             and " " not in stripped.split("=", 1)[1].strip()
+            and "/" not in stripped.split("=", 1)[1]
         ):
             continue  # a variable line of a cron table (`MAILTO=...`)
         else:
-            stripped = _CRON_SCHEDULE.sub("", stripped, count=1)
+            m = _CRON_SCHEDULE.match(stripped)
+            if m:
+                stripped = stripped[m.end() :]
+                if cron_user:
+                    stripped = stripped.split(None, 1)[1] if " " in stripped.strip() else ""
         if stripped:
             lines.append(stripped)
     if pending.strip():
@@ -450,14 +548,95 @@ def _shell_lines(text: str) -> list[str]:
     return lines
 
 
+_VAR_LINE = re.compile(
+    r"^\s*(?:export\s+|local\s+|readonly\s+)?([A-Za-z_]\w*)=(['\"]?)([^\s'\"]+)\2\s*;?\s*$"
+)
+
+
+def _resolve_vars(lines: list[str]) -> list[str]:
+    """Lines with the values of variables an earlier line sets (`U=https://...`) written in where they are used."""
+    values: dict[str, str] = {}
+    out: list[str] = []
+    for line in lines:
+        m = _VAR_LINE.match(line)
+        if m:
+            values[m.group(1)] = m.group(3)
+            out.append(line)
+            continue
+        for name, value in values.items():
+            line = re.sub(r"\$\{" + name + r"\}|\$" + name + r"\b", lambda _m, v=value: v, line)
+        out.append(line)
+    return out
+
+
+#: A fetch whose output a shell runs through a substitution: `sh -c "$(curl ...)"`, `bash <(curl ...)`,
+#: `eval "$(wget -qO- ...)"`, `source <(curl ...)`.
+_SUBST_RUN = re.compile(
+    r"(?:\b(?:ba|z|k|da|fi)?sh|\beval|\bsource|(?:^|[\s;&|(])\.)\s+(?:-\w+\s+)*[\"']?(?:\$\(|`|<\()\s*"
+    r"(?:\S+/)?(?:curl|wget|fetch)\b"
+)
+#: An inline program (`python3 -c`, `node -e`, ...) that both fetches and runs what it fetched.
+_INLINE_PROGRAM = re.compile(
+    r"\b(?:python[23]?|node|deno|bun|perl|ruby|php)\s+(?:-\w+\s+)*(?:-c|-e|-E|-r|--eval)\b", re.I
+)
+_PROGRAM_FETCH = re.compile(
+    r"\b(?:urlopen|urllib|requests\.get|http\.get|https\.get|fetch\(|LWP|open-uri|Net::HTTP|file_get_contents"
+    r"|httpx\.get)",
+    re.I,
+)
+_PROGRAM_RUN = re.compile(r"\b(?:exec|eval|Function|system|spawn|execSync|import\()", re.I)
+#: PowerShell's download-and-run: `iwr URL | iex`, `IEX (New-Object Net.WebClient).DownloadString(URL)`.
+_PWSH_FETCH = re.compile(
+    r"\b(?:iwr|irm|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|net\.webclient)\b",
+    re.I,
+)
+_PWSH_RUN = re.compile(r"\b(?:iex|invoke-expression|start-process)\b", re.I)
+
+
+def _runs_fetched(line: str) -> bool:
+    """The line fetches code and runs it by a route the pipe check does not read."""
+    if _SUBST_RUN.search(line):
+        return True
+    if _INLINE_PROGRAM.search(line) and _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line):
+        return True
+    return bool(_PWSH_FETCH.search(line) and _PWSH_RUN.search(line))
+
+
+#: A send that carries local data: a file or standard input (`@file`, `@-`, `-T`, `<`), a variable's value in the
+#: request body, or a file-copy or raw-socket client. A request whose body is a literal (an API query) is a lookup.
+_LOCAL_SEND = re.compile(
+    r"(?:\s|^)(?:-d|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|-F|--form(?:-string)?|--post-data|--body-data)"
+    r"(?:\s+|=)[^\s]*?(?:@|\$)"
+    r"|(?:\s|^)(?:-T|--upload-file|--post-file|--body-file)(?:\s|=)"
+    r"|(?:\s|^)<\s*[~/$.\w]"
+    r"|\b(?:scp|rsync|sftp|nc|ncat|netcat|socat)\b|/dev/(?:tcp|udp)/"
+    r"|requests\.(?:post|put|patch)\([^)]*(?:open\(|environ|getenv)|readFileSync|process\.env",
+    re.I,
+)
+
+
+def _sends_local(text: str) -> bool:
+    return bool(_LOCAL_SEND.search(text))
+
+
 def _shell_roles(
-    text: str, *, home: str | None, workspace_root: str | None, contacts: bool = True
+    text: str,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    contacts: bool = True,
+    cron_user: bool = False,
 ) -> list[Found]:
     """Code sources and destinations of shell text. With `contacts`, every host a network client contacts is a
-    destination; without it, only a host the text sends to (an upload, a POST, a raw socket)."""
-    lines = _shell_lines(text)
+    destination; without it, only a host the text sends local data to (a file, standard input, a variable's value,
+    a copy or a raw socket). Base64 the text decodes is read too."""
+    from ..aira.normalize import normalise_text
+
+    lines = _resolve_vars(_shell_lines(text, cron_user=cron_user))
     if not lines:
         return []
+    decoded = [d for d in (normalise_text(line) for line in lines) if d not in lines]
+    lines = lines + decoded
     whole = "\n".join(lines)
     out: list[Found] = []
     try:
@@ -468,11 +647,24 @@ def _shell_roles(
     for f in found:
         if f.role is Role.CODE_SOURCE and f.kind in (EntityKind.HOST, EntityKind.REPO):
             out.append(f)
+    for line in decoded:
+        # encoded text decoded and handed to a shell or interpreter runs what it fetches
+        if pipes_into_code(line):
+            for h in _hosts_in(line, emails=False):
+                if h not in code and not _local(h):
+                    code.add(h)
+                    out.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
+    for line in lines:
+        if _runs_fetched(line):
+            for h in _hosts_in(line, inline_program=True, emails=False):
+                if h not in code and not _local(h):
+                    code.add(h)
+                    out.append(Found(EntityKind.HOST, h, h, Role.CODE_SOURCE))
     contacted: set[str] = set()
     for line in lines:
         for tokens in shell_segments(line):
             seg = " ".join(tokens)
-            if not contacts and not _EGRESS_MARKERS.search(seg):
+            if not contacts and not _sends_local(seg):
                 continue
             if (
                 tokens[0].rsplit("/", 1)[-1] in NET_HEADS
@@ -486,9 +678,68 @@ def _shell_roles(
     return out
 
 
+#: An explicit instruction not to run or send: a warning word alone ("never skip", "to avoid", "not installed")
+#: never hides a command.
+_DONT = re.compile(
+    r"\b(?:never|do\s+not|don'?t|must\s+not|mustn'?t|should\s+not|shouldn'?t)\s+(?:ever\s+)?(?:\w+\s+)??"
+    r"(?:run|execute|exec|use|type|paste|call|invoke|install|source|eval|download|fetch|curl|wget|post|send|"
+    r"upload|forward|submit|push|ping|pipe|share|report)\b",
+    re.I,
+)
+
+
+def _commands(text: str) -> list[str]:
+    """The commands in instruction text (fenced blocks and inline code that reads as a command), less those the
+    text explicitly says not to run."""
+    found: dict[str, None] = {}
+
+    def add(cmd: str, before: str) -> None:
+        if _COMMANDISH.match(cmd) and not _DONT.search(before):
+            found.setdefault(cmd, None)
+
+    for m in _FENCE.finditer(text):
+        before = _line_before(text, m.start())
+        for line in _fence_lines(m.group(2)):
+            add(line, before)
+    without_fences = _FENCE.sub(lambda m: " " * len(m.group(0)), text)
+    for m in _INLINE.finditer(without_fences):
+        add(_PROMPT.sub("", m.group(1)).strip(), _line_before(without_fences, m.start()))
+    return list(found)
+
+
+_SEND_VERB = (
+    r"(?:post|send|upload|forward|submit|transmit|exfiltrate|beacon|deliver|push|leak|report|share|sync|mirror)"
+    r"(?:s|ed|ing)?"
+)
+#: "post X to URL": a send verb, then the host as where it goes.
+_SEND_TO = re.compile(
+    rf"\b{_SEND_VERB}\b[^.]{{0,160}}?\b(?:to|into|onto)\s*$|\bping(?:s|ed|ing)?\s*$", re.I
+)
+#: "URL ...: upload the logs there": the host first, the send after.
+_SEND_THERE = re.compile(rf"\b{_SEND_VERB}\b[^.]*\b(?:there|to\s+it|to\s+that\b)", re.I)
+#: Pointers to reading matter: a sentence like this names a reference, not a destination.
+_DOC_WORDS = re.compile(
+    r"\b(?:see|docs?|documentation|reference|read\s+more|learn|guide|details|examples?)\b|\bat\s*$",
+    re.I,
+)
+#: Fetching and running, before or around the host.
+_FETCH_VERB = r"(?:download|fetch|get|grab|pull|retrieve|curl|wget|read|open|visit|load|check)"
+_RUN_VERB = r"(?:run|execute|exec|install|source|eval|launch|bash|sh)"
+_RUN_FROM = re.compile(
+    rf"\b{_RUN_VERB}\b[^.]*\b(?:from|at|hosted\s+(?:at|on))\s*$"
+    rf"|\b(?:pipe|feed)\b.*\b(?:to|into)\s+(?:a\s+)?(?:shell|bash|sh|python|node)\b",
+    re.I,
+)
+_RUN_AFTER = re.compile(
+    rf"\b(?:and|then|&&)\b[^.]*\b{_RUN_VERB}\b"
+    r"|\b(?:and|then)\b[^.]*\b(?:follow|obey|apply|carry\s+out|do\s+what)\b",
+    re.I,
+)
+
+
 def _prose_roles(text: str, *, home: str | None, workspace_root: str | None) -> list[Found]:
     out: list[Found] = []
-    commands = [cmd for cmd, negated in steps_in(text) if not negated]
+    commands = _commands(text)
     if commands:
         out.extend(
             _shell_roles(
@@ -504,17 +755,19 @@ def _prose_roles(text: str, *, home: str | None, workspace_root: str | None) -> 
             if _local(host):
                 continue
             at = _position(sentence, host)
-            # the words before the token that names the host (a URL's scheme is part of that token)
-            before = re.sub(r"\S*$", "", sentence[:at]) if at >= 0 else sentence
-            if _NEGATION.search(before):
+            if at < 0:
                 continue
-            if _FETCH_AND_RUN.search(before) or (
-                at >= 0
-                and _FETCH_AND_RUN.search(sentence)
-                and re.search(rf"\b{_FETCH_VERB}\b", before, re.I)
-            ):
+            # the words before the token that names the host (a URL's scheme is part of that token)
+            before = re.sub(r"\S*$", "", sentence[:at])
+            after = sentence[at:].split(None, 1)[1] if " " in sentence[at:] else ""
+            if _DONT.search(before):
+                continue
+            fetch_before = re.search(rf"\b{_FETCH_VERB}\b", before, re.I)
+            if _RUN_FROM.search(before) or (fetch_before and _RUN_AFTER.search(after)):
                 out.append(Found(EntityKind.HOST, host, host, Role.CODE_SOURCE))
-            elif _SEND.search(before):
+            elif not _DOC_WORDS.search(before) and (
+                _SEND_TO.search(before) or (not before.strip() and _SEND_THERE.search(after))
+            ):
                 out.append(Found(EntityKind.HOST, host, host, Role.DATA_DESTINATION))
     return out
 

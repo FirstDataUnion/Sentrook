@@ -16,9 +16,9 @@ The strong signals:
   and carries a sensitive source (sensitivity at least `sent_sensitivity_min`) or a file the agent wrote a secret
   into, where some destination is covered by no grant, owner request, owner configuration or library entry (or is
   not written as an entity at all); and a push that publishes a secret or a credential file;
-- an unknown host or repository nobody named (not the owner's request, a grant or the owner's own configuration)
-  that a later run, set up by self-modification content the call writes (a cron line, a hook, a skill, a job
-  prompt), sends to or runs code from (`reputation.unknown_in_written_selfmod`).
+- an unknown host or repository that a later run, set up by self-modification content the call writes (a cron line,
+  a hook, a skill, a job prompt), sends to or runs code from, and that relief left charged
+  (`reputation.unknown_in_written_selfmod`): naming it sanctions only sending to it, never running its code.
 
 Three further strong signals are parameters, off unless a parameter set switches them on: a look-alike of a
 vouched-for entry or of a host, package or person the owner named (`lookalike`); a retry of an action the owner
