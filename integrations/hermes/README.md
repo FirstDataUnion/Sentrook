@@ -105,6 +105,20 @@ Neither ever lowers a scanner floor (reading your SSH keys and sending them some
 and a file grant never covers a call that also sends data off the machine. You don't need a grant to send to a destination
 you name yourself in your request: Sentrook already takes that into account.
 
+You don't have to work these out in advance. When a review is caused by something a grant would cover, such as a
+host Sentrook has not seen before, the approval prompt ends with the command that would let calls like it through
+next time, for example `/sentrook grant destination api.example.com --persistent --expires 30d`. Sentrook only
+suggests a grant after checking that, with it, the same call would score below the review line; it never suggests
+one for a known-bad or look-alike host, for something that content the agent read put in front of it, for a file
+being sent out of a session that has read content trying to instruct the agent, or for a call with a clear attack
+signal, and it suggests trusting a new tool provider only when you asked for the work in your own chat. It suggests
+a grant only for a call that came from your own message or from a cron job Hermes started itself; a group chat,
+someone else's message, a subagent or a webhook gets none. A cron job's suggestion reaches you only through its held
+call: `/sentrook why <id>` names the grant and the job it came from, and `/sentrook approve <id>` sets it. A suggestion is a good guess, not a promise: Sentrook's judge sees the
+grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), answering
+**Always** also sets that grant, persistent for 30 days. `/sentrook why` lists every grant Sentrook suggested for a
+scan.
+
 Run these commands in a direct message to the agent or on the machine (see [who may run them](#commands)). In chat
 type `/sentrook …`. On the command line it is `hermes sentrook …`, with patterns in quotes so the shell leaves the `*`
 alone: `hermes sentrook grant file '/home/you/notes/*' --allows read,write --persistent`.
@@ -198,7 +212,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | --- | --- |
 | `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls and where their notices go, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
-| `why [request_id\|last]` | One scan in detail; with the id from a held-call notice, also the hold and the grant Sentrook suggests |
+| `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold and the grant approving it sets |
 | `grants` | Grants in force: from config (read-only) and set by command |
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |

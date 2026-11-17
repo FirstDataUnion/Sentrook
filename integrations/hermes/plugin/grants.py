@@ -430,6 +430,89 @@ def hint_grant(hint: Any) -> dict[str, Any] | None:
     return {k: v for k, v in parsed.items() if k in ("kind", "pattern", "allows")}
 
 
+#: Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a
+#: review always).
+HINT_DAYS = 30
+#: The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not.
+HINT_REMEMBER = "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}"
+HINT_PLAIN = "This grant would usually allow calls like this for 30 days: {command}"
+#: Sender bases that put a message in a room others can write to.
+_SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
+
+
+def response_hints(resp: Any, review_at: float | None = None) -> list[dict[str, Any]]:
+    """The scan response's suggested grants (`grant_hints`) that the grant command would accept, as `hint_grant`
+    returns them, in the scanner's order. With `review_at`, only those whose own risk (the call's risk with the
+    grant applied) is below this plugin's review line."""
+    raw = resp.get("grant_hints") if isinstance(resp, dict) else None
+    out: list[dict[str, Any]] = []
+    for h in raw[:3] if isinstance(raw, list) else []:
+        if not isinstance(h, dict):
+            continue
+        risk = h.get("risk")
+        if review_at is not None and not (
+            isinstance(risk, (int, float)) and not isinstance(risk, bool) and risk < review_at
+        ):
+            continue
+        grant = hint_grant(h)
+        if grant is not None and grant not in out:
+            out.append(grant)
+    return out
+
+
+def grant_command(grant: dict[str, Any], cmd: Cmd) -> str:
+    """The command that sets `grant` (from `hint_grant`) as the owner types it: persistent, ending in 30 days."""
+    words = [
+        cmd("grant"),
+        grant["kind"],
+        grant["pattern"],
+        "--persistent",
+        "--expires",
+        f"{HINT_DAYS}d",
+    ]
+    if grant.get("allows"):
+        words += ["--allows", ",".join(grant["allows"])]
+    return _clean(" ".join(words), 400)
+
+
+def hint_line(grant: dict[str, Any], cmd: Cmd, remember: bool) -> str:
+    return (HINT_REMEMBER if remember else HINT_PLAIN).format(command=grant_command(grant, cmd))
+
+
+#: Runs the host starts itself from a task the owner set up.
+HOST_TASK_KINDS = frozenset({"scheduled", "heartbeat"})
+#: The line `why <hold id>` adds under a suggestion from a host task run.
+HOLD_CONTEXT = "this suggestion comes from a {kind} run, not your own message: {where}"
+
+
+def owner_sender(planir: dict[str, Any]) -> bool:
+    """The owner's own turn: the sender is the owner, or the host started a scheduled or heartbeat run with no
+    sender behind it (`unknown`). A suggested grant is shown, kept on a hold and set only then: on anyone else's
+    turn (a non-owner sender, a sub-agent, a hook), whoever sent it chose what the call acts on. On a host task run
+    a suggestion reaches the owner only through a held call they approve."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    relation = sender.get("relation")
+    return relation == "owner" or (trig.get("kind") in HOST_TASK_KINDS and relation == "unknown")
+
+
+def may_remember(planir: dict[str, Any]) -> bool:
+    """Approving a review always may set its suggested grant: the call came from the owner's own message on the
+    main agent, outside a group chat or a host open to anyone. Whoever answers a review elsewhere is not known to
+    be the owner, so there the prompt only shows the command."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    session = planir.get("session") if isinstance(planir.get("session"), dict) else {}
+    basis = sender.get("basis") if isinstance(sender.get("basis"), list) else []
+    return (
+        trig.get("kind") == "message"
+        and sender.get("relation") == "owner"
+        and session.get("agent_role") == "main"
+        and not _SHARED_BASIS & set(basis)
+        and planir.get("self_edit") is None
+    )
+
+
 def describe_grant(grant: dict[str, Any]) -> str:
     """`destination discord:#ops`, with `(allows read)` for a file grant that limits them."""
     allows = f" (allows {','.join(grant['allows'])})" if grant.get("allows") else ""
@@ -443,14 +526,16 @@ def add_suggested(
     now: datetime,
     span: timedelta,
     hold_id: str,
+    source: str = "from_hold",
 ) -> tuple[str, dict[str, Any] | None]:
     """Adds `grant` (from `hint_grant`) as a persistent grant ending `span` from now, for an approved
-    hold. The reply names the new grant's id; None for the record when the file could not be read."""
+    hold (`source` `from_hold`, `hold_id` its id) or a review approved always (`from_review`, the scan's
+    request id). The reply names the new grant's id; None for the record when the file could not be read."""
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
-        # Once per hold: an approval retried after the holds file failed to save finds its grant.
+        # Once per hold or review: an approval retried after a failed save finds its grant.
         for g in data["grants"]:
-            if isinstance(g, dict) and g.get("from_hold") == hold_id and not expired(g, now):
+            if isinstance(g, dict) and g.get(source) == hold_id and not expired(g, now):
                 at = read_time(g.get("expires_at"))
                 return (
                     f"Granted {g.get('id')}: {describe_grant(g)} (persistent, expires "
@@ -468,7 +553,7 @@ def add_suggested(
             "granted_at": _iso(now),
             "expires_at": _iso(now + span),
             "set_by": by,
-            "from_hold": hold_id,
+            source: hold_id,
         }
         data["grants"].append(entry)
         return (

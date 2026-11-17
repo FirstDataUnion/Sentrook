@@ -93,12 +93,15 @@ def _fit(head: str, desc: str, codes: list[str], tail: str, limit: int) -> str:
 RELAXED_NOTE = "Sentrook would normally block this; it is asking because a snooze is on."
 
 
-def review_message(resp: dict[str, Any], tool: str, relaxed: bool = False) -> str:
-    """The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`."""
+def review_message(resp: dict[str, Any], tool: str, relaxed: bool = False, hint: str = "") -> str:
+    """The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`; a
+    suggested grant's line (`hint`) comes before it. Neither is ever cut, and the hint does not take room from
+    the description: the limit grows by its length."""
     risk = round(float(resp.get("risk") or 0))
     head = f"Sentrook (risk {risk}): "
-    tail = " ".join(p for p in (scores_line(resp), RELAXED_NOTE if relaxed else "") if p)
-    return _fit(head, describe(resp, tool), _reason_codes(resp), tail, REVIEW_MESSAGE_MAX)
+    tail = " ".join(p for p in (scores_line(resp), hint, RELAXED_NOTE if relaxed else "") if p)
+    limit = REVIEW_MESSAGE_MAX + (len(hint) + 1 if hint else 0)
+    return _fit(head, describe(resp, tool), _reason_codes(resp), tail, limit)
 
 
 # What the agent is told about a block. It names a coarse category only, never the reason codes, the

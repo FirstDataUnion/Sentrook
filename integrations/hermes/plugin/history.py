@@ -21,6 +21,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from . import grants
 from .decision import tiers_of
 
 HISTORY_DEFAULT = 10
@@ -272,4 +273,9 @@ def format_why(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
         if isinstance(e, dict) and isinstance(e.get("display"), str)
     ]
     lines += ["entities:", *shown] if shown else ["entities: none"]
+    # The grants the scanner found would each let the call through next time, as the owner sets them.
+    suggested = grants.response_hints(resp)
+    if suggested:
+        lines.append("grants that would allow it next time (30 days):")
+        lines += [f"  {grants.grant_command(g, '/sentrook {}'.format)}" for g in suggested]
     return "\n".join(lines)

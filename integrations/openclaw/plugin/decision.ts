@@ -76,18 +76,23 @@ function fit(desc: string, codes: string[], tail: string, limit: number): string
 /** The last line of a review prompt for a block a snooze turned into a review; it is never cut. */
 export const RELAXED_NOTE = "Sentrook would normally block this; it is asking because a snooze is on.";
 
-/** The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`. */
+/**
+ * The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`; a suggested
+ * grant's line (`hint`) comes before it. Neither is ever cut, and the hint does not take room from the description:
+ * the limit grows by its length.
+ */
 export function reviewCopy(
   resp: ScanResponse,
   toolName: string,
   relaxed = false,
+  hint = "",
 ): { title: string; description: string } {
   const risk = ` (risk ${Math.round(resp.risk ?? 0)})`;
   const head = "Sentrook: review ";
-  const tail = [scoresLine(resp), relaxed ? RELAXED_NOTE : ""].filter(Boolean).join(" ");
+  const tail = [scoresLine(resp), hint, relaxed ? RELAXED_NOTE : ""].filter(Boolean).join(" ");
   return {
     title: `${head}${clip(toolName, 80 - head.length - risk.length)}${risk}`,
-    description: fit(describe(resp, toolName), reasonCodes(resp), tail, 256),
+    description: fit(describe(resp, toolName), reasonCodes(resp), tail, 256 + (hint ? hint.length + 1 : 0)),
   };
 }
 
