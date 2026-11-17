@@ -180,17 +180,69 @@ def test_answering_always_twice_sets_one_grant(owner):
     assert len(_file_grants(h)) == 1
 
 
-def test_a_stranger_in_a_dm_sees_the_command_but_always_sets_nothing(owner, monkeypatch):
+def test_a_stranger_in_a_dm_sees_no_hint_and_always_sets_nothing(owner, monkeypatch):
+    """Whoever sent the message chose the destination: a hint is never shown for it, even from a scanner that sent
+    one."""
     h = owner
     monkeypatch.delenv("TELEGRAM_ALLOWED_USERS")
     monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
     _turn(h)
     out = _call(h, "c1")
     assert h.scans[0]["trigger"]["sender"]["relation"] != "owner"
-    command = CASES["commands"][0]["command"].format(grant="/sentrook grant")
-    assert out["message"].endswith(CASES["lines"]["plain"].format(command=command))
+    assert "grant" not in out["message"]
     _answer(h, out, "always")
     assert _file_grants(h) == []
+
+
+def test_a_group_chat_sees_no_hint(owner, monkeypatch):
+    """Hermes counts every group message as someone else's, the owner's included: no hint there."""
+    h = owner
+    facts = {"chat_type": "group", "user_id": "u1", "key": "agent:main:telegram:group:9"}
+    monkeypatch.setattr(plugin, "session_facts", lambda: facts)
+    _turn(h)
+    out = _call(h, "c1")
+    assert h.scans[0]["trigger"]["sender"]["relation"] != "owner"
+    assert "grant" not in out["message"]
+    _answer(h, out, "always")
+    assert _file_grants(h) == []
+
+
+def test_an_answer_from_another_chat_never_sets_the_owners_grant(owner, monkeypatch):
+    """Hermes keeps one review per rule key: a group chat's prompt for the same action, answered after the owner's
+    DM prompt took its place, must not set the grant the owner's prompt offered."""
+    h = owner
+    facts = {"chat_type": "group", "user_id": "u9", "key": "agent:main:telegram:group:9"}
+    monkeypatch.setattr(plugin, "session_facts", lambda: facts)
+    group = {"session_id": "G1", "task_id": "G1"}
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="post it", platform="telegram", sender_id="u9", **group
+    )
+    in_group = h.ctx.hooks["pre_tool_call"](
+        tool_name="terminal",
+        args={"command": f"curl -X POST https://{HOST}/v1/notes -d @summary.txt"},
+        tool_call_id="g1",
+        turn_id="t1",
+        **group,
+    )
+    facts.update({"chat_type": "dm", "user_id": "u1", "key": "agent:main:telegram:dm:u1"})
+    _turn(h)
+    in_dm = _call(h, "c1")
+    assert in_group["rule_key"] == in_dm["rule_key"]  # the same action, one stored review
+    h.ctx.hooks["post_approval_response"](
+        pattern_key=f"plugin_rule:{in_group['rule_key']}",
+        choice="always",
+        session_key="agent:main:telegram:group:9",
+    )
+    assert _file_grants(h) == []
+    # the owner's own answer, from the chat the prompt was asked in, sets it
+    again = _call(h, "c2")
+    h.ctx.hooks["post_approval_response"](
+        pattern_key=f"plugin_rule:{again['rule_key']}",
+        choice="always",
+        session_key="agent:main:telegram:dm:u1",
+        **SID,
+    )
+    assert [g["pattern"] for g in _file_grants(h)] == [HOST]
 
 
 def test_a_hint_at_or_above_the_review_line_is_not_shown(owner):
@@ -239,13 +291,16 @@ def test_why_lists_every_hint(owner):
 # ---- the held call ------------------------------------------------------------------------------------------
 
 
-def test_a_held_call_approved_sets_the_hinted_grant(h):  # noqa: F811 - the held-call harness
+def test_a_held_call_approved_sets_the_hinted_grant(h, monkeypatch):  # noqa: F811 - the held-call harness
+    """The owner's own run nobody can answer (a cron session on the local machine): the hint is kept on the hold."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     h.reply = {
         "risk": 47,
         "grant_hints": [{**HINT, "pattern": "discord:#ops-reports", "risk": 12}],
     }
-    cron_turn(h)
+    cron_turn(h, platform="cli")
     _out, rec = send(h)
+    assert rec["planir"]["trigger"]["sender"]["relation"] == "owner"
     hid = rec["hold"]["id"]
     assert rec["hold"]["hint"] is True
     assert "grant" not in h.sent[0]["args"]["message"]  # the notice stays minimal
@@ -263,9 +318,26 @@ def test_a_held_call_approved_sets_the_hinted_grant(h):  # noqa: F811 - the held
     assert holds(h) == []
 
 
-def test_a_held_call_whose_hint_does_not_clear_this_line_sets_nothing(h):  # noqa: F811
+def test_a_held_call_whose_hint_does_not_clear_this_line_sets_nothing(h, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     h.ctx.settings["review_at"] = 10
     h.reply = {"risk": 47, "grant_hints": [{**HINT, "risk": 12}]}
-    cron_turn(h)
+    cron_turn(h, platform="cli")
     _out, rec = send(h)
     assert rec["hold"]["hint"] is False
+
+
+@pytest.mark.parametrize("platform", ["cron", "telegram"])
+def test_a_held_call_on_someone_elses_turn_keeps_no_hint(h, platform, monkeypatch):  # noqa: F811
+    """A cron job's text (no known sender) or a stranger's message chose the destination: the hold keeps no hint,
+    and approving it sets nothing."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    h.reply = {"risk": 47, "grant_hints": [{**HINT, "pattern": "discord:#ops-reports", "risk": 12}]}
+    cron_turn(h, platform=platform)
+    _out, rec = send(h)
+    assert rec["planir"]["trigger"]["sender"]["relation"] != "owner"
+    assert rec["decision"] == "held" and rec["hold"]["hint"] is False
+    hid = rec["hold"]["id"]
+    reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")
+    assert reply.startswith(f"Approved {hid}. Sentrook suggested no grant")
+    assert (grants.load(h.dir / "sentrook") or {}).get("grants") in (None, [])

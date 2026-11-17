@@ -118,7 +118,8 @@ class ReliefApplied(_Model):
 
 
 class GrantHint(_Model):
-    """A grant the owner could set so that this call would not be reviewed next time. Offered only when the
+    """A grant the owner could set so that a call like this would usually not be reviewed next time (the next scan's
+    model sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the
     scanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds
     the risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an
     `enforced` decision or a call with an independent strong signal."""
@@ -127,7 +128,10 @@ class GrantHint(_Model):
         description="The grant kind, as `/sentrook grant` takes it"
     )
     pattern: str = Field(
-        description="The grant pattern: the entity's value as the scanner reads it, never a secret"
+        description=(
+            "The grant pattern: the entity's value as the scanner reads it (a path under the home directory written "
+            "with `~/`), never a secret"
+        )
     )
     allows: list[str] | None = Field(
         default=None, description="For a file grant: what the call does to the file"

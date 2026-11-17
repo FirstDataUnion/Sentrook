@@ -165,10 +165,11 @@ function registered(pluginConfig: Record<string, unknown> = {}) {
       ctx,
     );
   };
-  /** One send to a channel from a cron run. */
-  const cron = async () => {
+  /** One send to a channel from a cron run; `owner` marks the run as the owner's (`senderIsOwner`). */
+  const cron = async (owner = true) => {
     const ctx = { sessionKey: "agent:main:cron:cron-1", sessionId: "cron-1", agentId: "main", runId: "r-cron", trigger: "cron" };
     await fire("before_prompt_build", { runId: "r-cron", prompt: "[cron:abc daily-brief] post the brief" }, ctx);
+    if (owner) await fire("before_agent_run", { runId: "r-cron", senderIsOwner: true }, ctx);
     await fire(
       "before_tool_call",
       { toolName: "message", toolCallId: "c1", runId: "r-cron", params: { action: "send", channel: "discord", target: "#ops-reports", message: "Daily brief" } },
@@ -248,12 +249,11 @@ for (const decision of ["allow-once", "deny", "timeout", "cancelled"]) {
   });
 }
 
-test("someone other than the owner sees the command, with no allow always", async () => {
+test("someone other than the owner sees no hint and no allow always", async () => {
   const r = registered();
   const out = await r.review("c1", false);
   assert.notEqual(scans[0].trigger.sender.relation, "owner");
-  const command = CASES.commands[0].command.replace("{grant}", "/sentrook-grant");
-  assert.ok(out.requireApproval.description.endsWith(CASES.lines.plain.replace("{command}", command)));
+  assert.ok(!out.requireApproval.description.includes("grant"));
   assert.deepEqual(out.requireApproval.allowedDecisions, ["allow-once", "deny"]);
   await out.requireApproval.onResolution("allow-always");
   assert.deepEqual(grantsFile(), []);
@@ -314,6 +314,19 @@ test("a held call approved sets the hinted grant", async () => {
   assert.ok(answer.startsWith(`Approved ${id}. Granted gr-`), answer);
   const [g] = grantsFile();
   assert.deepEqual([g.kind, g.pattern, g.from_hold], ["destination", "discord:#ops-reports", id]);
+});
+
+test("a held call on a run nobody is known to have started keeps no hint, and approving it sets nothing", async () => {
+  hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
+  extra = { risk: 47 };
+  const r = registered();
+  const rec = await r.cron(false);
+  assert.notEqual(rec.planir.trigger.sender.relation, "owner");
+  assert.equal(rec.decision, "held");
+  assert.equal(rec.hold.hint, false);
+  const answer = await r.command("sentrook-approve", rec.hold.id);
+  assert.ok(answer.startsWith(`Approved ${rec.hold.id}. Sentrook suggested no grant`), answer);
+  assert.deepEqual(grantsFile(), []);
 });
 
 test("a held call whose hint does not clear this plugin's line sets nothing", async () => {

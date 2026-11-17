@@ -388,6 +388,7 @@ def converge(
         floors=[f.floor for f in floors],
         degraded=degraded,
         exposure_unjudged=unjudged,
+        flags=flags,
     )
     # make sure every entity a reason or a hint names is displayable
     for r in [*reasons, *hints]:

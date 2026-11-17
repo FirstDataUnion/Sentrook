@@ -138,7 +138,10 @@ time, for example `/sentrook-grant destination api.example.com --persistent --ex
 grant after checking that, with it, the same call would score below the review line; it never suggests one for a
 known-bad or look-alike host, for something that content the agent read put in front of it, for a file being sent
 out of a session that has read content trying to instruct the agent, or for a call with a clear attack signal, and it
-suggests trusting a new tool provider only when you asked for the work in your own chat. When you asked for the work yourself (your own message, not a group chat), the card also offers
+suggests trusting a new tool provider only when you asked for the work in your own chat. It suggests a grant only for
+a call that came from your own message (or a run OpenClaw marks as yours): someone else's message, or a job whose
+text nobody is known to have written, gets none. A suggestion is a good guess, not a promise: Sentrook's judge sees
+the grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), the card also offers
 **Allow always**, which allows the call and sets that grant, persistent for 30 days. `/sentrook-why` lists every
 grant Sentrook suggested for a scan.
 

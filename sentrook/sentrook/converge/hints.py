@@ -22,7 +22,9 @@ Which entities may be hinted:
 - a pattern that matches the entity exactly as the grant matcher reads it: no glob characters, no whitespace,
   not over-broad, at most 256 printable characters, and nothing that reads as a secret.
 
-No hints at all for a call that sends one of the machine's files off the host in a session that has read content
+No hints at all on a turn whose sender is not the owner (`owner_turn`), whatever the run: someone else chose what
+the call acts on. None for a host that is only a recipient's mail domain, and none whose pattern would cover any
+entity of the call but the one it names. No hints at all for a call that sends one of the machine's files off the host in a session that has read content
 trying to instruct the agent (the session's `tainted` flag): that is what an injected instruction to upload a file
 looks like, and a grant there would let the next one through. None for a fetch whose address carries text the
 session read from a local file (`prepare.url_carry`): data leaving in a URL. Nor for a call with an `enforced` decision or any floor, with an independent strong signal
@@ -44,7 +46,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..enums import Enforce, ProbeStatus, ProbeStep, SessionFlag
-from ..planir.models import OS
+from ..planir.models import OS, SenderRelation
 from ..prepare import Prepared
 from ..prepare.entities import Entity, EntityKind, Origin, Role, display_path
 from ..prepare.grants import GRANT_KINDS, grant_matches, path_actions, sends_off_host
@@ -81,6 +83,19 @@ _GLOB = frozenset("*?[]")
 _SWITCHED_PROVIDER = frozenset({"origin.switched_provider", "reputation.switched_provider"})
 #: Opening of a redaction placeholder, the plugins' and the scanner's own.
 _PLACEHOLDER_OPEN = "⟦"
+
+
+def owner_turn(prepared: Prepared) -> bool:
+    """The trigger's sender is the owner. Anyone else (a stranger, a trusted contact, a sender the host could not
+    name, the text of a job nobody is known to have written) chose what the call acts on, so no grant is suggested
+    for it, on any run."""
+    return prepared.planir.trigger.sender.relation is SenderRelation.OWNER
+
+
+def rank_key(hint: GrantHint, entity_kind: EntityKind | None) -> tuple:
+    """Lowest risk first; on a tie the narrower pattern (a full address, a channel, a path or a provider before a
+    host), then the pattern itself."""
+    return (hint.risk, 1 if entity_kind is EntityKind.HOST else 0, hint.kind, hint.pattern)
 
 
 @dataclass(frozen=True)
@@ -163,6 +178,8 @@ def _candidates(prepared: Prepared, unhintable: set[str], off_host: bool) -> lis
             continue
         if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING) or ent.sibling_only:
             continue
+        if ent.kind is EntityKind.HOST and ent.recipient_domain_of:
+            continue  # only a recipient's mail domain: a grant on it would cover every address there
         if Origin.GRANT in ent.origins or _from_content(ent):
             continue
         if (ent.roles | ent.future_roles) & _CODE_ROLES:
@@ -170,10 +187,8 @@ def _candidates(prepared: Prepared, unhintable: set[str], off_host: bool) -> lis
         spec = GRANT_KINDS[kind]
         if spec.local_only and off_host:
             continue
-        pattern = ent.value.strip()
-        if not plain_pattern(pattern):
-            continue
-        if not grant_matches(kind, pattern, ent, host_os=_host_os(prepared)):
+        pattern = _pattern(ent, _host_os(prepared))
+        if pattern is None:
             continue
         allows: tuple[str, ...] | None = None
         if spec.actions:
@@ -183,6 +198,20 @@ def _candidates(prepared: Prepared, unhintable: set[str], off_host: bool) -> lis
             allows = tuple(sorted(actions))
         out.append(_Candidate(kind, pattern, allows, ent.id))
     return out
+
+
+def _pattern(ent: Entity, host_os: OS) -> str | None:
+    """The pattern a hint names for `ent`, as the owner would type it: a path under the home directory with `~/`
+    (what a chat the prompt reaches shows, rather than the account's home), anything else as the scanner reads
+    it. None when neither form is a plain pattern that covers the entity."""
+    path = ent.kind is EntityKind.PATH
+    forms = [ent.display.strip(), ent.value.strip()] if path else [ent.value.strip()]
+    for form in forms:
+        if path and not form.startswith(("~/", "/")):
+            continue  # a display cut short, or relative: not what the grant matcher reads
+        if plain_pattern(form) and grant_matches(HINT_KIND[ent.kind], form, ent, host_os=host_os):
+            return form
+    return None
 
 
 def _sends_a_file(prepared: Prepared) -> bool:
@@ -198,7 +227,9 @@ def _sends_a_file(prepared: Prepared) -> bool:
 
 def _relieved_pairs(prepared: Prepared, cand: _Candidate) -> set[tuple[str, str | None]]:
     """What relief would remove with this grant in place: the kind's signals on every pending-call or
-    sibling entity the pattern covers (with every action the call takes on it, for a file grant)."""
+    sibling entity the pattern covers (with every action the call takes on it, for a file grant). A candidate
+    whose pattern covers any entity but its own subject gets nothing: the owner is shown one entity, so the
+    grant must relieve that one only."""
     spec = GRANT_KINDS[cand.kind]
     allowed = frozenset(cand.allows or ()) or spec.default_allows
     out: set[tuple[str, str | None]] = set()
@@ -223,6 +254,8 @@ def _relieved_pairs(prepared: Prepared, cand: _Candidate) -> set[tuple[str, str 
                 for g in reach
             ):
                 continue
+        if ent.id != cand.subject:
+            return set()
         out.update((s, ent.id) for s in spec.relieves)
     return out
 
@@ -240,9 +273,12 @@ def grant_hints(
     floors: list[str],
     degraded: bool,
     exposure_unjudged: bool,
+    flags: set[SessionFlag] | None = None,
 ) -> list[GrantHint]:
     """The grant hints for a scored call (`risk` 0-1, after floors). `claims`: every claim before relief, as
-    convergence merged them; `floors`: the floors applied."""
+    convergence merged them; `floors`: the floors applied; `flags`: the session's flags with this scan's own
+    (the token's alone when not given)."""
+    flags = set(prepared.state.flags) | set(flags or ())
     line = params.grant_hints_review_line
     if params.grant_hints_max <= 0 or risk < line or enforced is not None or floors:
         return []
@@ -259,8 +295,10 @@ def grant_hints(
         prepared, claims, kept, [(r.subject, r.reason) for r in relief], floors, params
     ):
         return []
+    if not owner_turn(prepared):
+        return []
     off_host = sends_off_host(prepared.pending, prepared.entities.pending())
-    if off_host and SessionFlag.TAINTED in prepared.state.flags and _sends_a_file(prepared):
+    if off_host and SessionFlag.TAINTED in flags and _sends_a_file(prepared):
         return []
     if prepared.url_carries:
         return []  # a fetch whose address carries text from a local read: data leaving in a URL
@@ -292,5 +330,10 @@ def grant_hints(
             relieves=relieves,
             risk=round(tiers.risk * 100.0, 2),
         )
-    ranked = sorted(found.values(), key=lambda h: (h.risk, h.kind, h.pattern))
+
+    def entity_kind(h: GrantHint) -> EntityKind | None:
+        ent = prepared.entities.by_id(h.subject) if h.subject else None
+        return ent.kind if ent is not None else None
+
+    ranked = sorted(found.values(), key=lambda h: rank_key(h, entity_kind(h)))
     return ranked[: params.grant_hints_max]

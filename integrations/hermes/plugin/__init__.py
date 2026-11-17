@@ -519,7 +519,7 @@ def _scan_one(
             key = _rule_key(resp.get("action_fingerprint"), planir["request_id"], relaxed)
             # The grant the scan suggests: the prompt shows its command, and approving always sets it where
             # the owner is the one answering (never for a block a snooze turned into a review).
-            hint = hold.grant_hint(resp, cfg.review_at)
+            hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
             remember = hint is not None and not relaxed and grants.may_remember(planir)
             directive = {
                 "action": "approve",
@@ -537,7 +537,17 @@ def _scan_one(
                     "sid": sid,
                     "request_id": planir["request_id"],
                     "on_error": False,
-                    **({"hint": hint, "platform": built["platform"]} if remember else {}),
+                    # Hermes keeps one review per rule key, so another chat's prompt for the same action can take
+                    # this entry's place: the answer sets the grant only from the chat it was asked in.
+                    **(
+                        {
+                            "hint": hint,
+                            "platform": built["platform"],
+                            "session_key": _approval_session_key(),
+                        }
+                        if remember
+                        else {}
+                    ),
                 },
             )
     else:
@@ -685,7 +695,7 @@ def _hold(
         if target
         else {"status": "unsent", "target": None, "reason": why}
     )
-    hint = hold.grant_hint(resp, cfg.review_at)
+    hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
     where = _where(built)
     try:
         hid = hold.create(
@@ -741,14 +751,20 @@ _APPROVED = {
 _ALWAYS = {"always", "allow-always", "allow_always"}
 
 
+def _approval_session_key() -> str:
+    """The session key Hermes gives the approval hook for the current chat (`HERMES_SESSION_KEY`, else `default`)."""
+    return session_facts().get("key") or "default"
+
+
 def _remember(
-    cfg: PluginConfig, traffic: TrafficLog, review: dict[str, Any]
+    cfg: PluginConfig, traffic: TrafficLog, review: dict[str, Any], session_key: str
 ) -> dict[str, Any] | None:
     """Sets the suggested grant of a review approved always, as a persistent grant ending in 30 days, once per
-    review. Returns the grants change, or None when there was nothing to set or it could not be written (logged:
-    the answer itself stands)."""
+    review, when the answer came from the chat the review was asked in (`session_key`, as the approval hook
+    reports it). Returns the grants change, or None when there was nothing to set or it could not be written
+    (logged: the answer itself stands)."""
     grant = grants.hint_grant(review.get("hint"))
-    if grant is None:
+    if grant is None or review.get("session_key") != session_key:
         return None
     by = {"basis": ["review_always"], "platform": str(review.get("platform") or "")}
     try:
@@ -802,7 +818,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 else "blocked"
             )
         remembered = (
-            _remember(cfg, traffic, review)
+            _remember(cfg, traffic, review, str(kw.get("session_key") or "default"))
             if approved and choice in _ALWAYS and not review.get("on_error")
             else None
         )

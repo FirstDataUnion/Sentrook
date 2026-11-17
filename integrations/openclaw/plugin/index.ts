@@ -554,7 +554,7 @@ const plugin = {
           entry.decision = "review_timed_out";
           // The grant the scan suggests: the prompt shows its command, and "allow always" (offered only then) sets it
           // where the owner is the one answering. Never for a block a snooze turned into a review.
-          const hint = hold.grantHint(resp, cfg.reviewAt);
+          const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
           remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
           const copy = reviewCopy(resp, event.toolName, relaxed, hint ? grants.hintLine(hint, (sub) => `/sentrook-${sub}`, remember !== null) : "");
           hook = {
@@ -742,7 +742,7 @@ const plugin = {
       if (target && !outbound?.loadAdapter) {
         notice = { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
       }
-      const hint = hold.grantHint(resp, cfg.reviewAt);
+      const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
       const record = (r: Record<string, unknown>) => traffic.write(r);
       let id: string | null = null;
       try {

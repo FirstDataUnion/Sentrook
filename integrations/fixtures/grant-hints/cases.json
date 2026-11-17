@@ -1,26 +1,45 @@
 {
-  "_comment": "Grant hints: the grants a scan response suggests (`grant_hints`), each of which alone would let the call through next time. Both plugins must pick the same hints (`selection`: with `review_at` set, only hints whose own `risk` is below it; `all` without a line; at most the first three are read; a hint the grant command would refuse is skipped), print the same command for each (`commands`, with {grant} replaced by /sentrook grant on Hermes and /sentrook-grant on OpenClaw), and end a review prompt with the first chosen hint's line (`lines`: `remember` when approving always sets the grant, which needs the owner's own message on the main agent outside a group chat or open host; `plain` otherwise, the command only). `why` lists every hint under `why_header`, one command per line indented by two spaces. A remembered grant is persistent and ends after `grant_days`.",
+  "_comment": "Grant hints: the grants a scan response suggests (`grant_hints`), each of which alone would let the call through next time. Both plugins must pick the same hints (`selection`: with `review_at` set, only hints whose own `risk` is below it; `all` without a line; at most the first three are read; a hint the grant command would refuse is skipped), print the same command for each (`commands`, with {grant} replaced by /sentrook grant on Hermes and /sentrook-grant on OpenClaw), and end a review prompt with the first chosen hint's line (`lines`: `remember` when approving always sets the grant, which needs the owner's own message on the main agent outside a group chat or open host; `plain` otherwise, the command only). Hints are shown, stored on a hold and set only on a turn whose sender is the owner (`trigger.sender.relation` owner); on any other turn the plugin ignores them. `why` lists every hint under `why_header`, one command per line indented by two spaces. A remembered grant is persistent and ends after `grant_days`.",
   "grant_days": 30,
   "lines": {
-    "remember": "Approve always to also set this grant for 30 days: {command}",
-    "plain": "To allow calls like this for 30 days: {command}"
+    "remember": "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}",
+    "plain": "This grant would usually allow calls like this for 30 days: {command}"
   },
   "why_header": "grants that would allow it next time (30 days):",
   "commands": [
     {
-      "hint": {"kind": "destination", "pattern": "status.example.invalid", "risk": 30.2},
+      "hint": {
+        "kind": "destination",
+        "pattern": "status.example.invalid",
+        "risk": 30.2
+      },
       "command": "{grant} destination status.example.invalid --persistent --expires 30d"
     },
     {
-      "hint": {"kind": "destination", "pattern": "discord:#ops-reports", "risk": 12},
+      "hint": {
+        "kind": "destination",
+        "pattern": "discord:#ops-reports",
+        "risk": 12
+      },
       "command": "{grant} destination discord:#ops-reports --persistent --expires 30d"
     },
     {
-      "hint": {"kind": "file", "pattern": "/home/me/.ssh/id_ed25519", "allows": ["read"], "risk": 23.33},
-      "command": "{grant} file /home/me/.ssh/id_ed25519 --persistent --expires 30d --allows read"
+      "hint": {
+        "kind": "file",
+        "pattern": "~/.ssh/id_ed25519",
+        "allows": [
+          "read"
+        ],
+        "risk": 23.33
+      },
+      "command": "{grant} file ~/.ssh/id_ed25519 --persistent --expires 30d --allows read"
     },
     {
-      "hint": {"kind": "provider", "pattern": "npm:@example/notes-mcp@1.2.0", "risk": 20},
+      "hint": {
+        "kind": "provider",
+        "pattern": "npm:@example/notes-mcp@1.2.0",
+        "risk": 20
+      },
       "command": "{grant} provider npm:@example/notes-mcp@1.2.0 --persistent --expires 30d"
     }
   ],
@@ -29,53 +48,133 @@
       "name": "the first hint below the line",
       "review_at": 45,
       "grant_hints": [
-        {"kind": "destination", "pattern": "status.example.invalid", "risk": 30.2, "subject": "E1", "relieves": ["reputation.unknown_host_as_data_destination"], "scope": "persistent", "expires_in_days": 30},
-        {"kind": "provider", "pattern": "npm:@example/notes-mcp@1.2.0", "risk": 20}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid",
+          "risk": 30.2,
+          "subject": "E1",
+          "relieves": [
+            "reputation.unknown_host_as_data_destination"
+          ],
+          "scope": "persistent",
+          "expires_in_days": 30
+        },
+        {
+          "kind": "provider",
+          "pattern": "npm:@example/notes-mcp@1.2.0",
+          "risk": 20
+        }
       ],
       "chosen": [
-        {"kind": "destination", "pattern": "status.example.invalid"},
-        {"kind": "provider", "pattern": "npm:@example/notes-mcp@1.2.0"}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid"
+        },
+        {
+          "kind": "provider",
+          "pattern": "npm:@example/notes-mcp@1.2.0"
+        }
       ],
       "all": [
-        {"kind": "destination", "pattern": "status.example.invalid"},
-        {"kind": "provider", "pattern": "npm:@example/notes-mcp@1.2.0"}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid"
+        },
+        {
+          "kind": "provider",
+          "pattern": "npm:@example/notes-mcp@1.2.0"
+        }
       ]
     },
     {
       "name": "a hint at or above this plugin's line is not offered",
       "review_at": 30,
       "grant_hints": [
-        {"kind": "destination", "pattern": "status.example.invalid", "risk": 30.2},
-        {"kind": "destination", "pattern": "mail.example.invalid", "risk": 29.9}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid",
+          "risk": 30.2
+        },
+        {
+          "kind": "destination",
+          "pattern": "mail.example.invalid",
+          "risk": 29.9
+        }
       ],
-      "chosen": [{"kind": "destination", "pattern": "mail.example.invalid"}],
+      "chosen": [
+        {
+          "kind": "destination",
+          "pattern": "mail.example.invalid"
+        }
+      ],
       "all": [
-        {"kind": "destination", "pattern": "status.example.invalid"},
-        {"kind": "destination", "pattern": "mail.example.invalid"}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid"
+        },
+        {
+          "kind": "destination",
+          "pattern": "mail.example.invalid"
+        }
       ]
     },
     {
       "name": "a hint without a numeric risk is not offered against a line",
       "review_at": 45,
       "grant_hints": [
-        {"kind": "destination", "pattern": "status.example.invalid"},
-        {"kind": "destination", "pattern": "mail.example.invalid", "risk": "10"},
-        {"kind": "destination", "pattern": "web.example.invalid", "risk": true}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid"
+        },
+        {
+          "kind": "destination",
+          "pattern": "mail.example.invalid",
+          "risk": "10"
+        },
+        {
+          "kind": "destination",
+          "pattern": "web.example.invalid",
+          "risk": true
+        }
       ],
       "chosen": [],
       "all": [
-        {"kind": "destination", "pattern": "status.example.invalid"},
-        {"kind": "destination", "pattern": "mail.example.invalid"},
-        {"kind": "destination", "pattern": "web.example.invalid"}
+        {
+          "kind": "destination",
+          "pattern": "status.example.invalid"
+        },
+        {
+          "kind": "destination",
+          "pattern": "mail.example.invalid"
+        },
+        {
+          "kind": "destination",
+          "pattern": "web.example.invalid"
+        }
       ]
     },
     {
       "name": "hints the grant command would refuse are skipped",
       "review_at": 45,
       "grant_hints": [
-        {"kind": "tool", "pattern": "curl", "risk": 10},
-        {"kind": "destination", "pattern": "two words.example.invalid", "risk": 10},
-        {"kind": "destination", "pattern": "*", "risk": 10, "allows": ["read"]}
+        {
+          "kind": "tool",
+          "pattern": "curl",
+          "risk": 10
+        },
+        {
+          "kind": "destination",
+          "pattern": "two words.example.invalid",
+          "risk": 10
+        },
+        {
+          "kind": "destination",
+          "pattern": "*",
+          "risk": 10,
+          "allows": [
+            "read"
+          ]
+        }
       ],
       "chosen": [],
       "all": []
@@ -84,34 +183,100 @@
       "name": "allows only on a file grant, and only known verbs",
       "review_at": 45,
       "grant_hints": [
-        {"kind": "file", "pattern": "/home/me/notes.txt", "allows": ["read", "launch"], "risk": 10},
-        {"kind": "file", "pattern": "/home/me/notes.txt", "allows": ["write", "read"], "risk": 11}
+        {
+          "kind": "file",
+          "pattern": "/home/me/notes.txt",
+          "allows": [
+            "read",
+            "launch"
+          ],
+          "risk": 10
+        },
+        {
+          "kind": "file",
+          "pattern": "/home/me/notes.txt",
+          "allows": [
+            "write",
+            "read"
+          ],
+          "risk": 11
+        }
       ],
-      "chosen": [{"kind": "file", "pattern": "/home/me/notes.txt", "allows": ["write", "read"]}],
-      "all": [{"kind": "file", "pattern": "/home/me/notes.txt", "allows": ["write", "read"]}]
+      "chosen": [
+        {
+          "kind": "file",
+          "pattern": "/home/me/notes.txt",
+          "allows": [
+            "write",
+            "read"
+          ]
+        }
+      ],
+      "all": [
+        {
+          "kind": "file",
+          "pattern": "/home/me/notes.txt",
+          "allows": [
+            "write",
+            "read"
+          ]
+        }
+      ]
     },
     {
       "name": "only the first three are read, and a repeat once",
       "review_at": 45,
       "grant_hints": [
-        {"kind": "destination", "pattern": "a.example.invalid", "risk": 10},
-        {"kind": "destination", "pattern": "a.example.invalid", "risk": 10},
-        {"kind": "destination", "pattern": "b.example.invalid", "risk": 10},
-        {"kind": "destination", "pattern": "c.example.invalid", "risk": 10}
+        {
+          "kind": "destination",
+          "pattern": "a.example.invalid",
+          "risk": 10
+        },
+        {
+          "kind": "destination",
+          "pattern": "a.example.invalid",
+          "risk": 10
+        },
+        {
+          "kind": "destination",
+          "pattern": "b.example.invalid",
+          "risk": 10
+        },
+        {
+          "kind": "destination",
+          "pattern": "c.example.invalid",
+          "risk": 10
+        }
       ],
       "chosen": [
-        {"kind": "destination", "pattern": "a.example.invalid"},
-        {"kind": "destination", "pattern": "b.example.invalid"}
+        {
+          "kind": "destination",
+          "pattern": "a.example.invalid"
+        },
+        {
+          "kind": "destination",
+          "pattern": "b.example.invalid"
+        }
       ],
       "all": [
-        {"kind": "destination", "pattern": "a.example.invalid"},
-        {"kind": "destination", "pattern": "b.example.invalid"}
+        {
+          "kind": "destination",
+          "pattern": "a.example.invalid"
+        },
+        {
+          "kind": "destination",
+          "pattern": "b.example.invalid"
+        }
       ]
     },
     {
       "name": "no field, or not a list",
       "review_at": 45,
-      "grant_hints": {"kind": "destination", "pattern": "a.example.invalid", "risk": 10},
+      "grant_hints": {
+        "kind": "destination",
+        "pattern": "a.example.invalid",
+        "risk": 10
+      },
       "chosen": [],
       "all": []
     }

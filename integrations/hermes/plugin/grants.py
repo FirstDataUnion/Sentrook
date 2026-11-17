@@ -434,8 +434,8 @@ def hint_grant(hint: Any) -> dict[str, Any] | None:
 #: review always).
 HINT_DAYS = 30
 #: The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not.
-HINT_REMEMBER = "Approve always to also set this grant for 30 days: {command}"
-HINT_PLAIN = "To allow calls like this for 30 days: {command}"
+HINT_REMEMBER = "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}"
+HINT_PLAIN = "This grant would usually allow calls like this for 30 days: {command}"
 #: Sender bases that put a message in a room others can write to.
 _SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
 
@@ -477,6 +477,14 @@ def grant_command(grant: dict[str, Any], cmd: Cmd) -> str:
 
 def hint_line(grant: dict[str, Any], cmd: Cmd, remember: bool) -> str:
     return (HINT_REMEMBER if remember else HINT_PLAIN).format(command=grant_command(grant, cmd))
+
+
+def owner_sender(planir: dict[str, Any]) -> bool:
+    """The turn's sender is the owner. A suggested grant is shown, kept on a hold and set only then: on anyone
+    else's turn, whoever sent it chose what the call acts on."""
+    trig = planir.get("trigger") if isinstance(planir.get("trigger"), dict) else {}
+    sender = trig.get("sender") if isinstance(trig.get("sender"), dict) else {}
+    return sender.get("relation") == "owner"
 
 
 def may_remember(planir: dict[str, Any]) -> bool:
