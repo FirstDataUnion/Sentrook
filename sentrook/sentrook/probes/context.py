@@ -497,8 +497,14 @@ class ContextProbe:
                 # only another call in the batch names it: that call's own scan charges it
                 evidence.setdefault("origins", {})[ent.id] = {"reason": "origin.sibling_only"}
                 continue
+            # a role a later run that the call's written self-modification content sets up counts as one of the
+            # call's own; whether naming or a grant sanctions it is relief's to decide, by role
             weight = max(
-                (self.params.origin_role_weight.get(r.value, 0.25) for r in ent.roles), default=0.25
+                (
+                    self.params.origin_role_weight.get(r.value, 0.25)
+                    for r in ent.roles | ent.future_roles
+                ),
+                default=0.25,
             )
             value, reason = self._origin_value(ent, prepared, prior_flags)
             switched_from = None

@@ -25,6 +25,13 @@ questions (their sensitivity comes from AIRA's path classes), loopback hosts are
 machine, and a recipient written as a self-reference (`me`, `self`, `owner`) is the account the tool
 runs as, so none of these is looked up.
 
+A host or repository that self-modification content the call writes (a cron line, a hook, a skill, a job prompt)
+sends to or runs code from in its later run (`Entity.future_roles`) is scored in that role. Unknown, it takes the
+unknown distrust of that role with the reason `reputation.unknown_in_written_selfmod`, which the attended-owner check
+counts as a strong signal; a look-alike keeps that claim beside its near-miss one, and its later code role counts for
+the `lookalike_code_source` floor. Relief decides whether the owner's naming, a grant or configuration sanctions the
+role, as for the call's own roles: sending, never running code.
+
 A provider API host the library lists only as the home of the credentials its service issues (tier
 `provider_api`) vouches for nothing else: it is scored, reported and shown to the judge as an unlisted host,
 and its credential names are kept in the evidence for the credential-home check (`prepare.credential_home`).
@@ -54,6 +61,9 @@ from ..prepare.entities import Entity, EntityKind, Origin, Role
 from .base import Contribution, Envelope, Floor
 
 PROBE_VERSION = "entity_oracle/2.0.0a1"
+#: An unknown host or repository nobody named that a later run, set up by self-modification content the call
+#: writes (a cron line, a hook, a skill, a job prompt), sends to or runs code from.
+WRITTEN_SELFMOD_REASON = "reputation.unknown_in_written_selfmod"
 
 LOOKUP_KINDS = (
     EntityKind.HOST,
@@ -163,12 +173,14 @@ def verdicts_for_view(envelope: Envelope, *, near_miss: bool = False) -> list[di
     an OK oracle envelope, as `kind`, `value`, `verdict` (and `tier` when the library gives one),
     sorted for a stable request body. Unknown entities are left out: not vouched for is the
     model's default. With `near_miss` (the call-v5 view), an unknown entity that is a near miss of a
-    `known_good` one is listed too, as `verdict: unknown` with the entry it imitates in `near_miss`."""
+    `known_good` one is listed too, as `verdict: unknown` with the entry it imitates in `near_miss`. An entity only
+    self-modification content the call writes names (`Entity.only_in_written_selfmod`) is scored, not listed."""
     if envelope.status is not ProbeStatus.OK:
         return []
     out: list[dict[str, object]] = []
     for info in (envelope.evidence.get("entities") or {}).values():
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or info.get("only_in_written_selfmod"):
+            # named only inside self-modification content the call writes: scored here, not shown to the judge
             continue
         near = info.get("near_miss") if near_miss else None
         if info.get("verdict") not in VIEW_VERDICTS and not (
@@ -233,6 +245,13 @@ class EntityOracleProbe:
         return {r.entity_id for r in refs if r.entity_id}
 
     @staticmethod
+    def _later_roles(ent: Entity) -> set[str]:
+        """The roles a later run that the call's written self-modification content sets up gives the entity. Whether
+        the owner's naming, a grant or the owner's configuration sanctions a role is relief's to decide
+        (`converge.relief`): naming sanctions sending to a host, never running code from it."""
+        return {r.value for r in ent.future_roles}
+
+    @staticmethod
     def _entity_info(ent: Entity, v: Verdict, roles: list[str], near: dict | None) -> dict:
         info = {
             "kind": ent.kind.value,
@@ -245,6 +264,10 @@ class EntityOracleProbe:
             "match": v.match.value if v.match else None,
             "near_miss": near,
         }
+        if ent.future_roles:
+            info["future_roles"] = sorted(r.value for r in ent.future_roles)
+        if ent.only_in_written_selfmod:
+            info["only_in_written_selfmod"] = True
         if ent.recipient_domain_of:
             info["mail_domain_of"] = list(ent.recipient_domain_of)
         if v.credential_names:
@@ -313,8 +336,20 @@ class EntityOracleProbe:
         for ent in remote:
             v = _credential_home_only(result.get(ent.kind.value, ent.value))
             near = _near_miss(v)
+            later_near = False
             roles = sorted(r.value for r in ent.roles) or [Role.MENTIONED.value]
-            risky_role = max(roles, key=lambda r: self.params.unknown_by_role.get(r, 0.0))
+            later = self._later_roles(ent)
+            risky_role = max(
+                sorted(set(roles) | later), key=lambda r: self.params.unknown_by_role.get(r, 0.0)
+            )
+            # the risk comes from a run the call's written self-modification content sets up
+            from_later = bool(later) and self.params.unknown_by_role.get(risky_role, 0.0) >= max(
+                self.params.unknown_by_role.get(r, 0.0) for r in roles
+            )
+            if from_later and risky_role not in later:
+                risky_role = max(
+                    sorted(later), key=lambda r: self.params.unknown_by_role.get(r, 0.0)
+                )
             if v.verdict is VerdictKind.KNOWN_BAD:
                 distrust = (
                     self.params.known_bad_distrust if v.distrust is None else float(v.distrust)
@@ -340,13 +375,19 @@ class EntityOracleProbe:
                     if v.distrust is not None
                     else self.params.unknown_by_role.get(risky_role, 0.1)
                 )
-                reason = f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                reason = (
+                    WRITTEN_SELFMOD_REASON
+                    if from_later
+                    else f"reputation.unknown_{ent.kind.value}_as_{risky_role}"
+                )
                 if near is not None and risky_role in NEAR_MISS_ROLES:
                     distrust = max(distrust, self.params.near_miss_distrust)
                     reason = f"reputation.near_miss_{ent.kind.value}"
+                    # a look-alike the written content plants keeps the written-content claim beside its own
+                    later_near = from_later
                     if (
                         self.params.near_miss_floor > 0
-                        and NEAR_MISS_CODE_ROLES & set(roles)
+                        and NEAR_MISS_CODE_ROLES & (set(roles) | later)
                         and Origin.GRANT not in ent.origins
                     ):
                         floors.append(
@@ -401,6 +442,15 @@ class EntityOracleProbe:
                     reason=reason,
                 )
             )
+            if later_near:
+                contributions.append(
+                    Contribution(
+                        signal="suspicion.distrust",
+                        value=min(1.0, max(0.0, distrust)),
+                        subject=ent.id,
+                        reason=WRITTEN_SELFMOD_REASON,
+                    )
+                )
             per_entity[ent.id] = self._entity_info(ent, v, roles, near)
         if not result.available:
             coverage = min(coverage, self.params.coverage_unavailable)
