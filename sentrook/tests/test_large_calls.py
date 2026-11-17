@@ -503,3 +503,90 @@ def test_a_long_local_query_is_read_once():
     query = "=" * 99_000
     res, spent = scan(ex(f"curl 'http://localhost:8080/run?{query}'"))
     assert spent < FAST, f"{spent:.2f}s"
+
+
+def _sed_guardrail() -> str:
+    return (
+        "echo start; sed -i 's/enforce/off/' ~/.openclaw/extensions/sentrook/guardrail.yaml; echo done-"
+        + "x" * 60
+    )
+
+
+def _long_guardrail(n: int) -> str:
+    return (
+        "rm -rf "
+        + " ".join(f"/tmp/d{i}" for i in range(n))
+        + " ~/.openclaw/extensions/sentrook "
+        + " ".join(f"/tmp/e{i}" for i in range(n))
+    )
+
+
+def _all_read_keys(command: str) -> dict:
+    from sentrook.planir.canonical import _read_keys
+
+    pads = {k: "y" * 58_000 for k in _read_keys(ToolKind.EXEC) if k not in ("command", "cwd")}
+    return {"command": command, "cwd": "~/workspace", **pads}
+
+
+PADDED_DEEPER = [
+    (
+        "a priority list",
+        lambda: {"command": _sed_guardrail(), "cwd": "~/workspace", "files": ["y" * 3900] * 1000},
+    ),
+    ("every key canonicalisation reads", lambda: _all_read_keys(_long_guardrail(180))),
+    (
+        "nested keys",
+        lambda: {
+            "command": _long_guardrail(60),
+            "cwd": "~/workspace",
+            "p": {f"k{i:05d}": [0] for i in range(16_500)},
+            "q": "x" * 90_000,
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize("name, make", PADDED_DEEPER, ids=[p[0] for p in PADDED_DEEPER])
+def test_padding_alongside_the_command_keeps_it_whole(name, make):
+    arguments = make()
+    raw = ex(arguments["command"])
+    raw["pending_call"]["arguments"] = arguments
+    res, _ = scan(raw)
+    held_for_review(res)
+    assert res.prepared.pending.command == arguments["command"]
+    assert res.response.enforced is Enforce.BLOCK
+
+
+def test_bounded_arguments_stay_within_the_bound():
+    import random
+
+    rng = random.Random(4)
+
+    def value(depth: int):
+        roll = rng.random()
+        if depth < 3 and roll < 0.25:
+            return {
+                f"k{rng.randrange(10**6)}": value(depth + 1) for _ in range(rng.randrange(1, 30))
+            }
+        if depth < 3 and roll < 0.45:
+            return [value(depth + 1) for _ in range(rng.randrange(1, 120))]
+        if roll < 0.6:
+            return rng.randrange(1000)
+        return "z" * rng.choice([0, 1, 30, 400, 3000, 40_000])
+
+    checked = 0
+    for _ in range(300):
+        arguments = {
+            "command": "ls -la",
+            "cwd": "~/w",
+            **{f"a{i}": value(1) for i in range(rng.randrange(1, 8))},
+        }
+        kind = rng.choice([ToolKind.EXEC, ToolKind.OTHER])
+        kept, over = bound_arguments(arguments, kind, frozenset({"command", "cwd"}))
+        if over is None:
+            continue
+        checked += 1
+        assert kept["command"] == "ls -la" and kept["cwd"] == "~/w"
+        again, over_again = bound_arguments(kept, kind, frozenset({"command", "cwd"}))
+        assert over_again is None, over_again
+    assert checked > 50
