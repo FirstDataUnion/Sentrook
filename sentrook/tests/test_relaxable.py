@@ -160,6 +160,15 @@ STRONG = {
     "code_lookalike": lambda: _plus(
         _high_selfmod(), 1, _c("suspicion.overreach", 0.9, "code.lookalike_provider", "E1")
     ),
+    "written_selfmod_host": lambda: [
+        *_high_selfmod(),
+        Envelope(
+            step=ProbeStep.ENTITY_ORACLE,
+            contributions=[
+                _c("suspicion.distrust", 0.6, "reputation.unknown_in_written_selfmod", "E1")
+            ],
+        ),
+    ],
     "retry": lambda: _plus(
         _high_selfmod(), 1, _c("suspicion.retry_after_denial", 0.8, "retry.same_action")
     ),
@@ -297,6 +306,21 @@ def test_the_same_cron_change_on_a_scheduled_run_is_not_marked_end_to_end(twin_c
     r = scanner(answers, params=params).scan(case["fixture"], options(case, probes_enabled=None))
     assert r.response.relaxable is None
     assert json.loads(r.response.model_dump_json())["relaxable"] is None
+
+
+@SETS
+def test_a_written_hook_that_runs_code_from_an_unknown_host_is_not_marked_end_to_end(
+    twin_case, params
+):
+    """An owner-asked hook that later pipes an unknown host's script to a shell: the written host is a strong
+    signal, so a snooze never turns its block into a question."""
+    from test_written_selfmod_hosts import HOOK_PIPE, _case
+    from test_written_selfmod_hosts import _scan as _scan_written
+
+    res = _scan_written(_case(twin_case, arguments=HOOK_PIPE), params)
+    info = res.response.metadata.versions["attended_owner"]
+    assert "written_selfmod_host" in info["strong"]
+    assert res.response.relaxable is None and info["relaxable"] is False
 
 
 @SETS
