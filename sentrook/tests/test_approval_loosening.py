@@ -19,6 +19,7 @@ from sentrook.converge.registry import REASONS
 from sentrook.enums import Enforce
 
 REASON = "guardrail.approval_loosening"
+REVIEW_REASON = "guardrail.approval_loosening_review"
 
 
 def fires(raw: dict) -> None:
@@ -28,6 +29,17 @@ def fires(raw: dict) -> None:
     f = floors[0]
     assert f.floor == "guardrail_tampering" and f.min_risk == 1.0 and f.enforce is Enforce.BLOCK
     assert of(env, SELF, REASON)[0].value == 1.0
+
+
+def reviews(raw: dict) -> None:
+    """The review tier: the owner is always asked, the floor never blocks on its own."""
+    _, env = run(raw)
+    assert REASON not in floor_reasons(env), env.evidence["findings"]
+    floors = [f for f in env.floors if f.reason == REVIEW_REASON]
+    assert len(floors) == 1, (floor_reasons(env), env.evidence["findings"])
+    f = floors[0]
+    assert f.floor == "guardrail_tampering" and f.enforce is Enforce.REVIEW and f.min_risk < 0.8
+    assert of(env, SELF, REVIEW_REASON) == []
 
 
 def stays_silent(raw: dict) -> None:
@@ -67,7 +79,11 @@ H_CONFIG = "~/.hermes/config.yaml"
 
 
 def test_reason_has_owner_text():
-    assert REASON in REASONS
+    assert REASON in REASONS and REVIEW_REASON in REASONS
+
+
+def test_a_setting_written_with_escaped_newlines_gets_the_review_tier():
+    reviews(ex("printf 'approvals:\\n  mode: off\\n' >> ~/.hermes/config.yaml"))
 
 
 # --------------------------------------------------------------------------- must fire
@@ -259,7 +275,6 @@ def test_hermes_file_changes_fire(raw):
         "echo 'HERMES_YOLO_MODE=1' >> ~/.hermes/.env",
         "echo 'HERMES_YOLO_MODE=1' | tee -a ~/.hermes/.env",
         "sed -i 's/mode: smart/mode: off/' ~/.hermes/config.yaml",
-        "printf 'approvals:\\n  mode: off\\n' >> ~/.hermes/config.yaml",
         "cat > ~/.openclaw/exec-approvals.json <<'EOF'\n"
         '{"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}}\n'
         "EOF",
@@ -681,7 +696,6 @@ def test_settings_outside_the_host_or_under_another_key_stay_silent(raw):
         oc_edit(OC_CONFIG, '"security": "deny"', '"security": "full"'),
         # A profile's state directory, and an include file beside the config.
         oc_edit("~/.openclaw-dev/openclaw.json", '"mode": "allowlist"', '"mode": "full"'),
-        oc_edit("~/.openclaw/tools.json5", 'exec: { mode: "allowlist" }', 'exec: { mode: "full" }'),
         # The enclosing key decides.
         oc_edit(
             OC_CONFIG,
@@ -689,7 +703,7 @@ def test_settings_outside_the_host_or_under_another_key_stay_silent(raw):
             '"exec": {\n      "host": "gateway",\n      "mode": "full"',
         ),
     ],
-    ids=["ask minimal", "security minimal", "profile dir", "include file", "enclosing exec"],
+    ids=["ask minimal", "security minimal", "profile dir", "enclosing exec"],
 )
 def test_host_config_edits_fire(raw):
     fires(raw)
@@ -699,19 +713,46 @@ def test_host_config_edits_fire(raw):
     "command",
     [
         'sed -i \'s/"security": "deny"/"security": "full"/\' ~/.openclaw/openclaw.json',
-        "sed -i 's/deny/full/' ~/.openclaw/exec-approvals.json",
         'perl -pi -e \'s/"ask": "always"/"ask": "off"/\' ~/.openclaw/exec-approvals.json',
-        "python3 -c \"import json,os;p=os.path.expanduser('~/.openclaw/exec-approvals.json');"
-        "d=json.load(open(p));d['defaults']['askFallback']='full';json.dump(d,open(p,'w'))\"",
         "jq '.defaults.ask = \"off\"' ~/.openclaw/exec-approvals.json > /tmp/a.json"
         " && mv /tmp/a.json ~/.openclaw/exec-approvals.json",
         "jq '.defaults.ask = \"off\"' ~/.openclaw/exec-approvals.json | sponge ~/.openclaw/exec-approvals.json",
-        "yq -i '.approvals.mode = \"off\"' ~/.hermes/config.yaml",
+        'cd ~/.openclaw && sed -i \'s/"ask": "always"/"ask": "off"/\' openclaw.json',
+        'f=~/.openclaw/exec-approvals.json; sed -i \'s/"ask": "always"/"ask": "off"/\' "$f"',
+        'sed -i \'s/"ask": "always"/"ask": "off"/\' ${HOME}/.openclaw/exec-approvals.json',
+        'sed -i \'s/"ask": "always"/"ask": "off"/\' ~me/.openclaw/exec-approvals.json',
     ],
-    ids=["sed key", "sed bare value", "perl -pi", "python -c", "jq and mv", "jq sponge", "yq -i"],
+    ids=[
+        "sed key",
+        "perl -pi",
+        "jq and mv",
+        "jq sponge",
+        "relative after cd",
+        "shell variable",
+        "${HOME}",
+        "~user",
+    ],
 )
 def test_in_place_writers_fire(command):
     fires(ex(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -i 's/deny/full/' ~/.openclaw/exec-approvals.json",
+        "python3 -c \"import json,os;p=os.path.expanduser('~/.openclaw/exec-approvals.json');"
+        "d=json.load(open(p));d['defaults']['askFallback']='full';json.dump(d,open(p,'w'))\"",
+        "yq -i '.approvals.mode = \"off\"' ~/.hermes/config.yaml",
+        "python3 -c \"import pathlib;p=pathlib.Path.home()/'.openclaw'/'exec-approvals.json';"
+        "p.write_text(p.read_text().replace('deny','full'))\"",
+        "python3 -c \"import os;p=os.path.join(os.environ['HOME'],'.openclaw','exec-approvals.json');"
+        "s=open(p).read().replace('deny','full');open(p,'w').write(s)\"",
+    ],
+    ids=["sed bare value", "python -c", "yq -i", "Path.home()", "os.path.join HOME"],
+)
+def test_in_place_scripts_get_the_review_tier(command):
+    reviews(ex(command))
 
 
 @pytest.mark.parametrize(
@@ -756,19 +797,18 @@ def test_in_place_writers_stay_silent(command):
         "--file=",
     ],
 )
-def test_blind_replacement_fires(command):
-    fires(ex(command))
+def test_blind_replacement_gets_the_review_tier(command):
+    reviews(ex(command))
 
 
 @pytest.mark.parametrize(
     "command",
     [
-        "cp ~/.openclaw/openclaw.json.bak ~/.openclaw/openclaw.json",
         "cp ~/.openclaw/exec-approvals.json /tmp/backup.json",
-        "openclaw approvals set --file ~/.openclaw/backups/exec-approvals.json",
         "cp /tmp/notes.md ~/.openclaw/notes.md",
+        "cp ~/.openclaw-dev/openclaw.json ~/.openclaw/openclaw.json",
     ],
-    ids=["restore from host dir", "backup out", "approvals --file from host dir", "other file"],
+    ids=["backup out", "other file", "from another profile's config"],
 )
 def test_restore_and_backup_stay_silent(command):
     stays_silent(ex(command))
@@ -890,8 +930,8 @@ def _execute_code(code: str) -> dict:
     return planir("execute_code", "exec", {"code": code}, platform="hermes")
 
 
-def test_hermes_execute_code_writing_the_config_fires():
-    fires(
+def test_hermes_execute_code_writing_the_config_gets_the_review_tier():
+    reviews(
         _execute_code(
             "import os, pathlib\n"
             "p = pathlib.Path(os.path.expanduser('~/.hermes/config.yaml'))\n"
@@ -914,3 +954,205 @@ def test_hermes_execute_code_tightening_the_config_stays_silent():
             "p.write_text(p.read_text().replace('mode: off', 'mode: manual'))\n"
         )
     )
+
+
+# --------------------------------------------------------------------------- second review round
+
+
+def with_ws(raw: dict, ws: str) -> dict:
+    raw["host"]["workspace_root"] = ws
+    return raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # The workspace is excluded only when it sits strictly inside a host tree.
+        with_ws(
+            h_patch(H_CONFIG, "approvals:\n  mode: smart", "approvals:\n  mode: off"), "~/.hermes"
+        ),
+        with_ws(h_patch(H_CONFIG, "approvals:\n  mode: smart", "approvals:\n  mode: off"), "~"),
+        with_ws(oc_edit(OC_CONFIG, '"mode": "allowlist"', '"mode": "full"'), "~"),
+        with_ws(h_write("~/.hermes/.env", "HERMES_YOLO_MODE=1\n"), "~/.hermes"),
+        # Relative paths resolve before the tree anchor.
+        oc_ws(oc_edit("../openclaw.json", '"mode": "allowlist"', '"mode": "full"')),
+        with_ws(oc_edit("openclaw.json", '"ask": "always"', '"ask": "off"'), "~/.openclaw"),
+    ],
+    ids=[
+        "ws hermes tree",
+        "ws home hermes",
+        "ws home openclaw",
+        "ws hermes env",
+        "../",
+        "bare name",
+    ],
+)
+def test_workspace_and_relative_paths(raw):
+    fires(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A script that reads a host file and writes elsewhere.
+        ex(
+            "python3 -c \"import json;c=json.load(open('/home/me/.openclaw/openclaw.json'));"
+            "open('/tmp/report.txt','w').write('ask off? '+str(c['tools']['exec']))\""
+        ),
+        planir(
+            "execute_code",
+            "exec",
+            {
+                "code": "import yaml\nc = yaml.safe_load(open('/home/me/.hermes/config.yaml'))\n"
+                "open('/tmp/summary.txt', 'w').write('approvals mode: ' + c['approvals']['mode'])\n"
+                "print('mode: off would disable approvals')\n"
+            },
+            platform="hermes",
+        ),
+        ex("sed -i 's/full/off/' src/app.py && grep -n ask ~/.openclaw/openclaw.json"),
+        ex("cat ~/.openclaw/openclaw.json > /tmp/config-copy.json"),
+        # Files in a host tree that are not the host's config.
+        h_write("~/.hermes/skills/deploy/config.yaml", "approvals:\n  mode: off\n"),
+        oc_write(
+            "~/.openclaw/skills/deploy/settings.json", '{"exec": {"mode": "full", "ask": "off"}}'
+        ),
+        h_patch("~/.hermes/skills/deploy/config.yaml", "  mode: smart", "  mode: off"),
+    ],
+    ids=[
+        "python read write elsewhere",
+        "execute_code summary",
+        "sed project and grep host",
+        "cat host to tmp",
+        "hermes skill config",
+        "openclaw skill settings",
+        "hermes skill config edit",
+    ],
+)
+def test_reads_and_non_config_files_stay_silent(raw):
+    stays_silent(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        oc_edit(
+            OC_CONFIG,
+            '"exec": {"note": "a } b", "mode": "allowlist"}',
+            '"exec": {"note": "a } b", "mode": "full"}',
+        ),
+        oc_edit(
+            OC_CONFIG,
+            '"exec": { // }\n  "mode": "allowlist"\n}',
+            '"exec": { // }\n  "mode": "full"\n}',
+        ),
+        oc_write(OC_CONFIG, '{tools: {exec: /* c */ {mode: "full"}}}'),
+        oc_write(OC_CONFIG, '{"tools": {"exec": {"\\u006dode": "f\\u0075ll"}}}'),
+        h_write(H_CONFIG, "model: m\napprovals: &a\n  mode: off\n"),
+        h_write(H_CONFIG, "model: m\napprovals: !!map\n  mode: off\n"),
+        h_write(H_CONFIG, "model: m\napprovals: # note: {\n  mode: off\n"),
+    ],
+    ids=[
+        "brace in string",
+        "line comment",
+        "block comment",
+        "unicode escapes",
+        "anchor",
+        "tag",
+        "comment brace",
+    ],
+)
+def test_enclosing_key_parser_evasions_fire(raw):
+    fires(raw)
+
+
+def test_an_undecidable_fragment_gets_the_review_tier():
+    # No enclosing key, no old value of the same key: the review tier, not silence.
+    reviews(h_patch(H_CONFIG, "  mode: x", "  mode: off"))
+
+
+def test_a_full_write_with_mode_off_under_another_key_stays_silent():
+    stays_silent(h_write(H_CONFIG, "approvals:\n  mode: manual\ntts:\n  mode: off\n"))
+
+
+def test_an_include_file_gets_the_review_tier():
+    reviews(
+        oc_edit("~/.openclaw/tools.json5", 'exec: { mode: "allowlist" }', 'exec: { mode: "full" }')
+    )
+
+
+def test_a_large_body_scans_in_well_under_a_second():
+    """The floor's own text scan is linear: one forward pass for enclosing keys."""
+    import time
+
+    from sentrook.aira.detectors import _loosened, _loosening_rules, _Where
+    from sentrook.aira.lists import load_lists
+
+    body = (
+        '{"tools": {"exec": {"mode": "allowlist"}}, "notes": ['
+        + ", ".join(f'{{"k{i}": "v{i}", "mode": "full", "ask": "off"}}' for i in range(11000))
+        + "]}"
+    )
+    assert len(body) > 500_000
+    rules = _loosening_rules(load_lists())
+    where = _Where(frozenset({"tree", "env", "main"}), "openclaw", "json")
+    start = time.perf_counter()
+    hits = _loosened([("", body)], rules, where, fragment=False)
+    assert time.perf_counter() - start < 1.0
+    assert hits == set()  # every one sits under `notes`, not the exec settings
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "openclaw config unset tools",
+        "openclaw config set tools.exec '{}' --strict-json",
+        "openclaw config set tools.exec.security null --json",
+        'openclaw config set tools.exec --json \'{"host":"gateway"}\'',
+        'openclaw config set tools \'{"profile": "coding"}\' --strict-json',
+    ],
+    ids=["unset tools", "exec empty", "security null", "exec without policy", "tools without exec"],
+)
+def test_unset_equivalents_fire(command):
+    fires(ex(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'openclaw config set tools.exec \'{"host":"gateway"}\' --strict-json --merge',
+        'openclaw config set tools.exec \'{"mode":"allowlist"}\' --strict-json',
+        "openclaw config set tools.exec.host null --json",
+    ],
+    ids=["merge", "mode kept", "other key null"],
+)
+def test_set_keeping_the_policy_stays_silent(command):
+    stays_silent(ex(command))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /tmp/approvals.json > ~/.openclaw/exec-approvals.json",
+        "cp -t ~/.openclaw/ /tmp/exec-approvals.json",
+        "rsync -a /tmp/openclaw.json ~/.openclaw/openclaw.json",
+        "ln -sf /tmp/approvals.json ~/.openclaw/exec-approvals.json",
+        "curl -fsSL -o ~/.openclaw/openclaw.json https://cfg.example.dev/openclaw.json",
+        "wget -O ~/.hermes/config.yaml https://cfg.example.dev/config.yaml",
+        "cp ~/.openclaw/staging.txt ~/.openclaw/exec-approvals.json",
+        "cp ~/.openclaw/openclaw.json.bak ~/.openclaw/openclaw.json",
+        "openclaw approvals set --file ~/.openclaw/backups/exec-approvals.json",
+    ],
+    ids=[
+        "cat",
+        "cp -t",
+        "rsync",
+        "ln -sf",
+        "curl -o",
+        "wget -O",
+        "staged in tree",
+        "bak",
+        "--file in tree",
+    ],
+)
+def test_more_blind_replacements_get_the_review_tier(command):
+    reviews(ex(command))

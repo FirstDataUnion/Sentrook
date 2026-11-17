@@ -200,28 +200,33 @@ host_approvals:
 # A file change counts only when the loosening setting is in the text written and not in the text
 # it replaces, so tightening and moving a setting do not fire. Reads never fire.
 approval_loosening:
-  # The host's own trees. `{home}` is the scan's home directory. A path under the workspace root
-  # is never in a host tree, also when the workspace sits inside the state directory (OpenClaw's
-  # default `~/.openclaw/workspace`). `~/.openclaw-<profile>` is a profile's state directory.
+  # The host's own trees, by root. `{home}` is the scan's home directory; a profile's root
+  # (`~/.openclaw-<name>`, `~/.hermes/profiles/<name>`) is a root of its own. A path under the
+  # workspace root is outside every tree when the workspace sits strictly inside a tree
+  # (OpenClaw's default `~/.openclaw/workspace`); a workspace that is a tree root or contains one
+  # (Hermes runs with `~/.hermes` or `~` as its working directory) excludes nothing.
   host_trees:
-    - '\A{home}/\.openclaw(?:-[\w.-]+)?/'
-    - '\A{home}/\.hermes/'
-    - '\A/etc/hermes/'
-    - '\A/opt/data/(?:config\.ya?ml|\.env|profiles/)'
-  # Inside a host tree: the approvals files (any loosening value counts, no context needed) ...
+    - host: openclaw
+      root: '{home}/\.openclaw(?:-[\w.-]+)?'
+    - host: hermes
+      root: '{home}/\.hermes(?:/profiles/[^/]+)?'
+    - host: hermes
+      root: '/etc/hermes'
+    - host: hermes
+      root: '/opt/data(?:/profiles/[^/]+)?'
+  # Paths relative to a tree root. The approvals files: any loosening setting counts in them.
   approvals_files:
-    - '/exec-approvals\.json\Z'
-    - '/shell-hooks-allowlist\.json\Z'
-    - '/agents/[^/]+/agent/config\.json\Z'
-  # ... the config files: OpenClaw's config and its `$include` files (JSON5 beside it), Hermes
-  # `config.yaml` (a profile's too) ...
-  config_files:
-    - '/\.openclaw[^/]*/(?:[^/]+/)*[^/]+\.json5?\Z'
-    - '(?:\A|/)config\.ya?ml\Z'
-  # ... and the main config files, where `bare` keys count without an enclosing key.
+    - 'exec-approvals\.json'
+    - 'shell-hooks-allowlist\.json'
+    - 'agents/[^/]+/agent/config\.json'
+  # The main config file at the root (`bare` keys count without an enclosing key there).
   main_config_files:
-    - '/openclaw\.json\Z'
-    - '(?:\A|/)config\.ya?ml\Z'
+    openclaw: 'openclaw\.json'
+    hermes: 'config\.ya?ml'
+  # OpenClaw's `$include` files beside its config: what they hold is merged into the config by
+  # path, so a setting in them gets the review tier.
+  include_files:
+    openclaw: '[^/]+\.json5?|.+\.json5'
   # Files that set the environment a host is started with: the environment variables count in
   # them as well as in the host trees, also in a project (`.env`).
   env_files:
@@ -238,11 +243,14 @@ approval_loosening:
   # `value`: regex over the whole value. `where`:
   #   env     the host trees and `env_files`;
   #   tree    anywhere in a host tree;
-  #   config  the approvals files; in the config files only when the setting's nearest enclosing
-  #           key (JSON braces or YAML indentation; for a config command, the path) matches
-  #           `parents`, or, in a fragment that shows no enclosing key, when the replaced text held
-  #           the same key with a value matching `old_values`, or the key is `bare` (unambiguous)
-  #           and the file is a main config file.
+  #   config  the approvals files; in the main config files (and `$include` files, review tier)
+  #           only when the setting's nearest enclosing key (JSON or JSON5 braces, YAML
+  #           indentation, strings and comments skipped; for a config command, the path) matches
+  #           `parents`. In an edit fragment that shows no enclosing key it counts when the
+  #           replaced text held the same key with a value matching `old_values`, or the key is
+  #           `bare` (unambiguous in the main config file); otherwise the fragment cannot be
+  #           decided and gets the review tier.
+  # `host`: the host whose files and commands the setting belongs to (both when absent).
   settings:
     # OpenClaw approvals: the decision when no one can answer a prompt, or the prompt times out.
     - key: 'askFallback|ask_fallback'
@@ -273,23 +281,27 @@ approval_loosening:
     - key: 'mode'
       value: 'off|false|none|disabled?|yolo'
       where: config
+      host: hermes
       parents: 'approvals'
       old_values: 'manual|smart'
     # OpenClaw `tools.exec.mode: full`. OpenClaw has other `mode` keys (`discovery.mdns.mode`).
     - key: 'mode'
       value: 'full'
       where: config
+      host: openclaw
       parents: 'exec'
       old_values: 'deny|allowlist|ask|auto'
     # OpenClaw legacy `tools.exec.security: full` and `ask: off`; in openclaw.json only exec has them.
     - key: 'security'
       value: 'full'
       where: config
+      host: openclaw
       parents: 'exec'
       bare: true
     - key: 'ask'
       value: 'off|never|false'
       where: config
+      host: openclaw
       parents: 'exec'
       bare: true
     # A bare approvals switch turned off inside the exec settings.
@@ -315,31 +327,40 @@ approval_loosening:
     # A download piped to a shell or an interpreter.
     - '.*\|\s*(?:sudo\s+)?(?:[\w./-]*/)?(?:(?:ba|z|da|k)?sh|python\d*(?:\.\d+)?|node|perl|ruby)\b.*'
   # Shell writes into a host approvals or config file whose text the scan cannot read as settings
-  # (`sed -i 's/deny/full/'`, `jq`, inline code): the replacement text, or the whole command,
-  # counts when it holds a loosening value (in a config file, also an approval key).
+  # (`sed -i 's/deny/full/'`, inline code): the replacement text, or the whole command, gets the
+  # review tier when it holds a loosening value (in a config file, also an approval key, or the
+  # same key with an approvals value earlier in the script).
   loosening_value_patterns:
     - '\b(?:full|off|yolo|approve|allow)\b'
     - '["'']\*{1,2}["'']'
   approval_key_patterns:
     - '\b(?:askFallback|ask_fallback|ask|security|approvals?|allowlist|command_allowlist|strictInlineEval|hooks_auto_accept|cron_mode|single_query_mode|unattended_mode|HERMES_YOLO_MODE|HERMES_ACCEPT_HOOKS)\b'
-  # In-place writers: the host files a command names count as written when it holds one of these.
-  inplace_writer_patterns:
-    - '\bsed\b[^|;&\n]*\s(?:-[a-zA-Z]*i|--in-place)'
-    - '\b(?:perl|ruby)\b[^|;&\n]*\s-[a-zA-Z]*i'
-    - '\byq\b[^|;&\n]*\s(?:-[a-zA-Z]*i|--inplace)'
-    - '\b(?:g?awk)\b[^|;&\n]*-i\s*inplace'
-    - '\bsponge\b'
-    - 'open\s*\([^)]*["''][wax]\+?["'']'
-    - '\.write_(?:text|bytes)\('
-    - '\bjson\.dump\('
-    - '\bfs\.(?:writeFile|appendFile)\w*\('
+  # In-place editors: their file operands are written (`sed -i`, `perl -pi`, `yq -i`).
+  inplace_heads: [sed, perl, ruby, yq]
+  # Inline code: the write target of each sink (group `t`, an expression), resolved from string
+  # literals, `Path.home()`, `expanduser`, `os.environ['HOME']` and variables assigned in the code.
+  code_sink_patterns:
+    - '\bopen\s*\(\s*(?P<t>[^,()]+(?:\([^()]*\)[^,()]*)*)\s*,\s*["''][wax]\+?b?["'']'
+    - '(?P<t>[\w.]+(?:\([^()]*\))?)\.write_(?:text|bytes)\('
+    - '\bfs\.(?:writeFile|appendFile)\w*\(\s*(?P<t>[^,]+),'
+    - '\b(?:shutil\.(?:copy\w*|move)|os\.(?:replace|rename))\([^,]+,\s*(?P<t>[^)]+)\)'
   # Heads that replace a file with another: a host approvals or main config file replaced from a
-  # file outside the host trees (and not written by the same command) is a blind replacement.
-  replace_heads: [cp, mv, install]
+  # file that is not a host approvals or config file (and not written by the same command) is a
+  # blind replacement, review tier.
+  replace_heads: [cp, mv, install, rsync, ln]
+  # Heads whose output is the content of a file or URL the scan cannot read: redirected onto a
+  # host approvals or main config file, they replace it blind.
+  blind_output_heads: [cat, tac, head, tail, base64, xxd, zcat, gunzip, bzcat, xzcat, curl, wget]
+  # Download options naming the file written.
+  download_output_flags: [-o, --output, -O, --output-document]
   # `openclaw config unset <path>`: OpenClaw falls back to its defaults (`security: full`,
   # `ask: off`, `strictInlineEval: false`), which are looser than any set value.
   unset_paths:
-    - '\Atools\.exec(?:\.(?:mode|security|ask|strictInlineEval))?\Z'
+    - '\Atools(?:\.exec(?:\.(?:mode|security|ask|strictInlineEval))?)?\Z'
+  # `config set` of one of these objects without `--merge` replaces it whole: a value that names
+  # neither `mode` nor both `security` and `ask` drops the policy, like an unset.
+  replaced_objects:
+    - '\Atools(?:\.exec)?\Z'
   # OpenClaw approvals commands, matched as `<head> [options] <subcommand> [options] <verb> …`.
   # `presets`: loosening preset names. `flags`: option -> loosening value. `content`: the
   # command's text (a heredoc or JSON5 argument) is read as an approvals document. `file_flag`: a

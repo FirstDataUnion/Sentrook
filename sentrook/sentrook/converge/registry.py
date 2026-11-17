@@ -276,6 +276,7 @@ REASONS: dict[str, str] = {
     "guardrail.gateway_stop": "The call stops the agent gateway. Make this change yourself.",
     "guardrail.host_approvals": "The call changes the host's own approval or allowlist settings.",
     "guardrail.approval_loosening": "The call loosens the host's approval or allowlist settings, so later commands would run without asking you. Make this change yourself.",
+    "guardrail.approval_loosening_review": "The call may loosen the host's approval or allowlist settings (a script edit or a replaced settings file the scan cannot read exactly). Check it before it runs.",
     "guardrail.log_tamper": "The call truncates or removes the operator log.",
     "destroy.outside_scratch": "The command deletes {subject}, outside the workspace and scratch space.",
     "destroy.workspace_wide": "The command deletes the whole workspace or a large part of it.",

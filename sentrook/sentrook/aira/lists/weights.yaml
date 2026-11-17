@@ -1,7 +1,7 @@
 # Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
 # overlay may override any scalar here. Values are 0–1 on the signal's own scale.
 
-version: 7
+version: 8
 
 # C1: credential material reached. Keyed by path group.
 sensitivity:
@@ -61,6 +61,8 @@ selfmod:
 guardrail:
   self_modification: 1.0
   floor_min_risk: 1.0
+  # The review tier of the approval-loosening floor: always asked, never blocked by the floor.
+  review_floor_min_risk: 0.5
 
 # C7: destruction outside scratch.
 destroy:

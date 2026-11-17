@@ -1506,6 +1506,14 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
 
 
 # ------------------------------------------------------------------ C4*: approval loosening
+#
+# Two tiers. A known approval setting changed to a looser value in a host file or command, or a
+# broad allowlist entry, takes the block floor (`guardrail.approval_loosening`). What the scan
+# can only infer (a script's loose words, a host file replaced blind, an `$include` file, an edit
+# fragment whose section cannot be decided) takes a review floor
+# (`guardrail.approval_loosening_review`): the owner is always asked, and the floor never blocks.
+
+BLOCK, REVIEW = "block", "review"
 
 
 @dataclass(frozen=True)
@@ -1516,9 +1524,16 @@ class _Setting:
     plist: re.Pattern[str]
     value: re.Pattern[str]
     where: str  # env | tree | config
+    host: str | None
     parents: re.Pattern[str] | None
     old_values: re.Pattern[str] | None
     bare: bool
+
+
+@dataclass(frozen=True)
+class _Tree:
+    host: str
+    root: str  # regex source with `{home}`
 
 
 @dataclass(frozen=True)
@@ -1529,24 +1544,28 @@ class _LooseningRules:
     allow_tree: re.Pattern[str] | None
     allow_approvals: re.Pattern[str] | None
     broad: tuple[re.Pattern[str], ...]
-    trees: tuple[str, ...]  # regex sources with `{home}`
+    trees: tuple[_Tree, ...]
     approvals_files: tuple[re.Pattern[str], ...]
-    config_files: tuple[re.Pattern[str], ...]
-    main_config_files: tuple[re.Pattern[str], ...]
+    main_config_files: dict[str, re.Pattern[str]]
+    include_files: dict[str, re.Pattern[str]]
     env_files: tuple[re.Pattern[str], ...]
     doc_files: tuple[re.Pattern[str], ...]
     loose_values: tuple[re.Pattern[str], ...]
     approval_keys: tuple[re.Pattern[str], ...]
-    inplace: tuple[re.Pattern[str], ...]
+    inplace_heads: frozenset[str]
+    code_sinks: tuple[re.Pattern[str], ...]
     replace_heads: frozenset[str]
+    blind_heads: frozenset[str]
+    download_flags: frozenset[str]
     unset_paths: tuple[re.Pattern[str], ...]
+    replaced_objects: tuple[re.Pattern[str], ...]
     approvals_cli: tuple[dict[str, Any], ...]
     launch_flags: dict[str, frozenset[str]]
     env: tuple[re.Pattern[str], ...]
 
 
 _LOOSENING_CACHE: dict[int, tuple[Any, _LooseningRules]] = {}
-_VALUE = r"""[ \t]*[:=][ \t]*["']?(?P<v>[^\s"',;}\]#)/\\<]+)"""
+_VALUE = r"""[ \t]*[:=][ \t]*(?:&\w+[ \t]+|!!?\w+[ \t]+)*["']?(?P<v>[^\s"',;}\]#)/\\<]+)"""
 
 
 def _loosening_rules(lists: Lists) -> _LooseningRules:
@@ -1560,6 +1579,9 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
 
     def rxs(key: str) -> tuple[re.Pattern[str], ...]:
         return tuple(re.compile(str(p), re.IGNORECASE) for p in raw.get(key) or ())
+
+    def by_host(key: str) -> dict[str, re.Pattern[str]]:
+        return {str(h): re.compile(str(p), re.IGNORECASE) for h, p in (raw.get(key) or {}).items()}
 
     settings = []
     for s in raw.get("settings") or []:
@@ -1577,6 +1599,7 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
                 ),
                 value=re.compile(str(s["value"]), re.IGNORECASE),
                 where=str(s.get("where", "config")),
+                host=str(s["host"]) if s.get("host") else None,
                 parents=rx(s.get("parents")),
                 old_values=rx(s.get("old_values")),
                 bare=bool(s.get("bare")),
@@ -1592,103 +1615,223 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
             r"""(?<![\w-])["']?(?:""" + str(k) + r""")["']?[ \t]*[:=][ \t]*""", re.IGNORECASE
         )
 
+    def pats(key: str) -> tuple[re.Pattern[str], ...]:
+        return lists.patterns("guardrail", "approval_loosening", key)
+
     rules = _LooseningRules(
         settings=tuple(settings),
         allow_tree=list_key("tree"),
         allow_approvals=list_key("approvals"),
-        broad=lists.patterns("guardrail", "approval_loosening", "broad_entry_patterns"),
-        trees=tuple(str(p) for p in raw.get("host_trees") or ()),
+        broad=pats("broad_entry_patterns"),
+        trees=tuple(_Tree(str(t["host"]), str(t["root"])) for t in raw.get("host_trees") or ()),
         approvals_files=rxs("approvals_files"),
-        config_files=rxs("config_files"),
-        main_config_files=rxs("main_config_files"),
+        main_config_files=by_host("main_config_files"),
+        include_files=by_host("include_files"),
         env_files=rxs("env_files"),
         doc_files=rxs("doc_files"),
-        loose_values=lists.patterns("guardrail", "approval_loosening", "loosening_value_patterns"),
-        approval_keys=lists.patterns("guardrail", "approval_loosening", "approval_key_patterns"),
-        inplace=lists.patterns("guardrail", "approval_loosening", "inplace_writer_patterns"),
+        loose_values=pats("loosening_value_patterns"),
+        approval_keys=pats("approval_key_patterns"),
+        inplace_heads=frozenset(str(h) for h in raw.get("inplace_heads") or ()),
+        code_sinks=pats("code_sink_patterns"),
         replace_heads=frozenset(str(h) for h in raw.get("replace_heads") or ()),
+        blind_heads=frozenset(str(h) for h in raw.get("blind_output_heads") or ()),
+        download_flags=frozenset(str(f) for f in raw.get("download_output_flags") or ()),
         unset_paths=rxs("unset_paths"),
+        replaced_objects=rxs("replaced_objects"),
         approvals_cli=tuple(raw.get("approvals_cli") or ()),
         launch_flags={
             str(head).lower(): frozenset(str(f) for f in flags or ())
             for head, flags in (raw.get("launch_flags") or {}).items()
         },
-        env=lists.patterns("guardrail", "approval_loosening", "env_assignment_patterns"),
+        env=pats("env_assignment_patterns"),
     )
     _LOOSENING_CACHE[id(raw)] = (raw, rules)
     return rules
 
 
-def _host_classes(value: str, rules: _LooseningRules, ctx: Context) -> frozenset[str]:
-    """Where a path sits for this floor: `tree` (a host tree, never under the workspace root),
-    `approvals`, `config` and `main` (host files in a tree), `env` (a file that sets the
-    environment a host starts with, or a host tree). Documentation is none of them."""
+@dataclass(frozen=True)
+class _Where:
+    """Where a file or command sits for this floor."""
+
+    classes: frozenset[str]  # tree, env, approvals, main, include
+    host: str | None = None
+    fmt: str = "auto"  # json | yaml | auto
+
+    def __bool__(self) -> bool:
+        return bool(self.classes)
+
+
+def _host_where(value: str, rules: _LooseningRules, ctx: Context) -> _Where:
+    """`tree` (a host tree), `approvals`, `main` and `include` (host files at a tree root), and
+    `env` (a file that sets the environment a host starts with, or a host tree). Documentation is
+    none of them."""
     if _match_any(rules.doc_files, value):
-        return frozenset()
-    out: set[str] = set()
-    ws = ctx.prepared.workspace_root.rstrip("/")
-    in_ws = bool(ws) and (value == ws or value.startswith(ws + "/"))
+        return _Where(frozenset())
     home = re.escape(ctx.prepared.home.rstrip("/"))
-    if not in_ws and any(re.search(t.replace("{home}", home), value) for t in rules.trees):
-        out |= {"tree", "env"}
-        if _match_any(rules.approvals_files, value):
-            out.add("approvals")
-        if _match_any(rules.config_files, value):
-            out.add("config")
-        if _match_any(rules.main_config_files, value):
-            out.add("main")
-    if _match_any(rules.env_files, value):
-        out.add("env")
-    return frozenset(out)
-
-
-_KEY_BEFORE = re.compile(r"""["']?([\w$-]+)["']?\s*:\s*\Z""")
-_YAML_KEY = re.compile(r"""-?\s*["']?([\w$.-]+)["']?\s*:\s*(?:#.*)?\Z""")
-
-
-def _enclosing_keys(text: str, pos: int) -> list[str]:
-    """The keys enclosing the setting at `pos`, nearest first: JSON or JSON5 braces and
-    brackets (a container without a key, such as a list item, is skipped), or else YAML
-    indentation. Empty when the text is a fragment that shows none."""
-    keys: list[str] = []
-    depth = 0
-    for i in range(pos - 1, -1, -1):
-        ch = text[i]
-        if ch in "}]":
-            depth += 1
-        elif ch in "{[":
-            if depth:
-                depth -= 1
-                continue
-            m = _KEY_BEFORE.search(text, max(0, i - 200), i)
-            if m:
-                keys.append(m.group(1))
-    if keys:
-        return keys
-    line_start = text.rfind("\n", 0, pos) + 1
-    head = text[line_start:pos]
-    indent = len(head) - len(head.lstrip(" "))
-    for line in reversed(text[:line_start].splitlines()):
-        stripped = line.lstrip(" ")
-        if not stripped or stripped.startswith("#"):
-            continue
-        level = len(line) - len(stripped)
-        if level >= indent:
-            continue
-        m = _YAML_KEY.match(stripped)
+    ws = ctx.prepared.workspace_root.rstrip("/")
+    classes: set[str] = set()
+    host: str | None = None
+    for tree in rules.trees:
+        root = tree.root.replace("{home}", home)
+        m = re.match(r"(?:" + root + r")/(?P<rel>.+)\Z", value)
         if m is None:
-            break
-        keys.append(m.group(1))
-        indent = level
-        if level == 0:
-            break
-    return keys
+            continue
+        # The workspace excludes its files only when it sits strictly inside this tree.
+        ws_in = re.match(r"(?:" + root + r")/.+\Z", ws) if ws else None
+        if ws_in and (value == ws or value.startswith(ws + "/")):
+            continue
+        rel = m.group("rel")
+        host = tree.host
+        classes |= {"tree", "env"}
+        if any(p.fullmatch(rel) for p in rules.approvals_files):
+            classes.add("approvals")
+        main = rules.main_config_files.get(tree.host)
+        if main is not None and main.fullmatch(rel):
+            classes.add("main")
+        include = rules.include_files.get(tree.host)
+        if include is not None and include.fullmatch(rel) and not classes & {"main", "approvals"}:
+            classes.add("include")
+        break
+    if _match_any(rules.env_files, value):
+        classes.add("env")
+    ext = os.path.splitext(value)[1].lower()
+    fmt = "yaml" if ext in (".yaml", ".yml") else "json" if ext in (".json", ".json5") else "auto"
+    return _Where(frozenset(classes), host, fmt)
+
+
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _decode(text: str) -> str:
+    """`\\uXXXX` escapes decoded, so `"\\u006dode"` reads as `"mode"`."""
+    if "\\u" not in text:
+        return text
+    return _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+_IDENT = re.compile(r"[A-Za-z_$][\w$-]*")
+
+
+def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str]]:
+    """The keys enclosing each position (nearest first) in JSON or JSON5, one forward pass:
+    strings, `//` and `/* */` comments skipped, unquoted keys read. A container with no key (a
+    list item) adds nothing."""
+    out: dict[int, list[str]] = {}
+    want = sorted(set(positions))
+    w = 0
+    stack: list[str | None] = []
+    last: str | None = None  # the last string or identifier, a key if `:` follows
+    pending: str | None = None  # the key whose value comes next
+    i, n = 0, len(text)
+    while i < n and w < len(want):
+        while w < len(want) and want[w] <= i:
+            out[want[w]] = [k for k in reversed(stack) if k]
+            w += 1
+        ch = text[i]
+        if ch in "\"'":
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            last = text[i + 1 : j]
+            i = j + 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        if ch == ":":
+            pending, last = last, None
+        elif ch in "{[":
+            stack.append(pending)
+            pending = last = None
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            pending = last = None
+        elif ch == ",":
+            pending = last = None
+        elif not ch.isspace():
+            m = _IDENT.match(text, i)
+            if m:
+                last = m.group(0)
+                i = m.end()
+                continue
+        i += 1
+    for p in want[w:]:
+        out[p] = [k for k in reversed(stack) if k]
+    return out
+
+
+_YAML_KEY = re.compile(r"""(?:-\s+)?["']?([\w$.-]+)["']?\s*:(?:\s+(.*))?\Z""")
+_YAML_OPENER = re.compile(r"""(?:(?:&\w+|!!?[\w/]+)\s*)*\Z""")
+
+
+def _yaml_strip_comment(line: str) -> str:
+    """The line without a `#` comment (outside quotes), the same length."""
+    quote = ""
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i] + " " * (len(line) - i)
+    return line
+
+
+def _yaml_contexts(text: str, positions: list[int]) -> dict[int, list[str]]:
+    """The keys enclosing each position by YAML indentation (nearest first), one forward pass;
+    comments, anchors (`&a`) and tags (`!!map`) skipped."""
+    out: dict[int, list[str]] = {}
+    want = sorted(set(positions))
+    w = 0
+    stack: list[tuple[int, str]] = []
+    offset = 0
+    for raw_line in text.split("\n"):
+        end = offset + len(raw_line)
+        line = _yaml_strip_comment(raw_line)
+        stripped = line.strip()
+        if stripped:
+            indent = len(line) - len(line.lstrip(" "))
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            while w < len(want) and want[w] <= end:
+                out[want[w]] = [k for _, k in reversed(stack)]
+                w += 1
+            m = _YAML_KEY.match(stripped)
+            if m and _YAML_OPENER.match((m.group(2) or "").strip()):
+                stack.append((indent, m.group(1)))
+        else:
+            while w < len(want) and want[w] <= end:
+                out[want[w]] = [k for _, k in reversed(stack)]
+                w += 1
+        offset = end + 1
+    for p in want[w:]:
+        out[p] = []
+    return out
+
+
+def _contexts(text: str, positions: list[int], fmt: str) -> dict[int, list[str]]:
+    if not positions:
+        return {}
+    if fmt == "json":
+        return _json_contexts(text, positions)
+    # YAML may carry flow maps (`approvals: {mode: off}`): braces count once comments are gone.
+    stripped = "\n".join(_yaml_strip_comment(line) for line in text.split("\n"))
+    braces = _json_contexts(stripped, positions)
+    lines = _yaml_contexts(text, positions)
+    return {p: braces.get(p) or lines.get(p) or [] for p in positions}
 
 
 def _list_value(text: str, start: int) -> str:
     """The value that starts at `start`: a bracketed list (to its closing bracket), a YAML block
     list on the following lines, or one scalar."""
-    rest = text[start:]
+    rest = text[start : start + 20000]
     if rest.startswith("["):
         depth = 0
         for i, ch in enumerate(rest):
@@ -1724,70 +1867,119 @@ def _broad(entry: str, rules: _LooseningRules) -> bool:
     return any(b.fullmatch(entry.strip()) for b in rules.broad)
 
 
+Hit = tuple[str, str, str]  # (key, value, tier)
+
+
 def _loosening_hits(
     text: str,
     old: str,
     rules: _LooseningRules,
-    where: frozenset[str],
+    where: _Where,
+    *,
     parents: list[str] | None = None,
-) -> set[tuple[str, str]]:
-    """The loosening settings `text` holds where a file or command sits (`where`, from
-    `_host_classes`), as (key, value). `old` is the text it replaces (for `old_values`);
-    `parents` stands in for the enclosing keys when the text shows none (a config command's
-    path)."""
-    hits: set[tuple[str, str]] = set()
+    fragment: bool = False,
+) -> set[Hit]:
+    """The loosening settings `text` holds where a file or command sits, as (key, value, tier).
+    `old` is the text it replaces (for `old_values`); `parents` stands in for the enclosing keys
+    when the text shows none (a config command's path); `fragment` marks an edit's text, whose
+    top level is not the file's."""
+    hits: set[Hit] = set()
     if not text or not where:
         return hits
+    classes = where.classes
+    found: list[tuple[_Setting, str, str, int]] = []
     for s in rules.settings:
-        if s.where == "env" and "env" not in where:
+        if s.host is not None and where.host is not None and s.host != where.host:
             continue
-        if s.where == "tree" and "tree" not in where:
+        if s.where == "env" and "env" not in classes:
             continue
-        if s.where == "config" and not where & {"approvals", "config"}:
+        if s.where == "tree" and "tree" not in classes:
             continue
-        found = [(m.group("k"), m.group("v"), m.start()) for m in s.rx.finditer(text)]
+        if s.where == "config" and not classes & {"approvals", "main", "include"}:
+            continue
+        for m in s.rx.finditer(text):
+            if s.value.fullmatch(m.group("v")):
+                found.append((s, m.group("k"), m.group("v"), m.start()))
         if s.where == "env":
-            found += [(m.group("k"), m.group("v"), m.start()) for m in s.plist.finditer(text)]
-        for key, value, at in found:
-            if not s.value.fullmatch(value):
-                continue
-            if s.where == "config" and "approvals" not in where:
-                enclosing = _enclosing_keys(text, at) or (parents or [])
-                if enclosing:
-                    if s.parents is None or not s.parents.fullmatch(enclosing[0]):
-                        continue
-                elif not (
-                    (s.bare and "main" in where)
-                    or (
-                        s.old_values is not None
-                        and any(
-                            m.group("k").lower() == key.lower()
-                            and s.old_values.fullmatch(m.group("v"))
-                            for m in s.rx.finditer(old)
-                        )
-                    )
-                ):
+            for m in s.plist.finditer(text):
+                if s.value.fullmatch(m.group("v")):
+                    found.append((s, m.group("k"), m.group("v"), m.start()))
+    needs_context = [
+        at for s, _, _, at in found if s.where == "config" and "approvals" not in classes
+    ]
+    contexts = _contexts(text, needs_context, where.fmt)
+    for s, key, value, at in found:
+        tier = REVIEW if "include" in classes and s.where == "config" else BLOCK
+        if s.where == "config" and "approvals" not in classes:
+            enclosing = contexts.get(at) or (parents or [])
+            if enclosing:
+                if s.parents is None or not s.parents.fullmatch(enclosing[0]):
                     continue
-            hits.add((key, value.lower()))
+            elif s.bare and "main" in classes:
+                pass
+            elif s.old_values is not None and any(
+                m.group("k").lower() == key.lower() and s.old_values.fullmatch(m.group("v"))
+                for m in s.rx.finditer(old)
+            ):
+                pass
+            elif fragment:
+                tier = REVIEW  # a fragment that cannot be decided: ask, do not stay silent
+            else:
+                continue  # the top level of a whole file: not the approvals section
+        hits.add((key, value.lower(), tier))
     for key_rx, needs in ((rules.allow_tree, "tree"), (rules.allow_approvals, "approvals")):
-        if key_rx is None or needs not in where:
+        if key_rx is None or needs not in classes:
             continue
         for m in key_rx.finditer(text):
             for entry in _entries(_list_value(text, m.end())):
                 if _broad(entry, rules):
-                    hits.add((m.group(0).strip(" \t:=\"'"), entry.strip()))
+                    hits.add((m.group(0).strip(" \t:=\"'"), entry.strip(), BLOCK))
     return hits
 
 
 def _loosened(
-    pairs: list[tuple[str, str]], rules: _LooseningRules, where: frozenset[str]
-) -> set[tuple[str, str]]:
+    pairs: list[tuple[str, str]], rules: _LooseningRules, where: _Where, *, fragment: bool
+) -> set[Hit]:
     """The loosening settings the new text of each (old, new) pair holds and its old text does
-    not."""
-    out: set[tuple[str, str]] = set()
+    not (compared without the tier)."""
+    out: set[Hit] = set()
     for old, new in pairs:
-        out |= _loosening_hits(new, old, rules, where) - _loosening_hits(old, "", rules, where)
+        old, new = _decode(old), _decode(new)
+        before = {
+            (k.lower(), v) for k, v, _ in _loosening_hits(old, "", rules, where, fragment=fragment)
+        }
+        out |= {
+            h
+            for h in _loosening_hits(new, old, rules, where, fragment=fragment)
+            if (h[0].lower(), h[1]) not in before
+        }
     return out
+
+
+def _script_hits(text: str, rules: _LooseningRules, where: _Where) -> set[Hit]:
+    """Review tier: a script writes a host approvals or config file and its text is not settings
+    the scan can read (`s/deny/full/`, `d['ask'] = 'off'`, `.replace('mode: smart', 'mode: off')`).
+    A loosening value counts anywhere in an approvals file; in a config file next to an approval
+    key, or after the same key with an approvals value."""
+    if not where.classes & {"approvals", "main", "include"}:
+        return set()
+    loose = _match_any(rules.loose_values, text)
+    if loose is None:
+        return set()
+    if "approvals" in where.classes or _match_any(rules.approval_keys, text):
+        return {("script", loose.group(0).strip("'\""), REVIEW)}
+    for s in rules.settings:
+        if s.old_values is None:
+            continue
+        first_old = next(
+            (m.start() for m in s.rx.finditer(text) if s.old_values.fullmatch(m.group("v"))), None
+        )
+        if first_old is None:
+            continue
+        for m in s.rx.finditer(text, first_old):
+            if s.value.fullmatch(m.group("v")):
+                return {(m.group("k"), m.group("v").lower(), REVIEW)}
+    return set()
 
 
 _PATCH_FILE = re.compile(r"^(?:\*\*\* (?:Update|Add) File:|\+\+\+ (?:b/)?)\s*(\S.*?)\s*$", re.M)
@@ -1821,14 +2013,17 @@ _BATCH_ITEM = re.compile(
     r"""("[^"]*"|'[^']*'|\[[^\]]*\]|\{[^}]*\}|[^,}\s]+)"""
 )
 _SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1).)*)\1""")
-# A host path written in a command, also inside quoted inline code.
-_HOST_PATH = re.compile(
-    r"""(?:~|\$HOME|\$\{HOME\}|/)[\w./~$-]*?/\.(?:openclaw|hermes)[\w.-]*/[\w./-]+"""
+_ASSIGNMENT = re.compile(r"""(?:\A|[;&|\n(]\s*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2""")
+_VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+_TILDE_USER = re.compile(r"\A~([A-Za-z_][\w.-]*)(?=/|\Z)")
+_CODE_LITERAL = re.compile(r"""["']([^"'\n]*)["']""")
+_CODE_ASSIGN = re.compile(
+    r"""(?m)^\s*(?:const\s+|let\s+|var\s+)?(\w+)\s*=\s*(.+?)\s*$|;\s*(\w+)\s*=\s*([^;\n]+)"""
 )
-
-
-# Where a `key: value` pair starts, for reading a script's text one setting at a time.
-_SETTING_AT = re.compile(r"""["']?[\w$-]+["']?[ \t]*[:=]""")
+_HOME_EXPR = re.compile(
+    r"""Path\.home\(\)|expanduser|environ\s*(?:\[\s*["']HOME["']\s*\]|\.get\(\s*["']HOME["'])|"""
+    r"""getenv\(\s*["']HOME["']|homedir\(\)"""
+)
 
 
 def _sed_split(command: str) -> tuple[str, str]:
@@ -1838,32 +2033,64 @@ def _sed_split(command: str) -> tuple[str, str]:
     return "\n".join(old), _SED_SUBST.sub(lambda m: "s" + m.group(1), command)
 
 
-def _settings(hits: set[tuple[str, str]]) -> list[str]:
-    return sorted(f"{k}={v}" for k, v in hits)
+def _code_path(expr: str, variables: dict[str, str]) -> str | None:
+    """The path a code expression names: string literals joined (`Path.home() / '.openclaw' /
+    'x.json'`, `os.path.join(os.environ['HOME'], '.hermes', 'config.yaml')`, `'~/.hermes/x'`),
+    or a variable assigned one earlier in the code."""
+    expr = expr.strip()
+    if re.fullmatch(r"\w+", expr):
+        return variables.get(expr)
+    literals = [
+        lit for lit in _CODE_LITERAL.findall(expr) if lit not in ("w", "a", "x", "r", "HOME")
+    ]
+    if not literals:
+        inner = re.search(r"\b(\w+)\b", expr)
+        return variables.get(inner.group(1)) if inner else None
+    parts = [lit.strip("/") for lit in literals]
+    if _HOME_EXPR.search(expr) and not literals[0].startswith(("/", "~")):
+        return "~/" + "/".join(p for p in parts if p)
+    if literals[0].startswith(("/", "~")):
+        return ("/" if literals[0].startswith("/") else "") + "/".join(p for p in parts if p)
+    return None
 
 
-def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None, dict[str, Any]]]:
-    """Changes that loosen the host's approval or allowlist policy, as (subject, detail)."""
+def _approval_loosening(
+    a: CallAnalysis, ctx: Context
+) -> list[tuple[str, str | None, dict[str, Any]]]:
+    """Changes that loosen the host's approval or allowlist policy, as (tier, subject, detail)."""
     lists = ctx.lists
     rules = _loosening_rules(lists)
     if not rules.settings and rules.allow_tree is None:
         return []
-    out: list[tuple[str | None, dict[str, Any]]] = []
+    out: list[tuple[str, str | None, dict[str, Any]]] = []
+    home = ctx.prepared.home.rstrip("/")
+    ws = ctx.prepared.workspace_root
+
+    def report(hits: set[Hit], subject: str | None, detail: dict[str, Any]) -> None:
+        if not hits:
+            return
+        tier = BLOCK if any(t == BLOCK for _, _, t in hits) else REVIEW
+        settings = sorted(f"{k}={v}" for k, v, t in hits if t == tier)
+        out.append((tier, subject, {**detail, "settings": settings[:4]}))
 
     def resolve(path: str, cwd: str | None = None) -> str:
-        return normalise_path(
-            path.strip().strip("'\""),
-            home=ctx.prepared.home,
-            workspace_root=ctx.prepared.workspace_root,
-            cwd=cwd or a.cwd or ctx.prepared.workspace_root,
-        )
+        path = path.strip().strip("'\"")
+        path = path.replace("${HOME}", "~").replace("$HOME", "~")
+        m = _TILDE_USER.match(path)
+        if m:
+            user = m.group(1)
+            base = home if os.path.basename(home) == user else os.path.dirname(home) + "/" + user
+            path = base + path[m.end() :]
+        base = cwd or a.cwd or ws
+        if path and not path.startswith(("/", "~", "$")):
+            # `normalise_path` keeps a bare or `../` relative path as it is; this floor anchors on
+            # the host trees, so it resolves one against the cwd (or the workspace) first.
+            base_abs = normalise_path(base, home=home, workspace_root=ws, cwd=None)
+            path = os.path.normpath(os.path.join(base_abs, path))
+        return normalise_path(path, home=home, workspace_root=ws, cwd=base)
 
-    def file_change(
-        value: str, subject: str | None, pairs: list[tuple[str, str]], detail: dict[str, Any]
-    ) -> None:
-        hits = _loosened(pairs, rules, _host_classes(value, rules, ctx))
-        if hits:
-            out.append((subject, {**detail, "settings": _settings(hits)[:4]}))
+    def display(value: str) -> str:
+        return display_path(value, home)
 
     # 1. File tools: write, edit, patch (also MCP and other tools that name the path).
     if a.kind in _WRITE_KINDS | {ToolKind.MCP, ToolKind.OTHER}:
@@ -1880,11 +2107,11 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
             for path, old, new in _patch_sections(patch):
                 value = resolve(path)
                 p = a.path(value)
-                file_change(
-                    value,
+                where = _host_where(value, rules, ctx)
+                report(
+                    _loosened([(old, new)], rules, where, fragment=True),
                     p.entity_id if p else None,
-                    [(old, new)],
-                    {"path": display_path(value, ctx.prepared.home), "mechanism": "patch"},
+                    {"path": display(value), "mechanism": "patch"},
                 )
         edits = [e for e in a.call.get("edits") or [] if isinstance(e, dict)]
         if edits:
@@ -1896,94 +2123,155 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
             # rewriting the host's config whole is rare, and telling an unchanged setting from a
             # new one would need the file's earlier content.
             pairs = [("", a.content)]
-        for p, mechanism in _written_paths(a, ctx):
-            file_change(p.value, p.entity_id, pairs, {"path": p.display, "mechanism": mechanism})
+        raw_path = a.call.get("path")
+        targets = [(p.value, p.entity_id, p.display, m) for p, m in _written_paths(a, ctx)]
+        if isinstance(raw_path, str) and raw_path:
+            value = resolve(raw_path)
+            if all(t[0] != value for t in targets):
+                targets.append((value, None, display(value), a.kind.value))
+        for value, subject, shown, mechanism in targets:
+            where = _host_where(value, rules, ctx)
+            report(
+                _loosened(pairs, rules, where, fragment=bool(edits)),
+                subject,
+                {"path": shown, "mechanism": mechanism},
+            )
         return out
 
     if a.kind is not ToolKind.EXEC or not a.command:
         return out
-    command = a.command
+    command = _decode(a.command)
     shape = a.shape
 
-    # 2. Shell writes into a host file: redirects, `tee`, writing heads, and in-place writers
-    #    (`sed -i`, `perl -pi`, `yq -i`, `sponge`, inline code that writes) naming the file. The
-    #    words `echo` and `printf` print are not files.
-    pair = _sed_split(command) if a.heads & {"sed", "perl", "ruby"} else ("", command)
-    targets: dict[str, tuple[str | None, str, str]] = {}
-    for p, mechanism in _written_paths(a, ctx):
-        if mechanism not in ("head:echo", "head:printf"):
-            targets.setdefault(p.value, (p.entity_id, p.display, mechanism))
-    if _match_any(rules.inplace, command):
-        for m in _HOST_PATH.finditer(command):
-            value = resolve(m.group(0).replace("${HOME}", "~").replace("$HOME", "~"))
-            targets.setdefault(value, (None, display_path(value, ctx.prepared.home), "in_place"))
-    for value, (subject, display, mechanism) in targets.items():
-        where = _host_classes(value, rules, ctx)
-        detail = {"path": display, "mechanism": mechanism}
-        hits = _loosened([pair], rules, where)
-        if not hits and where & {"config"}:
-            # A script that replaces a value (`.replace('mode: smart', 'mode: off')`): the same
-            # key with an old value earlier in the command ties the setting to its section.
-            for m in _SETTING_AT.finditer(pair[1]):
-                before = pair[1][: m.start()]
-                hits |= _loosening_hits(pair[1][m.start() :], before, rules, where)
-                if hits:
-                    break
-        if not hits and where & {"approvals", "config"}:
-            # The script's text is not settings (`s/deny/full/`, `.defaults.ask = "off"`):
-            # a loosening value in what it writes counts, in a config file next to an approval key.
-            written = pair[1]
-            loose = _match_any(rules.loose_values, written)
-            if loose and ("approvals" in where or _match_any(rules.approval_keys, written)):
-                hits = {("script", loose.group(0).strip("'\""))}
-        if hits:
-            out.append((subject, {**detail, "settings": _settings(hits)[:4]}))
+    # Shell variables assigned in the command (`f=~/.openclaw/x.json; sed -i … "$f"`).
+    variables = {m.group(1): m.group(3) for m in _ASSIGNMENT.finditer(command)}
 
-    # 3. A host approvals or main config file replaced from a file outside the host trees: what
-    #    it now holds is not visible to the scan. A file the same command wrote is visible above.
-    if shape is not None and shape.parse_ok:
-        written_here = {resolve(t) for t in shape.redirect_targets}
+    def expand(token: str) -> str:
+        return _VAR_REF.sub(
+            lambda m: (
+                variables.get(m.group(1) or m.group(2), m.group(0))
+                if (m.group(1) or m.group(2)) != "HOME"
+                else "~"
+            ),
+            token,
+        )
+
+    # 2. What the command writes, segment by segment (`cd` moves the cwd).
+    written: list[tuple[str, str, ExecSegment | None]] = []  # (path, mechanism, segment)
+    blind: list[tuple[str, str]] = []  # (host file, what it was replaced from)
+    written_here: set[str] = set()
+    writing = {h.lower() for h in lists.strings("guardrail", "writing_heads")} - {"echo", "printf"}
+    if shape is not None and shape.parse_ok and shape.segments:
+        cwd = a.cwd or ws
         for seg in shape.segments:
-            if seg.head not in rules.replace_heads:
+            if seg.head == "cd":
+                if seg.positional:
+                    cwd = resolve(expand(seg.positional[0]), cwd)
                 continue
-            words = [t for t in seg.positional if t != "-" and ("/" in t or "." in t)]
-            if len(words) < 2:
-                continue
-            *sources, dest = words
-            for src in sources:
-                src_value = resolve(src)
-                dest_value = resolve(dest)
-                if dest.endswith("/") or not os.path.splitext(dest_value)[1]:
-                    dest_value = dest_value.rstrip("/") + "/" + os.path.basename(src_value)
-                if not _host_classes(dest_value, rules, ctx) & {"approvals", "main"}:
-                    continue
-                if "tree" in _host_classes(src_value, rules, ctx) or src_value in written_here:
-                    continue
-                out.append(
-                    (
-                        None,
-                        {
-                            "path": display_path(dest_value, ctx.prepared.home),
-                            "mechanism": f"replace:{seg.head}",
-                            "settings": [
-                                "replaced from " + display_path(src_value, ctx.prepared.home)
-                            ],
-                        },
-                    )
-                )
+            for target in seg.redirects:
+                value = resolve(expand(target), cwd)
+                written.append((value, "redirect", seg))
+                written_here.add(value)
+                sources = [t for t in seg.positional if not t.startswith("-")]
+                if seg.head in rules.blind_heads and sources:
+                    blind.append((value, sources[0]))
+            args = [expand(t) for t in seg.positional]
+            if seg.head in rules.inplace_heads and (
+                seg.has_flag_letter("i") or "--in-place" in seg.flags or "--inplace" in seg.flags
+            ):
+                for tok in args:
+                    if _SED_SUBST.search(tok) or re.search(r"[\s=]", tok) or tok.startswith("."):
+                        continue
+                    written.append((resolve(tok, cwd), f"in_place:{seg.head}", seg))
+            elif seg.head == "sponge" or (
+                seg.head in writing and seg.head not in rules.replace_heads
+            ):
+                for tok in args:
+                    written.append((resolve(tok, cwd), f"head:{seg.head}", seg))
+            if seg.head in rules.replace_heads:
+                target_dir = None
+                for i, f in enumerate(seg.argv):
+                    if f in ("-t", "--target-directory") and i + 1 < len(seg.argv):
+                        target_dir = expand(seg.argv[i + 1])
+                    elif f.startswith("--target-directory="):
+                        target_dir = expand(f.split("=", 1)[1])
+                words = [t for t in args if t != target_dir and ("/" in t or "." in t)]
+                if target_dir is not None:
+                    sources, dests = words, [target_dir.rstrip("/") + "/"] * len(words)
+                elif len(words) >= 2:
+                    sources, dests = words[:-1], [words[-1]] * (len(words) - 1)
+                else:
+                    sources, dests = [], []
+                for src, dest in zip(sources, dests, strict=True):
+                    src_value = resolve(src, cwd)
+                    dest_value = resolve(dest, cwd)
+                    if dest.endswith("/") or not os.path.splitext(dest_value)[1]:
+                        dest_value = dest_value.rstrip("/") + "/" + os.path.basename(src_value)
+                    written.append((dest_value, f"head:{seg.head}", seg))
+                    src_where = _host_where(src_value, rules, ctx)
+                    if src_value in written_here:
+                        continue  # written by this command: its content is judged below
+                    if src_where.classes & {"approvals", "main", "include"}:
+                        continue  # another host config or approvals file
+                    blind.append((dest_value, src_value))
+            for i, f in enumerate(seg.argv):
+                name, eq, val = f.partition("=")
+                if name in rules.download_flags and seg.head in ("curl", "wget"):
+                    val = val if eq else (seg.argv[i + 1] if i + 1 < len(seg.argv) else "")
+                    if val and val != "-":
+                        dest_value = resolve(expand(val), cwd)
+                        blind.append((dest_value, "a download"))
+    # Inline code (`python -c`, `node -e`, Hermes `execute_code`): each write sink's target.
+    code_vars: dict[str, str] = {}
+    for m in _CODE_ASSIGN.finditer(command):
+        name, expr = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        path = _code_path(expr, code_vars)
+        if path:
+            code_vars[name] = path
+    for sink in rules.code_sinks:
+        for m in sink.finditer(command):
+            path = _code_path(m.group("t"), code_vars)
+            if path:
+                written.append((resolve(path), "inline_code", None))
+
+    pair = _sed_split(command) if a.heads & {"sed", "perl", "ruby"} else ("", command)
+    seen: set[str] = set()
+    for value, mechanism, _seg in written:
+        if value in seen:
+            continue
+        seen.add(value)
+        where = _host_where(value, rules, ctx)
+        if not where:
+            continue
+        # A command is not an edit fragment: an undecided setting falls to the script check.
+        hits = _loosened([pair], rules, where, fragment=False)
+        if not hits:
+            hits = _script_hits(pair[1], rules, where)
+        report(hits, None, {"path": display(value), "mechanism": mechanism})
+
+    # 3. A host approvals or main config file replaced from content the scan cannot read.
+    for dest_value, src in blind:
+        if _host_where(dest_value, rules, ctx).classes & {"approvals", "main"}:
+            source = src if src == "a download" else display(resolve(src))
+            report(
+                {("replaced from", source, REVIEW)},
+                None,
+                {"path": display(dest_value), "mechanism": "replace"},
+            )
 
     # 4. Host CLIs: config commands, approvals commands, launching with approvals bypassed.
     config_cli = lists.get("guardrail", "config_cli", default=[]) or []
     heads = {str(e.get("head")).lower() for e in config_cli}
     heads |= {str(e.get("head")).lower() for e in rules.approvals_cli}
     heads |= set(rules.launch_flags)
-    host_cli = frozenset({"tree", "config", "env"})
-    approvals_doc = frozenset({"tree", "config", "env", "approvals"})
 
-    def cli_hit(line: str, mechanism: str, settings: list[str]) -> None:
-        out.append((None, {"match": line[:120], "mechanism": mechanism, "settings": settings[:4]}))
+    def cli_where(head: str, *extra: str) -> _Where:
+        return _Where(frozenset({"tree", "env", "main", *extra}), head, "auto")
 
-    def set_value(path: str, value: str) -> set[tuple[str, str]]:
+    def cli_hit(line: str, mechanism: str, hits: set[Hit]) -> None:
+        report(hits, None, {"match": line[:120], "mechanism": mechanism})
+
+    def set_value(head: str, path: str, value: str) -> set[Hit]:
         """`<path> <value>` of a config command, read as `<last segment>: <value>` with the
         path's other segments as the enclosing keys."""
         if value.startswith("@"):
@@ -1992,16 +2280,30 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
         if not segments:
             return set()
         text = f"{segments[-1]}: {value}"
-        return _loosening_hits(text, "", rules, host_cli, parents=segments[-2::-1])
+        return _loosening_hits(text, "", rules, cli_where(head), parents=segments[-2::-1])
+
+    def drops_policy(path: str, value: str, merge: bool) -> bool:
+        """`config set` of the exec settings that leaves OpenClaw on its looser defaults."""
+        path = path.strip("'\"")
+        if value.strip().lower() == "null" and _match_any(rules.unset_paths, path):
+            return True
+        if merge or not _match_any(rules.replaced_objects, path):
+            return False
+        if not value.lstrip().startswith("{"):
+            return False
+        names = {w.lower() for w in re.findall(r"[A-Za-z]+", value)}
+        if path.strip() == "tools" and "exec" not in names:
+            return True
+        return "mode" not in names and not {"security", "ask"} <= names
 
     for words, line in _cli_segments(a, lists):
-        tokens = _cli_tokens(words, heads, lists)
+        tokens = [expand(t) for t in _cli_tokens(words, heads, lists)]
         if not tokens or tokens[0] not in heads:
             continue
         head = tokens[0]
         flags = rules.launch_flags.get(head, frozenset())
         if flags and any(t in flags for t in tokens[1:]):
-            cli_hit(line, "launch_flag", [t for t in tokens[1:] if t in flags])
+            cli_hit(line, "launch_flag", {(t, "on", BLOCK) for t in tokens[1:] if t in flags})
         for at in _after_options(tokens, 1):
             sub = tokens[at].lower()
             verbs = [(v, tokens[v].lower()) for v in _after_options(tokens, at + 1)]
@@ -2013,25 +2315,27 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
                         continue
                     args = tokens[v + 1 :]
                     positional = [t for t in args if not t.startswith("-")]
-                    hits: set[tuple[str, str]] = set()
-                    if verb in ("unset", "rm", "remove", "delete", "del"):
+                    hits: set[Hit] = set()
+                    removes = verb in ("unset", "rm", "remove", "delete", "del")
+                    if removes and head == "openclaw":
                         hits = {
-                            (path, "unset")
+                            (path, "unset", BLOCK)
                             for path in positional[:1]
                             if _match_any(rules.unset_paths, path.strip("'\""))
                         }
                     if verb == "patch":
-                        hits |= _loosening_hits(command, "", rules, host_cli)
+                        hits |= _loosening_hits(command, "", rules, cli_where(head))
                     if any(t.split("=", 1)[0] == "--batch-json" for t in args):
                         for m in _BATCH_ITEM.finditer(command):
-                            hits |= set_value(m.group(1), m.group(2).strip("'\""))
-                    if (
-                        verb not in ("unset", "rm", "remove", "delete", "del")
-                        and len(positional) >= 2
-                    ):
-                        hits |= set_value(positional[0], positional[1])
+                            hits |= set_value(head, m.group(1), m.group(2).strip("'\""))
+                    if not removes and len(positional) >= 2:
+                        hits |= set_value(head, positional[0], positional[1])
+                        if head == "openclaw" and drops_policy(
+                            positional[0], positional[1], "--merge" in args
+                        ):
+                            hits.add((positional[0], "policy dropped", BLOCK))
                     if hits:
-                        cli_hit(line, f"{head} {sub} {verb}", _settings(hits))
+                        cli_hit(line, f"{head} {sub} {verb}", hits)
             for entry in rules.approvals_cli:
                 if head != entry.get("head") or sub != entry.get("subcommand"):
                     continue
@@ -2042,33 +2346,31 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
                     mech = f"{head} {sub} {verb}"
                     presets = {str(p).lower() for p in entry.get("presets") or []}
                     if presets and any(t.lower() in presets for t in args):
-                        cli_hit(line, mech, [t for t in args if t.lower() in presets])
+                        cli_hit(
+                            line, mech, {("preset", t, BLOCK) for t in args if t.lower() in presets}
+                        )
                     flag_rx = entry.get("flags") or {}
-                    found: list[str] = []
+                    found: set[Hit] = set()
                     for i, t in enumerate(args):
                         name, eq, val = t.partition("=")
                         if name in flag_rx:
                             val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
                             if re.fullmatch(str(flag_rx[name]), val, re.IGNORECASE):
-                                found.append(f"{name}={val}")
+                                found.add((name, val, BLOCK))
                     if found:
                         cli_hit(line, mech, found)
                     if entry.get("content"):
-                        hits = _loosening_hits(command, "", rules, approvals_doc)
+                        hits = _loosening_hits(command, "", rules, cli_where(head, "approvals"))
                         if hits:
-                            cli_hit(line, mech, _settings(hits))
+                            cli_hit(line, mech, hits)
                     file_flag = entry.get("file_flag")
                     for i, t in enumerate(args):
                         name, eq, val = t.partition("=")
                         if file_flag and name == file_flag:
                             val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
                             src = resolve(val)
-                            if val and "tree" not in _host_classes(src, rules, ctx):
-                                cli_hit(
-                                    line,
-                                    mech,
-                                    ["read from " + display_path(src, ctx.prepared.home)],
-                                )
+                            if val and not _host_where(src, rules, ctx).classes & {"approvals"}:
+                                cli_hit(line, mech, {("read from", display(src), REVIEW)})
                     add = entry.get("allowlist_add")
                     if add and args and args[0].lower() == str(add):
                         # Entries: the words after the options; an option's value is skipped.
@@ -2081,12 +2383,12 @@ def _approval_loosening(a: CallAnalysis, ctx: Context) -> list[tuple[str | None,
                                 skip = "=" not in t
                             else:
                                 entries.append(t)
-                        broad = [e for e in entries if _broad(e, rules)]
+                        broad = {("allowlist", e, BLOCK) for e in entries if _broad(e, rules)}
                         if broad:
                             cli_hit(line, mech, broad)
     env = _match_any(rules.env, command)
     if env:
-        cli_hit(env.group(0).strip(), "environment", [env.group(0).strip()])
+        cli_hit(env.group(0).strip(), "environment", {("environment", env.group(0).strip(), BLOCK)})
     return out
 
 
@@ -2102,6 +2404,22 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if key in seen:
             return
         seen.add(key)
+        if reason == "guardrail.approval_loosening_review":
+            # The review tier: the owner is always asked; the floor adds no score and never blocks.
+            f = Finding(
+                rule="C4star.approval_loosening_review", cls="C4*", reason=reason, detail=detail
+            )
+            f.floors.append(
+                Floor(
+                    floor="guardrail_tampering",
+                    min_risk=ctx.weight("guardrail", "review_floor_min_risk", default=0.5),
+                    enforce=Enforce.REVIEW,
+                    subject=subject,
+                    reason=reason,
+                )
+            )
+            out.append(f)
+            return
         if reason == "guardrail.host_approvals":
             # Changing the host's own approval or allowlist settings is scored, not floored: the
             # floor covers Sentrook's state, its plugin entry and the gateway.
@@ -2159,12 +2477,16 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 )
 
     # Loosening the host's approval or allowlist policy, by any route.
-    # One finding per call, however many routes and settings it takes.
+    # One finding per call, however many routes and settings it takes: the block tier when any
+    # route is precise, else the review tier.
     loosening = _approval_loosening(a, ctx)
     if loosening:
-        subject, detail = loosening[0]
-        settings = sorted({s for _, d in loosening for s in d.get("settings", [])})
-        emit("guardrail.approval_loosening", subject, {**detail, "settings": settings[:6]})
+        tier = BLOCK if any(t == BLOCK for t, _, _ in loosening) else REVIEW
+        chosen = [(subject, detail) for t, subject, detail in loosening if t == tier]
+        subject, detail = chosen[0]
+        settings = sorted({s for _, d in chosen for s in d.get("settings", [])})
+        reason = "guardrail.approval_loosening" + ("" if tier == BLOCK else "_review")
+        emit(reason, subject, {**detail, "settings": settings[:6]})
 
     if a.kind is not ToolKind.EXEC:
         return out
