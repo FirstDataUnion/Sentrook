@@ -49,6 +49,9 @@ TAGS = [
     "v0.23.1",
     "rc.3-v0.23.1",
     "v0.9.10",
+    "v2026.9.24",
+    "v2026.9.24-desktop",
+    "v2026.8.16.2",
 ]
 
 
@@ -56,6 +59,12 @@ def test_newest_stable_orders_numerically_and_skips_variants():
     assert compat.newest_stable(HERMES, TAGS) == "v0.23.2"
     assert compat.newest_stable(HERMES, ["v0.9.10", "v0.10.0"]) == "v0.10.0"
     assert compat.newest_stable(HERMES, ["main", "rc.1-v1.0.0"]) is None
+
+
+def test_hermes_calendar_tags_are_not_releases():
+    """Hermes's older calendar-versioned images must never become `latest` or a release candidate."""
+    assert compat.newest_stable(HERMES, ["v2026.9.24", "v2026.9.21"]) is None
+    assert compat.newest_rc(HERMES, ["rc.1-v2026.9.24"], "v0.23.2") is None
 
 
 def test_rc_only_when_newer_than_latest():
