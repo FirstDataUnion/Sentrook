@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -210,22 +211,48 @@ export class Store {
     renameSync(tmp, file);
   }
 
+  /**
+   * The per-install salt, created on first use. Every process sharing the state dir (the gateway and the
+   * `openclaw sentrook` command line) must get the same one, so a new salt is written whole to a temp file and
+   * hard-linked into place: the link fails with `EEXIST` when another process got there first, and that
+   * process's salt is read instead. No one ever reads a half-written salt. An empty salt file (which older
+   * versions could leave after a crash) is replaced.
+   */
   salt(): string {
     if (this.saltCache) return this.saltCache;
     const file = path.join(this.dir, "salt");
-    if (existsSync(file)) {
-      const v = readFileSync(file, "utf8").trim();
-      if (v) return (this.saltCache = v);
-    }
+    const existing = this.readSalt(file);
+    if (existing) return (this.saltCache = existing);
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const v = randomBytes(32).toString("hex");
-    writeFileSync(file, v, { mode: 0o600 });
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
     try {
-      chmodSync(file, 0o600);
-    } catch {
-      // best effort
+      writeFileSync(tmp, randomBytes(32).toString("hex"), { mode: 0o600 });
+      try {
+        chmodSync(tmp, 0o600);
+      } catch {
+        // best effort
+      }
+      try {
+        linkSync(tmp, file);
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") throw err;
+        if (!this.readSalt(file)) renameSync(tmp, file);
+      }
+    } finally {
+      rmSync(tmp, { force: true });
     }
+    const v = this.readSalt(file);
+    if (!v) throw new Error(`could not create ${file}`);
     return (this.saltCache = v);
+  }
+
+  private readSalt(file: string): string {
+    try {
+      return readFileSync(file, "utf8").trim();
+    } catch (err: any) {
+      if (err?.code === "ENOENT") return "";
+      throw err;
+    }
   }
 
   private sessionFile(sid: string) {
