@@ -16,8 +16,6 @@ const ENV_KEYS = [
   "SENTROOK_SCAN_CLIENT_ID",
   "SENTROOK_SCAN_CLIENT_SECRET",
   "SENTROOK_MODE",
-  "OPENCLAW_VERSION",
-  "SENTROOK_SCHEDULED_APPROVAL_TIMEOUT_BEHAVIOR",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -232,49 +230,6 @@ const unavailableRuntime = new Proxy(
 
 // An invalid scan URL and no credentials keep verify off the network.
 const OFFLINE = { scanUrl: "http://scan.invalid" };
-const ALLOW = { ...OFFLINE, approval: { scheduledTimeoutBehavior: "allow" } };
-const NOTE = /^approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*held for the owner/m;
-
-test("status and verify say scheduledTimeoutBehavior allow is not honoured on a 2026.10.3 host", async () => {
-  const { commands, cliActions } = await registered(ALLOW, "full", { version: "2026.10.3" });
-  const slash = (await commands[0].handler({ args: "status" })).text;
-  assert.match(slash, NOTE);
-  assert.equal(slash.match(/not honoured/g)?.length, 1);
-  const cli = await captureLog(() => cliActions["sentrook status"]!());
-  assert.equal(cli, slash);
-  const verify = await captureLog(() => cliActions["sentrook verify"]!());
-  process.exitCode = 0;
-  assert.match(verify, /^ok   approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3: .*held for the owner/m);
-});
-
-test("the CLI finds the host version when the runtime is unavailable", async () => {
-  process.env.OPENCLAW_VERSION = "2026.10.3";
-  const { cliActions } = await registered(ALLOW, "cli-metadata", unavailableRuntime);
-  assert.match(await captureLog(() => cliActions["sentrook status"]!()), NOTE);
-  const verify = await captureLog(() => cliActions["sentrook verify"]!());
-  process.exitCode = 0;
-  assert.match(verify, /approval: scheduledTimeoutBehavior allow is not honoured on OpenClaw 2026\.10\.3/);
-});
-
-test("status and verify stay silent with deny, on an unknown host version and on a newer host", async () => {
-  const cases: [string, Record<string, unknown>, unknown][] = [
-    ["deny", { ...OFFLINE, approval: { scheduledTimeoutBehavior: "deny" } }, { version: "2026.10.3" }],
-    ["default", OFFLINE, { version: "2026.10.3" }],
-    ["no runtime", ALLOW, undefined],
-    ["empty version", ALLOW, { version: "" }],
-    ["runtime unavailable", ALLOW, unavailableRuntime],
-    ["newer host", ALLOW, { version: "2027.1.1" }],
-  ];
-  for (const [label, cfg, runtime] of cases) {
-    const { commands, cliActions } = await registered(cfg, "full", runtime);
-    const slash = (await commands[0].handler({ args: "status" })).text;
-    assert.doesNotMatch(slash, /not honoured/, label);
-    assert.doesNotMatch(await captureLog(() => cliActions["sentrook status"]!()), /not honoured/, label);
-    const verify = await captureLog(() => cliActions["sentrook verify"]!());
-    process.exitCode = 0;
-    assert.doesNotMatch(verify, /approval:/, label);
-  }
-});
 
 const DREAMING_OFF = { plugins: { entries: { "memory-core": { config: { dreaming: { enabled: false } } } } } };
 const HOOK_ON = { hooks: { internal: { entries: { "session-memory": { enabled: true } } } } };

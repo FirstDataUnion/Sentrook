@@ -21,7 +21,9 @@
  *
  * Expiry is mandatory: an entry with no readable expiry, or one more than 24 hours away, never applies.
  * A file that cannot be read relaxes nothing and is never overwritten. Expired entries are dropped on
- * the next change. Every change is written to the traffic log as a `snooze` record (none when the
+ * the next change. A change holds the file's cross-process lock, because the gateway and the command line can
+ * change it at the same time; when another process keeps the lock longer than the wait, nothing is changed and
+ * the owner is told to try again. Every change is written to the traffic log as a `snooze` record (none when the
  * owner has turned the traffic log off). The Hermes plugin keeps the same file format and prints the
  * same text.
  */
@@ -31,7 +33,7 @@ import path from "node:path";
 import type { Cmd, Entry } from "./grants.ts";
 /** What an entry is keyed on. */
 export { sessionRef } from "./planir.ts";
-import { readTime, type SnoozeFile, Store } from "./store.ts";
+import { LockTimeoutError, readTime, type SnoozeFile, Store, withFileLock } from "./store.ts";
 
 const MINUTE = 60_000;
 const DEFAULT_MS = 3600_000;
@@ -207,6 +209,24 @@ export function run(
   if (parsed.op === "status") return { reply: formatStatus(load(stateDir), ref, now), change: null };
   if (parsed.op === "set" && !parsed.all && ref === null) return { reply: noSession(cmd), change: null };
 
+  const file = path.join(stateDir, "snooze.json");
+  try {
+    return withFileLock(file, () => change(stateDir, parsed, ref, by, now, beforeWrite));
+  } catch (err) {
+    if (!(err instanceof LockTimeoutError)) throw err;
+    return { reply: `The snooze file ${file} is locked by another process; no snooze was changed. Try again.`, change: null };
+  }
+}
+
+/** The change `parsed` asks for, read and written while the caller holds the file's lock. */
+function change(
+  stateDir: string,
+  parsed: Exclude<Parsed, { op: "status" }>,
+  ref: string | null,
+  by: Entry,
+  now: Date,
+  beforeWrite: () => void,
+): SnoozeResult {
   const store = new Store(stateDir);
   const data = store.loadSnooze();
   if (data === null) {

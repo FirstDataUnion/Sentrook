@@ -5,15 +5,21 @@ for at most 24 hours. It never touches a block, a review the scanner enforces, o
 """
 
 import argparse
+import contextlib
+import fcntl
 import json
+import os
 import shutil
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 import plugin
-from plugin import history, owner, snooze
+from plugin import history, owner, snooze, store
 from plugin.store import read_time
 
 #: Shared with the OpenClaw plugin's tests: both hosts print the same text for the same state.
@@ -494,3 +500,83 @@ def test_help_lists_snooze_as_owner_only(term):
     text = slash(term, "help")
     line = next(x for x in text.splitlines() if x.startswith("/sentrook snooze"))
     assert "[duration|off|status] [--all]" in line and line.endswith("(owner only)")
+
+
+# ---- two processes at once ---------------------------------------------------------------------------------
+
+CHILD = """
+import sys, time
+from datetime import UTC, datetime
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from plugin import snooze
+state, label, count, start = Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]), float(sys.argv[5])
+cmd = lambda sub: "/sentrook " + sub
+while time.time() < start:
+    pass
+for i in range(count):
+    reply, rec = snooze.run(state, "1h", f"s_{label}_{i}", {}, datetime.now(UTC), cmd)
+    assert rec is not None, reply
+for i in range(0, count, 2):
+    reply, rec = snooze.run(state, "off", f"s_{label}_{i}", {}, datetime.now(UTC), cmd)
+    assert rec is not None, reply
+"""
+
+
+def test_two_processes_setting_and_clearing_snoozes_at_the_same_time_lose_no_change(tmp_path):
+    """The gateway, a `hermes cron run` process and the command line are separate processes: the
+    in-process lock alone would let one write undo another's snooze or bring back one it ended."""
+    root = str(Path(__file__).resolve().parents[2])
+    start = time.time() + 1.0
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", CHILD, root, str(tmp_path), label, "30", str(start)],
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        for label in ("a", "b")
+    ]
+    assert [p.wait(60) for p in procs] == [0, 0]
+    kept = sorted(
+        e["session_ref"] for e in json.loads((tmp_path / "snooze.json").read_text())["snoozes"]
+    )
+    assert kept == sorted(f"s_{label}_{i}" for label in ("a", "b") for i in range(1, 30, 2))
+
+
+@contextlib.contextmanager
+def held_elsewhere(path):
+    """Holds `path`'s lock through a separate open file, as another process would."""
+    fd = os.open(str(path) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _cmd(sub):
+    return "/sentrook " + sub
+
+
+def test_a_snooze_whose_file_stays_locked_is_not_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "LOCK_WAIT_S", 0.05)
+    with held_elsewhere(tmp_path / "snooze.json"):
+        reply, rec = snooze.run(tmp_path, "2h --all", None, {}, NOW, _cmd)
+    assert rec is None
+    assert reply == (
+        f"The snooze file {tmp_path / 'snooze.json'} is locked by another process; "
+        "no snooze was changed. Try again."
+    )
+    assert not (tmp_path / "snooze.json").exists()
+    assert not snooze.active(snooze.load(tmp_path), S1, NOW)
+
+
+def test_a_snooze_off_whose_file_stays_locked_says_so_and_changes_nothing(tmp_path, monkeypatch):
+    snooze.run(tmp_path, "2h --all", None, {}, NOW, _cmd)
+    before = (tmp_path / "snooze.json").read_text()
+    monkeypatch.setattr(store, "LOCK_WAIT_S", 0.05)
+    with held_elsewhere(tmp_path / "snooze.json"):
+        reply, rec = snooze.run(tmp_path, "off --all", None, {}, NOW, _cmd)
+    assert rec is None
+    assert "is locked by another process; no snooze was changed" in reply
+    assert (tmp_path / "snooze.json").read_text() == before
