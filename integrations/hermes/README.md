@@ -346,8 +346,8 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
 - **Where reviews are attended** (chat platforms, the local terminal, and platforms in `attended_platforms`) you are
   asked, with Hermes's approval prompt, whether to run the call without a scan. It runs only if you approve, except
   in a session where you switched on YOLO, where Hermes approves the prompt itself (see above). Answering
-  **Session** or **Always** stops these questions in that chat until Sentrook can scan again; another chat still
-  asks.
+  **Session** or **Always** stops these questions in that chat until Sentrook can scan again; another chat, or a
+  different kind of failure (for example credentials that expire meanwhile), still asks.
 - **On unattended runs** (the API server, cron, subagents, webhooks, and anywhere Hermes approvals are switched off
   as described above) nobody can answer, so the call is blocked. The agent is told that Sentrook did not scan the
   call, that this is a service problem rather than a security block, and that the call did not run. The call is not

@@ -12,7 +12,7 @@ since the version the catalog pins.
   `why`. The prompt fits Discord's 300-character limit; the description of the call is shortened first.
 - A block a snooze turned into a question: answering Session or Always now lets the same action through without
   asking until that snooze ends. A call that could not be scanned: Session or Always stops the question in that chat
-  while Sentrook cannot scan.
+  until Sentrook scans again; another chat or another kind of failure still asks.
 
 ## 2.0.0-beta.13
 
