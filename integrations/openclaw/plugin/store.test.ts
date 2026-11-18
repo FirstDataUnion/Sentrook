@@ -26,16 +26,35 @@ function saltInChild(dir: string, at: number) {
   }).then((r) => r.stdout);
 }
 
+/** Six processes make their first `salt()` call on `dir` at the same moment; all must agree. */
+async function raceSalt(dir: string) {
+  // Far enough ahead that every child has started (and is spinning) before it.
+  const at = Date.now() + 3_000;
+  const salts = await Promise.all(Array.from({ length: 6 }, () => saltInChild(dir, at)));
+  assert.match(salts[0]!, /^[0-9a-f]{64}$/);
+  assert.deepEqual(new Set(salts), new Set([salts[0]]));
+  assert.equal(readFileSync(path.join(dir, "salt"), "utf8"), salts[0]);
+  assert.equal(statSync(path.join(dir, "salt")).mode & 0o777, 0o600);
+  assert.deepEqual(
+    readdirSync(dir).filter((f) => f.endsWith(".tmp")),
+    [],
+  );
+}
+
 test("concurrent first salt() calls from separate processes all get the same salt, stored 0o600", async () => {
   for (let round = 0; round < 3; round++) {
     const dir = stateDir();
-    const at = Date.now() + 1_500;
-    const salts = await Promise.all(Array.from({ length: 6 }, () => saltInChild(dir, at)));
-    assert.match(salts[0]!, /^[0-9a-f]{64}$/);
-    assert.deepEqual(new Set(salts), new Set([salts[0]]));
-    assert.equal(readFileSync(path.join(dir, "salt"), "utf8"), salts[0]);
-    assert.equal(statSync(path.join(dir, "salt")).mode & 0o777, 0o600);
+    await raceSalt(dir);
     assert.deepEqual(readdirSync(dir), ["salt"]);
+  }
+});
+
+test("concurrent first salt() calls over an empty salt file all get the same new salt", async () => {
+  for (let round = 0; round < 3; round++) {
+    const dir = stateDir();
+    new Store(dir).salt();
+    writeFileSync(path.join(dir, "salt"), "");
+    await raceSalt(dir);
   }
 });
 
@@ -58,5 +77,8 @@ test("an existing salt is kept, and an empty salt file is replaced", () => {
   const fresh = new Store(dir).salt();
   assert.match(fresh, /^[0-9a-f]{64}$/);
   assert.equal(readFileSync(path.join(dir, "salt"), "utf8"), fresh);
-  assert.deepEqual(readdirSync(dir), ["salt"]);
+  assert.deepEqual(
+    readdirSync(dir).filter((f) => f.endsWith(".tmp")),
+    [],
+  );
 });

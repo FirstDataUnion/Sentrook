@@ -215,8 +215,10 @@ export class Store {
    * The per-install salt, created on first use. Every process sharing the state dir (the gateway and the
    * `openclaw sentrook` command line) must get the same one, so a new salt is written whole to a temp file and
    * hard-linked into place: the link fails with `EEXIST` when another process got there first, and that
-   * process's salt is read instead. No one ever reads a half-written salt. An empty salt file (which older
-   * versions could leave after a crash) is replaced.
+   * process's salt is read instead. No one ever reads a half-written salt. Two cases fall back to renaming
+   * the temp file into place while holding the file's cross-process lock (`withFileLock`): an empty salt file
+   * (which older versions could leave after a crash), and a filesystem without hard links. Under the lock the
+   * first process to get it writes the salt and the rest read it.
    */
   salt(): string {
     if (this.saltCache) return this.saltCache;
@@ -235,8 +237,11 @@ export class Store {
       try {
         linkSync(tmp, file);
       } catch (err: any) {
-        if (err?.code !== "EEXIST") throw err;
-        if (!this.readSalt(file)) renameSync(tmp, file);
+        if (err?.code !== "EEXIST" || !this.readSalt(file)) {
+          withFileLock(file, () => {
+            if (!this.readSalt(file)) renameSync(tmp, file);
+          });
+        }
       }
     } finally {
       rmSync(tmp, { force: true });
