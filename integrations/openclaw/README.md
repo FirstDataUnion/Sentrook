@@ -271,9 +271,9 @@ If Sentrook blocks your own setup work, snooze for the duration: blocks without 
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
 marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
 or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
-granted, no floor, and the scan was complete) becomes an approval prompt at critical severity that ends "Sentrook would normally
-block this; it is asking because a snooze is on." It is never allowed without asking, and the snooze does not skip
-that prompt. The score is the same either way.
+granted, no floor, and the scan was complete) becomes an approval prompt at critical severity that says "Would be
+blocked, but a snooze is on." It is never allowed without asking, and the snooze does not skip that prompt. The score
+is the same either way.
 
 A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
 subagents, webhooks): blocks still stop, and a review on an unattended run is held for you instead.
@@ -302,6 +302,30 @@ is not told which checks fired or the risk score; you can see those with `opencl
 
 A review is an OpenClaw approval prompt. In a chat it waits 5 minutes for your answer
 (`approval.interactiveTimeoutMs`) and then denies the call.
+
+### What a review looks like
+
+The prompt's title starts with a feather and the risk score; OpenClaw adds the plugin id (`sentrook`) and the
+buttons:
+
+```text
+🪶 Sentrook security check · risk 62/100
+
+Sends ~/notes/q3-plan.md to paste.example.net.
+Because paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.
+"Always allow" also trusts paste.example.net for 30 days.
+Details: /sentrook-why 3f9c2a1b
+```
+
+- Reviews start at risk 45 and blocks at 80. "Safety rule" in place of "security check" means a rule that always
+  asks, whatever the score; the card is then marked critical.
+- The lines below say what the call does and, in plain words, the main reasons. Long files and addresses are
+  shortened in the middle. OpenClaw refuses a prompt over its size limit, so Sentrook fits the card first, keeping
+  the reasons and your options and shortening the description of the call.
+- **Allow once** runs this call. **Allow always** appears only when a grant would cover calls like this and you asked
+  for the work yourself; it runs the call and sets that grant for 30 days. Otherwise the card gives the command.
+- `/sentrook-why <id>` shows everything behind the decision: the scores, the checks that fired, the files and
+  addresses in full, and every grant that would allow it next time.
 
 ### Held calls in cron jobs and subagents
 

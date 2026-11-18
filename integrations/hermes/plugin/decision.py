@@ -1,4 +1,5 @@
-"""From a scan response to allow / review / block, and the text a human sees.
+"""From a scan response to allow / review / block, and what the agent is told about a block. The review card
+a human sees is `card`.
 
 The plugin decides from `risk` and its local lines (review at `review_at`, block at `block_at`), lowers that to
 the scanner's `ceiling` when it is `review`, then takes the stricter of that and the scanner's `enforced` floor. In observe mode the decision is recorded
@@ -7,13 +8,11 @@ but never applied.
 
 from __future__ import annotations
 
-import math
 import re
 from typing import Any
 
 _RANK = {"allow": 0, "review": 1, "block": 2}
 _PLACEHOLDER = re.compile(r"\{(E\d+)\}")
-REVIEW_MESSAGE_MAX = 300
 
 
 def decide(resp: dict[str, Any], review_at: float, block_at: float) -> str:
@@ -51,57 +50,6 @@ def describe(resp: dict[str, Any], tool: str) -> str:
     return _PLACEHOLDER.sub(
         lambda m: str((entities.get(m.group(1)) or {}).get("display") or m.group(1)), template
     )
-
-
-def _reason_codes(resp: dict[str, Any]) -> list[str]:
-    seen: list[str] = []
-    for r in resp.get("reasons") or []:
-        code = r.get("code") if isinstance(r, dict) else None
-        if isinstance(code, str) and code and code not in seen:
-            seen.append(code)
-    return seen
-
-
-def _clip(s: str, n: int) -> str:
-    return s if len(s) <= n else s[: max(0, n - 1)] + "…"
-
-
-def scores_line(resp: dict[str, Any]) -> str:
-    """The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none.
-    A score that is not a finite number is left out; the rest are held to 0-1."""
-    parts = [
-        f"{name} {round(min(max(v, 0.0), 1.0) * 100)}"
-        for name, v in tiers_of(resp).items()
-        if v is not None and math.isfinite(v)
-    ]
-    return f"Scores: {', '.join(parts)}." if parts else ""
-
-
-def _fit(head: str, desc: str, codes: list[str], tail: str, limit: int) -> str:
-    """`head`, the description, up to 3 reason codes and `tail` within `limit`. Reason codes go
-    first, then the description is shortened; `head` and `tail` always stay."""
-    tail = f" {tail}" if tail else ""
-    for k in range(min(3, len(codes)), -1, -1):
-        why = f" Why: {', '.join(codes[:k])}." if k else ""
-        text = f"{head}{desc}.{why}{tail}"
-        if len(text) <= limit:
-            return text
-    return f"{head}{_clip(desc, limit - len(head) - len(tail) - 1)}.{tail}"
-
-
-#: The last line of a review prompt for a block a snooze turned into a review; it is never cut.
-RELAXED_NOTE = "Sentrook would normally block this; it is asking because a snooze is on."
-
-
-def review_message(resp: dict[str, Any], tool: str, relaxed: bool = False, hint: str = "") -> str:
-    """The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`; a
-    suggested grant's line (`hint`) comes before it. Neither is ever cut, and the hint does not take room from
-    the description: the limit grows by its length."""
-    risk = round(float(resp.get("risk") or 0))
-    head = f"Sentrook (risk {risk}): "
-    tail = " ".join(p for p in (scores_line(resp), hint, RELAXED_NOTE if relaxed else "") if p)
-    limit = REVIEW_MESSAGE_MAX + (len(hint) + 1 if hint else 0)
-    return _fit(head, describe(resp, tool), _reason_codes(resp), tail, limit)
 
 
 # What the agent is told about a block. It names a coarse category only, never the reason codes, the

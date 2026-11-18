@@ -6,6 +6,8 @@
  * attended, block when unattended). Auth and configuration failures never fail open.
  */
 
+import { errorCard, errorCause } from "./card.ts";
+
 export type OnScanError = "allow" | "deny" | "review";
 export type ScanFailureKind = "rate_limited" | "http" | "timeout" | "network" | "config" | "scan_error";
 
@@ -103,36 +105,9 @@ function detailSnippet(failure: ScanFailure, limit = 100): string {
   return `${raw.slice(0, Math.max(0, limit - 3))}...`;
 }
 
+/** The review card for a call that could not be scanned (`card.errorCard`). */
 export function scanErrorCopy(failure: ScanFailure): { title: string; description: string } {
-  if (failure.kind === "rate_limited") {
-    return {
-      title: "Sentrook rate limited",
-      description:
-        "Sentrook rate-limited this scan. Continue this tool without a security scan?",
-    };
-  }
-  if (isAuthFailure(failure)) {
-    if (failure.kind === "config") {
-      return {
-        title: "Sentrook is not configured",
-        description:
-          "Sentrook's endpoint or credentials are not configured correctly " +
-          "(configuration error, not a security policy block). Continue this tool without scanning?",
-      };
-    }
-    return {
-      title: "Sentrook authentication failed",
-      description:
-        "Sentrook could not authenticate to the scan service " +
-        "(configuration error — not a security policy block). " +
-        "Continue this tool without scanning?",
-    };
-  }
-  return {
-    title: "Sentrook unreachable",
-    description:
-      "Sentrook is unreachable, would you like your agent to continue anyway without scanning?",
-  };
+  return errorCard(errorCause(failure.kind, isAuthFailure(failure)));
 }
 
 function blockReasonFor(failure: ScanFailure): string {

@@ -13,7 +13,8 @@ import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
-import { blockReason, decide, reviewCopy, severity, tiersOf, type Verdict } from "./decision.ts";
+import { reviewCard } from "./card.ts";
+import { blockReason, decide, severity, tiersOf, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
@@ -556,7 +557,12 @@ const plugin = {
           // where the owner is the one answering. Never for a block a snooze turned into a review.
           const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
           remember = hint !== null && !relaxed && grants.mayRemember(built.planir) ? hint : null;
-          const copy = reviewCopy(resp, event.toolName, relaxed, hint ? grants.hintLine(hint, (sub) => `/sentrook-${sub}`, remember !== null) : "");
+          const copy = reviewCard(resp, event.toolName, {
+            relaxed,
+            hint,
+            remember: remember !== null,
+            whyId: cfg.trafficLog.enabled ? built.planir.request_id : null,
+          });
           hook = {
             requireApproval: {
               ...copy,

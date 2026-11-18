@@ -436,8 +436,7 @@ for (const c of RELAX) {
     const lowered = c.outcome === "review" && (c.response.risk as number) >= 80 && c.response.ceiling == null;
     assert.equal(rec.relaxed, lowered ? true : undefined);
     if (c.outcome === "review") {
-      // the owner is told why a block asks: the shared line ends the prompt, and only then
-      assert.equal(out.requireApproval.description.endsWith(` ${NOTE}`), lowered);
+      // the owner is told why a block asks: the shared line is on the card, and only then
       assert.equal(out.requireApproval.description.includes(NOTE), lowered);
     }
   });
@@ -450,7 +449,7 @@ test("a relaxed block asks every time and keeps its score", async () => {
   for (let i = 0; i < 2; i++) {
     const { out, rec } = await r.scan("openclaw cron edit nightly --every 6h");
     assert.equal(out.requireApproval.severity, "critical");
-    assert.ok(out.requireApproval.description.endsWith(` ${NOTE}`));
+    assert.ok(out.requireApproval.description.split("\n").includes(NOTE));
     assert.deepEqual([rec.verdict, rec.relaxed, rec.snoozed, rec.response.risk], ["review", true, undefined, 92]);
   }
 });

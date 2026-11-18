@@ -94,7 +94,7 @@ def test_each_item_of_a_comma_list_is_traced():
 
 
 def test_the_reason_is_registered():
-    assert REASON in REASONS and "{subject}" not in REASONS[REASON]
+    assert REASON in REASONS and "{subject}" not in REASONS[REASON].subject
 
 
 # --------------------------------------------------------------------------- must stay silent

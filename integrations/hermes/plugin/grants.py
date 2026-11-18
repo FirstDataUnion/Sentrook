@@ -433,9 +433,6 @@ def hint_grant(hint: Any) -> dict[str, Any] | None:
 #: Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a
 #: review always).
 HINT_DAYS = 30
-#: The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not.
-HINT_REMEMBER = "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}"
-HINT_PLAIN = "This grant would usually allow calls like this for 30 days: {command}"
 #: Sender bases that put a message in a room others can write to.
 _SHARED_BASIS = frozenset({"group_chat", "host_open_access"})
 
@@ -473,10 +470,6 @@ def grant_command(grant: dict[str, Any], cmd: Cmd) -> str:
     if grant.get("allows"):
         words += ["--allows", ",".join(grant["allows"])]
     return _clean(" ".join(words), 400)
-
-
-def hint_line(grant: dict[str, Any], cmd: Cmd, remember: bool) -> str:
-    return (HINT_REMEMBER if remember else HINT_PLAIN).format(command=grant_command(grant, cmd))
 
 
 #: Runs the host starts itself from a task the owner set up.

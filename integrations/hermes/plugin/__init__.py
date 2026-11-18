@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import (
+    card,
     cli,
     commands,
     conversation,
@@ -32,7 +33,7 @@ from . import (
 )
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
-from .decision import block_reason, decide, review_message, tiers_of
+from .decision import block_reason, decide, tiers_of
 from .intent import (
     conversation_sender_of,
     hermes_config,
@@ -43,7 +44,7 @@ from .intent import (
 from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
-from .scan_error_policy import ScanFailure, scan_error_to_directive
+from .scan_error_policy import ScanFailure, is_auth_failure, scan_error_to_directive
 from .store import LockTimeout, Store
 from .traffic import TrafficLog
 
@@ -145,16 +146,26 @@ def _self_edit(store: Store, sid: str, tool: str, args: Any, redactor: Redactor)
         return {"kind": kind, "store": where, "conversation": []}
 
 
-def _rule_key(fingerprint: str | None, request_id: str, relaxed: bool = False) -> str:
+def _rule_key(fingerprint: str | None, request_id: str, snoozes: str | None = None) -> str:
     """Hermes persists Session/Always approvals per rule key. Keyed on the action fingerprint, an approval
     covers the same action (same source and destination) again, not other calls of the same tool.
 
-    A block a snooze turned into a review (`relaxed`) must always ask, and a plugin cannot limit Hermes's
-    answers to once: its key is the request id under its own prefix, so no stored approval matches it and
-    a Session or Always answer to it never covers another call."""
-    if relaxed:
-        return "sentrook:relaxed:" + hashlib.sha256(request_id.encode()).hexdigest()[:16]
+    A block a snooze turned into a review is keyed on the action and the snoozes covering it (`snoozes`, from
+    `snooze.covering`) under its own prefix: Session or Always covers the same action while those snoozes last, as
+    the card says, and never a review or a later snooze."""
+    if snoozes is not None:
+        material = f"{fingerprint or request_id}|{snoozes}"
+        return "sentrook:relaxed:" + hashlib.sha256(material.encode()).hexdigest()[:16]
     return "sentrook:" + hashlib.sha256((fingerprint or request_id).encode()).hexdigest()[:16]
+
+
+def _error_rule_key(session_ref: str, outage: str, cause: str) -> str:
+    """A scan error's rule key: the session, the outage (`error_epoch`: the first failed scan since the session's
+    last good one) and the cause (`card.error_cause`). Session or Always answers the scan errors of that kind in that
+    chat until Sentrook scans again, as the card says; a later outage, another kind of failure (credentials that
+    expire during an outage) or another chat asks again, and an Always Hermes stores never matches them."""
+    material = f"{session_ref}|{outage}|{cause}"
+    return "sentrook:error:" + hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
 # ---- owner-only commands ----------------------------------------------------------------------------
@@ -486,9 +497,11 @@ def _scan_one(
             )
         ):
             # The owner snoozed this attended session and nothing independent points to an attack: the block
-            # asks instead. It is never allowed silently.
+            # asks instead. It is allowed silently only where the owner answered Session or Always for the same
+            # action under the same snoozes (`_rule_key`).
             verdict = "review"
             relaxed = True
+        sess.pop("error_epoch", None)  # Sentrook scans again: the next failure is a new outage
         sess["token"] = resp.get("state")
         sess["buffer"] = []
         entry["action_fingerprint"] = resp.get("action_fingerprint")
@@ -516,18 +529,27 @@ def _scan_one(
             snoozed = True
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
-            key = _rule_key(resp.get("action_fingerprint"), planir["request_id"], relaxed)
+            snoozes = (
+                snooze.covering(
+                    store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+                )
+                if relaxed
+                else None
+            )
+            key = _rule_key(resp.get("action_fingerprint"), planir["request_id"], snoozes)
             # The grant the scan suggests: the prompt shows its command, and approving always sets it where
             # the owner is the one answering (never for a block a snooze turned into a review).
             hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
             remember = hint is not None and not relaxed and grants.may_remember(planir)
             directive = {
                 "action": "approve",
-                "message": review_message(
+                "message": card.hermes_message(
                     resp,
                     built["tool"],
-                    relaxed,
-                    grants.hint_line(hint, commands.CMD, remember) if hint else "",
+                    relaxed=relaxed,
+                    hint=hint,
+                    remember=remember,
+                    why_id=planir["request_id"] if cfg.traffic_log_enabled else None,
                 ),
                 "rule_key": key,
             }
@@ -553,7 +575,9 @@ def _scan_one(
     else:
         logger.warning("scan failed (%s): %s", result.kind, result.detail)
         if cfg.mode != "observe":
-            key = "sentrook:error:" + hashlib.sha256(planir["request_id"].encode()).hexdigest()[:16]
+            outage = sess.setdefault("error_epoch", planir["request_id"])
+            cause = card.error_cause(result.kind, is_auth_failure(result))
+            key = _error_rule_key(planir["session"]["session_ref"], outage, cause)
             d = scan_error_to_directive(
                 result, on_scan_error=cfg.on_scan_error, unattended=unattended, rule_key=key
             )

@@ -155,6 +155,15 @@ class Reason(_Model):
     signal: str | None = None
     subject: str | None = None
     detail: dict[str, Any] | None = None
+    text: str | None = Field(
+        default=None,
+        description=(
+            "The reason in plain words for the review card, from a fixed list: a clause in lower case with no full "
+            "stop, which may name the subject as its `{E1}` placeholder. Null for a reason that does not say why "
+            "the call is risky (relief, gaps in what the scan could check, split model answers) and for a repeat of "
+            "an earlier reason's text."
+        ),
+    )
 
 
 class ToolDescription(_Model):

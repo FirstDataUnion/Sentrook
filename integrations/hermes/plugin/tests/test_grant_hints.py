@@ -6,13 +6,14 @@ approved with `/sentrook approve` sets it too, and `why` lists every suggestion.
 OpenClaw plugin's tests (`integrations/fixtures/grant-hints`).
 """
 
+import html
 import json
 from pathlib import Path
 
 import pytest
 
 import plugin
-from plugin import commands, grants, hold
+from plugin import card, commands, grants, hold
 
 from .test_hold import h as h  # noqa: F401 - the held-call harness, used by name
 from .test_hold import holds, send
@@ -135,14 +136,12 @@ def _file_grants(h):
     return (grants.load(h.dir / "sentrook") or {}).get("grants") or []
 
 
-def test_the_review_prompt_shows_the_command_and_always_sets_it(owner):
+def test_the_review_prompt_names_the_grant_and_always_sets_it(owner):
     h = owner
     _turn(h)
     out = _call(h, "c1")
     assert out["action"] == "approve"
-    command = CASES["commands"][0]["command"].format(grant="/sentrook grant")
-    line = CASES["lines"]["remember"].format(command=command)
-    assert out["message"].endswith(line)
+    assert f'"Always" also trusts {HOST} for 30 days.' in out["message"].splitlines()
     _answer(h, out, "always")
     [g] = _file_grants(h)
     assert (g["kind"], g["pattern"], g["scope"]) == ("destination", HOST, "persistent")
@@ -263,15 +262,15 @@ def test_no_hint_no_line(owner):
     assert "grant" not in out["message"]
 
 
-def test_the_hint_never_takes_room_from_the_description(owner):
-    """A long pattern: the line is kept whole, the description and reasons keep their usual room."""
+def test_a_long_pattern_keeps_the_card_within_its_budget(owner):
+    """A long pattern: the card stays within Hermes's budget and still names the grant."""
     h = owner
     long = "a" * 60 + ".example.invalid"
     h.hints = [{**HINT, "pattern": long}]
     _turn(h)
     out = _call(h, "c1")
-    assert out["message"].endswith(f"{long} --persistent --expires 30d")
-    assert f"Sends data to {HOST}." in out["message"]
+    assert len(html.escape(out["message"]).encode("utf-16-le")) // 2 <= 300
+    assert f'"Always" also trusts {card.mid(long, 60)} for 30 days.' in out["message"]
 
 
 def test_why_lists_every_hint(owner):

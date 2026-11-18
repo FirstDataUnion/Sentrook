@@ -411,9 +411,6 @@ export function hintGrant(hint: unknown): Entry | null {
 
 /** Days a suggested grant lasts when the owner sets it (by command, by approving a held call, or by approving a review always). */
 export const HINT_DAYS = 30;
-/** The line a review prompt ends with when the scan suggests a grant: with approve-always setting it, or not. */
-export const HINT_REMEMBER = "Approve always to also set this grant for 30 days; it would usually allow calls like this: {command}";
-export const HINT_PLAIN = "This grant would usually allow calls like this for 30 days: {command}";
 /** Sender bases that put a message in a room others can write to. */
 const SHARED_BASIS = new Set(["group_chat", "host_open_access"]);
 
@@ -439,10 +436,6 @@ export function grantCommand(grant: Entry, cmd: Cmd): string {
   const words = [cmd("grant"), grant.kind, grant.pattern, "--persistent", "--expires", `${HINT_DAYS}d`];
   if (Array.isArray(grant.allows) && grant.allows.length) words.push("--allows", grant.allows.join(","));
   return clean(words.join(" "), 400);
-}
-
-export function hintLine(grant: Entry, cmd: Cmd, remember: boolean): string {
-  return (remember ? HINT_REMEMBER : HINT_PLAIN).replace("{command}", grantCommand(grant, cmd));
 }
 
 /** Runs the host starts itself from a task the owner set up. */

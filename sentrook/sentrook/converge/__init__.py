@@ -36,7 +36,7 @@ from .formulas import Tiers, compute
 from .hints import grant_hints
 from .merge import Claim, Merged, collect, merge
 from .params import ConvergenceParams, load_params
-from .registry import SIGNALS
+from .registry import SIGNALS, reason_text
 from .relief import Relief, compute_relief
 
 __all__ = ["converge", "ConvergeResult", "ConvergenceParams", "load_params"]
@@ -204,6 +204,23 @@ def _reasons(
         )
     scored.sort(key=lambda t: -t[0])
     return [r for _, r in scored]
+
+
+def _fill_reason_text(reasons: list[Reason], entities: dict[str, EntityDisplay]) -> None:
+    """Each reason's plain words for the review card (`registry.reason_text`), naming its subject by its placeholder
+    when the plugin can show it. A floor speaks with the words of the reason it records (`detail.reason`), so the
+    claim behind it does not say the same thing again: a reason whose words repeat an earlier one's gets none."""
+    shown: set[str] = set()
+    for r in reasons:
+        behind = (r.detail or {}).get("reason") if r.code.startswith("floor.") else None
+        text = (reason_text(behind) if isinstance(behind, str) else None) or reason_text(r.code)
+        if text is None:
+            continue
+        named = r.subject is not None and r.subject in entities
+        words = text.subject.replace("{subject}", "{" + r.subject + "}") if named else text.plain
+        if words not in shown:
+            shown.add(words)
+            r.text = words
 
 
 def cap_model_sensitivity(claims: list[Claim], cap: float) -> list[Claim]:
@@ -415,6 +432,7 @@ def converge(
             ent = prepared.entities.by_id(r.subject)
             if ent is not None:
                 entities[r.subject] = EntityDisplay(kind=ent.kind.value, display=ent.display)
+    _fill_reason_text(reasons, entities)
 
     response = Response(
         request_id=prepared.planir.request_id,

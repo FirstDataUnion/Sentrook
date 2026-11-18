@@ -106,8 +106,9 @@ and a file grant never covers a call that also sends data off the machine. You d
 you name yourself in your request: Sentrook already takes that into account.
 
 You don't have to work these out in advance. When a review is caused by something a grant would cover, such as a
-host Sentrook has not seen before, the approval prompt ends with the command that would let calls like it through
-next time, for example `/sentrook grant destination api.example.com --persistent --expires 30d`. Sentrook only
+host Sentrook has not seen before, the approval prompt names the grant that would let calls like it through next
+time: what answering **Always** would also set, or the command to set it yourself, for example
+`/sentrook grant destination api.example.com --persistent --expires 30d`. Sentrook only
 suggests a grant after checking that, with it, the same call would score below the review line; it never suggests
 one for a known-bad or look-alike host, for something that content the agent read put in front of it, for a file
 being sent out of a session that has read content trying to instruct the agent, or for a call with a clear attack
@@ -231,9 +232,10 @@ If Sentrook blocks your own setup work, snooze for the duration: blocks without 
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
 marks as having no clear attack signal (you asked in the chat, nothing came from content the agent read, no known-bad
 or look-alike entity, no retry of a call you denied, no credential leaving for a destination you have not named or
-granted, no floor, and the scan was complete) becomes an approval prompt that ends "Sentrook would normally
-block this; it is asking because a snooze is on." It is never allowed without asking, and the snooze does not skip
-that prompt. The score is the same either way.
+granted, no floor, and the scan was complete) becomes an approval prompt that says "Would be blocked, but a snooze
+is on." The snooze does not skip that prompt. If you answer **Session** or **Always**, the same action (same tool,
+source and destination) goes through without asking until that snooze ends; a new snooze asks again. The score is the
+same either way.
 
 A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
 webhooks, the API server): blocks still stop, and a review on an unattended run is held for you instead.
@@ -262,6 +264,29 @@ Reviews use Hermes's approval prompt, which needs a person on the other end. Cha
 count as attended. Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
 prompts, add it with `attended_platforms` (see [Settings](#settings)).
+
+### What a review looks like
+
+Hermes frames the prompt with its own heading and buttons; Sentrook's part starts with a feather:
+
+```text
+🪶 Sentrook security check · risk 62/100
+Sends ~/notes/q3-plan.md to paste.example.net.
+Because paste.example.net is new to Sentrook as a place to send data.
+"Always" also trusts paste.example.net for 30 days.
+Details: /sentrook why 3f9c2a1b
+```
+
+- The first line says it is Sentrook asking and gives the risk score (reviews start at 45, blocks at 80). "Safety
+  rule" in place of "security check" means a rule that always asks, whatever the score.
+- The next lines say what the call does and, in plain words, the main reasons. Long files and addresses are
+  shortened in the middle; on small screens (a Discord message holds 300 characters) the reasons and your options
+  are kept and the description of the call is shortened first.
+- **Once** runs this call. **Session** and **Always** also run the same action (same tool, source and destination)
+  without asking again: for this session, or from now on. Where a grant would cover calls like this, the prompt says
+  what **Always** also sets, or gives the command.
+- `/sentrook why <id>` shows everything behind the decision: the scores, the checks that fired, the files and
+  addresses in full, and every grant that would allow it next time.
 
 With approvals switched off (`approvals.mode: off`), Hermes would approve every prompt itself, so a review holds the
 call instead; the same goes for a gateway started with `HERMES_YOLO_MODE=1` in its environment, and on those runs a
@@ -320,7 +345,9 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
 
 - **Where reviews are attended** (chat platforms, the local terminal, and platforms in `attended_platforms`) you are
   asked, with Hermes's approval prompt, whether to run the call without a scan. It runs only if you approve, except
-  in a session where you switched on YOLO, where Hermes approves the prompt itself (see above).
+  in a session where you switched on YOLO, where Hermes approves the prompt itself (see above). Answering
+  **Session** or **Always** stops these questions in that chat until Sentrook can scan again; another chat, or a
+  different kind of failure (for example credentials that expire meanwhile), still asks.
 - **On unattended runs** (the API server, cron, subagents, webhooks, and anywhere Hermes approvals are switched off
   as described above) nobody can answer, so the call is blocked. The agent is told that Sentrook did not scan the
   call, that this is a service problem rather than a security block, and that the call did not run. The call is not

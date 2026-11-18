@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from .card import error_cause, hermes_error_message
+
 OnScanError = Literal["allow", "deny", "review"]
 ScanFailureKind = Literal["rate_limited", "http", "timeout", "network", "config", "scan_error"]
 
@@ -79,21 +81,8 @@ def _detail_snippet(failure: ScanFailure, limit: int = 100) -> str:
 
 
 def scan_error_copy(failure: ScanFailure) -> str:
-    """Operator-facing body for interactive scan-error review cards."""
-    if failure.kind == "rate_limited":
-        return "Sentrook rate-limited this scan. Continue this tool without a security scan?"
-    if failure.kind == "config":
-        return (
-            "Sentrook's endpoint or credentials are not configured correctly "
-            "(configuration error, not a security policy block). Continue this tool without scanning?"
-        )
-    if is_auth_failure(failure):
-        return (
-            "Sentrook could not authenticate to the scan service "
-            "(configuration error — not a security policy block). "
-            "Continue this tool without scanning?"
-        )
-    return "Sentrook is unreachable. Continue without scanning?"
+    """The review card for a call that could not be scanned (`card.hermes_error_message`)."""
+    return hermes_error_message(error_cause(failure.kind, is_auth_failure(failure)))
 
 
 def _block_reason_for(failure: ScanFailure) -> str:

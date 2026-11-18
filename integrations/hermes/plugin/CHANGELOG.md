@@ -4,6 +4,16 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
+## 2.0.0-beta.14
+
+- The approval prompt is easier to read and always recognisable as Sentrook's: it starts with
+  `🪶 Sentrook security check · risk 62/100`, says what the call does and why in plain words, says what answering
+  Always would also set, and ends with `/sentrook why <id>` for the full detail. Reason codes and scores moved to
+  `why`. The prompt fits Discord's 300-character limit; the description of the call is shortened first.
+- A block a snooze turned into a question: answering Session or Always now lets the same action through without
+  asking until that snooze ends. A call that could not be scanned: Session or Always stops the question in that chat
+  until Sentrook scans again; another chat or another kind of failure still asks.
+
 ## 2.0.0-beta.13
 
 The 2.0 line, replacing 0.1.x. Needs Hermes v0.23.0 or newer.
