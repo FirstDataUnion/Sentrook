@@ -396,9 +396,11 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   sent as content. Someone else in a chat who types one of these forms gets nothing from it: they keep their own
   sender, a result or event they type is sent as content with no earlier request in its place, and a heartbeat,
   `/loop` or goal form they type stays their own request. Short notes Hermes puts in front of your next message
-  (a model switch, a skills reload, a system note) are left out of the request. Two kinds of host text are not
-  recognised and are sent as the turn's request, as before: a message another Hermes plugin injects into the chat,
-  and the note Hermes sends on its own when it resumes an interrupted turn with no new message;
+  (a model switch, a skills reload, a system note) are left out of the request. When the gateway resumes a turn a
+  restart or shutdown interrupted, its note is not your request either: the calls carry the interrupted turn's
+  request and the turn it came from, and the note is sent as content. A message another Hermes plugin injects into
+  the chat is not recognised and is sent as the turn's request, as before: Hermes does not tell plugins which
+  messages were injected;
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
