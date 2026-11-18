@@ -1,5 +1,5 @@
-"""Stand-ins for the identity service, the Sentrook scanner and a model provider, for the Hermes
-compatibility check. Stdlib only: it runs on the Hermes image's own Python.
+"""Stand-ins for the identity service, the Sentrook scanner and a model provider, for the host
+compatibility checks. Stdlib only: it runs on the host image's own Python.
 
 One server answers all three, on one port:
 
@@ -7,7 +7,8 @@ One server answers all three, on one port:
   client id and secret;
 - scanner: `/healthz`, and `/scan`, which blocks a pending call that mentions `BLOCKED_FILE` and
   allows every other one;
-- model: an OpenAI-compatible `/v1/chat/completions` that asks for two terminal calls, one at a time:
+- model: an OpenAI-compatible `/v1/chat/completions` that asks for two shell calls (the host's shell
+  tool, `--tool`: `terminal` on Hermes, `exec` on OpenClaw), one at a time:
   first one that creates `BLOCKED_FILE` (Sentrook should block it), then one that creates
   `ALLOWED_FILE` (Sentrook should allow it), then answers in text. Streaming and non-streaming both
   work.
@@ -60,7 +61,7 @@ def scan_response(planir: Any) -> dict[str, Any]:
     return {"response_version": "2.0", "status": "ok", "risk": 0, "reasons": []}
 
 
-def model_reply(messages: list[dict[str, Any]]) -> dict[str, Any]:
+def model_reply(messages: list[dict[str, Any]], tool: str = "terminal") -> dict[str, Any]:
     """The assistant message for this step: the blocked call, then the allowed call, then text."""
     done = sum(1 for m in messages if m.get("role") == "tool")
     if done >= 2:
@@ -74,7 +75,7 @@ def model_reply(messages: list[dict[str, Any]]) -> dict[str, Any]:
                 "id": f"call_compat_{done + 1}",
                 "type": "function",
                 "function": {
-                    "name": "terminal",
+                    "name": tool,
                     "arguments": json.dumps({"command": f"touch {target}"}),
                 },
             }
@@ -87,6 +88,7 @@ class Handler(BaseHTTPRequestHandler):
     log_path: str = ""
     client_id: str = ""
     client_secret: str = ""
+    tool: str = "terminal"
 
     def log_message(self, fmt: str, *args: Any) -> None:  # quiet stderr; the JSON log is the record
         return
@@ -157,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if authed else 401, resp if authed else {"error": "unauthorized"})
         elif self.path.rstrip("/").endswith("/chat/completions"):
             req = json.loads(raw or b"{}")
-            msg = model_reply(req.get("messages") or [])
+            msg = model_reply(req.get("messages") or [], self.tool)
             step = (
                 msg["tool_calls"][0]["function"]["arguments"] if msg.get("tool_calls") else "answer"
             )
@@ -228,10 +230,12 @@ def main() -> None:
     ap.add_argument("--log", required=True, help="JSON-lines request log")
     ap.add_argument("--client-id", required=True)
     ap.add_argument("--client-secret", required=True)
+    ap.add_argument("--tool", default="terminal", help="the host's shell tool the model calls")
     args = ap.parse_args()
     Handler.log_path = args.log
     Handler.client_id = args.client_id
     Handler.client_secret = args.client_secret
+    Handler.tool = args.tool
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
 

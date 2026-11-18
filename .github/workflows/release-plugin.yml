@@ -66,7 +66,18 @@ env:
   CLAWHUB_OWNER: firstdataunion
 
 jobs:
+  # The plugin on real OpenClaw (the declared floor and the latest stable release) before anything is
+  # published; see host-compat.yml.
+  compat:
+    uses: ./.github/workflows/host-compat.yml
+    permissions:
+      contents: read
+    with:
+      mode: release
+      hosts: openclaw
+
   publish:
+    needs: compat
     runs-on: ubuntu-latest
     environment: release-npm
     permissions:

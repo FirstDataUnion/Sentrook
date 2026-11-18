@@ -1,0 +1,11 @@
+{
+  "name": "sentrook-compat-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Records the shape of the OpenClaw host fields the Sentrook plugin reads, for the compatibility check.",
+  "type": "module",
+  "main": "./index.js",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}
