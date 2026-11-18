@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
@@ -589,4 +591,84 @@ test("help lists /sentrook-snooze as an owner command", () => {
     .split("\n")
     .find((l) => l.trim().startsWith("/sentrook-snooze"));
   assert.ok(line?.includes("[duration|off|status] [--all]"));
+});
+
+// ---- two processes at once ------------------------------------------------------------------------------
+
+/** Runs a snooze child in a separate node process; resolves when it exits 0. */
+function snoozeInChild(script: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", script, ...args], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let err = "";
+    child.stderr.on("data", (d) => (err += String(d)));
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}: ${err}`))));
+  });
+}
+
+test("two processes setting and clearing snoozes at the same time lose no change", async () => {
+  // The gateway and the `openclaw sentrook` command line are separate processes: the in-process order alone
+  // would let one write undo another's snooze or bring back one it ended.
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-snooze-race-"));
+  const script = path.join(dir, "child.ts");
+  writeFileSync(
+    script,
+    `import * as snooze from ${JSON.stringify(pathToFileURL(path.resolve("snooze.ts")).href)};
+const [dir, label, count, startAt] = process.argv.slice(2);
+const cmd = (sub: string) => "/sentrook-" + sub;
+while (Date.now() < Number(startAt)) {}
+for (let i = 0; i < Number(count); i++) {
+  const r = snooze.run(dir, "1h", "s_" + label + "_" + i, {}, new Date(), cmd, () => {});
+  if (!r.change) throw new Error(r.reply);
+}
+for (let i = 0; i < Number(count); i += 2) {
+  const r = snooze.run(dir, "off", "s_" + label + "_" + i, {}, new Date(), cmd, () => {});
+  if (!r.change) throw new Error(r.reply);
+}
+`,
+  );
+  const startAt = Date.now() + 800;
+  await Promise.all(["a", "b"].map((l) => snoozeInChild(script, [dir, l, "30", String(startAt)])));
+  const kept = JSON.parse(readFileSync(path.join(dir, "snooze.json"), "utf8")).snoozes.map((e: any) => e.session_ref).sort();
+  const want = ["a", "b"].flatMap((l) => Array.from({ length: 15 }, (_, i) => `s_${l}_${2 * i + 1}`)).sort();
+  assert.deepEqual(kept, want);
+});
+
+/** Holds `file`'s lock through a separate connection, as another process would, while `fn` runs. */
+function heldElsewhere<T>(file: string, fn: () => T): T {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const other = new DatabaseSync(`${file}.lockdb`);
+  other.exec("BEGIN EXCLUSIVE");
+  try {
+    return fn();
+  } finally {
+    other.exec("ROLLBACK");
+    other.close();
+  }
+}
+
+const cmdOf = (sub: string) => `/sentrook-${sub}`;
+
+test("a snooze whose file stays locked is not set", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-snooze-locked-"));
+  const file = path.join(dir, "snooze.json");
+  let wrote = false;
+  const r = heldElsewhere(file, () => snooze.run(dir, "2h --all", null, {}, NOW, cmdOf, () => (wrote = true)));
+  assert.equal(r.change, null);
+  assert.equal(r.reply, `The snooze file ${file} is locked by another process; no snooze was changed. Try again.`);
+  assert.equal(wrote, false);
+  assert.equal(existsSync(file), false);
+  assert.equal(snooze.active(snooze.load(dir), S1, NOW), false);
+});
+
+test("a snooze off whose file stays locked says so and changes nothing", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-snooze-locked-off-"));
+  const file = path.join(dir, "snooze.json");
+  snooze.run(dir, "2h --all", null, {}, NOW, cmdOf, () => {});
+  const before = readFileSync(file, "utf8");
+  const r = heldElsewhere(file, () => snooze.run(dir, "off --all", null, {}, NOW, cmdOf, () => {}));
+  assert.equal(r.change, null);
+  assert.match(r.reply, /is locked by another process; no snooze was changed/);
+  assert.equal(readFileSync(file, "utf8"), before);
 });

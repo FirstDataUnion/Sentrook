@@ -139,8 +139,7 @@ function blockReasonFor(failure: ScanFailure): string {
  *
  * Auth failures (401/403) never fail-open: ``onScanError=allow`` still blocks.
  * Interactive ``review`` escalates with a configuration-error card.
- * Unattended ``review`` always blocks (no ``scheduledTimeoutBehavior: allow``
- * on the scan-error path — that knob is only for Sentrook *policy* reviews).
+ * Unattended ``review`` always blocks.
  */
 export function scanErrorToHookResult(
   failure: ScanFailure,

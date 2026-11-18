@@ -355,9 +355,6 @@ by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats a
 A block (at `blockAt` or above, or one the scanner enforces) is never held: it stays a block. The traffic log records
 the scan with decision `held`, then the approval or the expiry; `/sentrook-history` shows them.
 
-`approval.scheduledTimeoutMs` and `approval.scheduledTimeoutBehavior` no longer apply to reviews, since an unattended
-review is held rather than asked. They are still read, so an existing config loads.
-
 ### Skills and memory the agent saves on its own
 
 OpenClaw saves to the agent's skills and memory on its own, with nobody asking:
@@ -537,8 +534,6 @@ also come from a `SENTROOK_*` environment variable; the config value wins.
 | `onScanError` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `timeoutMs` | `30000` | How long to wait for a scan |
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
-| `approval.scheduledTimeoutMs` | `1800000` | No longer used for reviews: an unattended review is held (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
-| `approval.scheduledTimeoutBehavior` | `deny` | No longer used for reviews: an unattended review is held |
 | `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |

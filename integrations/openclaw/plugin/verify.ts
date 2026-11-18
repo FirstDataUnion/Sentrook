@@ -3,7 +3,6 @@
  * settings that leave something unscanned.
  */
 
-import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
@@ -23,7 +22,6 @@ export async function runVerify(
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
     timeoutMs?: number;
-    hostVersion?: string;
     /** OpenClaw's own config; undefined when it cannot be read. */
     hostConfig?: unknown;
   } = {},
@@ -91,9 +89,6 @@ export async function runVerify(
     ok: true,
     detail: `${cfg.channelBindings.length} in config${problems ? `; cannot apply: ${problems}` : ""}`,
   });
-  // Reported, not failed: on a host that ignores it, the setting only leaves unattended reviews denied.
-  const note = timeoutBehaviorNote(cfg.approval, opts.hostVersion);
-  if (note) checks.push({ name: "approval", ok: true, detail: note });
   // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
   const target = new Store(cfg.stateDir).loadNotify();
   checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
