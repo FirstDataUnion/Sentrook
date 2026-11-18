@@ -1814,11 +1814,12 @@ def _sql_settings(statement: str, db: _StateDb) -> str:
     return "\n".join(lines)
 
 
-def _sqlite_cli(args: list[str]) -> tuple[str | None, list[str]]:
-    """A `sqlite3` command's database and the SQL it runs (its arguments after the database,
-    and `-cmd` values)."""
+def _sqlite_cli(args: list[str]) -> tuple[str | None, list[str], str | None]:
+    """A `sqlite3` command's database, the SQL it runs (its arguments after the database, and
+    `-cmd` values), and the `-init` script it reads."""
     db: str | None = None
     sql: list[str] = []
+    init: str | None = None
     i = 0
     while i < len(args):
         a = args[i]
@@ -1827,6 +1828,8 @@ def _sqlite_cli(args: list[str]) -> tuple[str | None, list[str]]:
             if name in _SQLITE_VALUED and i + 1 < len(args):
                 if name == "cmd":
                     sql.append(args[i + 1])
+                elif name == "init":
+                    init = args[i + 1]
                 i += 2
                 continue
         elif db is None:
@@ -1834,7 +1837,15 @@ def _sqlite_cli(args: list[str]) -> tuple[str | None, list[str]]:
         else:
             sql.append(a)
         i += 1
-    return db, sql
+    return db, sql, init
+
+
+#: A `sqlite3` script that reads SQL from a file (`.read file`).
+_SQL_READ = re.compile(r"(?:\A|[\n;])[ \t]*\.read[ \t]+[\"']?(?P<f>[^\s\"';]+)")
+#: `sqlite3 …` with its stdin redirected from a file or a process substitution (quoted text
+#: taken out first; a heredoc is read).
+_SQLITE_STDIN = re.compile(r"\bsqlite3\b[^;&|\n]*?(?<![<\d])<(?![<&])[ \t]*(?P<f><\(|[^\s<(]\S*)")
+_QUOTED = re.compile(r"'[^']*'" + r'|"(?:[^"\\]|\\.)*"')
 
 
 @dataclass(frozen=True)
@@ -2825,6 +2836,11 @@ def _approval_loosening(
     def cli_hit(line: str, mechanism: str, hits: set[Hit]) -> None:
         report(hits, None, {"match": line[:120], "mechanism": mechanism})
 
+    def state_db(value: str) -> bool:
+        """Whether `value` is a host tree's state database (or its WAL, shm or journal)."""
+        db = rules.state_db
+        return db is not None and _tree_file(value, db.host, db.files, rules, ctx)
+
     def sqlite_write(text: str, dbs: list[str | None], cwd: str | None, mechanism: str) -> None:
         """SQL that writes the host's approvals table. In a host tree's state DB a loosening
         value blocks and any other write is reviewed; a database the scan cannot place (a
@@ -3076,7 +3092,15 @@ def _approval_loosening(
         written_script: dict[str, str] = {}  # the writer's text, when its output is not read
         written_blind: set[str] = set()  # written from content the scan cannot read
         segments = shape.segments if shape.parse_ok else []
-        for seg in segments:
+        # Each pipeline stage's source stage, and what each segment printed (None: unreadable).
+        pipe_source = {
+            st: p[k - 1]
+            for p in (shape.pipelines if shape.parse_ok else [])
+            for k, st in enumerate(p)
+            if k
+        }
+        printed: dict[int, str | None] = {}
+        for index, seg in enumerate(segments):
             head = seg.head
             words = [head, *[expand(w) for w in seg.argv]]
             line = " ".join(words)
@@ -3092,12 +3116,33 @@ def _approval_loosening(
             if head == "ln" and args and len(args) >= 2 and (seg.has_flag_letter("s")):
                 links[args[-1].rstrip("/")] = args[-2].rstrip("/")
             if head == "sqlite3":
-                db_arg, sql = _sqlite_cli(words[1:])
+                db_arg, sql, init = _sqlite_cli(words[1:])
                 sql_text = ";\n".join([*sql, _heredocs_after(command, "sqlite3"), *produced])
                 opened = [m.group("o") or m.group("a") for m in _SQL_OPEN.finditer(sql_text)]
                 dbs = [d for d in (db_arg, *opened) if d]
                 if dbs:
                     sqlite_write(sql_text, list(dbs), cwd, "sqlite3")
+                if db_arg and "$" not in db_arg and state_db(resolve(db_arg, cwd)):
+                    # SQL the call does not show, run against the host's state DB.
+                    read = _SQL_READ.search(sql_text)
+                    stdin = _SQLITE_STDIN.search(_QUOTED.sub("''", command))
+                    source = pipe_source.get(index)
+                    unseen = (
+                        init
+                        or (read.group("f") if read else None)
+                        or (stdin.group("f") if stdin else None)
+                        or (
+                            "piped input"
+                            if source is not None and printed.get(source) is None
+                            else None
+                        )
+                    )
+                    if unseen:
+                        report(
+                            {("sql from", unseen, REVIEW)},
+                            None,
+                            {"path": display(resolve(db_arg, cwd)), "mechanism": "sqlite3"},
+                        )
             # Redirects: an `echo`/`printf`/heredoc is read; a blind head is a replacement.
             for target in seg.redirects:
                 inner = re.fullmatch(r">\((.*)\)", target, re.DOTALL)
@@ -3182,6 +3227,7 @@ def _approval_loosening(
                 cli(tokens, line, command)
             if rendered is not None:
                 produced.append(rendered)
+            printed[index] = rendered
             previous = line
         # Inline code anywhere in the command (`python3 -c`, `node -e`, a heredoc script).
         code(command, cwd, depth)
@@ -3192,7 +3238,7 @@ def _approval_loosening(
             )
 
     def blind(value: str, source: str) -> None:
-        if _host_where(value, rules, ctx).classes & {"approvals", "main"}:
+        if _host_where(value, rules, ctx).classes & {"approvals", "main"} or state_db(value):
             shown = (
                 source if source in ("a download", "unreadable input") else display(resolve(source))
             )
@@ -3232,6 +3278,12 @@ def _approval_loosening(
             dest_value = resolve(dest.replace("${HOME}", "~").replace("$HOME", "~"), cwd)
             if dest.endswith("/") or not os.path.splitext(dest_value)[1]:
                 dest_value = dest_value.rstrip("/") + "/" + os.path.basename(src_value)
+            if state_db(dest_value):
+                # The host's state DB holds its approvals: replaced from another file, it is
+                # asked (the tree's own DB copied over itself, or restored from a sidecar, is not).
+                if not state_db(src_value):
+                    blind(dest_value, src)
+                continue
             if src_value in written_blind:
                 blind(dest_value, src)
                 continue
