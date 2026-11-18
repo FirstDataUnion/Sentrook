@@ -1,11 +1,25 @@
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
 version: 2
 updates:
+  # One grouped pull request: split bumps of github/codeql-action leave its init and analyze steps on
+  # different versions, which fails the CodeQL job.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The scanner (root pyproject.toml and uv.lock).
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
 
   - package-ecosystem: npm
     directory: /
