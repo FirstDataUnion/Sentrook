@@ -101,7 +101,7 @@ from .skill_steps import skill_step_calls
 from .steering import steering_marks, steers
 from .trust import Trust, classify
 from .url_carry import CarriedText, url_carries_local
-from .written_selfmod import future_entities, written_selfmod_texts
+from .written_selfmod import PlantedFile, WrittenText, future_entities, written_selfmod_texts
 
 __all__ = [
     "Lineage",
@@ -1310,20 +1310,55 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             # comes back through them.
             continue
         table.add_found(f, Origin.PENDING_CALL)
-    # Self-modification content the call writes (a cron line, a hook, a skill, a job prompt) runs later: the hosts
-    # that run sends to or runs code from take those roles as future roles, never as roles of this call.
+    # Copies and moves that ran: a denied or blocked step copied nothing.
+    not_run = frozenset(
+        h.step
+        for h in planir.history
+        if h.decision.value in ("denied_by_user", "blocked", "review_timed_out", "blocked_on_error")
+    )
+    copies = CopyHistory()
     try:
-        written_selfmod = future_entities(
-            written_selfmod_texts(pending, home=home, workspace_root=ws),
-            home=home,
-            workspace_root=ws,
-        )
+        copies = copy_history(history, not_run, home=home, workspace_root=ws)
+    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
+        coverage.append(CoverageNote("copy_history_failed", f"{type(exc).__name__}: {exc}"))
+
+    # Self-modification content the call writes (a cron line, a hook, a skill, a job prompt) runs later: the hosts
+    # that run sends to or runs code from take those roles as future roles, never as roles of this call. A file a
+    # sibling or an earlier step that ran wrote is read where the call copies it into place or the content runs it.
+    ran = [h for h in history if h.step not in not_run]
+
+    def planted(path: str) -> PlantedFile | None:
+        for w in reversed(writes):
+            if w.path == path and w.content:
+                return PlantedFile(w.content, w.call_id, sibling=True)
+        found = _find_executed(planir, ran, copies, path, home, ws)
+        return PlantedFile(found.content, f"step:{found.step}") if found is not None else None
+
+    # (found, origin, ref): a planted file's hosts come from the call that wrote it, not from this call.
+    written_selfmod: list[tuple[Found, Origin, str | None]] = []
+    try:
+        texts = written_selfmod_texts(pending, home=home, workspace_root=ws, planted=planted)
+        groups: dict[PlantedFile | None, list[WrittenText]] = {}
+        for wt in texts:
+            groups.setdefault(wt.planted, []).append(wt)
+        for source, group in groups.items():
+            origin = (
+                Origin.PENDING_CALL
+                if source is None
+                else Origin.SIBLING
+                if source.sibling
+                else Origin.WRITTEN_FILE
+            )
+            written_selfmod.extend(
+                (f, origin, None if source is None else source.ref)
+                for f in future_entities(group, home=home, workspace_root=ws)
+            )
     except Exception as exc:  # noqa: BLE001 (odd content must not fail the scan)
         written_selfmod = []
         coverage.append(CoverageNote("written_selfmod_failed", f"{type(exc).__name__}: {exc}"))
-    for f in written_selfmod:
+    for f, origin, ref in written_selfmod:
         new = table.get(f.kind, f.value) is None
-        ent = table.add(f.kind, f.value, display=f.display, origin=Origin.PENDING_CALL)
+        ent = table.add(f.kind, f.value, display=f.display, origin=origin, ref=ref)
         if new:
             ent.roles.add(Role.MENTIONED)
             ent.only_in_written_selfmod = True
@@ -1507,18 +1542,6 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     if ent.first_history_step is None
                     else min(ent.first_history_step, call.step)
                 )
-
-    # Copies and moves that ran: a denied or blocked step copied nothing.
-    not_run = frozenset(
-        h.step
-        for h in planir.history
-        if h.decision.value in ("denied_by_user", "blocked", "review_timed_out", "blocked_on_error")
-    )
-    copies = CopyHistory()
-    try:
-        copies = copy_history(history, not_run, home=home, workspace_root=ws)
-    except Exception as exc:  # noqa: BLE001 (an odd command must not fail the scan)
-        coverage.append(CoverageNote("copy_history_failed", f"{type(exc).__name__}: {exc}"))
 
     written: WrittenFile | None = None
     for exe_path, exe_display, required in _run_targets(pending, table, home):
