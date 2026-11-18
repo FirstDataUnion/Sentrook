@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # The OpenClaw compatibility check against one OpenClaw image:
 #
-#   integrations/openclaw/compat/run.sh <image> [plugin dir] [out dir]
+#   integrations/openclaw/compat/run.sh <image> [plugin dir | package] [out dir]
 #   e.g. integrations/openclaw/compat/run.sh ghcr.io/openclaw/openclaw:2026.11.5
 #
-# Packs the plugin as npm publishes it (`npm run pack:check`, then `npm pack`), runs container_check.sh in the
+# Packs the plugin as npm publishes it (`npm run pack:check`, then `npm pack`), or takes the package as given: a
+# .tgz, or a directory holding exactly one .tgz and no package.json (the release workflow's packed artifact, so
+# the bytes checked are the bytes published). Then runs container_check.sh in the
 # image (validator, credentials, install, load, doctor, verify, status, an agent turn against the mock services,
 # the seam probe), then compares what OpenClaw's own checks report with warnings-baseline.txt. Exit 1 when any
 # step fails. Needs Docker, Node 22.6+ and python3. COMPAT_CLIENT_SECRET and COMPAT_PROBE_EXTRA are passed
@@ -13,7 +15,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-image=${1:?usage: run.sh <image> [plugin dir] [out dir]}
+image=${1:?usage: run.sh <image> [plugin dir | package] [out dir]}
 plugin=${2:-$root/integrations/openclaw/plugin}
 out=${3:-$(mktemp -d)}
 mkdir -p "$out"
@@ -22,12 +24,28 @@ rm -f "${out:?}/validate.json"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
-# The package as the release workflow publishes it, from a copy so the source tree is left alone.
 mkdir -p "$stage/src" "$stage/pkg"
-(cd "$plugin" && tar --exclude node_modules --exclude dist -cf - .) | tar -xf - -C "$stage/src"
-# The plugin is an npm workspace of the repository root, so its build tools are in the root's node_modules.
-ln -s "$root/node_modules" "$stage/src/node_modules"
-if { [ -x "$root/node_modules/.bin/esbuild" ] || (cd "$root" && npm ci --no-audit --no-fund); } >"$out/pack.log" 2>&1 &&
+given=''
+if [ -f "$plugin" ] && [[ "$plugin" == *.tgz ]]; then
+  given=$plugin
+elif [ -d "$plugin" ] && [ ! -e "$plugin/package.json" ]; then
+  shopt -s nullglob
+  tarballs=("$plugin"/*.tgz)
+  shopt -u nullglob
+  [ "${#tarballs[@]}" -ne 1 ] || given=${tarballs[0]}
+fi
+if [ -n "$given" ]; then
+  # The package as given: checked as it is, not packed again.
+  if cp "$given" "$stage/pkg/sentrook.tgz" 2>"$out/pack.log"; then
+    printf 'pack\tok\t%s\n' "the package as given: $(basename "$given")" >>"$out/steps.tsv"
+  else
+    printf 'pack\tFAIL\t%s\n' "could not read $(basename "$given") (see pack.log)" >>"$out/steps.tsv"
+  fi
+# The package as the release workflow publishes it, from a copy so the source tree is left alone.
+elif (cd "$plugin" && tar --exclude node_modules --exclude dist -cf - .) | tar -xf - -C "$stage/src" &&
+  # The plugin is an npm workspace of the repository root, so its build tools are in the root's node_modules.
+  ln -s "$root/node_modules" "$stage/src/node_modules" &&
+  { [ -x "$root/node_modules/.bin/esbuild" ] || (cd "$root" && npm ci --no-audit --no-fund); } >"$out/pack.log" 2>&1 &&
   (cd "$stage/src" && npm run --silent pack:check && npm pack --silent --pack-destination "$stage/pkg") \
     >>"$out/pack.log" 2>&1 && mv "$stage/pkg"/*.tgz "$stage/pkg/sentrook.tgz" 2>>"$out/pack.log"; then
   printf 'pack\tok\t%s\n' "npm run pack:check and npm pack" >>"$out/steps.tsv"
