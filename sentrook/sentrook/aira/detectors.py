@@ -1755,18 +1755,24 @@ _SQLITE_VALUED = frozenset(
     | {"maxsize", "heap", "escape"}
 )
 _SQL_BUDGET = 8000  # characters read per statement
+#: Where a write statement's values end.
+_SQL_END = re.compile(r";|\bWHERE\b|\bRETURNING\b", re.IGNORECASE)
+#: A database URI (`file:/path?mode=rw`) as its path.
+_SQL_URI = re.compile(r"\Afile:(?://localhost)?(?P<p>[^?#]*)")
 
 
 def _sql_writes(text: str, db: _StateDb) -> list[str]:
-    """The statements in `text` that write the approvals table, each up to its `;`."""
+    """The statements in `text` that write the approvals table, each up to its `;`, the end of
+    the text, or its `WHERE` or `RETURNING` clause (a condition is not a value written)."""
     out: list[str] = []
     for n, m in enumerate(db.writes.finditer(text)):
         if n >= _SINK_MATCHES:
             break
         if m.group("t").lower() != db.table:
             continue
-        end = text.find(";", m.end(), m.end() + _SQL_BUDGET)
-        out.append(text[m.start() : end if end >= 0 else m.end() + _SQL_BUDGET])
+        body = text[m.start() : m.end() + _SQL_BUDGET]
+        cut = _SQL_END.search(body, m.end() - m.start())
+        out.append(body[: cut.start()] if cut else body)
     return out
 
 
@@ -2818,26 +2824,30 @@ def _approval_loosening(
         statements = _sql_writes(text, db)
         if not statements:
             return
-        place, shown = "other", ""
+        # Each database named: in a host tree, one the scan cannot place, or another one.
+        places: list[tuple[str, str]] = []
         for path in dbs:
-            if path is None or "$" in path or "`" in path:
-                place, shown = (
-                    ("unknown", "an unplaced database")
-                    if place == "other"
-                    else (
-                        place,
-                        shown,
-                    )
-                )
+            uri = _SQL_URI.match(path) if path else None
+            path = uri.group("p") if uri else path
+            if path == ":memory:":
+                continue  # an in-memory database: what it attaches is what counts
+            if not path or any(c in path for c in "$`{}"):
+                places.append(("unknown", "an unplaced database"))
                 continue
             value = resolve(path, cwd)
             if _tree_file(value, db.host, db.files, rules, ctx):
-                place, shown = "tree", display(value)
-                break
-            if place == "other" and db.basename.fullmatch(os.path.basename(value)):
-                place, shown = "unknown", display(value)
-        if place == "other":
+                places.append(("tree", display(value)))
+            elif db.basename.fullmatch(os.path.basename(value)):
+                places.append(("unknown", display(value)))
+            else:
+                places.append(("other", display(value)))
+        kinds = {k for k, _ in places}
+        if not kinds & {"tree", "unknown"}:
             return
+        # The scan does not bind a statement to a connection: a tree DB opened beside another
+        # database is not known to be the one written, so it is asked, not blocked.
+        place = "tree" if kinds == {"tree"} else "unknown"
+        shown = next(sh for k, sh in places if k in ("tree", "unknown"))
         where = _Where(frozenset({"approvals"}), db.host, "auto")
         hits: set[Hit] = set()
         for statement in statements:
@@ -2911,7 +2921,9 @@ def _approval_loosening(
                                 verb == "patch" or name == "--batch-file"
                             ):
                                 val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
-                                hits.add(("read from", val or name, REVIEW))
+                                # `-` (dropped from the words) is stdin: a heredoc there is read.
+                                if val and val != "-":
+                                    hits.add(("read from", val, REVIEW))
                         if (
                             verb == "patch"
                             and "--stdin" in args
@@ -2997,9 +3009,10 @@ def _approval_loosening(
                 for n, m in enumerate(db.connect.finditer(text))
                 if n < _SINK_MATCHES and "(" in text[m.end() : m.end() + 3]
             ]
-            if connects:
-                dbs = [_code_path(args[0], variables) if args else None for args in connects]
-                sqlite_write(_decode(text), dbs, cwd, "inline_code")
+            dbs = [_code_path(args[0], variables) if args else None for args in connects]
+            dbs += [m.group("a") for m in _SQL_OPEN.finditer(text) if m.group("a")]
+            # A connection the scan does not recognise is a database it cannot place.
+            sqlite_write(_decode(text), dbs or [None], cwd, "inline_code")
         unresolved = False
         for target in _code_sink_targets(text, rules):
             path = _code_path(target, variables)
@@ -3068,7 +3081,7 @@ def _approval_loosening(
                 links[args[-1].rstrip("/")] = args[-2].rstrip("/")
             if head == "sqlite3":
                 db_arg, sql = _sqlite_cli(words[1:])
-                sql_text = "\n".join([*sql, heredocs, *produced])
+                sql_text = ";\n".join([*sql, _heredocs_after(command, "sqlite3"), *produced])
                 opened = [m.group("o") or m.group("a") for m in _SQL_OPEN.finditer(sql_text)]
                 dbs = [d for d in (db_arg, *opened) if d]
                 if dbs:
@@ -3237,8 +3250,31 @@ def _approval_loosening(
 
 
 #: An input redirect from a file (`< patch.json5`), not a heredoc or process substitution.
-_STDIN_FILE = re.compile(r"(?<![<\d])<(?![<(&])[ \t]*[^\s<]")
+_STDIN_FILE = re.compile(
+    r"\bpatch\b[^;&|\n]*(?<![<\d])<(?![<(&])[ \t]*[^\s<]",
+)
 _HEREDOC_START = re.compile(r"""<<-?[ \t]*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n""")
+
+
+def _heredocs_after(command: str, head: str) -> str:
+    """The bodies of the heredocs fed to `head`: those whose `<<` follows the word in the same
+    simple command."""
+    bodies: list[str] = []
+    pos = 0
+    while True:
+        m = _HEREDOC_START.search(command, pos)
+        if m is None:
+            break
+        end = re.compile(r"^[ \t]*" + re.escape(m.group("tag")) + r"[ \t]*$", re.M).search(
+            command, m.end()
+        )
+        if end is None:
+            break
+        start = max(command.rfind(c, 0, m.start()) for c in "\n;|&") + 1
+        if re.search(r"(?:\A|[\s/])" + re.escape(head) + r"(?:\s|\Z)", command[start : m.start()]):
+            bodies.append(command[m.end() : max(m.end(), end.start() - 1)])
+        pos = end.end()
+    return "\n".join(bodies)
 
 
 def _heredocs(command: str) -> str:

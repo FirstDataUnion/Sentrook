@@ -1305,6 +1305,65 @@ def test_sqlite_approvals_store_reads_and_other_tables_stay_silent(raw):
     stays_silent(raw)
 
 
+U = "UPDATE exec_approvals_config SET default_security='full'"
+
+
+def test_sqlite_uri_to_the_tree_db_fires():
+    fires(ex(f"sqlite3 'file:/home/me/.openclaw/state/openclaw.sqlite?mode=rw' \"{U}\""))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A condition is not a value written: tightening, or a delete, with a loose WHERE.
+        sql(
+            "UPDATE exec_approvals_config SET default_security='allowlist' "
+            "WHERE default_security='full'"
+        ),
+        sql("DELETE FROM exec_approvals_config WHERE default_ask='off'"),
+        # Each argument is its own statement.
+        ex(
+            f"sqlite3 {DB} \"UPDATE exec_approvals_config SET default_ask='always'\" "
+            "\"SELECT * FROM t WHERE default_security='full'\""
+        ),
+        # A connection the scan does not recognise.
+        ex(
+            "python3 - <<'EOF'\nimport sqlite3 as sq\n"
+            "c = sq.connect('/home/me/.openclaw/state/openclaw.sqlite')\n"
+            f'c.execute("{U}")\nEOF'
+        ),
+        # The tree DB opened beside another database: which one is written is not known.
+        ex(
+            "python3 - <<'EOF'\nimport sqlite3\n"
+            "c = sqlite3.connect('/home/me/.openclaw/state/openclaw.sqlite')\n"
+            "x = sqlite3.connect('/tmp/t.db')\n"
+            f'x.execute("{U}")\nEOF'
+        ),
+    ],
+    ids=["where tighten", "where delete", "next argument", "aliased module", "two connections"],
+)
+def test_sqlite_review_edges(raw):
+    reviews(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A heredoc fed to another command is not SQL `sqlite3` runs.
+        ex(
+            f"sqlite3 {DB} 'select count(*) from sessions'; cat > ~/workspace/notes.sql <<'EOF'\n{U};\nEOF"
+        ),
+        ex(f"sqlite3 {DB} '.tables' && python3 - <<'EOF'\nprint(\"{U}\")\nEOF"),
+        # `--file -` reads the heredoc; a redirect on another command is not the patch's stdin.
+        ex("openclaw config patch --file - <<'EOF'\n{ agents: { defaults: {} } }\nEOF"),
+        ex("echo '{\"agents\":{}}' | openclaw config patch --stdin && sort < a.txt"),
+    ],
+    ids=["heredoc to cat", "heredoc to python", "patch --file -", "stdin redirect elsewhere"],
+)
+def test_sqlite_and_patch_edges_stay_silent(raw):
+    stays_silent(raw)
+
+
 # --------------------------------------------------------------------------- forms the floor now reads
 
 

@@ -452,8 +452,12 @@ approval_loosening:
   # scan cannot place (a variable, an `openclaw.sqlite` outside the trees, a custom state dir).
   # Another database outside the trees is not the host's. Reads never fire.
   # `files`: the state DB relative to a tree root. `basename`: a state DB the scan cannot place.
-  # `columns`: a column -> the approvals setting it holds. `writers`: the command or code must use
-  # SQLite. `connect`: calls in inline code whose first argument is the database.
+  # `columns`: a column -> the approvals setting it holds. `writers`: inline code that uses a SQLite
+  # library (the `sqlite3` CLI is read as a command). `connect`: calls in inline code whose first
+  # argument is the database; code that writes the table through a connection the scan does not
+  # recognise gets the review tier. A statement's values end at its `WHERE` or `RETURNING`; the
+  # scan does not bind a statement to a connection, so code that opens the tree's state DB beside
+  # another database gets the review tier.
   state_db:
     host: openclaw
     files: 'state/openclaw\.sqlite'
@@ -463,7 +467,7 @@ approval_loosening:
       default_ask_fallback: askFallback
       default_security: security
       default_ask: ask
-    writers: '\bsqlite3?\b|node:sqlite|better-sqlite3|bun:sqlite|\bDatabaseSync\b'
+    writers: '\bimport\s+sqlite3\b|\bfrom\s+sqlite3\s+import\b|\bsqlite3\.connect\b|node:sqlite|better-sqlite3|bun:sqlite|\bDatabaseSync\b'
     connect: '\bsqlite3\.connect|\bnew\s+Database(?:Sync)?\b'
   # Launching the host with approvals or hook consent bypassed: a flag on the CLI head, or the
   # environment variable set anywhere in the command.
