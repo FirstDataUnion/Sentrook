@@ -26,8 +26,6 @@
         "additionalProperties": false,
         "properties": {
           "interactiveTimeoutMs": { "type": "number", "minimum": 1 },
-          "scheduledTimeoutMs": { "type": "number", "minimum": 1 },
-          "scheduledTimeoutBehavior": { "type": "string", "enum": ["allow", "deny"], "description": "No longer used for reviews: a review on an unattended run is held for the owner (/sentrook-approve). Still read, so an existing config loads." },
           "scheduledIntentKinds": { "type": "array", "items": { "type": "string", "enum": ["user", "cron", "subagent", "system"] } }
         }
       },

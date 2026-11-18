@@ -413,6 +413,8 @@ export function hintGrant(hint: unknown): Entry | null {
 export const HINT_DAYS = 30;
 /** Sender bases that put a message in a room others can write to. */
 const SHARED_BASIS = new Set(["group_chat", "host_open_access"]);
+/** Sender bases that say nothing about how the relation was derived. */
+const NO_BASIS = new Set(["none", "unknown"]);
 
 /**
  * The scan response's suggested grants (`grant_hints`) that the grant command would accept, as `hintGrant` returns
@@ -456,7 +458,7 @@ export function ownerSender(planir: Entry): boolean {
 
 /**
  * Approving a review always may set its suggested grant: the call came from the owner's own message on the main
- * agent, outside a group chat or a host open to anyone. Whoever answers a review elsewhere is not known to be the
+ * agent, outside a group chat or a host open to anyone, in a chat the plugin could tell apart. Whoever answers a review elsewhere is not known to be the
  * owner, so there the prompt only shows the command.
  */
 export function mayRemember(planir: Entry): boolean {
@@ -468,6 +470,8 @@ export function mayRemember(planir: Entry): boolean {
     sender.relation === "owner" &&
     planir?.session?.agent_role === "main" &&
     !basis.some((b) => typeof b === "string" && SHARED_BASIS.has(b)) &&
+    // a basis that says how the plugin knows: `none` alone is a chat whose kind it could not tell, maybe a room
+    basis.some((b) => typeof b === "string" && !NO_BASIS.has(b)) &&
     (planir?.self_edit ?? null) === null
   );
 }

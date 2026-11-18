@@ -13,9 +13,9 @@
 #            fails, is still pending at the deadline, has a scan that is not clean or has Plugin Inspector findings
 #            stops the job before npm; the job summary records the ClawHub release id and outcome either way.
 #
-# Releasing: a changeset with the change; merge the Version PR (it bumps package.json and writes the CHANGELOG.md
-# entry; bump PLUGIN_VERSION in planir.ts to match, a test keeps them equal); dispatch this workflow, dry_run first
-# if in doubt; approve Environment release-npm.
+# Releasing: a changeset with the change; merge the Version PR (it bumps package.json and PLUGIN_VERSION in planir.ts
+# together and writes the CHANGELOG.md entry); dispatch this workflow, dry_run first if in doubt; approve Environment
+# release-npm.
 #
 # Channels: a prerelease (2.x.y-beta.N) goes only to channel next: npm dist-tag next and ClawHub tag beta
 # (`openclaw plugins install <name>@beta`). A stable version goes only to latest on both.

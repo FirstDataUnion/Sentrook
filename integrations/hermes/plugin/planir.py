@@ -420,7 +420,7 @@ def build_planir(
             request_text = _request_of(last_request or {})
             carried_from = req_no if request_text.strip() else None
         if host is not None and not request_text.strip():
-            request_text = host_turns.REQUEST_TEXT
+            request_text = host.no_request
         trigger = host_turns.trigger_for(trigger, host.trigger if host else "system")
     else:
         request_text = _request_of(turn)
