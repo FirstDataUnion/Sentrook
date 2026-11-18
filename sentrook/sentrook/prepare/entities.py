@@ -2047,12 +2047,14 @@ def repos_named_in(text: str) -> set[str]:
     """The repositories (`repo_of_url`) that URLs, schemeless URLs and scp-style git remotes in `text` name."""
     out: set[str] = set()
     for m in _URL_TOKEN_RE.finditer(text):
-        tok = m.group(0).rstrip(".,:;!?")
-        if "." not in tok:
-            continue
-        split = _tenant_split(tok)
-        if split is not None:
-            out.add(split[1])
+        # URLs run together with commas, markdown emphasis around them, a possessive after them
+        for tok in m.group(0).split(","):
+            tok = re.sub(r"[’'‘]s$", "", tok.strip("*_~’‘“”")).rstrip(".:;!?")
+            if "." not in tok:
+                continue
+            split = _tenant_split(tok)
+            if split is not None:
+                out.add(split[1])
     return out
 
 

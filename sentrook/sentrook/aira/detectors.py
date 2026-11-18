@@ -39,6 +39,7 @@ from ..prepare.entities import (
     normalise_path,
     normalise_remote_identity,
     provider_name,
+    repos_named_in,
     resolve_token,
 )
 from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
@@ -817,6 +818,11 @@ def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
     host cannot be told from any other, so it is floored too: fail closed, on a degraded scan."""
     ent = ctx.prepared.entities.by_id(code_source.entity_id or "")
     if ent is None or not ent.steered or ent.sanctioned:
+        return None
+    if ent.kind is EntityKind.REPO and ent.value in repos_named_in(ctx.prepared.request_words):
+        # The owner asked for this repository by a URL of it. That vouches for nothing (a repository the owner
+        # names is still scored as an unknown code source), but the run is the owner's, not the steering
+        # content's.
         return None
     if _is_listed_installer(code_source.value, ctx) or is_local_host(code_source.value):
         return None

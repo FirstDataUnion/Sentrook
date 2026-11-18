@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import copy
 
+import pytest
 from test_aira_detectors import ex, hist_step, run
 from test_steered_code import HIDDEN, _scan, _scanner, after_read, steered_floors, tool_result
 
 from sentrook.enums import Enforce
-from sentrook.prepare.entities import EntityKind, Origin
+from sentrook.prepare.entities import EntityKind, Origin, repos_named_in
 from sentrook.probes.context import ContextProbe
 
 REPO = "github.com/kestrelwade/yard-helper"
@@ -135,3 +136,37 @@ def test_an_install_output_that_echoes_a_url_the_agent_used_does_not_name_the_re
     ]
     p, _ = run(raw)
     assert Origin.UNTRUSTED_INPUT not in _repo(p).origins
+
+
+# --------------------------------------------------------------------------- review
+
+
+def test_the_owner_typing_the_url_after_a_steering_page_takes_no_floor():
+    for request in (f"Run {FETCH_RUN}", "Install from https://github.com/kestrelwade/yard-helper"):
+        _, env = run(after_read(STEERING, FETCH_RUN, request=request))
+        assert steered_floors(env) == []
+
+
+def test_an_install_output_that_echoes_the_url_with_steering_text_takes_no_floor():
+    raw = ex(FETCH_RUN, request="Install the yard helper.")
+    raw["history"] = [hist_step(1, "exec", "exec", {"command": FETCH_RUN, "cwd": "~/workspace"})]
+    raw["session"]["step"] = 2
+    raw["new_inputs"] = [tool_result(1, "c1", STEERING, tool="exec")]
+    p, env = run(raw)
+    ent = _repo(p)
+    assert Origin.UNTRUSTED_INPUT not in ent.origins and not ent.steered
+    assert steered_floors(env) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "**https://github.com/kestrelwade/yard-helper**",
+        "_https://github.com/kestrelwade/yard-helper_",
+        "see https://github.com/kestrelwade/yard-helper’s README",
+        "https://github.com/kestrelwade/yard-helper,https://github.com/marrowfen/x",
+    ],
+    ids=["bold", "underscore", "curly-apostrophe", "comma-list"],
+)
+def test_repos_named_in_markdown_and_prose(text):
+    assert REPO in repos_named_in(text)
