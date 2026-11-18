@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from ..planir.bounds import MAX_CALL_CHARS, bound_text
 from ..planir.canonical import (
     CanonicalCall,
     canonical_history,
@@ -158,6 +159,32 @@ class WrittenFile:
     step: int
     content: str
     truncated: bool
+    #: What was over preparation's bounds when the content was cut to them (`bounds.bound_text`).
+    too_large: str | None = None
+
+
+#: Room a written file's content leaves for the call that wraps it (AIRA reads it as the command of
+#: a call with the pending call's cwd), so that call is within the bounds too.
+_WRAPPER_ROOM = 1024
+
+
+def _bounded(written: WrittenFile | None) -> WrittenFile | None:
+    return None if written is None else _bounded_file(written)
+
+
+def _bounded_file(written: WrittenFile, room: int = _WRAPPER_ROOM) -> WrittenFile:
+    """`written` with its content cut to preparation's bounds less `room`, read as a shell script (a file
+    the agent assembled from several history writes and edits can be far larger than any one step)."""
+    content, over = bound_text(written.content, shell=True, max_chars=MAX_CALL_CHARS - room)
+    if over is None:
+        return written
+    return WrittenFile(
+        path=written.path,
+        step=written.step,
+        content=content,
+        truncated=written.truncated,
+        too_large=written.too_large or over,
+    )
 
 
 @dataclass
@@ -674,7 +701,7 @@ def _find_written(
                 content = best.content + "\n" + content
                 truncated = truncated or best.truncated
             best = WrittenFile(path=path, step=call.step, content=content, truncated=truncated)
-    return best
+    return _bounded(best)
 
 
 def _downloaded_installs(
@@ -822,13 +849,20 @@ def _find_executed(
         return later  # a copy of a file no step wrote: only the edits made to the copy are visible
     if later is None:
         return WrittenFile(
-            path=path, step=source.step, content=source.content, truncated=source.truncated
+            path=path,
+            step=source.step,
+            content=source.content,
+            truncated=source.truncated,
+            too_large=source.too_large,
         )
-    return WrittenFile(
-        path=path,
-        step=later.step,
-        content=source.content + "\n" + later.content,
-        truncated=source.truncated or later.truncated,
+    return _bounded_file(
+        WrittenFile(
+            path=path,
+            step=later.step,
+            content=source.content + "\n" + later.content,
+            truncated=source.truncated or later.truncated,
+            too_large=source.too_large or later.too_large,
+        )
     )
 
 
@@ -1133,6 +1167,45 @@ def _session_binding(
     )
 
 
+#: Coverage note: part of what this request asks to run was over preparation's bounds and was read
+#: only in part (the head and tail). Convergence holds such a call for review.
+INPUT_TOO_LARGE = "input_too_large"
+
+
+def _as_analysed(
+    raw: dict[str, Any],
+    pending: CanonicalCall,
+    siblings: list[CanonicalCall],
+    history: list[CanonicalCall],
+) -> dict[str, Any]:
+    """The request with each call that was over preparation's bounds carrying the arguments preparation analysed
+    (its head and tail), so the views send no more of a call than was read. The request itself when no call was."""
+    if not any(c.too_large for c in (pending, *siblings, *history)):
+        return raw
+    out = dict(raw)
+    pc = dict(raw["pending_call"])
+    if pending.too_large:
+        pc["arguments"] = pending.raw
+    batch = pc.get("batch")
+    if isinstance(batch, dict) and isinstance(batch.get("siblings"), list):
+        sibs = batch["siblings"]
+        if len(sibs) == len(siblings):
+            batch = dict(batch)
+            batch["siblings"] = [
+                {**s, "arguments": c.raw} if c.too_large else s
+                for s, c in zip(sibs, siblings, strict=True)
+            ]
+            pc["batch"] = batch
+    out["pending_call"] = pc
+    steps = raw.get("history")
+    if isinstance(steps, list) and len(steps) == len(history):
+        out["history"] = [
+            {**h, "arguments": c.raw} if c.too_large else h
+            for h, c in zip(steps, history, strict=True)
+        ]
+    return out
+
+
 def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     """Run the preparation stage. Raises `InvalidPlanIR` when the request cannot be scored."""
     planir = PlanIR.model_validate(raw)
@@ -1177,10 +1250,19 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     ]
     history = [canonical_history(platform, h) for h in planir.history]
     for call in (pending, *siblings, *history):
+        where = call.source if call.step is None else f"{call.source} step {call.step}"
         if call.dropped:
-            where = call.source if call.step is None else f"{call.source} step {call.step}"
             coverage.append(
                 CoverageNote("argument_dropped", f"{where} {call.tool}: {', '.join(call.dropped)}")
+            )
+        if call.too_large:
+            # Only the head and tail of the call were analysed. A history step was judged when it
+            # was the pending call, so only the calls of this request take the review floor.
+            coverage.append(
+                CoverageNote(
+                    "history_input_too_large" if call.source == "history" else INPUT_TOO_LARGE,
+                    f"{where} {call.tool}: {call.too_large}; analysed its head and tail",
+                )
             )
 
     # 4. trust
@@ -1257,6 +1339,17 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             resolved = [*resolved, *steps]
         except Exception as exc:  # noqa: BLE001
             coverage.append(CoverageNote("skill_steps_failed", f"{type(exc).__name__}: {exc}"))
+    # The commands built from this request's calls (read through the siblings' writes, or a saved
+    # skill's steps) are bounded like any call; one that was cut was not read in full either.
+    for call in resolved:
+        if call.too_large:
+            coverage.append(
+                CoverageNote(
+                    INPUT_TOO_LARGE,
+                    f"{call.source} {call.call_id or call.tool}: {call.too_large}; "
+                    "analysed its head and tail",
+                )
+            )
     words = owner_words(planir.request.text)
     # A fetch whose URL reproduces a local read sends that text whatever its method: the host it names
     # receives data. A failure here leaves the call a read rather than failing the scan.
@@ -1421,6 +1514,8 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     for exe_path, exe_display, required in _run_targets(pending, table, home):
         written = _find_executed(planir, history, copies, exe_path, home, ws)
         if written is not None:
+            # AIRA reads the file as the command of a call with the pending call's cwd: leave room for it.
+            written = _bounded_file(written, _WRAPPER_ROOM + len(str(pending.get("cwd") or "")))
             for f in extract_exec(
                 written.content, home=home, workspace_root=ws, cwd=pending.get("cwd")
             ):
@@ -1450,11 +1545,15 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if w is not None
         ]
         if parts:
-            written = WrittenFile(
-                path=parts[-1].path,
-                step=max(w.step for w in parts),
-                content="\n".join(w.content for w in parts),
-                truncated=any(w.truncated for w in parts),
+            written = _bounded_file(
+                WrittenFile(
+                    path=parts[-1].path,
+                    step=max(w.step for w in parts),
+                    content="\n".join(w.content for w in parts),
+                    truncated=any(w.truncated for w in parts),
+                    too_large=next((w.too_large for w in parts if w.too_large), None),
+                ),
+                _WRAPPER_ROOM + len(str(pending.get("cwd") or "")),
             )
             for w in parts:
                 table.add(
@@ -1503,6 +1602,19 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             )
 
     lineage = _lineage(planir, pending, writes, history, table, written, home, ws)
+    # A file the agent wrote over several steps and this call runs, sends or lists: only its head
+    # and tail were read when it was over the bounds.
+    seen_files: set[str] = set()
+    for w in (written, *lineage.sent, *lineage.listings):
+        if w is not None and w.too_large and w.path not in seen_files:
+            seen_files.add(w.path)
+            coverage.append(
+                CoverageNote(
+                    INPUT_TOO_LARGE,
+                    f"written file {display_path(w.path, home)} from step {w.step}: {w.too_large}; "
+                    "analysed its head and tail",
+                )
+            )
     _mark_packages_named_in_content(inputs, owner_config, table, planir.session.step)
 
     # 6. untrusted set
@@ -1585,7 +1697,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         and i.input.input_seq not in own_store_inputs
     }
     built = views.build_views(
-        raw,
+        _as_analysed(raw, pending, siblings, history),
         exposure_input_seqs=untrusted_seqs,
         call_budget_tokens=options.call_budget_tokens,
         selfedit_budget_tokens=options.selfedit_budget_tokens,

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote
 
+from .bounds import bound_arguments, bound_tool_name
 from .models import HistoryStep, PendingCall, Provider, Sibling, ToolKind
 
 # Alias tables: canonical key → raw keys tried in order. Shared across platforms; the platform hook
@@ -112,6 +113,9 @@ class CanonicalCall:
     analysis_text: str = ""
     #: Raw keys whose value was not kept because it was not the type the canonical key needs.
     dropped: list[str] = field(default_factory=list)
+    #: What was over preparation's bounds (`bounds.bound_arguments`) when the arguments were cut to
+    #: them; `raw`, `args` and the texts then hold the cut arguments. None when nothing was cut.
+    too_large: str | None = None
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.args.get(key, default)
@@ -330,6 +334,67 @@ def canonical_arguments(
     return args
 
 
+_EDIT_KEYS = (
+    "edits",
+    "old_string",
+    "old_str",
+    "oldText",
+    "old",
+    "new_string",
+    "new_str",
+    "newText",
+    "new",
+    "input",
+    "operations",
+)
+
+
+def _own_keys(tool_kind: ToolKind) -> frozenset[str]:
+    """The raw keys of what the call itself is for `tool_kind` (its command, cwd, path, URL, content):
+    kept before anything else when its arguments are cut to preparation's bounds. A kind with no aliases
+    of its own takes the generic URL, path and content keys."""
+    aliases = _ALIASES.get(tool_kind)
+    if aliases:
+        return frozenset(k for keys in aliases.values() for k in keys)
+    return frozenset((*_GENERIC_URL_KEYS, *_GENERIC_PATH_KEYS, *_GENERIC_CONTENT_KEYS))
+
+
+def _taken_keys(tool_kind: ToolKind, raw: dict[str, Any]) -> frozenset[str]:
+    """The raw key canonicalisation takes for each of `tool_kind`'s own keys: the first alias present."""
+    aliases = _ALIASES.get(tool_kind)
+    groups = (
+        list(aliases.values())
+        if aliases
+        else [_GENERIC_URL_KEYS, _GENERIC_PATH_KEYS, _GENERIC_CONTENT_KEYS]
+    )
+    taken: set[str] = set()
+    for keys in groups:
+        first = next((k for k in keys if raw.get(k) not in (None, "")), None)
+        if first is not None:
+            taken.add(first)
+    return frozenset(taken)
+
+
+def _read_keys(tool_kind: ToolKind) -> frozenset[str]:
+    """The raw keys canonicalisation reads for `tool_kind`: what the call is (its command, path, URL,
+    content, recipients, packages), kept first when its arguments are cut to preparation's bounds."""
+    keys = {k for aliases in _ALIASES.get(tool_kind, {}).values() for k in aliases}
+    for group in (
+        ("action",),
+        _RECIPIENT_KEYS,
+        _CC_KEYS,
+        _BCC_KEYS,
+        _ATTACHMENT_KEYS,
+        _GENERIC_URL_KEYS,
+        _GENERIC_PATH_KEYS,
+        _GENERIC_CONTENT_KEYS,
+        _GENERIC_PACKAGE_KEYS,
+        _EDIT_KEYS,
+    ):
+        keys.update(group)
+    return frozenset(keys)
+
+
 def canonicalise(
     platform: str,
     *,
@@ -341,6 +406,16 @@ def canonicalise(
     call_id: str | None = None,
     step: int | None = None,
 ) -> CanonicalCall:
+    arguments, too_large = bound_arguments(
+        arguments,
+        tool_kind,
+        _own_keys(tool_kind),
+        _read_keys(tool_kind),
+        _taken_keys(tool_kind, arguments),
+    )
+    tool, long_name = bound_tool_name(tool)
+    if long_name:
+        too_large = f"{too_large}, {long_name}" if too_large else long_name
     text = joined_text(arguments)
     dropped: list[str] = []
     args = canonical_arguments(platform, tool, tool_kind, arguments, dropped)
@@ -356,6 +431,7 @@ def canonicalise(
         text=text,
         analysis_text=decode_url_queries(text),
         dropped=dropped,
+        too_large=too_large,
     )
 
 

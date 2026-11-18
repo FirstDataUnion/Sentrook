@@ -1324,17 +1324,23 @@ def detect_selfmod(a: CallAnalysis, ctx: Context) -> list[Finding]:
 # =========================================================================== C4*
 
 
+#: The longest file name a filesystem takes (bytes on most; characters are never more).
+_MAX_NAME = 255
+
+
 def _guardrail_path_reason(value: str, head: str | None, ctx: Context) -> str | None:
     lists = ctx.lists
     base = os.path.basename(value.rstrip("/"))
+    # A name longer than any filesystem takes is no log file (and the log patterns are not read over it).
+    log_name = len(base) <= _MAX_NAME
     for seg in lists.strings("guardrail", "state_dir_segments"):
         if re.search(r"(?:\A|/)" + re.escape(seg) + r"(?:/|\Z)", value, re.IGNORECASE):
-            if _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
+            if log_name and _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
                 return "guardrail.log_tamper"
             return "guardrail.state_dir_write"
     for name in lists.strings("guardrail", "legacy_basenames"):
         if re.search(basename_pattern(name), value, re.IGNORECASE):
-            if _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
+            if log_name and _match_any(lists.patterns("guardrail", "log_basename_patterns"), base):
                 return "guardrail.log_tamper"
             return "guardrail.state_dir_write"
     if _match_any(lists.patterns("guardrail", "host_guardrail_path_patterns"), value):
@@ -2167,7 +2173,11 @@ _BATCH_ITEM = re.compile(
 # The two branches never match the same character (a backslash only starts an escape), so the
 # loop cannot backtrack exponentially on a long run of escapes.
 _SED_SUBST = re.compile(r"""(?<![\w])s([/|#,:@])((?:\\.|(?!\1)[^\\])*)\1""")
-_ASSIGNMENT = re.compile(r"""(?:\A|[;&|\n(]\s*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2""")
+#: After a separator, whitespace other than a newline (a newline is a separator of its own), so a
+#: long run of newlines is read once.
+_ASSIGNMENT = re.compile(
+    r"""(?:\A|[;&|\n(][^\S\n]*|\bexport\s+)([A-Za-z_]\w*)=(["']?)([^\s;&|'"]+)\2"""
+)
 _VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
 _TILDE_USER = re.compile(r"\A~([A-Za-z_][\w.-]*)(?=/|\Z)")
 # Inline code: the home directory however it is spelled, variables, and string literals
@@ -2176,7 +2186,7 @@ _CODE_HOME = re.compile(
     r"""Path\.home\(\)|os\.path\.expanduser\(\s*["']~["']\s*\)|"""
     r"""os\.environ\s*\[\s*["']HOME["']\s*\]|os\.environ\.get\(\s*["']HOME["'][^)]*\)|"""
     r"""os\.getenv\(\s*["']HOME["'][^)]*\)|process\.env\.HOME|process\.env\[\s*["']HOME["']\s*\]|"""
-    r"""(?:\w+|require\(\s*["']os["']\s*\))\.homedir\(\)"""
+    r"""(?:(?<!\w)\w+|require\(\s*["']os["']\s*\))\.homedir\(\)"""
 )
 _CODE_TOKEN = re.compile(
     r"""(?P<lit>[fFrRbB]{0,2}(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|`[^`]*`)|(?P<name>[A-Za-z_$][\w$]*)"""

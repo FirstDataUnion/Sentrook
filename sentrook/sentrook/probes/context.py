@@ -284,12 +284,14 @@ def _request_names_role(words: str, role: str) -> bool:
 #: `create mode 100644 path`, `rewrite path (92%)`, `rename old => new (100%)` (group 1 is the
 #: whole rename expression) and a stat line `path | 4 ++--`.
 _COMMIT_PATH_RES = (
-    re.compile(r"^\s*create mode \d{6} (.+?)\s*$", re.MULTILINE),
-    re.compile(r"^\s*rewrite (.+?) \(\d+%\)\s*$", re.MULTILINE),
-    re.compile(r"^\s*rename (.+? => .+?) \(\d+%\)\s*$", re.MULTILINE),
+    re.compile(r"^[^\S\n]*create mode \d{6} (.+?)\s*$", re.MULTILINE),
+    re.compile(r"^[^\S\n]*rewrite (.+?) \(\d+%\)\s*$", re.MULTILINE),
+    re.compile(r"^[^\S\n]*rename (.+? => .+?) \(\d+%\)\s*$", re.MULTILINE),
     re.compile(r"^ (\S.*?)\s+\|\s+(?:\d+ [+-]+|Bin\b)", re.MULTILINE),
 )
-_RENAME_BRACES_RE = re.compile(r"\{(.*?) => (.*?)\}")
+#: `{old => new}` with no brace inside; the lookahead finds the closing brace first, so a long run
+#: of `{` is read once.
+_RENAME_BRACES_RE = re.compile(r"\{(?=[^{}]*\})([^{}]*?) => ([^{}]*)\}")
 #: Names of files that stand in for a credential file without holding one.
 _TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist", ".tmpl")
 _GIT_VALUE_FLAGS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})

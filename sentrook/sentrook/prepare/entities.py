@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import lru_cache
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
@@ -246,7 +247,7 @@ class EntityTable:
 # --------------------------------------------------------------------------- normalisation
 
 _URL_RE = re.compile(r"https?://[^\s\"'<>`|;)\]}]+", re.IGNORECASE)
-_EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
+_EMAIL_RE = re.compile(r"(?<![\w.%+-])([A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
 # A bare hostname: two or more labels, alphabetic TLD. Lookbehind excludes path components, emails and
 # scheme-prefixed forms (those are caught by _URL_RE / _EMAIL_RE); the extension list excludes files.
 # The lookahead also refuses a stop before `.label`, so `a.b.net/x` is not read as `a.b`.
@@ -464,6 +465,9 @@ _EXECUTABLE_HEADS = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_EXEC_RE = re.compile(r"(?:^|[\s;&|(])((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)(?=\s|$|[;&|)])")
+#: Every separator occurrence, overlapping ones included (zero-width, so `&&&` yields two `&&`);
+#: their ends never decrease, so one forward pass finds the last one before a position.
+_DIRECT_EXEC_SEP_RE = re.compile(r"(?=(;|&&|\|))")
 _WRITE_TARGET_RE = re.compile(
     r"(?:>>?|\btee\s+(?:-a\s+)?|-o\s+|--output\s+|\bmv\s+\S+\s+|\bcp\s+\S+\s+)\s*((?:~|\$HOME|\.{1,2})?/[\w./@%+~-]+)"
 )
@@ -893,8 +897,13 @@ def _install_operands(text: str, start: int, spans: list[tuple[int, int]]) -> st
     return "".join(out)
 
 
-#: Package extras after a local operand (`.[dev]`, `./pkg[test,docs]`).
-_EXTRAS_RE = re.compile(r"\[[^\]]*\]\Z")
+def _strip_extras(tok: str) -> str:
+    """`tok` without package extras after a local operand (`.[dev]`, `./pkg[test,docs]`): from the first
+    `[` after the last `]` before the closing one. One pass, however many brackets the token holds."""
+    if not tok.endswith("]"):
+        return tok
+    start = tok.find("[", tok.rfind("]", 0, len(tok) - 1) + 1, len(tok) - 1)
+    return tok[:start] if start >= 0 else tok
 
 
 #: Installer options whose value is a package index or registry, by installer: where the packages come
@@ -916,7 +925,7 @@ def _local_install_operand(token: str, eco: str = "") -> str | None:
     path starting `./`, `../`, `/`, `~/` or `$HOME/`, without quotes, package extras (`.[dev]`) or, for
     Go, its `/...` package pattern. None for any other operand (a name, a version spec, a URL)."""
     tok = token.strip().strip("'\"")
-    tok = _EXTRAS_RE.sub("", tok)
+    tok = _strip_extras(tok)
     if eco == "go" and tok.endswith("/..."):
         tok = tok[:-4] or "."
     if tok in (".", "..", "~", "$HOME") or tok.startswith(("./", "../", "/", "~/", "$HOME/")):
@@ -1197,9 +1206,16 @@ def shell_segments(command: str) -> list[list[str]]:
 def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
     """`shell_segments`, each with the separator before it (`|`, `&&`, `||`, `;`, a newline, or `""`
     for the first)."""
+    return [(sep, list(tokens)) for sep, tokens in _segments_of(command or "")]
+
+
+@lru_cache(maxsize=64)
+def _segments_of(command: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """`shell_segments_sep` for one command, parsed once: preparation and every probe split the same
+    commands many times over."""
     import shlex
 
-    out: list[tuple[str, list[str]]] = []
+    out: list[tuple[str, tuple[str, ...]]] = []
     parts = re.split("(" + _SEGMENT_SPLIT_RE.pattern + ")", command or "")
     sep = ""
     for i, seg in enumerate(parts):
@@ -1216,8 +1232,8 @@ def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
         while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
             tokens = tokens[1:]
         if tokens:
-            out.append((sep, tokens))
-    return out
+            out.append((sep, tuple(tokens)))
+    return tuple(out)
 
 
 def resolve_token(
@@ -1848,12 +1864,15 @@ def extract_exec(
                 sources.add(tok.strip("'\""))
     for m in _EXECUTABLE_HEADS.finditer(command):
         executables.add(m.group(1))
+    # A path that starts its simple command runs: the text between the last `;`, `&&`, `||` or `|`
+    # before it and the path is blank. One forward pass keeps the last separator end in hand.
+    seps = _DIRECT_EXEC_SEP_RE.finditer(command)
+    sep_end, nxt = 0, next(seps, None)
     for m in _DIRECT_EXEC_RE.finditer(command):
-        seg_start = command.rfind(";", 0, m.start()) + 1
-        for sep in ("&&", "||", "|"):
-            k = command.rfind(sep, 0, m.start())
-            seg_start = max(seg_start, k + len(sep) if k >= 0 else 0)
-        if command[seg_start : m.start(1)].strip() == "":
+        while nxt is not None and nxt.end(1) <= m.start():
+            sep_end = nxt.end(1)
+            nxt = next(seps, None)
+        if command[sep_end : m.start(1)].strip() == "":
             executables.add(m.group(1))
     for m in _WRITE_TARGET_RE.finditer(command):
         destinations.add(m.group(1))
@@ -1873,23 +1892,25 @@ def extract_exec(
         normalise_path(raw, home=home, workspace_root=workspace_root, cwd=cwd) for raw, _ in local
     }
 
+    def normalised(raws: set[str]) -> set[str]:
+        return {normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) for r in raws}
+
+    # Each raw spelling is normalised once, so a call with many paths stays linear.
+    executable_paths = normalised(executables)
+    destination_paths = normalised(destinations)
+    matched_paths = normalised(sources) | destination_paths | executable_paths
+    installed_set = set(installed)
     for norm, disp in paths_in(command, home, workspace_root, cwd):
-        raw_matches = [
-            r
-            for r in sources | destinations | executables
-            if normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
-        ]
-        if (norm in installed or norm in unresolved) and not raw_matches and norm not in run_files:
+        raw_matches = norm in matched_paths
+        if (
+            (norm in installed_set or norm in unresolved)
+            and not raw_matches
+            and norm not in run_files
+        ):
             continue  # only installed: added below as a code source
-        if norm in run_files or any(
-            normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
-            for r in executables
-        ):
+        if norm in run_files or norm in executable_paths:
             role = Role.EXECUTABLE
-        elif any(
-            normalise_path(r, home=home, workspace_root=workspace_root, cwd=cwd) == norm
-            for r in destinations
-        ):
+        elif norm in destination_paths:
             role = Role.DATA_DESTINATION
         elif raw_matches or not egress:
             role = Role.DATA_SOURCE
