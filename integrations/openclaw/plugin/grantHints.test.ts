@@ -247,6 +247,18 @@ test("the review card names the grant, offers allow always, and allow always set
   assert.ok(scans.at(-1).grants.some((x: any) => x.pattern === HOST));
 });
 
+test("allow always only for the owner's message in a chat the plugin could tell apart", () => {
+  const planir = (basis: string[], kind = "message", relation = "owner") => ({
+    trigger: { kind, channel: null, sender: { relation, basis } },
+    session: { agent_role: "main" },
+  });
+  assert.equal(grants.mayRemember(planir(["host_owner_flag"])), true);
+  for (const basis of [["group_chat"], ["host_open_access"], ["none"], ["unknown"], []]) {
+    assert.equal(grants.mayRemember(planir(basis)), false, basis.join("+"));
+  }
+  assert.equal(grants.mayRemember(planir(["none"], "system", "unknown")), false);
+});
+
 for (const decision of ["allow-once", "deny", "timeout", "cancelled"]) {
   test(`answering ${decision} sets nothing`, async () => {
     const r = registered();
