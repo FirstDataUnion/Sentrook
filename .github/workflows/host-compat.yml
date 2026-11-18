@@ -11,7 +11,7 @@
 #   candidate, an OpenClaw beta) when it is newer than the latest stable (report-only). Pushes to main
 #   run every host.
 # - The release workflows call it with mode `release` and their host: the pinned versions only, blocking,
-#   on the tree they are about to publish when they pass it as `plugin-artifact`.
+#   on the tree or package they are about to publish when they pass it as `plugin-artifact`.
 # - The nightly canary against the host's main build, and the bump to each new stable release, are in
 #   host-compat-nightly.yml.
 #
@@ -59,8 +59,9 @@ on:
         default: ""
       plugin-artifact:
         description: >-
-          an artifact of the calling run holding the plugin tree to check instead of the checkout's (the
-          release workflow's assembled mirror tree); give one host in `hosts`
+          an artifact of the calling run holding the plugin to check instead of the checkout's (Hermes: the
+          release workflow's assembled mirror tree; OpenClaw: a directory with the packed .tgz); give one host
+          in `hosts`
         type: string
         default: ""
 

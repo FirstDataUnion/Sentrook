@@ -31,6 +31,10 @@ test("one version: package.json and the version the plugin reports", () => {
   assert.equal(PLUGIN_VERSION, pkg.version);
 });
 
+test("the CHANGELOG is shipped in the package", () => {
+  assert.ok((pkg.files as string[]).includes("CHANGELOG.md"), "files ships CHANGELOG.md");
+});
+
 test("every declared entry is shipped by the files allowlist", () => {
   const entries: string[] = [...(pkg.openclaw?.extensions ?? []), ...(pkg.openclaw?.runtimeExtensions ?? [])];
   assert.ok(entries.length >= 2, "both a source and a runtime entry are declared");
