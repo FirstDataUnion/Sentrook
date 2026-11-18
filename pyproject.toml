@@ -28,7 +28,7 @@ Issues = "https://github.com/FirstDataUnion/Sentrook/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0",
-    "ruff==0.16.4",
+    "ruff==0.17.5",
     "jsonschema>=4.23.0",
 ]
 
