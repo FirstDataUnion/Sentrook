@@ -957,6 +957,12 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 steered = _steered_source(source, ctx)
                 if steered is not None:
                     out.append(steered)
+        # A repository on a multi-tenant host is the code source there (the host is only read from): one named in
+        # steering content takes the floor as a steered host does. A repository mimics no installer host.
+        for source in (r for r in a.repos if Role.CODE_SOURCE in r.roles):
+            steered = _steered_source(source, ctx)
+            if steered is not None:
+                out.append(steered)
 
     if decode_mech:
         f = Finding(

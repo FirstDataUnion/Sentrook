@@ -2043,6 +2043,19 @@ def repo_of_url(url: str) -> str | None:
     return split[1] if split else None
 
 
+def repos_named_in(text: str) -> set[str]:
+    """The repositories (`repo_of_url`) that URLs, schemeless URLs and scp-style git remotes in `text` name."""
+    out: set[str] = set()
+    for m in _URL_TOKEN_RE.finditer(text):
+        tok = m.group(0).rstrip(".,:;!?")
+        if "." not in tok:
+            continue
+        split = _tenant_split(tok)
+        if split is not None:
+            out.add(split[1])
+    return out
+
+
 def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
     """A multi-tenant host the command takes code from supplies anyone's files: the code source is the
     repository each of its URLs in the command names, and the host is only read from. A fetch run by
