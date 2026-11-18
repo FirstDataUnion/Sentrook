@@ -217,6 +217,16 @@ def test_the_release_notes_are_the_changelog_entry(tmp_path):
     assert f"openclaw plugins install npm:{release.PACKAGE_NAME}@next" in notes
 
 
+def test_a_security_fix_is_flagged():
+    wf = workflow()
+    assert "security_fix" in wf[True]["workflow_dispatch"]["inputs"]  # `on:` parses as True
+    release_step = next(
+        s for s in wf["jobs"]["publish"]["steps"] if s.get("name") == "GitHub Release"
+    )
+    assert release_step["env"]["SECURITY_FIX"] == "${{ inputs.security_fix }}"
+    assert 'title="Security fix: ${title}"' in release_step["run"]
+
+
 def test_the_current_tree_is_releasable():
     """package.json, PLUGIN_VERSION and CHANGELOG.md agree today, on the channel the version implies."""
     version = release.package(release.PLUGIN_DIR)["version"]

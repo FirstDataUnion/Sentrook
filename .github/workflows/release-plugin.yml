@@ -21,7 +21,8 @@
 # (`openclaw plugins install <name>@beta`). A stable version goes only to latest on both.
 #
 # Batching: ClawHub reviews automatically, so there is no fixed cadence; release when a change is ready. A security
-# fix is released on its own (no other changes in the version) and says so at the top of its CHANGELOG entry.
+# fix is released on its own (no other changes in the version), says so at the top of its CHANGELOG entry, and is
+# dispatched with security_fix, which flags the GitHub Release title and the job summary.
 #
 # Auth: npm Trusted Publishing (OIDC), no NPM_TOKEN. Trusted Publisher on npmjs: org FirstDataUnion, repo
 # Sentrook, workflow release-plugin.yml, environment release-npm.
@@ -46,6 +47,11 @@ on:
           - latest
       dry_run:
         description: Check, pack, validate and run the compatibility check; publish nothing
+        required: false
+        type: boolean
+        default: false
+      security_fix:
+        description: A security fix, released on its own; flagged in the GitHub Release title and the summary
         required: false
         type: boolean
         default: false
@@ -292,12 +298,15 @@ jobs:
           NAME: ${{ needs.build.outputs.name }}
           VERSION: ${{ needs.build.outputs.version }}
           SHA: ${{ github.sha }}
+          SECURITY_FIX: ${{ inputs.security_fix }}
         run: |
           set -euo pipefail
+          title="${NAME}@${VERSION}"
+          [ "$SECURITY_FIX" != true ] || title="Security fix: ${title}"
           notes_file="$(mktemp)"
           python3 "$RELEASE_PY" notes --release "$RUNNER_TEMP/record/release.json" > "${notes_file}"
           gh release create "plugin-v${VERSION}" \
-            --title "${NAME}@${VERSION}" \
+            --title "${title}" \
             --notes-file "${notes_file}" \
             --target "${SHA}"
 
@@ -316,11 +325,16 @@ jobs:
           CLAWHUB_SCAN: ${{ steps.clawhub.outputs.scan }}
           CLAWHUB_STOPPED: ${{ steps.clawhub.outputs.stopped }}
           JOB_STATUS: ${{ job.status }}
+          SECURITY_FIX: ${{ inputs.security_fix }}
         run: |
           set -euo pipefail
           {
             echo "## Plugin release"
             echo ""
+            if [[ "${SECURITY_FIX}" == "true" ]]; then
+              echo "**Security fix.**"
+              echo ""
+            fi
             echo "- Package: \`${NAME}@${VERSION}\`"
             echo "- Dist-tag: \`${TAG}\`"
             echo "- SHA: \`${SHA}\`"
