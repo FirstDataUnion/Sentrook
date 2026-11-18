@@ -1,4 +1,7 @@
-# Phase 2 — secrets, SCA, SAST. Fail closed on HIGH/CRITICAL (or Semgrep ERROR+).
+# Secrets, SCA, SAST. Fail closed on HIGH/CRITICAL (or Semgrep ERROR+).
+# Every job is a required check on pull requests, so none is path-filtered. On a push to main only gitleaks
+# (history) and CodeQL (code-scanning alerts track the default branch) run again: actionlint, Trivy and
+# Semgrep already ran on the pull request's tree. The weekly schedule runs everything.
 name: security
 
 on:
@@ -40,6 +43,7 @@ jobs:
             --verbose --redact --exit-code=1
 
   actionlint:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -53,6 +57,7 @@ jobs:
             -color
 
   trivy-fs:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -78,6 +83,7 @@ jobs:
           # failure — see that file.
 
   semgrep:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
