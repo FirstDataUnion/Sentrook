@@ -732,8 +732,13 @@ def _argv_pipeline(command: str) -> list[tuple[str, list[str]]]:
         out.append((sep, cur))
     cleaned: list[tuple[str, list[str]]] = []
     for sep, argv in out:
+        # a subshell's parentheses, not a quoted argument's own (`python3 -c "f(x)"`)
         argv = [
-            t.lstrip("(") if i == 0 else t.rstrip(")") if i == len(argv) - 1 else t
+            t.lstrip("(") if i == 0 and t.count("(") > t.count(")") else t
+            for i, t in enumerate(argv)
+        ]
+        argv = [
+            t.rstrip(")") if i == len(argv) - 1 and t.count(")") > t.count("(") else t
             for i, t in enumerate(argv)
         ]
         argv = [t for t in argv if t]
@@ -886,7 +891,7 @@ def _python_texts(
             if not _selfmod_file(norm, path, lists):
                 continue
             for value in _py_literals(prog):
-                if value != path and not value.startswith(("/", "~/")):
+                if value not in targets:
                     out.extend(
                         _path_texts(
                             norm,
@@ -1075,7 +1080,7 @@ def _planted_copies(
             continue
         if head in _COPY_HEADS:
             target: str | None = None
-            if "-t" in argv or "--target-directory" in argv:
+            if head != "rsync" and ("-t" in argv or "--target-directory" in argv):
                 k = argv.index("-t") if "-t" in argv else argv.index("--target-directory")
                 target = argv[k + 1] + "/" if k + 1 < len(argv) else None
                 argv = argv[:k] + argv[k + 2 :]
@@ -1198,7 +1203,7 @@ def _exec_written(
     # (`sh /tmp/x.sh`) names none (`_planted_runs`).
     for m in _QUOTED.finditer(rest):
         body = m.group(1) if m.group(1) is not None else m.group(2)
-        if body:
+        if body and (_hosts_in(body) or _ECHOED.search(rest, 0, m.start())):
             bodies.append(_SED_APPEND.sub("", body.replace('\\"', '"'), count=1))
     for m in _UNQUOTED_ECHO.finditer(rest):
         bodies.append(m.group(1))
@@ -1208,6 +1213,9 @@ def _exec_written(
 
 #: A sed script that appends or inserts a line (`$a text`, `1i\ text`): the line is the text.
 _SED_APPEND = re.compile(r"^\s*(?:(?:\$|\d+|/[^/]*/)\s*[aic]\\?\s*|[aic]\\\s*)")
+#: Text right after an `echo` or `printf` in the same command: what it prints (a quoted pattern given to `grep` is
+#: not written anywhere).
+_ECHOED = re.compile(r"(?:^|[;&|(\n])\s*(?:sudo\s+)?(?:echo|printf)\b[^;&|\n]*$")
 #: An unquoted `echo` or `printf` redirected into a file: what it writes.
 _UNQUOTED_ECHO = re.compile(r"\b(?:echo|printf)\s+(?:-[neE]+\s+)?([^'\"<>|;&\n]+?)\s*>>?\s*\S+")
 
@@ -1265,7 +1273,7 @@ def future_entities(
                 runs = {
                     h
                     for line in code.splitlines()
-                    if _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line)
+                    if _PROGRAM_FETCH.search(line) and _PROGRAM_EVAL.search(line)
                     for h in _hosts_in(line, inline_program=True, emails=False)
                 }
                 program_lines = [code]
@@ -1377,6 +1385,8 @@ _PROGRAM_FETCH = re.compile(
     r"|httpx\.get)",
     re.I,
 )
+#: Code a program evaluates (stricter than `_PROGRAM_RUN`: the `function` keyword or `execute` are not it).
+_PROGRAM_EVAL = re.compile(r"\b(?:exec|eval)\s*\(|\bnew\s+Function\s*\(|\bimport\s*\(")
 _PROGRAM_RUN = re.compile(r"\b(?:exec|eval|Function|system|spawn|execSync|import\()", re.I)
 #: PowerShell's download-and-run: `iwr URL | iex`, `IEX (New-Object Net.WebClient).DownloadString(URL)`.
 _PWSH_FETCH = re.compile(
