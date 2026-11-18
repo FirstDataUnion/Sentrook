@@ -145,7 +145,7 @@ const plugin = {
       api.registerCli(
         async ({ program }) => {
           const { registerSentrookCli } = await import("./cli.ts");
-          registerSentrookCli(program, () => api.pluginConfig ?? {}, runtimeVersion, hostConfig);
+          registerSentrookCli(program, () => api.pluginConfig ?? {}, hostConfig);
         },
         { descriptors: [{ name: "sentrook", description: "Sentrook plugin helpers (verify, status)", hasSubcommands: true }] },
       );
@@ -159,11 +159,7 @@ const plugin = {
         description: "Sentrook plugin status and help",
         acceptsArgs: true,
         handler: async (ctx) => ({
-          text: await runSentrookCommand(ctx?.args, {
-            pluginConfig: api.pluginConfig ?? {},
-            env: process.env,
-            hostVersion: runtimeVersion(),
-          }),
+          text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
         }),
       });
     } catch (err) {
@@ -568,8 +564,8 @@ const plugin = {
               ...copy,
               severity: severity(resp, cfg, relaxed),
               timeoutMs: timing.timeoutMs,
-              // Sent for a host that reads it; releases up to TIMEOUT_BEHAVIOR_IGNORED_THROUGH ignore it and deny.
-              timeoutBehavior: timing.timeoutBehavior,
+              // An unanswered card never runs the call, on a host that reads this or not.
+              timeoutBehavior: "deny",
               allowedDecisions: remember ? ["allow-once", "allow-always", "deny"] : ["allow-once", "deny"],
             },
           };
