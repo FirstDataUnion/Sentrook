@@ -36,7 +36,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-
 #: The request a call on an event-notice turn carries when no earlier request may be carried.
 REQUEST_TEXT = (
     "No owner request: Hermes delivered a background task's result or event, "

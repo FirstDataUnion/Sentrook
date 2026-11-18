@@ -890,7 +890,10 @@ def test_an_owner_message_behind_the_resume_note_is_their_request(h):
     turn(h, "t2", RESUME + "\n\nactually, stop and list my notes")
     sent = call(h, "t2", "c1")
     assert sent["trigger"] == OWNER_DM
-    assert sent["request"] == {"text": "actually, stop and list my notes", "carried_from_turn": None}
+    assert sent["request"] == {
+        "text": "actually, stop and list my notes",
+        "carried_from_turn": None,
+    }
     assert host_inputs(sent) == []
 
 
