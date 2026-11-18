@@ -11,6 +11,7 @@
     "index.ts",
     "approvalPolicy.ts",
     "auth.ts",
+    "card.ts",
     "cli.ts",
     "commands.ts",
     "config.ts",

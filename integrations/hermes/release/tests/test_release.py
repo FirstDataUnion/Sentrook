@@ -299,18 +299,20 @@ def test_a_first_submission_reads_as_one(tmp_path):
 
 
 def test_a_bump_lists_the_changes_since_the_pinned_version_and_the_commit_range(tmp_path):
+    # The release is always plugin.yaml's version, so the newest entry follows it.
+    current = release.manifest()["version"]
     changelog = (
-        "# sentrook\n\n## 2.0.0-beta.13\n\n- Thirteen.\n\n## 2.0.0-beta.12\n\n- Twelve.\n\n"
+        f"# sentrook\n\n## {current}\n\n- Newest.\n\n## 2.0.0-beta.12\n\n- Twelve.\n\n"
         "## 2.0.0-beta.9\n\n- Nine.\n"
     )
     title, body = release.catalog_pr(
-        info_for("2.0.0-beta.13"),
+        info_for(),
         previous=yaml.safe_load(previous_entry(tmp_path).read_text()),
         previous_readme=release.README.read_text(),
         changelog=changelog,
     )
-    assert title == "sentrook: 2.0.0-beta.9 → 2.0.0-beta.13"
-    assert "Thirteen" in body and "Twelve" in body and "Nine" not in body
+    assert title == f"sentrook: 2.0.0-beta.9 → {current}"
+    assert "Newest" in body and "Twelve" in body and "Nine" not in body
     assert f"compare/{'c' * 40}...{'d' * 40}" in body
     assert "Disclosures: unchanged" in body
 

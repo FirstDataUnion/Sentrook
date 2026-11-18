@@ -212,6 +212,17 @@ export function runPackCheck(): void {
   const distEntry = (listing.files ?? []).find((f) => f.path === "dist/index.js");
   assert.ok(distEntry && (distEntry.size ?? 0) > 1024, "packed dist/index.js is missing or empty");
 
+  // OpenClaw's validator loads the packed TypeScript sources too: each one's local imports must be packed.
+  const unpackedImports = [...packedPaths]
+    .filter((p) => p.endsWith(".ts") && !p.includes("/"))
+    .flatMap((p) =>
+      [...readFileSync(join(root, p), "utf8").matchAll(/from\s+["']\.\/([^"']+\.ts)["']/g)]
+        .map((m) => m[1])
+        .filter((dep) => !packedPaths.has(dep))
+        .map((dep) => `${p} imports ./${dep}`),
+    );
+  assert.deepEqual(unpackedImports, [], `npm pack is missing local imports: ${unpackedImports.join(", ")}`);
+
   const mustNotPack = [...packedPaths].filter(
     (p) => p.endsWith(".test.ts") || p === "packCheck.ts" || p.startsWith("fixtures/"),
   );
