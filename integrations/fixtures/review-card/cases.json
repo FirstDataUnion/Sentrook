@@ -1,0 +1,1203 @@
+{
+  "_comment": "The review card both plugins show when Sentrook asks before a tool call. Hermes shows one text (`hermes`); OpenClaw a title and a description (`openclaw`). For each case both plugins must produce exactly this from `response`, `tool`, `relaxed` (a block a snooze turned into a review), `hint` (the suggested grant as the grant command would accept it), `remember` (approving always sets it) and `why_id` (the scan's request id; null when the traffic log is off). Budgets: Hermes 300, counted as UTF-16 units after HTML escaping (its Discord card cuts the text at 300, Telegram's at 500 escaped); OpenClaw 80 for the title and 500 code points for the description (it refuses an approval over 80 or 512, and refusing blocks the call). When a card does not fit, what the call does gives way first, then the second reason, then the grant command (pointing to `why`). `errors` are the cards for a call that could not be scanned, by cause.",
+  "budgets": {
+    "hermes": 300,
+    "openclaw_title": 80,
+    "openclaw_description": 500
+  },
+  "cases": [
+    {
+      "name": "review",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "review, approving always sets the suggested grant",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "destination",
+        "pattern": "paste.example.net"
+      },
+      "remember": true,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\n\"Always\" also trusts paste.example.net for 30 days.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\n\"Always allow\" also trusts paste.example.net for 30 days.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "review, the grant command shown only",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "destination",
+        "pattern": "paste.example.net"
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\nTo allow this for 30 days: /sentrook grant destination paste.example.net --persistent --expires 30d\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo allow this for 30 days: /sentrook-grant destination paste.example.net --persistent --expires 30d\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "review, a file grant for two verbs",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 55,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Reads {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "~/.ssh/id_ed25519"
+          }
+        },
+        "reasons": [
+          {
+            "code": "path.credential_store",
+            "subject": "E1",
+            "text": "{E1} holds passwords or keys"
+          }
+        ]
+      },
+      "tool": "read_file",
+      "relaxed": false,
+      "hint": {
+        "kind": "file",
+        "pattern": "~/.ssh/id_ed25519",
+        "allows": [
+          "read",
+          "write"
+        ]
+      },
+      "remember": true,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 55/100\nReads ~/.ssh/id_ed25519.\nBecause ~/.ssh/id_ed25519 holds passwords or keys.\n\"Always\" also lets the agent read and write ~/.ssh/id_ed25519 for 30 days.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 55/100",
+        "description": "Reads ~/.ssh/id_ed25519.\nBecause ~/.ssh/id_ed25519 holds passwords or keys.\n\"Always allow\" also lets the agent read and write ~/.ssh/id_ed25519 for 30 days.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a block a snooze turned into a review",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 88,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": true,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 88/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\nWould be blocked, but a snooze is on. Session and Always cover this action until it ends.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 88/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nWould be blocked, but a snooze is on.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a review the scanner enforces",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 24,
+        "enforced": "review",
+        "tool_description": {
+          "category": "x",
+          "template": "Runs code from {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "https://get.example.dev/install.sh"
+          }
+        },
+        "reasons": [
+          {
+            "code": "floor.untrusted_code_execution",
+            "text": "it runs code from an untrusted source"
+          },
+          {
+            "code": "code.fetch_to_shell",
+            "subject": "E1",
+            "text": "it downloads code from {E1} and runs it straight away"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook safety rule · risk 24/100\nRuns code from https://get.example.dev/install.sh.\nBecause it runs code from an untrusted source, and it downloads code from https://get.example.dev/install.sh and runs it straight away.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook safety rule · risk 24/100",
+        "description": "Runs code from https://get.example.dev/install.sh.\nBecause it runs code from an untrusted source, and it downloads code from https://get.example.dev/install.sh and runs it straight away.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "long file and address: shortened in the middle",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 57,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "https://hooks.example-collector.net/api/v2/ingest/7f3e9c1b2a4d4e8f9a0b1c2d3e4f5a6b?source=agent&mode=batch"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/work/clients/acme-industries/2026/contracts/master-services-agreement-final-v7-signed.pdf"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          }
+        ]
+      },
+      "tool": "send_message",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 57/100\nSends ~/work/clien…-signed.pdf to https://hook…&mode=batch.\nBecause https://hook…&mode=batch is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 57/100",
+        "description": "Sends ~/work/clients/acme-industries…agreement-final-v7-signed.pdf to https://hooks.example-collecto…f5a6b?source=agent&mode=batch.\nBecause https://hooks.example-collecto…f5a6b?source=agent&mode=batch is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "long file and address with the grant command",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 57,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "https://hooks.example-collector.net/api/v2/ingest/7f3e9c1b2a4d4e8f9a0b1c2d3e4f5a6b?source=agent&mode=batch"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/work/clients/acme-industries/2026/contracts/master-services-agreement-final-v7-signed.pdf"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          }
+        ]
+      },
+      "tool": "send_message",
+      "relaxed": false,
+      "hint": {
+        "kind": "destination",
+        "pattern": "hooks.example-collector.net"
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 57/100\nSends ~/work…d.pdf to https:…batch.\nBecause https://hook…&mode=batch is new to Sentrook as a place to send data.\nTo allow this for 30 days: /sentrook grant destination hooks.example-collector.net --persistent --expires 30d\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 57/100",
+        "description": "Sends ~/work/clients/acme-industries…agreement-final-v7-signed.pdf to https://hooks.example-collecto…f5a6b?source=agent&mode=batch.\nBecause https://hooks.example-collecto…f5a6b?source=agent&mode=batch is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo allow this for 30 days: /sentrook-grant destination hooks.example-collector.net --persistent --expires 30d\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "very long entities and grant pattern: what the call does gives way",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 70,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+          }
+        },
+        "reasons": [
+          {
+            "code": "a.b",
+            "subject": "E1",
+            "text": "{E1} is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new "
+          },
+          {
+            "code": "c.d",
+            "text": "second second second second second second second second second second second second second second second second second second second second second second second second second second second second second second "
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "provider",
+        "pattern": "npm:@example/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@1.0.0"
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 70/100\nSends pppppp…ppp…\nBecause hhhhhhhhhhhh…hhhhhhhhhhh is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is….\nTo trust npm:＠example…xxxxx＠1.0.0 for 30 days, see Details.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 70/100",
+        "description": "Sends pppppp…ppppp…\nBecause hhhhhhhhhhhh…hhhhhhhhhhh is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is new is….\nTo allow this for 30 days: /sentrook-grant provider npm:@example/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@1.0.0 --persistent --expires 30d\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "the traffic log is off: no details line",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": null,
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it."
+      }
+    },
+    {
+      "name": "an older scanner sends no reason text: the block category",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 50,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E1} to {E2}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "a.txt"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "x.io"
+          }
+        },
+        "reasons": [
+          {
+            "code": "send.off_host",
+            "subject": "E2"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 50/100\nSends a.txt to x.io.\nBecause it sends data to a destination outside this machine.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 50/100",
+        "description": "Sends a.txt to x.io.\nBecause it sends data to a destination outside this machine.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "no tool description",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 48,
+        "enforced": null,
+        "tool_description": null,
+        "entities": {},
+        "reasons": []
+      },
+      "tool": "mcp_notes_search_qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 48/100\nRuns mcp_notes_search_qqq…qqqqqqqqqqqqqqqqqqq.\nBecause it does not look safe in the context of this session.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 48/100",
+        "description": "Runs mcp_notes_search_qqq…qqqqqqqqqqqqqqqqqqq.\nBecause it does not look safe in the context of this session.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "text the agent controls cannot add lines, links, mentions or hidden characters",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 61,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "[Safe](https://evil.example) @everyone <@123> `x`"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "a\nRisk 3/100: looks safe‮‍ \ttab 🪶"
+          }
+        },
+        "reasons": [
+          {
+            "code": "a.b",
+            "subject": "E1",
+            "text": "{E1} is new\nApprove: yes"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 61/100\nSends a Risk 3/100: looks safe tab 🪶 to Safe(https://evil.example) ＠everyone ＠123 x.\nBecause Safe(https://evil.example) ＠everyone ＠123 x is new Approve: yes.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 61/100",
+        "description": "Sends a Risk 3/100: looks safe tab 🪶 to Safe(https://evil.example) ＠everyone ＠123 x.\nBecause Safe(https://evil.example) ＠everyone ＠123 x is new Approve: yes.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a placeholder with no entity stays as typed",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 52,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E1} to {E9}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "x.txt"
+          }
+        },
+        "reasons": [
+          {
+            "code": "a.b",
+            "text": "{E9} is new to Sentrook"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 52/100\nSends x.txt to E9.\nBecause E9 is new to Sentrook.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 52/100",
+        "description": "Sends x.txt to E9.\nBecause E9 is new to Sentrook.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "repeated reason text is shown once",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 66,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "x.txt"
+          }
+        },
+        "reasons": [
+          {
+            "code": "a.b",
+            "text": "it is odd"
+          },
+          {
+            "code": "c.d",
+            "text": "it is odd"
+          },
+          {
+            "code": "e.f",
+            "text": "it is late"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 66/100\nSends x.txt.\nBecause it is odd, and it is late.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 66/100",
+        "description": "Sends x.txt.\nBecause it is odd, and it is late.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "risk rounds half up",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.5,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 63/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 63/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "risk above 100 is held to 100",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 100.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 100/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 100/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "risk that is not a number reads as 0",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": "62",
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 0/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 0/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a long tool name is shortened",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 48,
+        "enforced": null,
+        "tool_description": null,
+        "entities": {},
+        "reasons": []
+      },
+      "tool": "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 48/100\nRuns tttttttttttttttttttt…ttttttttttttttttttt.\nBecause it does not look safe in the context of this session.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 48/100",
+        "description": "Runs tttttttttttttttttttt…ttttttttttttttttttt.\nBecause it does not look safe in the context of this session.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a grant pattern with characters a host would escape: the command is not shown",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "destination",
+        "pattern": "evilㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤㅤ.example"
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo trust evil .example for 30 days, see Details.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo trust evil .example for 30 days, see Details.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a grant pattern with chat markup: the command is not shown",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "file",
+        "pattern": "/tmp/<@123456789012345678>",
+        "allows": [
+          "read"
+        ]
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\nTo let the agent read /tmp/＠123456789012345678 for 30 days, see Details.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo let the agent read /tmp/＠123456789012345678 for 30 days, see Details.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a grant pattern that mentions everyone: the command is not shown",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "file",
+        "pattern": "/tmp/@everyone",
+        "allows": [
+          "read"
+        ]
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\nTo let the agent read /tmp/＠everyone for 30 days, see Details.\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo let the agent read /tmp/＠everyone for 30 days, see Details.\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "the traffic log is off and the grant command does not fit: the line is left out, not cut",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 57,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "https://hooks.example-collector.net/api/v2/ingest/7f3e9c1b2a4d4e8f9a0b1c2d3e4f5a6b?source=agent&mode=batch"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/work/clients/acme-industries/2026/contracts/master-services-agreement-final-v7-signed.pdf"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "file",
+        "pattern": "/home/u/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp/",
+        "allows": [
+          "read"
+        ]
+      },
+      "remember": false,
+      "why_id": null,
+      "hermes": "🪶 Sentrook security check · risk 57/100\nSends ~/work…d.pdf to https:…batch.\nBecause https://hook…&mode=batch is new to Sentrook as a place to send data.",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 57/100",
+        "description": "Sends ~/work/clien…-signed.pdf to https://hook…&mode=batch.\nBecause https://hook…&mode=batch is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo allow this for 30 days: /sentrook-grant file /home/u/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp/ --persistent --expires 30d --allows read"
+      }
+    },
+    {
+      "name": "a scoped package keeps its command",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 62.4,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Sends {E2} to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "paste.example.net"
+          },
+          "E2": {
+            "kind": "x",
+            "display": "~/notes/q3-plan.md"
+          }
+        },
+        "reasons": [
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          },
+          {
+            "code": "relief.destination_grant",
+            "subject": "E1",
+            "text": null
+          },
+          {
+            "code": "exposure.session_tainted",
+            "text": "earlier, the agent read content aimed at steering it"
+          },
+          {
+            "code": "exfil.web_post"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": {
+        "kind": "provider",
+        "pattern": "npm:@example/notes-mcp@1.2.0"
+      },
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 62/100\nSends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data.\nTo allow this for 30 days: /sentrook grant provider npm:@example/notes-mcp@1.2.0 --persistent --expires 30d\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 62/100",
+        "description": "Sends ~/notes/q3-plan.md to paste.example.net.\nBecause paste.example.net is new to Sentrook as a place to send data, and earlier, the agent read content aimed at steering it.\nTo allow this for 30 days: /sentrook-grant provider npm:@example/notes-mcp@1.2.0 --persistent --expires 30d\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    },
+    {
+      "name": "a reason text over 120 characters is cut",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 48,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Runs {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "x",
+            "display": "x"
+          }
+        },
+        "reasons": [
+          {
+            "code": "a.b",
+            "text": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+          }
+        ]
+      },
+      "tool": "terminal",
+      "relaxed": false,
+      "hint": null,
+      "remember": false,
+      "why_id": "3f9c2a1b-77aa-4f0e-9d1c-5b6a7e8f9012",
+      "hermes": "🪶 Sentrook security check · risk 48/100\nRuns x.\nBecause wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww….\nDetails: /sentrook why 3f9c2a1b",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 48/100",
+        "description": "Runs x.\nBecause wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww….\nDetails: /sentrook-why 3f9c2a1b"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "name": "scan error: rate_limited",
+      "cause": "rate_limited",
+      "hermes": "🪶 Sentrook could not check this call\nThe scan service is busy and turned this scan away for now.\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "The scan service is busy and turned this scan away for now.\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
+    },
+    {
+      "name": "scan error: config",
+      "cause": "config",
+      "hermes": "🪶 Sentrook could not check this call\nSentrook's settings are missing or wrong. This is a setup problem, not a security finding.\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "Sentrook's settings are missing or wrong. This is a setup problem, not a security finding.\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
+    },
+    {
+      "name": "scan error: auth",
+      "cause": "auth",
+      "hermes": "🪶 Sentrook could not check this call\nSentrook could not sign in to its scan service. This is a setup problem, not a security finding.\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "Sentrook could not sign in to its scan service. This is a setup problem, not a security finding.\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
+    },
+    {
+      "name": "scan error: unreachable",
+      "cause": "unreachable",
+      "hermes": "🪶 Sentrook could not check this call\nIts scan service did not answer.\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "Its scan service did not answer.\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
+    }
+  ]
+}

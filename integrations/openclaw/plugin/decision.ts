@@ -1,5 +1,6 @@
 /**
- * From a scan response to allow / review / block, and the text a human sees.
+ * From a scan response to allow / review / block, and what the agent is told about a block. The review card a
+ * human sees is `card.ts`.
  *
  * The plugin decides from `risk` and its local lines (review at `reviewAt`, block at `blockAt`),
  * lowers that to the scanner's `ceiling` when it is `review`, then takes the stricter of that and the
@@ -38,62 +39,6 @@ export function describe(resp: ScanResponse, toolName: string): string {
   if (!template) return `Runs ${toolName}`;
   const entities = resp.entities ?? {};
   return template.replace(/\{(E\d+)\}/g, (_m, id: string) => entities[id]?.display ?? id);
-}
-
-function reasonCodes(resp: ScanResponse): string[] {
-  return [...new Set((resp.reasons ?? []).map((r) => r.code).filter(Boolean))];
-}
-
-function clip(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, Math.max(0, n - 1))}…`;
-}
-
-/**
- * The tree's tier scores on the 0-100 scale of `risk`; empty when the response has none. A score that
- * is not a finite number is left out; the rest are held to 0-1.
- */
-export function scoresLine(resp: ScanResponse): string {
-  const parts = Object.entries(tiersOf(resp))
-    .filter((e): e is [string, number] => e[1] !== null && Number.isFinite(e[1]))
-    .map(([name, v]) => `${name} ${Math.round(Math.min(Math.max(v, 0), 1) * 100)}`);
-  return parts.length ? `Scores: ${parts.join(", ")}.` : "";
-}
-
-/**
- * The description, up to 3 reason codes and `tail` within `limit`. Reason codes go first, then the
- * description is shortened; `tail` always stays.
- */
-function fit(desc: string, codes: string[], tail: string, limit: number): string {
-  const end = tail ? ` ${tail}` : "";
-  for (let k = Math.min(3, codes.length); k >= 0; k--) {
-    const why = k ? ` Why: ${codes.slice(0, k).join(", ")}.` : "";
-    const text = `${desc}.${why}${end}`;
-    if (text.length <= limit) return text;
-  }
-  return `${clip(desc, limit - end.length - 1)}.${end}`;
-}
-
-/** The last line of a review prompt for a block a snooze turned into a review; it is never cut. */
-export const RELAXED_NOTE = "Sentrook would normally block this; it is asking because a snooze is on.";
-
-/**
- * The approval prompt. A block a snooze turned into a review (`relaxed`) ends with `RELAXED_NOTE`; a suggested
- * grant's line (`hint`) comes before it. Neither is ever cut, and the hint does not take room from the description:
- * the limit grows by its length.
- */
-export function reviewCopy(
-  resp: ScanResponse,
-  toolName: string,
-  relaxed = false,
-  hint = "",
-): { title: string; description: string } {
-  const risk = ` (risk ${Math.round(resp.risk ?? 0)})`;
-  const head = "Sentrook: review ";
-  const tail = [scoresLine(resp), hint, relaxed ? RELAXED_NOTE : ""].filter(Boolean).join(" ");
-  return {
-    title: `${head}${clip(toolName, 80 - head.length - risk.length)}${risk}`,
-    description: fit(describe(resp, toolName), reasonCodes(resp), tail, 256 + (hint ? hint.length + 1 : 0)),
-  };
 }
 
 /**

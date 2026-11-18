@@ -80,7 +80,7 @@ def test_the_owner_naming_the_look_alike_does_not_lift_the_floor():
 
 
 def test_the_floor_has_owner_text():
-    assert "{subject}" in REASONS["floor.lookalike_code_source"]
+    assert "{subject}" in REASONS["floor.lookalike_code_source"].subject
 
 
 # --------------------------------------------------------------------------- must stay silent

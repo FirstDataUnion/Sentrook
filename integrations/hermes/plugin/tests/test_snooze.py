@@ -326,8 +326,7 @@ def test_what_a_snooze_does_to_each_verdict(scripted, monkeypatch, case):
     )
     assert rec.get("relaxed", False) is relaxed
     if want == "review":
-        # the owner is told why a block asks: the shared line ends the prompt, and only then
-        assert out["message"].endswith(f" {NOTE}") is relaxed
+        # the owner is told why a block asks: the shared line is on the card, and only then
         assert (NOTE in out["message"]) is relaxed
 
 
@@ -336,8 +335,9 @@ def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
     turn(scripted)
     scripted.reply = {"risk": 92, "enforced": None, "relaxable": True}
     out, rec = call(scripted, "openclaw cron edit nightly --every 6h")
-    assert out["action"] == "approve" and out["message"].startswith("Sentrook (risk 92): ")
-    assert out["message"].endswith(f" {NOTE}")
+    assert out["action"] == "approve"
+    assert out["message"].startswith("🪶 Sentrook security check · risk 92/100\n")
+    assert f"{NOTE} Session and Always cover this action until it ends." in out["message"]
     assert (rec["verdict"], rec["decision"], rec["relaxed"]) == ("review", "review_timed_out", True)
     assert rec["response"]["risk"] == 92  # the score is unchanged
     # the same call again is asked again: a relaxed block is never snoozed through
@@ -345,10 +345,10 @@ def test_a_relaxed_block_asks_and_the_owner_decides(scripted):
     assert out["action"] == "approve" and "snoozed" not in rec
 
 
-def test_a_relaxed_prompt_never_matches_a_stored_approval(scripted):
-    """Hermes stores Session and Always answers per rule key. A review of action F keys on F, so an Always
-    stored for it must not let a relaxed block of F through, and a Session answer to a relaxed prompt must
-    not cover the next identical relaxed call: every relaxed prompt has a key of its own."""
+def test_a_relaxed_prompt_is_keyed_to_the_action_and_its_snoozes(scripted):
+    """Hermes stores Session and Always answers per rule key. A relaxed block of action F keys on F and the snoozes
+    covering the session: an answer to it covers F again while those snoozes last (as the card says), never a
+    review of F, and never F under a later snooze."""
     approve = scripted.ctx.hooks["post_approval_response"]
     slash(scripted, "snooze")
     turn(scripted)
@@ -366,15 +366,25 @@ def test_a_relaxed_prompt_never_matches_a_stored_approval(scripted):
     }
     first, rec1 = call(scripted, "run it")
     second, rec2 = call(scripted, "run it")
-    keys = [review["rule_key"], first["rule_key"], second["rule_key"]]
     assert first["action"] == second["action"] == "approve"
-    assert len(set(keys)) == 3  # never the review's key, and never each other's
-    assert all(k.startswith("sentrook:relaxed:") for k in keys[1:])
-    # a Session answer to the first is recorded against that call only
+    assert first["rule_key"] == second["rule_key"] != review["rule_key"]
+    assert first["rule_key"].startswith("sentrook:relaxed:")
+    scripted.reply = {**scripted.reply, "action_fingerprint": "afp1:exec|G"}
+    other, _ = call(scripted, "run it")
+    assert other["rule_key"] not in (first["rule_key"], review["rule_key"])
+    # a new snooze is a new key: an earlier Session or Always answer does not carry over
+    scripted.reply = {**scripted.reply, "action_fingerprint": "afp1:exec|F"}
+    slash(scripted, "snooze off")
+    slash(scripted, "snooze 2h")
+    later, _ = call(scripted, "run it")
+    assert (
+        later["rule_key"].startswith("sentrook:relaxed:") and later["rule_key"] != first["rule_key"]
+    )
+    # an answer is recorded against the call it was asked for
     approve(pattern_key=f"plugin_rule:{first['rule_key']}", choice="session", session_id="S1")
     decisions = {r["request_id"]: r["decision"] for r in records(scripted, "resolution")}
-    assert decisions[rec1["request_id"]] == "approved_by_user"
-    assert rec2["request_id"] not in decisions
+    assert decisions[rec2["request_id"]] == "approved_by_user"
+    assert rec1["request_id"] not in decisions
 
 
 def test_without_a_snooze_a_relaxable_block_still_blocks(scripted):

@@ -10,8 +10,9 @@ A snooze never allows:
 - a scan error, or observe mode.
 
 In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner attends,
-nothing independent points to an attack and nothing is enforced: the score alone blocks) into a review that
-always asks; it is never allowed silently. A block without the mark, from an older scanner too, stays a block.
+nothing independent points to an attack and nothing is enforced: the score alone blocks) into a review. It is
+allowed without asking only where the owner answered Session or Always for the same action while the same
+snoozes covered the session. A block without the mark, from an older scanner too, stays a block.
 
 A session is named by its `session_ref`, the same hash a scan sends. A command with no current
 session (the command line) can only snooze every session.
@@ -105,6 +106,17 @@ def active(data: dict[str, Any] | None, ref: str, now: datetime) -> bool:
     return any(_applies_to(e, ref) for e, _ in _entries(data, now))
 
 
+def covering(data: dict[str, Any] | None, ref: str, now: datetime) -> str:
+    """The snoozes covering the session `ref` now, as one string: a new or replaced snooze gives a new one."""
+    return "|".join(
+        sorted(
+            f"{e['scope']}:{e.get('session_ref') or ''}:{e.get('expires_at')}"
+            for e, _ in _entries(data, now)
+            if _applies_to(e, ref)
+        )
+    )
+
+
 def applies(resp: dict[str, Any], block_at: float) -> bool:
     """A snooze may relax this review: the scanner did not enforce it, and its score is under the block line (a
     block the scanner's ceiling lowered to a review always asks)."""
@@ -114,7 +126,7 @@ def applies(resp: dict[str, Any], block_at: float) -> bool:
 
 
 def relaxes(resp: dict[str, Any], verdict: str) -> bool:
-    """A snooze in a chat the owner attends turns this block into a review that always asks: the block comes from
+    """A snooze in a chat the owner attends turns this block into a review: the block comes from
     the score and the scanner marks it `relaxable` (only a JSON true counts; an older scanner sends none)."""
     return (
         verdict == "block"

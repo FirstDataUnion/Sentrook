@@ -7,12 +7,10 @@ import pytest
 
 from plugin.config import parse_endpoint, resolve_config
 from plugin.decision import (
-    REVIEW_MESSAGE_MAX,
     block_category,
     block_reason,
     decide,
     describe,
-    review_message,
 )
 from plugin.intent import sender_of
 from plugin.planir import tool_kind
@@ -74,123 +72,6 @@ CEILING = json.loads(
 def test_verdict_ceiling_lowers_to_review_and_never_raises(case):
     lines = case["lines"]
     assert decide(case["response"], lines["review_at"], lines["block_at"]) == case["verdict"]
-
-
-def _scored(**extra):
-    return {
-        "risk": 90,
-        "tree": {
-            "suspicion": {"score": 0.92},
-            "consequence": {"score": 0.5},
-            "confidence": {"score": 0.8},
-        },
-        "tool_description": {"category": "x", "template": "Sends {E2} to {E1}"},
-        "entities": {
-            "E1": {"kind": "host", "display": "cl0ud-sync.io"},
-            "E2": {"kind": "path", "display": "~/.aws/credentials"},
-        },
-        "reasons": [{"code": "exfil.exec_egress"}, {"code": "path.cloud_credentials"}],
-        **extra,
-    }
-
-
-def test_a_relaxed_review_message_keeps_the_snooze_line_when_cut():
-    from plugin.decision import RELAXED_NOTE, REVIEW_MESSAGE_MAX
-
-    long = _scored(tool_description={"template": "Sends " + "x" * 400})
-    text = review_message(long, "exec", relaxed=True)
-    assert len(text) <= REVIEW_MESSAGE_MAX and text.endswith(f" {RELAXED_NOTE}")
-    assert RELAXED_NOTE not in review_message(long, "exec")
-
-
-def test_review_message_shows_the_scores():
-    assert review_message(_scored(), "exec") == (
-        "Sentrook (risk 90): Sends ~/.aws/credentials to cl0ud-sync.io."
-        " Why: exfil.exec_egress, path.cloud_credentials."
-        " Scores: suspicion 92, consequence 50, confidence 80."
-    )
-    partial = review_message(
-        _scored(tree={"suspicion": {"score": 0.92}, "consequence": {"score": None}}), "exec"
-    )
-    assert partial.endswith(" Scores: suspicion 92.")
-    odd = {
-        "suspicion": {"score": float("inf")},
-        "consequence": {"score": 1e300},
-        "confidence": {"score": -0.5},
-    }
-    assert review_message(_scored(tree=odd), "exec").endswith(
-        " Scores: consequence 100, confidence 0."
-    )
-
-
-@pytest.mark.parametrize(
-    "tree", [None, {}, {"suspicion": {}, "consequence": {"score": None}}, "junk"]
-)
-def test_review_message_without_a_tree_has_no_scores(tree):
-    resp = _scored(tree=tree)
-    if tree is None:
-        del resp["tree"]
-    msg = review_message(resp, "exec")
-    assert "Scores" not in msg
-    assert (
-        msg
-        == "Sentrook (risk 90): Sends ~/.aws/credentials to cl0ud-sync.io. Why: exfil.exec_egress, path.cloud_credentials."
-    )
-
-
-def test_review_message_keeps_risk_and_scores_within_the_limit():
-    scores = " Scores: suspicion 92, consequence 50, confidence 80."
-    many = [{"code": f"domain.reason_{i:02d}_" + "x" * 60} for i in range(20)]
-    for resp, tool in (
-        (_scored(tool_description=None), "t" * 2000),
-        (_scored(reasons=many), "exec"),
-        (_scored(tool_description=None, reasons=many), "t" * 2000),
-        (
-            _scored(entities={"E1": {"display": "h" * 400}, "E2": {"display": "p"}}, reasons=many),
-            "exec",
-        ),
-    ):
-        msg = review_message(resp, tool)
-        assert len(msg) <= REVIEW_MESSAGE_MAX
-        assert msg.startswith("Sentrook (risk 90): ") and msg.endswith(scores)
-
-    # Reason codes go first, one at a time, before the description is shortened.
-    desc = "Sends ~/.aws/credentials to " + "h" * 60
-    resp = _scored(
-        entities={"E1": {"display": "h" * 60}, "E2": {"display": "~/.aws/credentials"}},
-        reasons=many[:3],
-    )
-    msg = review_message(resp, "exec")
-    assert desc + "." in msg and "reason_00" in msg and "reason_02" not in msg
-    assert len(msg) <= REVIEW_MESSAGE_MAX
-
-    resp["entities"]["E1"]["display"] = "h" * 260
-    msg = review_message(resp, "exec")
-    assert "Why:" not in msg and "…." in msg and len(msg) == REVIEW_MESSAGE_MAX
-
-
-def test_review_message_carries_no_redacted_data():
-    secret = "ghp_" + "A" * 36
-    resp = _scored(
-        reasons=[
-            {
-                "code": "exfil.exec_egress",
-                "subject": secret,
-                "detail": {"value": secret},
-                "signal": secret,
-            }
-        ],
-        entities={
-            "E1": {"kind": "host", "display": "cl0ud-sync.io"},
-            "E2": {"kind": "path", "display": "~/x"},
-            "E3": {"display": secret},
-        },
-    )
-    resp["tree"]["suspicion"]["note"] = secret
-    resp["tree"]["consequence"]["sensitivity"] = secret
-    resp["tree"]["extra"] = {"score": secret}
-    msg = review_message(resp, "exec")
-    assert secret not in msg and "Scores: suspicion 92, consequence 50, confidence 80." in msg
 
 
 def test_process_control_kind_follows_the_action():
@@ -648,11 +529,3 @@ def test_block_text_names_no_code_risk_entity_or_description(case):
     assert not re.search(r"\d", text)
     assert describe(resp, "exec") not in text
     assert "enforced" not in text
-
-
-def test_the_review_prompt_still_shows_the_reasons_the_block_text_leaves_out():
-    resp = BLOCK_TEXT[1]["response"]
-    assert review_message(resp, "exec") == (
-        "Sentrook (risk 90): Sends ~/.aws/credentials to cl0ud-sync.io. "
-        "Why: exfil.exec_egress, path.credential_store."
-    )

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
+import { ERROR_TITLE } from "./card.ts";
 import { runSentrookCommand } from "./commands.ts";
 import plugin, { MIDDLEWARE_RUNTIMES } from "./index.ts";
 import { execPolicy } from "./planir.ts";
@@ -198,7 +199,7 @@ test("allow, block and review over one episode, with the state token and inputs 
 
   const review = await h.fire("before_tool_call", call("c3", "rm REVIEW"));
   assert.ok(review.requireApproval);
-  assert.equal(review.requireApproval.title, "Sentrook: review exec (risk 55)");
+  assert.equal(review.requireApproval.title, "🪶 Sentrook security check · risk 55/100");
   assert.deepEqual(review.requireApproval.allowedDecisions, ["allow-once", "deny"]);
   const p3 = h.scans[2];
   assert.equal(p3.session.state, "state-2");
@@ -244,7 +245,7 @@ test("scan errors: review when attended, token and buffer kept", async () => {
   await h.fire("after_tool_call", { toolName: "exec", toolCallId: "c1", result: "out" });
   const r = await h.fire("before_tool_call", call("c2", "FAIL"));
   assert.ok(r.requireApproval);
-  assert.equal(r.requireApproval.title, "Sentrook unreachable");
+  assert.equal(r.requireApproval.title, ERROR_TITLE);
   await r.requireApproval.onResolution("allow-once");
   await h.fire("before_tool_call", call("c3", "ls"));
   const p3 = h.scans[2];
@@ -299,7 +300,7 @@ for (const [marker, kind] of Object.entries(SCAN_FAILURES)) {
     const r = await h.fire("before_tool_call", call("c1", `ls ${marker}`), { ...CTX, trigger: "user" });
     assert.equal(h.scans[0].trigger.kind, "message");
     assert.ok(r.requireApproval, "asks the owner");
-    assert.equal(r.requireApproval.title, "Sentrook unreachable");
+    assert.equal(r.requireApproval.title, ERROR_TITLE);
     assert.equal(r.requireApproval.timeoutBehavior, "deny", "an unanswered card does not run the call");
     assert.equal(h.traffic().at(-1).decision, "blocked_on_error");
     assert.equal(h.traffic().at(-1).failure.kind, kind);
@@ -335,7 +336,7 @@ for (const unattended of [false, true]) {
       assert.match(review.blockReason, /^Sentrook held this tool call/);
     } else {
       assert.ok(review.requireApproval);
-      assert.notEqual(review.requireApproval.title, "Sentrook unreachable");
+      assert.notEqual(review.requireApproval.title, ERROR_TITLE);
     }
     assert.ok(h.scans.every((p) => p.trigger.kind === (unattended ? "scheduled" : "message")));
     const decisions = h.traffic().map((e) => e.decision);

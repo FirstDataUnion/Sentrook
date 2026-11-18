@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
+import { DESCRIPTION_BUDGET, mid } from "./card.ts";
 import { clearScanTokenCache } from "./auth.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
@@ -224,13 +225,12 @@ for (const c of CASES.commands) {
 
 // ---- the attended review ------------------------------------------------------------------------------
 
-test("the review card shows the command, offers allow always, and allow always sets the grant", async () => {
+test("the review card names the grant, offers allow always, and allow always sets it", async () => {
   const r = registered();
   const out = await r.review();
   assert.equal(scans[0].trigger.kind, "message");
   assert.equal(scans[0].trigger.sender.relation, "owner");
-  const command = CASES.commands[0].command.replace("{grant}", "/sentrook-grant");
-  assert.ok(out.requireApproval.description.endsWith(CASES.lines.remember.replace("{command}", command)), out.requireApproval.description);
+  assert.ok(out.requireApproval.description.split("\n").includes(`"Always allow" also trusts ${HOST} for 30 days.`), out.requireApproval.description);
   assert.deepEqual(out.requireApproval.allowedDecisions, ["allow-once", "allow-always", "deny"]);
   await out.requireApproval.onResolution("allow-always");
   const [g] = grantsFile();
@@ -283,13 +283,13 @@ test("no hint, no line and no allow always", async () => {
   assert.deepEqual(out.requireApproval.allowedDecisions, ["allow-once", "deny"]);
 });
 
-test("the hint never takes room from the description", async () => {
+test("a long pattern keeps the card within its budget", async () => {
   const long = `${"a".repeat(60)}.example.invalid`;
   hints = [{ ...HINT, pattern: long }];
   const r = registered();
   const out = await r.review();
-  assert.ok(out.requireApproval.description.endsWith(`${long} --persistent --expires 30d`));
-  assert.ok(out.requireApproval.description.includes(`Sends data to ${HOST}.`));
+  assert.ok(Array.from(out.requireApproval.description).length <= DESCRIPTION_BUDGET);
+  assert.ok(out.requireApproval.description.includes(`"Always allow" also trusts ${mid(long, 60)} for 30 days.`));
 });
 
 test("why lists every hint", async () => {

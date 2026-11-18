@@ -77,7 +77,7 @@ def test_the_value_follows_the_parameter():
 
 
 def test_the_reason_has_owner_text():
-    assert "{subject}" in REASONS[REASON]
+    assert "{subject}" in REASONS[REASON].subject
 
 
 # --------------------------------------------------------------------------- must stay silent

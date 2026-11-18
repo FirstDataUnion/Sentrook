@@ -14,7 +14,13 @@ from plugin.config import resolve_config
 
 from .test_plugin import SID, call, turn
 
-SCAN_ERROR_TEXT = "Sentrook is unreachable. Continue without scanning?"
+SCAN_ERROR_TEXT = (
+    "🪶 Sentrook could not check this call\n"
+    "Its scan service did not answer.\n"
+    "If you allow it, it runs without a security check.\n"
+    "Session and Always skip this question in this chat while Sentrook cannot scan.\n"
+    "Status: /sentrook status"
+)
 
 
 @pytest.fixture
@@ -40,6 +46,8 @@ def h(harness, monkeypatch):
                 raise TimeoutError("timed out")
             if "DOWN" in cmd:
                 raise ConnectionRefusedError(61, "Connection refused")
+            if "NOAUTH" in cmd:
+                return (401, {"error": {"code": "unauthorized", "message": "expired"}}, {})
         return harness(url, data=data, headers=headers, timeout=timeout)
 
     monkeypatch.setattr(auth, "http_json", http)
@@ -76,6 +84,34 @@ def test_unattended_scan_failure_blocks(h, marker):
     assert "The tool was not run." in r["message"]
     assert h.traffic()[-1]["decision"] == "blocked_on_error"
     assert h.traffic()[-1]["failure"]["kind"] == FAILURES[marker]
+
+
+def test_a_scan_error_is_keyed_to_its_chat_and_outage(h):
+    """Session or Always answers the scan errors of one kind in the chat until Sentrook scans again, as the card
+    says: never another chat's, another kind of failure in the same outage, or a later outage."""
+    turn(h)
+    first = call(h, "c1", "ls DOWN")
+    second = call(h, "c2", "cat TIMEOUT")
+    assert first["rule_key"] == second["rule_key"]
+    # credentials that expire during the outage are another kind of failure: asked again
+    expired = call(h, "c3", "ls NOAUTH")
+    assert expired["action"] == "approve" and expired["rule_key"] != first["rule_key"]
+    # a good scan ends the outage: the next failure is a new one
+    assert call(h, "c4", "ls") is None
+    later = call(h, "c5", "ls DOWN")
+    assert (
+        later["rule_key"].startswith("sentrook:error:") and later["rule_key"] != first["rule_key"]
+    )
+    s2 = {"session_id": "S2"}
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="hi", platform="telegram", sender_id="u1", **s2
+    )
+    other = h.ctx.hooks["pre_tool_call"](
+        tool_name="terminal", args={"command": "ls DOWN"}, tool_call_id="c3", turn_id="t1", **s2
+    )
+    assert (
+        other["rule_key"].startswith("sentrook:error:") and other["rule_key"] != first["rule_key"]
+    )
 
 
 def test_attended_scan_failure_runs_only_on_the_owners_yes(h):
