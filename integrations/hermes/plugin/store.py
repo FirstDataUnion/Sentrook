@@ -14,8 +14,8 @@ the separate `hermes cron run` process.
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
-read-modify-write; `session_lock` serialises a whole scan per session. `holds.json` and `grants.json`
-are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
+read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `grants.json` and
+`snooze.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
 `hermes sentrook`) can change them at the same time.
 """
 

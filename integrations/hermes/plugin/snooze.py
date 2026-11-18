@@ -19,7 +19,9 @@ session (the command line) can only snooze every session.
 
 Expiry is mandatory: an entry with no readable expiry, or one more than 24 hours away, never applies.
 A file that cannot be read relaxes nothing and is never overwritten. Expired entries are dropped on
-the next change. Every change is written to the traffic log as a `snooze` record (none when the owner
+the next change. A change holds the file's cross-process lock, because the gateway, a `hermes cron run`
+process and the command line can change it at the same time; when another process keeps the lock
+longer than the wait, nothing is changed and the owner is told to try again. Every change is written to the traffic log as a `snooze` record (none when the owner
 has turned the traffic log off). The OpenClaw plugin keeps the same file format and prints the same
 text.
 """
@@ -35,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .planir import session_ref as session_ref  # what an entry is keyed on
-from .store import Store, read_time
+from .store import LockTimeout, Store, file_lock, read_time
 
 DEFAULT = timedelta(hours=1)
 MAX = timedelta(hours=24)
@@ -50,7 +52,7 @@ SET_RULE = (
     "Blocks with no clear attack signal ask you instead; other blocks, enforced reviews and "
     "unattended runs are not snoozed."
 )
-#: Serialises read-modify-write of the file within this process; writes are atomic across processes.
+#: Serialises read-modify-write of the file within this process; `file_lock` does across processes.
 _LOCK = threading.Lock()
 
 #: (subcommand) -> the command as the owner types it, e.g. "/sentrook snooze".
@@ -237,38 +239,56 @@ def run(
     if parsed["op"] == "set" and not parsed["all"] and ref is None:
         return _no_session(cmd), None
 
-    store = Store(state_dir)
-    with _LOCK:
-        data = store.load_snooze()
-        if data is None:
-            return (
-                f"The snooze file {state_dir / 'snooze.json'} could not be read; "
-                "fix or remove it first."
-            ), None
-        kept = [e for e in data["snoozes"] if _live(e, now)]
-        if parsed["op"] == "off":
-            every = parsed["all"] or ref is None
-            ended = [e for e in kept if every or _applies_to(e, ref)]
-            if not ended:
-                return "No snooze was on.", None
-            data["snoozes"] = [e for e in kept if not any(e is x for x in ended)]
-            store.save_snooze(data)
-            n = len(ended)
-            return f"Snooze off: ended {n} snooze{'' if n == 1 else 's'}.", {
-                "op": "off",
-                "entries": ended,
-            }
-        e: dict[str, Any] = {"scope": "all" if parsed["all"] else "session"}
-        if not parsed["all"]:
-            e["session_ref"] = ref
-        e.update(set_at=iso(now), expires_at=iso(now + parsed["span"]), set_by=by)
-        kept = [
-            x
-            for x in kept
-            if not (x["scope"] == e["scope"] and x.get("session_ref") == e.get("session_ref"))
-        ]
-        data["snoozes"] = [*kept, e][-MAX_ENTRIES:]
+    try:
+        with _LOCK, file_lock(state_dir / "snooze.json"):
+            reply, record = _change(Store(state_dir), state_dir, parsed, ref, by, now)
+    except LockTimeout:
+        return (
+            f"The snooze file {state_dir / 'snooze.json'} is locked by another process; "
+            "no snooze was changed. Try again."
+        ), None
+    return reply, record
+
+
+def _change(
+    store: Store,
+    state_dir: Path,
+    parsed: dict[str, Any],
+    ref: str | None,
+    by: dict[str, Any],
+    now: datetime,
+) -> tuple[str, dict[str, Any] | None]:
+    """The change `parsed` asks for, read and written while the caller holds the file's locks."""
+    data = store.load_snooze()
+    if data is None:
+        return (
+            f"The snooze file {state_dir / 'snooze.json'} could not be read; "
+            "fix or remove it first."
+        ), None
+    kept = [e for e in data["snoozes"] if _live(e, now)]
+    if parsed["op"] == "off":
+        every = parsed["all"] or ref is None
+        ended = [e for e in kept if every or _applies_to(e, ref)]
+        if not ended:
+            return "No snooze was on.", None
+        data["snoozes"] = [e for e in kept if not any(e is x for x in ended)]
         store.save_snooze(data)
+        n = len(ended)
+        return f"Snooze off: ended {n} snooze{'' if n == 1 else 's'}.", {
+            "op": "off",
+            "entries": ended,
+        }
+    e: dict[str, Any] = {"scope": "all" if parsed["all"] else "session"}
+    if not parsed["all"]:
+        e["session_ref"] = ref
+    e.update(set_at=iso(now), expires_at=iso(now + parsed["span"]), set_by=by)
+    kept = [
+        x
+        for x in kept
+        if not (x["scope"] == e["scope"] and x.get("session_ref") == e.get("session_ref"))
+    ]
+    data["snoozes"] = [*kept, e][-MAX_ENTRIES:]
+    store.save_snooze(data)
     where = "in every session" if parsed["all"] else "in this session"
     return (
         f"Snoozed reviews {where} for {parsed['text']}, until {_show(now + parsed['span'])}. "
