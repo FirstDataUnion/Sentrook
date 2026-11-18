@@ -27,7 +27,8 @@ judged not to follow from the owner's request (`fresh_injection`, model judgemen
 
 Attended is derived from the PlanIR, not from a plugin flag: the turn is a message (not scheduled, heartbeat,
 hook, sub-agent, system or unknown), the sender is the owner outside a group chat or open host (sender basis not
-`group_chat` or `host_open_access`) and the agent is the main agent. Unattended runs, other senders, group chats and
+`group_chat` or `host_open_access`) on a basis the plugin names (not `none` alone, as for a chat of unknown
+kind), and the agent is the main agent. Unattended runs, other senders, group chats and
 unknown triggers are unchanged. No ceiling is set on a scan that is not fully
 informed: a probe errored, timed out or fell back, the context or rule-based probe did not answer, the entity oracle
 was unavailable, new content went unjudged, the session state was lost, or the scan is otherwise degraded.
@@ -44,7 +45,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from ..enums import ProbeStatus, ProbeStep
-from ..planir.models import AgentRole, Channel, PlanIR, SenderBasis, SenderRelation, TriggerKind
+from ..planir.models import AgentRole, PlanIR, SenderBasis, SenderRelation, TriggerKind
 from ..prepare import Prepared
 from ..prepare.entities import EntityKind, Role
 from ..prepare.grants import sends_off_host
@@ -112,6 +113,8 @@ DESTINATION_RELIEF = frozenset(
 #: Sender bases that put the owner's message in a room others can write to: a group, channel or thread, or a
 #: host open to anyone. The owner is there, but so is everyone else, and a review there is everyone's.
 SHARED_BASIS = frozenset({SenderBasis.GROUP_CHAT, SenderBasis.HOST_OPEN_ACCESS})
+#: Sender bases that say nothing about how the relation was derived.
+NO_BASIS = frozenset({SenderBasis.NONE, SenderBasis.UNKNOWN})
 #: The probes the strong signals come from: without their answer nobody looked for one.
 SIGNAL_PROBES = (ProbeStep.CONTEXT, ProbeStep.AIRA)
 #: The plugins' default block line, on the 0-1 scale: above it the ceiling is what decides the outcome there, so
@@ -125,8 +128,8 @@ def attended_owner(planir: PlanIR) -> bool:
         planir.trigger.kind is TriggerKind.MESSAGE
         and planir.trigger.sender.relation is SenderRelation.OWNER
         and not SHARED_BASIS & set(planir.trigger.sender.basis)
-        # an unrecognised channel: on OpenClaw its own system-agent chat, where host-marker turns arrive too
-        and planir.trigger.channel is not Channel.OTHER
+        # the plugin says how it knows: an owner from a chat whose kind it could not tell is not attending alone
+        and bool(set(planir.trigger.sender.basis) - NO_BASIS)
         and planir.session.agent_role is AgentRole.MAIN
         # a self-edit block says the host's own background process made the call, whatever the trigger says
         and planir.self_edit is None

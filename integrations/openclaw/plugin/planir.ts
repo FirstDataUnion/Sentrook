@@ -206,7 +206,8 @@ export function hostLabels(run: RunContext, ctx: any): Record<string, unknown> {
 
 export function triggerKind(run: RunContext): string {
   if (run.inputProvenance?.sourceRole === "subagent") return "subagent";
-  if (isSystemAgentTurn(run)) return "message";
+  // The host writes its own lines into these turns ([proposal-resolved], [ui-context]): not an owner's chat message.
+  if (isSystemAgentTurn(run)) return "system";
   switch (run.trigger) {
     case "user":
       return "message";
@@ -227,35 +228,80 @@ export function triggerKind(run: RunContext): string {
 }
 
 const CHANNELS = new Set(["discord", "telegram", "slack", "email", "webhook"]);
+/** OpenClaw's own chat surfaces: the Control UI, webchat and the terminal, which only the operator reaches. */
+const CHAT_SURFACES = new Set(["webchat", "chat", "cli", "control-ui"]);
 function channelOf(v: unknown): string | null {
   if (typeof v !== "string" || !v) return null;
   const c = v.toLowerCase();
   if (CHANNELS.has(c)) return c;
-  if (["webchat", "chat", "cli", "control-ui"].includes(c)) return "chat";
+  if (CHAT_SURFACES.has(c)) return "chat";
   return "other";
 }
 
+/** Session-key or address segments that name a room many people write in. */
+export const GROUP_SEGMENT = /(^|:)(group|channel|room|space)(:|$)/i;
+/** Segments that name one person's chat. */
+export const DIRECT_SEGMENT = /(^|:)(direct|dm)(:|$)/i;
+/** A thread or topic: it belongs to the chat its key starts with. */
+const THREAD_SUFFIX = /:(?:thread|topic):.*$/i;
+
+export type ChatKind = "direct" | "group" | "unknown";
+
+/**
+ * Whether OpenClaw routed a group or channel room into the agent's main session (`session.groupScope: "main"`,
+ * globally or on a route binding). Without that, only direct chats share the main session.
+ */
+function groupsInMain(config: any): boolean {
+  if (config?.session?.groupScope === "main") return true;
+  const bindings: unknown[] = Array.isArray(config?.bindings) ? config.bindings : [];
+  return bindings.some((b: any) => b?.session?.groupScope === "main");
+}
+
+/**
+ * The kind of chat a turn came from, read from its session key as OpenClaw builds it: a room gets its own
+ * `agent:<id>:<channel>:group|channel:<id>` key, a direct chat `...:direct:<peer>` or, under the default
+ * `session.dmScope: "main"`, the agent's main key `agent:<id>:<mainKey>`. A thread or topic is the chat it is in.
+ * The main key is a direct chat only while no room is routed into it. OpenClaw's own chat surfaces are the
+ * operator's. `unknown` when nothing says.
+ */
+export function chatKindOfTurn(sessionKey: unknown, channel: string | null, config: any): ChatKind {
+  const key = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase().replace(THREAD_SUFFIX, "") : "";
+  if (GROUP_SEGMENT.test(key)) return "group";
+  if (DIRECT_SEGMENT.test(key)) return "direct";
+  if (channel === "chat") return "direct";
+  const mainKey = String(config?.session?.mainKey ?? "").trim().toLowerCase() || "main";
+  const parts = key.split(":");
+  if (parts.length === 3 && parts[0] === "agent" && parts[2] === mainKey && !groupsInMain(config)) return "direct";
+  return "unknown";
+}
+
+/**
+ * Who sent the turn. An owner's message in a group or channel room stays the owner's, with basis `group_chat`
+ * (the room is shared, so nobody there is attending alone); an owner's message from a chat whose kind the
+ * session key does not say keeps the owner relation with basis `none`, claiming no direct chat. A system agent
+ * turn has no sender.
+ */
 export function senderOf(
   requester: any,
   run: RunContext,
   cfg: Pick<PluginConfig, "trustedSenders" | "trustedRoles">,
+  chat: ChatKind = "direct",
 ): { relation: string; basis: string[] } {
-  if (
-    requester?.senderIsOwner === true ||
-    (!requester && run.senderIsOwner === true) ||
-    isSystemAgentTurn(run)
-  ) {
+  if (isSystemAgentTurn(run)) return { relation: "unknown", basis: ["none"] };
+  if (requester?.senderIsOwner === true || (!requester && run.senderIsOwner === true)) {
+    if (chat === "group") return { relation: "owner", basis: ["group_chat"] };
+    if (chat === "unknown") return { relation: "owner", basis: ["none"] };
     return { relation: "owner", basis: ["host_owner_flag"] };
   }
   const senderId = requester?.senderId ?? run.senderId;
   if (senderId && cfg.trustedSenders.includes(String(senderId))) {
-    return { relation: "trusted", basis: ["plugin_allowlist:sender"] };
+    return { relation: "trusted", basis: chat === "group" ? ["plugin_allowlist:sender", "group_chat"] : ["plugin_allowlist:sender"] };
   }
   const roles: string[] = Array.isArray(requester?.roleIds) ? requester.roleIds.map(String) : [];
   if (roles.some((r) => cfg.trustedRoles.includes(r))) {
-    return { relation: "trusted", basis: ["plugin_allowlist:role"] };
+    return { relation: "trusted", basis: chat === "group" ? ["plugin_allowlist:role", "group_chat"] : ["plugin_allowlist:role"] };
   }
-  if (requester) return { relation: "other", basis: ["none"] };
+  if (requester) return { relation: "other", basis: chat === "group" ? ["group_chat"] : ["none"] };
   return { relation: "unknown", basis: ["none"] };
 }
 
@@ -543,6 +589,11 @@ export function buildPlanir(b: BuildInput): Built {
   );
 
   const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);
+  const channel = isSystemAgentTurn(run)
+    ? "chat"
+    : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider));
+  const kind = triggerKind(run);
+  const chatKind = isSystemAgentTurn(run) ? "direct" : chatKindOfTurn(sessionKey, channel, b.hostConfig);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
@@ -575,11 +626,10 @@ export function buildPlanir(b: BuildInput): Built {
     trigger: b.hostProcess
       ? structuredClone(SELF_EDIT_TRIGGER)
       : {
-          kind: triggerKind(run),
-          channel: isSystemAgentTurn(run)
-            ? "chat"
-            : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider)),
-          sender: senderOf(ctx.requester, run, cfg),
+          kind,
+          // a message from a chat of unknown kind does not claim to be one (a direct chat or a room)
+          channel: kind === "message" && chatKind === "unknown" ? null : channel,
+          sender: senderOf(ctx.requester, run, cfg, chatKind),
         },
     request: { text: redactor.string(String(requestText)), carried_from_turn: null },
     new_inputs: sentInputs,

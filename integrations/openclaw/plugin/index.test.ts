@@ -384,7 +384,7 @@ test("a cron run's delivery goes out as a scheduled trigger with its channel bin
   assert.deepEqual(other.grants, []);
 });
 
-test("an OpenClaw system agent turn is the operator's message, without the host's markers", async () => {
+test("an OpenClaw system agent turn, with the host's marker lines, is a system turn without a sender", async () => {
   const h = setup({}, {}, { runtime: { version: "2026.10.3" } });
   const ctx = { ...CTX, runId: "r5", agentId: "openclaw", requester: { channel: "openclaw" } };
   const run = { ...ctx, trigger: "manual", messageProvider: "openclaw" };
@@ -400,13 +400,91 @@ test("an OpenClaw system agent turn is the operator's message, without the host'
   );
   await h.fire("before_tool_call", { toolName: "openclaw", toolCallId: "c1", runId: "r5", params: { action: "status" } }, ctx);
   const p = h.scans[0];
-  assert.deepEqual(p.trigger, { kind: "message", channel: "chat", sender: { relation: "owner", basis: ["host_owner_flag"] } });
+  assert.deepEqual(p.trigger, { kind: "system", channel: "chat", sender: { relation: "unknown", basis: ["none"] } });
   assert.equal(p.request.text, "status");
   assert.equal(p.host.platform_version, "2026.10.3");
   const labels = h.traffic()[0].host_labels;
   assert.equal(labels.trigger, "manual");
   assert.equal(labels.message_provider, "openclaw");
   assert.deepEqual(labels.requester, { channel: "openclaw", sender_is_owner: null, has_sender_id: false });
+});
+
+/** The trigger a before_tool_call sends for an owner's message in `sessionKey` on `channel`. */
+async function ownerTrigger(sessionKey: string, channel: string, config?: unknown) {
+  const h = setup({}, {}, config ? { config } : {});
+  const ctx = { ...CTX, sessionKey, runId: "r1", requester: { senderIsOwner: true, senderId: "u1", channel } };
+  await h.fire("before_prompt_build", { runId: "r1", prompt: "tidy the logs" }, { ...ctx, trigger: "user", messageProvider: channel });
+  await h.fire("before_tool_call", call("c1", "ls"), ctx);
+  return h.scans[0].trigger;
+}
+
+const ATTENDED = { relation: "owner", basis: ["host_owner_flag"] };
+
+for (const [name, key, channel] of [
+  ["a Discord DM in the main session (dmScope main)", "agent:main:main", "discord"],
+  ["a Discord DM in its own session", "agent:main:discord:direct:381022", "discord"],
+  ["a Telegram DM", "agent:main:telegram:direct:5150", "telegram"],
+  ["a Telegram DM topic", "agent:main:telegram:direct:5150:topic:7", "telegram"],
+  ["a Slack DM per account", "agent:main:slack:work:direct:u0abc", "slack"],
+  ["a Slack DM thread", "agent:main:slack:direct:u0abc:thread:1731.22", "slack"],
+  ["webchat", "agent:main:main", "webchat"],
+  ["a Control UI dashboard session", "agent:main:dashboard:d41", "webchat"],
+]) {
+  test(`an owner message in ${name} is a direct chat`, async () => {
+    const t = await ownerTrigger(key, channel);
+    assert.equal(t.kind, "message");
+    assert.equal(t.channel, channel === "webchat" ? "chat" : channel);
+    assert.deepEqual(t.sender, ATTENDED);
+  });
+}
+
+for (const [name, key, channel] of [
+  ["a Discord guild channel", "agent:main:discord:channel:1498333845953712258", "discord"],
+  ["a Discord guild channel thread", "agent:main:discord:channel:1498333845953712258:thread:77", "discord"],
+  ["a Slack channel", "agent:main:slack:channel:c0general", "slack"],
+  ["a Telegram group", "agent:main:telegram:group:-1001234", "telegram"],
+  ["a Telegram forum topic", "agent:main:telegram:group:-1001234:topic:9", "telegram"],
+  ["a WhatsApp group", "agent:main:whatsapp:group:1203@g.us", "whatsapp"],
+]) {
+  test(`an owner message in ${name} keeps the owner, in a group chat`, async () => {
+    const t = await ownerTrigger(key, channel);
+    assert.equal(t.kind, "message");
+    assert.deepEqual(t.sender, { relation: "owner", basis: ["group_chat"] });
+  });
+}
+
+test("a room routed into the main session leaves the main session's chat kind unknown", async () => {
+  for (const config of [
+    { session: { groupScope: "main" } },
+    { bindings: [{ agentId: "main", match: { channel: "discord" }, session: { groupScope: "main" } }] },
+  ]) {
+    const t = await ownerTrigger("agent:main:main", "discord", config);
+    assert.equal(t.kind, "message");
+    assert.equal(t.channel, null);
+    assert.deepEqual(t.sender, { relation: "owner", basis: ["none"] });
+  }
+  // a custom main key is still the main session
+  assert.deepEqual((await ownerTrigger("agent:main:home", "discord", { session: { mainKey: "home" } })).sender, ATTENDED);
+});
+
+test("a session key that names no chat kind claims no direct chat", async () => {
+  for (const key of ["global", "agent:main:discord:1498333845953712258", "agent:main:main:extra"]) {
+    const t = await ownerTrigger(key, "discord");
+    assert.equal(t.channel, null);
+    assert.deepEqual(t.sender, { relation: "owner", basis: ["none"] });
+  }
+});
+
+test("someone else in a group chat is another sender in a group chat; a trusted sender stays trusted", async () => {
+  const h = setup({}, { trustedSenders: ["u7"] });
+  const key = "agent:main:discord:channel:1498333845953712258";
+  for (const [run, senderId] of [["r1", "u9"], ["r2", "u7"]]) {
+    const ctx = { ...CTX, sessionKey: key, runId: run, requester: { senderIsOwner: false, senderId, channel: "discord" } };
+    await h.fire("before_prompt_build", { runId: run, prompt: "hi" }, { ...ctx, trigger: "user", messageProvider: "discord" });
+    await h.fire("before_tool_call", { ...call(`c${run}`, "ls"), runId: run }, ctx);
+  }
+  assert.deepEqual(h.scans[0].trigger.sender, { relation: "other", basis: ["group_chat"] });
+  assert.deepEqual(h.scans[1].trigger.sender, { relation: "trusted", basis: ["plugin_allowlist:sender", "group_chat"] });
 });
 
 test("marker lines stay in the request text outside the system agent", async () => {
