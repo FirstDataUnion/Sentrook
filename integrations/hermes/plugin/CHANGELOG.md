@@ -13,6 +13,8 @@ since the version the catalog pins.
 - A block a snooze turned into a question: answering Session or Always now lets the same action through without
   asking until that snooze ends. A call that could not be scanned: Session or Always stops the question in that chat
   until Sentrook scans again; another chat or another kind of failure still asks.
+- When the gateway resumes a turn a restart or shutdown interrupted, its note is no longer taken as the owner's
+  request: the calls carry the interrupted turn's request, and the note is sent as content.
 
 ## 2.0.0-beta.13
 
