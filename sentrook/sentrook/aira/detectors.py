@@ -1550,6 +1550,25 @@ class _Setting:
     old_values: re.Pattern[str] | None
     bare: bool
     ambiguous: bool
+    #: `key:value` pairs only this setting's section has: beside one, an `ambiguous` key in a
+    #: fragment with no enclosing key counts.
+    siblings: re.Pattern[str] | None = None
+
+
+@dataclass(frozen=True)
+class _StateDb:
+    """The host's state database holding its approvals (`approval_loosening.state_db`)."""
+
+    host: str
+    files: re.Pattern[str]
+    basename: re.Pattern[str]
+    table: str
+    #: A write statement naming any table; group `t` is the table.
+    writes: re.Pattern[str]
+    #: Columns as the approvals settings they hold, longest name first.
+    columns: tuple[tuple[re.Pattern[str], str], ...]
+    writers: re.Pattern[str]
+    connect: re.Pattern[str]
 
 
 @dataclass(frozen=True)
@@ -1592,6 +1611,7 @@ class _LooseningRules:
     approvals_cli: tuple[dict[str, Any], ...]
     launch_flags: dict[str, frozenset[str]]
     env: tuple[re.Pattern[str], ...]
+    state_db: _StateDb | None = None
 
 
 _LOOSENING_CACHE: dict[int, tuple[Any, _LooseningRules]] = {}
@@ -1639,6 +1659,7 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
                 old_values=rx(s.get("old_values")),
                 bare=bool(s.get("bare")),
                 ambiguous=bool(s.get("ambiguous")),
+                siblings=re.compile(str(s["siblings"])) if s.get("siblings") else None,
             )
         )
     keys = raw.get("allowlist_keys") or {}
@@ -1695,9 +1716,125 @@ def _loosening_rules(lists: Lists) -> _LooseningRules:
             for head, flags in (raw.get("launch_flags") or {}).items()
         },
         env=pats("env_assignment_patterns"),
+        state_db=_state_db_rules(raw.get("state_db")),
     )
     _LOOSENING_CACHE[id(raw)] = (raw, rules)
     return rules
+
+
+# A statement that writes a table: group `t` is the table (a schema prefix and quotes skipped).
+_SQL_WRITE = (
+    r"""(?:\b(?:UPDATE(?:\s+OR\s+\w+)?|(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO|DELETE\s+FROM|"""
+    r"""DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ALTER\s+TABLE)\s+|\.import\s+(?:--?\w+\s+)*\S+\s+)"""
+    r"""(?:["`\[]?\w+["`\]]?\.)?["`\[]?(?P<t>\w+)"""
+)
+
+
+def _state_db_rules(raw: Any) -> _StateDb | None:
+    if not raw:
+        return None
+    columns = sorted((raw.get("columns") or {}).items(), key=lambda kv: -len(str(kv[0])))
+    return _StateDb(
+        host=str(raw["host"]),
+        files=re.compile(str(raw["files"]), re.IGNORECASE),
+        basename=re.compile(str(raw["basename"]), re.IGNORECASE),
+        table=str(raw["table"]).lower(),
+        writes=re.compile(_SQL_WRITE, re.IGNORECASE),
+        columns=tuple(
+            (re.compile(r"\b" + re.escape(str(c)) + r"\b", re.IGNORECASE), str(k))
+            for c, k in columns
+        ),
+        writers=re.compile(str(raw["writers"])),
+        connect=re.compile(str(raw["connect"])),
+    )
+
+
+_SQL_LITERAL = re.compile(r"'((?:[^'\n]|'')*)'")
+#: `json_set(raw_json, '$.defaults.ask', 'off')`: a path and the value set there.
+_SQL_JSON_PATH = re.compile(r"""'\$\.(?P<p>[^'\n]+)'\s*,\s*(?:'(?P<v>[^'\n]*)'|(?P<n>[\w.-]+))""")
+#: `json_object('security', 'full')`: a key and its value.
+_SQL_PAIR = re.compile(r"""'(?P<k>[\w-]+)'\s*,\s*'(?P<v>[^'\n]*)'""")
+_SQL_INSERT = re.compile(r"""\((?P<cols>[^()]*)\)\s*VALUES\s*\(""", re.IGNORECASE)
+#: A database a `sqlite3` script opens or attaches.
+_SQL_OPEN = re.compile(
+    r"""(?:\A|[\n;])[ \t]*\.open[ \t]+(?:--?\w+[ \t]+)*["']?(?P<o>[^\s"';]+)|"""
+    r"""\bATTACH[ \t]+(?:DATABASE[ \t]+)?["'](?P<a>[^"'\n]+)["']""",
+    re.IGNORECASE,
+)
+#: `sqlite3` options that take a value (`-cmd` runs its value as SQL).
+_SQLITE_VALUED = frozenset(
+    {"cmd", "separator", "newline", "nullvalue", "init", "mmap", "pagecache", "lookaside", "vfs"}
+    | {"maxsize", "heap", "escape"}
+)
+_SQL_BUDGET = 8000  # characters read per statement
+#: Where a write statement's values end.
+_SQL_END = re.compile(r";|\bWHERE\b|\bRETURNING\b", re.IGNORECASE)
+#: A database URI (`file:/path?mode=rw`) as its path.
+_SQL_URI = re.compile(r"\Afile:(?://localhost)?(?P<p>[^?#]*)")
+
+
+def _sql_writes(text: str, db: _StateDb) -> list[str]:
+    """The statements in `text` that write the approvals table, each up to its `;`, the end of
+    the text, or its `WHERE` or `RETURNING` clause (a condition is not a value written)."""
+    out: list[str] = []
+    for n, m in enumerate(db.writes.finditer(text)):
+        if n >= _SINK_MATCHES:
+            break
+        if m.group("t").lower() != db.table:
+            continue
+        body = text[m.start() : m.end() + _SQL_BUDGET]
+        cut = _SQL_END.search(body, m.end() - m.start())
+        out.append(body[: cut.start()] if cut else body)
+    return out
+
+
+def _sql_settings(statement: str, db: _StateDb) -> str:
+    """A statement as settings text: its columns named as the settings they hold, `json_set`
+    paths and `json_object` pairs as `key: value` lines, insert columns beside their values, and
+    the contents of its string literals (the approvals document in `raw_json`)."""
+    text = statement.replace('\\"', '"')
+    for rx, key in db.columns:
+        text = rx.sub(key, text)
+    lines = [text]
+    for m in _SQL_JSON_PATH.finditer(text):
+        leaf = re.split(r"[.\[\]]+", m.group("p").strip(".[]"))[-1].strip("\"'")
+        value = m.group("v") if m.group("v") is not None else m.group("n")
+        lines.append(f"{leaf}: {value}")
+    for n, m in enumerate(re.finditer(r"json_object\s*\(", text, re.IGNORECASE)):
+        if n >= _SINK_MATCHES:
+            break
+        for pair in _SQL_PAIR.finditer(text, m.end(), m.end() + _SCAN_BUDGET):
+            lines.append(f"{pair.group('k')}: {pair.group('v')}")
+    insert = _SQL_INSERT.search(text)
+    if insert:
+        columns = [c.strip().strip('"`[]') for c in insert.group("cols").split(",")]
+        values = _call_args(text, insert.end() - 1)
+        lines += [f"{c}: {v}" for c, v in zip(columns, values, strict=False)]
+    lines += [m.group(1).replace("''", "'") for m in _SQL_LITERAL.finditer(text)]
+    return "\n".join(lines)
+
+
+def _sqlite_cli(args: list[str]) -> tuple[str | None, list[str]]:
+    """A `sqlite3` command's database and the SQL it runs (its arguments after the database,
+    and `-cmd` values)."""
+    db: str | None = None
+    sql: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("-") and len(a) > 1:
+            name = a.lstrip("-")
+            if name in _SQLITE_VALUED and i + 1 < len(args):
+                if name == "cmd":
+                    sql.append(args[i + 1])
+                i += 2
+                continue
+        elif db is None:
+            db = a
+        else:
+            sql.append(a)
+        i += 1
+    return db, sql
 
 
 @dataclass(frozen=True)
@@ -1756,6 +1893,21 @@ def _host_where(value: str, rules: _LooseningRules, ctx: Context) -> _Where:
     return _Where(frozenset(classes), host, fmt, excluded)
 
 
+def _tree_file(
+    value: str, host: str, rel: re.Pattern[str], rules: _LooseningRules, ctx: Context
+) -> bool:
+    """Whether `value` is the file `rel` (relative to a tree root) in one of `host`'s trees."""
+    home = re.escape(ctx.prepared.home.rstrip("/"))
+    flags = re.IGNORECASE if ctx.prepared.planir.host.os in ("macos", "windows") else 0
+    for tree in rules.trees:
+        if tree.host != host:
+            continue
+        m = re.match(r"(?:" + tree.root.replace("{home}", home) + r")/(?P<rel>.+)\Z", value, flags)
+        if m is not None and rel.fullmatch(m.group("rel")):
+            return True
+    return False
+
+
 _UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 
@@ -1774,14 +1926,21 @@ _INSIDE = None
 def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | None]:
     """The keys enclosing each position (nearest first) in JSON or JSON5, one forward pass:
     strings, `//` and `/* */` comments skipped, unquoted keys read. A container with no key (a
-    list item) adds nothing. A position inside a string or a comment maps to `None`."""
+    list item) adds nothing. A position inside a string or a comment maps to `None`, except at
+    a segment of a dotted key (`"tools.exec.mode": …`), where the segments before it enclose it.
+    A dotted key's segments each enclose what its value holds."""
     out: dict[int, list[str] | None] = {}
     want = sorted(set(positions))
     w = 0
-    stack: list[str | None] = []
     last: str | None = None  # the last string or identifier, a key if `:` follows
     pending: str | None = None  # the key whose value comes next
     i, n = 0, len(text)
+
+    flat: list[str] = []  # the enclosing keys as segments, outermost first
+    sizes: list[int] = []  # per open container, the segments its key added
+
+    def enclosing() -> list[str]:
+        return flat[::-1]
 
     def skip_to(j: int) -> None:
         nonlocal w
@@ -1791,7 +1950,7 @@ def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | Non
 
     while i < n and w < len(want):
         while w < len(want) and want[w] <= i:
-            out[want[w]] = [k for k in reversed(stack) if k]
+            out[want[w]] = enclosing()
             w += 1
         ch = text[i]
         if ch in "\"'":
@@ -1799,6 +1958,20 @@ def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | Non
             while j < n and text[j] != ch:
                 j += 2 if text[j] == "\\" else 1
             last = text[i + 1 : j]
+            if "." in last and w < len(want) and want[w] <= j:
+                k = j + 1
+                while k < n and text[k] in " \t\r\n":
+                    k += 1
+                if k < n and text[k] == ":":
+                    outer = enclosing()
+                    while w < len(want) and want[w] <= j:
+                        prefix = text[i + 1 : want[w]]
+                        if prefix.endswith("."):
+                            segs = [seg for seg in prefix.split(".") if seg]
+                            out[want[w]] = segs[::-1] + outer
+                        else:
+                            out[want[w]] = _INSIDE
+                        w += 1
             skip_to(j + 1)
             i = j + 1
             continue
@@ -1817,11 +1990,15 @@ def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | Non
         if ch == ":":
             pending, last = last, None
         elif ch in "{[":
-            stack.append(pending)
+            segs = [seg for seg in pending.split(".") if seg] if pending else []
+            flat.extend(segs)
+            sizes.append(len(segs))
             pending = last = None
         elif ch in "}]":
-            if stack:
-                stack.pop()
+            if sizes:
+                drop = sizes.pop()
+                if drop:
+                    del flat[-drop:]
             pending = last = None
         elif ch == ",":
             pending = last = None
@@ -1833,7 +2010,7 @@ def _json_contexts(text: str, positions: list[int]) -> dict[int, list[str] | Non
                 continue
         i += 1
     for p in want[w:]:
-        out[p] = [k for k in reversed(stack) if k]
+        out[p] = enclosing()
     return out
 
 
@@ -1905,6 +2082,76 @@ def _yaml_contexts(text: str, positions: list[int]) -> dict[int, list[str] | Non
     for p in want[w:]:
         out[p] = []
     return out
+
+
+_YAML_EXPLICIT = re.compile(
+    r"^(?P<i>[ \t]*)\?[ \t]+(?P<k>[^\n]+)\n(?P=i):[ \t]*(?P<rest>[^\n]*)", re.M
+)
+_YAML_ANCHOR = re.compile(
+    r"""^(?P<i>[ \t]*)(?:-[ \t]+)?["']?[\w$.-]+["']?[ \t]*:[ \t]*&(?P<a>[\w-]+)[ \t]*$""", re.M
+)
+_YAML_MERGE = re.compile(
+    r"^(?P<i>[ \t]*)<<[ \t]*:[ \t]*(?P<refs>\*[\w-]+|\[[^\]\n]*\])[ \t]*$", re.M
+)
+_YAML_ALIAS = re.compile(
+    r"""^(?P<i>[ \t]*)(?P<k>["']?[\w$.-]+["']?)[ \t]*:[ \t]*\*(?P<a>[\w-]+)[ \t]*$""", re.M
+)
+_YAML_EXPANSION = 20000  # characters merge keys and aliases may add
+
+
+def _yaml_expand(text: str) -> str:
+    """YAML whose keys the indentation pass would misread, rewritten: an explicit key
+    (`? approvals` then `: mode: off`) as `approvals:` with its value nested, and a merge key
+    (`<<: *b`) or an alias value (`approvals: *b`) replaced by the anchored block, one level
+    deep and at most `_YAML_EXPANSION` characters added."""
+    if "?" in text:
+        text = _YAML_EXPLICIT.sub(
+            lambda m: (
+                f"{m['i']}{m['k'].rstrip()}:"
+                + (f"\n{m['i']}  {m['rest']}" if m["rest"].strip() else "")
+            ),
+            text,
+        )
+    if "*" not in text or "&" not in text:
+        return text
+    blocks: dict[str, str] = {}
+    lines = text.split("\n")
+    starts = {m.start(): m for m in _YAML_ANCHOR.finditer(text)}
+    offset = 0
+    for n, line in enumerate(lines):
+        m = starts.get(offset)
+        offset += len(line) + 1
+        if m is None:
+            continue
+        indent = len(m["i"]) + (len(line) - len(line.lstrip(" \t-")) - len(m["i"]))
+        body: list[str] = []
+        for following in lines[n + 1 :]:
+            if following.strip() and len(following) - len(following.lstrip(" \t")) <= indent:
+                break
+            body.append(following)
+        depth = min((len(b) - len(b.lstrip(" \t")) for b in body if b.strip()), default=0)
+        blocks[m["a"]] = "\n".join(b[depth:] for b in body if b.strip())
+    if not blocks:
+        return text
+    budget = [_YAML_EXPANSION]
+
+    def place(names: list[str], indent: str) -> str | None:
+        found = [blocks[a] for a in names if a in blocks]
+        added = sum(len(b) for b in found)
+        if not found or added > budget[0]:
+            return None
+        budget[0] -= added
+        return "\n".join(indent + line for b in found for line in b.split("\n"))
+
+    def merge(m: re.Match[str]) -> str:
+        names = re.findall(r"\*([\w-]+)", m["refs"])
+        return place(names, m["i"]) or m.group(0)
+
+    def alias(m: re.Match[str]) -> str:
+        block = place([m["a"]], m["i"] + "  ")
+        return f"{m['i']}{m['k']}:\n{block}" if block is not None else m.group(0)
+
+    return _YAML_ALIAS.sub(alias, _YAML_MERGE.sub(merge, text))
 
 
 def _contexts(text: str, positions: list[int], fmt: str) -> dict[int, list[str] | None]:
@@ -1999,6 +2246,8 @@ def _loosening_hits(
     hits: set[Hit] = set()
     if not text or not where:
         return hits
+    if where.fmt != "json":
+        text = _yaml_expand(text)
     classes = where.classes
     found: list[tuple[_Setting, str, str, int]] = []
     active = [
@@ -2024,6 +2273,21 @@ def _loosening_hits(
     contexts = _contexts(text, [at for _, _, _, at in found], where.fmt) if found else {}
     # An `$include` file's top level is wherever the config includes it: a fragment.
     fragment = fragment or "include" in classes
+    top_level: list[str] | None = None  # `key:value` at the fragment's top level, read once
+
+    def beside(s: _Setting) -> bool:
+        nonlocal top_level
+        if s.siblings is None:
+            return False
+        if top_level is None:
+            pairs = [
+                (m.start(), m.group(1), m.group(2))
+                for _, m in zip(range(_LIST_MATCHES), _SIBLING_KEY.finditer(text), strict=False)
+            ]
+            ctx_at = _contexts(text, [at for at, _, _ in pairs], where.fmt)
+            top_level = [f"{k}:{v}" for at, k, v in pairs if ctx_at.get(at) == []]
+        return any(s.siblings.fullmatch(kv) for kv in top_level)
+
     for s, key, value, at in found:
         enclosing = contexts.get(at, [])
         if enclosing is _INSIDE:
@@ -2043,6 +2307,8 @@ def _loosening_hits(
                 pass
             elif fragment and not s.ambiguous:
                 tier = REVIEW  # a fragment that cannot be decided: ask, do not stay silent
+            elif fragment and beside(s):
+                pass  # beside a key only this setting's section has
             else:
                 continue  # the top level of a whole file, or a key both hosts use elsewhere
         hits.add((key, value.lower(), tier))
@@ -2065,6 +2331,12 @@ def _loosening_hits(
                     if _broad(entry, rules):
                         hits.add((m.group(0).strip(" \t:=\"'"), entry.strip(), BLOCK))
     return hits
+
+
+#: A `key: value` pair, the key quoted or not; the value's first word.
+_SIBLING_KEY = re.compile(
+    r"""(?<![\w$-])["']?([A-Za-z_$][\w$-]*)["']?[ \t]*:[ \t]*["']?([^\s"',}\]]*)"""
+)
 
 
 def _loosened(
@@ -2553,14 +2825,59 @@ def _approval_loosening(
     def cli_hit(line: str, mechanism: str, hits: set[Hit]) -> None:
         report(hits, None, {"match": line[:120], "mechanism": mechanism})
 
+    def sqlite_write(text: str, dbs: list[str | None], cwd: str | None, mechanism: str) -> None:
+        """SQL that writes the host's approvals table. In a host tree's state DB a loosening
+        value blocks and any other write is reviewed; a database the scan cannot place (a
+        variable, a state DB outside the trees) is reviewed; another database is not the
+        host's."""
+        db = rules.state_db
+        if db is None or db.table not in text.lower():
+            return
+        statements = _sql_writes(text, db)
+        if not statements:
+            return
+        # Each database named: in a host tree, one the scan cannot place, or another one.
+        places: list[tuple[str, str]] = []
+        for path in dbs:
+            uri = _SQL_URI.match(path) if path else None
+            path = uri.group("p") if uri else path
+            if path == ":memory:":
+                continue  # an in-memory database: what it attaches is what counts
+            if not path or any(c in path for c in "$`{}"):
+                places.append(("unknown", "an unplaced database"))
+                continue
+            value = resolve(path, cwd)
+            if _tree_file(value, db.host, db.files, rules, ctx):
+                places.append(("tree", display(value)))
+            elif db.basename.fullmatch(os.path.basename(value)):
+                places.append(("unknown", display(value)))
+            else:
+                places.append(("other", display(value)))
+        kinds = {k for k, _ in places}
+        if not kinds & {"tree", "unknown"}:
+            return
+        # The scan does not bind a statement to a connection: a tree DB opened beside another
+        # database is not known to be the one written, so it is asked, not blocked.
+        place = "tree" if kinds == {"tree"} else "unknown"
+        shown = next(sh for k, sh in places if k in ("tree", "unknown"))
+        where = _Where(frozenset({"approvals"}), db.host, "auto")
+        hits: set[Hit] = set()
+        for statement in statements:
+            hits |= _loosening_hits(_sql_settings(statement, db), "", rules, where)
+        if place != "tree" or not hits:
+            hits = {(k, v, REVIEW) for k, v, _ in hits} | {("sqlite write", db.table, REVIEW)}
+        report(hits, None, {"path": shown, "mechanism": mechanism})
+
     def set_value(head: str, path: str, value: str) -> set[Hit]:
         """`<path> <value>` of a config command, read as `<last segment>: <value>` with the
         path's other segments as the enclosing keys."""
         if value.startswith("@"):
-            return set()  # read from a file the call does not show
+            # Read from a file the call does not show: the session decides, not this floor.
+            return set()
         segments = [s.strip("'\"") for s in path.split(".") if s.strip("'\"")]
         if not segments:
             return set()
+
         text = f"{segments[-1]}: {value}"
         return _loosening_hits(text, "", rules, cli_where(head), parents=segments[-2::-1])
 
@@ -2607,6 +2924,25 @@ def _approval_loosening(
                         hits |= _loosening_hits(
                             _heredocs(command) or command, "", rules, cli_where(head)
                         )
+                    if "--dry-run" not in args:
+                        # Content the call does not show: a patch or batch file, or a patch
+                        # read on stdin from a file.
+                        for i, t in enumerate(args):
+                            name, eq, val = t.partition("=")
+                            if name in ("--file", "--batch-file") and (
+                                verb == "patch" or name == "--batch-file"
+                            ):
+                                val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
+                                # `-` (dropped from the words) is stdin: a heredoc there is read.
+                                if val and val != "-":
+                                    hits.add(("read from", val, REVIEW))
+                        if (
+                            verb == "patch"
+                            and "--stdin" in args
+                            and not _heredocs(command)
+                            and _STDIN_FILE.search(command)
+                        ):
+                            hits.add(("read from", "stdin", REVIEW))
                     if any(t.split("=", 1)[0] == "--batch-json" for t in args):
                         for m in _BATCH_ITEM.finditer(command):
                             hits |= set_value(head, m.group(1), m.group(2).strip("'\""))
@@ -2678,6 +3014,17 @@ def _approval_loosening(
         each write sink's target, the commands it runs, and the review backstop for a target
         the scan cannot resolve in code that names a host approvals or main config file."""
         variables = _code_variables(text)
+        db = rules.state_db
+        if db is not None and db.writers.search(text) and db.table in text.lower():
+            connects = [
+                _call_args(text, m.end() + text[m.end() :].index("("))
+                for n, m in enumerate(db.connect.finditer(text))
+                if n < _SINK_MATCHES and "(" in text[m.end() : m.end() + 3]
+            ]
+            dbs = [_code_path(args[0], variables) if args else None for args in connects]
+            dbs += [m.group("a") for m in _SQL_OPEN.finditer(text) if m.group("a")]
+            # A connection the scan does not recognise is a database it cannot place.
+            sqlite_write(_decode(text), dbs or [None], cwd, "inline_code")
         unresolved = False
         for target in _code_sink_targets(text, rules):
             path = _code_path(target, variables)
@@ -2744,8 +3091,22 @@ def _approval_loosening(
             rendered = _render(head, seg, heredocs)
             if head == "ln" and args and len(args) >= 2 and (seg.has_flag_letter("s")):
                 links[args[-1].rstrip("/")] = args[-2].rstrip("/")
+            if head == "sqlite3":
+                db_arg, sql = _sqlite_cli(words[1:])
+                sql_text = ";\n".join([*sql, _heredocs_after(command, "sqlite3"), *produced])
+                opened = [m.group("o") or m.group("a") for m in _SQL_OPEN.finditer(sql_text)]
+                dbs = [d for d in (db_arg, *opened) if d]
+                if dbs:
+                    sqlite_write(sql_text, list(dbs), cwd, "sqlite3")
             # Redirects: an `echo`/`printf`/heredoc is read; a blind head is a replacement.
             for target in seg.redirects:
+                inner = re.fullmatch(r">\((.*)\)", target, re.DOTALL)
+                if inner is not None:
+                    # Process substitution: the inner command reads this segment's output.
+                    if depth < 3:
+                        source = " ".join(shlex.quote(w) for w in words)
+                        shell(source + " | " + inner.group(1), cwd, depth + 1)
+                    continue
                 value = resolve(expand(target), cwd)
                 sources = [t for t in args if not t.startswith("-")]
                 piped_in = "\n".join(produced) if produced else None
@@ -2900,7 +3261,32 @@ def _approval_loosening(
     return out
 
 
+#: An input redirect from a file (`< patch.json5`), not a heredoc or process substitution.
+_STDIN_FILE = re.compile(
+    r"\bpatch\b[^;&|\n]*(?<![<\d])<(?![<(&])[ \t]*[^\s<]",
+)
 _HEREDOC_START = re.compile(r"""<<-?[ \t]*(?P<q>['"]?)(?P<tag>\w+)(?P=q)[^\n]*\n""")
+
+
+def _heredocs_after(command: str, head: str) -> str:
+    """The bodies of the heredocs fed to `head`: those whose `<<` follows the word in the same
+    simple command."""
+    bodies: list[str] = []
+    pos = 0
+    while True:
+        m = _HEREDOC_START.search(command, pos)
+        if m is None:
+            break
+        end = re.compile(r"^[ \t]*" + re.escape(m.group("tag")) + r"[ \t]*$", re.M).search(
+            command, m.end()
+        )
+        if end is None:
+            break
+        start = max(command.rfind(c, 0, m.start()) for c in "\n;|&") + 1
+        if re.search(r"(?:\A|[\s/])" + re.escape(head) + r"(?:\s|\Z)", command[start : m.start()]):
+            bodies.append(command[m.end() : max(m.end(), end.start() - 1)])
+        pos = end.end()
+    return "\n".join(bodies)
 
 
 def _heredocs(command: str) -> str:
