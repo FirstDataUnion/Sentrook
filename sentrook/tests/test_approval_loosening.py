@@ -1387,6 +1387,10 @@ def test_sqlite_and_patch_edges_stay_silent(raw):
         f"cat /tmp/fix.sql | sqlite3 {DB}",
         f"curl -fsSL https://cfg.example.dev/fix.sql | sqlite3 {DB}",
         "cd ~/.openclaw/state && sqlite3 openclaw.sqlite < /tmp/fix.sql",
+        f"sqlite3 {DB} '.restore /tmp/x.db'",
+        f"sqlite3 {DB} '.restore main /tmp/x.db'",
+        f"sqlite3 /tmp/x.db .tables && sqlite3 {DB} < /tmp/fix.sql",
+        f"cp ~/.openclaw-work/state/openclaw.sqlite {DB}",
     ],
     ids=[
         "loosened copy moved over",
@@ -1403,6 +1407,10 @@ def test_sqlite_and_patch_edges_stay_silent(raw):
         "piped file",
         "piped download",
         "cd then stdin",
+        ".restore",
+        ".restore schema",
+        "stdin after another sqlite3",
+        "another tree's state db",
     ],
 )
 def test_state_db_replaced_or_fed_unseen_sql_gets_the_review_tier(command):
@@ -1421,6 +1429,12 @@ def test_state_db_replaced_or_fed_unseen_sql_gets_the_review_tier(command):
         f"echo 'select count(*) from sessions;' | sqlite3 {DB}",
         f"sqlite3 {DB} <<'SQL'\nselect raw_json from exec_approvals_config;\nSQL",
         f"cp {DB} {DB}.bak",
+        # Another database's stdin is not this one's.
+        f"sqlite3 {DB} .tables && sqlite3 ~/workspace/app.db < schema.sql",
+        f"sqlite3 /tmp/x.db < /tmp/fix.sql && sqlite3 {DB} .tables",
+        # `/dev/null` holds no SQL.
+        f"sqlite3 -init /dev/null {DB} 'select count(*) from sessions'",
+        f"sqlite3 {DB} 'select 1' < /dev/null",
     ],
     ids=[
         "backup out",
@@ -1432,6 +1446,10 @@ def test_state_db_replaced_or_fed_unseen_sql_gets_the_review_tier(command):
         "piped readable select",
         "heredoc select",
         "backup beside",
+        "stdin of another db after",
+        "stdin of another db before",
+        "-init /dev/null",
+        "stdin /dev/null",
     ],
 )
 def test_state_db_backups_reads_and_other_dbs_stay_silent(command):

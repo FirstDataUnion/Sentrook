@@ -1841,10 +1841,16 @@ def _sqlite_cli(args: list[str]) -> tuple[str | None, list[str], str | None]:
 
 
 #: A `sqlite3` script that reads SQL from a file (`.read file`).
-_SQL_READ = re.compile(r"(?:\A|[\n;])[ \t]*\.read[ \t]+[\"']?(?P<f>[^\s\"';]+)")
+_SQL_READ = re.compile(
+    r"(?:\A|[\n;])[ \t]*\.(?:read|restore(?:[ \t]+\w+(?=[ \t]+\S))?)[ \t]+[\"']?(?P<f>[^\s\"';]+)"
+)
 #: `sqlite3 …` with its stdin redirected from a file or a process substitution (quoted text
 #: taken out first; a heredoc is read).
-_SQLITE_STDIN = re.compile(r"\bsqlite3\b[^;&|\n]*?(?<![<\d])<(?![<&])[ \t]*(?P<f><\(|[^\s<(]\S*)")
+_SQLITE_STDIN = re.compile(
+    r"\bsqlite3\b(?P<args>[^;&|\n<]*)(?<![<\d])<(?![<&])[ \t]*(?P<f><\(|[^\s<(]\S*)"
+)
+#: Files that hold no SQL: `-init /dev/null` skips `~/.sqliterc`, `< /dev/null` closes stdin.
+_NO_SQL = frozenset({"/dev/null"})
 _QUOTED = re.compile(r"'[^']*'" + r'|"(?:[^"\\]|\\.)*"')
 
 
@@ -3124,13 +3130,31 @@ def _approval_loosening(
                     sqlite_write(sql_text, list(dbs), cwd, "sqlite3")
                 if db_arg and "$" not in db_arg and state_db(resolve(db_arg, cwd)):
                     # SQL the call does not show, run against the host's state DB.
-                    read = _SQL_READ.search(sql_text)
-                    stdin = _SQLITE_STDIN.search(_QUOTED.sub("''", command))
+                    target = resolve(db_arg, cwd)
+                    read = next(
+                        (
+                            m.group("f")
+                            for m in _SQL_READ.finditer(sql_text)
+                            if m.group("f") not in _NO_SQL
+                        ),
+                        None,
+                    )
+                    # Stdin redirected on this database's own `sqlite3` command.
+                    stdin = None
+                    for m in _SQLITE_STDIN.finditer(_QUOTED.sub("''", command)):
+                        db_word = _sqlite_cli([expand(w) for w in m.group("args").split()])[0]
+                        if (
+                            db_word
+                            and resolve(db_word, cwd) == target
+                            and m.group("f") not in _NO_SQL
+                        ):
+                            stdin = m.group("f")
+                            break
                     source = pipe_source.get(index)
                     unseen = (
-                        init
-                        or (read.group("f") if read else None)
-                        or (stdin.group("f") if stdin else None)
+                        (init if init not in _NO_SQL else None)
+                        or read
+                        or stdin
                         or (
                             "piped input"
                             if source is not None and printed.get(source) is None
@@ -3281,7 +3305,11 @@ def _approval_loosening(
             if state_db(dest_value):
                 # The host's state DB holds its approvals: replaced from another file, it is
                 # asked (the tree's own DB copied over itself, or restored from a sidecar, is not).
-                if not state_db(src_value):
+                # Another tree's state DB (a profile's) counts as another file.
+                if not (
+                    state_db(src_value)
+                    and os.path.dirname(src_value) == os.path.dirname(dest_value)
+                ):
                     blind(dest_value, src)
                 continue
             if src_value in written_blind:

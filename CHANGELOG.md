@@ -759,8 +759,8 @@ OpenClaw 2026.11 keeps exec approvals in its SQLite state database (`<state>/sta
 
 ### Guardrail: the OpenClaw state DB replaced or fed unseen SQL (2026-11-18)
 With the approvals table read since the previous change, loosening a copy of the state DB and moving it over the original went unseen, and so did SQL the call does not show.
-- The state DB of a host tree (`<state>/state/openclaw.sqlite`, its `-wal`, `-shm` and `-journal` included) replaced from another file (`cp`, `mv`, `install`, `rsync`, `ln -sf`, `curl -o`, `cat src >`) gets the review tier, like a host approvals file replaced from elsewhere. The tree's own DB copied over itself or a sidecar does not.
-- `sqlite3` on the tree's state DB reading SQL the call does not show gets the review tier: stdin from a file or a process substitution, a pipe from a source the scan cannot read (`cat file |`, `curl … |`), `.read`, `-init`. Readable SQL (`echo … |`, a heredoc, arguments) is judged as before.
+- The state DB of a host tree (`<state>/state/openclaw.sqlite`, its `-wal`, `-shm` and `-journal` included) replaced from another file (`cp`, `mv`, `install`, `rsync`, `ln -sf`, `curl -o`, `cat src >`) gets the review tier, like a host approvals file replaced from elsewhere. The tree's own DB copied over its sidecar does not; another tree's (a profile's) DB counts as another file.
+- `sqlite3` on the tree's state DB reading SQL or a database the call does not show gets the review tier: stdin from a file or a process substitution on its own command, a pipe from a source the scan cannot read (`cat file |`, `curl … |`), `.read`, `.restore`, `-init`. `/dev/null` holds no SQL. Readable SQL (`echo … |`, a heredoc, arguments) is judged as before.
 - Backups out of the DB (`cp`, `.dump`, `.backup`), reads, other databases and a `<` inside quoted SQL stay quiet.
 - `guardrail.yaml`: `state_db.files` covers the sidecars.
-- Tests: `test_approval_loosening` (14 review cases, 9 quiet) and 8 pinned probes.
+- Tests: `test_approval_loosening` (18 review cases, 13 quiet) and 8 pinned probes.
