@@ -25,6 +25,8 @@ Current goal: see the callout at the top of the Sentrook 2.0 Notion page.
 plugin dir), `make hermes-plugin-test`, `make plugin-planir-check` (both plugins' requests against the models).
 `make hermes-compat` (Docker) runs the Hermes plugin on real Hermes images; `make compat-test` tests its helpers.
 See `integrations/compat/README.md` for the host compatibility CI (versions, canary, bump).
+`make hermes-release-test` tests the Hermes plugin release steps (`integrations/hermes/release/release.py`,
+used by `release-hermes-plugin.yml`); a version bump needs a `CHANGELOG.md` entry in the plugin dir.
 
 ## Rules for agents
 - Do not read or copy from `release/1.x` or `archive/pre-2.0-main` unless the task says to. They are

@@ -11,7 +11,7 @@ services with synthetic hosts and credentials, so it needs no secrets.
 | Pull requests and pushes touching a plugin or this tooling (`host-compat.yml`) | the floor and latest pinned in `versions.txt` | yes |
 | Same | the check's self-test, on the latest pinned version | yes |
 | Same | the newest pre-release (Hermes release candidate, OpenClaw beta), when it is newer than latest | no (report-only) |
-| Plugin release workflows (`host-compat.yml`, mode `release`, for their host) | the floor and latest | yes |
+| Plugin release workflows (`host-compat.yml`, mode `release`, for their host) | the floor and latest, on the tree about to be published when the workflow passes it as `plugin-artifact` (Hermes) | yes |
 | Nightly (`host-compat-nightly.yml`) | the host's `main` build and the newest pre-release | no: one issue per failing target, labelled `host-compat`, closed when it passes |
 | Nightly bump (`host-compat-nightly.yml`) | a new stable release | opens a PR moving `latest` and the install guide's "Tested on" line; its checks decide whether it can merge |
 

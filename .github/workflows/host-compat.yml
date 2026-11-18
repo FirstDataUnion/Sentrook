@@ -10,7 +10,8 @@
 #   proves the check still catches a broken plugin), and the newest pre-release (a Hermes release
 #   candidate, an OpenClaw beta) when it is newer than the latest stable (report-only). Pushes to main
 #   run every host.
-# - The release workflows call it with mode `release` and their host: the pinned versions only, blocking.
+# - The release workflows call it with mode `release` and their host: the pinned versions only, blocking,
+#   on the tree they are about to publish when they pass it as `plugin-artifact`.
 # - The nightly canary against the host's main build, and the bump to each new stable release, are in
 #   host-compat-nightly.yml.
 #
@@ -54,6 +55,12 @@ on:
         default: release
       hosts:
         description: "hosts to check, space-separated (empty: all)"
+        type: string
+        default: ""
+      plugin-artifact:
+        description: >-
+          an artifact of the calling run holding the plugin tree to check instead of the checkout's (the
+          release workflow's assembled mirror tree); give one host in `hosts`
         type: string
         default: ""
 
@@ -120,6 +127,11 @@ jobs:
             fi
           done
           [ "$MODE" = pr ] || latest='[]'
+          # A release must be checked: an empty set would skip the check and read as a pass.
+          if [ "$MODE" = release ] && [ "$blocking" = '[]' ]; then
+            echo "release mode with nothing to check (hosts: ${hosts:-none})" >&2
+            exit 1
+          fi
           {
             echo "blocking=$blocking"
             echo "latest=$latest"
@@ -151,8 +163,18 @@ jobs:
       - name: Pull ${{ matrix.image }}
         run: docker pull -q "${{ matrix.image }}"
 
+      # A release checks the exact tree it is about to tag, not the plugin directory.
+      - name: Download the plugin tree to check
+        if: inputs.plugin-artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.plugin-artifact }}
+          path: ${{ runner.temp }}/plugin-tree
+
       - name: Compatibility check
-        run: integrations/${{ matrix.host }}/compat/run.sh "${{ matrix.image }}" "" "$RUNNER_TEMP/compat"
+        env:
+          PLUGIN_TREE: ${{ inputs.plugin-artifact != '' && format('{0}/plugin-tree', runner.temp) || '' }}
+        run: integrations/${{ matrix.host }}/compat/run.sh "${{ matrix.image }}" "$PLUGIN_TREE" "$RUNNER_TEMP/compat"
 
       - name: Keep the results
         if: always()

@@ -107,6 +107,9 @@ jobs:
       - name: Host compatibility helper tests
         run: make compat-test
 
+      - name: Hermes plugin release steps
+        run: make hermes-release-test
+
       # The scanner must accept every PlanIR the plugins build in their integration tests.
       - name: Plugin PlanIR requests validate against the scanner
         run: make plugin-planir-check

@@ -1,7 +1,8 @@
 # Sentrook 2.0 scanner.
 # Everything runs through uv; `make install` creates .venv with the dev extras.
 .PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check \
-	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat openclaw-compat
+	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat openclaw-compat \
+	hermes-release-test
 
 help:
 	@echo "install       uv sync with dev extras"
@@ -21,6 +22,7 @@ help:
 	@echo "              latest, or HERMES_IMAGE=<image>"
 	@echo "openclaw-compat  the OpenClaw plugin on real OpenClaw images (needs Docker and Node): the"
 	@echo "              pinned floor and latest, or OPENCLAW_IMAGE=<image>"
+	@echo "hermes-release-test  the Hermes plugin release steps (integrations/hermes/release)"
 
 # The gitleaks release the vendor key shapes of the second redaction pass are generated from.
 # Also the gitleaks image security.yml scans with. CI checks the file against it;
@@ -80,6 +82,10 @@ plugin-planir-check:
 
 compat-test:
 	uv run python -m pytest integrations/compat/tests -q
+
+# The Hermes plugin release steps (release-hermes-plugin.yml), against a local stand-in for the mirror.
+hermes-release-test:
+	uv run python -m pytest integrations/hermes/release/tests -q
 
 # The blocking set by default; HERMES_IMAGE=nousresearch/hermes-agent:main for any other image.
 HERMES_IMAGE ?= $(shell python3 integrations/compat/compat.py images --host hermes)
