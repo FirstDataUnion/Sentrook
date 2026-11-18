@@ -14,7 +14,6 @@
  * `ownerCommand`; `/sentrook` and its status stay open to everyone.
  */
 
-import { timeoutBehaviorNote } from "./approvalPolicy.ts";
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as grants from "./grants.ts";
@@ -54,8 +53,6 @@ export interface CommandContext {
   owner?: OwnerRun;
   /** The session the command was sent from (as scans key it); unset when there is none. */
   session?: string;
-  /** The OpenClaw version the plugin runs in; unset when the host does not say. */
-  hostVersion?: string;
   /** The chat the command came from (channel, sender, account, thread); unset on the command line. */
   chat?: hold.NotifyContext;
 }
@@ -287,7 +284,5 @@ function statusText(ctx: CommandContext): string {
       cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
     )}`,
   ];
-  const note = timeoutBehaviorNote(cfg.approval, ctx.hostVersion);
-  if (note) lines.push(`approval: ${note}`);
   return lines.join("\n");
 }
