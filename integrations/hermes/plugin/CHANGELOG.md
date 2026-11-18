@@ -16,6 +16,8 @@ since the version the catalog pins.
 - Snooze changes are safe when the gateway, a `hermes cron run` process and the command line change snoozes at the
   same time: a snooze set or ended in one is no longer undone by another. When the snooze file stays locked by
   another process, nothing is changed and the reply says to try again.
+- When the gateway resumes a turn a restart or shutdown interrupted, its note is no longer taken as the owner's
+  request: the calls carry the interrupted turn's request, and the note is sent as content.
 
 ## 2.0.0-beta.13
 
