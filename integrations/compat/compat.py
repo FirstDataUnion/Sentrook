@@ -65,9 +65,11 @@ HOSTS = {
         compat_dir=REPO_ROOT / "integrations/hermes/compat",
         readme=REPO_ROOT / "integrations/hermes/README.md",
         # Release images are vX.Y.Z; release candidates rc.N-vX.Y.Z, named for the release they lead to.
-        # Arch and -desktop variants carry a suffix and are skipped.
-        stable_tag=re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
-        rc_tag=re.compile(r"^rc\.(?P<n>\d+)-v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
+        # Arch and -desktop variants carry a suffix and are skipped. So are the calendar-versioned tags
+        # of Hermes's older scheme (v2026.9.24): they would sort above every vX.Y.Z release. A major
+        # version of at most three digits tells the two schemes apart.
+        stable_tag=re.compile(r"^v(?P<major>\d{1,3})\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
+        rc_tag=re.compile(r"^rc\.(?P<n>\d+)-v(?P<major>\d{1,3})\.(?P<minor>\d+)\.(?P<patch>\d+)$"),
         prerelease="release candidate",
         prerelease_short="rc",
         main_tag="main",
