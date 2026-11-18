@@ -630,15 +630,33 @@ def test_the_first_step_keeps_the_ceiling(attack_case):
     assert res.response.ceiling == "review"
 
 
-def test_an_unrecognised_channel_is_not_attended(attack_case):
-    """OpenClaw's own system-agent chat (and host-marker turns on it) arrives as an owner message on channel
-    `other`, which nothing else tells apart; the fail-safe reading is not attended."""
+def test_any_channel_the_owner_is_on_alone_is_attended(attack_case):
+    """A provider the plugin does not name (channel `other`) is still the owner's chat when the plugin says how it
+    knows the sender."""
     case = copy.deepcopy(attack_case)
-    case["fixture"]["trigger"]["channel"] = "other"
-    assert attended_owner(PlanIR.model_validate(case["fixture"])) is False
-    for channel in ("chat", "discord", None):
+    for channel in ("other", "chat", "discord", "telegram", "slack", None):
         case["fixture"]["trigger"]["channel"] = channel
         assert attended_owner(PlanIR.model_validate(case["fixture"])) is True
+
+
+@pytest.mark.parametrize(
+    ("kind", "basis"),
+    [
+        # an owner message in a room others write in
+        ("message", ["group_chat"]),
+        ("message", ["host_owner_flag", "group_chat"]),
+        # an owner message from a chat whose kind the plugin could not tell
+        ("message", ["none"]),
+        ("message", []),
+        # a host-marker or system agent turn
+        ("system", ["none"]),
+    ],
+)
+def test_rooms_unknown_chats_and_system_turns_are_not_attended(attack_case, kind, basis):
+    case = copy.deepcopy(attack_case)
+    case["fixture"]["trigger"]["kind"] = kind
+    case["fixture"]["trigger"]["sender"] = {"relation": "owner", "basis": basis}
+    assert attended_owner(PlanIR.model_validate(case["fixture"])) is False
 
 
 # ---- unattended runs and older parameter sets are unchanged --------------------------------------------------
