@@ -1,0 +1,8 @@
+# What OpenClaw's own checks report about the plugin today: `openclaw plugins validate` errors and
+# `openclaw plugins doctor` diagnostics for sentrook. Any other line fails the blocking compatibility check (an
+# unknown hook name, for one, shows only here). Remove a line once OpenClaw no longer reports it.
+#
+# The plugin does not carry ClawHub authoring metadata yet.
+validate: plugin entry does not expose tool or feature authoring metadata: ./index.ts
+# The check installs the plugin from a local archive, which OpenClaw cannot trace to a registry (2026.11 and later).
+doctor warn: OpenClaw can't verify where this plugin came from. Review it with 'openclaw plugins inspect sentrook'. Adding it to plugins.allow lets it load, but does not make it trusted. If it's an official plugin, reinstall it from its official npm package or its official ClawHub listing to enable trusted features. reason=provenance-invalid; registryPath="~/.openclaw/state/openclaw.sqlite"; origin="global"; installSource="archive"; installSpec=null.

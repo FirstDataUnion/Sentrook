@@ -1,7 +1,7 @@
 # Sentrook 2.0 scanner.
 # Everything runs through uv; `make install` creates .venv with the dev extras.
 .PHONY: help install test lint lint-fix schema schema-check redact-shapes redact-shapes-check \
-	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat
+	plugin-test hermes-plugin-test plugin-planir-check compat-test hermes-compat openclaw-compat
 
 help:
 	@echo "install       uv sync with dev extras"
@@ -19,6 +19,8 @@ help:
 	@echo "compat-test   unit tests of the host compatibility CI helpers (integrations/compat)"
 	@echo "hermes-compat the Hermes plugin on real Hermes images (needs Docker): the pinned floor and"
 	@echo "              latest, or HERMES_IMAGE=<image>"
+	@echo "openclaw-compat  the OpenClaw plugin on real OpenClaw images (needs Docker and Node): the"
+	@echo "              pinned floor and latest, or OPENCLAW_IMAGE=<image>"
 
 # The gitleaks release the vendor key shapes of the second redaction pass are generated from.
 # Also the gitleaks image security.yml scans with. CI checks the file against it;
@@ -83,3 +85,8 @@ compat-test:
 HERMES_IMAGE ?= $(shell python3 integrations/compat/compat.py images --host hermes)
 hermes-compat:
 	for image in $(HERMES_IMAGE); do integrations/hermes/compat/run.sh "$$image" || exit 1; done
+
+# The blocking set by default; OPENCLAW_IMAGE=ghcr.io/openclaw/openclaw:main for any other image.
+OPENCLAW_IMAGE ?= $(shell python3 integrations/compat/compat.py images --host openclaw)
+openclaw-compat:
+	for image in $(OPENCLAW_IMAGE); do integrations/openclaw/compat/run.sh "$$image" || exit 1; done
