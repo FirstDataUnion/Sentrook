@@ -278,6 +278,13 @@ is the same either way.
 A snooze never allows a block, a review the scanner marks as enforced, or anything on an unattended run (cron jobs,
 subagents, webhooks): blocks still stop, and a review on an unattended run is held for you instead.
 
+A chat you attend is a direct chat with the agent: a DM, webchat or the Control UI. A group or channel room is not,
+even when you wrote the message, and neither is a turn of OpenClaw's own system agent. The plugin tells them apart by
+the session key OpenClaw gives the turn (a room has its own `...:group:...` or `...:channel:...` key; with the
+default `session.dmScope: "main"` a DM runs in the agent's main session). If you set `session.groupScope: "main"`,
+globally or on a route binding, rooms share the main session too, so the plugin can no longer tell a DM from a room
+there and treats those turns as not attended.
+
 On Mattermost, a message that starts with `/` is taken by Mattermost as one of its own slash commands. Mention the
 bot first: `@yourbot /sentrook status`.
 

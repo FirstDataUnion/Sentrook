@@ -21,7 +21,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 5
+version: 6
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -195,7 +195,11 @@ host_approvals:
 # OpenClaw's approvals commands (`exec-policy`, `approvals set|allowlist add`), launching Hermes
 # with YOLO or hook consent, the environment (`launchctl setenv`, assignments), a write, edit or
 # patch of a host file (file tools, `apply_patch`, redirects, `tee`, `sed -i`, `perl -pi`, `yq -i`,
-# `sponge`, inline code that writes), and a host approvals or config file replaced from elsewhere.
+# `sponge`, inline code that writes, a process substitution `> >(tee file)`), a host approvals or
+# config file replaced from elsewhere, and SQL that writes OpenClaw's approvals table in its state
+# database (`state_db`). A patch or batch file a config command reads and the call does not show
+# (`config patch --file`, `config patch --stdin < file`, `config set --batch-file`) gets the review
+# tier; an `@file` value stays quiet (the session decides).
 #
 # A file change counts only when the loosening setting is in the text written and not in the text
 # it replaces, so tightening and moving a setting do not fire. Reads never fire.
@@ -251,6 +255,9 @@ approval_loosening:
   #           `bare` (unambiguous in the main config file); otherwise the fragment cannot be
   #           decided and gets the review tier, unless the key is `ambiguous` (`mode`: both hosts
   #           have other `mode` keys), when it stays quiet.
+  #           An `ambiguous` key in such a fragment counts after all when the fragment's top
+  #           level also holds one of its `siblings` (`key:value` pairs only its section has,
+  #           such as `"host": "gateway"` beside exec's `mode`).
   # `host`: the host whose files and commands the setting belongs to (both when absent); a
   # setting never counts in the other host's tree.
   settings:
@@ -300,6 +307,7 @@ approval_loosening:
       parents: 'approvals'
       old_values: 'manual|smart'
       ambiguous: true
+      siblings: '(?:cron_mode|single_query_mode|unattended_mode):.*'
     # OpenClaw `tools.exec.mode: full`. OpenClaw has other `mode` keys (`discovery.mdns.mode`).
     - key: 'mode'
       value: 'full'
@@ -308,6 +316,7 @@ approval_loosening:
       parents: 'exec'
       old_values: 'deny|allowlist|ask|auto'
       ambiguous: true
+      siblings: '(?:safeBins|safeBinTrustedDirs|safeBinProfiles|strictInlineEval|pathPrepend|applyPatch|notifyOnExit|notifyOnExitEmptySuccess|approvalRunningNoticeMs|backgroundMs|grantExpiryDays|commandHighlighting):.*|host:(?:gateway|sandbox|node)'
     # OpenClaw legacy `tools.exec.security: full` and `ask: off`; in openclaw.json only exec has them.
     - key: 'security'
       value: 'full'
@@ -434,6 +443,32 @@ approval_loosening:
       subcommand: approvals
       verb: allowlist
       allowlist_add: add
+  # OpenClaw 2026.11+ keeps exec approvals in its state database (`<state>/state/openclaw.sqlite`,
+  # table `exec_approvals_config`: the approvals document in `raw_json`, its defaults also in
+  # columns); `exec-approvals.json` is only a migration source there. A command or inline code that
+  # writes the table (`UPDATE`, `INSERT`, `REPLACE`, `DELETE`, `DROP`, `ALTER`, `.import`) is read
+  # as a write to an approvals file: a loosening value in the state DB of a host tree blocks; any
+  # other write to the table there gets the review tier, and so does any write whose database the
+  # scan cannot place (a variable, an `openclaw.sqlite` outside the trees, a custom state dir).
+  # Another database outside the trees is not the host's. Reads never fire.
+  # `files`: the state DB relative to a tree root. `basename`: a state DB the scan cannot place.
+  # `columns`: a column -> the approvals setting it holds. `writers`: inline code that uses a SQLite
+  # library (the `sqlite3` CLI is read as a command). `connect`: calls in inline code whose first
+  # argument is the database; code that writes the table through a connection the scan does not
+  # recognise gets the review tier. A statement's values end at its `WHERE` or `RETURNING`; the
+  # scan does not bind a statement to a connection, so code that opens the tree's state DB beside
+  # another database gets the review tier.
+  state_db:
+    host: openclaw
+    files: 'state/openclaw\.sqlite'
+    basename: 'openclaw\.sqlite'
+    table: 'exec_approvals_config'
+    columns:
+      default_ask_fallback: askFallback
+      default_security: security
+      default_ask: ask
+    writers: '\bimport\s+sqlite3\b|\bfrom\s+sqlite3\s+import\b|\bsqlite3\.connect\b|node:sqlite|better-sqlite3|bun:sqlite|\bDatabaseSync\b'
+    connect: '\bsqlite3\.connect|\bnew\s+Database(?:Sync)?\b'
   # Launching the host with approvals or hook consent bypassed: a flag on the CLI head, or the
   # environment variable set anywhere in the command.
   launch_flags:
