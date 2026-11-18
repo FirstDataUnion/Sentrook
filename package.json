@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "changeset": "changeset",
-    "version": "changeset version && npm install --package-lock-only"
+    "version": "changeset version && node --experimental-strip-types integrations/openclaw/plugin/syncVersion.ts && npm install --package-lock-only"
   },
   "devDependencies": {
     "@changesets/cli": "3.0.2",
