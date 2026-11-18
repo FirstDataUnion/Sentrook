@@ -1,27 +1,57 @@
-# Gated promote of integrations/hermes/plugin → FirstDataUnion/Sentrook-hermes.
-# Manual only. Merging to main never updates the mirror.
+# Hermes plugin release: integrations/hermes/plugin → the install mirror FirstDataUnion/Sentrook-hermes,
+# tagged hermes-plugin-v<version>, and the files for the Hermes plugin catalog pull request.
+# Manual only; merging to main never updates the mirror. The steps are integrations/hermes/release/release.py.
 #
-# Operator: dispatch this workflow → approve Environment release-hermes.
-# Auth: Environment secret MIRROR_GITHUB_TOKEN — fine-grained PAT (or GitHub App
-# installation token) with Contents: Read and write on Sentrook-hermes only.
-# Prefer that over enabling org-wide deploy keys.
+#   build    plugin tests; refuses a version (plugin.yaml) with no CHANGELOG.md entry; builds the mirror
+#            commit locally: the plugin without tests, the monorepo's README.md and CHANGELOG.md, and the
+#            mirror's own LICENSE, SECURITY.md, CONTRIBUTING.md and .github. No secrets.
+#   compat   host-compat.yml on that exact tree, on the declared floor and the latest Hermes: the catalog
+#            validator, install, verify and one agent turn. What gets tagged is what was validated.
+#   promote  (skipped on a dry run; Environment release-hermes, approved by a person) rebuilds the commit,
+#            checks it is the one validated, pushes it to the mirror's main and tags it.
+#   catalog  (skipped for a pre-release) writes plugin-catalog/sentrook.yaml with the tagged sha, the
+#            version and requires_hermes from plugin.yaml, and the PR title and body; job summary and
+#            artifact catalog-pr. A dry run writes them for the commit it built, without pushing it.
 #
-# Mirror is install-only. Source of truth remains this monorepo.
+# Releasing: add a `## <version>` entry to integrations/hermes/plugin/CHANGELOG.md with the version bump in
+# plugin.yaml (and PLUGIN_VERSION in planir.py; a test keeps them equal); merge; dispatch this workflow,
+# dry_run first if in doubt; approve Environment release-hermes. Then open the catalog PR by hand (below).
+#
+# The catalog PR stays a person's step: the catalog takes submissions from the plugin's owner or a major
+# contributor (catalog rule 5). From your fork of NousResearch/hermes-agent, put the artifact's
+# plugin-catalog/sentrook.yaml in place and open the PR with pr-title.txt and pr-body.md.
+# Batching, since every catalog PR is a full review:
+#   - At most one catalog PR open. If one is waiting, push the newer sentrook.yaml to its branch and replace
+#     its title and body with the new ones (they cover everything since the pinned version) instead of
+#     opening a second. The job summary names an open PR when it finds one.
+#   - A security fix goes as its own PR, flagged in the title: dispatch with security_fix.
+#   - Pre-releases (prerelease) are only tagged (the mirror's main stays at the last release), for testers
+#     who install the tag directly
+#     (`hermes plugins install FirstDataUnion/Sentrook-hermes@hermes-plugin-v<version>`); they get no
+#     catalog PR.
+#
+# Auth: Environment secret MIRROR_GITHUB_TOKEN, a fine-grained PAT (or GitHub App installation token) with
+# Contents: Read and write on Sentrook-hermes only. Only the promote job can read it.
 name: release-hermes-plugin
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Run tests + assemble tree only; skip push/tag to mirror
+        description: Build, check and write the catalog files; push and tag nothing
         required: false
         type: boolean
         default: false
-      create_tag:
-        description: Create annotated tag hermes-plugin-v* on the mirror from plugin.yaml version
+      prerelease:
+        description: Tag the mirror for testers only; no catalog PR files
         required: false
         type: boolean
-        default: true
+        default: false
+      security_fix:
+        description: A security fix; the catalog PR goes on its own, flagged in the title
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,24 +62,147 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  PLUGIN_DIR: integrations/hermes/plugin
   MIRROR_REPO: FirstDataUnion/Sentrook-hermes
 
 jobs:
-  # The plugin on real Hermes (the declared floor and the latest stable release) before anything is
-  # promoted; see host-compat.yml.
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+      tag: ${{ steps.build.outputs.tag }}
+      sha: ${{ steps.build.outputs.sha }}
+    steps:
+      - name: Checkout Sentrook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        run: make install
+
+      - name: CHANGELOG entry for this version
+        run: |
+          set -euo pipefail
+          version=$(uv run python integrations/hermes/release/release.py version)
+          echo "## CHANGELOG $version" >>"$GITHUB_STEP_SUMMARY"
+          uv run python integrations/hermes/release/release.py changelog --version "$version" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Hermes plugin and release tests
+        run: make hermes-plugin-test hermes-release-test
+
+      # The mirror is public: the commit is built without the mirror token.
+      - name: Build the mirror commit
+        id: build
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release"
+          uv run python integrations/hermes/release/release.py build \
+            --mirror "https://github.com/$MIRROR_REPO.git" --out "$out" --upstream-sha "$GITHUB_SHA"
+          jq -r '"version=\(.version)", "tag=\(.tag)", "sha=\(.sha)"' "$out/release.json" >>"$GITHUB_OUTPUT"
+          echo "Mirror commit: $(jq -r '"\(.sha) on \(.parent) (\(.tag))"' "$out/release.json")"
+          # A tag is never moved: stop before the checks rather than at the push.
+          tag=$(jq -r .tag "$out/release.json")
+          if [ -n "$(git ls-remote --tags "https://github.com/$MIRROR_REPO.git" "refs/tags/$tag")" ]; then
+            echo "Tag $tag already exists on $MIRROR_REPO: bump the version in plugin.yaml (and CHANGELOG.md)." >&2
+            exit 1
+          fi
+
+      - name: Keep the release record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hermes-release
+          path: ${{ runner.temp }}/release/release.json
+          retention-days: 30
+
+      - name: Keep the mirror tree
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hermes-mirror-tree
+          path: ${{ runner.temp }}/release/tree
+          include-hidden-files: true
+          retention-days: 30
+
+  # The plugin on real Hermes (the declared floor and the latest stable release), on the tree about to be
+  # tagged; see host-compat.yml.
   compat:
+    needs: build
     uses: ./.github/workflows/host-compat.yml
     permissions:
       contents: read
     with:
       mode: release
       hosts: hermes
+      plugin-artifact: hermes-mirror-tree
 
   promote:
-    needs: compat
+    needs: [build, compat]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     environment: release-hermes
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Sentrook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The mirror push carries its own token; keep this repository's out of git's config.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        run: make install
+
+      - name: The release record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hermes-release
+          path: ${{ runner.temp }}/record
+
+      - name: Push and tag the validated commit
+        env:
+          MIRROR_GITHUB_TOKEN: ${{ secrets.MIRROR_GITHUB_TOKEN }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MIRROR_GITHUB_TOKEN}" ]; then
+            echo "MIRROR_GITHUB_TOKEN is empty on Environment release-hermes." >&2
+            echo "Create a fine-grained PAT with Contents: Read and write on $MIRROR_REPO only, then:" >&2
+            echo "  gh secret set MIRROR_GITHUB_TOKEN --repo FirstDataUnion/Sentrook --env release-hermes" >&2
+            exit 1
+          fi
+          # A pre-release is a tag only: the mirror's main, which an unpinned install follows, stays put.
+          flag=()
+          [ "$PRERELEASE" != true ] || flag=(--tag-only)
+          # x-access-token works for fine-grained PATs and GitHub App tokens; release.py never prints the URL.
+          MIRROR_URL="https://x-access-token:${MIRROR_GITHUB_TOKEN}@github.com/${MIRROR_REPO}.git" \
+            uv run python integrations/hermes/release/release.py push \
+              --release "$RUNNER_TEMP/record/release.json" --out "$RUNNER_TEMP/promote" "${flag[@]}"
+
+  catalog:
+    needs: [build, compat, promote]
+    # After the tag on a real release; on a dry run, for the commit the build made.
+    if: >-
+      ${{ !cancelled() && !inputs.prerelease
+        && needs.build.result == 'success' && needs.compat.result == 'success'
+        && (needs.promote.result == 'success' || (inputs.dry_run && needs.promote.result == 'skipped')) }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -66,168 +219,111 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install pytest + PyYAML
+      - name: Install
+        run: make install
+
+      - name: The release record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: hermes-release
+          path: ${{ runner.temp }}/record
+
+      # The catalog's current entry makes this a SHA bump (changes since its version, the commit range);
+      # none makes it the first submission. Any other failure stops here rather than guess which.
+      - name: The catalog's current entry
         run: |
           set -euo pipefail
-          uv venv .venv
-          # shellcheck disable=SC1091
-          source .venv/bin/activate
-          uv pip install pytest pyyaml
+          prev="$RUNNER_TEMP/previous"
+          mkdir -p "$prev"
+          code=$(curl -sS -o "$prev/entry.yaml" -w '%{http_code}' \
+            https://raw.githubusercontent.com/NousResearch/hermes-agent/main/plugin-catalog/sentrook.yaml)
+          case "$code" in
+            200)
+              sha=$(uv run python -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["sha"])' "$prev/entry.yaml")
+              if ! curl -fsS -o "$prev/README.md" \
+                "https://raw.githubusercontent.com/$MIRROR_REPO/$sha/README.md"; then
+                echo "::warning::could not read the mirror README at $sha; the PR body lists the disclosures in full"
+                : >"$prev/README.md"
+              fi ;;
+            404) : >"$prev/entry.yaml"; echo "No catalog entry yet: first submission." ;;
+            *) echo "Reading the catalog entry failed (HTTP $code)" >&2; exit 1 ;;
+          esac
 
-      - name: Hermes plugin tests
-        run: |
-          set -euo pipefail
-          # shellcheck disable=SC1091
-          source .venv/bin/activate
-          make hermes-plugin-test
-
-      - name: Read plugin version
-        id: meta
-        run: |
-          set -euo pipefail
-          # shellcheck disable=SC1091
-          source .venv/bin/activate
-          version="$(python - <<'PY'
-          from pathlib import Path
-          import yaml
-          doc = yaml.safe_load(Path("integrations/hermes/plugin/plugin.yaml").read_text())
-          print(doc["version"])
-          PY
-          )"
-          {
-            echo "version=${version}"
-            echo "tag=hermes-plugin-v${version}"
-          } >> "${GITHUB_OUTPUT}"
-          echo "Will promote plugin.yaml version ${version}"
-
-      - name: Assemble mirror tree
-        run: |
-          set -euo pipefail
-          stage="${RUNNER_TEMP}/hermes-mirror"
-          mkdir -p "${stage}"
-          # Runtime plugin only — tests stay in the monorepo.
-          rsync -a \
-            --exclude '__pycache__/' \
-            --exclude '*.py[cod]' \
-            --exclude 'tests/' \
-            --exclude '.pytest_cache/' \
-            "${PLUGIN_DIR}/" "${stage}/"
-          test -f "${stage}/plugin.yaml"
-          test -f "${stage}/__init__.py"
-          test ! -e "${stage}/tests"
-          # Semantic checks (version, provides_hooks == EXPECTED_HOOKS) run in
-          # make hermes-plugin-test (tests/test_pack_check.py) before this step.
-          # Preserve / restore install-mirror docs from the live mirror tip when
-          # promoting; they are authored on the mirror seed, not in PLUGIN_DIR.
-          echo "Assembled $(find "${stage}" -type f | wc -l | tr -d ' ') plugin files"
-
-      - name: Push promote to mirror
-        if: ${{ !inputs.dry_run }}
+      - name: Catalog entry and PR text
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          TAG: ${{ steps.meta.outputs.tag }}
-          CREATE_TAG: ${{ inputs.create_tag }}
-          UPSTREAM_SHA: ${{ github.sha }}
-          MIRROR_GITHUB_TOKEN: ${{ secrets.MIRROR_GITHUB_TOKEN }}
+          SECURITY_FIX: ${{ inputs.security_fix }}
         run: |
           set -euo pipefail
-          if [ -z "${MIRROR_GITHUB_TOKEN}" ]; then
-            echo "MIRROR_GITHUB_TOKEN is empty on Environment release-hermes." >&2
-            echo "Create a fine-grained PAT with Contents: Read and write on" >&2
-            echo "FirstDataUnion/Sentrook-hermes only, then:" >&2
-            echo "  gh secret set MIRROR_GITHUB_TOKEN --repo FirstDataUnion/Sentrook --env release-hermes" >&2
-            exit 1
-          fi
-          stage="${RUNNER_TEMP}/hermes-mirror"
-          work="${RUNNER_TEMP}/hermes-mirror-git"
-          rm -rf "${work}"
-          # Drop credentials that actions/checkout may have set globally for
-          # FirstDataUnion/Sentrook — otherwise git can mix tokens.
-          git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          flag=()
+          [ "$SECURITY_FIX" != true ] || flag=(--security-fix)
+          uv run python integrations/hermes/release/release.py catalog \
+            --release "$RUNNER_TEMP/record/release.json" --out "$RUNNER_TEMP/catalog" \
+            --previous-entry "$RUNNER_TEMP/previous/entry.yaml" \
+            --previous-readme "$RUNNER_TEMP/previous/README.md" "${flag[@]}"
 
-          # x-access-token works for fine-grained PATs and GitHub App tokens.
-          # Keep the token only in the remote URL used for fetch/push (not printed).
-          authed_remote="https://x-access-token:${MIRROR_GITHUB_TOKEN}@github.com/${MIRROR_REPO}.git"
-          git clone --depth 1 "${authed_remote}" "${work}"
-          cd "${work}"
-          # Redact token from `git remote -v` / logs; re-auth per push via GIT_CONFIG.
-          git remote set-url origin "https://github.com/${MIRROR_REPO}.git"
-
-          # Keep mirror-authored docs; replace everything else with the stage.
-          keep_readme=0
-          keep_contributing=0
-          keep_security=0
-          keep_license=0
-          keep_github=0
-          [ -f README.md ] && keep_readme=1 && cp README.md "${RUNNER_TEMP}/keep-README.md"
-          [ -f CONTRIBUTING.md ] && keep_contributing=1 && cp CONTRIBUTING.md "${RUNNER_TEMP}/keep-CONTRIBUTING.md"
-          [ -f SECURITY.md ] && keep_security=1 && cp SECURITY.md "${RUNNER_TEMP}/keep-SECURITY.md"
-          [ -f LICENSE ] && keep_license=1 && cp LICENSE "${RUNNER_TEMP}/keep-LICENSE"
-          [ -d .github ] && keep_github=1 && cp -a .github "${RUNNER_TEMP}/keep-github"
-
-          # Wipe tracked content except .git
-          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          rsync -a "${stage}/" ./
-
-          if [ "${keep_readme}" = 1 ]; then cp "${RUNNER_TEMP}/keep-README.md" README.md; fi
-          if [ "${keep_contributing}" = 1 ]; then cp "${RUNNER_TEMP}/keep-CONTRIBUTING.md" CONTRIBUTING.md; fi
-          if [ "${keep_security}" = 1 ]; then cp "${RUNNER_TEMP}/keep-SECURITY.md" SECURITY.md; fi
-          if [ "${keep_license}" = 1 ]; then cp "${RUNNER_TEMP}/keep-LICENSE" LICENSE; fi
-          if [ "${keep_github}" = 1 ]; then rm -rf .github && cp -a "${RUNNER_TEMP}/keep-github" .github; fi
-
-          # Provenance marker (safe to overwrite each promote)
+      - name: Open catalog PRs for sentrook
+        id: open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Advisory: the batching policy allows one open catalog PR.
+          open=$(gh pr list -R NousResearch/hermes-agent --state open --search "sentrook in:title" \
+            --json number,title,url --jq '.[] | "- #\(.number) \(.title): \(.url)"' 2>/dev/null || echo "(could not list)")
           {
-            echo "upstream_repo=FirstDataUnion/Sentrook"
-            echo "upstream_path=integrations/hermes/plugin"
-            echo "upstream_sha=${UPSTREAM_SHA}"
-            echo "plugin_version=${VERSION}"
-            echo "promoted_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > .release-mirror
-
-          git config user.name "Sentrook Release Bot"
-          git config user.email "noreply@firstdataunion.org"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No file changes vs mirror tip — still retagging if requested."
-          else
-            msg_file="$(mktemp)"
-            {
-              echo "release: promote Sentrook Hermes plugin v${VERSION}"
-              echo ""
-              echo "Upstream: FirstDataUnion/Sentrook@${UPSTREAM_SHA}"
-              echo "Source: integrations/hermes/plugin"
-            } > "${msg_file}"
-            git commit -F "${msg_file}"
-            git push "${authed_remote}" HEAD:main
-          fi
-
-          if [ "${CREATE_TAG}" = "true" ]; then
-            if git ls-remote --tags "${authed_remote}" "refs/tags/${TAG}" | grep -q "${TAG}"; then
-              echo "Tag ${TAG} already exists on mirror — refusing to move it" >&2
-              exit 1
-            fi
-            git tag -a "${TAG}" -m "Sentrook Hermes plugin ${VERSION} (upstream ${UPSTREAM_SHA})"
-            git push "${authed_remote}" "refs/tags/${TAG}"
-          fi
+            echo "list<<EOF"
+            echo "${open:-none}"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Summary
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
-          TAG: ${{ steps.meta.outputs.tag }}
           DRY: ${{ inputs.dry_run }}
-          SHA: ${{ github.sha }}
+          SECURITY_FIX: ${{ inputs.security_fix }}
+          OPEN: ${{ steps.open.outputs.list }}
         run: |
           set -euo pipefail
+          c="$RUNNER_TEMP/catalog"
           {
-            echo "## Hermes plugin mirror release"
-            echo ""
-            echo "- Upstream SHA: \`${SHA}\`"
-            echo "- plugin.yaml version: \`${VERSION}\`"
-            echo "- Mirror: https://github.com/${MIRROR_REPO}"
-            if [[ "${DRY}" == "true" ]]; then
-              echo "- Mode: **dry_run** (mirror not updated)"
-            else
-              echo "- Tag: \`${TAG}\` (if create_tag=true)"
-              echo "- Install: \`hermes plugins install ${MIRROR_REPO} --enable\`"
+            echo "## Catalog PR files"
+            echo
+            if [ "$DRY" = true ]; then
+              echo "**Dry run:** the sha below is the commit this run built; nothing was pushed or tagged."
+              echo
             fi
-          } >> "${GITHUB_STEP_SUMMARY}"
+            echo "Open catalog PRs for sentrook on NousResearch/hermes-agent:"
+            echo
+            echo "$OPEN"
+            echo
+            if [ "$OPEN" = "(could not list)" ]; then
+              echo "Could not check for open catalog PRs: look before opening one (at most one open, see the workflow's header)."
+            elif [ "$OPEN" != none ] && [ "$SECURITY_FIX" != true ]; then
+              echo "One is open: push this sentrook.yaml to its branch and replace its title and body with the ones below, instead of opening another."
+            else
+              echo "Open the PR from your fork of NousResearch/hermes-agent with the files below (artifact \`catalog-pr\`)."
+            fi
+            echo
+            echo "### Title"
+            echo
+            echo '```text'
+            cat "$c/pr-title.txt"
+            echo '```'
+            echo
+            echo "### plugin-catalog/sentrook.yaml"
+            echo
+            echo '```yaml'
+            cat "$c/plugin-catalog/sentrook.yaml"
+            echo '```'
+            echo
+            echo "### Body"
+            echo
+            echo '````markdown'
+            cat "$c/pr-body.md"
+            echo '````'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the catalog PR files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: catalog-pr
+          path: ${{ runner.temp }}/catalog
+          retention-days: 90
