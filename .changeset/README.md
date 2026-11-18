@@ -25,21 +25,26 @@ Pick `patch` / `minor` / `major`, write a user-facing summary. Commit the new
 
 On `main`, `.github/workflows/changeset-version.yml` opens a **Version** PR
 (`changeset version` + lockfile). Merge that to bump
-`integrations/openclaw/plugin/package.json` and `CHANGELOG.md`. Then dispatch
+`integrations/openclaw/plugin/package.json` and write the version's entry in
+`integrations/openclaw/plugin/CHANGELOG.md`; bump `PLUGIN_VERSION` in
+`planir.ts` to match in the same PR (a test keeps them equal). Then dispatch
 Sentrook Actions → **`release-plugin`** with `channel=next` or `latest`
-(Environment `release-npm`, OIDC Trusted Publisher). That workflow is the only
-npm write — merging never publishes.
+(`dry_run` first if in doubt; Environment `release-npm`, OIDC Trusted
+Publisher). It refuses a version with no CHANGELOG entry, runs the OpenClaw
+compatibility check on the packed tarball, then publishes that tarball to
+ClawHub (with `clawhub`) and npm. That workflow is the only npm write —
+merging never publishes.
 
 Local equivalent: `make plugin-version`.
 
 ## Release candidates
 
-Prerelease versions are `x.y.z-rc.N` (npm dist-tag `next`). Enter Changesets
-pre mode before the version bump:
+Prerelease versions are `x.y.z-beta.N` (npm dist-tag `next`, ClawHub tag
+`beta`). Enter Changesets pre mode before the version bump:
 
 ```bash
-npx changeset pre enter rc
-make plugin-version          # → e.g. 1.0.1-rc.0
+npx changeset pre enter beta
+make plugin-version          # → e.g. 2.0.1-beta.0
 npx changeset pre exit       # before the matching stable bump
 ```
 

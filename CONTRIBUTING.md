@@ -30,7 +30,7 @@ contributing to these it is not yet ready, but we'd still love to hear your thou
    the full policy-bound engine regression if you have FIDU maintainer access
    (`make test-engine` from this repo). Do not copy production rules or engine
    policy tests into this tree. After merge to `main`, Sentrook may dispatch a
-   private full-eval for the SHA (non-blocking on merge; required before release).
+   private full-eval for the SHA (non-blocking on merge).
 4. If you change OpenClaw plugin behaviour or its installable API, add a
    changeset (`make plugin-changeset`). Docs/test-only plugin PRs skip this.
    Merging a changeset does **not** publish to npm; a Version PR bumps

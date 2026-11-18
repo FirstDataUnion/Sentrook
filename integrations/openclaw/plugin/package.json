@@ -32,7 +32,8 @@
     "traffic.ts",
     "verify.ts",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "repository": {
     "type": "git",
