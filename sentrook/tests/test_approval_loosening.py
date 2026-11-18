@@ -4,8 +4,8 @@ An agent that turns approvals off, sets the approval fallback to allow, enables 
 wildcard in an allowlist removes the human from the loop for every later call, so such a change is
 blocked whatever route it takes: the host's config command, its approvals commands, a direct write,
 edit or patch of the config or approvals file, or a shell redirect into it. Tightening, unrelated
-keys, reads, values read from a file the call does not show, and a narrow allowlist entry (one named
-command) do not take the floor.
+keys, reads, `@file` values and a narrow allowlist entry (one named command) do not take the floor; a
+patch or batch file the call does not show gets the review tier.
 
 Paths, hosts and file names are invented.
 """
@@ -347,7 +347,7 @@ def test_sibling_loosening_blocks_the_batch():
         ex('openclaw approvals allowlist add --agent "*" "/usr/bin/uname"'),
         h_ex("hermes config set command_allowlist '[\"git status\"]'"),
         h_patch(H_CONFIG, "command_allowlist: []", "command_allowlist:\n- npm test"),
-        # A value read from a file the call does not show.
+        # A value read from a file the call does not show: the session decides, not this floor.
         ex("openclaw config set exec.allowlist @/home/me/workspace/config/exec-allow.json"),
         ex("openclaw config set approvals @/home/me/workspace/config/approvals.json"),
         # Documentation that quotes a setting, and a scratch value outside any config file.
@@ -1169,6 +1169,292 @@ def test_set_keeping_the_policy_stays_silent(command):
     ],
 )
 def test_more_blind_replacements_get_the_review_tier(command):
+    reviews(ex(command))
+
+
+# --------------------------------------------------------------------------- OpenClaw SQLite approvals store
+#
+# OpenClaw 2026.11 keeps exec approvals in its state database, table `exec_approvals_config`
+# (`raw_json` plus the `default_security`, `default_ask` and `default_ask_fallback` columns).
+# A loosening write naming the table in the state DB of a host tree blocks; any other write to the
+# table there, and any write whose database the scan cannot place, gets the review tier.
+
+DB = "~/.openclaw/state/openclaw.sqlite"
+
+
+def sql(statement: str, db: str = DB) -> dict:
+    return ex(f'sqlite3 {db} "{statement}"')
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        sql("UPDATE exec_approvals_config SET default_security='full'"),
+        sql("UPDATE exec_approvals_config SET default_ask = 'off', updated_at_ms = 0"),
+        sql("update exec_approvals_config set default_ask_fallback='allow'"),
+        sql(
+            "UPDATE exec_approvals_config SET raw_json = "
+            "json_set(raw_json, '$.defaults.askFallback', 'full')"
+        ),
+        sql(
+            "UPDATE exec_approvals_config SET raw_json = "
+            "json_set(raw_json, '$.agents.main.allowlist', json('[{\\\"pattern\\\": \\\"*\\\"}]'))"
+        ),
+        sql(
+            "UPDATE exec_approvals_config SET raw_json = "
+            "json_patch(raw_json, json_object('defaults', json_object('security', 'full')))"
+        ),
+        sql(
+            "INSERT OR REPLACE INTO exec_approvals_config "
+            "(config_key, raw_json, has_socket_token, default_security, agent_count, "
+            "allowlist_count, updated_at_ms) VALUES ('default', '{}', 0, 'full', 1, 0, 0)"
+        ),
+        ex(
+            f"sqlite3 {DB} <<'SQL'\n"
+            "UPDATE exec_approvals_config\n"
+            '  SET raw_json = \'{"version": 1, "defaults": {"security": "full", "ask": "off"}}\';\n'
+            "SQL"
+        ),
+        ex(f"echo \"UPDATE exec_approvals_config SET default_ask='never';\" | sqlite3 {DB}"),
+        ex(
+            "sqlite3 -cmd '.timeout 5' ~/.openclaw-work/state/openclaw.sqlite "
+            "\"UPDATE exec_approvals_config SET default_security='full'\""
+        ),
+        ex(
+            "cd ~/.openclaw/state && sqlite3 openclaw.sqlite "
+            "\"UPDATE exec_approvals_config SET default_security='full'\""
+        ),
+        ex(
+            'python3 -c "import sqlite3, os; '
+            "c = sqlite3.connect(os.path.expanduser('~/.openclaw/state/openclaw.sqlite')); "
+            'c.execute(\\"UPDATE exec_approvals_config SET default_ask=\'off\'\\"); c.commit()"'
+        ),
+        ex(
+            "node -e \"const {DatabaseSync} = require('node:sqlite'); "
+            "const db = new DatabaseSync(require('os').homedir() + '/.openclaw/state/openclaw.sqlite'); "
+            'db.exec(\\"UPDATE exec_approvals_config SET default_security=\'full\'\\")"'
+        ),
+    ],
+    ids=[
+        "column security",
+        "column ask",
+        "column fallback lower case",
+        "json_set fallback",
+        "json_set broad allowlist",
+        "json_patch object",
+        "insert columns",
+        "heredoc raw_json",
+        "piped",
+        "profile tree with -cmd",
+        "cd then relative db",
+        "python sqlite3",
+        "node sqlite",
+    ],
+)
+def test_sqlite_approvals_store_loosening_fires(raw):
+    fires(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Any other write to the table in the host's state DB.
+        sql("UPDATE exec_approvals_config SET default_security='allowlist'"),
+        sql("DELETE FROM exec_approvals_config"),
+        sql("DROP TABLE IF EXISTS exec_approvals_config"),
+        ex(f"sqlite3 {DB} '.import /tmp/approvals.csv exec_approvals_config'"),
+        # A database the scan cannot place: a variable, a custom state dir, unresolved code.
+        sql(
+            "UPDATE exec_approvals_config SET default_security='full'",
+            db='"$OPENCLAW_STATE_DIR/state/openclaw.sqlite"',
+        ),
+        sql(
+            "UPDATE exec_approvals_config SET default_security='full'",
+            db="/srv/claw/state/openclaw.sqlite",
+        ),
+        ex(
+            'python3 -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); '
+            'c.execute(\\"UPDATE exec_approvals_config SET default_ask=\'off\'\\")" "$DB"'
+        ),
+    ],
+    ids=["tighten", "delete", "drop", "import", "variable db", "custom state dir", "argv db"],
+)
+def test_sqlite_approvals_store_other_writes_get_the_review_tier(raw):
+    reviews(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        sql("SELECT raw_json FROM exec_approvals_config"),
+        ex(f"sqlite3 {DB} '.dump exec_approvals_config' > /tmp/approvals.sql"),
+        ex(f"sqlite3 -readonly {DB} 'select default_security from exec_approvals_config'"),
+        sql("UPDATE sessions SET title='full'"),
+        sql("UPDATE exec_approvals_config SET default_security='full'", db="~/workspace/app.db"),
+        ex("grep -rn exec_approvals_config ~/workspace/docs"),
+        ex("echo \"UPDATE exec_approvals_config SET default_security='full'\""),
+        ex(
+            'python3 -c "import sqlite3, os; '
+            "c = sqlite3.connect(os.path.expanduser('~/.openclaw/state/openclaw.sqlite')); "
+            "print(c.execute('SELECT raw_json FROM exec_approvals_config').fetchone())\""
+        ),
+    ],
+    ids=["select", "dump", "readonly select", "other table", "other db", "grep", "echo", "py read"],
+)
+def test_sqlite_approvals_store_reads_and_other_tables_stay_silent(raw):
+    stays_silent(raw)
+
+
+U = "UPDATE exec_approvals_config SET default_security='full'"
+
+
+def test_sqlite_uri_to_the_tree_db_fires():
+    fires(ex(f"sqlite3 'file:/home/me/.openclaw/state/openclaw.sqlite?mode=rw' \"{U}\""))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A condition is not a value written: tightening, or a delete, with a loose WHERE.
+        sql(
+            "UPDATE exec_approvals_config SET default_security='allowlist' "
+            "WHERE default_security='full'"
+        ),
+        sql("DELETE FROM exec_approvals_config WHERE default_ask='off'"),
+        # Each argument is its own statement.
+        ex(
+            f"sqlite3 {DB} \"UPDATE exec_approvals_config SET default_ask='always'\" "
+            "\"SELECT * FROM t WHERE default_security='full'\""
+        ),
+        # A connection the scan does not recognise.
+        ex(
+            "python3 - <<'EOF'\nimport sqlite3 as sq\n"
+            "c = sq.connect('/home/me/.openclaw/state/openclaw.sqlite')\n"
+            f'c.execute("{U}")\nEOF'
+        ),
+        # The tree DB opened beside another database: which one is written is not known.
+        ex(
+            "python3 - <<'EOF'\nimport sqlite3\n"
+            "c = sqlite3.connect('/home/me/.openclaw/state/openclaw.sqlite')\n"
+            "x = sqlite3.connect('/tmp/t.db')\n"
+            f'x.execute("{U}")\nEOF'
+        ),
+    ],
+    ids=["where tighten", "where delete", "next argument", "aliased module", "two connections"],
+)
+def test_sqlite_review_edges(raw):
+    reviews(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A heredoc fed to another command is not SQL `sqlite3` runs.
+        ex(
+            f"sqlite3 {DB} 'select count(*) from sessions'; cat > ~/workspace/notes.sql <<'EOF'\n{U};\nEOF"
+        ),
+        ex(f"sqlite3 {DB} '.tables' && python3 - <<'EOF'\nprint(\"{U}\")\nEOF"),
+        # `--file -` reads the heredoc; a redirect on another command is not the patch's stdin.
+        ex("openclaw config patch --file - <<'EOF'\n{ agents: { defaults: {} } }\nEOF"),
+        ex("echo '{\"agents\":{}}' | openclaw config patch --stdin && sort < a.txt"),
+    ],
+    ids=["heredoc to cat", "heredoc to python", "patch --file -", "stdin redirect elsewhere"],
+)
+def test_sqlite_and_patch_edges_stay_silent(raw):
+    stays_silent(raw)
+
+
+# --------------------------------------------------------------------------- forms the floor now reads
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Process substitution: the segment's output is written by the inner command.
+        h_ex("echo 'approvals:\n  mode: off' > >(tee ~/.hermes/config.yaml)"),
+        ex('printf \'{"tools":{"exec":{"security":"full"}}}\' > >(tee ~/.openclaw/openclaw.json)'),
+        # YAML explicit keys, merge keys and aliases.
+        h_write(H_CONFIG, "? approvals\n: mode: off\n"),
+        h_write(H_CONFIG, "base: &b\n  mode: off\napprovals:\n  <<: *b\n"),
+        h_write(H_CONFIG, "base: &b\n  mode: off\napprovals: *b\n"),
+        h_write(H_CONFIG, "base: &b\n  cron_mode: approve\napprovals:\n  <<: [*b]\n"),
+        # Dotted JSON5 keys.
+        oc_write(OC_CONFIG, '{"tools.exec.security": "full"}'),
+        oc_write(OC_CONFIG, '{"tools": {"exec.mode": "full"}}'),
+        oc_write(OC_CONFIG, '{"tools.exec": {"ask": "off"}}'),
+        oc_edit(APPROVALS, '"defaults.ask": "always"', '"defaults.ask": "off"'),
+        # `mode` next to an exec-only sibling, with no approvals value of its own.
+        oc_edit(OC_CONFIG, '"host": "gateway"', '"host": "gateway", "mode": "full"'),
+        oc_edit(OC_CONFIG, '"safeBins": []', '"safeBins": [], "mode": "full"'),
+        h_patch(H_CONFIG, "  cron_mode: deny", "  cron_mode: deny\n  mode: off"),
+    ],
+    ids=[
+        "hermes >(tee)",
+        "openclaw >(tee)",
+        "yaml explicit key",
+        "yaml merge key",
+        "yaml alias",
+        "yaml merge list",
+        "dotted full path",
+        "dotted under tools",
+        "dotted parent",
+        "dotted in approvals",
+        "mode beside host",
+        "mode beside safeBins",
+        "hermes mode beside cron_mode",
+    ],
+)
+def test_more_forms_fire(raw):
+    fires(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        h_write(H_CONFIG, "base: &b\n  mode: off\ntts:\n  <<: *b\n"),
+        h_write(H_CONFIG, "? tts\n: mode: off\n"),
+        oc_write(OC_CONFIG, '{"discovery.mdns.mode": "full"}'),
+        oc_write(OC_CONFIG, '{"notes": "tools.exec.security: full"}'),
+        oc_edit(OC_CONFIG, '"host": "gateway"', '"host": "gateway", "mode": "allowlist"'),
+        oc_edit(OC_CONFIG, '"port": 8080', '"port": 8080, "mode": "full"'),
+        oc_edit(OC_CONFIG, '"host": "0.0.0.0"', '"host": "0.0.0.0", "mode": "full"'),
+        h_ex("echo 'approvals:\n  mode: off' > >(grep -c mode)"),
+        ex("openclaw config patch --file ./openclaw.patch.json5 --dry-run"),
+        ex("openclaw config set agents.defaults.heartbeat.every @/home/me/workspace/every.txt"),
+    ],
+    ids=[
+        "merge under tts",
+        "explicit key tts",
+        "dotted other mode",
+        "dotted inside a string",
+        "mode beside host tightened",
+        "mode beside unrelated",
+        "mode beside a network host",
+        ">(grep)",
+        "patch file dry run",
+        "unrelated @file",
+    ],
+)
+def test_more_forms_stay_silent(raw):
+    stays_silent(raw)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "openclaw config patch --file ./openclaw.patch.json5",
+        "openclaw config patch --file=/tmp/p.json5 --replace-path tools.exec",
+        "openclaw config patch --stdin < ./openclaw.patch.json5",
+        "openclaw config set --batch-file ./config-set.batch.json",
+    ],
+    ids=[
+        "patch --file",
+        "patch --file=",
+        "patch stdin redirect",
+        "batch-file",
+    ],
+)
+def test_content_the_call_does_not_show_gets_the_review_tier(command):
     reviews(ex(command))
 
 

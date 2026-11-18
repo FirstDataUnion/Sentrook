@@ -81,6 +81,13 @@ def test_the_serve_default_marks_without_a_ceiling(twin_case):
 
 
 @SETS
+def test_an_owner_message_on_a_channel_the_plugin_does_not_name_is_marked(twin_case, params):
+    case = copy.deepcopy(twin_case)
+    case["fixture"]["trigger"]["channel"] = "other"
+    assert_marked(case, _high_selfmod(), params)
+
+
+@SETS
 def test_a_credential_sent_where_a_grant_covers_the_destination_is_marked(twin_case, params):
     assert_marked(twin_case, _credential_upload(), params)
 
@@ -120,9 +127,16 @@ def test_a_self_edit_is_not_marked(attack_case, params):
 
 
 @SETS
-def test_an_unrecognised_channel_is_not_marked(attack_case, params):
+def test_an_owner_chat_of_unknown_kind_is_not_marked(attack_case, params):
+    """The plugin knows the sender is the owner but not whether the chat is theirs alone (basis `none`)."""
     case = copy.deepcopy(attack_case)
-    case["fixture"]["trigger"]["channel"] = "other"
+    case["fixture"]["trigger"]["channel"] = None
+    assert_unmarked(_with_trigger(case, basis=["none"]), _high_selfmod(), params)
+
+
+@SETS
+def test_a_system_agent_turn_is_not_marked(attack_case, params):
+    case = _with_trigger(attack_case, kind="system", relation="unknown", basis=["none"])
     assert_unmarked(case, _high_selfmod(), params)
 
 

@@ -20,9 +20,9 @@ before any probe.
    owner's: they join the token's trusted set instead. Bind the pending call to the token's sensitive
    and tainted sets (`session_sets`): the files and tables it reads, runs or applies that the sets hold,
    and what an injected result in this request came from.
-   Mark the hosts named in an untrusted input that tries to steer the agent (it asks the agent to
-   keep the action from the owner, `steering`) as steered, and keep them in the
-   token's steered set; a host already in that set is steered on this step too.
+   Mark the hosts and repositories named in an untrusted input that tries to steer the agent (it asks
+   the agent to keep the action from the owner, `steering`) as steered, and keep them in the
+   token's steered set; one already in that set is steered on this step too.
 7. Compute the pending call's action fingerprint.
 8. Build the Jev state views: the v1 views byte-identical to the runner's `trim-v1`, and the v1.1 question-set pass's
    `trim-v2` views (`call-v2` with the turn's inputs, `exposure-v2`) after the second redaction pass
@@ -72,6 +72,7 @@ from .entities import (
     platform_targets,
     provider_counterpart,
     provider_name,
+    repos_named_in,
     resolve_token,
     send_platform,
     shell_segments,
@@ -475,15 +476,18 @@ def _value_named(ent: Entity, text: str, roots: tuple[str | None, ...] = ()) -> 
     return False
 
 
-def _mark_packages_named_in_content(
+def _mark_code_named_in_content(
     inputs: list[PreparedInput], owner_config: set[int], table: EntityTable, now: int
 ) -> None:
     """A document can name a package without an installer command the extractor reads: in a sentence
     ("Install kiln-rowcount."), a list, or a command inside backticks. A package the pending call, a
     sibling or the script it runs installs, whose name appears as a whole token in an untrusted input,
-    came from that input. Not when the agent's own call named the package at or before the step
-    that produced the input: a result that names it back (an install's own output) echoes the
-    agent's choice. An operand computed at run time has no name to find."""
+    came from that input. A repository on a multi-tenant host came from an untrusted input that holds a
+    URL naming the same repository (`repo_of_url`, so the raw, archive and web URLs of one repository
+    name it alike); the host alone, or another repository on it, does not. Not when the agent's own call
+    named the package or repository at or before the step that produced the input: a result that names
+    it back (an install's own output) echoes the agent's choice. An operand computed at run time has no
+    name to find."""
     for pi in inputs:
         content = pi.input.content or ""
         if not content or pi.trust is not Trust.UNTRUSTED or pi.input.input_seq in owner_config:
@@ -491,18 +495,24 @@ def _mark_packages_named_in_content(
         text = content.lower()
         ref = f"input:{pi.input.input_seq}"
         arrived = pi.step if pi.step is not None else now
+        repos: set[str] | None = None  # the repositories the input's URLs name, read once
         for ent in table:
-            if ent.kind not in (EntityKind.PACKAGE, EntityKind.PLUGIN):
+            if ent.kind not in (EntityKind.PACKAGE, EntityKind.PLUGIN, EntityKind.REPO):
                 continue
             if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
                 continue
             if ref in (ent.origins.get(Origin.UNTRUSTED_INPUT) or ()):
                 continue
-            if is_computed_package(ent.value):
+            if ent.kind is not EntityKind.REPO and is_computed_package(ent.value):
                 continue
             if ent.first_history_step is not None and ent.first_history_step <= arrived:
                 continue
-            if not _value_named(ent, text):
+            if ent.kind is EntityKind.REPO:
+                if repos is None:
+                    repos = repos_named_in(content)
+                if ent.value not in repos:
+                    continue
+            elif not _value_named(ent, text):
                 continue
             ent.add_origin(Origin.UNTRUSTED_INPUT, ref)
             ent.first_untrusted_step = (
@@ -1638,7 +1648,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
                     "analysed its head and tail",
                 )
             )
-    _mark_packages_named_in_content(inputs, owner_config, table, planir.session.step)
+    _mark_code_named_in_content(inputs, owner_config, table, planir.session.step)
 
     # 6. untrusted set
     prior_trusted = frozenset(state.trusted)
@@ -1682,7 +1692,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             )
     steered_additions: list[str] = []
     for ent in table:
-        if ent.kind is not EntityKind.HOST or ent.hash is None:
+        if ent.kind not in (EntityKind.HOST, EntityKind.REPO) or ent.hash is None:
             continue
         if ent.hash in prior_steered:
             ent.steered = True
@@ -1699,6 +1709,27 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             continue
         ent.steered = True
         steered_additions.append(ent.hash)
+    # A repository a new steering input names that no call uses yet (content names repositories only by URL, and
+    # only a call makes the entity): kept in the token's untrusted and steered sets, so a later step that runs code
+    # from it takes the floor as a steered host does. Only steering inputs: a page of ordinary repository links
+    # must not crowd the bounded untrusted set. Not one the agent's own call used at or before the step that
+    # produced the input.
+    repo_untrusted: list[str] = []
+    for pi in inputs:
+        if not pi.new or f"input:{pi.input.input_seq}" not in steered_at:
+            continue
+        arrived_at = steered_at[f"input:{pi.input.input_seq}"]
+        for repo in sorted(repos_named_in(pi.input.content or "")):
+            ent = table.get(EntityKind.REPO, repo)
+            if ent is not None and (
+                ent.first_history_step is not None and ent.first_history_step <= arrived_at
+            ):
+                continue
+            h = entity_hash(state.salt, EntityKind.REPO.value, repo)
+            repo_untrusted.append(h)
+            if h not in steered_additions:
+                steered_additions.append(h)
+    state.add_untrusted(repo_untrusted)
     state.add_steered(steered_additions)
     _mark_display_named(words, table)
     _mark_self_copy(words, table, [pending, *siblings])

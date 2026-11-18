@@ -233,7 +233,7 @@
     ],
     {}
    ],
-   "expect": "quiet"
+   "expect": "block"
   },
   {
    "name": "oc tee",
@@ -881,7 +881,7 @@
     ],
     {}
    ],
-   "expect": "quiet"
+   "expect": "block"
   },
   {
    "name": "oc ask off via edit fragment",
@@ -907,7 +907,7 @@
     ],
     {}
    ],
-   "expect": "quiet"
+   "expect": "block"
   },
   {
    "name": "hermes fragment mode off no old",
@@ -1644,7 +1644,7 @@
     ],
     {}
    ],
-   "expect": "quiet"
+   "expect": "block"
   },
   {
    "name": "yaml merge <<",
@@ -1656,7 +1656,7 @@
     ],
     {}
    ],
-   "expect": "quiet"
+   "expect": "block"
   },
   {
    "name": "yaml json style",
@@ -3281,6 +3281,299 @@
     {}
    ],
    "expect": "block"
+  },
+  {
+   "name": "sqlite column security",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite \"UPDATE exec_approvals_config SET default_security='full'\""
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "sqlite json_set fallback",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite \"UPDATE exec_approvals_config SET raw_json = json_set(raw_json, '$.defaults.askFallback', 'full')\""
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "sqlite raw_json heredoc",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite <<'SQL'\nUPDATE exec_approvals_config SET raw_json = '{\"defaults\": {\"ask\": \"off\"}}';\nSQL"
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "sqlite profile tree",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw-work/state/openclaw.sqlite \"UPDATE exec_approvals_config SET default_ask='off'\""
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "sqlite relative in state dir",
+   "call": [
+    "ex",
+    [
+     "sqlite3 openclaw.sqlite \"UPDATE exec_approvals_config SET default_security='full'\""
+    ],
+    {}
+   ],
+   "expect": "block",
+   "cwd": "/home/me/.openclaw/state"
+  },
+  {
+   "name": "sqlite attach",
+   "call": [
+    "ex",
+    [
+     "sqlite3 :memory: \"ATTACH DATABASE '/home/me/.openclaw/state/openclaw.sqlite' AS s; UPDATE s.exec_approvals_config SET default_security='full';\""
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "sqlite python connect",
+   "call": [
+    "ex",
+    [
+     "python3 -c \"import sqlite3; c = sqlite3.connect('/home/me/.openclaw/state/openclaw.sqlite'); c.execute(\\\"UPDATE exec_approvals_config SET default_ask_fallback='full'\\\"); c.commit()\""
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "sqlite tighten",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite \"UPDATE exec_approvals_config SET default_ask='always'\""
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "sqlite delete",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite 'DELETE FROM exec_approvals_config'"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "sqlite custom state dir",
+   "call": [
+    "ex",
+    [
+     "sqlite3 /srv/claw/state/openclaw.sqlite \"UPDATE exec_approvals_config SET default_security='full'\""
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "sqlite variable db",
+   "call": [
+    "ex",
+    [
+     "sqlite3 \"$OPENCLAW_STATE_DIR/state/openclaw.sqlite\" \"UPDATE exec_approvals_config SET default_security='full'\""
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "sqlite select",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite 'SELECT raw_json FROM exec_approvals_config'"
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "sqlite other table",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite \"UPDATE sessions SET title='full'\""
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "sqlite other db",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/workspace/app.db \"UPDATE exec_approvals_config SET default_security='full'\""
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "sqlite in-memory",
+   "call": [
+    "ex",
+    [
+     "sqlite3 \"CREATE TABLE exec_approvals_config(x); UPDATE exec_approvals_config SET x='full'\""
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "yaml alias value",
+   "call": [
+    "hw",
+    [
+     "~/.hermes/config.yaml",
+     "base: &b\n  mode: off\napprovals: *b\n"
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "yaml merge under tts",
+   "call": [
+    "hw",
+    [
+     "~/.hermes/config.yaml",
+     "base: &b\n  mode: off\ntts:\n  <<: *b\n"
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "oc dotted other mode",
+   "call": [
+    "ow",
+    [
+     "~/.openclaw/openclaw.json",
+     "{\"discovery.mdns.mode\": \"full\"}"
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "oc dotted parent key",
+   "call": [
+    "ow",
+    [
+     "~/.openclaw/openclaw.json",
+     "{\"tools.exec\": {\"mode\": \"full\"}}"
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "oc mode beside network host",
+   "call": [
+    "oe",
+    [
+     "~/.openclaw/openclaw.json",
+     "\"host\": \"0.0.0.0\"",
+     "\"host\": \"0.0.0.0\", \"mode\": \"full\""
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "hermes tee procsub",
+   "call": [
+    "hx",
+    [
+     "echo 'approvals:\n  mode: off' > >(tee ~/.hermes/config.yaml)"
+    ],
+    {}
+   ],
+   "expect": "block"
+  },
+  {
+   "name": "oc patch --file",
+   "call": [
+    "ex",
+    [
+     "openclaw config patch --file ./openclaw.patch.json5"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "oc patch --file dry run",
+   "call": [
+    "ex",
+    [
+     "openclaw config patch --file ./openclaw.patch.json5 --dry-run"
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "oc batch-file",
+   "call": [
+    "ex",
+    [
+     "openclaw config set --batch-file ./batch.json"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "oc @file exec",
+   "call": [
+    "ex",
+    [
+     "openclaw config set tools.exec @./exec.json5 --strict-json"
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "oc @file unrelated",
+   "call": [
+    "ex",
+    [
+     "openclaw config set agents.defaults.heartbeat.every @./every.txt"
+    ],
+    {}
+   ],
+   "expect": "quiet"
   }
  ]
 }
