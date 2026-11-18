@@ -39,6 +39,7 @@ from ..prepare.entities import (
     normalise_path,
     normalise_remote_identity,
     provider_name,
+    repos_named_in,
     resolve_token,
 )
 from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
@@ -818,6 +819,11 @@ def _steered_source(code_source: EntityRef, ctx: Context) -> Finding | None:
     ent = ctx.prepared.entities.by_id(code_source.entity_id or "")
     if ent is None or not ent.steered or ent.sanctioned:
         return None
+    if ent.kind is EntityKind.REPO and ent.value in repos_named_in(ctx.prepared.request_words):
+        # The owner asked for this repository by a URL of it. That vouches for nothing (a repository the owner
+        # names is still scored as an unknown code source), but the run is the owner's, not the steering
+        # content's.
+        return None
     if _is_listed_installer(code_source.value, ctx) or is_local_host(code_source.value):
         return None
     info = ctx.prepared.oracle_entities.get(ent.id)
@@ -957,6 +963,12 @@ def detect_untrusted_code(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 steered = _steered_source(source, ctx)
                 if steered is not None:
                     out.append(steered)
+        # A repository on a multi-tenant host is the code source there (the host is only read from): one named in
+        # steering content takes the floor as a steered host does. A repository mimics no installer host.
+        for source in (r for r in a.repos if Role.CODE_SOURCE in r.roles):
+            steered = _steered_source(source, ctx)
+            if steered is not None:
+                out.append(steered)
 
     if decode_mech:
         f = Finding(
