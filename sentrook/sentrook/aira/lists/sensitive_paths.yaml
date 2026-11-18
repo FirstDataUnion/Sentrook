@@ -253,9 +253,9 @@ startup:
     # fish, PowerShell and direnv startup files.
     - '\.config/fish/(?:config\.fish|conf\.d/)'
     - '(?:Documents/(?:Windows)?PowerShell|\.config/powershell)/(?:Microsoft\.\w+_)?profile\.ps1\b'
-    - '(?:^|[\s"''`=/])\.envrc(?![A-Za-z0-9_-])'
+    - '(?:^|[\s"''`=/])\.envrc(?![\w.-])'
     # A `.pth` file in a Python package folder: its `import` lines run whenever an interpreter starts.
-    - '(?:site|dist)-packages/[^/\s"'']+\.pth\b'
+    - '(?:site|dist)-packages/[^/\s"'']+\.pth(?![\w.-])'
 
 host_scheduler:
   patterns:

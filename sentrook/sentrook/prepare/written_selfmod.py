@@ -430,13 +430,15 @@ def _path_texts(
 #: git's own configuration files, whose aliases and command settings git runs later.
 _GITCONFIG = re.compile(r"(?:^|/)(?:\.gitconfig(?:\.local)?|\.git/config|\.config/git/config)$")
 #: git settings whose value is a command git runs; an alias or a credential helper only with a leading `!`.
-_GIT_COMMAND_KEYS = frozenset({"core.fsmonitor", "core.sshcommand", "core.pager"})
+_GIT_COMMAND_KEY = re.compile(
+    r"^(?:core\.(?:fsmonitor|sshcommand|pager)|filter\..+\.(?:smudge|clean|process))$"
+)
 _GIT_BANG_KEY = re.compile(r"^(?:alias\..+|credential\.(?:.+\.)?helper)$")
 
 
 def _git_value(key: str, value: str) -> list[WrittenText]:
     """A git setting's value as shell when git runs it: an alias or a credential helper with a leading `!`,
-    `core.fsmonitor`, `core.sshCommand`, `core.pager`."""
+    `core.fsmonitor`, `core.sshCommand`, `core.pager`, a filter's `smudge`, `clean` or `process` command."""
     key, value = key.strip().lower(), value.strip()
     if _GIT_BANG_KEY.match(key):
         return (
@@ -444,7 +446,7 @@ def _git_value(key: str, value: str) -> list[WrittenText]:
             if value.startswith("!") and value[1:].strip()
             else []
         )
-    if key in _GIT_COMMAND_KEYS and value:
+    if _GIT_COMMAND_KEY.match(key) and value:
         return [WrittenText(value, Form.SHELL)]
     return []
 
@@ -531,22 +533,38 @@ def _structured(text: str, *, yaml_text: bool = False) -> list[WrittenText]:
     return out
 
 
+def _snake(name: str) -> str:
+    """A key in snake case: `systemPrompt` and `system-prompt` read as `system_prompt`."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower().replace("-", "_")
+
+
 def _walk(node: Any, key: str | None, out: list[WrittenText]) -> None:
     if isinstance(node, dict):
+        cmd, args = node.get("command"), node.get("args")
+        if (
+            isinstance(cmd, str)
+            and isinstance(args, list)
+            and all(isinstance(a, str) for a in args)
+        ):
+            # a server or job started as `command` with `args` (an MCP stdio server): one command line
+            out.append(WrittenText(_join_argv([cmd, *args]), Form.SHELL))
+            node = {k: v for k, v in node.items() if k not in ("command", "args")}
         for k, v in node.items():
             _walk(v, str(k), out)
     elif isinstance(node, list):
-        if (
-            key is not None
-            and key.lower() in COMMAND_KEYS
-            and all(isinstance(v, str) for v in node)
-        ):
-            out.append(WrittenText(_join_argv(node), Form.SHELL))
-            return
+        k = _snake(key) if key is not None else None
+        if k is not None and all(isinstance(v, str) for v in node):
+            if k in COMMAND_KEYS:
+                out.append(WrittenText(_join_argv(node), Form.SHELL))
+                return
+            if k == "args" and "-c" in node[:-1]:
+                # a shell's arguments on their own: the program after `-c`
+                out.append(WrittenText(node[node.index("-c") + 1], Form.SHELL))
+                return
         for v in node:
             _walk(v, key, out)
     elif isinstance(node, str) and node.strip() and key is not None:
-        k = key.lower().replace("-", "_")
+        k = _snake(key)
         if k in COMMAND_KEYS:
             out.append(WrittenText(node, Form.SHELL))
         elif k in PROSE_KEYS:
@@ -599,7 +617,7 @@ def _tool_texts(call: CanonicalCall, lists: Lists) -> list[WrittenText]:
             for w in _config_value(name, obj["value"]):
                 add(w.text, w.form)
         for k, v in obj.items():
-            key = str(k).lower().replace("-", "_")
+            key = _snake(str(k))
             if isinstance(v, str) and key in NESTED_JSON_KEYS:
                 try:
                     v = json.loads(v)  # a list of edits passed as a JSON string
@@ -647,8 +665,7 @@ NESTED_JSON_KEYS = frozenset({"operations", "edits"})
 def _field_name(path: str) -> str:
     """The last field of a dotted config path (`mcp.servers.x.command`, `hooks[0].systemPrompt`), in snake case."""
     parts = [p for p in re.split(r"[.\[\]/]+", path) if p and not p.isdigit()]
-    leaf = parts[-1] if parts else ""
-    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", leaf).lower().replace("-", "_")
+    return _snake(parts[-1]) if parts else ""
 
 
 def _config_value(path: str, value: Any) -> list[WrittenText]:
@@ -668,15 +685,30 @@ def _config_value(path: str, value: Any) -> list[WrittenText]:
     elif isinstance(value, str) and value.strip():
         if leaf in COMMAND_KEYS:
             out.append(WrittenText(value, Form.SHELL))
-        elif leaf in PROSE_KEYS:
+        elif leaf in _CONFIG_PROSE_KEYS:
             out.append(WrittenText(value, Form.PROSE))
     return out
 
 
-def _argv_segments(command: str) -> list[list[str]]:
-    """The simple commands of shell text as argument vectors, quotes removed and kept whole (a quoted program or
-    value is one argument), split at `;`, `&`, `|` and newlines; a leading `sudo`, `env` or variable assignment is
-    dropped. Empty when the text does not split (an unclosed quote)."""
+#: Config fields whose text the agent follows: a prompt or a job's message. A description or a label is shown, not
+#: followed.
+_CONFIG_PROSE_KEYS = frozenset(
+    {"prompt", "system_prompt", "instructions", "instruction", "message", "task", "persona"}
+)
+
+
+#: Launchers that run the command after them: `sudo`, `env`, `npx`, `uv run`, `pnpm exec` and the like.
+_LAUNCHERS = frozenset({"sudo", "env", "exec", "nohup", "npx", "bunx"})
+_LAUNCHER_PAIRS = frozenset(
+    {("uv", "run"), ("poetry", "run"), ("pnpm", "exec"), ("pnpm", "dlx"), ("npm", "exec")}
+)
+
+
+def _argv_pipeline(command: str) -> list[tuple[str, list[str]]]:
+    """The simple commands of shell text as argument vectors, each with the separator before it (`""` for the
+    first): quotes removed and kept whole (a quoted program or value is one argument), split at `;`, `&`, `|` and
+    newlines; a leading launcher (`sudo`, `env`, `npx`, `uv run`, ...) or variable assignment is dropped. Empty when
+    the text does not split (an unclosed quote)."""
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
         lex.whitespace = " \t\r"
@@ -685,31 +717,43 @@ def _argv_segments(command: str) -> list[list[str]]:
         tokens = list(lex)
     except ValueError:
         return []
-    out: list[list[str]] = []
+    out: list[tuple[str, list[str]]] = []
     cur: list[str] = []
+    sep = ""
     for tok in tokens:
         if tok and all(c in ";&|\n" for c in tok):
             if cur:
-                out.append(cur)
+                out.append((sep, cur))
             cur = []
+            sep = tok
         else:
             cur.append(tok)
     if cur:
-        out.append(cur)
-    cleaned: list[list[str]] = []
-    for argv in out:
-        argv = [t.lstrip("(") if i == 0 else t for i, t in enumerate(argv)]
-        while argv and argv[0] in ("sudo", "env", "exec", "nohup"):
-            argv = argv[1:]
-            while argv and argv[0].startswith("-"):
-                argv = argv[2:] if argv[0] in ("-u", "-g", "-C") else argv[1:]
-            while argv and re.match(r"^[A-Za-z_]\w*=", argv[0]):
+        out.append((sep, cur))
+    cleaned: list[tuple[str, list[str]]] = []
+    for sep, argv in out:
+        argv = [
+            t.lstrip("(") if i == 0 else t.rstrip(")") if i == len(argv) - 1 else t
+            for i, t in enumerate(argv)
+        ]
+        argv = [t for t in argv if t]
+        while argv:
+            if re.match(r"^[A-Za-z_]\w*=", argv[0]):
                 argv = argv[1:]
-        while argv and re.match(r"^[A-Za-z_]\w*=", argv[0]):
-            argv = argv[1:]
+            elif argv[0] in _LAUNCHERS or tuple(argv[:2]) in _LAUNCHER_PAIRS:
+                argv = argv[1:] if argv[0] in _LAUNCHERS else argv[2:]
+                while argv and argv[0].startswith("-"):
+                    argv = argv[2:] if argv[0] in ("-u", "-g", "-C", "--with", "-p") else argv[1:]
+            else:
+                break
         if argv:
-            cleaned.append(argv)
+            cleaned.append((sep, argv))
     return cleaned
+
+
+def _argv_segments(command: str) -> list[list[str]]:
+    """The simple commands of shell text as argument vectors (`_argv_pipeline` without the separators)."""
+    return [argv for _, argv in _argv_pipeline(command)]
 
 
 def _head(argv: list[str]) -> str:
@@ -750,34 +794,99 @@ def _python_programs(command: str) -> list[str]:
     return progs
 
 
+def _py_statements(prog: str) -> list[str]:
+    """A Python program's statements (split at newlines and `;` outside strings); the whole program when it does not
+    tokenise."""
+    import io
+    import tokenize
+
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(prog).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return [prog]
+    lines = prog.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def offset(pos: tuple[int, int]) -> int:
+        row, col = pos
+        return starts[row - 1] + col if row - 1 < len(starts) else len(prog)
+
+    out: list[str] = []
+    at = 0
+    for tok in toks:
+        if tok.type == tokenize.NEWLINE or (tok.type == tokenize.OP and tok.string == ";"):
+            end = offset(tok.start)
+            if prog[at:end].strip():
+                out.append(prog[at:end])
+            at = offset(tok.end)
+    if prog[at:].strip():
+        out.append(prog[at:])
+    return out
+
+
+#: The file a write call writes: the arguments of `open(..., "w"|"a"|"x")`, or the receiver of `.write_text(`,
+#: `.write_bytes(` or `.open("a")`.
+_PY_OPEN_WRITE = re.compile(
+    r"\bopen\(((?:[^()]|\([^()]*\))*?),\s*(?:mode\s*=\s*)?[rRbBuU]?['\"][^'\"]*[wax]"
+)
+_PY_RECEIVER_WRITE = re.compile(
+    r"\.\s*(?:write_(?:text|bytes)\(|open\(\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax])"
+)
+_PY_ASSIGN = re.compile(r"^\s*(?:with\s+.*\bas\s+)?([A-Za-z_]\w*)\s*=\s*(.+)$", re.S)
+
+
+def _py_literals(code: str) -> list[str]:
+    out: list[str] = []
+    for m in _PY_LITERAL.finditer(code):
+        try:
+            value = ast.literal_eval(m.group(0))
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "replace")
+        if isinstance(value, str):
+            out.append(value)
+    return out
+
+
+def _py_paths(expr: str) -> list[str]:
+    """The paths a Python expression spells: a path literal, or `Path.home() / "..."`."""
+    paths = [f"~/{m.group(2).lstrip('/')}" for m in _PY_HOME_JOIN.finditer(expr)]
+    return paths + [v for v in _py_literals(expr) if v.startswith(("/", "~/"))]
+
+
 def _python_texts(
     command: str, *, home: str | None, workspace_root: str | None, lists: Lists
 ) -> list[WrittenText]:
-    """What a Python program a command runs writes into a self-modification file: the string literals it holds,
-    read as that file's content. The target is the first path literal (or `Path.home() / ...`) that falls in a
-    self-modification group; a program with no write call writes nothing."""
+    """What a Python program a command runs writes into a self-modification file: its string literals, read as that
+    file's content. The file is the one a write call names (`open(PATH, "w")`, `PATH.write_text(...)`, through a
+    variable an earlier statement set); a file the program only reads is not written."""
     out: list[WrittenText] = []
     for prog in _python_programs(command):
         if not _PY_WRITE.search(prog):
             continue
-        literals: list[str] = []
-        for m in _PY_LITERAL.finditer(prog):
-            try:
-                value = ast.literal_eval(m.group(0))
-            except (ValueError, SyntaxError):
-                continue
-            if isinstance(value, bytes):
-                value = value.decode("utf-8", "replace")
-            if isinstance(value, str):
-                literals.append(value)
-        paths = [f"~/{m.group(2).lstrip('/')}" for m in _PY_HOME_JOIN.finditer(prog)]
-        paths += [v for v in literals if v.startswith(("/", "~/"))]
-        for path in paths:
+        names: dict[str, str] = {}
+        targets: list[str] = []
+        for stmt in _py_statements(prog):
+            exprs = [m.group(1) for m in _PY_OPEN_WRITE.finditer(stmt)]
+            m = _PY_RECEIVER_WRITE.search(stmt)
+            if m:
+                exprs.append(stmt[: m.start()])
+            for expr in exprs:
+                for name, value in names.items():
+                    expr = re.sub(rf"\b{name}\b", lambda _m, v=value: f"({v})", expr)
+                targets.extend(_py_paths(expr))
+            a = _PY_ASSIGN.match(stmt)
+            if a:
+                names[a.group(1)] = a.group(2)
+        for path in targets:
             norm = normalise_path(path, home=home, workspace_root=workspace_root)
             if not _selfmod_file(norm, path, lists):
                 continue
-            for value in literals:
-                if value != path and _hosts_in(value):
+            for value in _py_literals(prog):
+                if value != path and not value.startswith(("/", "~/")):
                     out.extend(
                         _path_texts(
                             norm,
@@ -808,6 +917,8 @@ def _config_cli_texts(command: str) -> list[WrittenText]:
             and argv[2] in _CONFIG_CLI_VERBS
         ):
             operands = [t for t in argv[3:] if not t.startswith("--")]
+            if len(operands) == 1 and "=" in operands[0]:
+                operands = operands[0].split("=", 1)  # `config set path=value`
             if len(operands) >= 2:
                 out.extend(_config_value(operands[0], operands[1]))
     return out
@@ -830,6 +941,11 @@ def _git_config_texts(command: str) -> list[WrittenText]:
             i += 2 if argv[i] in ("-C", "-c") else 1
         if i >= len(argv) or argv[i] != "config":
             continue
+        if any(t.startswith("--unset") for t in argv[i + 1 :]) or argv[i + 1 : i + 2] in (
+            ["unset"],
+            ["get"],
+        ):
+            continue  # removing or reading a setting: a value after it is a pattern, not a command
         operands: list[str] = []
         j = i + 1
         while j < len(argv):
@@ -873,9 +989,36 @@ def _systemd_run_texts(command: str) -> list[WrittenText]:
     return out
 
 
-#: Copies whose last operand is the destination; `install`'s options that take a value.
-_COPY_HEADS = frozenset({"cp", "mv", "install", "rsync"})
+#: Copies and links whose last operand is the destination; options of theirs that take a value.
+_COPY_HEADS = frozenset({"cp", "mv", "install", "rsync", "ln"})
 _COPY_VALUE_OPTS = frozenset({"-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"})
+
+
+def _operands(
+    argv: list[str], value_opts: frozenset[str] = frozenset()
+) -> tuple[list[str], list[str], list[str]]:
+    """A command's operands, the files it redirects its output to (`>`, `>>`) and the files it reads its input
+    from (`<`), skipping options and the values of `value_opts`."""
+    operands: list[str] = []
+    outputs: list[str] = []
+    inputs: list[str] = []
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        m = re.match(r"^(\d?>>?|<)(.*)$", tok)
+        if m:
+            target = m.group(2) or (argv[i + 1] if i + 1 < len(argv) else "")
+            i += 1 if m.group(2) else 2
+            if target and not target.startswith("&"):
+                (inputs if m.group(1) == "<" else outputs).append(target)
+            continue
+        if tok in value_opts:
+            i += 2
+            continue
+        if not tok.startswith("-") or tok == "-":
+            operands.append(tok)
+        i += 1
+    return operands, outputs, inputs
 
 
 def _planted_copies(
@@ -886,88 +1029,84 @@ def _planted_copies(
     lists: Lists,
     planted: Planted,
 ) -> list[WrittenText]:
-    """A file another call wrote, copied, moved or `cat`-ed into a self-modification file (read as that file's
-    content), or installed as a crontab with `crontab FILE`."""
+    """A file another call wrote, put into a self-modification file (read as that file's content): copied, moved,
+    installed or linked there, written there by `cat` (a redirect, or a pipe into `tee`), or installed as a crontab
+    (`crontab FILE`, `crontab < FILE`, `cat FILE | crontab -`). A relative path is resolved against the folder an
+    earlier `cd` in the command moved to."""
     out: list[WrittenText] = []
+    cwd: str | None = None
 
     def norm(p: str) -> str:
-        return normalise_path(p, home=home, workspace_root=workspace_root)
+        if not p.startswith(("/", "~", "$HOME", "./")):
+            p = "./" + p  # relative to the folder the command is in
+        return normalise_path(p, home=home, workspace_root=workspace_root, cwd=cwd)
 
-    for argv in _argv_segments(command):
+    def put(src: str, dest: str) -> None:
+        found = planted(norm(src))
+        if found is None:
+            return
+        # a destination with no file name of its own may be a folder: the file keeps its name there
+        candidates = [dest]
+        if dest.endswith("/") or "." not in dest.rstrip("/").rsplit("/", 1)[-1]:
+            candidates.insert(0, dest.rstrip("/") + "/" + src.rsplit("/", 1)[-1])
+        for cand in candidates:
+            if cand.endswith("/"):
+                continue
+            texts = _path_texts(
+                norm(cand),
+                found.content,
+                home=home,
+                workspace_root=workspace_root,
+                lists=lists,
+                raw=cand,
+            )
+            if texts:
+                out.extend(replace(w, planted=found) for w in texts)
+                return
+
+    piped: list[str] = []  # what the previous command of a pipeline read (`cat FILE | ...`)
+    for sep, argv in _argv_pipeline(command):
         head = _head(argv)
-        pairs: list[tuple[str, str]] = []  # (source, destination)
+        stdin = piped if sep == "|" else []
+        piped = []
+        if head == "cd":
+            operands, _, _ = _operands(argv)
+            cwd = norm(operands[0]) if operands else cwd
+            continue
         if head in _COPY_HEADS:
-            operands: list[str] = []
             target: str | None = None
-            i = 1
-            while i < len(argv):
-                tok = argv[i]
-                if tok in ("-t", "--target-directory"):
-                    target = argv[i + 1] if i + 1 < len(argv) else None
-                    i += 2
-                    continue
-                if tok in _COPY_VALUE_OPTS:
-                    i += 2
-                    continue
-                if not tok.startswith("-"):
-                    operands.append(tok)
-                i += 1
+            if "-t" in argv or "--target-directory" in argv:
+                k = argv.index("-t") if "-t" in argv else argv.index("--target-directory")
+                target = argv[k + 1] + "/" if k + 1 < len(argv) else None
+                argv = argv[:k] + argv[k + 2 :]
+            operands, _, _ = _operands(argv, _COPY_VALUE_OPTS)
             if target is None and len(operands) >= 2:
                 target = operands.pop()
-            if target:
-                for src in operands:
-                    dest = (
-                        target.rstrip("/") + "/" + src.rsplit("/", 1)[-1]
-                        if target.endswith("/")
-                        else target
-                    )
-                    pairs.append((src, dest))
+            for src in operands if target else []:
+                put(src, target)
         elif head == "cat":
-            srcs: list[str] = []
-            dest = None
-            i = 1
-            while i < len(argv):
-                tok = argv[i]
-                if tok in (">", ">>"):
-                    dest = argv[i + 1] if i + 1 < len(argv) else None
-                    i += 2
-                    continue
-                if tok.startswith(">"):
-                    dest = tok.lstrip(">")
-                elif not tok.startswith("-"):
-                    srcs.append(tok)
-                i += 1
-            if dest:
-                pairs.extend((s, dest) for s in srcs)
+            operands, outputs, inputs = _operands(argv)
+            srcs = [o for o in operands if o != "-"] + inputs
+            for dest in outputs:
+                for src in srcs:
+                    put(src, dest)
+            piped = srcs
+        elif head == "tee":
+            operands, _, _ = _operands(argv)
+            for dest in operands:
+                for src in stdin:
+                    put(src, dest)
         elif head == "crontab":
-            operands = []
-            i = 1
-            while i < len(argv):
-                if argv[i] == "-u":
-                    i += 2
-                    continue
-                if not argv[i].startswith("-"):
-                    operands.append(argv[i])
-                i += 1
-            for src in operands[:1]:
+            operands, _, inputs = _operands(argv, frozenset({"-u"}))
+            files = (
+                [o for o in operands if o != "-"][:1]
+                or inputs
+                or (stdin if operands in ([], ["-"]) else [])
+            )
+            for src in files:
                 found = planted(norm(src))
                 if found is not None and found.content.strip():
                     out.append(WrittenText(found.content, Form.SHELL, planted=found))
-            continue
-        for src, dest in pairs:
-            found = planted(norm(src))
-            if found is not None:
-                out.extend(
-                    replace(w, planted=found)
-                    for w in _path_texts(
-                        norm(dest),
-                        found.content,
-                        home=home,
-                        workspace_root=workspace_root,
-                        lists=lists,
-                        raw=dest,
-                    )
-                )
     return out
 
 
@@ -1055,13 +1194,14 @@ def _exec_written(
     if form is None:
         return []
     bodies = [body for _, _, body in _heredocs(command)]
+    # Every body is kept, not only one that names a host: a line that runs a file another call wrote
+    # (`sh /tmp/x.sh`) names none (`_planted_runs`).
     for m in _QUOTED.finditer(rest):
         body = m.group(1) if m.group(1) is not None else m.group(2)
-        if body and _hosts_in(body):
+        if body:
             bodies.append(_SED_APPEND.sub("", body.replace('\\"', '"'), count=1))
     for m in _UNQUOTED_ECHO.finditer(rest):
-        if _hosts_in(m.group(1)):
-            bodies.append(m.group(1))
+        bodies.append(m.group(1))
     cron_user = any(_SYSTEM_CRON.search(t) for t in _write_targets(rest))
     return [WrittenText(b, form, host_run, cron_user) for b in dict.fromkeys(bodies) if b.strip()]
 
@@ -1120,12 +1260,26 @@ def future_entities(
             )
         elif wt.form is Form.PROGRAM:
             code = _strip_comments(wt.text)
-            program_lines = (
-                [code] if wt.host_run else [ln for ln in code.splitlines() if _sends_local(ln)]
-            )
+            if wt.host_run:
+                # every host the code names is a destination; one a line fetches from and evaluates is a code source
+                runs = {
+                    h
+                    for line in code.splitlines()
+                    if _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line)
+                    for h in _hosts_in(line, inline_program=True, emails=False)
+                }
+                program_lines = [code]
+            else:
+                runs = set()
+                program_lines = [ln for ln in code.splitlines() if _sends_local(ln)]
             add(
                 [
-                    Found(EntityKind.HOST, h, h, Role.DATA_DESTINATION)
+                    Found(
+                        EntityKind.HOST,
+                        h,
+                        h,
+                        Role.CODE_SOURCE if h in runs else Role.DATA_DESTINATION,
+                    )
                     for line in program_lines
                     for h in _hosts_in(line, inline_program=True, emails=False)
                     if not _local(h)
