@@ -17,7 +17,18 @@ What counts as written self-modification content:
   and argv fields as shell, its prompt, message, content and instruction fields as instructions;
 - a shell command that installs a crontab, a systemd or launchd job, or writes into one of those files (a redirect,
   `tee`, an in-place `sed`), or that adds a job with the host's own cron or automation command: its quoted strings,
-  heredoc bodies and unquoted `echo` text.
+  heredoc bodies and unquoted `echo` text;
+- a Python program the command runs (`python3 -c`, or a heredoc fed to `python3 -`) that writes one of those files
+  (`open(..., "w"|"a")`, `Path.write_text`): its string literals, read as that file's content;
+- a config field set with the host's `config set` command or a config tool (`{key, value}`): a command field as
+  shell, a prompt or message field as instructions, a JSON value walked by its keys;
+- a git setting git runs later (an alias or a credential helper with a leading `!`, `core.fsmonitor`,
+  `core.sshCommand`, `core.pager`), set with `git config` or written into a git config file;
+- the command a `systemd-run` timer (`--on-calendar` and the like) runs;
+- a file an earlier step that ran (or a sibling call in the batch) wrote, put into one of those files by `cp`, `mv`,
+  `install`, `rsync` or `cat >`, installed with `crontab FILE`, or run by shell content the host runs
+  (`sh /tmp/x.sh`): read as that content, with the origin of the call that wrote it. A scheduler tool naming such a
+  script is read as running it now (`prepare._scheduled_scripts`), not again here.
 
 How the roles are read:
 
@@ -50,10 +61,13 @@ the call's own roles (`converge.relief`): naming sanctions sending to a host, ne
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+import shlex
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -101,6 +115,18 @@ class WrittenText:
     host_run: bool = True
     #: A system cron table (`/etc/crontab`, `/etc/cron.d/*`): each line names the user it runs as after the schedule.
     cron_user: bool = False
+    #: The text is a file another call wrote, which this call puts in place or runs (`PlantedFile`).
+    planted: PlantedFile | None = None
+
+
+@dataclass(frozen=True)
+class PlantedFile:
+    """A file an earlier step that ran, or a sibling call in the batch, wrote: its content and which call wrote it
+    (`ref`: `step:N` for a step, the call id for a sibling)."""
+
+    content: str
+    ref: str | None
+    sibling: bool = False
 
 
 #: Path groups whose files hold content that runs or is followed later.
@@ -160,6 +186,9 @@ PROSE_KEYS = frozenset(
         "new_string",
         "system_prompt",
         "payload",
+        "markdown",
+        "skill_md",
+        "file_text",
     }
 )
 #: Self-modification reasons whose tool or command writes content that runs later. A memory note is not in scope.
@@ -169,7 +198,8 @@ _TOOL_REASONS = frozenset(
 
 #: Clients that contact the host named in their arguments.
 NET_HEADS = frozenset(
-    "curl wget http https xh httpie aria2c nc ncat netcat socat ssh scp sftp rsync ftp telnet git".split()
+    "curl wget http https xh httpie aria2c nc ncat netcat socat ssh scp sftp rsync ftp telnet git "
+    "iwr irm invoke-webrequest invoke-restmethod".split()
 )
 #: A cron line's schedule: five time fields, or a `@` nickname.
 _CRON_SCHEDULE = re.compile(
@@ -269,21 +299,50 @@ _CODE = re.compile(r"(?ms)^[ \t]*(```|~~~)[^\n]*\n.*?^[ \t]*\1[ \t]*$|`[^`\n]+`"
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=\S)|\n+")
 
 
+#: What an earlier call of the session (or a sibling in the batch) wrote at a normalised path, or None.
+Planted = Callable[[str], "PlantedFile | None"]
+#: Planted files read for one call at most.
+MAX_PLANTED = 8
+
+
 def written_selfmod_texts(
-    call: CanonicalCall, *, home: str | None, workspace_root: str | None, lists: Lists | None = None
+    call: CanonicalCall,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    lists: Lists | None = None,
+    planted: Planted | None = None,
 ) -> list[WrittenText]:
-    """The self-modification content `call` writes, each piece with how it is read. Empty for any other call."""
+    """The self-modification content `call` writes, each piece with how it is read. Empty for any other call.
+
+    `planted` gives the content another call wrote at a path: a copy of that file into a hook or startup file, a
+    crontab installed from it, and shell content the host runs that runs it are read through it."""
     lists = lists or load_lists()
     kind = call.tool_kind
     if kind in (ToolKind.FILE_WRITE, ToolKind.FILE_EDIT):
-        return _file_texts(call, home=home, workspace_root=workspace_root, lists=lists)
-    if kind in (ToolKind.MCP, ToolKind.OTHER):
-        return _tool_texts(call, lists)
-    if kind is ToolKind.EXEC:
-        return _exec_texts(
-            call.command or "", home=home, workspace_root=workspace_root, lists=lists
+        texts = _file_texts(call, home=home, workspace_root=workspace_root, lists=lists)
+    elif kind in (ToolKind.MCP, ToolKind.OTHER):
+        texts = _tool_texts(call, lists)
+    elif kind is ToolKind.EXEC:
+        texts = _exec_texts(
+            call.command or "",
+            home=home,
+            workspace_root=workspace_root,
+            lists=lists,
+            planted=planted,
         )
-    return []
+    else:
+        return []
+    # A scheduler tool that names a script the agent wrote already runs that file in this call's lineage (its hosts
+    # take the roles of a run now), so it is not read again as a later run.
+    scheduler = (
+        kind in (ToolKind.MCP, ToolKind.OTHER) and _tool_reason(call, lists) == "selfmod.scheduler"
+    )
+    if planted is not None and texts and not scheduler:
+        texts = texts + _planted_runs(
+            texts, home=home, workspace_root=workspace_root, planted=planted
+        )
+    return texts
 
 
 def _groups(path: str, lists: Lists) -> list[str]:
@@ -320,18 +379,40 @@ def _file_texts(
     texts = written_texts(call.raw)
     if not texts and isinstance(call.get("content"), str):
         texts = [call.get("content")]
-    if not texts:
+    return [
+        w
+        for t in texts
+        for w in _path_texts(
+            norm, t, home=home, workspace_root=workspace_root, lists=lists, raw=path
+        )
+    ]
+
+
+def _path_texts(
+    norm: str,
+    text: str,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    lists: Lists,
+    raw: str | None = None,
+) -> list[WrittenText]:
+    """How `text` written to the file at `norm` (a normalised path; `raw` as the call spells it) is read: empty for
+    a file that holds no self-modification content."""
+    if not text.strip():
         return []
     if norm.rsplit("/", 1)[-1] == "package.json":
-        return [w for t in texts for w in _lifecycle_scripts(t)]
-    groups = _groups(norm, lists) or _groups(path, lists)
+        return _lifecycle_scripts(text)
+    if _GITCONFIG.search(norm):
+        return _gitconfig_texts(text)
+    groups = _groups(norm, lists) or (_groups(raw, lists) if raw else [])
     if not groups:
         return []
-    if norm.lower().endswith(_STRUCTURED_SUFFIXES + _YAML_SUFFIXES):
-        out: list[WrittenText] = []
-        for text in texts:
-            out.extend(_structured(text, yaml_text=norm.lower().endswith(_YAML_SUFFIXES)))
-        return out
+    low = norm.lower()
+    if low.endswith(_STRUCTURED_SUFFIXES + _YAML_SUFFIXES):
+        return _structured(text, yaml_text=low.endswith(_YAML_SUFFIXES))
+    if low.endswith(".pth"):
+        return _pth_texts(text)
     form = _form_of(norm, groups)
     if form is None:
         return []
@@ -343,7 +424,70 @@ def _file_texts(
         return []  # a `hooks/` folder of a project's own code (a web app's hooks), not a host hook
     host_run = bool(_SHELL_GROUPS & set(groups))
     cron_user = bool(_SYSTEM_CRON.search(norm))
-    return [WrittenText(t, form, host_run, cron_user) for t in texts if t.strip()]
+    return [WrittenText(text, form, host_run, cron_user)]
+
+
+#: git's own configuration files, whose aliases and command settings git runs later.
+_GITCONFIG = re.compile(r"(?:^|/)(?:\.gitconfig(?:\.local)?|\.git/config|\.config/git/config)$")
+#: git settings whose value is a command git runs; an alias or a credential helper only with a leading `!`.
+_GIT_COMMAND_KEYS = frozenset({"core.fsmonitor", "core.sshcommand", "core.pager"})
+_GIT_BANG_KEY = re.compile(r"^(?:alias\..+|credential\.(?:.+\.)?helper)$")
+
+
+def _git_value(key: str, value: str) -> list[WrittenText]:
+    """A git setting's value as shell when git runs it: an alias or a credential helper with a leading `!`,
+    `core.fsmonitor`, `core.sshCommand`, `core.pager`."""
+    key, value = key.strip().lower(), value.strip()
+    if _GIT_BANG_KEY.match(key):
+        return (
+            [WrittenText(value[1:], Form.SHELL)]
+            if value.startswith("!") and value[1:].strip()
+            else []
+        )
+    if key in _GIT_COMMAND_KEYS and value:
+        return [WrittenText(value, Form.SHELL)]
+    return []
+
+
+_GIT_SECTION = re.compile(r'^\[\s*([^\]\s"]+)(?:\s+"([^"]*)")?\s*\]')
+
+
+def _gitconfig_texts(text: str) -> list[WrittenText]:
+    """The command settings (`_git_value`) of a git configuration file."""
+    out: list[WrittenText] = []
+    section = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s[0] in "#;":
+            continue
+        m = _GIT_SECTION.match(s)
+        if m:
+            section = m.group(1).lower() + (f".{m.group(2)}" if m.group(2) else "")
+            continue
+        if "=" in s and section:
+            k, v = s.split("=", 1)
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] == '"':
+                v = v[1:-1]
+            out.extend(_git_value(f"{section}.{k.strip()}", v))
+    return out
+
+
+def _selfmod_file(norm: str, raw: str, lists: Lists) -> bool:
+    """Whether a write to the file can hold self-modification content (`_path_texts` may read it)."""
+    return bool(
+        norm.rsplit("/", 1)[-1] == "package.json"
+        or _GITCONFIG.search(norm)
+        or _groups(norm, lists)
+        or _groups(raw, lists)
+    )
+
+
+def _pth_texts(text: str) -> list[WrittenText]:
+    """A `.pth` file in a Python package folder: its `import` lines run as Python whenever an interpreter starts; its
+    other lines are paths."""
+    code = [ln for ln in text.splitlines() if re.match(r"import[ \t]", ln)]
+    return [WrittenText("\n".join(code), Form.PROGRAM)] if code else []
 
 
 def _lifecycle_scripts(text: str) -> list[WrittenText]:
@@ -449,8 +593,18 @@ def _tool_texts(call: CanonicalCall, lists: Lists) -> list[WrittenText]:
     def take(obj: Any) -> None:
         if not isinstance(obj, dict):
             return
+        # a config tool's `{key: "a.b.command", value: ...}`: the value is read by the field the key names
+        name = next((obj[k] for k in _CONFIG_NAME_KEYS if isinstance(obj.get(k), str)), None)
+        if name is not None and "value" in obj:
+            for w in _config_value(name, obj["value"]):
+                add(w.text, w.form)
         for k, v in obj.items():
             key = str(k).lower().replace("-", "_")
+            if isinstance(v, str) and key in NESTED_JSON_KEYS:
+                try:
+                    v = json.loads(v)  # a list of edits passed as a JSON string
+                except ValueError:
+                    continue
             if isinstance(v, str):
                 if key in COMMAND_KEYS:
                     add(v, Form.SHELL)
@@ -484,11 +638,404 @@ _AGENT_JOB_CLI = re.compile(
 )
 
 
-def _exec_texts(
+#: A config tool's argument that names the field it sets.
+_CONFIG_NAME_KEYS = ("key", "path", "setting", "field", "name")
+#: Arguments that hold a list of edits, which a tool may take as a JSON string.
+NESTED_JSON_KEYS = frozenset({"operations", "edits"})
+
+
+def _field_name(path: str) -> str:
+    """The last field of a dotted config path (`mcp.servers.x.command`, `hooks[0].systemPrompt`), in snake case."""
+    parts = [p for p in re.split(r"[.\[\]/]+", path) if p and not p.isdigit()]
+    leaf = parts[-1] if parts else ""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", leaf).lower().replace("-", "_")
+
+
+def _config_value(path: str, value: Any) -> list[WrittenText]:
+    """A config field's new value: shell when the field holds a command, instructions when it holds a prompt or a
+    message; a JSON object or list is walked by its own keys."""
+    leaf = _field_name(path)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped[:1] in '[{"':
+            try:
+                value = json.loads(stripped)
+            except ValueError:
+                pass
+    out: list[WrittenText] = []
+    if isinstance(value, (dict, list)):
+        _walk(value, leaf, out)
+    elif isinstance(value, str) and value.strip():
+        if leaf in COMMAND_KEYS:
+            out.append(WrittenText(value, Form.SHELL))
+        elif leaf in PROSE_KEYS:
+            out.append(WrittenText(value, Form.PROSE))
+    return out
+
+
+def _argv_segments(command: str) -> list[list[str]]:
+    """The simple commands of shell text as argument vectors, quotes removed and kept whole (a quoted program or
+    value is one argument), split at `;`, `&`, `|` and newlines; a leading `sudo`, `env` or variable assignment is
+    dropped. Empty when the text does not split (an unclosed quote)."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+        lex.whitespace = " \t\r"
+        lex.whitespace_split = True
+        lex.commenters = ""
+        tokens = list(lex)
+    except ValueError:
+        return []
+    out: list[list[str]] = []
+    cur: list[str] = []
+    for tok in tokens:
+        if tok and all(c in ";&|\n" for c in tok):
+            if cur:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        out.append(cur)
+    cleaned: list[list[str]] = []
+    for argv in out:
+        argv = [t.lstrip("(") if i == 0 else t for i, t in enumerate(argv)]
+        while argv and argv[0] in ("sudo", "env", "exec", "nohup"):
+            argv = argv[1:]
+            while argv and argv[0].startswith("-"):
+                argv = argv[2:] if argv[0] in ("-u", "-g", "-C") else argv[1:]
+            while argv and re.match(r"^[A-Za-z_]\w*=", argv[0]):
+                argv = argv[1:]
+        while argv and re.match(r"^[A-Za-z_]\w*=", argv[0]):
+            argv = argv[1:]
+        if argv:
+            cleaned.append(argv)
+    return cleaned
+
+
+def _head(argv: list[str]) -> str:
+    return argv[0].rsplit("/", 1)[-1]
+
+
+_PYTHON_HEAD = re.compile(r"^python(?:\d+(?:\.\d+)?)?$")
+#: A Python program writing a file: `open(..., "w"|"a"|"x")`, `Path.write_text`, `Path.open("a")`.
+_PY_WRITE = re.compile(
+    r"\bopen\((?:[^()]|\([^()]*\))*?,\s*(?:mode\s*=\s*)?[rRbBuU]?['\"][^'\"]*[wax]"
+    r"|\.write_(?:text|bytes)\("
+    r"|\.open\(\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax]"
+)
+_PY_LITERAL = re.compile(
+    r"(?<![\w'\"])[rRbBuU]{0,2}(?:'''[\s\S]*?'''|\"\"\"[\s\S]*?\"\"\"|'(?:[^'\\\n]|\\.)*'|\"(?:[^\"\\\n]|\\.)*\")"
+)
+#: `Path.home() / ".bashrc"`: a path under the home folder.
+_PY_HOME_JOIN = re.compile(r"Path\.home\(\)\s*/\s*[rRuU]?(['\"])([^'\"]+)\1")
+
+
+def _python_programs(command: str) -> list[str]:
+    """The Python programs a command runs: the code after `python3 -c`, and heredoc bodies fed to an interpreter
+    that reads its program from standard input."""
+    rest = _without_heredocs(command)
+    progs: list[str] = []
+    stdin = False
+    for argv in _argv_segments(rest):
+        if not _PYTHON_HEAD.match(_head(argv)):
+            continue
+        if "-c" in argv[1:]:
+            i = argv.index("-c", 1)
+            if i + 1 < len(argv):
+                progs.append(argv[i + 1])
+        elif all(t.startswith("-") for t in argv[1:]):
+            stdin = True  # `python3`, `python3 -`, `python3 -u -`
+    if stdin:
+        progs.extend(body for _, _, body in _heredocs(command))
+    return progs
+
+
+def _python_texts(
     command: str, *, home: str | None, workspace_root: str | None, lists: Lists
+) -> list[WrittenText]:
+    """What a Python program a command runs writes into a self-modification file: the string literals it holds,
+    read as that file's content. The target is the first path literal (or `Path.home() / ...`) that falls in a
+    self-modification group; a program with no write call writes nothing."""
+    out: list[WrittenText] = []
+    for prog in _python_programs(command):
+        if not _PY_WRITE.search(prog):
+            continue
+        literals: list[str] = []
+        for m in _PY_LITERAL.finditer(prog):
+            try:
+                value = ast.literal_eval(m.group(0))
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", "replace")
+            if isinstance(value, str):
+                literals.append(value)
+        paths = [f"~/{m.group(2).lstrip('/')}" for m in _PY_HOME_JOIN.finditer(prog)]
+        paths += [v for v in literals if v.startswith(("/", "~/"))]
+        for path in paths:
+            norm = normalise_path(path, home=home, workspace_root=workspace_root)
+            if not _selfmod_file(norm, path, lists):
+                continue
+            for value in literals:
+                if value != path and _hosts_in(value):
+                    out.extend(
+                        _path_texts(
+                            norm,
+                            value,
+                            home=home,
+                            workspace_root=workspace_root,
+                            lists=lists,
+                            raw=path,
+                        )
+                    )
+            break
+    return out
+
+
+#: `openclaw config set PATH VALUE`, `hermes config set PATH VALUE` (and `add`, `append`).
+_CONFIG_CLI_HEADS = frozenset({"openclaw", "hermes"})
+_CONFIG_CLI_VERBS = frozenset({"set", "add", "append"})
+
+
+def _config_cli_texts(command: str) -> list[WrittenText]:
+    """A config field the host's own `config set` command sets: read by the field it names (`_config_value`)."""
+    out: list[WrittenText] = []
+    for argv in _argv_segments(command):
+        if (
+            _head(argv) in _CONFIG_CLI_HEADS
+            and len(argv) >= 3
+            and argv[1] == "config"
+            and argv[2] in _CONFIG_CLI_VERBS
+        ):
+            operands = [t for t in argv[3:] if not t.startswith("--")]
+            if len(operands) >= 2:
+                out.extend(_config_value(operands[0], operands[1]))
+    return out
+
+
+#: `git config` options that take a value of their own.
+_GIT_VALUE_OPTS = frozenset(
+    {"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"}
+)
+
+
+def _git_config_texts(command: str) -> list[WrittenText]:
+    """A git setting the command sets whose value git runs later (`_git_value`)."""
+    out: list[WrittenText] = []
+    for argv in _argv_segments(command):
+        if _head(argv) != "git":
+            continue
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            i += 2 if argv[i] in ("-C", "-c") else 1
+        if i >= len(argv) or argv[i] != "config":
+            continue
+        operands: list[str] = []
+        j = i + 1
+        while j < len(argv):
+            tok = argv[j]
+            if tok in _GIT_VALUE_OPTS:
+                j += 2
+                continue
+            if not tok.startswith("-"):
+                operands.append(tok)
+            j += 1
+        if operands[:1] == ["set"]:
+            operands = operands[1:]
+        if len(operands) >= 2:
+            out.extend(_git_value(operands[0], operands[1]))
+    return out
+
+
+#: `systemd-run` options that set up a timer: the command runs later, not now.
+_SDRUN_TIMER = re.compile(
+    r"^--on-(?:active|boot|startup|unit-active|unit-inactive|calendar|clock-change|timezone-change)\b"
+)
+#: `systemd-run` options that take a value of their own when not written `--opt=value`.
+_SDRUN_VALUE_OPTS = frozenset(
+    "-u --unit -p --property --description --slice --uid --gid -E --setenv --working-directory -M --machine "
+    "-H --host --nice --service-type --on-active --on-boot --on-startup --on-unit-active --on-unit-inactive "
+    "--on-calendar --timer-property --path-property --socket-property".split()
+)
+
+
+def _systemd_run_texts(command: str) -> list[WrittenText]:
+    """The command a `systemd-run` timer runs later (one with an `--on-...` option)."""
+    out: list[WrittenText] = []
+    for argv in _argv_segments(command):
+        if _head(argv) != "systemd-run" or not any(_SDRUN_TIMER.match(t) for t in argv[1:]):
+            continue
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            i += 2 if argv[i] in _SDRUN_VALUE_OPTS else 1
+        if i < len(argv):
+            out.append(WrittenText(_join_argv(argv[i:]), Form.SHELL))
+    return out
+
+
+#: Copies whose last operand is the destination; `install`'s options that take a value.
+_COPY_HEADS = frozenset({"cp", "mv", "install", "rsync"})
+_COPY_VALUE_OPTS = frozenset({"-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"})
+
+
+def _planted_copies(
+    command: str,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    lists: Lists,
+    planted: Planted,
+) -> list[WrittenText]:
+    """A file another call wrote, copied, moved or `cat`-ed into a self-modification file (read as that file's
+    content), or installed as a crontab with `crontab FILE`."""
+    out: list[WrittenText] = []
+
+    def norm(p: str) -> str:
+        return normalise_path(p, home=home, workspace_root=workspace_root)
+
+    for argv in _argv_segments(command):
+        head = _head(argv)
+        pairs: list[tuple[str, str]] = []  # (source, destination)
+        if head in _COPY_HEADS:
+            operands: list[str] = []
+            target: str | None = None
+            i = 1
+            while i < len(argv):
+                tok = argv[i]
+                if tok in ("-t", "--target-directory"):
+                    target = argv[i + 1] if i + 1 < len(argv) else None
+                    i += 2
+                    continue
+                if tok in _COPY_VALUE_OPTS:
+                    i += 2
+                    continue
+                if not tok.startswith("-"):
+                    operands.append(tok)
+                i += 1
+            if target is None and len(operands) >= 2:
+                target = operands.pop()
+            if target:
+                for src in operands:
+                    dest = (
+                        target.rstrip("/") + "/" + src.rsplit("/", 1)[-1]
+                        if target.endswith("/")
+                        else target
+                    )
+                    pairs.append((src, dest))
+        elif head == "cat":
+            srcs: list[str] = []
+            dest = None
+            i = 1
+            while i < len(argv):
+                tok = argv[i]
+                if tok in (">", ">>"):
+                    dest = argv[i + 1] if i + 1 < len(argv) else None
+                    i += 2
+                    continue
+                if tok.startswith(">"):
+                    dest = tok.lstrip(">")
+                elif not tok.startswith("-"):
+                    srcs.append(tok)
+                i += 1
+            if dest:
+                pairs.extend((s, dest) for s in srcs)
+        elif head == "crontab":
+            operands = []
+            i = 1
+            while i < len(argv):
+                if argv[i] == "-u":
+                    i += 2
+                    continue
+                if not argv[i].startswith("-"):
+                    operands.append(argv[i])
+                i += 1
+            for src in operands[:1]:
+                found = planted(norm(src))
+                if found is not None and found.content.strip():
+                    out.append(WrittenText(found.content, Form.SHELL, planted=found))
+            continue
+        for src, dest in pairs:
+            found = planted(norm(src))
+            if found is not None:
+                out.extend(
+                    replace(w, planted=found)
+                    for w in _path_texts(
+                        norm(dest),
+                        found.content,
+                        home=home,
+                        workspace_root=workspace_root,
+                        lists=lists,
+                        raw=dest,
+                    )
+                )
+    return out
+
+
+#: Heads that run their first operand as a script.
+_SCRIPT_RUNNERS = frozenset(
+    "sh bash zsh dash ksh fish source . python python3 node perl ruby pwsh powershell".split()
+)
+
+
+def _planted_runs(
+    texts: list[WrittenText], *, home: str | None, workspace_root: str | None, planted: Planted
+) -> list[WrittenText]:
+    """Files another call wrote that shell content the host runs (a hook, a cron line, a startup file, a job's
+    command) runs in turn (`sh /tmp/x.sh`, `/tmp/x.sh`): read as content the host runs. One level, at most
+    `MAX_PLANTED` files."""
+    out: list[WrittenText] = []
+    seen: set[str] = set()
+    for wt in texts:
+        if wt.form is not Form.SHELL or not wt.host_run:
+            continue
+        for line in _shell_lines(wt.text, cron_user=wt.cron_user):
+            for argv in _argv_segments(line):
+                head = _head(argv)
+                if head in _SCRIPT_RUNNERS or _PYTHON_HEAD.match(head):
+                    operands = [t for t in argv[1:] if not t.startswith("-")]
+                    if "-c" in argv[1:] or not operands:
+                        continue
+                    path = operands[0]
+                elif argv[0].startswith(("/", "~/", "./", "$HOME/")):
+                    path = argv[0]
+                else:
+                    continue
+                norm = normalise_path(path, home=home, workspace_root=workspace_root)
+                if norm in seen or len(seen) >= MAX_PLANTED:
+                    continue
+                seen.add(norm)
+                found = planted(norm)
+                if found is not None and found.content.strip():
+                    form = Form.PROGRAM if norm.lower().endswith(_PROGRAM_SUFFIXES) else Form.SHELL
+                    out.append(WrittenText(found.content, form, planted=found))
+    return out
+
+
+def _exec_texts(
+    command: str,
+    *,
+    home: str | None,
+    workspace_root: str | None,
+    lists: Lists,
+    planted: Planted | None = None,
 ) -> list[WrittenText]:
     if not command.strip():
         return []
+    routes = _python_texts(command, home=home, workspace_root=workspace_root, lists=lists)
+    rest = _without_heredocs(command)
+    routes += _config_cli_texts(rest) + _git_config_texts(rest) + _systemd_run_texts(rest)
+    if planted is not None:
+        routes += _planted_copies(
+            rest, home=home, workspace_root=workspace_root, lists=lists, planted=planted
+        )
+    return routes + _exec_written(command, home=home, workspace_root=workspace_root, lists=lists)
+
+
+def _exec_written(
+    command: str, *, home: str | None, workspace_root: str | None, lists: Lists
+) -> list[WrittenText]:
+    """Text a shell command writes into a self-modification file or a job by a redirect, `tee`, `sed`, a heredoc,
+    `crontab -` or the host's job commands."""
     form: Form | None = None
     rest = _without_heredocs(command)
     cli = [str(r.get("reason")) for r in lists.rules("selfmod", "cli") if r.regex.search(rest)]
@@ -685,9 +1232,13 @@ _PWSH_FETCH = re.compile(
 _PWSH_RUN = re.compile(r"\b(?:iex|invoke-expression|start-process)\b", re.I)
 
 
+#: A fetch piped into the current shell (fish's `curl ... | source`, `curl ... | . /dev/stdin`).
+_PIPE_SOURCE = re.compile(r"\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:source|\.)(?=\s|$)")
+
+
 def _runs_fetched(line: str) -> bool:
     """The line fetches code and runs it by a route the pipe check does not read."""
-    if _SUBST_RUN.search(line):
+    if _SUBST_RUN.search(line) or _PIPE_SOURCE.search(line):
         return True
     if _INLINE_PROGRAM.search(line) and _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line):
         return True
@@ -787,7 +1338,7 @@ def _shell_roles(
             if not contacts and not _segment_sends_local(sep.strip(), tokens, seg):
                 continue
             if (
-                tokens[0].rsplit("/", 1)[-1] in NET_HEADS
+                tokens[0].rsplit("/", 1)[-1].lower() in NET_HEADS
                 or "/dev/tcp/" in seg
                 or "/dev/udp/" in seg
             ):

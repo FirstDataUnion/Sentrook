@@ -12,7 +12,7 @@
 # An operator overlay directory (`SENTROOK_LISTS_DIR`) may carry a file of the same name; its
 # entries are merged additively (lists are appended, groups are unioned).
 
-version: 3
+version: 4
 
 # --------------------------------------------------------------------------
 # sensitive — credential, key, auth-store, browser-profile and PII material.
@@ -250,6 +250,12 @@ startup:
     # SSH persistence — authorized_keys is also `sensitive`; both are true.
     - 'authorized_keys'
     - '\.ssh/(?:config|rc)\b'
+    # fish, PowerShell and direnv startup files.
+    - '\.config/fish/(?:config\.fish|conf\.d/)'
+    - '(?:Documents/(?:Windows)?PowerShell|\.config/powershell)/(?:Microsoft\.\w+_)?profile\.ps1\b'
+    - '(?:^|[\s"''`=/])\.envrc(?![A-Za-z0-9_-])'
+    # A `.pth` file in a Python package folder: its `import` lines run whenever an interpreter starts.
+    - '(?:site|dist)-packages/[^/\s"'']+\.pth\b'
 
 host_scheduler:
   patterns:
