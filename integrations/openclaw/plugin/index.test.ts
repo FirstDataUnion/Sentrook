@@ -475,6 +475,30 @@ test("a session key that names no chat kind claims no direct chat", async () => 
   }
 });
 
+test("chat words in the agent id or main key name no chat", async () => {
+  const roomsInMain = { session: { groupScope: "main" } };
+  // a room routed into the main session of an agent called `dm` is not a direct chat
+  for (const key of ["agent:dm:main", "agent:direct:main"]) {
+    assert.deepEqual((await ownerTrigger(key, "discord", roomsInMain)).sender, { relation: "owner", basis: ["none"] });
+  }
+  const dmMainKey = { session: { groupScope: "main", mainKey: "dm" } };
+  assert.deepEqual((await ownerTrigger("agent:main:dm", "discord", dmMainKey)).sender, { relation: "owner", basis: ["none"] });
+  // DMs of an agent called `group`, `channel` or `thread` stay direct chats
+  for (const key of ["agent:group:main", "agent:channel:main", "agent:thread:main", "agent:group:discord:direct:381022"]) {
+    assert.deepEqual((await ownerTrigger(key, "discord")).sender, ATTENDED, key);
+  }
+  // a DM thread in the main session is the DM
+  assert.deepEqual((await ownerTrigger("agent:main:main:thread:42", "slack")).sender, ATTENDED);
+});
+
+test("a sender other than the owner in a chat of unknown kind keeps its channel", async () => {
+  const h = setup();
+  const ctx = { ...CTX, sessionKey: "global", runId: "r1", requester: undefined };
+  await h.fire("before_prompt_build", { runId: "r1", prompt: "hi" }, { ...ctx, trigger: "user", messageProvider: "discord" });
+  await h.fire("before_tool_call", call("c1", "ls"), ctx);
+  assert.deepEqual(h.scans[0].trigger, { kind: "message", channel: "discord", sender: { relation: "unknown", basis: ["none"] } });
+});
+
 test("someone else in a group chat is another sender in a group chat; a trusted sender stays trusted", async () => {
   const h = setup({}, { trustedSenders: ["u7"] });
   const key = "agent:main:discord:channel:1498333845953712258";

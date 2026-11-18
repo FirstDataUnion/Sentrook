@@ -243,7 +243,7 @@ export const GROUP_SEGMENT = /(^|:)(group|channel|room|space)(:|$)/i;
 /** Segments that name one person's chat. */
 export const DIRECT_SEGMENT = /(^|:)(direct|dm)(:|$)/i;
 /** A thread or topic: it belongs to the chat its key starts with. */
-const THREAD_SUFFIX = /:(?:thread|topic):.*$/i;
+const THREAD_SUFFIX = /(?:^|:)(?:thread|topic):.*$/i;
 
 export type ChatKind = "direct" | "group" | "unknown";
 
@@ -265,13 +265,15 @@ function groupsInMain(config: any): boolean {
  * operator's. `unknown` when nothing says.
  */
 export function chatKindOfTurn(sessionKey: unknown, channel: string | null, config: any): ChatKind {
-  const key = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase().replace(THREAD_SUFFIX, "") : "";
-  if (GROUP_SEGMENT.test(key)) return "group";
-  if (DIRECT_SEGMENT.test(key)) return "direct";
-  if (channel === "chat") return "direct";
+  const full = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase() : "";
+  // Only the part after `agent:<id>:` names the chat; the agent id is any word.
+  const agent = /^agent:[^:]+:/.exec(full);
+  const rest = (agent ? full.slice(agent[0].length) : full).replace(THREAD_SUFFIX, "");
   const mainKey = String(config?.session?.mainKey ?? "").trim().toLowerCase() || "main";
-  const parts = key.split(":");
-  if (parts.length === 3 && parts[0] === "agent" && parts[2] === mainKey && !groupsInMain(config)) return "direct";
+  if (agent && rest === mainKey) return groupsInMain(config) ? "unknown" : "direct";
+  if (GROUP_SEGMENT.test(rest)) return "group";
+  if (DIRECT_SEGMENT.test(rest)) return "direct";
+  if (channel === "chat") return "direct";
   return "unknown";
 }
 
@@ -594,6 +596,7 @@ export function buildPlanir(b: BuildInput): Built {
     : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider));
   const kind = triggerKind(run);
   const chatKind = isSystemAgentTurn(run) ? "direct" : chatKindOfTurn(sessionKey, channel, b.hostConfig);
+  const sender = senderOf(ctx.requester, run, cfg, chatKind);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
@@ -627,9 +630,9 @@ export function buildPlanir(b: BuildInput): Built {
       ? structuredClone(SELF_EDIT_TRIGGER)
       : {
           kind,
-          // a message from a chat of unknown kind does not claim to be one (a direct chat or a room)
-          channel: kind === "message" && chatKind === "unknown" ? null : channel,
-          sender: senderOf(ctx.requester, run, cfg, chatKind),
+          // the owner's message from a chat of unknown kind claims no chat (a direct chat or a room)
+          channel: kind === "message" && chatKind === "unknown" && sender.relation === "owner" ? null : channel,
+          sender,
         },
     request: { text: redactor.string(String(requestText)), carried_from_turn: null },
     new_inputs: sentInputs,
