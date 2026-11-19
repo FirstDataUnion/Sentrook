@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -153,12 +154,18 @@ def _rule_key(
     *,
     tool: str = "",
     args: Any = None,
+    secret: str = "",
 ) -> str:
     """Hermes persists Session/Always approvals per rule key, and approves a later review with the same key without
-    asking. The key is the tool and the action fingerprint, so an approval covers the same action (same source and
-    destination) through the same tool again, never another tool's call. A fingerprint that names nothing (no source,
-    destination or code: `afp1:<kind>` alone, or with only the tool's provider) would cover every such call of that
-    kind, or of that tool, so its key also holds the call's arguments: the approval covers that exact call. No fingerprint: a key of the request alone.
+    asking. The key is the tool and the scan's approval fingerprint (`approval_fingerprint`: the action's sources,
+    destinations and code, the same in every session; `action_fingerprint` when a scanner sends none), so an
+    approval covers the same action through the same tool again, in this session (Session) or any later one
+    (Always), never another tool's call. A fingerprint that names nothing (`afp1:<kind>` alone, or with only the
+    tool's provider) would cover every such call of that kind, or of that tool, so its key also holds the call's
+    arguments: the approval covers that exact call. No fingerprint: a key of the request alone.
+
+    The key is an HMAC under `secret` (derived from this install's salt), so two installs never share keys and the
+    stored key reveals nothing about the action.
 
     A block a snooze turned into a review is keyed the same way plus the snoozes covering it (`snoozes`, from
     `snooze.covering`) under its own prefix: Session or Always covers the same action while those snoozes last, as
@@ -172,10 +179,14 @@ def _rule_key(
             material += "|args:" + hashlib.sha256(arguments.encode()).hexdigest()
     else:
         material = request_id
+    prefix = "sentrook:"
     if snoozes is not None:
         material = f"{material}|{snoozes}"
-        return "sentrook:relaxed:" + hashlib.sha256(material.encode()).hexdigest()[:16]
-    return "sentrook:" + hashlib.sha256(material.encode()).hexdigest()[:16]
+        prefix = "sentrook:relaxed:"
+    digest = hmac.new(
+        ("sentrook rule key v1|" + secret).encode(), material.encode(), hashlib.sha256
+    ).hexdigest()
+    return prefix + digest[:16]
 
 
 def _error_rule_key(session_ref: str, outage: str, cause: str) -> str:
@@ -554,11 +565,12 @@ def _scan_one(
                 else None
             )
             key = _rule_key(
-                resp.get("action_fingerprint"),
+                resp.get("approval_fingerprint") or resp.get("action_fingerprint"),
                 planir["request_id"],
                 snoozes,
                 tool=tool_name,
                 args=kw.get("args"),
+                secret=store.salt(),
             )
             # The grant the scan suggests: the prompt shows its command, and approving always sets it where
             # the owner is the one answering (never for a block a snooze turned into a review).
@@ -582,8 +594,8 @@ def _scan_one(
                     "sid": sid,
                     "request_id": planir["request_id"],
                     "on_error": False,
-                    # Hermes keeps one review per rule key, so another chat's prompt for the same action can take
-                    # this entry's place: the answer sets the grant only from the chat it was asked in.
+                    # The same action can wait in several chats under one key (`Store.put_review` keeps one entry
+                    # per session): the answer sets the grant only from the chat it was asked in.
                     **(
                         {
                             "hint": hint,
@@ -845,7 +857,8 @@ def on_post_approval_response(**kw: Any) -> None:
             return
         cfg, _ = _load()
         store, traffic = _state(cfg)
-        review = store.pop_review(key)
+        # the same action can wait in several chats under one key: take the answering session's review
+        review = store.pop_review(key, str(kw.get("session_id") or kw.get("task_id") or "") or None)
         if not review:
             return
         choice = str(kw.get("choice") or kw.get("decision") or "").strip().lower()

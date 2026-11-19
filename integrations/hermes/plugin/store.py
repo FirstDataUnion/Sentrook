@@ -7,7 +7,7 @@ the separate `hermes cron run` process.
   save's `self_edit` block (see `conversation`). When one is written, at most once an hour per process,
   logs not modified in `CONVERSATION_MAX_AGE_S` are deleted and only the `CONVERSATION_KEEP` most recently
   modified are kept
-- `reviews.json`: rule_key → (session, request id) for joining approval answers
+- `reviews.json`: rule_key → the reviews waiting under it (session, request id), for joining approval answers
 - `grants.json`: grants and channel bindings set by command (see `grants`)
 - `snooze.json`: snoozes set by command (see `snooze`)
 - `holds.json`: unattended reviews held for the owner's approval (see `hold`)
@@ -160,6 +160,20 @@ def empty_session() -> dict[str, Any]:
     }
 
 
+#: Reviews of one action waiting at once, per rule key (one per session).
+REVIEWS_PER_KEY = 20
+
+
+def _review_entries(value: Any) -> list[dict[str, Any]]:
+    """The waiting reviews stored under one key: a list of entries (a single entry from before keys were shared
+    across sessions reads as a list of one)."""
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [e for e in value if isinstance(e, dict)]
+    return []
+
+
 class Store:
     def __init__(self, directory: Path) -> None:
         self.dir = Path(directory)
@@ -283,19 +297,36 @@ class Store:
             return True
 
     def put_review(self, rule_key: str, value: dict[str, Any]) -> None:
+        """Record a review waiting for its answer under the rule key its prompt carries. The same action can be
+        under review in several chats at once with one key (a key holds no session), so each key keeps a short list,
+        one entry per waiting review; a newer review from the same session replaces its older one."""
         path = self.dir / "reviews.json"
         with self.lock:
             cur = self._read(path, {})
-            cur[rule_key] = value
+            waiting = [
+                e for e in _review_entries(cur.get(rule_key)) if e.get("sid") != value.get("sid")
+            ]
+            cur.pop(rule_key, None)
+            cur[rule_key] = [*waiting, value][-REVIEWS_PER_KEY:]
             if len(cur) > 500:
                 cur = dict(list(cur.items())[-500:])
             self._write(path, cur)
 
-    def pop_review(self, rule_key: str) -> dict[str, Any] | None:
+    def pop_review(self, rule_key: str, sid: str | None = None) -> dict[str, Any] | None:
+        """Take the waiting review an answer under `rule_key` belongs to: the one from session `sid` when the host
+        names the answering session, else the oldest waiting one."""
         path = self.dir / "reviews.json"
         with self.lock:
             cur = self._read(path, {})
-            value = cur.pop(rule_key, None)
+            waiting = _review_entries(cur.get(rule_key))
+            if not waiting:
+                return None
+            idx = next((i for i, e in enumerate(waiting) if sid and e.get("sid") == sid), 0)
+            value = waiting.pop(idx)
+            if waiting:
+                cur[rule_key] = waiting
+            else:
+                cur.pop(rule_key, None)
             self._write(path, cur)
             return value
 
