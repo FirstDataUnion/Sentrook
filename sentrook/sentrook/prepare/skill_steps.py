@@ -25,8 +25,8 @@ from typing import Any
 
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
+from .entities import SKILL_TOOLS
 
-SKILL_TOOLS = frozenset({"skill_manage", "skill_workshop"})
 WRITTEN_KEYS = ("content", "file_content", "new_string", "new_text", "newText")
 #: Lists of edits whose entries carry written text of their own.
 NESTED_KEYS = ("operations", "edits")
