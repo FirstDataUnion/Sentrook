@@ -9,6 +9,8 @@
   "files": [
     "dist/",
     "index.ts",
+    "dashboard.ts",
+    "dashboardView.js",
     "approvalPolicy.ts",
     "auth.ts",
     "card.ts",

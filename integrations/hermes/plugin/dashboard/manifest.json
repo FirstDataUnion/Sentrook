@@ -1,0 +1,10 @@
+{
+  "name": "sentrook",
+  "label": "Sentrook",
+  "description": "Recent Sentrook scans and their risk scores (read-only).",
+  "icon": "Shield",
+  "version": "2.0.0-beta.14",
+  "tab": { "path": "/sentrook", "position": "end" },
+  "entry": "view.js",
+  "api": "plugin_api.py"
+}
