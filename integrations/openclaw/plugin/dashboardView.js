@@ -116,9 +116,10 @@
     "border-radius:6px;padding:3px 10px;cursor:pointer}.srk-btn[aria-pressed=true]{border-color:var(--srk-accent);color:var(--srk-accent)}",
     ".srk-spacer{flex:1}",
     // Pending: front and centre.
-    ".srk-pending{border:2px solid var(--srk-mid);border-radius:var(--srk-radius);background:var(--srk-card);padding:12px 14px;margin:12px 0}",
-    ".srk-pending h2{margin:0 0 8px;display:flex;align-items:center;gap:8px}",
-    ".srk-pending-item{border-top:1px solid var(--srk-border);padding:10px 0 4px}.srk-pending-item:first-of-type{border-top:0;padding-top:2px}",
+    ".srk-section{display:flex;align-items:center;gap:8px;font-size:17px;margin:24px 0 10px}",
+    ".srk-section-count{font-size:12px;font-weight:600;padding:1px 8px;border-radius:999px;background:var(--srk-soft);color:var(--srk-muted)}",
+    ".srk-pending-section .srk-section-count{background:var(--srk-mid);color:var(--srk-card)}",
+    ".srk-pending-item{border:2px solid var(--srk-mid);border-radius:var(--srk-radius);background:var(--srk-card);padding:12px 14px;margin:0 0 12px}",
     ".srk-pending-detail{border:1px solid var(--srk-border);border-radius:var(--srk-radius);margin:10px 0 6px;overflow:hidden}",
     ".srk-pending-detail>.srk-detail{border-top:0}",
     ".srk-pending-title{font-weight:600}.srk-pending-meta{color:var(--srk-muted);font-size:12px;margin:2px 0 6px}",
@@ -636,8 +637,12 @@
       ]));
     });
     if (p.holds_readable === false) items.push(el("div", { class: "srk-help", text: "The holds file could not be read, so held calls may be missing here." }));
-    return el("div", { class: "srk-pending", role: "region", "aria-label": "Waiting for you" }, [
-      el("h2", null, [el("span", { class: "srk-dot", style: "background:var(--srk-mid);width:10px;height:10px" }), "Waiting for you (" + (reviews.length + holds.length) + ")"]),
+    return el("section", { class: "srk-pending-section", "aria-label": "Waiting for you" }, [
+      el("h2", { class: "srk-section" }, [
+        el("span", { class: "srk-dot", style: "background:var(--srk-mid);width:10px;height:10px" }),
+        hinted("span", "Waiting for you", "Approval prompts still open and calls held for your approval. Each shows how to answer it."),
+        el("span", { class: "srk-section-count", text: String(reviews.length + holds.length) }),
+      ]),
     ].concat(items));
   }
 
@@ -719,6 +724,10 @@
     ].concat(limits)));
     var pending = pendingPanel(model, open);
     if (pending) root.appendChild(pending);
+    root.appendChild(el("h2", { class: "srk-section" }, [
+      hinted("span", "History", "Recent scans from the traffic log, newest first."),
+      model.scans.length ? el("span", { class: "srk-section-count", text: String(model.scans.length) }) : null,
+    ]));
     if (model.log !== "on") {
       root.appendChild(el("div", { class: "srk-empty", text: "The traffic log is off, so there is no scan history." }));
     } else if (!model.scans.length) {

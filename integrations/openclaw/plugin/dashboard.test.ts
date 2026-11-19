@@ -445,16 +445,21 @@ test("pending items sit at the top with the commands to answer them", () => {
   model.pending.reviews = [review.id];
   model.commands = COMMANDS;
   const root = drawView(model);
-  assert.equal(root.children[1]!.className, "srk-pending", "right under the header");
-  const text = root.byClass("srk-pending")[0]!.textContent;
-  assert.match(text, /Waiting for you \(4\)/);
+  assert.equal(root.children[1]!.className, "srk-pending-section", "right under the header");
+  const section = root.byClass("srk-pending-section")[0]!;
+  const text = section.textContent;
+  assert.match(text, /^Waiting for you4/);
+  // Each waiting item has its own box.
+  assert.equal(section.byClass("srk-pending-item").length, 4);
+  // History follows as its own section.
+  assert.equal(root.children[2]!.textContent, "History6");
   assert.match(text, /\/approve <approval id> deny/);
   assert.match(text, new RegExp(`/sentrook-why ${review.id.slice(0, 8)}`));
   assert.match(text, /\/sentrook-approve h-2c2c2c/);
   assert.match(text, /destination channel:1234567890/);
   assert.match(text, /There is no suggested grant/);
   // The open prompt carries the same breakdown as an opened scan, without repeating its why command.
-  const panel = root.byClass("srk-pending")[0]!;
+  const panel = section;
   const details = panel.byClass("srk-detail");
   assert.equal(details.length, 1, "the review's scan is in the list; the holds' scans are not");
   assert.equal(details[0]!.byClass("srk-tier").length, 3);
@@ -462,9 +467,11 @@ test("pending items sit at the top with the commands to answer them", () => {
   assert.match(panel.textContent, /Its scan is older than the scans shown here; \/sentrook-why h-2c2c2c shows it/);
   // A hold whose scan is in the list shows its breakdown too.
   model.pending.holds[0].request_id = model.scans[0].id;
-  assert.equal(drawView(model).byClass("srk-pending")[0]!.byClass("srk-detail").length, 2);
-  // Nothing pending: no panel.
-  assert.equal(drawView(viewModel()).byClass("srk-pending").length, 0);
+  assert.equal(drawView(model).byClass("srk-pending-section")[0]!.byClass("srk-detail").length, 2);
+  // Nothing pending: no section, and History comes first.
+  const quiet = drawView(viewModel());
+  assert.equal(quiet.byClass("srk-pending-section").length, 0);
+  assert.equal(quiet.children[1]!.textContent, "History6");
 });
 
 test("grants and snooze sections explain the commands, in this host's command form", () => {
