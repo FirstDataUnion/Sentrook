@@ -1,5 +1,5 @@
 name: sentrook
-version: 2.0.0-beta.14
+version: 2.0.0-beta.15
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
@@ -75,8 +75,9 @@ config_schema:
     description: >
       The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run,
       and of a call blocked there because the scan failed (at most once per job, or per session for other
-      runs, every 6 hours). Until it is set no notice is sent (status and verify say so); the call is still
-      held or blocked. Env
+      runs, every 6 hours), and of a background skill or memory save blocked, held or let through without
+      asking (at most one of each per session every 6 hours). Until it is set no notice is sent (status and
+      verify say so); the call is still held, blocked or let through. Env
       SENTROOK_OWNER_CHANNEL.
   skill_review:
     type: str
@@ -84,7 +85,9 @@ config_schema:
     description: >
       allow | review. allow declares Hermes's own background skill and memory saves (the self-improvement
       review and the curator) to Sentrook and sends the recent conversation, redacted, so the save is judged
-      against what was said; Sentrook's verdict applies as for any call. review sends them like any other
+      against what was said. Either way these saves never ask for approval (nobody is there to answer):
+      a review Sentrook marks lenient (only with allow) lets the save through, any other review holds it
+      (not saved), and the owner is told on owner_channel. review sends them like any other
       call, without the conversation, and deletes the kept conversations. false (off, no) reads as review and
       true as allow; any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
   timeout_ms:

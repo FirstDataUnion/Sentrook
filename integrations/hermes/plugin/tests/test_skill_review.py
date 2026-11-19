@@ -3,7 +3,8 @@
 A loop save is `skill_manage` or `memory` called while Hermes's write origin is `background_review` and the
 review is unattended (the automatic review and the curator, not an owner's `/refine`). With `skill_review:
 allow` (the default) it is sent with trigger system and a `self_edit` block; the scanner's verdict is then
-applied like any other. With `skill_review: review` it is sent like any other call. Nothing else changes.
+applied as on a run nobody attends: a loop save never asks (`test_background_saves`). With `skill_review: review` it
+is sent like any other call. Nothing else changes.
 """
 
 import io
@@ -103,20 +104,21 @@ def test_an_unattended_review_of_a_loop_save_is_held(h, tool, args, store, platf
     out, rec = call(h, tool, args)
     assert out["action"] == "block"
     assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "held", True)
-    assert history_action(h) == "held"
+    assert history_action(h) == "held (self-edit)"
     assert "self_edit" in h.scans[-1]
 
 
 @pytest.mark.parametrize("platform", ["telegram", "cli"])
-def test_an_attended_review_of_a_loop_save_asks(h, monkeypatch, platform):
+def test_a_review_of_a_loop_save_in_a_chat_or_the_terminal_is_held_too(h, monkeypatch, platform):
+    """The owner's turn is over when the loop saves, so nobody could answer a prompt there either."""
     if platform == "cli":
         monkeypatch.setattr(sys, "stdin", Tty())
     turn(h, platform)
     h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out["action"] == "approve"
-    assert rec["decision"] == "review_timed_out" and rec["skill_review"] is True
-    assert history_action(h) == "review"
+    assert out["action"] == "block"
+    assert rec["decision"] == "held" and rec["skill_review"] is True
+    assert history_action(h) == "held (self-edit)"
 
 
 @pytest.mark.parametrize("platform", ["api_server", "webhook", None])
@@ -129,7 +131,7 @@ def test_a_reviewed_bare_save_is_held_unattended_and_still_declared(h, platform)
     out, rec = call(h, *LOOP_CALLS[4][:2])
     assert out is not None and out["action"] == "block"
     assert (rec["verdict"], rec["decision"], rec["skill_review"]) == ("review", "held", True)
-    assert history_action(h) == "held"
+    assert history_action(h) == "held (self-edit)"
     sent = h.scans[-1]
     assert sent["trigger"] == SYSTEM_TRIGGER and sent["self_edit"]["store"] == "memory"
 
@@ -146,7 +148,8 @@ def test_an_enforced_floor_applies(h, floor):
     turn(h, "telegram")
     h.reply.update(risk=20, enforced=floor)
     out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out["action"] == ("approve" if floor == "review" else "block")
+    assert out["action"] == "block"
+    assert rec["decision"] == ("held" if floor == "review" else "blocked")
     turn(h, "api_server")
     out, rec = call(h, *LOOP_CALLS[4][:2])
     # Unattended: an enforced review waits for the owner, an enforced block stays a block.
@@ -159,7 +162,7 @@ def test_observe_mode_is_unchanged(h):
     turn(h, "api_server")
     h.reply.update(risk=55)
     out, rec = call(h, *LOOP_CALLS[0][:2])
-    assert out is None and history_action(h) == "observed (would review)"
+    assert out is None and history_action(h) == "observed (would review, self-edit)"
     assert "self_edit" in h.scans[-1]
 
 
@@ -239,7 +242,8 @@ def test_skill_review_review_sends_a_loop_save_like_any_other_call(h):
     assert sent["trigger"]["kind"] == "hook" and "self_edit" not in sent
     turn(h, "telegram")
     out, rec = call(h, *LOOP_CALLS[4][:2])
-    assert out["action"] == "approve"
+    # still a loop save: in a chat too it never asks
+    assert out["action"] == "block" and rec["decision"] == "held"
     assert h.scans[-1]["trigger"]["kind"] == "message" and "self_edit" not in h.scans[-1]
     # No conversation is kept either.
     assert not (h.dir / "sentrook" / "conversations").exists()
@@ -302,7 +306,7 @@ def status(h):
     return next(line for line in out.splitlines() if line.startswith("skill review:"))
 
 
-def test_status_counts_allowed_blocked_asked_and_held_loop_saves(h):
+def test_status_counts_allowed_blocked_and_held_loop_saves(h):
     assert status(h) == "skill review: allow; loop saves in the traffic log: 0 allowed, 0 blocked"
     turn(h, "api_server")
     call(h, *LOOP_CALLS[0][:2])
@@ -319,7 +323,7 @@ def test_status_counts_allowed_blocked_asked_and_held_loop_saves(h):
     h.prov["origin"] = "background_review"
     turn(h, "telegram")
     call(h, *LOOP_CALLS[3][:2])
-    assert status(h).endswith("2 allowed, 0 blocked, 1 asked, 1 held")
+    assert status(h).endswith("2 allowed, 0 blocked, 2 held")
 
 
 def test_an_unknown_value_reads_as_allow_and_is_named(h):

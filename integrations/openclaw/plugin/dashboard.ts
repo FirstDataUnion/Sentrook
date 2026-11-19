@@ -40,7 +40,7 @@ export const TIERS: Array<[string, string[]]> = [
 ];
 
 /** Plugin marks on a scan record worth showing next to the action. */
-const FLAGS = ["snoozed", "relaxed", "hold", "notice", "skill_review", "self_edit", "host_process"];
+const FLAGS = ["snoozed", "relaxed", "lenient", "hold", "notice", "skill_review", "self_edit", "host_process"];
 
 function unit(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : null;
@@ -82,11 +82,14 @@ function entityOrder(a: string, b: string): number {
   return num(a) - num(b) || (a < b ? -1 : a > b ? 1 : 0);
 }
 
-/** Which total a scan counts towards. */
+/**
+ * Which total a scan counts towards. A background save sent to the drafts waits for the owner (review); one OpenClaw
+ * did not keep was not made (blocked).
+ */
 export function bucketOf(scan: Rec, action: string): string {
   if (responseOf(scan) === null) return "scan_error";
-  if (action.startsWith("blocked")) return "blocked";
-  if (action.startsWith("review") || action.startsWith("held")) return "review";
+  if (action.startsWith("blocked") || action.startsWith("not saved")) return "blocked";
+  if (["review", "held", "drafted", "sent to drafts"].some((p) => action.startsWith(p))) return "review";
   if (action.startsWith("observed")) return "observed";
   return "allowed";
 }

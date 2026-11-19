@@ -30,6 +30,7 @@ from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
+from .prepare.save_adds import UNREAD_SAVE, save_adds
 from .prepare.views import (
     CALL,
     EXPOSURE,
@@ -159,6 +160,22 @@ def view_budgets(question_sets: Iterable[QuestionSet | None]) -> tuple[int | Non
         else:
             call = budget if call is None else min(call, budget)
     return call, selfedit
+
+
+def _pending_rule_findings(prepared: Prepared, envelopes: list[Envelope]) -> list[dict[str, Any]]:
+    """The rule-based probe's findings on the pending call, for the self-edit reading to reuse (a probe that did not
+    answer leaves none, and the save is not lenient for that reason anyway)."""
+    from .aira.detectors import call_label
+
+    label = call_label(prepared.pending)
+    for env in envelopes:
+        if env.step is ProbeStep.AIRA and env.status is ProbeStatus.OK:
+            return [
+                f
+                for f in env.evidence.get("findings", [])
+                if isinstance(f, dict) and f.get("call_id") == label
+            ]
+    return []
 
 
 class Scanner:
@@ -334,6 +351,15 @@ class Scanner:
                     )
         ordered = [envelopes[step] for step in ALL_PROBES]
 
+        # What a background save adds, for the plugins' handling of a save nobody can be asked about; no score reads it.
+        reading = None
+        if prepared.planir.is_self_edit:
+            try:
+                reading = save_adds(
+                    prepared, rule_findings=_pending_rule_findings(prepared, ordered)
+                )
+            except Exception:  # noqa: BLE001 (the reading never fails a scan: unread, the save is not lenient)
+                reading = UNREAD_SAVE
         result = converge(
             prepared,
             ordered,
@@ -343,6 +369,7 @@ class Scanner:
             started=started,
             probes_enabled=list(enabled),
             views=views_label(views),
+            self_edit_reading=reading,
         )
         return ScanResult(
             response=result.response,

@@ -83,6 +83,8 @@ def run_status(
                 skill_review.setting_text(cfg.skill_review, cfg.skill_review_unknown),
                 cfg.traffic_log_path if cfg.traffic_log_enabled else None,
             ),
+            "background-save notices: "
+            + skill_review.notice_line(cfg.owner_channel, hold.home_platforms()),
         )
     )
 
