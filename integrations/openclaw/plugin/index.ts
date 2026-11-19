@@ -10,6 +10,7 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
+import * as dashboard from "./dashboard.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
@@ -51,6 +52,15 @@ interface OpenClawPluginApi {
     handler: (ctx: any) => Promise<{ text?: string }>;
   }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
+  registerHttpRoute?: (route: {
+    path: string;
+    auth: "gateway" | "plugin";
+    match?: "exact" | "prefix";
+    handler: (req: any, res: any) => boolean | Promise<boolean>;
+  }) => void;
+  /** Deprecated flat alias of `session.controls.registerControlUiDescriptor`, kept for older hosts. */
+  registerControlUiDescriptor?: (descriptor: Json) => void;
+  session?: { controls?: { registerControlUiDescriptor?: (descriptor: Json) => void } };
 }
 
 export interface BeforeToolCallResult {
@@ -176,6 +186,23 @@ const plugin = {
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
       api.logger.warn(`${LOG} ${m}`),
     );
+    // The read-only dashboard: a Gateway route behind gateway auth, shown as a Control UI tab.
+    if (api.registerHttpRoute) {
+      try {
+        api.registerHttpRoute({
+          path: dashboard.ROUTE,
+          auth: "gateway",
+          match: "prefix",
+          handler: (req, res) => dashboard.handleRequest(req, res, () => loadConfig().cfg),
+        });
+        const tab = { ...dashboard.TAB, requiredScopes: [...dashboard.TAB.requiredScopes] };
+        const controls = api.session?.controls;
+        if (typeof controls?.registerControlUiDescriptor === "function") controls.registerControlUiDescriptor(tab);
+        else api.registerControlUiDescriptor?.(tab);
+      } catch (err) {
+        api.logger.warn(`${LOG} dashboard unavailable: ${String(err)}`);
+      }
+    }
     // `/sentrook-history`, `/sentrook-why`, the grants commands and `/sentrook-snooze`: owner only,
     // audited in the traffic log.
     for (const [verb, sub] of Object.entries(OWNER_SUBCOMMANDS)) {
