@@ -406,7 +406,8 @@ def test_every_manifest_setting_is_read():
 
 def test_episode_review_loop_auto_deny_on_the_terminal(loop_h, review_fork, monkeypatch):
     """The review loop's own deny on the local terminal goes out as `blocked` in the next scan's history,
-    and that request is valid PlanIR (`make plugin-planir-check`)."""
+    and that request is valid PlanIR (`make plugin-planir-check`). The fork's saves never ask, so the prompt is
+    for another call the fork makes."""
     import io
     import sys
 
@@ -421,8 +422,8 @@ def test_episode_review_loop_auto_deny_on_the_terminal(loop_h, review_fork, monk
     )
     h.reply.update(risk=55)
     out = h.ctx.hooks["pre_tool_call"](
-        tool_name="skill_manage",
-        args={"action": "create", "name": "tidy", "content": "# Tidy\nSteps."},
+        tool_name="read_file",
+        args={"path": "skills/tidy/SKILL.md"},
         tool_call_id="c1",
         turn_id="t1",
         **SID,

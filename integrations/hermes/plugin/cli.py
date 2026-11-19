@@ -12,7 +12,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from . import hold
+from . import hold, skill_review
 from .auth import (
     clear_scan_token_cache,
     get_scan_access_token,
@@ -100,6 +100,15 @@ def run_verify(
             "held-call notices",
             True,
             f"to the {target} home channel" if target else f"not sent: {why}",
+        )
+    )
+    # Reported, not failed: Hermes's background saves never ask, so without a notice target the owner learns of
+    # one that was let through, held or blocked only from history.
+    checks.append(
+        (
+            "background-save notices",
+            True,
+            skill_review.notice_line(cfg.owner_channel, hold.home_platforms()),
         )
     )
     return checks

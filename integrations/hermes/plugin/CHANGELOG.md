@@ -4,6 +4,22 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
+## 2.0.0-beta.15
+
+- Hermes's background skill and memory saves (the self-improvement review after a turn, and the curator) never ask
+  for approval any more, on any surface and whatever the approval settings: nobody is there to answer once the turn
+  is over, so a question was lost without a word (denied unseen on the local terminal, sent nowhere on a gateway).
+  Now an allowed save is saved; a blocked save is blocked and the owner gets a notice; a review Sentrook marks
+  lenient is saved and the owner gets a notice that it was let through; any other review is held for the owner,
+  with the held-call notice; a scan failure is handled as on any unattended run, with its notice. The new notices go
+  to the `owner_channel` home channel, at most one of each kind per session every 6 hours.
+- A snooze on the session (or every session) lets a background save through that would otherwise be held, with the
+  notice; it never lets a blocked one through.
+- `status` and `verify` say where background-save notices go, and say plainly when they cannot be delivered and how
+  to set a home channel. `status` counts background saves let through.
+- History marks Hermes's own background saves "(self-edit)", and shows a save let through as
+  "allowed (let through, self-edit)".
+
 ## 2.0.0-beta.14
 
 - The approval prompt is easier to read and always recognisable as Sentrook's: it starts with

@@ -9,6 +9,10 @@ A snooze never allows:
 - an unattended run, where a review stays a block;
 - a scan error, or observe mode.
 
+Hermes's own background skill and memory saves (`skill_review`) never ask. One whose review would otherwise be
+held is allowed when a snooze covers its session (or every session), under the same rules: never a block, an
+enforced review or one at the block line. The owner gets a notice that it was let through.
+
 In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner attends,
 nothing independent points to an attack and nothing is enforced: the score alone blocks) into a review. It is
 allowed without asking only where the owner answered Session or Always for the same action while the same

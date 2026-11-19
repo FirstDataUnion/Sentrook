@@ -161,7 +161,15 @@ def _time(ts: Any) -> str:
 
 
 def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
-    """What the plugin did with the call."""
+    """What the plugin did with the call; Hermes's own background saves are marked `self-edit`, as the OpenClaw
+    plugin marks its own."""
+    action = _base_action(scan, resolution)
+    if scan.get("skill_review") is not True or _response(scan) is None:
+        return action
+    return f"{action[:-1]}, self-edit)" if action.endswith(")") else f"{action} (self-edit)"
+
+
+def _base_action(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
     verdict, decision = scan.get("verdict"), scan.get("decision")
     if _response(scan) is None:
         if resolution is not None:
@@ -174,6 +182,9 @@ def action_of(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str:
     if verdict == "review":
         if decision == "allowed" and scan.get("snoozed") is True:
             return "allowed (snoozed)"
+        if decision == "allowed" and scan.get("lenient") is True:
+            # a background save the scanner marked lenient: let through without asking
+            return "allowed (let through)"
         if decision == "held":
             return "held"
         return "blocked (no reviewer)" if decision == "blocked" else "review"

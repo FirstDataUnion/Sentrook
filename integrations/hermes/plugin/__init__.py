@@ -33,7 +33,15 @@ from . import (
 )
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
-from .decision import block_reason, decide, tiers_of, unattended_view
+from .decision import (
+    BLOCK_CATEGORIES,
+    block_category,
+    block_reason,
+    decide,
+    describe,
+    tiers_of,
+    unattended_view,
+)
 from .intent import (
     conversation_sender_of,
     hermes_config,
@@ -456,7 +464,9 @@ def _scan_one(
         last_request=last_request,
     )
     planir = built["planir"]
-    unattended = is_unattended(
+    built["loop_save"] = loop_save
+    # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
+    unattended = loop_save or is_unattended(
         built["platform"],
         env,
         subagent=built["subagent"],
@@ -498,8 +508,11 @@ def _scan_one(
     verdict: str | None = None
     snoozed = False
     relaxed = False
+    let_through = False
     held: dict[str, Any] | None = None
-    failure_notice: dict[str, Any] | None = None
+    notice: dict[str, Any] | None = (
+        None  # the owner's notice of a background save or a scan failure
+    )
     if isinstance(result, ScanOk):
         resp = result.response
         # A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
@@ -529,6 +542,24 @@ def _scan_one(
         elif verdict == "block":
             entry["decision"] = "blocked"
             directive = {"action": "block", "message": block_reason(resp)}
+            if loop_save:
+                notice = _background_notice(cfg, built, resp, "blocked")
+        elif (
+            loop_save
+            and snooze.applies(resp, cfg.block_at)
+            and (
+                skill_review.lenient(resp)
+                or snooze.active(
+                    store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+                )
+            )
+        ):
+            # A reviewed background save the scanner marks lenient, or one a snooze covers, runs and the owner is
+            # told; never one the scanner enforces or that scores at the block line.
+            entry["decision"] = "allowed"
+            let_through = skill_review.lenient(resp)
+            snoozed = not let_through
+            notice = _background_notice(cfg, built, resp, "allowed", snoozed=snoozed)
         elif unattended:
             # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
             entry["decision"] = "held"
@@ -615,7 +646,7 @@ def _scan_one(
                         key, {"sid": sid, "request_id": planir["request_id"], "on_error": True}
                     )
                 elif unattended:
-                    failure_notice = _scan_failure_notice(cfg, built, result)
+                    notice = _scan_failure_notice(cfg, built, result)
         entry["decision"] = "blocked_on_error" if directive else "allowed_on_error"
 
     sess["history"].append(entry)
@@ -632,9 +663,10 @@ def _scan_one(
             "verdict": verdict,
             "decision": entry["decision"],
             **({"snoozed": True} if snoozed else {}),
+            **({"lenient": True} if let_through else {}),
             **({"relaxed": True} if relaxed else {}),
             **({"hold": held} if held is not None else {}),
-            **({"notice": failure_notice} if failure_notice is not None else {}),
+            **({"notice": notice} if notice is not None else {}),
             **({"skill_review": True} if loop_save else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
@@ -654,7 +686,13 @@ def _scan_one(
             result.response.get("status"),
             verdict,
             entry["decision"],
-            " (snoozed)" if snoozed else " (block relaxed to review by snooze)" if relaxed else "",
+            " (snoozed)"
+            if snoozed
+            else " (block relaxed to review by snooze)"
+            if relaxed
+            else " (let through)"
+            if let_through
+            else "",
             " (self-edit)" if self_edit is not None else " (loop save)" if loop_save else "",
             result.latency_ms,
         )
@@ -670,6 +708,8 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
     """(the job or session a call belongs to, for the owner's notices; the cron job id when Hermes says
     which)."""
     sref = built["planir"]["session"]["session_ref"]
+    if built.get("loop_save"):
+        return hold.where_text(skill_review.RUN, sref), None
     run = None
     try:
         read = getattr(_ctx, "current_cron_execution", None)
@@ -691,15 +731,76 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
     return hold.where_text("unattended run", sref), None
 
 
+def _notice_target(owner_channel: str) -> tuple[str | None, str]:
+    """(platform whose home channel gets the owner's notices, or None; why there is none)."""
+    target, why = hold.notice_target(owner_channel, hold.home_platforms())
+    if target and not callable(getattr(_ctx, "dispatch_tool", None)):
+        target, why = None, "this Hermes cannot dispatch send_message from a plugin"
+    return target, why
+
+
+def _background_notice(
+    cfg: PluginConfig,
+    built: dict[str, Any],
+    resp: dict[str, Any],
+    outcome: str,
+    *,
+    snoozed: bool = False,
+) -> dict[str, Any]:
+    """Tells the owner a background save was blocked (`outcome` blocked) or let through without asking (allowed):
+    once per kind and session per quiet period. Returns what the scan record says about the notice. Never raises:
+    the save's outcome stands whatever happens here."""
+    target, why = _notice_target(cfg.owner_channel)
+    if not target:
+        logger.warning("sentrook %s a background save but sent no notice: %s", outcome, why)
+        return {"status": "unsent", "target": None, "reason": why}
+    planir = built["planir"]
+    key = skill_review.quiet_key(outcome, planir["session"]["session_ref"])
+    try:
+        stamp = scan_failure_notice.claim(cfg.state_dir, key, datetime.now(UTC))
+        if stamp is None:
+            return {"status": "quiet"}
+    except LockTimeout:
+        return {"status": "unsent", "target": None, "reason": "notice file locked"}
+    except Exception as exc:  # noqa: BLE001 - the outcome stands, just not announced
+        logger.warning("sentrook could not read or write background-save notices: %s", exc)
+        return {"status": "unsent", "target": None, "reason": "notice file not written"}
+
+    def release() -> None:
+        scan_failure_notice.release(cfg.state_dir, key, stamp)
+
+    try:
+        where = _where(built)
+        shown = describe(resp, built["tool"])
+        details = (
+            f"Details: {commands.CMD('why')} {planir['request_id'][:8]}; every background save is in "
+            f"{commands.CMD('history')}."
+            if cfg.traffic_log_enabled
+            else None
+        )
+        text = (
+            skill_review.block_notice_text(
+                built["tool"], shown, where, BLOCK_CATEGORIES[block_category(resp)], details
+            )
+            if outcome == "blocked"
+            else skill_review.let_through_text(built["tool"], shown, where, details, snoozed)
+        )
+    except Exception as exc:  # noqa: BLE001 - a malformed response: not announced
+        logger.warning("sentrook could not build a background-save notice: %s", exc)
+        release()
+        return {"status": "unsent", "target": None, "reason": "notice could not be built"}
+    # Not delivered: the next one of this kind in this session is announced instead.
+    hold.deliver(_ctx, target, text, on_fail=release)
+    return {"status": "queued", "target": target}
+
+
 def _scan_failure_notice(
     cfg: PluginConfig, built: dict[str, Any], failure: ScanFailure
 ) -> dict[str, Any]:
     """Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session)
     per quiet period. Returns what the scan record says about the notice. Never raises: the call is
     blocked whatever happens here."""
-    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
-    if target and not callable(getattr(_ctx, "dispatch_tool", None)):
-        target, why = None, "this Hermes cannot dispatch send_message from a plugin"
+    target, why = _notice_target(cfg.owner_channel)
     if not target:
         return {"status": "unsent", "target": None, "reason": why}
     where, job_id = _run_of(built)
@@ -734,9 +835,7 @@ def _hold(
     call is held whatever happens here: a hold that cannot be stored only cannot be approved."""
     now = datetime.now(UTC)
     planir = built["planir"]
-    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
-    if target and not callable(getattr(_ctx, "dispatch_tool", None)):
-        target, why = None, "this Hermes cannot dispatch send_message from a plugin"
+    target, why = _notice_target(cfg.owner_channel)
     notice: dict[str, Any] = (
         {"status": "queued", "target": target}
         if target

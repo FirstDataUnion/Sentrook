@@ -7,6 +7,9 @@ surface is `cli`, the thread's callback is the review's auto-deny, and no gatewa
 That answer is recorded as `blocked` (what a review nobody can answer is), never `denied_by_user`, and
 history says "auto-denied by the review loop". A denial a person could have given (another surface, a
 gateway route, no auto-deny callback) or of an ordinary call is still the owner's.
+
+The fork's own skill and memory saves never ask (`test_background_saves`), so the prompts here are for the fork's
+other calls (a read) and for an owner's `/refine`, whose saves still ask.
 """
 
 import io
@@ -18,6 +21,8 @@ from plugin import history
 
 SID = {"session_id": "S1", "task_id": "S1"}
 SAVE = ("skill_manage", {"action": "create", "name": "tidy", "content": "# Tidy\nSteps."})
+#: A call the review fork makes that is not a save.
+FORK = ("read_file", {"path": "skills/tidy/SKILL.md"})
 AUTO = "auto-denied by the review loop"
 
 
@@ -81,9 +86,10 @@ def shown(h):
 
 @pytest.mark.parametrize("attended", [False, True], ids=["loop", "refine"])
 def test_the_review_loops_auto_deny_on_the_terminal_is_not_the_owners(h, attended):
-    """The automatic review and an owner's /refine both run in the fork, whose callback denies unseen."""
+    """The automatic review and an owner's /refine both run in the fork, whose callback denies unseen: a read in
+    the automatic review, a save in a /refine."""
     h.prov["attended"] = attended
-    key = ask(h, *SAVE)
+    key = ask(h, *(SAVE if attended else FORK))
     answer(h, key, "deny")
     sent = next_history(h)[0]
     # the scan of a retry is told the review loop denied it, so the retry may ask rather than block
@@ -99,7 +105,7 @@ def test_the_review_loops_auto_deny_on_the_terminal_is_not_the_owners(h, attende
     assert f"review: {AUTO}" in why.splitlines()
 
 
-def test_any_call_the_fork_makes_is_covered_not_only_saves(h):
+def test_any_call_the_fork_makes_is_covered(h):
     """A terminal call the review fork makes is asked about the same way and auto-denied the same way."""
     key = ask(h, "terminal", {"command": "ls skills"})
     answer(h, key, "deny")
@@ -114,7 +120,7 @@ def test_a_scan_error_review_auto_denied_is_labelled_too(h, monkeypatch):
         "plugin.post_scan",
         lambda **_kw: ScanFailure(ok=False, kind="http", status=500, detail="boom"),
     )
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     assert key.startswith("sentrook:error:")
     answer(h, key, "deny")
     res = resolution(h)
@@ -142,7 +148,7 @@ def test_a_denial_on_another_surface_is_the_owners(h, surface):
     h.ctx.hooks["pre_llm_call"](
         turn_id="t1", user_message="keep replies short", platform="telegram", sender_id="u1", **SID
     )
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     if surface is None:
         h.ctx.hooks["post_approval_response"](
             pattern_key=f"plugin_rule:{key}", choice="deny", **SID
@@ -158,7 +164,7 @@ def test_a_gateway_routed_prompt_answered_on_the_terminal_is_the_owners(h):
     """Hermes's managed local runtime routes the fork's prompt through a gateway notifier to the person at
     the terminal, and still reports the `cli` surface: their deny is theirs."""
     h.fork.notifiers.add("agent:main:cli:S1")
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     answer(h, key, "deny")
     assert next_history(h)[0]["decision"] == "denied_by_user"
     assert "decided_by" not in resolution(h)
@@ -166,17 +172,16 @@ def test_a_gateway_routed_prompt_answered_on_the_terminal_is_the_owners(h):
 
 @pytest.mark.parametrize("callback", [None, "other"], ids=["no-callback", "another-callback"])
 def test_a_prompt_without_the_review_auto_deny_is_the_owners(h, callback):
-    """`hermes curator run` in the foreground has no callback and asks on the terminal itself; any other
-    callback is a person's prompt too."""
+    """With no callback, or any other callback, a person may have answered the prompt."""
     h.fork.callback = callback
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     answer(h, key, "deny")
     assert next_history(h)[0]["decision"] == "denied_by_user"
     assert "decided_by" not in resolution(h)
 
 
 def test_a_hook_without_a_session_key_is_the_owners(h):
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     h.ctx.hooks["post_approval_response"](
         pattern_key=f"plugin_rule:{key}", choice="deny", surface="cli", **SID
     )
@@ -187,7 +192,7 @@ def test_a_hook_without_a_session_key_is_the_owners(h):
     "missing", ["tools.approval", "tools.terminal_tool", "agent.background_review"]
 )
 def test_without_hermes_approval_plumbing_the_denial_is_the_owners(h, monkeypatch, missing):
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     monkeypatch.setitem(sys.modules, missing, None)
     answer(h, key, "deny")
     assert next_history(h)[0]["decision"] == "denied_by_user"
@@ -198,7 +203,7 @@ def test_without_hermes_approval_plumbing_the_denial_is_the_owners(h, monkeypatc
     [("timeout", "review_timed_out", "timed out"), ("cancelled", "blocked", "cancelled")],
 )
 def test_other_unanswered_outcomes_in_the_fork_are_unchanged(h, choice, decision, review):
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     answer(h, key, choice)
     sent = next_history(h)[0]
     assert sent["decision"] == decision and "decided_by" not in sent
@@ -208,7 +213,7 @@ def test_other_unanswered_outcomes_in_the_fork_are_unchanged(h, choice, decision
 
 def test_an_unreadable_write_origin_leaves_the_denial_as_it_was(h, monkeypatch):
     """A host without the write origin has no review loop to recognise."""
-    key = ask(h, *SAVE)
+    key = ask(h, *FORK)
     monkeypatch.setitem(sys.modules, "tools.skill_provenance", None)
     answer(h, key, "deny")
     assert next_history(h)[0]["decision"] == "denied_by_user"

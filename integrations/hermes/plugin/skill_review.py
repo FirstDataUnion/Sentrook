@@ -2,8 +2,7 @@
 
 After a turn, Hermes forks a background review (and, when idle, the curator) that saves skills through
 `skill_manage` and memory through `memory`. The fork runs without a request or a chat of its own, so a
-scan of its save would show a write with nothing to justify it, and where nobody can answer a review
-(API server, webhook, a chat after the turn ended) a review is a block.
+scan of its save would show a write with nothing to justify it.
 
 A loop save is recognised only from Hermes's own write origin (`tools.skill_provenance`): the origin
 is `background_review` and the review is unattended (not an owner's `/refine`), and the tool is
@@ -12,21 +11,35 @@ module has no loop saves.
 
 With `skill_review: allow` (the default) a loop save is declared as a self-edit: it is sent with trigger
 `system` and a top-level `self_edit` block carrying the conversation the review read (see
-`conversation.py`), and the scanner judges the save against it. Its verdict is applied like any other.
-`skill_review: review` sends a loop save like any other call, without the block (a background call never
-reads as the owner's message: an owner sender becomes unknown, trigger `system`). Any
-other value reads as allow, and status and the startup log name it.
+`conversation.py`), and the scanner judges the save against it. `skill_review: review` sends a loop save
+like any other call, without the block (a background call never reads as the owner's message: an owner
+sender becomes unknown, trigger `system`). Any other value reads as allow, and status and the startup log
+name it.
+
+A loop save never asks for approval, whatever the setting, the surface or Hermes's approval settings. Nobody
+can answer it: the owner's turn is over. On the local terminal Hermes's callback on the fork's thread denies
+every prompt unseen; on a gateway the session's approval route is gone by the time the fork calls, so the
+prompt reaches nobody; Hermes fails the curator's prompts closed. A prompt would lose the save without a word. So a
+loop save is decided as an unattended run's call is, and the owner is told:
+- allow: it runs;
+- block: it is blocked, and the owner gets a notice (`block_notice_text`);
+- review the scanner marks lenient (`lenient`), below the block line and not enforced: it runs, and the owner
+  gets a notice that it was let through (`let_through_text`); the same when a snooze covers the session;
+- any other review: it is held for the owner (`hold`), with the hold notice;
+- scan failure: as on any unattended run (`scan_error_policy`), with the scan-failure notice when it blocks.
+These notices are sent at most once per kind per session every 6 hours (`scan_failure_notice` keeps the times).
 
 Every call the fork or the curator makes (a loop save or not) carries the session's last owner request
 and that turn's number, and is not counted as a new turn: the fork fires no `pre_llm_call`, and the
 curator's carries its own prompt, not a request. With no owner request stored it carries `REQUEST_TEXT`.
 
-Every loop save's traffic record says `skill_review: true`, and `/sentrook status` counts allowed,
-blocked and asked loop saves.
+Every loop save's traffic record says `skill_review: true`, history marks it "self-edit", and
+`/sentrook status` counts allowed, blocked, held and let-through loop saves.
 
-On the local terminal the review fork answers its own approval prompts: Hermes's callback on its thread
-denies them unseen (see `auto_denied`). That denial is recorded as `blocked` (a review nobody could answer), never `denied_by_user`,
-its resolution says `decided_by: review_loop`, and history shows "auto-denied by the review loop".
+The fork's other calls, and an owner's `/refine`, can still ask. On the local terminal Hermes's callback
+denies those prompts unseen (see `auto_denied`). That denial is recorded as `blocked` (a review nobody could
+answer), never `denied_by_user`, its resolution says `decided_by: review_loop`, and history shows
+"auto-denied by the review loop".
 """
 
 from __future__ import annotations
@@ -68,9 +81,9 @@ def auto_denied(kw: dict[str, Any], choice: str) -> bool:
     A deny is that callback's when it came from the `cli` surface under the background-review origin,
     the thread's callback is Hermes's review auto-deny, and no gateway notifier is registered for the
     session. A gateway route (Hermes's managed local runtime) also reports `cli` but takes the prompt
-    to a person, and a run with no callback (`hermes curator run` in the foreground) asks on the
-    terminal; in both a person answered, so the denial stays theirs. Any failure to read Hermes means
-    no."""
+    to a person, so the denial stays theirs; so does a deny from any other callback. Loop saves never ask
+    (see the module note), so this covers the fork's other calls and a `/refine`'s. Any failure to read
+    Hermes means no."""
     if choice != "deny" or kw.get("surface") != "cli" or not in_background_review():
         return False
     try:
@@ -106,11 +119,99 @@ def store_of(tool: str) -> str:
     return "memory" if tool == "memory" else "skills"
 
 
+def lenient(resp: dict[str, Any]) -> bool:
+    """The scanner marks this reviewed save as one to let through without asking: `self_edit.lenient` is a JSON
+    true. A missing block or flag (an older scanner) is not lenient."""
+    block = resp.get("self_edit")
+    return isinstance(block, dict) and block.get("lenient") is True
+
+
+def what(tool: str) -> str:
+    """What a loop save saves, in the owner's words."""
+    return "memory" if store_of(tool) == "memory" else "skill"
+
+
+#: How the owner's notices name the run of a loop save.
+RUN = "background save"
+
+
+def quiet_key(outcome: str, session_ref: str) -> str:
+    """What the quiet period of a loop-save notice is kept by: its kind and the session."""
+    return f"background-{outcome}:session:{session_ref}"
+
+
+def _save_line(tool: str, shown: str) -> str:
+    from .hold import inert
+
+    return f"Save: {inert(tool, 80)}: {inert(shown, 160)}"
+
+
+def _details(details: str | None) -> list[str]:
+    return [details] if details else []
+
+
+def let_through_text(
+    tool: str, shown: str, where: str, details: str | None, snoozed: bool = False
+) -> str:
+    """The owner's notice that a reviewed loop save ran without asking. Like the hold notice it may be copied into
+    the agent's own transcript, so it carries only the plugin's own words, the run (`hold.where_text`, already
+    inert), the tool and its description as a review prompt shows it, and the commands. `details` names where to
+    read more (None when the traffic log is off)."""
+    because = " because a snooze is on" if snoozed else " without asking"
+    return "\n".join(
+        (
+            f"Sentrook let a background {what(tool)} save through{because}, though it would normally ask "
+            "about a save like this.",
+            f"Run: {where}",
+            _save_line(tool, shown),
+            *_details(details),
+            f"More background saves let through in this session are not announced for {_quiet_hours()} hours.",
+        )
+    )
+
+
+def block_notice_text(tool: str, shown: str, where: str, category: str, details: str | None) -> str:
+    """The owner's notice that a loop save was blocked; `category` as the agent's block text names it."""
+    return "\n".join(
+        (
+            f"Sentrook blocked a background {what(tool)} save, so it was not saved.",
+            f"Run: {where}",
+            _save_line(tool, shown),
+            f"Blocked because {category}.",
+            *_details(details),
+            f"More blocked background saves in this session are not announced for {_quiet_hours()} hours.",
+        )
+    )
+
+
+def _quiet_hours() -> int:
+    from .scan_failure_notice import QUIET
+
+    return int(QUIET.total_seconds() // 3600)
+
+
+def notice_line(owner_channel: str, homes: list[str]) -> str:
+    """Where loop-save notices go, for status and verify (`homes`: the platforms with a home channel)."""
+    from .hold import notice_target
+
+    target, why = notice_target(owner_channel, homes)
+    if target:
+        return f"to the {target} home channel"
+    why = why if owner_channel else "owner_channel is not set"
+    return (
+        f"cannot be delivered ({why}). Set owner_channel to a platform with a home channel: "
+        "hermes config set plugins.entries.sentrook.settings.owner_channel <platform>, then /sethome in that "
+        "chat. Until then background saves Sentrook lets through, holds or blocks show only in /sentrook "
+        "history and the skill review counts."
+    )
+
+
 def counts(path: Path) -> dict[str, int]:
-    """Loop saves in the recent traffic log, by what was done: allowed, blocked, asked, held."""
+    """Loop saves in the recent traffic log, by what was done: allowed, blocked, asked (before loop saves stopped
+    asking), held, let through (a review allowed without asking: lenient or snoozed)."""
     from .history import action_of, recent_scans
 
-    out = {"allowed": 0, "blocked": 0, "asked": 0, "held": 0}
+    out = {"allowed": 0, "blocked": 0, "asked": 0, "held": 0, "let_through": 0}
     for scan, resolution in recent_scans(path, 10_000, None):
         if scan.get("skill_review") is not True:
             continue
@@ -122,6 +223,9 @@ def counts(path: Path) -> dict[str, int]:
             if action.startswith("review")
             else "held"
             if action.startswith("held")
+            else "let_through"
+            if scan.get("decision") == "allowed"
+            and (scan.get("lenient") is True or scan.get("snoozed") is True)
             else "allowed"
         )
         out[key] += 1
@@ -144,7 +248,8 @@ def status_line(setting: str, path: Path | None) -> str:
     c = counts(path)
     asked = f", {c['asked']} asked" if c["asked"] else ""
     held = f", {c['held']} held" if c["held"] else ""
+    let = f", {c['let_through']} let through" if c["let_through"] else ""
     return (
         f"{setting}; loop saves in the traffic log: {c['allowed']} allowed, {c['blocked']} blocked"
-        f"{asked}{held}"
+        f"{asked}{held}{let}"
     )
