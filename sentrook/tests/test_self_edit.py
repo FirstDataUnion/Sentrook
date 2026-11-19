@@ -26,6 +26,7 @@ from sentrook.planir.models import PlanIR
 from sentrook.planir.validate import MAX_SELF_EDIT_ENTRIES, InvalidPlanIR, check
 from sentrook.prepare.skill_steps import MAX_COMMANDS, commands_in, steps_in, written_texts
 from sentrook.prepare.views import (
+    REPUTATION_RESERVE_TOKENS,
     SELF_EDIT_ENTRY_CAP_CHARS,
     SELFEDIT_QUESTIONS_RESERVE_TOKENS,
     SELFEDIT_STATE_BUDGET_TOKENS,
@@ -315,7 +316,9 @@ def test_history_goes_before_any_message():
     raw["self_edit"]["conversation"] += [{"role": "user", "sender": OWNER, "text": "u" * 3000}] * 10
     # sized for this budget (the selfedit-v2 set's room), not the default reserve
     state = build_views(
-        raw, exposure_input_seqs=None, selfedit_budget_tokens=BUDGET_TOKENS - 14_000
+        raw,
+        exposure_input_seqs=None,
+        selfedit_budget_tokens=BUDGET_TOKENS - 14_000 + REPUTATION_RESERVE_TOKENS,
     )[SELFEDIT_V1].state
     assert state["self_edit"]["scanner_dropped"].get("history")
     assert "user" not in state["self_edit"]["scanner_dropped"]

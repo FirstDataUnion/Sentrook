@@ -56,6 +56,13 @@ owner_config`). A request with no batch and no such entity gives the call-v5 sta
 `trim-v8` changes `call-v5` only: a cut never splits a secret. Each cut point moves out of anything the second
 redaction pass would replace, with the context that identifies it (`redact.protected_spans`), so a secret is kept
 whole, and replaced, or cut away whole; `kept_chars` reports what was really kept.
+
+What the call probe adds after the fit has a bound, and its room is kept free: the `reputation` block holds at most
+`REPUTATION_MAX_ENTRIES` entries within `REPUTATION_CAP_CHARS` (known_bad kept first, then near misses, then
+known_good, then owner_config; the rest counted in `reputation_omitted`), and every view that carries the block is
+fitted to its budget less `REPUTATION_RESERVE_TOKENS`. A view the second redaction pass grows past its budget (a
+placeholder is longer than a short secret) is fitted again to a budget smaller by the growth. A view with room to
+spare is unchanged: the budgets are sizing, not part of the views version.
 """
 
 from __future__ import annotations
@@ -100,6 +107,8 @@ SELFEDIT_VIEWS = frozenset({SELFEDIT_V1, SELFEDIT_V2})
 SELF_EDIT = "self_edit"
 #: The call-v3 block of entity-library verdicts, added by the call probe once the oracle has run.
 REPUTATION = "reputation"
+#: How many entries the block left out when it was capped; absent when nothing was.
+REPUTATION_OMITTED = "reputation_omitted"
 VIEW_KEYS: dict[str, tuple[str, ...]] = {
     EXPOSURE: ("planir_version", "host", "trigger", "request", "new_inputs"),
     CALL: (
@@ -634,14 +643,57 @@ def with_resolved(state: dict[str, Any], commands: list[str]) -> dict[str, Any]:
     return out
 
 
+#: The `reputation` block's bound. Entries per call over replayed beta traffic (3,174 calls):
+#: 6 calls have a block, at most 3 entries; over the suite (1,753 cases): 194, at most 2, the longest entry 130
+#: characters of JSON. The cap keeps eight entries of 200 characters, so a long host or address still fits.
+REPUTATION_MAX_ENTRIES = 8
+REPUTATION_CAP_CHARS = 1_600
+#: The room a view carrying the block keeps free for it: the cap, the block's key and the omitted count.
+REPUTATION_RESERVE_TOKENS = math.ceil((REPUTATION_CAP_CHARS + 64) / CHARS_PER_TOKEN)
+
+
+def _reputation_rank(entry: dict[str, Any]) -> int:
+    """Which entries a capped block keeps first: known_bad, then near misses of a known_good entry, then known_good,
+    then the rest (owner_config)."""
+    verdict = entry.get("verdict")
+    if verdict == "known_bad":
+        return 0
+    if "near_miss" in entry:
+        return 1
+    return 2 if verdict == "known_good" else 3
+
+
+def cap_reputation(verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The entries a `reputation` block keeps: all of them when they fit `REPUTATION_MAX_ENTRIES` and
+    `REPUTATION_CAP_CHARS`, otherwise the highest-ranked (`_reputation_rank`, then their order) up to the first that
+    does not fit, in their original order."""
+    entries = [dict(v) for v in verdicts]
+    if len(entries) <= REPUTATION_MAX_ENTRIES and _json_chars(entries) <= REPUTATION_CAP_CHARS:
+        return entries
+    kept: list[int] = []
+    for i in sorted(range(len(entries)), key=lambda i: (_reputation_rank(entries[i]), i)):
+        if len(kept) == REPUTATION_MAX_ENTRIES:
+            break
+        if _json_chars([entries[j] for j in sorted([*kept, i])]) > REPUTATION_CAP_CHARS:
+            break
+        kept.append(i)
+    return [entries[i] for i in sorted(kept)]
+
+
 def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> dict[str, Any]:
     """A copy of a call-v3 state with the `reputation` block appended after `grants`; with no
     known verdicts the key is absent, so the model's default (nothing vouched for) applies and the
-    request body is the same as it would be without an oracle."""
+    request body is the same as it would be without an oracle. The block is capped (`cap_reputation`); the entries
+    left out are counted in `reputation_omitted`."""
     out = dict(state)
     out.pop(REPUTATION, None)
+    out.pop(REPUTATION_OMITTED, None)
     if verdicts:
-        out[REPUTATION] = [dict(v) for v in verdicts]
+        kept = cap_reputation(verdicts)
+        if kept:
+            out[REPUTATION] = kept
+        if len(kept) < len(verdicts):
+            out[REPUTATION_OMITTED] = len(verdicts) - len(kept)
     return out
 
 
@@ -898,17 +950,36 @@ def _fit_call_view(
     return _Fitted(cut, stripped, history_cut, dropped, request_cut)
 
 
-def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int) -> BuiltView:
+#: How many times a view the second redaction pass grew past its budget is fitted again.
+REDACTION_REFITS = 3
+
+
+def _call_view_with_inputs(
+    raw: dict[str, Any],
+    name: str,
+    *,
+    budget_tokens: int,
+    shrink_tokens: int = 0,
+    refits: int = REDACTION_REFITS,
+) -> BuiltView:
     """A call view (or a self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
-    self-edit views keep their own fitting: their conversation goes after the inputs."""
+    self-edit views keep their own fitting: their conversation goes after the inputs. If the redaction grew the view
+    past its budget, it is built again fitted to a budget smaller by the growth (`shrink_tokens`), up to `refits`
+    times."""
+    given_budget = budget_tokens
     v = view(trim(raw), name)
     batch_redactions = 0
+    if REPUTATION in VIEW_KEYS[name]:
+        # the call probe adds the (capped) `reputation` block after the fit: keep its room free
+        budget_tokens -= REPUTATION_RESERVE_TOKENS
     if name in BATCH_VIEWS and isinstance(v.get("pending_call"), dict):
         batch, batch_redactions = _batch_block(raw)
         if batch is not None:
             v["pending_call"][BATCH] = batch
             # the call probe adds `resolved` after the fit: keep its room free
             budget_tokens -= BATCH_RESOLVED_RESERVE_TOKENS
+    sent_budget = budget_tokens
+    budget_tokens -= shrink_tokens
     if name == SELFEDIT_V2:
         mark_own_store(v)
     inputs = v.get("new_inputs")
@@ -940,6 +1011,16 @@ def _call_view_with_inputs(raw: dict[str, Any], name: str, *, budget_tokens: int
         if fit_self_edit(v, budget_tokens):
             truncated = True
     state, count = second_pass(v)
+    over = est_tokens(state) - sent_budget
+    if over > 0 and refits > 0 and est_tokens(state) > est_tokens(v):
+        # placeholders longer than the secrets they replace took the view over its budget: fit it tighter
+        return _call_view_with_inputs(
+            raw,
+            name,
+            budget_tokens=given_budget,
+            shrink_tokens=shrink_tokens + over,
+            refits=refits - 1,
+        )
     return BuiltView(
         state=state,
         redactions=count + batch_redactions,
