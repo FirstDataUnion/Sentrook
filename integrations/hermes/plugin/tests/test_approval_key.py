@@ -91,3 +91,12 @@ def test_a_remembered_answer_still_reaches_the_review(h):
     h.ctx.hooks["post_approval_response"](pattern_key=f"plugin_rule:{k}", choice="session", **SID)
     rec = [r for r in h.traffic() if r.get("kind") == "resolution"][-1]
     assert rec["decision"] == "approved_by_user"
+
+
+def test_a_call_naming_only_its_tool_server_is_keyed_on_its_arguments(h):
+    """An MCP call to a configured server carries the server (`prov:`) and nothing it acts on."""
+    prov = "afp1:mcp|prov:h_fedcba987654"
+    one = key(h, "mcp_yard_delete_thing", {"id": 1}, prov)
+    two = key(h, "mcp_yard_delete_thing", {"id": 2}, prov)
+    assert one != two
+    assert key(h, "mcp_yard_delete_thing", {"id": 1}, prov) == one

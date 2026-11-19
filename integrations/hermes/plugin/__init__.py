@@ -157,15 +157,17 @@ def _rule_key(
     """Hermes persists Session/Always approvals per rule key, and approves a later review with the same key without
     asking. The key is the tool and the action fingerprint, so an approval covers the same action (same source and
     destination) through the same tool again, never another tool's call. A fingerprint that names nothing (no source,
-    destination or code: `afp1:<kind>` alone) would cover every such call of that kind, so its key also holds the
-    call's arguments: the approval covers that exact call. No fingerprint: a key of the request alone.
+    destination or code: `afp1:<kind>` alone, or with only the tool's provider) would cover every such call of that
+    kind, or of that tool, so its key also holds the call's arguments: the approval covers that exact call. No fingerprint: a key of the request alone.
 
     A block a snooze turned into a review is keyed the same way plus the snoozes covering it (`snoozes`, from
     `snooze.covering`) under its own prefix: Session or Always covers the same action while those snoozes last, as
     the card says, and never a review or a later snooze."""
     if fingerprint:
         material = f"{tool}|{fingerprint}"
-        if "|" not in fingerprint:
+        # parts after `afp1:<kind>`; a tool provider (`prov:`) alone is the server, not what the call acts on
+        targets = [part for part in fingerprint.split("|")[1:] if not part.startswith("prov:")]
+        if not targets:
             arguments = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
             material += "|args:" + hashlib.sha256(arguments.encode()).hexdigest()
     else:
