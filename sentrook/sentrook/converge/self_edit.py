@@ -6,7 +6,8 @@ Set only on a declared self-edit (the host's own background process saving to me
 - the save adds nothing, or only commands;
 - the self-edit judge answered (its envelope is OK and carries every one of `LENIENT_ANSWERS`), and each of those
   answers is below `LENIENT_ANSWER_LIMIT`;
-- no floor applies to the scan (an enforced one, a guardrail, or one that only raises the score).
+- no floor applies to the scan (an enforced one, a guardrail, or one that only raises the score), and no probe that
+  sets floors failed (convergence takes floors only from probes that answered); the rule probe ran.
 
 `lenient` says nothing about the verdict: a plugin that cannot ask anyone about a background save consults it only
 when the risk lands in its review band, to let such a save through instead of holding it. It changes no score, and
@@ -15,6 +16,7 @@ the scan's overall status is not part of it (a background run often has no sessi
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 
 from ..enums import ProbeStatus, ProbeStep
@@ -46,19 +48,43 @@ def _answers_below_limit(envelopes: Iterable[Envelope]) -> bool:
             return False
         for q in LENIENT_ANSWERS:
             a = answers.get(q)
-            if not isinstance(a, dict) or not isinstance(a.get("noul"), int | float):
-                return False
-            if float(a["noul"]) >= LENIENT_ANSWER_LIMIT:
+            v = a.get("noul") if isinstance(a, dict) else None
+            if not isinstance(v, int | float) or not math.isfinite(v) or v >= LENIENT_ANSWER_LIMIT:
                 return False
         return True
     return False
+
+
+#: Probes whose floors convergence takes only from an OK envelope: one that failed may have hidden a floor. The
+#: rule probe also reads the saved commands, so it must have run; the others must not have failed.
+FLOOR_PROBES_RUN: frozenset[ProbeStep] = frozenset({ProbeStep.AIRA})
+FLOOR_PROBES_NOT_FAILED: frozenset[ProbeStep] = frozenset(
+    {ProbeStep.AIRA, ProbeStep.CONTEXT, ProbeStep.ENTITY_ORACLE}
+)
+
+
+def _floor_probes_answered(envelopes: Iterable[Envelope]) -> bool:
+    seen: set[ProbeStep] = set()
+    for env in envelopes:
+        if env.step in FLOOR_PROBES_NOT_FAILED and env.status in (
+            ProbeStatus.ERROR,
+            ProbeStatus.TIMEOUT,
+        ):
+            return False
+        if env.status is ProbeStatus.OK:
+            seen.add(env.step)
+    return FLOOR_PROBES_RUN <= seen
 
 
 def self_edit_save(
     adds: Iterable[str], envelopes: Iterable[Envelope], floors: Iterable[FloorApplied]
 ) -> SelfEditSave:
     kinds = tuple(sorted(set(adds)))
+    envelopes = list(envelopes)
     lenient = (
-        kinds in LENIENT_ADDS and not any(True for _ in floors) and _answers_below_limit(envelopes)
+        kinds in LENIENT_ADDS
+        and not any(True for _ in floors)
+        and _floor_probes_answered(envelopes)
+        and _answers_below_limit(envelopes)
     )
     return SelfEditSave(adds=list(kinds), lenient=lenient)

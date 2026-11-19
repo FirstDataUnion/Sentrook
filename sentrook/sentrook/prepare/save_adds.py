@@ -14,25 +14,31 @@ kinds of thing its saved content adds, for `Response.self_edit.adds`:
     plain words starting with a capital or a common English word is prose, not a command;
   - in a memory note, inline code that the sentence only reports on (`` `npm ci` failed ``, "because `npm ci`")
     is quoted, not a step.
-  Anything else that reads as a command counts: when in doubt the text is a command.
+  Every line of a script (a file the save writes whose path is not instruction text, or text starting `#!`) is a
+  command, and so is a line outside a recognised fence that starts like a command (a program name, a path, an
+  environment assignment; not a sentence or a list item): an edit fragment inside a fence it does not show, an
+  indented block, a longer or unclosed fence. Anything else that reads as a command counts: when in doubt the text
+  is a command.
 - `destination`: a host, URL, mail address, recipient or remote a later run reaches or sends to: the roles
   `written_selfmod.future_entities` reads from the text as a skill's prose; every host a saved command contacts; and
-  any URL with a network scheme or mail address written anywhere in the saved text, prose included.
+  any URL with a network scheme or mail address written anywhere in the saved text or another string argument,
+  prose included. A recipient named without an address (a chat id, a channel) and a step written only in prose are
+  left to the self-edit judge.
 - `permission`: a saved command that changes permissions, tool allowlists, host or agent config, plugins, hooks,
   the scheduler, approval or safety settings, or privilege: the self-modification (C4), guardrail (C4*) and
   privilege (C8) rules run on each command candidate, with every rule pack on. The candidates are every command the
-  scanner's own skill reading finds (before the narrower rules above), and, for an edit fragment or the lines a
-  patch adds (which may sit inside a fence the fragment does not show), each of their lines. On the save's own
+  scanner's own skill reading finds (before the narrower rules above), and every line of a saved text that reads
+  as a command on its own (a script's lines, and lines anywhere that start like a command). On the save's own
   target, which the plugin declares only for the memory or skill store, only a guardrail, an approval file or a
   privilege change counts: every save writes into that store, and a path rule may class a skill folder under the
   host's agent directory as config. More candidates than `MAX_CHECKED_COMMANDS` cannot all be checked, and count as
   a change (and a destination; so do more than `MAX_CODE_SPANS` code spans, around which the prose is read).
 - `secret`: a redaction placeholder, a shape the second redaction pass masks, or a secret-like value
-  (`secret_like.secret_carried`) in the saved text.
+  (`secret_like.secret_carried`) in the saved text or any other string argument.
 
 Only text the save writes is read (`skill_steps.written_texts`; for a patch, its new side with the context lines, so
-a fence the hunk shows stays a fence). A save through a tool whose written text sits under other argument names is
-read through every string argument but the replaced text. A save made by running a command or a program is read as
+a fence the hunk shows stays a fence); every other string argument but the replaced text (a description, a prompt
+field) is read for destinations and secrets too, and for commands when the call has no written text. A save made by running a command or a program is read as
 that command: it adds `command`, and its own text is read for the rest. A rule that fails counts its kind as added,
 since the scanner cannot vouch for what it did not read. Nothing here changes a score.
 """
@@ -111,11 +117,10 @@ _PROSE_STARTS = frozenset(
     "a an the no not and or but my your our their his her its this that these those all any each every some only "
     "always never please".split()
 )
-#: Words after inline code that report on it rather than ask for it: "`npm ci` failed", "`make` is slow".
+#: Words after inline code that report what it did rather than ask for it: "`npm ci` failed", "`make` took 4 min".
 _REPORTED_AFTER = re.compile(
-    r"\s*(?:failed|fails|errored|errors|returned|returns|printed|prints|showed|shows|worked|works|succeeded|"
-    r"hung|hangs|timed\s+out|crashed|crashes|was|is|were|are|exited|exits|needed|needs|requires|required|"
-    r"took|takes|output|outputs|gave|gives|broke|breaks)\b",
+    r"\s*(?:failed|fails|errored|returned|printed|showed|worked|succeeded|hung|timed\s+out|crashed|exited|took|"
+    r"gave|broke)\b",
     re.I,
 )
 #: Words right before inline code that report on it: "because `npm ci`", "the output of `ls`".
@@ -133,6 +138,23 @@ class SavedText:
     text: str
     #: A fragment of a larger file (an edit's new text, a patch's added lines), whose fence may not be shown.
     fragment: bool = False
+    #: A file that is not instruction text (a skill's script or data file, by its path, or text starting `#!`): every
+    #: line is read as it would run.
+    script: bool = False
+
+
+#: Suffixes of instruction text, whose commands are its fenced and inline code.
+PROSE_SUFFIXES = (".md", ".markdown", ".txt", ".rst")
+#: The arguments that name the file a save writes.
+PATH_KEYS = ("file_path", "path")
+
+
+def _script(path: str | None, text: str) -> bool:
+    if text.lstrip().startswith("#!"):
+        return True
+    return (
+        isinstance(path, str) and bool(path.strip()) and not path.lower().endswith(PROSE_SUFFIXES)
+    )
 
 
 def patch_new_side(patch: str) -> str:
@@ -159,12 +181,14 @@ def saved_texts(arguments: Any) -> list[SavedText]:
     it is a fragment of a larger file."""
     out: list[SavedText] = []
 
-    def take(obj: Any) -> None:
+    def take(obj: Any, path: str | None = None) -> None:
         if not isinstance(obj, dict):
             return
+        path = next((obj[k] for k in PATH_KEYS if isinstance(obj.get(k), str)), path)
         for k in WRITTEN_KEYS:
             if isinstance(obj.get(k), str):
-                out.append(SavedText(obj[k], fragment=k in FRAGMENT_KEYS))
+                text = obj[k]
+                out.append(SavedText(text, fragment=k in FRAGMENT_KEYS, script=_script(path, text)))
         patch = obj.get(PATCH_KEY)
         if isinstance(patch, str) and "\n+" in patch:
             new_side = patch_new_side(patch)
@@ -177,15 +201,15 @@ def saved_texts(arguments: Any) -> list[SavedText]:
             ops = obj.get(key)
             if isinstance(ops, list):
                 for op in ops:
-                    take(op)
+                    take(op, path)
 
     take(arguments)
     return out
 
 
 def _all_strings(obj: Any, key: str | None = None) -> list[str]:
-    """Every string in the arguments but the text an edit replaces."""
-    if key in REPLACED_KEYS:
+    """Every string in the arguments but the text an edit replaces and a raw patch (read by its new side)."""
+    if key in REPLACED_KEYS or key == PATCH_KEY:
         return []
     if isinstance(obj, str):
         return [obj]
@@ -293,18 +317,34 @@ def _raw_commands(text: str) -> list[str]:
     return list(out)
 
 
+def line_commands(st: SavedText, *, outside_fences: bool = False) -> list[str]:
+    """The lines of a saved text read as commands on their own: every line of a script (but comments), and each line
+    that starts like a command (a program name, a path, an environment assignment), not like a sentence or a list
+    item (inline code is left to the inline reading). These catch code the fence reading misses: an edit fragment inside a fence it does not show, an indented
+    block, a longer or unclosed fence. With `outside_fences`, lines of a fence the fence reading recognised are left
+    to it."""
+    text = st.text
+    if outside_fences and not st.script:
+        text = _FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = _PROMPT.sub("", raw).strip()
+        if not line or line.startswith("#"):
+            continue
+        if (st.script or _FRAGMENT_COMMAND.match(line)) and _COMMANDISH.match(line):
+            out.append(line[:MAX_COMMAND_CHARS])
+    return out
+
+
 def _candidates(texts: Iterable[SavedText]) -> list[str]:
-    """Every command candidate the permission rules check: the scanner's own skill reading, and each line of a
-    fragment that starts like a command."""
+    """Every command candidate the permission rules check: the scanner's own skill reading, and each line read as a
+    command on its own (`line_commands`)."""
     out: dict[str, None] = {}
     for st in texts:
         for cmd in _raw_commands(st.text):
             out.setdefault(cmd, None)
-        if st.fragment:
-            for line in st.text.splitlines():
-                line = _PROMPT.sub("", line).strip().strip("`").strip()
-                if _FRAGMENT_COMMAND.match(line) and _COMMANDISH.match(line):
-                    out.setdefault(line[:MAX_COMMAND_CHARS], None)
+        for cmd in line_commands(st):
+            out.setdefault(cmd, None)
     return list(out)
 
 
@@ -407,7 +447,9 @@ def save_adds(prepared: Any) -> tuple[str, ...]:
             texts = [SavedText(s, fragment=True) for s in _all_strings(pending.raw) if s.strip()]
     except Exception:  # noqa: BLE001 (odd arguments: nothing can be vouched for)
         return ADDS
-    plain = [st.text for st in texts]
+    # every other string the call writes or names (a description, a prompt field) is read for hosts and secrets too
+    others = [s for s in _all_strings(pending.raw) if s.strip()]
+    plain = list(dict.fromkeys([*(st.text for st in texts), *others]))
 
     def rule(kind: str, check) -> None:
         try:
@@ -416,10 +458,18 @@ def save_adds(prepared: Any) -> tuple[str, ...]:
         except Exception:  # noqa: BLE001 (a rule that fails cannot vouch for the text)
             adds.add(kind)
 
-    rule(COMMAND, lambda: any(saved_commands(st.text, store) for st in texts))
+    # fenced and inline code as narrowed for the report, every line of a script, and lines outside a recognised fence
+    # that start like a command (an edit fragment's, or code the fence reading misses)
+    rule(
+        COMMAND,
+        lambda: any(
+            saved_commands(st.text, store) or line_commands(st, outside_fences=True) for st in texts
+        ),
+    )
     candidates: list[str] = []
     try:
-        candidates = _candidates(texts)
+        # an exec save's own command is the save itself, read as the target below; only code inside it is a step
+        candidates = _raw_commands(texts[0].text) if exec_save and texts else _candidates(texts)
     except Exception:  # noqa: BLE001
         adds.update((PERMISSION, DESTINATION))
     # the command an exec save runs is the pending call itself, which the permission rules read as the target
