@@ -580,7 +580,7 @@
         },
         "lenient": {
           "default": false,
-          "description": "True only when `adds` is empty or only `command`, the self-edit judge answered and none of its directive-from-read-content, loosened-oversight and unsupported-owner-claim answers reached 0.7, and no floor applies. Says nothing about the verdict: a plugin consults it only when the risk is in its review band, for a background save nobody can be asked about",
+          "description": "True only when `adds` is empty or only `command`; the save writes content the scanner read, removes nothing the request shows, holds no code the rules cannot read and targets the declared store; the scan's status is ok; no rule fired on the saved content and no floor applies; the entity lookup answered; and the self-edit judge answered with its directive-from-read-content, loosened-oversight, unsupported-owner-claim and saved-secret answers, and its probability of hidden intent, all below 0.7. Says nothing about the verdict: a plugin consults it only when the risk is in its review band, for a background save nobody can be asked about",
           "title": "Lenient",
           "type": "boolean"
         }

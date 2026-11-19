@@ -336,7 +336,7 @@ class Scanner:
         ordered = [envelopes[step] for step in ALL_PROBES]
 
         # What a background save adds, for the plugins' handling of a save nobody can be asked about; no score reads it.
-        adds = save_adds(prepared) if prepared.planir.is_self_edit else None
+        reading = save_adds(prepared) if prepared.planir.is_self_edit else None
         result = converge(
             prepared,
             ordered,
@@ -346,7 +346,7 @@ class Scanner:
             started=started,
             probes_enabled=list(enabled),
             views=views_label(views),
-            self_edit_adds=adds,
+            self_edit_reading=reading,
         )
         return ScanResult(
             response=result.response,
