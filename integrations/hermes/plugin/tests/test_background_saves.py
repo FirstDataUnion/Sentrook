@@ -434,15 +434,75 @@ def test_a_lenient_save_under_a_snooze_is_let_through_as_lenient(h, monkeypatch)
     assert notices(h)[0].startswith("Sentrook let a background skill save through without asking")
 
 
-@pytest.mark.parametrize("platform", ["cron", "webhook", "api_server", "curator"])
+UNATTENDED_PARENTS = [
+    "cron",
+    "webhook",
+    "api_server",
+    "msgraph_webhook",
+    "curator",
+    "",
+    "something-new",
+]
+
+
+@pytest.mark.parametrize("platform", UNATTENDED_PARENTS)
 def test_a_snooze_never_reaches_a_save_after_an_unattended_session(h, monkeypatch, platform):
-    """Unattended runs are never snoozed, and a background save after one is no exception."""
+    """Unattended runs are never snoozed, and a background save after one is no exception: only a chat platform,
+    the local terminal or a configured attended platform counts as attended, whatever stdin is (the curator runs
+    inside the terminal's process; a gateway may run in a foreground terminal)."""
     reply = snooze(h, "--all 1h")
     assert "unattended runs are not snoozed" in reply
     h.reply.update(risk=55)
-    out, rec = run(h, monkeypatch, "fork-skill", platform)
+    monkeypatch.setattr(sys, "stdin", Tty())
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="curate", platform=platform, sender_id="", **SID
+    )
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name=SKILL[0], args=SKILL[1], tool_call_id="c1", turn_id="t1", **SID
+    )
+    rec = [r for r in h.traffic() if r.get("kind") == "scan"][-1]
     assert out == {"action": "block", "message": hold.HELD_TEXT}
     assert rec["decision"] == "held" and "snoozed" not in rec
+
+
+def test_a_configured_attended_platform_counts(h, monkeypatch):
+    h.ctx.settings["attended_platforms"] = ["api_server"]
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    out, rec = run(h, monkeypatch, "fork-skill", "api_server")
+    assert out is None and rec["snoozed"] is True
+
+
+@pytest.mark.parametrize(
+    ("platform", "tty", "want"),
+    [
+        ("telegram", False, "allowed"),
+        ("cli", True, "allowed"),
+        ("cli", False, "held"),
+        ("webhook", True, "held"),
+        ("api_server", True, "held"),
+        ("cron", True, "held"),
+        ("", True, "held"),
+    ],
+)
+def test_a_snooze_through_the_forks_own_turn(h, monkeypatch, platform, tty, want):
+    """The real fork: the owner's turn first, then the fork's calls under a turn id of their own with no
+    `pre_llm_call`, the platform read from the session facts Hermes copies to the fork's thread."""
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    h.prov["origin"] = "assistant_tool"
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="hi", platform=platform, sender_id="u1", **SID
+    )
+    h.prov["origin"] = "background_review"
+    h.facts = {"platform": platform} if platform else {}
+    if tty:
+        monkeypatch.setattr(sys, "stdin", Tty())
+    h.ctx.hooks["pre_tool_call"](
+        tool_name=SKILL[0], args=SKILL[1], tool_call_id="f1", turn_id="fork-turn", **SID
+    )
+    rec = [r for r in h.traffic() if r.get("kind") == "scan"][-1]
+    assert rec["decision"] == want and rec["skill_review"] is True
 
 
 def test_a_snooze_never_lets_a_retry_capped_review_through(h, monkeypatch):

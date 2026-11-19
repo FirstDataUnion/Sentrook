@@ -11,7 +11,8 @@ A snooze never allows:
 
 Hermes's own background skill and memory saves (`skill_review`) never ask. One whose review would otherwise be
 held is allowed when a snooze covers its session (or every session) and that session is one the owner attends (a
-chat or the terminal), under the same rules: never a block, an enforced review or one at the block line, and never
+chat platform, the local terminal or a platform in `attended_platforms`; never the curator, a webhook, the API
+server or an unknown platform, whatever stdin is), under the same rules: never a block, an enforced review or one at the block line, and never
 after an unattended run. The owner gets a notice that it was let through.
 
 In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner attends,

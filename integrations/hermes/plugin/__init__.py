@@ -46,6 +46,7 @@ from .intent import (
     conversation_sender_of,
     hermes_config,
     is_unattended,
+    owner_attends,
     resolve_platform,
     session_facts,
 )
@@ -465,15 +466,9 @@ def _scan_one(
     )
     planir = built["planir"]
     built["loop_save"] = loop_save
-    # Whether the session itself is one nobody attends (for a loop save: the session it follows).
-    run_unattended = is_unattended(
-        built["platform"],
-        env,
-        subagent=built["subagent"],
-        attended_platforms=cfg.attended_platforms,
-    )
+    attendance = {"subagent": built["subagent"], "attended_platforms": cfg.attended_platforms}
     # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
-    unattended = loop_save or run_unattended
+    unattended = loop_save or is_unattended(built["platform"], env, **attendance)
 
     ep = cfg.endpoints
     result: ScanOk | ScanFailure
@@ -553,7 +548,7 @@ def _scan_one(
                 skill_review.lenient(resp, declared=self_edit is not None)
                 or (
                     # unattended runs are never snoozed: only a save after a session the owner attends
-                    not run_unattended
+                    owner_attends(built["platform"], env, **attendance)
                     and snooze.active(
                         store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
                     )

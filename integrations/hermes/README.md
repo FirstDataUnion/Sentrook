@@ -366,9 +366,9 @@ save, and shows a held one as "not saved".
 Without `owner_channel` (for example when you use Hermes only on the local terminal) the saves are handled the same
 way, but nothing tells you: `status` and `verify` say so, and the saves show only in `/sentrook history` and the
 `skill review` counts in `status`. A snooze on the session (or on every session) lets a save through that would
-otherwise be held, with the "let through" notice, when the save follows a chat or a terminal session you attend;
-it never lets a blocked save through, and never one after a cron job, a webhook, the API server or another
-unattended run. History marks these saves "(self-edit)".
+otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal session or a
+platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
+cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
 
 ### When the scan service fails
 

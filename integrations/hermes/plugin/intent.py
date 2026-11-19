@@ -137,6 +137,27 @@ def is_unattended(
         return False
 
 
+def owner_attends(
+    platform: str,
+    env: dict[str, str],
+    *,
+    subagent: bool = False,
+    attended_platforms: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """The session is one the owner attends, from a positive list only: a chat platform, the local terminal (with a
+    terminal), or a platform in `attended_platforms`, and not a run `is_unattended` names. Any other platform (the
+    curator, webhooks, the API server, an empty or unknown one) is not, whatever stdin is: the curator runs inside
+    the terminal's process, and a gateway may run in a foreground terminal. Used for Hermes's background saves, whose
+    snooze must never reach an unattended run; ordinary calls keep `is_unattended`."""
+    if is_unattended(platform, env, subagent=subagent, attended_platforms=attended_platforms):
+        return False
+    return (
+        platform in ATTENDED_PLATFORMS
+        or platform in LOCAL_PLATFORMS
+        or platform in attended_platforms
+    )
+
+
 def trigger_kind(platform: str) -> str:
     if not platform:
         return "unknown"
