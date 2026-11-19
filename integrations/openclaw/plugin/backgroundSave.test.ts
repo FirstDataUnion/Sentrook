@@ -220,16 +220,38 @@ function registered(opts: Opts = {}) {
     (await commands[name].handler({ ...ctx, args })).text as string;
   let n = 0;
   /** Starts `run` and makes one call in it: the hook's result, the scan's traffic record and the PlanIR sent. */
-  const save = async (run: keyof typeof RUNS, call: { toolName: string; params: Record<string, unknown> } = SAVES[run]) => {
+  /**
+   * Starts `run` and makes one call in it: the hook's result, the scan's traffic record and the PlanIR sent. A call
+   * turned into a draft then runs as OpenClaw runs it: `draft` is its after_tool_call (default: the draft is kept).
+   */
+  const save = async (
+    run: keyof typeof RUNS,
+    call: { toolName: string; params: Record<string, unknown> } = SAVES[run],
+    draft: Record<string, unknown> | null = DRAFT_KEPT,
+  ) => {
     const { ctx, prompt } = RUNS[run];
+    const toolCallId = `t${++n}`;
     await fire("before_prompt_build", { runId: ctx.runId, prompt, messages: TRANSCRIPT }, ctx);
-    const out = await fire("before_tool_call", { ...call, toolCallId: `t${++n}`, runId: ctx.runId }, ctx);
+    const out = await fire("before_tool_call", { ...call, toolCallId, runId: ctx.runId }, ctx);
+    const rec = records("scan").at(-1);
+    if (out?.params && draft) {
+      await fire("after_tool_call", { toolName: call.toolName, toolCallId, runId: ctx.runId, params: { ...call.params, ...out.params }, ...draft }, ctx);
+    }
     await hold.waitForNotices();
-    return { out, rec: records("scan").at(-1), planir: scans.at(-1) };
+    return { out, rec, planir: scans.at(-1) };
   };
   const holds = () => (existsSync(path.join(stateDir, "holds.json")) ? JSON.parse(readFileSync(path.join(stateDir, "holds.json"), "utf8")).holds : []);
   return { fire, commands, sent, logs, records, command, save, holds };
 }
+
+/** What OpenClaw 2026.11.5 reports for a kept draft, and for one it refuses. */
+const DRAFT_KEPT = {
+  result: {
+    content: [{ type: "text", text: 'Saved draft deploy-staging-6df801f9 for "deploy-staging". Skills are unchanged; the user reviews drafts with /learn drafts.' }],
+    details: { status: "ok" },
+  },
+};
+const DRAFT_REFUSED = { error: "Too many drafts are waiting for review.", result: { details: { status: "error" } } };
 
 const history = () => formatHistory(recentScans(path.join(stateDir, "traffic.jsonl"), 50), "/sentrook-why");
 
@@ -247,26 +269,33 @@ type Cell = "allow" | "lenient" | "strict" | "block" | "error";
 const EXPECTED: Record<keyof typeof RUNS, Record<Cell, { decision: string; action: string; notice: RegExp | null }>> = {
   review: {
     allow: { decision: "allowed", action: "allowed (self-edit)", notice: null },
-    lenient: { decision: "allowed", action: "allowed (lenient, self-edit)", notice: /^Sentrook let one of OpenClaw's background saves through/ },
+    lenient: { decision: "allowed", action: "allowed (let through, self-edit)", notice: /^Sentrook let one of OpenClaw's background saves through/ },
     strict: { decision: "drafted", action: "drafted (self-edit)", notice: /^Sentrook saved a new skill .* as a Skill Workshop draft/ },
     block: { decision: "blocked", action: "blocked (self-edit)", notice: /^Sentrook blocked one of OpenClaw's background saves/ },
     error: { decision: "blocked_on_error", action: "blocked (scan error)", notice: /^Sentrook could not scan a tool call on an unattended run/ },
   },
   flush: {
     allow: { decision: "allowed", action: "allowed (self-edit)", notice: null },
-    lenient: { decision: "allowed", action: "allowed (lenient, self-edit)", notice: /^Sentrook let one of OpenClaw's background saves through/ },
-    strict: { decision: "held", action: "held (self-edit)", notice: /^Sentrook held a tool call on an unattended run/ },
+    lenient: { decision: "allowed", action: "allowed (let through, self-edit)", notice: /^Sentrook let one of OpenClaw's background saves through/ },
+    strict: { decision: "held", action: "held (self-edit)", notice: /^Sentrook held one of OpenClaw's background saves: it was not made/ },
     block: { decision: "blocked", action: "blocked (self-edit)", notice: /^Sentrook blocked one of OpenClaw's background saves/ },
     error: { decision: "blocked_on_error", action: "blocked (scan error)", notice: /^Sentrook could not scan a tool call on an unattended run/ },
   },
   curator: {
     allow: { decision: "allowed", action: "allowed (self-edit)", notice: null },
-    lenient: { decision: "allowed", action: "allowed (lenient, self-edit)", notice: /^Sentrook let one of OpenClaw's background saves through/ },
-    strict: { decision: "held", action: "held (self-edit)", notice: /^Sentrook held a tool call on an unattended run/ },
+    lenient: { decision: "allowed", action: "allowed (let through, self-edit)", notice: /^Sentrook let one of OpenClaw's background saves through/ },
+    strict: { decision: "held", action: "held (self-edit)", notice: /^Sentrook held one of OpenClaw's background saves: it was not made/ },
     block: { decision: "blocked", action: "blocked (self-edit)", notice: /^Sentrook blocked one of OpenClaw's background saves/ },
     error: { decision: "blocked_on_error", action: "blocked (scan error)", notice: /^Sentrook could not scan a tool call on an unattended run/ },
   },
 };
+
+/** Where the record of a scan's notice is: the hold's, the draft's resolution (sent once OpenClaw ran it), or the scan's. */
+function noticeOf(r: ReturnType<typeof registered>, rec: any, decision: string) {
+  if (decision === "held") return rec.hold.notice;
+  if (decision === "drafted") return r.records("resolution").find((x) => x.request_id === rec.request_id)?.notice;
+  return rec.notice;
+}
 
 function setVerdict(cell: Cell) {
   unreachable = cell === "error";
@@ -311,13 +340,13 @@ for (const run of Object.keys(RUNS) as (keyof typeof RUNS)[]) {
         assert.ok(!text.includes(BODY_MARKER), "nothing the saving model wrote reaches the notice");
         assert.ok(!/\b55\b|\b92\b|selfedit\.|selfmod\./.test(text), "no risk score or reason codes");
         assert.equal(r.sent[0].channel, "telegram");
-        if (want.decision === "held") assert.deepEqual(rec.hold.notice, { status: "queued", target: "telegram" });
-        else assert.deepEqual(rec.notice, { status: "queued", target: "telegram" });
+        assert.deepEqual(noticeOf(r, rec, want.decision), { status: "queued", target: "telegram" });
       } else {
         assert.equal(r.sent.length, 0);
         assert.equal(rec.notice, undefined);
       }
-      assert.equal(r.holds().length, want.decision === "held" ? 1 : 0);
+      assert.equal(r.holds().length, 0, "background saves are never in the holds file");
+      if (r.sent.length) assert.ok(!r.sent[0].text.includes("/sentrook-approve"), "nothing to approve");
     });
 
     if (cell !== "allow") {
@@ -328,8 +357,7 @@ for (const run of Object.keys(RUNS) as (keyof typeof RUNS)[]) {
         assertResult(cell, want.decision, out);
         assert.equal(rec.decision, want.decision);
         assert.equal(r.sent.length, 0);
-        const notice = want.decision === "held" ? rec.hold.notice : rec.notice;
-        assert.deepEqual(notice, { status: "unsent", target: null, reason: hold.NOTIFY_UNSET });
+        assert.deepEqual(noticeOf(r, rec, want.decision), { status: "unsent", target: null, reason: hold.NOTIFY_UNSET });
         const status = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
         assert.match(status, /^background-save notices: cannot be delivered: no notify target is set; run \/sentrook-notify here/m);
         const check = (await runVerify({}, { env: process.env, fetchImpl: offline })).find((c) => c.name === "background-save notices");
@@ -393,7 +421,7 @@ for (const [name, call] of [
     const { out, rec } = await r.save("review", call as any);
     assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
     assert.equal(rec.decision, "held");
-    assert.match(r.sent[0].text, /^Sentrook held a tool call on an unattended run/);
+    assert.match(r.sent[0].text, /^Sentrook held one of OpenClaw's background saves/);
   });
 }
 
@@ -459,8 +487,8 @@ test("must stay strict: a review the scanner enforces is never let through, leni
   const { out, rec } = await r.save("flush");
   assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
   assert.equal(rec.decision, "held");
-  assert.equal(bg.lenientOf({ ...VERDICTS.lenient, enforced: "review" } as any, 80), false);
-  assert.equal(bg.lenientOf({ ...VERDICTS.lenient, enforced: null } as any, 80), true);
+  assert.equal(bg.lenientOf({ ...BASE, ...VERDICTS.lenient, enforced: "review" } as any, 80), false);
+  assert.equal(bg.lenientOf({ ...BASE, ...VERDICTS.lenient, enforced: null } as any, 80), true);
 });
 
 test("must stay strict: a block-level score the scanner caps at review (a retry nobody answered) is never let through", async () => {
@@ -627,6 +655,136 @@ test("with the traffic log off, notices carry no why id", async () => {
   await r.save("flush");
   assert.equal(r.sent.length, 1);
   assert.ok(!r.sent[0].text.includes("/sentrook-why"));
+});
+
+// ---- the fix round: what is let through, what is drafted, what is held ----------------------------------------
+
+test("must stay strict: a degraded scan is never let through, lenient or not", async () => {
+  const r = registered();
+  reply = { ...VERDICTS.lenient, status: "degraded" };
+  const { out, rec } = await r.save("flush");
+  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.equal(rec.lenient, undefined);
+  assert.equal(bg.lenientOf({ ...VERDICTS.lenient, status: "degraded" } as any, 80), false);
+});
+
+test("must stay strict: lenient counts only when the save was declared as a self-edit (never with skillReview review)", async () => {
+  const r = registered({ pluginConfig: { skillReview: "review" } });
+  setVerdict("lenient");
+  const flush = await r.save("flush");
+  assert.equal(flush.planir.self_edit, undefined);
+  assert.deepEqual(flush.out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.equal(flush.rec.lenient, undefined);
+  const review = await r.save("review");
+  assert.equal(review.rec.decision, "drafted", "a new skill still drafts");
+});
+
+test("a write_file with no file_path cannot be drafted: held", async () => {
+  const r = registered();
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", { toolName: "skill_workshop", params: { action: "write_file", name: "deploy-staging", content: SKILL } });
+  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.equal(rec.decision, "held");
+});
+
+test("a second block in the same run is quiet; a block in another run is announced", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("block");
+  const first = await r.save("review");
+  const second = await r.save("review");
+  assert.deepEqual(first.rec.notice, { status: "queued", target: "telegram" });
+  assert.deepEqual(second.rec.notice, { status: "quiet" });
+  assert.equal(second.out.block, true);
+  await r.save("flush");
+  assert.equal(r.sent.length, 2);
+});
+
+test("a held save is announced once per run; a block-level retry after a draft is held and always announced", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const patch = { toolName: "skill_workshop", params: { action: "patch", name: "deploy-staging", old_text: "a", new_text: "b" } };
+  await r.save("review", patch);
+  const quiet = await r.save("review", patch);
+  assert.deepEqual(quiet.rec.hold.notice, { status: "quiet" });
+  assert.equal(r.sent.length, 1);
+  const drafted = await r.save("review");
+  assert.equal(drafted.rec.decision, "drafted");
+  assert.equal(r.sent.length, 2, "the draft is announced");
+  // The scanner sees the draft as a review nobody answered, so a block-level retry comes back capped at review.
+  reply = { ...VERDICTS.block, ceiling: "review", reasons: [{ code: "cap.unanswered_retry" }, { code: "selfmod.plugin" }] };
+  const retry = await r.save("review");
+  assert.equal(retry.planir.history.at(-1).decision, "review_timed_out");
+  assert.equal(retry.rec.verdict, "review");
+  assert.deepEqual(retry.out, { block: true, blockReason: hold.HELD_TEXT }, "never a second draft");
+  assert.equal(retry.rec.decision, "held");
+  assert.deepEqual(retry.rec.hold.notice, { status: "queued", target: "telegram" }, "not silenced by the earlier held notice");
+  assert.equal(r.sent.length, 3);
+  assert.match(r.sent[2].text, /^Sentrook held one of OpenClaw's background saves/);
+  assert.ok(!/not announced/.test(r.sent[2].text), "a block-level hold has no quiet period");
+  const again = await r.save("review");
+  assert.equal(again.rec.decision, "held");
+  assert.equal(r.sent.length, 4, "and the next one is announced too");
+});
+
+test("a draft is announced only once OpenClaw reports it kept", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", SAVES.review, null);
+  assert.equal(out.params.action, "draft");
+  assert.equal(r.sent.length, 0, "nothing before the host has run the draft");
+  assert.equal(actionOf(rec, null), "sent to drafts (self-edit)");
+  await r.fire("after_tool_call", { toolName: "skill_workshop", toolCallId: "t1", runId: RUNS.review.ctx.runId, ...DRAFT_KEPT }, RUNS.review.ctx);
+  await hold.waitForNotices();
+  assert.equal(r.sent.length, 1);
+  assert.match(r.sent[0].text, /as a Skill Workshop draft/);
+  const [resolution] = r.records("resolution");
+  assert.deepEqual(resolution, { ...resolution, request_id: rec.request_id, resolution: "draft_saved", decision: "drafted" });
+  assert.match(history(), /drafted \(self-edit\) +in drafts$/m);
+});
+
+for (const [name, report] of [
+  ["an error", DRAFT_REFUSED],
+  ["a result that does not name a saved draft", { result: { content: [{ type: "text", text: "Learning is off for this agent." }] } }],
+] as const) {
+  test(`a draft OpenClaw does not keep (${name}) is recorded as not saved and announced as lost`, async () => {
+    const r = registered();
+    await r.command("sentrook-notify", "here");
+    setVerdict("strict");
+    const { rec } = await r.save("review", SAVES.review, report as any);
+    assert.equal(r.sent.length, 1);
+    assert.match(r.sent[0].text, /^Sentrook sent a new skill .* but OpenClaw did not keep the draft, so the save was not made/);
+    assert.ok(!r.sent[0].text.includes(BODY_MARKER));
+    const [resolution] = r.records("resolution");
+    assert.equal(resolution.request_id, rec.request_id);
+    assert.equal(resolution.resolution, "draft_failed");
+    assert.match(history(), /not saved \(draft refused, self-edit\)/);
+    setVerdict("allow");
+    const next = await r.save("review", { toolName: "skill_workshop", params: { action: "list" } });
+    const sent = next.planir.history.at(-1);
+    assert.equal(sent.decision, "review_timed_out");
+    if (name === "an error") assert.deepEqual(sent.result, { status: "error", size_bytes: 0 });
+    const status = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+    assert.match(status, /1 drafts not kept/);
+  });
+}
+
+test("background holds stay out of the holds file, so they never push out holds that can be approved", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  // an ordinary cron job's review: an approvable hold
+  const ctx = { sessionKey: "agent:main:cron:job-9", sessionId: "J9", agentId: "main", runId: "r-j9", trigger: "cron" };
+  await r.fire("before_prompt_build", { runId: "r-j9", prompt: "[cron:job9 daily-brief] post" }, ctx);
+  await r.fire("before_tool_call", { toolName: "message", toolCallId: "m1", runId: "r-j9", params: { action: "send", channel: "discord", target: "#ops", message: "x" } }, ctx);
+  for (let i = 0; i < 3; i++) await r.save("flush");
+  assert.equal(r.holds().length, 1);
+  const status = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+  assert.match(status, /^held calls: 1 waiting/m);
+  assert.match(status, /3 held$/m);
+  assert.equal(r.records("scan").at(-1).hold.id, null);
 });
 
 // ---- what stays as it was ----------------------------------------------------------------------------------------

@@ -188,16 +188,25 @@ export function settingText(setting: SkillReviewSetting, unknown: string | null)
 }
 
 /** Self-edits in the recent traffic log, by what was done. */
-export function counts(file: string): { allowed: number; lenient: number; blocked: number; drafted: number; asked: number; held: number } {
-  const out = { allowed: 0, lenient: 0, blocked: 0, drafted: 0, asked: 0, held: 0 };
+export function counts(file: string): {
+  allowed: number;
+  lenient: number;
+  blocked: number;
+  drafted: number;
+  lost: number;
+  asked: number;
+  held: number;
+} {
+  const out = { allowed: 0, lenient: 0, blocked: 0, drafted: 0, lost: 0, asked: 0, held: 0 };
   for (const [scan, resolution] of recentScans(file, 10_000)) {
     if (!isBackgroundSave(scan)) continue;
     const action = actionOf(scan, resolution);
     if (action.startsWith("blocked")) out.blocked += 1;
     else if (action.startsWith("review")) out.asked += 1;
     else if (action.startsWith("held")) out.held += 1;
-    else if (action.startsWith("drafted")) out.drafted += 1;
-    else if (action.startsWith("allowed (lenient")) out.lenient += 1;
+    else if (action.startsWith("drafted") || action.startsWith("sent to drafts")) out.drafted += 1;
+    else if (action.startsWith("not saved")) out.lost += 1;
+    else if (action.startsWith("allowed (let through")) out.lenient += 1;
     else out.allowed += 1;
   }
   return out;
@@ -209,7 +218,8 @@ export function statusLine(setting: string, file: string | null): string {
   const c = counts(file);
   const lenient = c.lenient ? `, ${c.lenient} let through without asking` : "";
   const drafted = c.drafted ? `, ${c.drafted} saved as drafts` : "";
+  const lost = c.lost ? `, ${c.lost} drafts not kept` : "";
   const asked = c.asked ? `, ${c.asked} asked` : "";
   const held = c.held ? `, ${c.held} held` : "";
-  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${lenient}${drafted}${asked}${held}`;
+  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${lenient}${drafted}${lost}${asked}${held}`;
 }

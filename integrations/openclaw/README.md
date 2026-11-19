@@ -390,25 +390,27 @@ any OpenClaw version and whatever `skillReview` or `approval.scheduledIntentKind
 | Sentrook's answer | What happens to the save | What you get |
 | --- | --- | --- |
 | allow | It is saved. | Nothing. |
-| review, and Sentrook marks the save as one it can let through | It is saved. | A notice that a save Sentrook would normally ask about was let through: a skill or a memory note, and what it saves as a review would show it. |
-| review, a new skill, OpenClaw 2026.11.5 or newer | It is saved as a Skill Workshop **draft** instead, which the agent does not use until you apply it. | A notice that a skill was saved as a draft for you to review. Apply or discard it from the Skill Workshop drafts in the Control UI, or send `/learn drafts` in a chat with the agent. |
-| any other review (a change to an existing skill, a memory note, a skill file written directly, an older OpenClaw, or a version the plugin cannot read) | It is **held**, as in [Held calls](#held-calls-in-cron-jobs-and-subagents): it is not saved, and the run is told not to retry it. | The held-call notice. |
+| review below the block line, on a complete scan, and Sentrook marks the save as one it can let through (only with `skillReview: allow`, when Sentrook judged it as a background save) | It is saved. | A notice that a save Sentrook would normally ask about was let through: a skill or a memory note, and what it saves as a review would show it. |
+| any other review below the block line, of a new skill, on OpenClaw 2026.11.5 or newer | It is sent to the Skill Workshop **drafts** instead, which the agent does not use until you apply it. | Once OpenClaw reports the draft kept, a notice that a skill was saved as a draft for you to review: apply or discard it from the Skill Workshop drafts in the Control UI, or send `/learn drafts` in a chat with the agent. If OpenClaw does not keep it (too many drafts waiting, an invalid skill, the run ended), a notice that the save was not made. |
+| any other review (a change to an existing skill, a memory note, a skill file written directly, an older OpenClaw or one whose version the plugin cannot read, or a retry the scanner would block) | It is **held**: it is not saved, and the run is told not to retry it. | A notice that the save was held and not made. |
 | block | It is not saved. | A notice that a background save was blocked, with a broad category. |
 | the scan fails | As for any unattended run ([When the scan service fails](#when-the-scan-service-fails)): with the default `onScanError` the save is blocked and not kept, with `allow` it is saved unscanned. | The scan-failure notice when it is blocked. |
 
-Approving a held background save with `/sentrook-approve` does not make the save: the held call is never run again,
-and Sentrook usually suggests no grant for these saves, so approving sets nothing. If you want the save, ask the agent
-for it in a chat. Every background save is in
-`/sentrook-history`, as `allowed (lenient, self-edit)`, `drafted (self-edit)`, `held (self-edit)` and so on, and
-`/sentrook-why <id>` shows the id from a notice in detail.
+A held background save is not a [held call](#held-calls-in-cron-jobs-and-subagents) you can approve: approving could
+not make the save, so it gets no approve id and is not kept with the held calls (`status` counts it on its `skill
+review` line instead). If you want the save, ask the agent for it in a chat. Every background save is in
+`/sentrook-history`, as `allowed (let through, self-edit)`, `drafted (self-edit)` (`sent to drafts` until OpenClaw
+reports it, `not saved (draft refused)` if it does not keep it), `held (self-edit)` and so on, and `/sentrook-why <id>`
+shows the id from a notice in detail.
 
 The notices go where held-call notices go (`/sentrook-notify here`). They name the run (the Skill Workshop background
 review, the memory flush before compaction, or the skill collection review's cron job), the kind of save and what it
 saves, as a review card would describe it, never the saved text. One notice of each kind is sent per run (per cron job
-for the skill collection review) in 6 hours; further ones are only in the history. Without a notify target nothing
-changes in the table above except that you are not told: `status` and `verify` then say that background-save notices
-cannot be delivered. If you only use OpenClaw from the Control UI or the terminal, there is no direct message to send
-notices to; check `/sentrook-history` instead. In observe mode nothing is drafted, held or announced.
+for the skill collection review) in 6 hours; further ones are only in the history. A held retry that Sentrook would
+otherwise block is always announced. Without a notify target nothing changes in the table above except that you are
+not told: `status` and `verify` then say that background-save notices cannot be delivered. If you only use OpenClaw
+from the Control UI or the terminal, there is no direct message to send notices to; check `/sentrook-history` instead.
+In observe mode nothing is drafted, held or announced.
 
 ### Memory Sentrook does not see
 

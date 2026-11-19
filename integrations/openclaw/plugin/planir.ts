@@ -14,6 +14,9 @@ import { capArgs, type Redactor } from "./redact.ts";
 import { hostRequestText, TRIGGER as SELF_EDIT_TRIGGER } from "./selfEdit.ts";
 import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from "./store.ts";
 
+/** History decisions sent as `review_timed_out`. */
+const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
+
 export const PLUGIN_VERSION = "2.0.0-beta.12";
 
 const TOOL_KIND: Record<string, string> = {
@@ -584,11 +587,11 @@ export function buildPlanir(b: BuildInput): Built {
   const windowIds = new Set(window.map((h) => h.call_id));
   // Every tool result must refer to a call in the history window (a scanner invariant).
   const sentInputs = sess.buffer.filter((i) => windowIds.has(i.call_id));
-  // A held call is a review nobody has answered yet, and so is a background skill save kept as a draft for the owner:
-  // PlanIR has no word for `held` or `drafted`, so they go as `review_timed_out` (what was asked for did not run, and
-  // a retry of it is a retry after a review).
+  // A held call is a review nobody has answered yet, and so is a background skill save sent to the drafts for the
+  // owner (kept there or not): PlanIR has no word for these, so they go as `review_timed_out` (what was asked for did
+  // not run, and a retry of it is a retry after a review).
   const history = window.map(({ _host_call_id: _drop, ...h }) =>
-    (h.decision === "held" || h.decision === "drafted" ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id">,
+    (DRAFT_OR_HELD.has(h.decision) ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id">,
   );
 
   const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);

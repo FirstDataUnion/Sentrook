@@ -8,20 +8,25 @@
  * never asked about, on any OpenClaw version and whatever the settings say. Instead:
  * - allow: the save runs;
  * - block: it does not run, and the owner is told;
- * - review, when the scanner marks the save `lenient` (it adds nothing that would need the owner): it runs, and the
- *   owner is told it was let through;
- * - any other review: on OpenClaw 2026.11.5 or newer, a new skill (`skill_workshop` `create`, or `write_file` of its
- *   `SKILL.md`) is saved as a Skill Workshop draft instead, which does nothing until the owner applies it, and the
- *   owner is told; everything else (a patch, a memory note, a file write, an older or unknown OpenClaw) is held like
- *   a review on any unattended run (`hold.ts`), with its notice;
+ * - review, when the plugin declared the save as a self-edit, the scan is complete (`status: ok`), the score is below
+ *   the block line and the scanner marks it `lenient`: it runs, and the owner is told it was let through;
+ * - any other review below the block line: on OpenClaw 2026.11.5 or newer, a new skill (`skill_workshop` `create`, or
+ *   `write_file` of its `SKILL.md`) is saved as a Skill Workshop draft instead, which does nothing until the owner
+ *   applies it. The owner is told once OpenClaw reports the draft saved (`after_tool_call`), or that the save was lost
+ *   when it reports a failure;
+ * - everything else (a patch, a memory note, a file write, an older or unknown OpenClaw, or a block-level score the
+ *   scanner capped at review because it retries a review nobody answered) is held: it does not run, the run is told
+ *   not to retry it, and the owner is told. These holds are not kept in the holds file: `/sentrook-approve` could do
+ *   nothing for them (it never makes the save), and they must not push out holds it can approve;
  * - a scan that gives no answer: the scan-error policy for unattended runs, with its failure notice
  *   (`scanErrorPolicy.ts`, `scanFailureNotice.ts`).
  *
  * The notices go where held-call notices go (`/sentrook-notify here`). They are built only from fixed text, the run
  * label, the tool name and the call's description as a review card shows it (entity display strings, made inert), so
  * nothing the saving model wrote reaches the owner beyond what a card shows. A notice of each kind goes once per run
- * (per cron job for the collection review) in the scan-failure notices' quiet period; `/sentrook-history` lists every
- * save. Observe mode changes nothing and sends nothing.
+ * (per cron job for the collection review) in the scan-failure notices' quiet period, except a hold of a block-level
+ * score, which is always announced; `/sentrook-history` lists every save. Observe mode changes nothing and sends
+ * nothing.
  */
 
 import path from "node:path";
@@ -33,8 +38,8 @@ import { QUIET_MS } from "./scanFailureNotice.ts";
 import type { SelfEditKind, SelfEditStore } from "./selfEdit.ts";
 import type { NotifyTarget } from "./store.ts";
 
-/** The outcomes a background save announces with a notice of its own (a hold has the held-call notice). */
-export type Announced = "lenient" | "drafted" | "blocked";
+/** The outcomes a background save announces. `draft_failed`: OpenClaw did not keep a save sent to the drafts. */
+export type Announced = "lenient" | "drafted" | "draft_failed" | "held" | "blocked";
 
 /** The first OpenClaw that takes a Skill Workshop draft from a plugin's rewritten parameters in a background review. */
 export const DRAFT_FLOOR: readonly [number, number, number] = [2026, 11, 5];
@@ -54,15 +59,31 @@ export const RUN_LABELS: Record<SelfEditKind, string> = {
 const STORE_WORDS: Record<SelfEditStore, string> = { skills: "skill", memory: "memory note" };
 
 /**
- * Whether the scanner marked a reviewed save as one to let through: only `self_edit.lenient === true` counts; a
- * missing or malformed field is not lenient. Neither is a review the scanner enforces (a floor is never relaxed) nor
- * a block-level score lowered to a review (a retry of a review nobody answered): only a review below `blockAt`.
+ * Whether the scanner marked a reviewed save as one to let through: only `self_edit.lenient === true` on a complete
+ * scan (`status: ok`, not degraded) counts; a missing or malformed field is not lenient. Neither is a review the
+ * scanner enforces (a floor is never relaxed) nor a block-level score lowered to a review (`capped`). The caller also
+ * requires that the save was declared as a self-edit: the scanner judged it as one.
  */
 export function lenientOf(resp: ScanResponse, blockAt: number): boolean {
   const se: unknown = (resp as { self_edit?: unknown }).self_edit;
   if (!se || typeof se !== "object" || Array.isArray(se)) return false;
-  const risk = typeof resp.risk === "number" ? resp.risk : Number.POSITIVE_INFINITY;
-  return (se as { lenient?: unknown }).lenient === true && resp.enforced !== "review" && risk < blockAt;
+  return (se as { lenient?: unknown }).lenient === true && resp.status === "ok" && resp.enforced !== "review" && !capped(resp, blockAt);
+}
+
+/** A score at or above the block line that reached a review only through the scanner's cap (or has no number). */
+export function capped(resp: ScanResponse, blockAt: number): boolean {
+  return !(typeof resp.risk === "number" && resp.risk < blockAt);
+}
+
+/**
+ * Whether OpenClaw reports a draft saved, from `after_tool_call`: no error, no error status in the result's details,
+ * and a result that names the draft (2026.11.5 answers "Saved draft <id> for ..."). Anything else counts as lost.
+ */
+export function draftSaved(event: any, text: string): boolean {
+  if (event?.error) return false;
+  const status = String(event?.result?.details?.status ?? "").toLowerCase();
+  if (["error", "failed", "failure", "refused", "denied", "cancelled", "blocked"].includes(status)) return false;
+  return /\bsaved draft\b/i.test(text);
 }
 
 /**
@@ -107,7 +128,10 @@ export function quietKey(outcome: Announced, jobId: string | null | undefined, s
   return `background_${outcome}:${jobId ? `job:${jobId}` : `session:${sessionRef}`}`;
 }
 
-/** The notice for a background save; `where` is `hold.whereText`'s, already made inert. */
+/**
+ * The notice for a background save; `where` is `hold.whereText`'s, already made inert. `quiet`: further notices of this
+ * kind wait out the quiet period (every kind but a block-level hold).
+ */
 export function noticeText(
   outcome: Announced,
   resp: ScanResponse,
@@ -116,6 +140,7 @@ export function noticeText(
   where: string,
   requestId: string | null,
   isJob: boolean,
+  quiet = true,
 ): string {
   const what = `${STORE_WORDS[store]}: ${inert(describe(resp, tool), 160)} (${inert(tool, 80)})`;
   // the id only means something while the traffic log keeps the scan
@@ -130,6 +155,22 @@ export function noticeText(
       `Saved ${what}`,
       `To look at it: ${look}`,
       `More saves let through in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+    ],
+    draft_failed: [
+      "Sentrook sent a new skill from one of OpenClaw's background runs to the Skill Workshop drafts, but OpenClaw did " +
+        "not keep the draft, so the save was not made.",
+      `Run: ${where}`,
+      `Save ${what}`,
+      `To keep it, ask the agent for it in a chat. To look at it: ${look}`,
+      `More lost drafts from this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+    ],
+    held: [
+      "Sentrook held one of OpenClaw's background saves: it was not made, and the run was told not to retry it.",
+      `Run: ${where}`,
+      `Save ${what}`,
+      `Held because ${BLOCK_CATEGORIES[blockCategory(resp)]}.`,
+      `To keep it, ask the agent for it in a chat. To look at it: ${look}`,
+      `More held saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
     ],
     drafted: [
       "Sentrook saved a new skill from one of OpenClaw's background runs as a Skill Workshop draft, for you to " +
@@ -149,7 +190,8 @@ export function noticeText(
       `More blocked saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
     ],
   };
-  return lines[outcome].join("\n");
+  const out = lines[outcome];
+  return (quiet ? out : out.filter((l) => !l.startsWith("More "))).join("\n");
 }
 
 /** Where background-save notices go, as status and verify say it. */

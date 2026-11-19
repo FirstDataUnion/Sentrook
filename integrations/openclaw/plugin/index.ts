@@ -77,7 +77,7 @@ export interface BeforeToolCallResult {
 const UNSCANNED_TOOLS = new Set(["tool_search", "tool_describe", TOOL_CALL]);
 
 /** History decisions after which the tool did not run. */
-const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held"]);
+const NOT_RUN = new Set(["blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held", "draft_failed"]);
 
 const LOG = "[sentrook]";
 
@@ -228,6 +228,8 @@ const plugin = {
     }
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
+    /** Background saves sent to the Skill Workshop drafts, by request id, until OpenClaw reports the draft kept or not. */
+    const pendingDrafts = new Map<string, (saved: boolean) => Json>();
 
     const remember = (runId: string | undefined, ctx: any, patch: Json) => {
       store.mergeRun(runId, {
@@ -363,6 +365,22 @@ const plugin = {
           const entry = [...sess.history].reverse().find((h) => h._host_call_id === hostId || h.call_id === hostId);
           if (!entry) return;
           const text = fullResults.get(hostId) ?? resultText(event?.result ?? event?.error);
+          if (entry.decision === "drafted") {
+            // Only now is the draft known kept or lost: recorded and announced here, not when it was sent.
+            const saved = bg.draftSaved(event, text);
+            if (!saved) entry.decision = "draft_failed";
+            const announce = pendingDrafts.get(entry.request_id);
+            pendingDrafts.delete(entry.request_id);
+            let notice: Json | null = null;
+            if (announce) safely("draft notice", () => void (notice = announce(saved)));
+            traffic.write({
+              kind: "resolution",
+              request_id: entry.request_id,
+              resolution: saved ? "draft_saved" : "draft_failed",
+              decision: entry.decision,
+              ...(notice ? { notice } : {}),
+            });
+          }
           fullResults.delete(hostId);
           const sizeBytes = Buffer.byteLength(text, "utf8");
           const ran = !(NOT_RUN.has(entry.decision) && event?.error);
@@ -554,21 +572,41 @@ const plugin = {
           // The owner snoozed reviews for this session: scanned and logged, not asked.
           entry.decision = "allowed";
           snoozed = true;
-        } else if (bgSave && bg.lenientOf(resp, cfg.blockAt)) {
-          // A background save the scanner marks lenient: kept, and the owner told.
+        } else if (selfEditBlock && bgSave && bg.lenientOf(resp, cfg.blockAt)) {
+          // A declared background save the scanner marks lenient: kept, and the owner told.
           entry.decision = "allowed";
           lenient = true;
           notice = backgroundNotice(cfg, "lenient", built, resp, event.toolName, bgSave, triggerKind, run);
-        } else if (bgSave && (draft = bg.draftParams(event.toolName, event?.params, hostVersion ?? process.env.OPENCLAW_VERSION))) {
-          // A new skill OpenClaw can keep as a Workshop draft: inert until the owner applies it.
+        } else if (
+          bgSave &&
+          !bg.capped(resp, cfg.blockAt) &&
+          (draft = bg.draftParams(event.toolName, event?.params, hostVersion ?? process.env.OPENCLAW_VERSION))
+        ) {
+          // A new skill OpenClaw can keep as a Workshop draft: inert until the owner applies it. The owner is told once
+          // OpenClaw reports the draft kept or lost (after_tool_call).
           entry.decision = "drafted";
           hook = { params: draft };
-          notice = backgroundNotice(cfg, "drafted", built, resp, event.toolName, bgSave, triggerKind, run);
+          const save = bgSave;
+          pendingDrafts.set(built.planir.request_id, (saved) =>
+            backgroundNotice(cfg, saved ? "drafted" : "draft_failed", built, resp, event.toolName, save, triggerKind, run),
+          );
+          if (pendingDrafts.size > 200) pendingDrafts.delete(pendingDrafts.keys().next().value!);
+        } else if (bgSave) {
+          // Nothing better applies: not saved, and the owner told. A block-level score the scanner capped at review is
+          // always announced, whatever was announced before in this run.
+          entry.decision = "held";
+          hook = { block: true, blockReason: hold.HELD_TEXT };
+          const always = bg.capped(resp, cfg.blockAt);
+          held = {
+            id: null,
+            background: true,
+            notice: backgroundNotice(cfg, "held", built, resp, event.toolName, bgSave, triggerKind, run, !always),
+          };
         } else if (unattended) {
           // Nobody can answer a review here: the call waits for the owner (hold.ts).
           entry.decision = "held";
           hook = { block: true, blockReason: hold.HELD_TEXT };
-          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, bgSave?.kind ?? null);
+          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -732,20 +770,23 @@ const plugin = {
      * Sends a notice that has a quiet period: none for `key` while it is in one. Returns what the scan record says about
      * it. Never throws: the call's outcome stands whatever happens here.
      */
-    function quietNotice(cfg: PluginConfig, key: string, text: () => string, what: string): Json {
+    function quietNotice(cfg: PluginConfig, key: string | null, text: () => string, what: string): Json {
       const target = store.loadNotify();
       const outbound = outboundOf();
       if (!target) return { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
       if (!outbound?.loadAdapter) return { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
-      let stamp: string | null;
+      let stamp: string | null = null;
       try {
-        stamp = scanFailure.claim(cfg.stateDir, key, new Date());
-        if (stamp === null) return { status: "quiet" };
+        if (key !== null) {
+          stamp = scanFailure.claim(cfg.stateDir, key, new Date());
+          if (stamp === null) return { status: "quiet" };
+        }
       } catch (err) {
         if (!(err instanceof hold.LockTimeoutError)) api.logger.warn(`${LOG} could not read or write notice times: ${String(err)}`);
         return { status: "unsent", target: null, reason: err instanceof hold.LockTimeoutError ? "notice file locked" : "notice file not written" };
       }
       const reopen = () => {
+        if (key === null) return;
         try {
           scanFailure.release(cfg.stateDir, key, stamp!);
         } catch (err) {
@@ -796,8 +837,9 @@ const plugin = {
     }
 
     /**
-     * Tells the owner what happened to one of OpenClaw's background saves (blocked, let through, saved as a draft): once
-     * per outcome and run (cron job for the collection review) per quiet period. Never throws.
+     * Tells the owner what happened to one of OpenClaw's background saves (blocked, let through, kept as a draft, lost
+     * as a draft, held): once per outcome and run (cron job for the collection review) per quiet period, or every time
+     * when `quiet` is false. Never throws.
      */
     function backgroundNotice(
       cfg: PluginConfig,
@@ -808,14 +850,15 @@ const plugin = {
       save: { kind: selfEdit.SelfEditKind; store: selfEdit.SelfEditStore },
       triggerKind: string,
       run: any,
+      quiet = true,
     ): Json {
       const sref: string = built.planir.session.session_ref;
       const { where, jobId } = unattendedRun(sref, triggerKind, run, save.kind);
+      const rid = cfg.trafficLog.enabled ? built.planir.request_id : null;
       const out = quietNotice(
         cfg,
-        bg.quietKey(outcome, jobId, sref),
-        () =>
-          bg.noticeText(outcome, resp, tool, save.store, where, cfg.trafficLog.enabled ? built.planir.request_id : null, jobId !== null),
+        quiet ? bg.quietKey(outcome, jobId, sref) : null,
+        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, quiet),
         "background-save",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);
@@ -833,11 +876,10 @@ const plugin = {
       tool: string,
       triggerKind: string,
       run: any,
-      kind: selfEdit.SelfEditKind | null,
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const { where } = unattendedRun(sref, triggerKind, run, kind);
+      const { where } = unattendedRun(sref, triggerKind, run);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
