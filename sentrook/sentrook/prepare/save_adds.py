@@ -50,11 +50,13 @@ handling whatever it adds:
   (`content`, `file_content`, `new_string`, `new_text`, `newText`, also inside `operations` and `edits`, and a
   patch's added lines), and it is not a command the save runs. A restore of an older version, an archive, a delete
   or a support-file removal brings in or takes out content the scan never saw.
-- `removes`: the save removes existing content, as far as the request shows it: a delete or remove action (a skill,
-  a support file, a memory entry), an edit whose replaced text has a word the save does not write again (an empty
-  replacement included), a patch's removed lines likewise, or a save made by running a command that deletes, moves,
-  truncates or edits a file in place. A replaced text every word of which the save writes again (an insertion, a
-  reorder, an edit that only adds) is not a removal. A whole-file write shows no old content and is not one.
+- `removes`: the save removes existing content and writes nothing in its place, as far as the request shows it: a
+  delete, remove or archive action (a skill, a support file, a memory entry), an edit whose replaced text has a word
+  the save does not write again and whose new text is empty, a patch's removed lines likewise, or a save made by
+  running a command that deletes, moves, truncates or edits a file in place. An edit that replaces text with new text
+  and drops a word of it is a rewording (`SaveReading.rewrites`): not held here, but lenient only while the judge's
+  loosened-oversight answer is low. A replaced text every word of which the save writes again (an insertion, a
+  reorder, an edit that only adds) is neither. A whole-file write shows no old content and is neither.
 - `risky_step`: a rule of any class fired on a command the save tells the agent to run (the narrower reading
   above, script lines, list items that read as code), which the rule-based probe does not judge for a memory note.
 - `unread`: the save holds code the rules cannot read: a command whose program is a variable (`$C config set`), a
@@ -246,10 +248,12 @@ class SavedText:
 @dataclass(frozen=True)
 class SaveReading:
     """What a save adds (`ADDS`, sorted), and why the reading cannot vouch for it (`HELD`, sorted; empty when it
-    can). Only `adds` reaches the response; `held` rules out lenient handling."""
+    can). Only `adds` reaches the response; `held` rules out lenient handling. `rewrites`: an edit replaces text with
+    new text and drops a word of it (`removes`), so lenient handling also needs a low loosened-oversight answer."""
 
     adds: tuple[str, ...] = ()
     held: tuple[str, ...] = ()
+    rewrites: bool = False
 
 
 #: Suffixes of instruction text, whose commands are its fenced and inline code.
@@ -932,29 +936,39 @@ def _words(text: str) -> set[str]:
     return {w.lower() for w in _WORD.findall(text)}
 
 
-def removes(arguments: Any, *, exec_command: str | None = None) -> bool:
-    """The save removes existing content, as far as the request shows it: a removing action, a replaced text with a
-    word the save does not write again, a patch's removed line likewise, or a command that deletes, moves, truncates
-    or edits a file in place."""
+def removes(arguments: Any, *, exec_command: str | None = None) -> tuple[bool, bool]:
+    """Whether the save removes existing content, as far as the request shows it: `(removes, rewrites)`.
+
+    `removes`: a pure removal, which nothing the save writes stands in for: a removing action, a replaced text or a
+    patch's removed lines with no new text in the same edit, or a command that deletes, moves, truncates or edits a
+    file in place. `rewrites`: an edit that replaces text with new text and drops a word of what it replaces (the
+    words of every text the save writes count); its lenient handling rests on the judge's loosened-oversight answer.
+    An edit that writes every word it replaces again (an insertion, a reorder) is neither."""
     if exec_command is not None:
-        return bool(_EXEC_REMOVAL.search(exec_command))
+        return bool(_EXEC_REMOVAL.search(exec_command)), False
     ops = _ops(arguments)
     written = _words(
         "\n".join(st.text for st in saved_texts(arguments))
         + "\n"
         + "\n".join(_patch_added(op[PATCH_KEY]) for op in ops if isinstance(op.get(PATCH_KEY), str))
     )
+    pure = rewrites = False
     for op in ops:
         action = op.get("action")
         if isinstance(action, str) and action.strip().lower() in REMOVING_ACTIONS:
-            return True
+            pure = True
         replaced = [op[k] for k in REPLACED_KEYS if isinstance(op.get(k), str)]
+        new = "".join(op[k] for k in WRITTEN_KEYS if isinstance(op.get(k), str))
         patch = op.get(PATCH_KEY)
         if isinstance(patch, str):
             replaced.append(_patch_removed(patch))
+            new += _patch_added(patch)
         if any(_words(old) - written for old in replaced):
-            return True
-    return False
+            if new.strip():
+                rewrites = True
+            else:
+                pure = True
+    return pure, rewrites
 
 
 def _unread(reads: list[_Read], store: str, tool: str | None) -> bool:
@@ -1106,11 +1120,15 @@ def save_adds(prepared: Any) -> SaveReading:
         return any(findings.get(c) or extra.get(c) for c in told)
 
     rule(RISKY_STEP, risky, held)
-    rule(
-        REMOVES,
-        lambda: removes(pending.raw, exec_command=pending.command if exec_save else None),
-        held,
-    )
+    rewrites = False
+    try:
+        pure, rewrites = removes(pending.raw, exec_command=pending.command if exec_save else None)
+        if pure:
+            held.add(REMOVES)
+    except Exception:  # noqa: BLE001
+        held.add(REMOVES)
     rule(UNREAD, lambda: _unread(reads, store, pending.tool), held)
     rule(OUTSIDE_STORE, lambda: outside_store(prepared, store), held)
-    return SaveReading(tuple(k for k in ADDS if k in adds), tuple(k for k in HELD if k in held))
+    return SaveReading(
+        tuple(k for k in ADDS if k in adds), tuple(k for k in HELD if k in held), rewrites
+    )

@@ -29,6 +29,7 @@ from sentrook.converge.self_edit import (
     LENIENT_ANSWER_LIMIT,
     LENIENT_ANSWERS,
     LENIENT_LEVEL_ANSWERS,
+    REWRITE_OVERSIGHT_LIMIT,
     self_edit_save,
 )
 from sentrook.enums import Enforce, ScanStatus
@@ -904,7 +905,9 @@ def test_must_be_lenient_ordinary_steps_the_wider_reading_also_sees(content):
     ],
 )
 def test_must_not_be_lenient_a_save_that_removes_content(tool, arguments):
-    assert field(planir(tool, arguments)) == {"adds": [], "lenient": False}
+    # the replace keeps new text: held here because the judge sees loosened oversight (0.6), see the rewording tests
+    answers = {**GOOD, "weakens_oversight": _noul(0.6)}
+    assert field(planir(tool, arguments), answers) == {"adds": [], "lenient": False}
 
 
 def test_must_not_be_lenient_a_command_that_removes_or_rewrites_memory():
@@ -938,6 +941,62 @@ def test_must_not_be_lenient_a_save_with_only_blank_written_text():
         ]
         is False
     )
+
+
+REWORDING = planir(
+    "skill_manage",
+    {
+        "action": "patch",
+        "name": "deploy",
+        "old_string": "Push to staging only after you ask the owner first.",
+        "new_string": "Push to staging when the tests pass.",
+    },
+)
+
+
+@pytest.mark.parametrize(
+    ("wo", "lenient"), [(0.0, True), (0.49, True), (0.5, False), (0.69, False)]
+)
+def test_a_rewording_is_lenient_only_while_the_judge_sees_little_loosened_oversight(wo, lenient):
+    # A replacement edit with new text drops words of what it replaces: lenient only while the judge's loosened-
+    # oversight answer stays below `REWRITE_OVERSIGHT_LIMIT`, a tighter limit than the one every save gets.
+    assert REWRITE_OVERSIGHT_LIMIT == 0.5 < LENIENT_ANSWER_LIMIT
+    answers = {**GOOD, "weakens_oversight": _noul(wo)}
+    assert field(REWORDING, answers) == {"adds": [], "lenient": lenient}
+
+
+def test_a_rewording_without_a_loosened_oversight_answer_is_not_lenient():
+    assert field(REWORDING, decider=_Dropping("weakens_oversight"))["lenient"] is False
+    reading = SaveReading((), (), rewrites=True)
+    ok = self_edit_save(reading, _env_answers(), [], status=ScanStatus.OK, pending_label="c2")
+    assert ok.lenient is True
+    envs = _env_answers()
+    envs[2].evidence["answers"].pop("weakens_oversight")
+    out = self_edit_save(reading, envs, [], status=ScanStatus.OK, pending_label="c2")
+    assert out.lenient is False
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("memory", {"action": "remove", "target": "memory", "old_text": "Ask before deploying."}),
+        (
+            "skill_manage",
+            {
+                "action": "patch",
+                "name": "d",
+                "old_string": "Never skip the check.",
+                "new_string": "",
+            },
+        ),
+        ("skill_manage", {"action": "delete", "name": "safety-checks"}),
+        ("skill_manage", {"action": "archive", "name": "safety-checks"}),
+    ],
+    ids=["remove", "empty replacement", "delete", "archive"],
+)
+def test_a_pure_removal_is_not_lenient_whatever_the_judge_says(tool, arguments):
+    mild = {**GOOD, "weakens_oversight": _noul(0.0)}
+    assert field(planir(tool, arguments), mild)["lenient"] is False
 
 
 @pytest.mark.parametrize(
@@ -1094,6 +1153,7 @@ PINNED = [
         store="skills",
         platform="openclaw",
     ),
+    REWORDING,
 ]
 
 

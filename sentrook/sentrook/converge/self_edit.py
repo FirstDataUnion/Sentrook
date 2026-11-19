@@ -4,7 +4,7 @@ Set only on a declared self-edit (the host's own background process saving to me
 `prepare.save_adds`, read by rule from the saved text. `lenient` is true only when all of these hold:
 
 - the save adds nothing, or only commands, and the reading can vouch for it (`SaveReading.held` is empty: the save
-  removes nothing the request shows, every step it tells the agent to run passes every rule, the rules can read all
+  writes content the reading examined, removes nothing without writing new text in its place, every step it tells the agent to run passes every rule, the rules can read all
   of its code, and its target is inside the declared store);
 - the scan's status is ok: a probe that failed or timed out, an entity lookup that fell back, or a fresh session
   state may have hidden a floor or a session judgement;
@@ -14,7 +14,9 @@ Set only on a declared self-edit (the host's own background process saving to me
 - the self-edit judge answered (its envelope is OK and carries every one of `LENIENT_ANSWERS` and
   `LENIENT_LEVEL_ANSWERS`), each of `LENIENT_ANSWERS` is below `LENIENT_ANSWER_LIMIT`, and so is the probability
   each of `LENIENT_LEVEL_ANSWERS` gives its counted levels (concealment: hidden intent);
-- no floor applies to the scan (an enforced one, a guardrail, or one that only raises the score).
+- no floor applies to the scan (an enforced one, a guardrail, or one that only raises the score);
+- a save that rewords existing text (`SaveReading.rewrites`) has a `weakens_oversight` answer below
+  `REWRITE_OVERSIGHT_LIMIT`.
 
 `lenient` says nothing about the verdict: a plugin that cannot ask anyone about a background save consults it only
 when the risk lands in its review band, to let such a save through instead of holding it. It changes no score.
@@ -46,6 +48,10 @@ LENIENT_LEVEL_ANSWERS: dict[str, int] = {"concealment": 2}
 #: The probability (the judge's raw answer, before the question set's knee) at which one of `LENIENT_ANSWERS`, or the
 #: counted levels of one of `LENIENT_LEVEL_ANSWERS`, rules out lenient handling.
 LENIENT_ANSWER_LIMIT = 0.7
+#: For a save that rewords existing text (`SaveReading.rewrites`: an edit that replaces text with new text and drops
+#: a word of it), the judge's `weakens_oversight` answer must stay below this tighter limit; a missing answer rules
+#: lenient handling out.
+REWRITE_OVERSIGHT_LIMIT = 0.5
 #: What a lenient save may add.
 LENIENT_ADDS: frozenset[tuple[str, ...]] = frozenset({(), ("command",)})
 #: On the save itself, the findings that are only the write into the declared store. A skill folder under the host's
@@ -128,6 +134,16 @@ def _oracle_answered(envelopes: Iterable[Envelope]) -> bool:
     return False
 
 
+def _rewording_judged_safe(envelopes: Iterable[Envelope]) -> bool:
+    for env in envelopes:
+        if env.step is ProbeStep.JEV_CALL and env.status is ProbeStatus.OK:
+            answers = env.evidence.get("answers")
+            a = answers.get("weakens_oversight") if isinstance(answers, dict) else None
+            v = a.get("noul") if isinstance(a, dict) else None
+            return _finite(v) and v < REWRITE_OVERSIGHT_LIMIT
+    return False
+
+
 def _no_probe_failed(envelopes: Iterable[Envelope]) -> bool:
     """No probe failed, timed out or fell back (the scan's status says the same; checked here too, on the envelopes
     this field reads)."""
@@ -151,6 +167,7 @@ def self_edit_save(
     lenient = (
         kinds in LENIENT_ADDS
         and not reading.held
+        and (not reading.rewrites or _rewording_judged_safe(envelopes))
         and status is ScanStatus.OK
         and _no_probe_failed(envelopes)
         and not any(True for _ in floors)
