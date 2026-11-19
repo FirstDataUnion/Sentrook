@@ -210,3 +210,43 @@ def test_the_skill_name_is_never_an_entity(attack_case, name):
     )
     assert all(name.lower() not in e.value.lower() for e in p.entities.pending())
     assert p.fingerprint.render() == "afp1:other"
+
+
+@pytest.mark.parametrize("viewed", ["alpha", "beta"])
+def test_hermes_skill_view_of_a_support_file_after_a_refused_write_is_not_a_retry(
+    attack_case, viewed
+):
+    first = {
+        "action": "write_file",
+        "name": "alpha",
+        "file_path": "references/api.md",
+        "file_content": "x",
+    }
+    view = {"name": viewed, "file_path": "references/api.md"}
+    assert reason(attack_case, refused("skill_manage", first), "skill_view", view) == "retry.none"
+
+
+def test_a_category_path_names_the_same_skill(attack_case):
+    """Hermes finds a skill by its name or its category path."""
+    first = {"action": "create", "name": "mlops/axolotl", "content": "# axolotl"}
+    patch = {"action": "patch", "name": "axolotl", "old_string": "a", "new_string": "b"}
+    assert (
+        reason(attack_case, refused("skill_manage", first), "skill_manage", patch)
+        == "retry.same_action"
+    )
+    other = {"action": "patch", "name": "mlops/vllm", "old_string": "a", "new_string": "b"}
+    assert (
+        reason(attack_case, refused("skill_manage", first), "skill_manage", other) == "retry.none"
+    )
+
+
+def test_a_batch_replaces_the_calls_own_name(attack_case):
+    """With `operations`, Hermes changes only the skills the batch names."""
+    both = {
+        "action": "create",
+        "name": "tidy-downloads",
+        "operations": [{"action": "create", "name": "rename-photos"}],
+    }
+    assert reason(attack_case, refused(), "skill_manage", both) == "retry.none"
+    empty = {**SAVE, "operations": []}
+    assert reason(attack_case, refused(), "skill_manage", empty) == "retry.same_action"

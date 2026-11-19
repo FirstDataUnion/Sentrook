@@ -27,6 +27,8 @@ from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
 
 SKILL_TOOLS = frozenset({"skill_manage", "skill_workshop"})
+#: Hermes's tools that only read the skill library (a skill, or one of its support files by relative path).
+SKILL_READ_TOOLS = frozenset({"skill_view", "skills_list"})
 WRITTEN_KEYS = ("content", "file_content", "new_string", "new_text", "newText")
 #: Lists of edits whose entries carry written text of their own.
 NESTED_KEYS = ("operations", "edits")
@@ -58,20 +60,25 @@ _RISKY = re.compile(
 def skills_changed(call: CanonicalCall) -> frozenset[str] | None:
     """For a host skill-tool call (`SKILL_TOOLS`, host provider): the skills it changes, by name (trimmed, lower-cased),
     from its own `action` and `name` and from each entry of an `operations` batch (a curator merging skills sends its
-    changes that way). A read action (`selfmod.yaml` `read_actions`) changes nothing. None for any other call.
+    changes that way; a non-empty batch replaces the call's own fields). A read action (`selfmod.yaml` `read_actions`)
+    and Hermes's skill reads (`SKILL_READ_TOOLS`, which may open a support file) change nothing. A name given as a
+    category path counts by its last segment. None for any other call.
 
     These tools take only a skill name (and, for a support file, a path relative to the skill), so the retry matcher
     compares skill-tool calls by the skills they change rather than by entities: the name is not a path, and a
     relative support-file path would match the same file name in another skill."""
     from ..aira.lists import load_lists
 
-    if call.tool not in SKILL_TOOLS or call.provider.kind is not ProviderKind.HOST:
+    if call.provider.kind is not ProviderKind.HOST:
+        return None
+    if call.tool in SKILL_READ_TOOLS:
+        return frozenset()  # Hermes's skill reads change nothing, whatever support file they open
+    if call.tool not in SKILL_TOOLS:
         return None
     reads = {a.lower() for a in load_lists().strings("selfmod", "read_actions")}
-    ops: list[Any] = [call.raw]
     nested = call.raw.get("operations")
-    if isinstance(nested, list):
-        ops.extend(nested)
+    # a non-empty batch replaces the call's own action and name, as Hermes applies it
+    ops: list[Any] = nested if isinstance(nested, list) and nested else [call.raw]
     out: set[str] = set()
     for op in ops:
         if not isinstance(op, dict):
@@ -81,7 +88,10 @@ def skills_changed(call: CanonicalCall) -> frozenset[str] | None:
             continue
         name = op.get("name")
         if isinstance(name, str) and name.strip():
-            out.add(name.strip().lower())
+            # Hermes finds a skill by its name or by its category path (`mlops/axolotl`): the last segment
+            leaf = name.strip().rstrip("/").rsplit("/", 1)[-1].strip().lower()
+            if leaf:
+                out.add(leaf)
     return frozenset(out)
 
 
