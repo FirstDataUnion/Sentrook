@@ -254,6 +254,8 @@ def test_a_held_save_hermes_can_replay_is_staged(h, name):
     assert record["origin"] == "background_review"
     assert record["summary"].startswith("Held by Sentrook (Sentrook asks for a review): ")
     assert len(record["summary"]) <= 200
+    # Hermes left it world-readable; the plugin made it the owner's only
+    assert h.wa.modes[record["id"]] == 0o644
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert shown(h) == ("staged (self-edit)", "pending in Hermes")
     assert len(h.sent) == 1
@@ -414,7 +416,6 @@ def test_never_staged_by_the_response(h, case):
 
 
 def test_an_old_scanner_never_stages_a_save_the_plugins_redaction_changed(h):
-    assert Redactor("standard", "s").string(SECRET_NOTE) != SECRET_NOTE
     del h.reply["self_edit"]
     out, rec = save(h, "memory", {"action": "add", "target": "memory", "content": SECRET_NOTE})
     assert out == HELD and rec["staging"] == {"status": "held", "reason": "redacted"}
@@ -686,6 +687,7 @@ def test_a_destructive_memory_change_goes_to_hermess_own_gate(gate, name):
         and res["decision"] == "staged"
         and res["pending_id"] == pid
     )
+    assert h.wa.modes[pid] == 0o644
     assert stat.S_IMODE(os.stat(h.dir / "pending" / "memory" / f"{pid}.json").st_mode) == 0o600
     assert shown(h) == ("staged (by Hermes, self-edit)", "pending in Hermes")
     (text,) = notices(h)

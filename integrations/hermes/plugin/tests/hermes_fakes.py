@@ -1,7 +1,7 @@
 """Stand-ins for the parts of Hermes (0.23) the plugin stages held background saves with, shaped like the real ones.
 
 `WriteApproval` is `tools.write_approval`: `stage_write` writes `<HERMES_HOME>/pending/<store>/<8 hex>.json` with the
-umask's mode (0644 here, as on Hermes) and returns the record; `list_pending`, `discard_pending`, `current_origin`.
+default mode under a 022 umask (0644, as on Hermes; `.modes` keeps it) and returns the record; `list_pending`, `discard_pending`, `current_origin`.
 
 The functions below are `tools.memory_tool` as far as the plugin reads it: its source is read to establish that
 Hermes's own gate stages a destructive memory change made by an unattended background review, so they keep the
@@ -21,6 +21,7 @@ from typing import Any
 def write_approval(home: Path, origin: Any) -> types.ModuleType:
     mod = types.ModuleType("tools.write_approval")
     mod.calls = []
+    mod.modes = {}  # pending id -> the file's mode as Hermes left it
     mod.fail = (
         None  # "raise" makes stage_write raise; "no_file" returns a record without writing it
     )
@@ -46,9 +47,14 @@ def write_approval(home: Path, origin: Any) -> types.ModuleType:
         }
         if mod.fail != "no_file":
             path = getattr(mod, "_pending_path", _pending_path)(subsystem, pid)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(record))
-            os.chmod(path, 0o644)
+            # Hermes writes it with the process umask's default mode: world-readable under the usual 022
+            previous = os.umask(0o022)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(record))
+            finally:
+                os.umask(previous)
+            mod.modes[pid] = os.stat(path).st_mode & 0o777
         return record
 
     def list_pending(subsystem):
