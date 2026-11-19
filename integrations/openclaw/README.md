@@ -244,7 +244,7 @@ command line as `openclaw sentrook <verb>`.
 
 | Chat | What it does |
 | --- | --- |
-| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls and where their notices go |
+| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls, where notices go, and OpenClaw's own saves by outcome |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
 | `/sentrook-why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold and the grant approving it sets |
@@ -253,7 +253,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-revoke <id>` | Remove a grant set by command |
 | `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
 | `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
-| `/sentrook-notify here\|off\|status` | Where the notice of a held call goes: `here`, sent as a direct message to the agent, sends notices to you in that chat |
+| `/sentrook-notify here\|off\|status` | Where notices go (held calls, scan failures on unattended runs, [background saves](#background-skill-and-memory-saves)): `here`, sent as a direct message to the agent, sends notices to you in that chat |
 | `/sentrook-approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
 
 `openclaw sentrook verify` exists only on the command line. There is no session on the command line, so
@@ -383,7 +383,7 @@ OpenClaw saves to the agent's skills and memory on its own, with nobody asking:
 
 These runs carry your context but are not your messages, and a save has no request of its own, so it would otherwise
 look like a write nobody asked for. By default (`skillReview: allow`) the plugin sends every call these runs make as
-the host's own (never as your message, and never snoozed), with your last message in the conversation they read as
+the host's own (never as your message), with your last message in the conversation they read as
 the request, tells Sentrook which calls are their saves (skill files written inside the Workshop folder, or the
 memory flush's write to the day's note; a write anywhere else is scanned like any other call), and sends the
 part of the conversation the run read, so Sentrook can judge the save against it. A save that follows from what you
@@ -395,7 +395,39 @@ memory change you ask for in a turn is scanned like any other call, too.
 Each message in that conversation is marked as yours, someone else's or unknown from OpenClaw's own sender flag, never
 from what the message says. Set `skillReview` to `review` to send these runs' calls as before, without the
 conversation; with nothing to judge them against, expect more saves to be reviewed or blocked. `status` counts the
-saves (allowed, blocked, asked) and the history marks them `(self-edit)`.
+saves by outcome and the history marks them `(self-edit)`.
+
+### Background skill and memory saves
+
+Nobody can answer an approval prompt in these runs: OpenClaw cancels it at once, or ends the run before you could
+answer, and the save would be lost without anyone telling you. So Sentrook never asks about one of their saves, on
+any OpenClaw version and whatever `skillReview` or `approval.scheduledIntentKinds` say (adding `system` to
+`approval.scheduledIntentKinds` is no longer needed for this). Instead:
+
+| Sentrook's answer | What happens to the save | What you get |
+| --- | --- | --- |
+| allow | It is saved. | Nothing. |
+| review below the block line, on a complete scan, and Sentrook marks the save as one it can let through (only with `skillReview: allow`, when Sentrook judged it as a background save, and only for a save that carries what it saves: a Skill Workshop create, patch, write_file or draft, or a file write, edit or patch) | It is saved. | A notice that a save Sentrook would normally ask about was let through: a skill or a memory note, and what it saves as a review would show it. |
+| any other review below the block line, of a Skill Workshop draft the agent makes itself, or of a new skill on OpenClaw 2026.11.5 or newer | It goes to the Skill Workshop **drafts** (a new skill is sent there instead), which the agent does not use until you apply it. | Once OpenClaw reports the draft kept, a notice that a skill was saved as a draft for you to review: apply or discard it from the Skill Workshop drafts in the Control UI, or send `/learn drafts` in a chat with the agent. If OpenClaw does not keep it (too many drafts waiting, an invalid skill, the run ended), a notice that the save was not made; if OpenClaw saved the new skill itself instead of the draft, a notice that it was saved live. |
+| any other review (a change to an existing skill, a restore, archive or file removal, a memory note, a skill file written directly, an older OpenClaw or one whose version the plugin cannot read, or a retry the scanner would block) | It is **held**: it is not saved, and the run is told it was not saved and not to retry it. | A notice that the save was held and not made. |
+| block | It is not saved. | A notice that a background save was blocked, with a broad category. |
+| the scan fails | As for any unattended run ([When the scan service fails](#when-the-scan-service-fails)): with the default `onScanError` the save is blocked and not kept, with `allow` it is saved unscanned. | The scan-failure notice when it is blocked. |
+
+A held background save is not a [held call](#held-calls-in-cron-jobs-and-subagents) you can approve: approving could
+not make the save, so it gets no approve id and is not kept with the held calls (`status` counts it on its `skill
+review` line instead). If you want the save, ask the agent for it in a chat. Every background save is in
+`/sentrook-history`, as `allowed (let through, self-edit)`, `drafted (self-edit)` (`sent to drafts` until OpenClaw
+reports it, `not saved (draft refused)` if it does not keep it, `saved live (draft ignored)` if it saved the skill
+itself), `held (self-edit)` and so on, and `/sentrook-why <id>` shows the id from a notice in detail.
+
+The notices go where held-call notices go (`/sentrook-notify here`). They name the run (the Skill Workshop background
+review, the memory flush before compaction, or the skill collection review's cron job), the kind of save and what it
+saves, as a review card would describe it, never the saved text. One notice of each kind is sent per run (per cron job
+for the skill collection review) in 6 hours; further ones are only in the history. The first held retry in a run
+that Sentrook would otherwise block is announced even after other notices; further ones in that run are not. Without a notify target nothing changes in the table above except that you are
+not told: `status` and `verify` then say that background-save notices cannot be delivered. If you only use OpenClaw
+from the Control UI or the terminal, there is no direct message to send notices to; check `/sentrook-history` instead.
+In observe mode nothing is drafted, held or announced.
 
 ### Memory Sentrook does not see
 
@@ -524,10 +556,12 @@ In short, for anyone deciding whether to install it:
 - **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never approves
   a call on your behalf. Where nobody can answer (cron jobs, subagents) a review holds the call and sends you one
   notice, through the channel you chose with `/sentrook-notify here`, and a call blocked because the scan failed sends
-  you one notice per job (per session for other runs) every 6 hours at most; those notices are the only messages
-  it sends.
+  you one notice per job (per session for other runs) every 6 hours at most. OpenClaw's own skill and memory saves
+  are never asked about: a reviewed one is let through, saved as a Skill Workshop draft or held, and a notice tells
+  you ([Background skill and memory saves](#background-skill-and-memory-saves)). Turning a save into a draft is the
+  only change it makes to a call; those notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
-  command, snooze state, held calls and their lock files, the notice target, when each job last had a scan-failure notice, and
+  command, snooze state, held calls and their lock files, the notice target, when each job or run last had a notice with a quiet period, and
   the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.
@@ -551,7 +585,7 @@ also come from a `SENTROOK_*` environment variable; the config value wins.
 | `onScanError` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `timeoutMs` | `30000` | How long to wait for a scan |
 | `approval.interactiveTimeoutMs` | `300000` | How long a review in a chat waits for your answer |
-| `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it |
+| `skillReview` | `allow` | `allow` tells Sentrook which calls are OpenClaw's own skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Any other value reads as `allow`, and `status` names it. Either way those saves are never asked about ([Background skill and memory saves](#background-skill-and-memory-saves)) |
 | `trafficLog.enabled` | `true` | Keep the local traffic log |
 | `channelBindings` | | Channels this deployment normally delivers to |
 | `grants` | | Standing grants, as `{kind, pattern, allows?, scope?}` objects |

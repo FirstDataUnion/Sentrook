@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { actionOf } from "./history.ts";
 import {
+  contentSave,
   hostRequestText,
   kindAtCall,
   lastOwnerMessage,
@@ -15,6 +16,7 @@ import {
   saveStoreOf,
   settingText,
   statusLine,
+  targetsOf,
 } from "./selfEdit.ts";
 
 const REVIEW_ID = "skill-workshop-review:61d38354-3521-487d-8018-82ea16a0fed1";
@@ -94,6 +96,31 @@ test("must stay silent on a review's write outside the Workshop: an ordinary cal
   assert.equal(saveStoreOf("background_review", "apply_patch", { input: "no files named" }, run), null);
   // a review not rooted in the Workshop (propose mode) saves only through skill_workshop
   assert.equal(saveStoreOf("background_review", "write", { path: "x/SKILL.md" }, { workspaceDir: WS }), null);
+});
+
+test("must stay silent on a patch whose indented header names a file outside the Workshop (OpenClaw trims header lines)", () => {
+  const run = { workspaceDir: WORKSHOP };
+  for (const indent of ["  ", "\t", "  ", "﻿"]) {
+    for (const header of ["Add File: /home/node/.openclaw/hooks/x.js", "Update File: ../../workspace/AGENTS.md", "Delete File: /etc/passwd"]) {
+      const input = `*** Begin Patch\n*** Add File: a/SKILL.md\n+x\n${indent}*** ${header}\n+y\n*** End Patch`;
+      assert.ok(targetsOf("apply_patch", { input }).length === 2, `${JSON.stringify(indent)} ${header}`);
+      assert.equal(saveStoreOf("background_review", "apply_patch", { input }, run), null, `${JSON.stringify(indent)} ${header}`);
+    }
+    const moved = `*** Begin Patch\n*** Update File: deploy/SKILL.md\n${indent}*** Move to: /etc/cron.d/x\n@@\n-a\n+b\n*** End Patch`;
+    assert.equal(saveStoreOf("background_review", "apply_patch", { input: moved }, run), null, JSON.stringify(indent));
+  }
+  const crlf = "*** Begin Patch\r\n  *** Add File: a/SKILL.md\r\n+x\r\n*** End Patch";
+  assert.deepEqual(targetsOf("apply_patch", { input: crlf }), ["a/SKILL.md"]);
+  assert.equal(saveStoreOf("background_review", "apply_patch", { input: crlf }, run), "skills", "an indented header inside the store is still a save");
+});
+
+test("only saves whose content the scan reads are content saves", () => {
+  for (const action of ["create", "patch", "write_file", "draft", " Create ", "PATCH"]) assert.equal(contentSave("skill_workshop", { action }), true, action);
+  for (const action of ["restore", "archive", "remove_file", "apply", "delete", "rollback", "", undefined]) {
+    assert.equal(contentSave("skill_workshop", { action }), false, String(action));
+  }
+  for (const tool of ["write", "edit", "apply_patch"]) assert.equal(contentSave(tool, {}), true, tool);
+  for (const tool of ["exec", "read", "skill_workshop_extra"]) assert.equal(contentSave(tool, {}), false, tool);
 });
 
 test("the flush's save is its write to the day's note at the workspace root, nothing else", () => {

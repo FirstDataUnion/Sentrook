@@ -799,7 +799,8 @@ test("a call in another session never borrows a recognised run's kind", async ()
   assert.equal(h.scans[0].trigger.kind, "message");
 });
 
-test("a self-edit's block and review verdicts are applied, and are never snoozed", async () => {
+test("a self-edit's block verdicts are applied; a review is held, never asked and never snoozed", async () => {
+  // Nobody can answer a prompt in a background run (backgroundSave.ts): a review of a file save is held.
   const h = setup();
   await startReview(h);
   const blocked = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w1", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "EXFIL" } }, REVIEW_CTX);
@@ -807,8 +808,9 @@ test("a self-edit's block and review verdicts are applied, and are never snoozed
   const floored = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w2", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "FLOOR" } }, REVIEW_CTX);
   assert.equal(floored?.block, true);
   const reviewed = await h.fire("before_tool_call", { toolName: "write", toolCallId: "w3", runId: REVIEW_RUN, params: { path: "a/SKILL.md", content: "REVIEW" } }, REVIEW_CTX);
-  assert.ok(reviewed?.requireApproval);
-  assert.deepEqual(h.traffic().map((t: any) => t.decision), ["blocked", "blocked", "review_timed_out"]);
+  assert.equal(reviewed?.requireApproval, undefined);
+  assert.equal(reviewed?.block, true);
+  assert.deepEqual(h.traffic().map((t: any) => t.decision), ["blocked", "blocked", "held"]);
 });
 
 test("must declare the memory flush's write to the day's note as a self-edit; its reads are the host's", async () => {

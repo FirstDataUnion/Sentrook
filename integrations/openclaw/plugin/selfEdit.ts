@@ -22,9 +22,10 @@
  * With `skillReview: allow` (the default) every call of a recognised run is sent with trigger `system` (no owner, no
  * snooze) and, as its request, the last message the host flags as the owner's in the conversation the run read (a
  * fixed text when there is none), and its saves are declared as self-edits with the conversation the process
- * read (`conversation.ts`); the scanner judges them against it, and the verdict is applied like any other. Its other
- * calls (exec, reads) are scored as usual. `skillReview: review` changes nothing: every call is sent as before. Any
- * other value reads as allow, and status and the startup log name it.
+ * read (`conversation.ts`); the scanner judges them against it. Its other calls (exec, reads) are scored as usual.
+ * `skillReview: review` changes nothing: every call is sent as before. Any other value reads as allow, and status and
+ * the startup log name it. Whatever the setting, a recognised run's saves are never asked about: nobody can answer a
+ * prompt there (`backgroundSave.ts` says what happens instead).
  *
  * Out of reach: dreaming (memory-core writes MEMORY.md and DREAMS.md in code) and the session-memory hook (writes
  * recent messages into memory/ on /new and /reset) make no tool call, so no plugin hook sees them.
@@ -33,7 +34,7 @@
 import path from "node:path";
 
 import { textOf } from "./conversation.ts";
-import { actionOf, recentScans } from "./history.ts";
+import { actionOf, isBackgroundSave, recentScans } from "./history.ts";
 import type { RunContext } from "./store.ts";
 
 export type SelfEditKind = "background_review" | "memory_flush" | "curator";
@@ -50,13 +51,21 @@ const COLLECTION_JOB = /^\[cron:[^\]\s]+ skill-collection-review-[^\]\s]+\]/;
 const WORKSHOP_DIR = "workshop-skills";
 /** The day's note the flush appends to, relative to the workspace. */
 const DAILY_NOTE = /^(?:\.\/)?memory\/(\d{4}-\d{2}-\d{2})\.md$/;
-/** The files a patch in OpenClaw's `*** Begin Patch` format touches. */
-const PATCH_FILE = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
+/**
+ * The files a patch in OpenClaw's `*** Begin Patch` format touches. OpenClaw trims a header line before it reads it,
+ * so a header may be indented by any whitespace.
+ */
+const PATCH_FILE = /^\s*\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
 
 /** The file tools a review or curator saves skills with, rooted in the Workshop directory. */
 const FILE_SAVES = new Set(["write", "edit", "apply_patch"]);
 /** `skill_workshop` actions that only read. */
 const WORKSHOP_READS = new Set(["list", "get", "read", "show", "view", "search", "status", "inspect", "describe"]);
+/**
+ * `skill_workshop` actions that carry the content they save in the call, so the scan read what is saved. Any other
+ * change (restore an older version, archive, remove a file, apply a draft) saves something the scan never saw.
+ */
+const WORKSHOP_CONTENT = new Set(["create", "patch", "write_file", "draft"]);
 
 /** The request text of a recognised run's calls when its conversation holds no owner message. */
 export const NO_OWNER_REQUEST =
@@ -93,6 +102,20 @@ export function kindAtCall(run: RunContext, ctx: any): SelfEditKind | null {
   const kind = run.selfEdit as SelfEditKind | undefined;
   if (!kind || !run.selfEditSessionKey || run.selfEditSessionKey !== ctx?.sessionKey) return null;
   return kind;
+}
+
+/** A `skill_workshop` call's action, trimmed and in lower case. */
+export function workshopAction(params: any): string {
+  return String(params?.action ?? "").trim().toLowerCase();
+}
+
+/**
+ * Whether a save carries the content it saves in the call (so the scan judged what is saved): `skill_workshop`
+ * `create`, `patch`, `write_file` and `draft`, and the file tools `write`, `edit` and `apply_patch`.
+ */
+export function contentSave(tool: string, params: any): boolean {
+  if (tool === "skill_workshop") return WORKSHOP_CONTENT.has(workshopAction(params));
+  return FILE_SAVES.has(tool);
 }
 
 /** `p`, resolved against `root` when relative, lies inside `root`. A `~` path never does. */
@@ -145,10 +168,7 @@ export function saveStoreOf(
   if (kind === "memory_flush") {
     return tool === "write" && isDayNote(params?.path, run.workspaceDir, now) ? "memory" : null;
   }
-  if (tool === "skill_workshop") {
-    const action = String(params?.action ?? "").toLowerCase();
-    return WORKSHOP_READS.has(action) ? null : "skills";
-  }
+  if (tool === "skill_workshop") return WORKSHOP_READS.has(workshopAction(params)) ? null : "skills";
   if (!FILE_SAVES.has(tool) || !isWorkshopDir(run.workspaceDir)) return null;
   const targets = targetsOf(tool, params);
   return targets.length && targets.every((t) => insideRoot(t, run.workspaceDir)) ? "skills" : null;
@@ -187,14 +207,27 @@ export function settingText(setting: SkillReviewSetting, unknown: string | null)
 }
 
 /** Self-edits in the recent traffic log, by what was done. */
-export function counts(file: string): { allowed: number; blocked: number; asked: number; held: number } {
-  const out = { allowed: 0, blocked: 0, asked: 0, held: 0 };
+export function counts(file: string): {
+  allowed: number;
+  lenient: number;
+  blocked: number;
+  drafted: number;
+  lost: number;
+  live: number;
+  asked: number;
+  held: number;
+} {
+  const out = { allowed: 0, lenient: 0, blocked: 0, drafted: 0, lost: 0, live: 0, asked: 0, held: 0 };
   for (const [scan, resolution] of recentScans(file, 10_000)) {
-    if (scan.skill_review !== true) continue;
+    if (!isBackgroundSave(scan)) continue;
     const action = actionOf(scan, resolution);
     if (action.startsWith("blocked")) out.blocked += 1;
     else if (action.startsWith("review")) out.asked += 1;
     else if (action.startsWith("held")) out.held += 1;
+    else if (action.startsWith("drafted") || action.startsWith("sent to drafts")) out.drafted += 1;
+    else if (action.startsWith("not saved")) out.lost += 1;
+    else if (action.startsWith("saved live")) out.live += 1;
+    else if (action.startsWith("allowed (let through")) out.lenient += 1;
     else out.allowed += 1;
   }
   return out;
@@ -204,7 +237,11 @@ export function counts(file: string): { allowed: number; blocked: number; asked:
 export function statusLine(setting: string, file: string | null): string {
   if (file === null) return `${setting} (self-edits not counted: the traffic log is off)`;
   const c = counts(file);
+  const lenient = c.lenient ? `, ${c.lenient} let through without asking` : "";
+  const drafted = c.drafted ? `, ${c.drafted} saved as drafts` : "";
+  const lost = c.lost ? `, ${c.lost} drafts not kept` : "";
+  const live = c.live ? `, ${c.live} saved live (draft ignored)` : "";
   const asked = c.asked ? `, ${c.asked} asked` : "";
   const held = c.held ? `, ${c.held} held` : "";
-  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${asked}${held}`;
+  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${lenient}${drafted}${lost}${live}${asked}${held}`;
 }
