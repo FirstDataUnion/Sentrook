@@ -226,7 +226,10 @@ def _written_paths(a: CallAnalysis, ctx: Context) -> list[tuple[PathRef, str]]:
         if p.is_destination:
             add(p, "exec_destination")
     shape = a.shape
-    if shape is None:
+    if shape is None or a.call.code_cell:
+        # A Code Mode cell is JavaScript: read as shell, an arrow function or a comparison (`f => f.name`,
+        # `n > 0`) is a "redirect" into the working directory. The cell writes through nested tool calls, which
+        # are scanned on their own; a write its command strings spell out is still a destination above.
         return out
     writing = {h.lower() for h in ctx.lists.strings("guardrail", "writing_heads")}
     destination_only = {h.lower() for h in ctx.lists.strings("guardrail", "destination_heads")}

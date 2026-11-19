@@ -572,6 +572,11 @@ def _write_target(node: Any, source: bytes) -> str | None:
                 operator = text.strip()
                 continue
         if operator is not None and destination is None:
+            if child.type == "ERROR" and text.lstrip().startswith(("(", ")")):
+                # A shell cannot run a redirect whose target starts with a bare parenthesis, so it names no file.
+                # JavaScript read as shell gives these: `t => (t.name || t.id)` would otherwise "write" a file `(`
+                # in the working directory. A quoted name is a `string` node and still counts.
+                return None
             destination = _unquote(text.strip())
     if operator not in _WRITE_REDIRECT_OPS or destination is None:
         return None

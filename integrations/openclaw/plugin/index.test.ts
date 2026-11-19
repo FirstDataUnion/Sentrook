@@ -231,6 +231,36 @@ test("a reused host call id is re-minted", async () => {
   assert.equal(h.scans[1].history[0].call_id, "call_0");
 });
 
+test("a Code Mode cell goes as JavaScript only on the host's mark", async () => {
+  const h = setup();
+  const code = 'const sh = (await catalog.search("shell")).find(t => (t.name || t.id) === "exec");\nreturn 1;';
+  // OpenClaw marks the cell on the hook event (and its context) and mirrors `code` into `command`.
+  const cellCtx = { ...CTX, toolKind: "code_mode_exec", toolInputKind: "javascript" };
+  await h.fire(
+    "before_tool_call",
+    { toolName: "exec", toolCallId: "cell1", runId: "r1", params: { code, command: code }, toolKind: "code_mode_exec", toolInputKind: "javascript" },
+    cellCtx,
+  );
+  assert.equal(h.scans[0].pending_call.input_kind, "javascript");
+  assert.deepEqual(h.scans[0].pending_call.arguments, { code, command: code });
+  // The mark on the context alone is enough; a mark without the JavaScript input kind is not.
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "cell2", runId: "r1", params: { code, command: code } }, cellCtx);
+  assert.equal(h.scans[1].pending_call.input_kind, "javascript");
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "cell3", runId: "r1", params: { code }, toolKind: "code_mode_exec" });
+  assert.equal("input_kind" in h.scans[2].pending_call, false);
+  // A shell exec is shell whatever its arguments say.
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "sh1", runId: "r1", params: { command: "ls", code: "ls", input_kind: "javascript" } });
+  assert.equal("input_kind" in h.scans[3].pending_call, false);
+  // The mark is only for the tool named `exec` (OpenClaw marks only its Code Mode tool).
+  await h.fire("before_tool_call", { toolName: "read", toolCallId: "rd1", runId: "r1", params: { path: "/tmp/x" }, toolKind: "code_mode_exec", toolInputKind: "javascript" });
+  assert.equal("input_kind" in h.scans[4].pending_call, false);
+  await h.fire("before_tool_call", { toolName: "bash", toolCallId: "bs1", runId: "r1", params: { command: "ls" }, toolKind: "code_mode_exec", toolInputKind: "javascript" });
+  assert.equal("input_kind" in h.scans[5].pending_call, false);
+  // History entries are as before.
+  assert.equal("input_kind" in h.scans[5].history[0], false);
+  dumpPlanirs(h.scans);
+});
+
 test("an enforced floor blocks below the risk line", async () => {
   const h = setup();
   const r = await h.fire("before_tool_call", call("c1", "FLOOR"));

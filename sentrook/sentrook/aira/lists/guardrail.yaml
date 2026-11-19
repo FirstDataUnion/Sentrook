@@ -21,7 +21,7 @@
 # Defence in depth lives outside Sentrook: make `<state>/sentrook/` read-only for the agent's OS
 # user. The floor covers only the calls Sentrook sees.
 
-version: 6
+version: 7
 
 # Path segments matched as a whole component anywhere in the path (`/sentrook/`, `sentrook/...`,
 # or a trailing `/sentrook`).
@@ -503,8 +503,8 @@ writing_heads:
   - chattr
   - touch
   - mkdir
-  - echo
-  - printf
+# `echo` and `printf` are not here: they print their arguments, and only a redirect (counted on its
+# own) makes them write.
 # For these heads only the *last* positional is the destination (`cp <state>/x /tmp` is a read).
 destination_heads:
   - cp
