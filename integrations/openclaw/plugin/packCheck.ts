@@ -204,10 +204,14 @@ export function runPackCheck(): void {
   const declared = [...(pkg.openclaw?.extensions ?? []), ...(pkg.openclaw?.runtimeExtensions ?? [])].map((e) =>
     e.replace(/^\.\//, ""),
   );
-  const required = ["dist/index.js", "openclaw.plugin.json", "package.json", "README.md", ...declared];
+  const required = ["dist/index.js", "openclaw.plugin.json", "package.json", "README.md", "assets/icon.png", ...declared];
   for (const path of required) {
     assert.ok(packedPaths.has(path), `npm pack is missing ${path}`);
   }
+
+  // ClawHub takes the listing icon from assets/icon.png in the upload and refuses one over 512 KiB.
+  const icon = (listing.files ?? []).find((f) => f.path === "assets/icon.png");
+  assert.ok(icon && (icon.size ?? 0) > 0 && (icon.size ?? 0) <= 512 * 1024, "packed assets/icon.png must be 1 byte to 512 KiB");
 
   const distEntry = (listing.files ?? []).find((f) => f.path === "dist/index.js");
   assert.ok(distEntry && (distEntry.size ?? 0) > 1024, "packed dist/index.js is missing or empty");

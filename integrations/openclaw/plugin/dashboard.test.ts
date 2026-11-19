@@ -32,6 +32,8 @@ const DASH = path.join(FIXTURES, "dashboard");
 /** Strings that appear only in call arguments, reason and floor details, descriptions and failure details. */
 const RAW = "RAW-ARG-MARKER";
 const HERMES_VIEW = fileURLToPath(new URL("../../hermes/plugin/dashboard/view.js", import.meta.url));
+const BRAND_MARK = fileURLToPath(new URL("../../../brand/sentrook-mark.svg", import.meta.url));
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED"];
 const savedEnv: Record<string, string | undefined> = {};
@@ -317,6 +319,27 @@ test("the view script parses, and the Hermes plugin ships the same file byte for
   assert.equal(src, readFileSync(HERMES_VIEW, "utf8"));
 });
 
+test("the header shows the Sentrook mark before the heading: the master logo's path, in the text colour, hidden from screen readers", () => {
+  const head = drawView(viewModel()).byClass("srk-head")[0]!;
+  const marks = head.all().filter((n) => n.tag === "svg");
+  assert.equal(marks.length, 1, "one mark in the header");
+  const mark = marks[0]!;
+  assert.equal(head.children[0], mark, "the mark comes first, before the heading");
+  assert.equal(head.children[1]!.tag, "h1");
+  assert.equal(mark.namespaceURI, SVG_NS, "made as an SVG element, not HTML");
+  assert.equal(mark.attrs.viewBox, "0 0 512 512");
+  assert.equal(mark.attrs["aria-hidden"], "true", "the heading already says Sentrook");
+  assert.equal(mark.attrs.focusable, "false");
+  assert.equal(mark.children.length, 1);
+  const pathNode = mark.children[0]!;
+  assert.equal(pathNode.tag, "path");
+  assert.equal(pathNode.namespaceURI, SVG_NS);
+  assert.equal(pathNode.attrs.fill, "currentColor", "follows the host's text colour in every theme");
+  const master = /\sd="([^"]+)"/.exec(readFileSync(BRAND_MARK, "utf8"))?.[1];
+  assert.ok(master, "brand/sentrook-mark.svg has path data");
+  assert.equal(pathNode.attrs.d, master, "the view carries the master logo's path; copy it again after editing the master");
+});
+
 function registered(extra: Record<string, unknown>) {
   const routes: any[] = [];
   const tabs: any[] = [];
@@ -374,6 +397,7 @@ class FakeNode {
   attrs: Record<string, string> = {};
   className = "";
   id = "";
+  namespaceURI: string | null = null;
   listeners: Record<string, Array<() => void>> = {};
   private ownText: string | null = null;
   ownerDocument: any;
@@ -440,6 +464,11 @@ function drawViewWith(model: unknown): { root: FakeNode; window: any } {
   const doc: any = { documentElement: null, head: null };
   const make = (tag: string) => new FakeNode(tag, doc);
   doc.createElement = make;
+  doc.createElementNS = (ns: string, tag: string) => {
+    const n = make(tag);
+    n.namespaceURI = ns;
+    return n;
+  };
   doc.createTextNode = (t: string) => {
     const n = make("#text");
     n.textContent = t;

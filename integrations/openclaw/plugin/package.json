@@ -11,6 +11,7 @@
     "index.ts",
     "dashboard.ts",
     "dashboardView.js",
+    "assets/icon.png",
     "approvalPolicy.ts",
     "auth.ts",
     "backgroundSave.ts",

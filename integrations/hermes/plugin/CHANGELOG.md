@@ -28,6 +28,7 @@ since the version the catalog pins.
 - A read-only **Sentrook** tab in `hermes dashboard`: recent scans and, for each one, its risk broken down into
   the scores and signals the scanner combined, with the reasons, floors and grants behind them. Changes stay with the
   commands.
+- The Sentrook tab shows the Sentrook logo in its corner, drawn in the dashboard theme's text colour.
 - The approval prompt is easier to read and always recognisable as Sentrook's: it starts with
   `🪶 Sentrook security check · risk 62/100`, says what the call does and why in plain words, says what answering
   Always would also set, and ends with `/sentrook why <id>` for the full detail. Reason codes and scores moved to
