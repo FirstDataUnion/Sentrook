@@ -773,25 +773,29 @@ def cap_self_edit_entries(v: dict[str, Any]) -> bool:
 def fit_self_edit(v: dict[str, Any], budget_tokens: int) -> bool:
     """While the view is over the budget, drop the oldest history step (the conversation carries the calls that
     matter, with their results), then the oldest tool entry, then the oldest assistant entry, and the owner's and
-    other people's messages last; what was dropped is counted in `self_edit.scanner_dropped`. Mutates `v`."""
+    other people's messages last; what was dropped is counted in `self_edit.scanner_dropped`, written before each next
+    size check so the count is inside the budget. Mutates `v`."""
     block = v.get(SELF_EDIT)
     if not isinstance(block, dict) or not isinstance(block.get("conversation"), list):
         return False
     conv = block["conversation"]
     dropped: dict[str, int] = {}
+
+    def count(kind: str) -> None:
+        dropped[kind] = dropped.get(kind, 0) + 1
+        block["scanner_dropped"] = dropped
+
     history = v.get("history")
     while isinstance(history, list) and history and est_tokens(v) > budget_tokens:
         history.pop(0)
-        dropped["history"] = dropped.get("history", 0) + 1
+        count("history")
     for role in ("tool", "assistant", "user"):
         while est_tokens(v) > budget_tokens:
             idx = next((i for i, e in enumerate(conv) if e.get("role") == role), None)
             if idx is None:
                 break
             del conv[idx]
-            dropped[role] = dropped.get(role, 0) + 1
-    if dropped:
-        block["scanner_dropped"] = dropped
+            count(role)
     return bool(dropped)
 
 

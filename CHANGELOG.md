@@ -792,3 +792,9 @@ The call view was fitted to its budget before the oracle ran; the call probe the
 - A view the second redaction pass grows past its budget is fitted again to its unredacted size less the growth (`REDACTION_REFITS`, up to 3 times). Cuts are still made on the unredacted text.
 - A view with room to spare is unchanged: every suite request body is byte-identical to before. On replayed beta traffic 66 of 3,174 call bodies change, all views within the reserve of their budget or already over it.
 - Tests: `test_reputation_budget` (the cap, known_bad never dropped first, a long known_bad host shortened, a view just over its budget after redaction, a fitted view plus the largest block within its budget, views grown by redaction refitted, small views unchanged); the fill and self-edit tests now fit to the room left after the reserve.
+
+### The self-edit fitter's drop count is inside its budget (2026-11-19)
+`fit_self_edit` wrote `self_edit.scanner_dropped` after its drop loops, outside the size checks, so a view that stopped just under its budget ended over it by the count's size (about 12 tokens).
+- The count is written before each next size check, as the call view's fitter marks its dropped history. A view within its budget is unchanged.
+- Suite: no self-edit view is fitted at the selfedit-v3 budget, so every view is byte-identical to before. The logged beta traffic has no self-edit requests.
+- Tests: `test_self_edit_fit_marker` (the reproducer, every budget across four conversation shapes, an unfitted view untouched).
