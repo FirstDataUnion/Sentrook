@@ -409,9 +409,16 @@ any OpenClaw version and whatever `skillReview` or `approval.scheduledIntentKind
 | allow | It is saved. | Nothing. |
 | review below the block line, on a complete scan, and Sentrook marks the save as one it can let through (only with `skillReview: allow`, when Sentrook judged it as a background save, and only for a save that carries what it saves: a Skill Workshop create, patch, write_file or draft, or a file write, edit or patch) | It is saved. | A notice that a save Sentrook would normally ask about was let through: a skill or a memory note, and what it saves as a review would show it. |
 | any other review below the block line, of a Skill Workshop draft the agent makes itself, or of a new skill on OpenClaw 2026.11.5 or newer | It goes to the Skill Workshop **drafts** (a new skill is sent there instead), which the agent does not use until you apply it. | Once OpenClaw reports the draft kept, a notice that a skill was saved as a draft for you to review: apply or discard it from the Skill Workshop drafts in the Control UI, or send `/learn drafts` in a chat with the agent. If OpenClaw does not keep it (too many drafts waiting, an invalid skill, the run ended), a notice that the save was not made; if OpenClaw saved the new skill itself instead of the draft, a notice that it was saved live. |
-| any other review (a change to an existing skill, a restore, archive or file removal, a memory note, a skill file written directly, an older OpenClaw or one whose version the plugin cannot read, or a retry the scanner would block) | It is **held**: it is not saved, and the run is told it was not saved and not to retry it. | A notice that the save was held and not made. |
+| any other review below the block line of a change to an existing skill's `SKILL.md` (a Skill Workshop patch), on OpenClaw 2026.11.5 or newer, when Sentrook judged it as a background save (`skillReview: allow`) | The plugin reads the live skill, applies the change exactly as OpenClaw would (the old text must appear exactly once), and sends the whole changed skill to the **drafts** instead; the live skill is unchanged. The draft's note says it was held by Sentrook and is the skill as it stood at that time with one change. | The same notices as for a new skill's draft, and the kept-draft notice adds that applying it replaces the skill with the version from when the change was held, so a later change to that skill would be undone (it can be brought back from the skill's history). |
+| any other review (a change that cannot be applied to the live skill as OpenClaw would apply it, a change to a support file, a restore, archive or file removal, a memory note, a skill file written directly, an older OpenClaw or one whose version the plugin cannot read, or a retry the scanner would block) | It is **held**: it is not saved, and the run is told it was not saved and not to retry it. | A notice that the save was held and not made; for an archive or restore, where to do it yourself (Plugins → Skill workshop in the Control UI). |
 | block | It is not saved. | A notice that a background save was blocked, with a broad category. |
 | the scan fails | As for any unattended run ([When the scan service fails](#when-the-scan-service-fails)): with the default `onScanError` the save is blocked and not kept, with `allow` it is saved unscanned. | The scan-failure notice when it is blocked. |
+
+A save is never sent to the drafts when Sentrook reads a secret in what it saves (a draft would keep it), and a change
+to an existing skill is not when the skill file cannot be read safely: it must be the skill's own `SKILL.md` under the
+agent's Skill Workshop folder, not a link, at most 1 MB. Sentrook scanned the change, not the rest of the skill; the
+rest is what the agent already uses. Applying a draft does not check whether the skill changed since: OpenClaw
+replaces the skill with the draft and keeps the version it replaced in the skill's history.
 
 A held background save is not a [held call](#held-calls-in-cron-jobs-and-subagents) you can approve: approving could
 not make the save, so it gets no approve id and is not kept with the held calls (`status` counts it on its `skill
@@ -563,8 +570,9 @@ In short, for anyone deciding whether to install it:
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
   command, snooze state, held calls and their lock files, the notice target, when each job or run last had a notice with a quiet period, and
   the conversations above), or to the paths you set for them (`stateDir`,
-  `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
-  no shell commands and starts no background processes.
+  `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on, and,
+  to turn a reviewed background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
+  starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
   The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it
   uses only its own `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already

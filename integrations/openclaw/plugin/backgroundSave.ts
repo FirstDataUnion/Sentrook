@@ -13,13 +13,16 @@
  *   scanner marks it `lenient`: it runs, and the owner is told it was let through;
  * - any other review below the block line: the model's own `skill_workshop` `draft` runs as it is, and on OpenClaw
  *   2026.11.5 or newer a new skill (`skill_workshop` `create`, or `write_file` of its `SKILL.md`) is saved as a Skill
- *   Workshop draft instead. A draft does nothing until the owner applies it. The owner is told once OpenClaw reports
- *   the draft saved (`after_tool_call`), that the save was lost when it reports a failure, or that the skill was saved
- *   live when OpenClaw ran the call's own `create` instead of the draft;
- * - everything else (a patch, a memory note, a file write, a change that carries no content such as a restore, an
- *   older or unknown OpenClaw, or a block-level score the scanner capped at review because it retries a review nobody
- *   answered) is held: it does not run, the run is told it was not saved and not to retry it (`HELD_TEXT`), and the
- *   owner is told. These holds are not kept in the holds file: `/sentrook-approve` could do nothing for them (it never
+ *   Workshop draft instead, and so is a `patch` of a skill's `SKILL.md`, as the whole live file with the patch applied
+ *   (`patchDraft`). A draft does nothing until the owner applies it. Never a draft the scan says adds a secret (it
+ *   would keep it), and a patch only with the scan's `self_edit` reading. The owner is told once OpenClaw reports the
+ *   draft saved (`after_tool_call`), that the save was lost when it reports a failure, or that it was saved live when
+ *   OpenClaw ran the call's own action instead of the draft;
+ * - everything else (a patch that cannot be applied to the live file, a support file, a memory note, a file write, a
+ *   change that carries no content such as a restore, an older or unknown OpenClaw, or a block-level score the scanner
+ *   capped at review because it retries a review nobody answered) is held: it does not run, the run is told it was not
+ *   saved and not to retry it (`HELD_TEXT`), and the owner is told, with where to make an archive or restore
+ *   themselves. These holds are not kept in the holds file: `/sentrook-approve` could do nothing for them (it never
  *   makes the save), and they must not push out holds it can approve;
  * - a scan that gives no answer: the scan-error policy for unattended runs, with its failure notice
  *   (`scanErrorPolicy.ts`, `scanFailureNotice.ts`).
@@ -32,6 +35,7 @@
  * every save. Observe mode changes nothing and sends nothing.
  */
 
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 import { BLOCK_CATEGORIES, blockCategory, describe } from "./decision.ts";
@@ -145,17 +149,201 @@ export function draftParams(tool: string, params: any, hostVersion: unknown): Re
   return { action: "draft", name: params.name, content: params.content, reason: DRAFT_REASON };
 }
 
+// ---- a held patch of a skill's SKILL.md, sent to the drafts as the patched skill -----------------------------------
+
+/** The most of a live `SKILL.md` read to build a patch draft: OpenClaw reads no more of it (1 MiB). */
+export const MAX_SKILL_FILE_BYTES = 1_048_576;
+
+/** OpenClaw's pattern for the name of an existing Workshop skill (one path segment, no dots). */
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,254}$/;
+
 /**
- * The quiet-period key of a notice: one per outcome and run (cron job, else session). `held_retry`: a hold of a
- * block-level score, kept apart from other holds so the first one in a run is always announced.
+ * Why a reviewed background patch was not sent to the drafts (it is held instead), or `drafted`; the scan record keeps
+ * it as `patch_draft`.
  */
-export function quietKey(outcome: Announced | "held_retry", jobId: string | null | undefined, sessionRef: string): string {
-  return `background_${outcome}:${jobId ? `job:${jobId}` : `session:${sessionRef}`}`;
+export type PatchDraft =
+  | "drafted"
+  | "support_file"
+  | "secret"
+  | "no_self_edit"
+  | "bad_name"
+  | "bad_patch"
+  | "no_agent_dir"
+  | "outside"
+  | "missing"
+  | "not_file"
+  | "too_large"
+  | "unreadable"
+  | "no_match"
+  | "several_matches";
+
+/** The response's `self_edit` object, or null when it has none (a save not declared as a self-edit). */
+function selfEditOf(resp: ScanResponse): Record<string, unknown> | null {
+  const se: unknown = (resp as { self_edit?: unknown }).self_edit;
+  return se && typeof se === "object" && !Array.isArray(se) ? (se as Record<string, unknown>) : null;
 }
 
 /**
+ * Whether a draft would keep a secret: the scan says the saved text adds one (`self_edit.adds` has `secret`), or its
+ * `self_edit` has no readable `adds`. A response with no `self_edit` says nothing either way.
+ */
+export function keepsSecret(resp: ScanResponse): boolean {
+  const se = selfEditOf(resp);
+  if (!se) return false;
+  return !Array.isArray(se.adds) || se.adds.includes("secret");
+}
+
+/**
+ * The text OpenClaw's own `patch` would save: `old_text` must occur exactly once (occurrences are counted as OpenClaw
+ * counts them, overlapping ones too), and it is replaced by `new_text` as written. Nothing is trimmed or normalised:
+ * OpenClaw matches whitespace and line endings exactly. An empty `old_text`, or one equal to `new_text`, OpenClaw
+ * refuses.
+ */
+export function applyPatch(live: string, oldText: string, newText: string): { content: string } | { skip: PatchDraft } {
+  if (!oldText || oldText === newText) return { skip: "bad_patch" };
+  const first = live.indexOf(oldText);
+  if (first === -1) return { skip: "no_match" };
+  if (live.indexOf(oldText, first + 1) !== -1) return { skip: "several_matches" };
+  return { content: live.slice(0, first) + newText + live.slice(first + oldText.length) };
+}
+
+/**
+ * The live `SKILL.md` of Workshop skill `name` under `agentDir`, or why it cannot be read safely. It must lie at
+ * `<agentDir>/workshop-skills/<name>/SKILL.md` once every link is resolved (no link in the skill's folder or on the
+ * file itself, as OpenClaw refuses them too), be a regular file with no other hard link, and hold at most
+ * `MAX_SKILL_FILE_BYTES`. Never throws.
+ */
+export function readLiveSkill(agentDir: string, name: string): { live: string } | { skip: PatchDraft } {
+  let fd: number | null = null;
+  try {
+    const root = realpathSync(path.join(agentDir, "workshop-skills"));
+    const real = realpathSync(path.join(agentDir, "workshop-skills", name, "SKILL.md"));
+    if (real !== path.join(root, name, "SKILL.md")) return { skip: "outside" };
+    // O_NOFOLLOW: a link swapped in after the check above is refused, not followed.
+    fd = openSync(real, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) return { skip: "not_file" };
+    if (st.size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
+    // Read to one byte past the bound, in case the file grew since fstat.
+    const buf = Buffer.alloc(MAX_SKILL_FILE_BYTES + 1);
+    let size = 0;
+    while (size < buf.length) {
+      const n = readSync(fd, buf, size, buf.length - size, null);
+      if (n === 0) break;
+      size += n;
+    }
+    if (size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
+    return { live: buf.subarray(0, size).toString("utf8") };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    const why: Record<string, PatchDraft> = { ENOENT: "missing", ENOTDIR: "missing", ELOOP: "outside", EISDIR: "not_file" };
+    return { skip: code && Object.hasOwn(why, code) ? why[code]! : "unreadable" };
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // already closed
+      }
+    }
+  }
+}
+
+/** The reason stored with a patch draft: fixed words and the UTC minute the live skill was read. */
+export function patchDraftReason(now: Date): string {
+  const at = now.toISOString().slice(0, 16).replace("T", " ");
+  return `Held by Sentrook for your review: the skill as it stood at ${at} UTC, with one change applied.`;
+}
+
+/**
+ * Whether a call is a `skill_workshop` `patch` of the skill's `SKILL.md`, as OpenClaw reads it: the action exactly
+ * `patch` once trimmed (OpenClaw does not fold case), and `file_path` absent, blank or `SKILL.md` once trimmed. Any
+ * other `file_path` is a support file (or one OpenClaw refuses, such as `./SKILL.md`).
+ */
+export function isSkillPatch(tool: string, params: any): "skill" | "support_file" | null {
+  if (tool !== "skill_workshop" || typeof params?.action !== "string" || params.action.trim() !== "patch") return null;
+  const fp = typeof params?.file_path === "string" ? params.file_path.trim() : "";
+  return fp === "" || fp === "SKILL.md" ? "skill" : "support_file";
+}
+
+/**
+ * The parameters that turn a reviewed background `patch` of a skill's `SKILL.md` into a Skill Workshop draft of the
+ * whole patched skill, or why it stays held; null when the call is no such patch or the host takes no drafts
+ * (`DRAFT_FLOOR`). The patch is applied as OpenClaw applies it to the live file, read safely (`readLiveSkill`).
+ * `declared`: the save was sent as a self-edit, so the response's `self_edit` is the scanner's reading of it. `agentDir`
+ * is asked only when everything else allows a draft; whatever it returns or throws, nothing is allowed.
+ *
+ * The scan read the patch (the old and new text), not the rest of the live file, and the draft holds the whole file.
+ * That is acceptable only because the rest is already the live skill, which the agent loads today: the draft adds
+ * nothing to it but the change the scan judged. A draft never keeps a secret the scan saw in the change
+ * (`keepsSecret`), and without a `self_edit` reading in the response it is not built at all.
+ */
+export function patchDraft(
+  tool: string,
+  params: any,
+  hostVersion: unknown,
+  resp: ScanResponse,
+  declared: boolean,
+  agentDir: () => unknown,
+  now: Date,
+): { params: Record<string, unknown> } | { skip: PatchDraft } | null {
+  const kind = isSkillPatch(tool, params);
+  if (!kind || !atLeast(hostVersion)) return null;
+  if (kind === "support_file") return { skip: "support_file" };
+  const se = selfEditOf(resp);
+  if (!declared || !se || !Array.isArray(se.adds)) return { skip: "no_self_edit" };
+  if (keepsSecret(resp)) return { skip: "secret" };
+  const name = typeof params?.name === "string" ? params.name.trim() : "";
+  if (!SKILL_NAME.test(name)) return { skip: "bad_name" };
+  const oldText = typeof params?.old_text === "string" ? params.old_text : "";
+  const newText = typeof params?.new_text === "string" ? params.new_text : "";
+  if (!oldText || oldText === newText) return { skip: "bad_patch" };
+  let dir: unknown;
+  try {
+    dir = agentDir();
+  } catch {
+    dir = undefined;
+  }
+  if (typeof dir !== "string" || !path.isAbsolute(dir)) return { skip: "no_agent_dir" };
+  const read = readLiveSkill(dir, name);
+  if ("skip" in read) return read;
+  const patched = applyPatch(read.live, oldText, newText);
+  if ("skip" in patched) return patched;
+  return { params: { action: "draft", name, content: patched.content, reason: patchDraftReason(now) } };
+}
+
+/**
+ * The quiet-period key of a notice: one per outcome and run (cron job, else session). `held_retry`: a hold of a
+ * block-level score, kept apart from other holds so the first one in a run is always announced. `patch`: a patch sent
+ * to the drafts has quiet periods of its own, so its note about applying it is not silenced by a new skill's notice.
+ */
+export function quietKey(
+  outcome: Announced | "held_retry",
+  jobId: string | null | undefined,
+  sessionRef: string,
+  patch = false,
+): string {
+  return `background_${outcome}${patch ? "_patch" : ""}:${jobId ? `job:${jobId}` : `session:${sessionRef}`}`;
+}
+
+/** Whether a notice is about a patch sent to the drafts (kept, run live, or not kept): it has words of its own. */
+export function patchDraftNotice(outcome: Announced, tool: string, action: string): boolean {
+  return tool === "skill_workshop" && action === "patch" && ["drafted", "draft_ignored", "draft_failed"].includes(outcome);
+}
+
+/** Where the owner can make a held Workshop change themselves, by `skill_workshop` action; other holds say to ask. */
+const HELD_WORKSHOP_ACTS: Record<string, string> = {
+  archive: "To archive it yourself: Archive on the skill, on Plugins → Skill workshop in the Control UI.",
+  restore: "To restore it yourself: the skill's history, on Plugins → Skill workshop in the Control UI.",
+  remove_file:
+    "The skill and its support files are on Plugins → Skill workshop in the Control UI; to remove the file, ask the " +
+    "agent for it in a chat.",
+};
+
+/**
  * The notice for a background save; `where` is `hold.whereText`'s, already made inert. `retry`: a hold of a block-level
- * score (a retry of a review nobody answered), whose further notices wait out their own quiet period.
+ * score (a retry of a review nobody answered), whose further notices wait out their own quiet period. `action`: the
+ * `skill_workshop` action, trimmed and in lower case (`patch` drafts and some holds have words of their own).
  */
 export function noticeText(
   outcome: Announced,
@@ -166,12 +354,17 @@ export function noticeText(
   requestId: string | null,
   isJob: boolean,
   retry = false,
+  action = "",
 ): string {
   const what = `${STORE_WORDS[store]}: ${inert(describe(resp, tool), 160)} (${inert(tool, 80)})`;
   // the id only means something while the traffic log keeps the scan
   const id = requestId === null ? null : inert(requestId, 36).slice(0, 8);
   const look = id ? `/sentrook-why ${id}; /sentrook-history lists every background save.` : "/sentrook-history lists every background save.";
   const scope = isJob ? "job" : "run";
+  if (patchDraftNotice(outcome, tool, action)) {
+    return patchNotice(outcome as "drafted" | "draft_ignored" | "draft_failed", what, where, id, look, scope).join("\n");
+  }
+  const act = tool === "skill_workshop" && Object.hasOwn(HELD_WORKSHOP_ACTS, action) ? HELD_WORKSHOP_ACTS[action]! : null;
   const lines: Record<Announced, string[]> = {
     lenient: [
       "Sentrook let one of OpenClaw's background saves through that it would normally ask you about. Nobody can " +
@@ -202,7 +395,7 @@ export function noticeText(
       `Run: ${where}`,
       `Save ${what}`,
       `Held because ${BLOCK_CATEGORIES[blockCategory(resp)]}.`,
-      `To keep it, ask the agent for it in a chat. To look at it: ${look}`,
+      ...(act ? [act, `To look at it: ${look}`] : [`To keep it, ask the agent for it in a chat. To look at it: ${look}`]),
       retry
         ? `More held retries of a blocked save in this ${scope} are not announced for ${QUIET_HOURS} hours.`
         : `More held saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
@@ -226,6 +419,49 @@ export function noticeText(
     ],
   };
   return lines[outcome].join("\n");
+}
+
+/** The notice for a change to an existing skill sent to the drafts: kept, run live instead, or not kept. */
+function patchNotice(
+  outcome: "drafted" | "draft_ignored" | "draft_failed",
+  what: string,
+  where: string,
+  id: string | null,
+  look: string,
+  scope: string,
+): string[] {
+  if (outcome === "drafted") {
+    return [
+      "Sentrook saved a change to an existing skill from one of OpenClaw's background runs as a Skill Workshop draft, " +
+        "for you to review: the skill is unchanged until you apply it.",
+      `Run: ${where}`,
+      `Draft ${what}`,
+      "To review and apply it: the Skill Workshop drafts in the Control UI, or /learn drafts in a chat with the agent.",
+      "Applying it replaces the skill with the version from when the change was held, with this one change: any later " +
+        "change to that skill would be undone. It can be brought back from the skill's history.",
+      ...(id ? [`Why it was not saved directly: /sentrook-why ${id}`] : []),
+      `More changes sent to drafts from this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+    ];
+  }
+  if (outcome === "draft_ignored") {
+    return [
+      "Sentrook sent a change to an existing skill from one of OpenClaw's background runs to the Skill Workshop drafts, " +
+        "but OpenClaw applied the change to the live skill instead, without asking you.",
+      `Run: ${where}`,
+      `Saved ${what}`,
+      "To undo it, restore the skill's previous version from its history on Plugins → Skill workshop in the Control UI. " +
+        `To look at it: ${look}`,
+      `More changes saved live from this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+    ];
+  }
+  return [
+    "Sentrook sent a change to an existing skill from one of OpenClaw's background runs to the Skill Workshop drafts, " +
+      "but OpenClaw did not keep the draft, so the change was not made.",
+    `Run: ${where}`,
+    `Save ${what}`,
+    `To keep it, ask the agent for it in a chat. To look at it: ${look}`,
+    `More lost changes from this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+  ];
 }
 
 /** Where background-save notices go, as status and verify say it. */

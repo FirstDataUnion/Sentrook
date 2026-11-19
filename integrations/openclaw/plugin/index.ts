@@ -42,7 +42,13 @@ interface OpenClawPluginApi {
   config?: any;
   logger: PluginLogger;
   registrationMode?: string;
-  runtime?: { version?: unknown; config?: { current?: () => unknown }; channel?: { outbound?: hold.Outbound } };
+  runtime?: {
+    version?: unknown;
+    config?: { current?: () => unknown };
+    channel?: { outbound?: hold.Outbound };
+    /** 2026.11.5: the agent's own directory, which holds its Workshop skills. */
+    agent?: { resolveAgentDir?: (cfg: unknown, agentId: string) => unknown };
+  };
   on: (hook: string, handler: (event: any, ctx: any) => unknown, opts?: { priority?: number }) => void;
   registerCli?: (registrar: (ctx: { program: any }) => void | Promise<void>, opts?: Json) => void;
   registerCommand?: (def: {
@@ -153,6 +159,17 @@ const plugin = {
         // The runtime throws outside full registration.
       }
       return api.config;
+    };
+    /**
+     * The directory of the agent a hook's call belongs to (its Workshop skills are under it), as OpenClaw resolves it;
+     * undefined when the host cannot say. May throw: the caller treats that as unknown.
+     */
+    const agentDirOf = (ctx: any): unknown => {
+      const agentId = ctx?.agentId;
+      if (typeof agentId !== "string" || !agentId) return undefined;
+      const agent = api.runtime?.agent;
+      if (typeof agent?.resolveAgentDir !== "function") return undefined;
+      return agent.resolveAgentDir(hostConfig(), agentId);
     };
     if (api.registerCli && (mode === "cli-metadata" || mode === "discovery" || mode === "full")) {
       api.registerCli(
@@ -562,7 +579,24 @@ const plugin = {
       let notice: Json | null = null;
       let relaxed = false;
       let lenient = false;
-      let draft: Record<string, unknown> | null = null;
+      /** What a reviewed background save becomes in the drafts; `params` null: the model's own draft, run as it is. */
+      let drafting: { params: Record<string, unknown> | null } | null = null;
+      /** Whether a reviewed background patch went to the drafts, or why not (the scan record's `patch_draft`). */
+      let patchDraft: bg.PatchDraft | null = null;
+      const workshopAction = event.toolName === "skill_workshop" ? selfEdit.workshopAction(event?.params) : "";
+      const toDraft = (resp: ScanOk["response"]): { params: Record<string, unknown> | null } | null => {
+        const version = hostVersion ?? process.env.OPENCLAW_VERSION;
+        const patch = bg.patchDraft(event.toolName, event?.params, version, resp, selfEditBlock !== null, () => agentDirOf(ctx), new Date());
+        if (patch) {
+          patchDraft = "params" in patch ? "drafted" : patch.skip;
+          return "params" in patch ? { params: patch.params } : null;
+        }
+        // A draft keeps what it saves until the owner looks: never one the scan says holds a secret.
+        if (bg.keepsSecret(resp)) return null;
+        if (workshopAction === "draft" && event.toolName === "skill_workshop") return { params: null };
+        const params = bg.draftParams(event.toolName, event?.params, version);
+        return params ? { params } : null;
+      };
       let held: Json | null = null;
       /** The suggested grant "allow always" sets, when the prompt offers it. */
       let remember: grants.Entry | null = null;
@@ -618,19 +652,15 @@ const plugin = {
           entry.decision = "allowed";
           lenient = true;
           notice = backgroundNotice(cfg, "lenient", built, resp, event.toolName, bgSave, triggerKind, run);
-        } else if (
-          bgSave &&
-          !bg.capped(resp, cfg.blockAt) &&
-          ((event.toolName === "skill_workshop" && selfEdit.workshopAction(event?.params) === "draft") ||
-            (draft = bg.draftParams(event.toolName, event?.params, hostVersion ?? process.env.OPENCLAW_VERSION)))
-        ) {
-          // The model's own draft, or a new skill OpenClaw can keep as a Workshop draft: inert until the owner applies
-          // it. The owner is told once OpenClaw reports what it did with the draft (after_tool_call).
+        } else if (bgSave && !bg.capped(resp, cfg.blockAt) && (drafting = toDraft(resp))) {
+          // The model's own draft, a new skill, or a patch of a skill's SKILL.md applied to the live file (OpenClaw
+          // 2026.11.5 or newer): kept as a Workshop draft, inert until the owner applies it. The owner is told once
+          // OpenClaw reports what it did with the draft (after_tool_call).
           entry.decision = "drafted";
-          if (draft) hook = { params: draft };
+          if (drafting.params) hook = { params: drafting.params };
           const save = bgSave;
           pendingDrafts.set(built.planir.request_id, (outcome) =>
-            backgroundNotice(cfg, outcome, built, resp, event.toolName, save, triggerKind, run),
+            backgroundNotice(cfg, outcome, built, resp, event.toolName, save, triggerKind, run, false, workshopAction),
           );
           if (pendingDrafts.size > 200) pendingDrafts.delete(pendingDrafts.keys().next().value!);
         } else if (bgSave) {
@@ -642,7 +672,18 @@ const plugin = {
           held = {
             id: null,
             background: true,
-            notice: backgroundNotice(cfg, "held", built, resp, event.toolName, bgSave, triggerKind, run, bg.capped(resp, cfg.blockAt)),
+            notice: backgroundNotice(
+              cfg,
+              "held",
+              built,
+              resp,
+              event.toolName,
+              bgSave,
+              triggerKind,
+              run,
+              bg.capped(resp, cfg.blockAt),
+              workshopAction,
+            ),
           };
         } else if (unattended) {
           // Nobody can answer a review here: the call waits for the owner (hold.ts).
@@ -711,6 +752,7 @@ const plugin = {
         ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
         ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
         ...(bgSave ? { background_save: bgSave } : {}),
+        ...(patchDraft ? { patch_draft: patchDraft } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
         host_labels: hostLabels(run, ctx),
         planir: built.planir,
@@ -881,7 +923,8 @@ const plugin = {
     /**
      * Tells the owner what happened to one of OpenClaw's background saves (blocked, let through, kept as a draft, lost
      * as a draft, saved live instead of a draft, held): once per outcome and run (cron job for the collection review)
-     * per quiet period. `retry`: a hold of a block-level score, with a quiet period of its own. Never throws.
+     * per quiet period. `retry`: a hold of a block-level score, with a quiet period of its own. `action`: the
+     * `skill_workshop` action; a patch sent to the drafts has notices and quiet periods of its own. Never throws.
      */
     function backgroundNotice(
       cfg: PluginConfig,
@@ -893,14 +936,15 @@ const plugin = {
       triggerKind: string,
       run: any,
       retry = false,
+      action = "",
     ): Json {
       const sref: string = built.planir.session.session_ref;
       const { where, jobId } = unattendedRun(sref, triggerKind, run, save.kind);
       const rid = cfg.trafficLog.enabled ? built.planir.request_id : null;
       const out = quietNotice(
         cfg,
-        bg.quietKey(retry ? "held_retry" : outcome, jobId, sref),
-        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry),
+        bg.quietKey(retry ? "held_retry" : outcome, jobId, sref, bg.patchDraftNotice(outcome, tool, action)),
+        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry, action),
         "background-save",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);

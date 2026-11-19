@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -172,7 +172,12 @@ const SAVES: Record<keyof typeof RUNS, { toolName: string; params: Record<string
 interface Opts {
   version?: string | null;
   pluginConfig?: Record<string, unknown>;
+  /** `runtime.agent` as the host offers it (2026.11.5 has `resolveAgentDir`); none by default. */
+  agent?: Record<string, unknown>;
 }
+
+/** OpenClaw's live config (`runtime.config.current()`); `api.config` is a different, load-time object. */
+const HOST_CONFIG = { tools: { exec: { mode: "full" } } };
 
 function registered(opts: Opts = {}) {
   const on: Record<string, any[]> = {};
@@ -183,7 +188,7 @@ function registered(opts: Opts = {}) {
   plugin.register({
     pluginConfig: opts.pluginConfig ?? {},
     registrationMode: "full",
-    config: { tools: { exec: { mode: "full" } } },
+    config: { tools: { exec: { mode: "load-time snapshot" } } },
     logger: { info: () => undefined, warn: (m: string) => logs.push(m), error: (m: string) => logs.push(m) },
     on: (hook: string, h: any) => (on[hook] ??= []).push(h),
     registerCommand: (def: any) => {
@@ -191,6 +196,8 @@ function registered(opts: Opts = {}) {
     },
     runtime: {
       ...(version === null ? {} : { version }),
+      ...(opts.agent ? { agent: opts.agent } : {}),
+      config: { current: () => HOST_CONFIG },
       channel: {
         outbound: {
           loadAdapter: async (channel: string) => ({
@@ -1015,3 +1022,429 @@ for (const indent of ["  ", "\t", "  "]) {
     assert.equal(planir.self_edit, undefined);
   });
 }
+
+// ---- a held patch of a skill's SKILL.md becomes a draft of the patched skill (OpenClaw 2026.11.5 or newer) ---------
+
+/** The skill as it is live before the review patches it. */
+const LIVE = "---\nname: deploy-staging\ndescription: Deploy to staging\n---\n1. Run make deploy-staging.\n2. Check the health page.\n";
+const OLD = "2. Check the health page.";
+const NEW = `2. Check the health page, then the logs. ${BODY_MARKER}`;
+const PATCH = { action: "patch", name: "deploy-staging", old_text: OLD, new_text: NEW, reason: "tightened the check" };
+const PATCHED = LIVE.replace(OLD, () => NEW);
+const patchCall = (params: Record<string, unknown> = {}) => ({ toolName: "skill_workshop", params: { ...PATCH, ...params } });
+
+/** A temporary agent dir holding the live skill; `resolveAgentDir` as 2026.11.5 offers it, recording its arguments. */
+function agentHome(content: string | null = LIVE) {
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-agent-"));
+  const skillDir = path.join(dir, "workshop-skills", "deploy-staging");
+  mkdirSync(skillDir, { recursive: true });
+  if (content !== null) writeFileSync(path.join(skillDir, "SKILL.md"), content);
+  const calls: unknown[][] = [];
+  const agent = {
+    resolveAgentDir: (cfg: unknown, agentId: unknown) => {
+      calls.push([cfg, agentId]);
+      return dir;
+    },
+  };
+  return { dir, skillDir, file: path.join(skillDir, "SKILL.md"), agent, calls };
+}
+
+const HELD = { block: true, blockReason: bg.HELD_TEXT };
+const REASON = /^Held by Sentrook for your review: the skill as it stood at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC, with one change applied\.$/;
+
+test("must draft: a reviewed background patch of SKILL.md matching once becomes a draft of the live skill with the patch applied", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", patchCall(), null);
+  assert.deepEqual(Object.keys(out), ["params"]);
+  assert.deepEqual(Object.keys(out.params), ["action", "name", "content", "reason"]);
+  assert.equal(out.params.action, "draft");
+  assert.equal(out.params.name, "deploy-staging");
+  assert.equal(out.params.content, PATCHED);
+  assert.match(out.params.reason, REASON);
+  assert.ok(out.params.reason.length <= 200, "a bounded reason");
+  assert.ok(!out.params.reason.includes("tightened"), "nothing the saving model wrote in the reason");
+  assert.equal(rec.decision, "drafted");
+  assert.equal(rec.patch_draft, "drafted");
+  assert.deepEqual(home.calls, [[HOST_CONFIG, "main"]], "the live config and the run's agent");
+  assert.equal(readFileSync(home.file, "utf8"), LIVE, "the live skill is untouched");
+  assert.equal(r.sent.length, 0, "nothing before the host has run the draft");
+  assert.ok(!JSON.stringify(r.records("scan")).includes("Run make deploy-staging"), "the live file never reaches the traffic log");
+  const { ctx } = RUNS.review;
+  await r.fire("after_tool_call", { toolName: "skill_workshop", toolCallId: "t1", runId: ctx.runId, params: { ...PATCH, ...out.params }, ...DRAFT_KEPT }, ctx);
+  await hold.waitForNotices();
+  assert.equal(r.records("resolution")[0].resolution, "draft_saved");
+  assert.match(history(), /drafted \(self-edit\) +in drafts$/m);
+  assert.equal(r.sent.length, 1);
+  const text: string = r.sent[0].text;
+  assert.match(text, /^Sentrook saved a change to an existing skill from one of OpenClaw's background runs as a Skill Workshop draft/);
+  assert.match(text, /the Skill Workshop drafts in the Control UI, or \/learn drafts in a chat with the agent/);
+  assert.match(text, /Applying it replaces the skill with the version from when the change was held, with this one change: any later change to that skill would be undone\. It can be brought back from the skill's history\./);
+  assert.ok(!text.includes(BODY_MARKER) && !text.includes("Run make deploy-staging"), "never the saved body");
+});
+
+for (const [name, params, want] of [
+  ["file_path SKILL.md", { file_path: "SKILL.md" }, PATCHED],
+  ["file_path with spaces around SKILL.md", { file_path: " SKILL.md " }, PATCHED],
+  ["a blank file_path", { file_path: "  " }, PATCHED],
+  ["no new_text (the host deletes the old text)", { new_text: undefined }, LIVE.replace(OLD, "")],
+  ["a new_text with $& and $1 (inserted as written)", { new_text: "2. Check $& and $1." }, LIVE.replace(OLD, () => "2. Check $& and $1.")],
+  ["a name with spaces around it (the host trims it)", { name: "  deploy-staging " }, PATCHED],
+] as const) {
+  test(`must draft: a patch with ${name}`, async () => {
+    const home = agentHome();
+    const r = registered({ agent: home.agent });
+    setVerdict("strict");
+    const { out, rec } = await r.save("review", patchCall(params as any));
+    assert.equal(rec.decision, "drafted", name);
+    assert.equal(out.params.content, want);
+    assert.equal(out.params.name, "deploy-staging");
+  });
+}
+
+test("must draft: line endings and whitespace are matched as written, as OpenClaw matches them", async () => {
+  const crlf = LIVE.replace(/\n/g, "\r\n");
+  const home = agentHome(crlf);
+  const r = registered({ agent: home.agent });
+  setVerdict("strict");
+  const lf = await r.save("review", patchCall({ old_text: "1. Run make deploy-staging.\n2." }));
+  assert.deepEqual(lf.out, HELD, "an LF old_text does not match a CRLF file");
+  assert.equal(lf.rec.patch_draft, "no_match");
+  const ok = await r.save("review", patchCall({ old_text: "1. Run make deploy-staging.\r\n2.", new_text: "1. Run it.\r\n2." }));
+  assert.equal(ok.out.params.content, crlf.replace("1. Run make deploy-staging.\r\n2.", "1. Run it.\r\n2."));
+});
+
+for (const [name, setup, params, reason] of [
+  ["old_text that does not match", null, { old_text: "3. Roll back." }, "no_match"],
+  ["old_text that matches twice", `${LIVE}${OLD}\n`, {}, "several_matches"],
+  ["old_text whose matches overlap (OpenClaw counts both)", `${LIVE}aaa\n`, { old_text: "aa" }, "several_matches"],
+  ["an empty old_text", null, { old_text: "" }, "bad_patch"],
+  ["old_text equal to new_text", null, { new_text: OLD }, "bad_patch"],
+  ["old_text that is not a string", null, { old_text: 7 }, "bad_patch"],
+  ["a missing SKILL.md", "missing", {}, "missing"],
+  ["a name that climbs out of the Workshop", null, { name: "../deploy-staging" }, "bad_name"],
+  ["an absolute name", null, { name: "/etc" }, "bad_name"],
+  ["a name with a slash", null, { name: "deploy-staging/references" }, "bad_name"],
+  ["a name in capitals (not a Workshop name)", null, { name: "Deploy-Staging" }, "bad_name"],
+] as const) {
+  test(`must hold: a patch with ${name}`, async () => {
+    const home = agentHome(setup === "missing" ? null : (setup ?? LIVE));
+    const r = registered({ agent: home.agent });
+    await r.command("sentrook-notify", "here");
+    setVerdict("strict");
+    const { out, rec } = await r.save("review", patchCall(params as any));
+    assert.deepEqual(out, HELD);
+    assert.equal(rec.decision, "held");
+    assert.equal(rec.patch_draft, reason);
+    assert.match(r.sent[0].text, /^Sentrook held one of OpenClaw's background saves/);
+    if (setup !== "missing") assert.equal(readFileSync(home.file, "utf8"), setup ?? LIVE);
+  });
+}
+
+test("must hold: a symlinked skill folder that leads out of the Workshop", async () => {
+  const home = agentHome(null);
+  const outside = mkdtempSync(path.join(tmpdir(), "sentrook-outside-"));
+  writeFileSync(path.join(outside, "SKILL.md"), LIVE);
+  rmSync(home.skillDir, { recursive: true });
+  symlinkSync(outside, home.skillDir);
+  const r = registered({ agent: home.agent });
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", patchCall());
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.patch_draft, "outside");
+});
+
+test("must hold: a SKILL.md that is a symlink, to a file outside or inside the Workshop", async () => {
+  for (const inside of [false, true]) {
+    const home = agentHome(null);
+    const target = inside ? path.join(home.skillDir, "references.md") : path.join(mkdtempSync(path.join(tmpdir(), "sentrook-outside-")), "SKILL.md");
+    writeFileSync(target, LIVE);
+    symlinkSync(target, home.file);
+    const r = registered({ agent: home.agent });
+    setVerdict("strict");
+    const { out, rec } = await r.save("review", patchCall());
+    assert.deepEqual(out, HELD, inside ? "inside" : "outside");
+    assert.equal(rec.patch_draft, "outside");
+  }
+});
+
+test("must hold: a SKILL.md with another hard link (OpenClaw refuses to read it)", async () => {
+  const home = agentHome();
+  linkSync(home.file, path.join(mkdtempSync(path.join(tmpdir(), "sentrook-outside-")), "copy.md"));
+  const r = registered({ agent: home.agent });
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", patchCall());
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.patch_draft, "not_file");
+});
+
+test("must hold: a SKILL.md that is a folder", async () => {
+  const home = agentHome(null);
+  mkdirSync(home.file);
+  const r = registered({ agent: home.agent });
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", patchCall());
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.patch_draft, "not_file");
+});
+
+test("must hold: a live SKILL.md larger than OpenClaw reads", async () => {
+  const home = agentHome(`${LIVE}${"x".repeat(bg.MAX_SKILL_FILE_BYTES)}`);
+  const r = registered({ agent: home.agent });
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", patchCall());
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.patch_draft, "too_large");
+  const fits = agentHome(`${LIVE}${"x".repeat(bg.MAX_SKILL_FILE_BYTES - Buffer.byteLength(LIVE))}`);
+  const r2 = registered({ agent: fits.agent });
+  assert.equal((await r2.save("review", patchCall())).rec.decision, "drafted", "exactly at the bound still drafts");
+});
+
+for (const [name, agent, ctxPatch] of [
+  ["no runtime.agent", undefined, {}],
+  ["no resolveAgentDir", {}, {}],
+  ["a resolveAgentDir that throws", { resolveAgentDir: () => { throw new Error("no such agent"); } }, {}],
+  ["a resolveAgentDir that returns nothing", { resolveAgentDir: () => undefined }, {}],
+  ["a resolveAgentDir that returns a relative path", { resolveAgentDir: () => "agents/main/agent" }, {}],
+  ["no agentId on the hook context", "home", { agentId: undefined }],
+] as const) {
+  test(`must hold: a patch with ${name}`, async () => {
+    const home = agentHome();
+    const r = registered({ agent: agent === "home" ? home.agent : (agent as any) });
+    await r.command("sentrook-notify", "here");
+    setVerdict("strict");
+    const ctx: Record<string, any> = { ...RUNS.review.ctx, ...ctxPatch };
+    await r.fire("before_prompt_build", { runId: ctx.runId, prompt: RUNS.review.prompt, messages: TRANSCRIPT }, ctx);
+    const out = await r.fire("before_tool_call", { ...patchCall(), toolCallId: "p1", runId: ctx.runId }, ctx);
+    await hold.waitForNotices();
+    assert.deepEqual(out, HELD);
+    const rec = r.records("scan").at(-1);
+    assert.equal(rec.decision, "held");
+    assert.equal(rec.patch_draft, "no_agent_dir");
+    assert.equal(r.sent.length, 1);
+  });
+}
+
+for (const [name, params, reason] of [
+  ["a support file", { file_path: "references/notes.md" }, "support_file"],
+  ["./SKILL.md (OpenClaw reads it as a support file path and refuses it)", { file_path: "./SKILL.md" }, "support_file"],
+  ["the action in capitals (OpenClaw does not know it)", { action: "Patch" }, undefined],
+] as const) {
+  test(`must hold: a patch of ${name}`, async () => {
+    const home = agentHome();
+    const r = registered({ agent: home.agent });
+    setVerdict("strict");
+    const { out, rec } = await r.save("review", patchCall(params as any));
+    assert.deepEqual(out, HELD);
+    assert.equal(rec.patch_draft, reason);
+  });
+}
+
+test("must hold: a patch when the scan says the saved text adds a secret; the new skill and the model's own draft too", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  reply = { ...VERDICTS.strict, self_edit: { adds: ["command", "secret"], lenient: false } };
+  const patch = await r.save("review", patchCall());
+  assert.deepEqual(patch.out, HELD);
+  assert.equal(patch.rec.patch_draft, "secret");
+  // the existing new-skill drafts: a draft would keep the secret just the same
+  for (const call of [
+    SAVES.review,
+    { toolName: "skill_workshop", params: { action: "write_file", name: "deploy-staging", file_path: "SKILL.md", content: SKILL } },
+    { toolName: "skill_workshop", params: { action: "draft", name: "deploy-staging", content: SKILL } },
+  ]) {
+    const { out, rec } = await r.save("review", call);
+    assert.deepEqual(out, HELD, String(call.params.action));
+    assert.equal(rec.decision, "held");
+  }
+  assert.equal(readFileSync(home.file, "utf8"), LIVE);
+});
+
+test("must hold: a patch whose response has no self_edit (or no adds list); a new skill still drafts there as before", async () => {
+  for (const self_edit of [undefined, null, {}, { adds: "secret" }, { lenient: false }]) {
+    const home = agentHome();
+    const r = registered({ agent: home.agent });
+    reply = { ...VERDICTS.strict, self_edit };
+    const { out, rec } = await r.save("review", patchCall());
+    assert.deepEqual(out, HELD, JSON.stringify(self_edit));
+    assert.equal(rec.patch_draft, "no_self_edit");
+    if (self_edit === undefined) assert.equal((await r.save("review")).rec.decision, "drafted");
+  }
+});
+
+test("must hold: with skillReview review (no self_edit is asked for) a patch is held", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent, pluginConfig: { skillReview: "review" } });
+  setVerdict("strict");
+  const { out, rec, planir } = await r.save("review", patchCall());
+  assert.equal(planir.self_edit, undefined);
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.patch_draft, "no_self_edit");
+});
+
+test("must block or hold: a patch on a block, an enforced block, or a block-level score capped at review", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  setVerdict("block");
+  assert.equal((await r.save("review", patchCall())).rec.decision, "blocked");
+  reply = { ...VERDICTS.strict, risk: 30, enforced: "block" };
+  assert.equal((await r.save("review", patchCall())).rec.decision, "blocked");
+  reply = { ...VERDICTS.block, ceiling: "review", reasons: [{ code: "cap.unanswered_retry" }], self_edit: { adds: ["command"], lenient: false } };
+  const capped = await r.save("review", patchCall());
+  assert.deepEqual(capped.out, HELD);
+  assert.equal(capped.rec.verdict, "review");
+  assert.equal(capped.rec.decision, "held");
+  assert.equal(readFileSync(home.file, "utf8"), LIVE);
+});
+
+test("must draft as a create does: a review the scanner enforces (a rule floor) below the block line", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  reply = { ...VERDICTS.strict, enforced: "review" };
+  assert.equal((await r.save("review")).rec.decision, "drafted", "a new skill");
+  assert.equal((await r.save("review", patchCall())).rec.decision, "drafted", "a patch, the same");
+});
+
+test("must hold: a block-level retry after a patch draft stays held and is announced", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  assert.equal((await r.save("review", patchCall())).rec.decision, "drafted");
+  reply = { ...VERDICTS.block, ceiling: "review", reasons: [{ code: "cap.unanswered_retry" }], self_edit: { adds: ["command"], lenient: false } };
+  const retry = await r.save("review", patchCall());
+  assert.equal(retry.planir.history.at(-1).decision, "review_timed_out");
+  assert.deepEqual(retry.out, HELD, "never a second draft");
+  assert.deepEqual(retry.rec.hold.notice, { status: "queued", target: "telegram" });
+});
+
+for (const version of ["2026.11.4", "2026.11.5-beta.1", null]) {
+  test(`must hold: a patch on OpenClaw ${version ?? "of unknown version"}, with the agent dir there`, async () => {
+    const home = agentHome();
+    const r = registered({ agent: home.agent, version });
+    setVerdict("strict");
+    const { out, rec } = await r.save("review", patchCall());
+    assert.deepEqual(out, HELD);
+    assert.equal(rec.patch_draft, undefined, "not tried");
+    assert.deepEqual(home.calls, [], "the agent dir is not even looked up");
+  });
+}
+
+test("a patch draft OpenClaw ignored (the patch went live) is recorded and announced as saved live", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const { rec } = await r.save("review", patchCall(), null);
+  const { ctx } = RUNS.review;
+  await r.fire(
+    "after_tool_call",
+    {
+      ...patchCall(),
+      toolCallId: "t1",
+      runId: ctx.runId,
+      result: { content: [{ type: "text", text: 'Patched "deploy-staging" (patched SKILL.md). Saved previous version; undo with action=restore name=deploy-staging.' }], details: {} },
+    },
+    ctx,
+  );
+  await hold.waitForNotices();
+  const [resolution] = r.records("resolution");
+  assert.equal(resolution.request_id, rec.request_id);
+  assert.equal(resolution.resolution, "draft_ignored");
+  assert.match(history(), /saved live \(draft ignored, self-edit\)/);
+  assert.equal(r.sent.length, 1);
+  const text: string = r.sent[0].text;
+  assert.match(text, /^Sentrook sent a change to an existing skill .* to the Skill Workshop drafts, but OpenClaw applied the change to the live skill instead/);
+  assert.match(text, /To undo it, restore the skill's previous version from its history on Plugins → Skill workshop in the Control UI/);
+  assert.ok(!text.includes(BODY_MARKER));
+});
+
+test("a patch draft OpenClaw did not keep is recorded and announced as not made", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  await r.save("review", patchCall(), DRAFT_REFUSED);
+  assert.equal(r.records("resolution")[0].resolution, "draft_failed");
+  assert.match(history(), /not saved \(draft refused, self-edit\)/);
+  assert.match(r.sent[0].text, /^Sentrook sent a change to an existing skill .* but OpenClaw did not keep the draft, so the change was not made/);
+  assert.equal(readFileSync(home.file, "utf8"), LIVE);
+});
+
+test("a patch draft has its own quiet period: the staleness note is not silenced by a new skill's draft notice", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  await r.save("review");
+  await r.save("review", patchCall());
+  await r.save("review", patchCall({ old_text: "1. Run make deploy-staging.", new_text: "1. Run it." }));
+  assert.equal(r.sent.length, 2, "one new-skill draft notice, one patch draft notice");
+  assert.match(r.sent[1].text, /any later change to that skill would be undone/);
+  assert.equal(r.records("resolution").at(-1).notice.status, "quiet");
+});
+
+test("observe mode never rewrites a patch", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent, pluginConfig: { mode: "observe" } });
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", patchCall());
+  assert.equal(out, undefined);
+  assert.equal(rec.decision, "allowed");
+  assert.deepEqual(home.calls, []);
+});
+
+test("must stay as before: an owner's own patch in a chat still asks, never rewritten", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  const ctx = { sessionKey: "agent:main:main", sessionId: "S1", agentId: "main", runId: "r1", trigger: "user", requester: { senderIsOwner: true, channel: "webchat" } };
+  await r.fire("before_prompt_build", { runId: "r1", prompt: "fix the skill", currentUserMessage: "fix the skill" }, ctx);
+  setVerdict("strict");
+  const out = await r.fire("before_tool_call", { ...patchCall(), toolCallId: "o1", runId: "r1" }, ctx);
+  assert.ok(out?.requireApproval);
+  assert.equal(out.params, undefined);
+  assert.deepEqual(home.calls, []);
+});
+
+test("must stay as before: a lenient patch is let through, an allowed patch runs, neither reads the live file", async () => {
+  const home = agentHome();
+  const r = registered({ agent: home.agent });
+  setVerdict("lenient");
+  assert.equal((await r.save("review", patchCall())).out, undefined);
+  setVerdict("allow");
+  assert.equal((await r.save("review", patchCall())).out, undefined);
+  assert.deepEqual(home.calls, []);
+});
+
+test("held notices say where the owner can act: archive and restore on the Skill Workshop page, a support file removal there too", () => {
+  const resp = { ...BASE, ...VERDICTS.strict } as any;
+  const where = hold.whereText(bg.RUN_LABELS.background_review, "s_0123abcd");
+  const text = (action: string) => bg.noticeText("held", resp, "skill_workshop", "skills", where, "3f9c2a1b", false, false, action);
+  assert.match(text("archive"), /^To archive it yourself: Archive on the skill, on Plugins → Skill workshop in the Control UI\.$/m);
+  assert.match(text("restore"), /^To restore it yourself: the skill's history, on Plugins → Skill workshop in the Control UI\.$/m);
+  assert.match(text("remove_file"), /^The skill and its support files are on Plugins → Skill workshop in the Control UI; to remove the file, ask the agent for it in a chat\.$/m);
+  for (const action of ["patch", "create", ""]) {
+    assert.doesNotMatch(text(action), /Plugins → Skill workshop/, action);
+    assert.match(text(action), /^To keep it, ask the agent for it in a chat\./m, action);
+  }
+  assert.doesNotMatch(bg.noticeText("held", resp, "write", "memory", where, null, false, false, "archive"), /Skill workshop/, "a file tool has no Workshop action");
+});
+
+test("applyPatch mirrors OpenClaw: exactly one occurrence, overlapping ones counted, the replacement inserted as written", () => {
+  assert.deepEqual(bg.applyPatch("a-b-c", "-b-", "+"), { content: "a+c" });
+  assert.deepEqual(bg.applyPatch("abc", "x", "y"), { skip: "no_match" });
+  assert.deepEqual(bg.applyPatch("a b a", "a", "y"), { skip: "several_matches" });
+  assert.deepEqual(bg.applyPatch("aaa", "aa", "b"), { skip: "several_matches" });
+  assert.deepEqual(bg.applyPatch("x", "x", "$&$&"), { content: "$&$&" });
+  assert.deepEqual(bg.applyPatch("x", "", "y"), { skip: "bad_patch" });
+  assert.deepEqual(bg.applyPatch("x", "x", "x"), { skip: "bad_patch" });
+});
+
+test("patchDraftReason: fixed words and the UTC minute the skill was read", () => {
+  assert.equal(
+    bg.patchDraftReason(new Date("2026-11-19T20:15:42.123Z")),
+    "Held by Sentrook for your review: the skill as it stood at 2026-11-19 20:15 UTC, with one change applied.",
+  );
+});
