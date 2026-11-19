@@ -162,6 +162,22 @@ def view_budgets(question_sets: Iterable[QuestionSet | None]) -> tuple[int | Non
     return call, selfedit
 
 
+def _pending_rule_findings(prepared: Prepared, envelopes: list[Envelope]) -> list[dict[str, Any]]:
+    """The rule-based probe's findings on the pending call, for the self-edit reading to reuse (a probe that did not
+    answer leaves none, and the save is not lenient for that reason anyway)."""
+    from .aira.detectors import call_label
+
+    label = call_label(prepared.pending)
+    for env in envelopes:
+        if env.step is ProbeStep.AIRA and env.status is ProbeStatus.OK:
+            return [
+                f
+                for f in env.evidence.get("findings", [])
+                if isinstance(f, dict) and f.get("call_id") == label
+            ]
+    return []
+
+
 class Scanner:
     def __init__(self, config: ScannerConfig):
         self.config = config
@@ -339,7 +355,9 @@ class Scanner:
         reading = None
         if prepared.planir.is_self_edit:
             try:
-                reading = save_adds(prepared)
+                reading = save_adds(
+                    prepared, rule_findings=_pending_rule_findings(prepared, ordered)
+                )
             except Exception:  # noqa: BLE001 (the reading never fails a scan: unread, the save is not lenient)
                 reading = UNREAD_SAVE
         result = converge(

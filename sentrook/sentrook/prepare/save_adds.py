@@ -239,33 +239,40 @@ _CREDENTIAL_PAIR = re.compile(
 #: A sign-in pair's value counts when it is this long, or holds a digit, a capital or a symbol.
 _PAIR_PLAIN_CHARS = 12
 _PAIR_MIXED = re.compile(r"[0-9A-Z]|[^\w]")
-#: "the password is <word>", "Wifi passphrase: <word>", "PIN is <digits>" in any case. Words that say where a secret
-#: is kept or what happened to it are not values.
+#: "the password is <word>", "Wifi passphrase: <word>", "pw is '<word>'", "password was changed to <word>",
+#: "password - <word>", "PIN code is <digits>" in any case. Words that say where a secret is kept or what happened to
+#: it are not values.
 _SECRET_IS = re.compile(
-    r"(?i:\b(?P<cue>password|passwd|passphrase|passcode|pass\s?code|pin|pwd)\b)[ \t]{0,4}(?i:is|was|:|=)[ \t]{0,4}"
+    r"(?i:\b(?P<cue>password|passwd|passphrase|passcode|pass\s?code|pin(?:\s+(?:code|number))?|pwd|pw)\b)"
+    r"[ \t]{0,4}(?i:is|was|:|=|-)[ \t]{0,4}(?i:(?:(?:changed|set|reset|updated)\s+to|now)\s+)?"
     r"[\"'`]?(?P<v>[^\s\"'`,;]{3,128})"
 )
 _NOT_VALUES = frozenset(
     """the a an in on at set stored saved kept not empty required changed same different there here below above
     managed rotated unknown missing none null secret redacted hidden available needed""".split()
 )
-#: A card number: 13 to 19 digits, single spaces or dashes allowed between them (checked with the Luhn sum).
-_CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
-#: A base32 seed after a 2FA, OTP or TOTP cue.
+#: A card number: 13 to 19 digits, up to two spaces or dashes between them (checked with the Luhn sum).
+_CARD = re.compile(r"(?<![\d-])(?:\d[ -]{0,2}){12,18}\d(?![\d-])")
+#: A base32 seed after a 2FA, OTP or TOTP cue, in one run or in groups of four, upper or lower case (lower case only
+#: with a digit 2-7, so a long plain word is not one).
 _OTP_SEED = re.compile(
-    r"(?i:\b(?:2fa|mfa|otp|totp|authenticator|seed)\b)[^\n]{0,24}?(?<![A-Za-z0-9])([A-Z2-7]{16,64})(?![A-Za-z0-9])"
+    r"(?i:\b(?:2fa|mfa|otp|totp|authenticator|seed)\b)[^\n]{0,24}?(?<![A-Za-z0-9])"
+    r"(?P<v>[A-Za-z2-7]{16,64}|[A-Za-z2-7]{4}(?:[ -][A-Za-z2-7]{4}){3,15})(?![A-Za-z0-9])"
 )
-#: A recovery phrase: twelve or more short lower-case words after a seed, recovery or mnemonic cue.
+#: A recovery phrase: twelve or more short lower-case words after a seed, recovery, mnemonic or backup-words cue,
+#: on one line or several, numbered or not.
 _RECOVERY = re.compile(
-    r"(?i:\b(?:seed|recovery|mnemonic)\b)[^\n]{0,24}?(?:\b[a-z]{3,8}\b[ \t,]{1,3}){11,23}\b[a-z]{3,8}\b"
+    r"(?i:\b(?:seed|recovery|mnemonic|backup\s+(?:words|phrase))\b)[\s\S]{0,24}?"
+    r"(?:(?:\d{1,2}[.)][ \t]{0,2})?\b[a-z]{3,8}\b[\s,]{1,3}){11,23}(?:\d{1,2}[.)][ \t]{0,2})?\b[a-z]{3,8}\b"
 )
 #: Vendor token prefixes, read in a run of spaced characters once joined.
 _PREFIXED_TOKEN = re.compile(
     r"(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_\w{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[\w-]{10,}"
     r"|AKIA[0-9A-Z]{12,}|glpat-[\w-]{16,}|AIza[\w-]{30,})"
 )
-#: A run of single characters separated by single spaces ("g h p _ a b c ..."), joined before the vendor shapes run.
-_SPACED = re.compile(r"(?<!\S)(?:\S ){11,}\S(?!\S)")
+#: A run of single characters separated by one or two spaces ("g h p _ a b c ..."), joined before the vendor shapes
+#: run.
+_SPACED = re.compile(r"(?<!\S)(?:\S {1,2}){11,}\S(?!\S)")
 
 
 @dataclass(frozen=True)
@@ -513,7 +520,15 @@ def _blank(text: str, spans: Iterable[Fence], *, keep_lines: bool = False) -> st
 
 
 def _is_command(line: str) -> bool:
-    return bool(_COMMANDISH.match(line) or _SHELL_START.match(line))
+    if _COMMANDISH.match(line) or _SHELL_START.match(line):
+        return True
+    # a program word quoted or escaped in part (`her'mes'`, `her\mes`, `$'hermes'`)
+    m = re.match(r"(\S{1,200})(\s+\S.*)", line, re.S)
+    return bool(
+        m
+        and re.search(r"[\\'\"]", m.group(1))
+        and _COMMANDISH.match(shell_unquote(m.group(1)) + m.group(2))
+    )
 
 
 def _fence_commands(block: str) -> list[str]:
@@ -677,9 +692,11 @@ def _candidates(reads: Iterable[_Read]) -> list[str]:
     command on its own (`line_commands`), and list items that read as code."""
     out: dict[str, None] = {}
     for r in reads:
-        for cmd in (*r.raw, *r.lines, *r.listed):
+        cmds = (*r.raw, *r.lines, *r.listed)
+        aliases = aliases_in(cmds)
+        for cmd in cmds:
             out.setdefault(cmd, None)
-            for v in program_variants(cmd):
+            for v in program_variants(cmd, aliases):
                 out.setdefault(v, None)
     return list(out)
 
@@ -812,8 +829,18 @@ def _target_findings(prepared: Any) -> list[Any]:
     return run_detectors(analyse(prepared.pending, prepared, lists), ctx)[0]
 
 
+#: A privilege program in a save made by running a command (read here, since the rule pack holding the sudo rule may
+#: be off in the rule-based probe whose findings on the save itself are reused).
+_PRIVILEGE = re.compile(r"(?:^|[\s;&|(])(?:sudo|doas|su|pkexec|runas)(?:\s|$)")
+
+
 def _permission(
-    prepared: Any, candidates: list[str], findings: dict[str, list[Any]], *, exec_save: bool
+    prepared: Any,
+    candidates: list[str],
+    findings: dict[str, list[Any]],
+    *,
+    exec_save: bool,
+    target_findings: list[Any] | None = None,
 ) -> bool:
     if len(candidates) > MAX_CHECKED_COMMANDS:
         return True
@@ -821,11 +848,12 @@ def _permission(
     # path rule may still class as agent config (a skill folder under the host's agent directory): only a guardrail,
     # an approval file or a privilege change counts there. A save made by running a command is read as a command,
     # less the write into the store.
-    target = _target_findings(prepared)
+    target = _target_findings(prepared) if target_findings is None else target_findings
     if exec_save:
         if any(f.cls in PERMISSION_CLASSES and f.reason not in STORE_REASONS for f in target):
             return True
-        if _loosens(prepared.pending.command or ""):
+        command = prepared.pending.command or ""
+        if _loosens(command) or _PRIVILEGE.search(command):
             return True
     elif any(f.cls in TARGET_CLASSES or f.reason in TARGET_REASONS for f in target):
         return True
@@ -890,18 +918,35 @@ def _sentence_spans(prose: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _prose_urls(reads: Iterable[_Read]) -> bool:
+#: Wording anywhere in a save that tells the agent to act on a page or send to it: a save holding any of it gets no
+#: pointer-link relaxation at all.
+_PAGE_ACTION = re.compile(
+    r"\b(?:follow|comply|obey|apply|use\s+(?:it|them|this|that)|do\s+(?:as|what|everything)|carry\s+(?:it\s+|them\s+)?out"
+    r"|treat\b[^.\n]{0,60}\bas|read\s+(?:it|them|this|that)\s+and|open|fetch|load|run|send|sent|post|upload|forward"
+    r"|goes|receive|endpoint|webhook|mandatory|required|must|says|(?:each|every)\s+task)(?:s|es|ed|d|ing)?\b",
+    re.I,
+)
+
+
+def pointer_relaxation_allowed(texts: Iterable[str]) -> bool:
+    """Whether a save may have pointer links at all: no sentence anywhere in it tells the agent to act on a page or
+    send to one (`_PAGE_ACTION`)."""
+    return not any(_PAGE_ACTION.search(t) for t in texts)
+
+
+def _prose_urls(reads: Iterable[_Read], allowed: bool = True) -> bool:
     """A network URL in a saved text's prose (outside fences, `<pre>` blocks and inline code) that is not only a
     pointer to reading matter: one with a pointer phrase directly before it, in a sentence with no send, run, fetch
-    or follow word, and not pointed back at by the next sentence with such a word. Sentence bounds are found once per
-    text and each sentence is read at most twice, so the cost grows linearly with the text."""
+    or follow word, not pointed back at by the next sentence with such a word, and in a save with no wording that
+    acts on a page anywhere (`allowed`). Sentence bounds are found once per text and each sentence is read at most
+    twice, so the cost grows linearly with the text."""
     for r in reads:
         if r.st.script:
             if _NET_URL.search(r.st.text):
                 return True
             continue
         prose = re.sub(r"`[^`\n]+`", lambda m: " " * len(m.group(0)), _blank(r.st.text, r.fences))
-        if _NET_URL.search(prose) and _unreferenced_url(prose):
+        if _NET_URL.search(prose) and (not allowed or _unreferenced_url(prose)):
             return True
     return False
 
@@ -990,20 +1035,46 @@ def _known_tld(token: str) -> bool:
     return token.rsplit(".", 1)[-1].lower() in _COMMON_TLDS
 
 
-def _prose_hosts(texts: Iterable[str]) -> bool:
-    """A host or address a sentence sends to or names as an address to reach ("post the summary to
-    hooks.example.io/ingest", "back up to 203.0.113.7", a host in inline code after such a word), or a mail address
-    spelled out ("name at host dot tld")."""
+#: "billing at quillmere.io": a mail address with its `@` written as "at", read as one when a send word is near.
+_AT_DOMAIN = re.compile(
+    r"(?<![\w.+-])[\w.+-]{1,64}[ \t]{1,3}at[ \t]{1,3}(?P<d>(?:[A-Za-z0-9-]{1,63}\.){1,4}[A-Za-z]{2,24})\b",
+    re.I,
+)
+_AT_DOMAIN_AFTER = 120
+#: Words that send mail, near a "name at host.tld" address.
+_MAIL_CUE = re.compile(
+    r"\b(?:send|sent|forward|e-?mail|mail|cc|bcc|deliver|reply|replies|write\s+to)(?:s|es|ed|d|ing)?\b",
+    re.I,
+)
+
+
+def _prose_hosts(texts: Iterable[str], allowed: bool = True) -> bool:
+    """A host or address in prose that a later run reaches: one with a path or a port anywhere, unless it is only a
+    pointer link (the pointer phrase directly before it, in a save allowed pointer links); one a sentence sends to or
+    names as an address to reach ("post the summary to collector.example.io", "back up to 203.0.113.7"); or a mail
+    address spelled out ("name at host dot tld", "name at host.tld" near a send word)."""
     for t in texts:
         for m in _HOSTISH.finditer(t):
-            if not _hostish(m.group(1)) or not (m.group(2) or m.group(3) or _known_tld(m.group(1))):
+            if not _hostish(m.group(1)):
                 continue
             window = t[max(0, m.start() - _HOST_WINDOW) : m.start()]
+            if m.group(2) or (m.group(3) and len(m.group(3)) > 1):
+                if not (allowed and _REF_LEAD.search(window)):
+                    return True
+                continue
+            if not _known_tld(m.group(1)):
+                continue
             clause = _CLAUSE_BREAK.split(window)[-1]
             if _HOST_CUE.search(clause) and not _FROM_BEFORE.search(clause):
                 return True
         for m in _SPELLED_MAIL.finditer(t):
             if _known_tld(re.sub(r"\s+dot\s+", ".", m.group("d"), flags=re.I)):
+                return True
+        for m in _AT_DOMAIN.finditer(t):
+            if not _known_tld(m.group("d")):
+                continue
+            near = t[max(0, m.start() - _HOST_WINDOW) : m.end() + _AT_DOMAIN_AFTER]
+            if _MAIL_CUE.search(near):
                 return True
     return False
 
@@ -1058,14 +1129,18 @@ def _destination(prepared: Any, reads: list[_Read], others: list[str], commands:
         _NET_URL.search(t) or _EMAIL_RE.search(t) for t in others
     ):
         return True
-    if _code_urls(reads) or _prose_urls(reads) or _quoted_code_hosts(reads):
+    # the save's prose, everywhere (code is not read for wording: a skill's commands are not about a page)
+    allowed = pointer_relaxation_allowed(
+        [*(_blank(r.st.text, r.fences) for r in reads if not r.st.script), *others]
+    )
+    if _code_urls(reads) or _prose_urls(reads, allowed) or _quoted_code_hosts(reads):
         return True
     # hosts and addresses with no scheme, in prose and inline code (fences are read as shell below)
     if _prose_hosts(
-        [_blank(r.st.text, r.fences).replace("`", " ") for r in reads if not r.st.script]
+        [_blank(r.st.text, r.fences).replace("`", " ") for r in reads if not r.st.script], allowed
     ):
         return True
-    if _prose_hosts(others):
+    if _prose_hosts(others, allowed):
         return True
     if (
         len(commands) > MAX_CHECKED_COMMANDS
@@ -1116,16 +1191,20 @@ def _secret(texts: list[str]) -> bool:
                 return True
         for m in _SECRET_IS.finditer(t):
             v = m.group("v").rstrip(".")
-            if m.group("cue").lower() == "pin":
+            if m.group("cue").lower().startswith("pin"):
                 if re.fullmatch(r"\d{4,12}", v):  # a version pin is not a PIN
                     return True
             elif len(v) >= 3 and v.lower() not in _NOT_VALUES:
                 return True
         if any(_luhn(m.group(0)) for m in _CARD.finditer(t)):
             return True
-        if _OTP_SEED.search(t) or _RECOVERY.search(t):
+        for m in _OTP_SEED.finditer(t):
+            v = m.group("v")
+            if v.isupper() or re.search(r"[2-7]", v):
+                return True
+        if _RECOVERY.search(t):
             return True
-        joined = _SPACED.sub(lambda m: m.group(0).replace(" ", ""), t)
+        joined = _SPACED.sub(lambda m: re.sub(" ", "", m.group(0)), t)
         if joined != t and (secret_carried(joined, placeholder) or _PREFIXED_TOKEN.search(joined)):
             return True
     return False
@@ -1148,21 +1227,24 @@ def _luhn(number: str) -> bool:
 _WORD = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_'./-]*[A-Za-z0-9_])?")
 #: A command a save made by running a command uses to delete, move, truncate, empty or edit a file in place.
 _EXEC_REMOVAL = re.compile(
-    r"(?:^|[\s;&|(])(?:rm|rmdir|unlink|shred|truncate|mv)\s"
-    r"|\b(?:sed|perl|ruby)\s+(?:-\w*\s+)*-i"
-    r"|(?<![>&\d])>(?!>)\s*(?!/dev/null\b)[^\s&]"
-    r"|\bcp\s+(?:-\w+\s+)*/dev/null\b"
-    r"|\bfind\b[^\n;|&]*\s-delete\b"
-    r"|\brsync\b[^\n;|&]*\s--delete"
-    r"|\btee\b(?![^\n;|&]*\s-(?:a|-append)\b)"
-    r"|\bos\.(?:remove|unlink|rmdir)\b|\bshutil\.rmtree\b|\.unlink\(|\bfs\.(?:unlink|rm)\w*\("
-    r"|\bgit\s+(?:checkout\s+--|restore\b|reset\s+--hard|clean\b)"
+    r"(?:^|[\s;&|(])(?:rm|rmdir|unlink|shred|truncate|mv|cp|ln|install|dd)\s"
+    r"|\b(?:sed|perl|ruby)\s+(?:-\w*\s+){0,8}-i"
+    r"|(?<![>&\d])>\|?(?!>)\s*(?!/dev/null\b)[^\s&]"
+    r"|\bfind\b[^\n;|&]{0,500}?\s-delete\b"
+    r"|\brsync\b[^\n;|&]{0,500}?\s--delete"
+    r"|\btee\b(?![^\n;|&]{0,500}?\s-(?:a|-append)\b)"
+    r"|\bos\.(?:remove|unlink|rmdir)\b|\bshutil\.rmtree\b|\.unlink\(|\.write_text\(|\bfs\.(?:unlink|rm)\w*\("
+    r"|\bgit\s+(?:checkout\s+--|restore\b|reset\s+--hard|clean\b|stash\b)"
 )
-#: Lines of a patch that remove or move a whole file: an `apply_patch` delete or move, a unified diff to /dev/null,
-#: a git rename.
+#: Lines of a patch that remove, move or replace a whole file: an `apply_patch` delete or move, a unified diff to
+#: /dev/null (with or without a timestamp), a git delete, rename or copy.
 _PATCH_FILE_REMOVAL = re.compile(
-    r"^(?:\*\*\* (?:Delete File|Move to):|\+\+\+ /dev/null\s*$|rename from )", re.M
+    r"^[ \t]*(?:\*\*\* (?:delete file|move to):|\+\+\+ /dev/null\b|deleted file mode\b|rename (?:from|to) "
+    r"|copy (?:from|to) )",
+    re.M | re.I,
 )
+#: A patch that adds lines to a file that exists: an `apply_patch` update, or a unified diff from a real file.
+_PATCH_UPDATES = re.compile(r"^[ \t]*(?:\*\*\* update file:|--- (?!/dev/null\b)\S)", re.M | re.I)
 #: Actions that replace a file's whole content without showing the old text.
 OVERWRITE_ACTIONS = frozenset({"edit", "update", "replace", "overwrite", "rewrite"})
 #: Words that make a sentence an oversight rule: any change to a sentence holding one is a rewording, even when no
@@ -1192,20 +1274,32 @@ def _all_sentences(text: str) -> set[str]:
     return {" ".join(sent.lower().split()) for sent in re.split(r"[.!?\n]+", text) if sent.strip()}
 
 
+#: A whole-file write with fewer words than this to an instruction file of the store empties it in effect.
+MIN_WHOLE_WRITE_WORDS = 3
+#: Actions (and a write tool with no action) that write a whole file without showing what it held.
+WHOLE_WRITE_ACTIONS = frozenset({"", "write", "write_file", "create"})
+#: A whole-file write (`write`, `write_file`, `create`) is read as a rewording: the scanner cannot tell whether the
+#: file existed, so its lenient handling rests on a low loosened-oversight answer. On replayed background saves this
+#: cost no rescue.
+WHOLE_WRITE_REWORDS = True
+
+
 def removes(arguments: Any, *, exec_command: str | None = None) -> tuple[bool, bool]:
     """Whether the save removes existing content, as far as the request shows it: `(removes, rewrites)`.
 
-    `removes`: a pure removal, which nothing the save writes stands in for: a removing action, a patch that deletes or
-    moves a file, a replaced text or a patch's removed lines with no new words in the same edit, or a command that
-    deletes, moves, truncates, empties or edits a file in place. `rewrites`: an edit that replaces text with new text
-    and drops a word of what it replaces (that edit's own new text counts, not the rest of the save), or changes a
-    sentence holding an oversight word (`OVERSIGHT_WORDS`) in any way, or adds one; or an action that replaces a whole
-    file without showing the old text (`OVERWRITE_ACTIONS`, a `patch` carrying whole content). Its lenient handling
-    rests on the judge's loosened-oversight answer. An edit that keeps every word and every oversight sentence of what
-    it replaces is neither."""
+    `removes`: a pure removal, which nothing the save writes stands in for: a removing action, a patch that deletes,
+    moves or copies over a file, a replaced text or a patch's removed lines with no new words in the same edit, a
+    whole-file write of fewer than `MIN_WHOLE_WRITE_WORDS` words to an instruction file, or a command that deletes,
+    moves, copies over, links over, truncates, empties or edits a file in place. `rewrites`: an edit that replaces
+    text with new text and drops a word of what it replaces (that edit's own new text counts, not the rest of the
+    save), or changes a sentence holding an oversight word (`OVERSIGHT_WORDS`) in any way, or adds one; a save whose
+    replaced text holds an oversight sentence and that adds any sentence anywhere; a patch that only adds lines to a
+    file that exists; or an action that replaces a whole file without showing the old text (`OVERWRITE_ACTIONS`, a
+    `patch` carrying whole content). Its lenient handling rests on the judge's loosened-oversight answer."""
     if exec_command is not None:
         return bool(_EXEC_REMOVAL.search(exec_command)), False
     pure = rewrites = False
+    guarded_old = adds_sentence = False
     for op in _ops(arguments):
         action = op.get("action")
         action = action.strip().lower() if isinstance(action, str) else ""
@@ -1222,9 +1316,27 @@ def removes(arguments: Any, *, exec_command: str | None = None) -> tuple[bool, b
             removed = _patch_removed(patch)
             if removed.strip():
                 replaced.append(removed)
+            elif _PATCH_UPDATES.search(patch) and _patch_added(patch).strip():
+                rewrites = True  # lines added to a file whose text is not shown
             new += "\n" + _patch_added(patch)
         replaced = [old for old in replaced if old.strip()]
         if not replaced:
+            path = next((op[k] for k in PATH_KEYS if isinstance(op.get(k), str)), None)
+            whole = (
+                action in WHOLE_WRITE_ACTIONS
+                and (
+                    path is not None
+                    or action in ("create", "write")
+                    or isinstance(op.get("content"), str)
+                )
+                and not (action == "" and path is None)
+            )
+            if whole and isinstance(new, str) and new.strip():
+                instruction = path is None or path.lower().endswith(PROSE_SUFFIXES)
+                if instruction and len(_WORD.findall(new)) < MIN_WHOLE_WRITE_WORDS:
+                    pure = True  # the file is all but emptied
+                elif WHOLE_WRITE_REWORDS:
+                    rewrites = True
             if new.strip() and (action in OVERWRITE_ACTIONS or action == "patch"):
                 rewrites = True  # the whole content replaced, the old text not shown
             continue
@@ -1234,12 +1346,19 @@ def removes(arguments: Any, *, exec_command: str | None = None) -> tuple[bool, b
         new_words = _words(new)
         new_sentences = _all_sentences(new)
         for old in replaced:
+            old_sentences = _all_sentences(old)
+            if _oversight_sentences(old):
+                guarded_old = True
+            if new_sentences - old_sentences:
+                adds_sentence = True
             if _words(old) - new_words:
                 rewrites = True
             elif not _oversight_sentences(old) <= new_sentences:
                 rewrites = True
-            elif _oversight_sentences(new) - _all_sentences(old):
+            elif _oversight_sentences(new) - old_sentences:
                 rewrites = True
+    if guarded_old and adds_sentence:
+        rewrites = True  # a rule shown, and something said next to it
     return pure, rewrites
 
 
@@ -1268,8 +1387,10 @@ def _unread(reads: list[_Read], store: str, tool: str | None) -> bool:
 
 def _escapes(value: str) -> bool:
     """A store-relative name or path that is absolute, home-relative, or climbs out with `..`."""
-    v = value.strip().replace("\\", "/")
-    return v.startswith(("/", "~", "$")) or ".." in v.split("/")
+    from urllib.parse import unquote
+
+    v = unicodedata.normalize("NFKC", unquote(value)).strip().replace("\\", "/")
+    return v.startswith(("/", "~", "$")) or ".." in [part.strip() for part in v.split("/")]
 
 
 def _inside(path: str, workspace_root: str | None) -> bool:
@@ -1299,7 +1420,7 @@ def outside_store(prepared: Any, store: str) -> bool:
         return any(
             isinstance(op.get(k), str) and _escapes(op[k])
             for op in _ops(pending.raw)
-            for k in ("name", "file_path", "path", "category")
+            for k in ("name", "skill", "file_path", "path", "category")
         )
     named = isinstance(pending.raw, dict) and any(
         isinstance(pending.raw.get(k), str) for k in PATH_KEYS
@@ -1329,27 +1450,34 @@ def outside_store(prepared: Any, store: str) -> bool:
 #: Characters that hide a word's letters: zero-width spaces and joiners, the word joiner, a byte-order mark, a soft
 #: hyphen.
 _INVISIBLE = re.compile("[​‌‍⁠﻿­]")
-#: Defanged addresses: `hxxp`, `[:]`, `[.]`, `(dot)`, `[at]`.
+#: Defanged addresses: `hxxp`, `[:]`, `[.]`, `(dot)`, `[at]`, with the spaces around a restored `@` or `.` closed up.
 _DEFANG = (
     (re.compile(r"\bhxxp(s?)(?=\s*(?:\[:\]|:))", re.I), r"http\1"),
     (re.compile(r"\[:\]|\(:\)"), ":"),
-    (re.compile(r"\[\.\]|\(\.\)|\[dot\]|\(dot\)|\{dot\}", re.I), "."),
-    (re.compile(r"\[@\]|\(@\)|\[at\]|\(at\)|\{at\}", re.I), "@"),
+    (re.compile(r"[ \t]{0,3}(?:\[\.\]|\(\.\)|\[dot\]|\(dot\)|\{dot\})[ \t]{0,3}", re.I), "."),
+    (re.compile(r"[ \t]{0,3}(?:\[@\]|\(@\)|\[at\]|\(at\)|\{at\})[ \t]{0,3}", re.I), "@"),
+    # a mail address broken over a line or spaced out round its `@`
+    (re.compile(r"(?<=\w)[ \t]{0,3}@[ \t]{0,3}\n?[ \t]{0,3}(?=[A-Za-z0-9-]{1,63}\.)"), "@"),
 )
+#: Ideographic full stops, folded to `.` after NFKC (which maps the halfwidth one to the ideographic one).
+_IDEOGRAPHIC_STOP = re.compile("[\u3002\uff61]")
 
 
 def normalise(text: str) -> str:
     """The text as a reader would take it: compatibility forms folded (fullwidth letters and colons, no-break spaces;
-    NFKC), invisible characters dropped, HTML entities decoded, defanged addresses restored, and backslash-newline
-    continuations joined as the shell joins them. Only this reading uses it; no scored view changes."""
+    NFKC), ideographic full stops read as dots, invisible characters dropped, HTML entities decoded, defanged addresses
+    restored, and backslash-newline continuations joined as the shell joins them. Only this reading uses it; no
+    scored view changes."""
     if (
         text.isascii()
         and "&" not in text
+        and "@" not in text
         and "\\\n" not in text
         and not re.search(r"hxxp|[\[({]", text, re.I)
     ):
         return text
     t = _INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
+    t = _IDEOGRAPHIC_STOP.sub(".", t)
     if "&" in t:
         t = html.unescape(t)
     for rx, to in _DEFANG:
@@ -1357,7 +1485,8 @@ def normalise(text: str) -> str:
     return t.replace("\\\n", "")
 
 
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+#: A heredoc's opener and its delimiter word: any token, quoted or not (`<<'END-X'`, `<<"E.O.F"`, `<<-EOF`).
+_HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([^\s'\"<>;&|()]+)\1")
 
 
 def heredoc_bodies(command: str) -> list[str]:
@@ -1366,7 +1495,11 @@ def heredoc_bodies(command: str) -> list[str]:
     out: list[str] = []
     i = 0
     while i < len(lines):
-        words = [m.group(2) for m in _HEREDOC.finditer(lines[i])]
+        words = [
+            m.group(2)
+            for m in _HEREDOC.finditer(lines[i])
+            if not lines[i][m.start() :].startswith("<<<")
+        ]
         i += 1
         for word in words:
             body: list[str] = []
@@ -1378,9 +1511,10 @@ def heredoc_bodies(command: str) -> list[str]:
     return out
 
 
-#: A program word written quoted or escaped (`"hermes" config ...`, `\hermes config ...`), at the start of a command
-#: or after a separator.
-_QUOTED_PROGRAM = re.compile(r"(^|[;&|(]\s*)\\?([\"'])?([\w./-]+)(?(2)\2)(?=\s)")
+#: A simple alias: `alias h=hermes`, `alias h='hermes --profile x'`.
+_ALIAS = re.compile(r"\balias[ \t]+([\w.-]{1,64})=(['\"]?)([^'\"\n;&|]{1,200})\2")
+#: Where a simple command starts: the text start, a separator, a subshell, a group, a command substitution.
+_COMMAND_START = re.compile(r"(\|\||&&|[;|\n]|\$\(|[({])")
 #: A shell function's body: `f() { ...; }`.
 _FUNCTION_BODY = re.compile(r"\b\w+\s*\(\)\s*\{([^{}]{1,2000})\}")
 #: Programs a description or a reason field may name a command by, outside code.
@@ -1388,26 +1522,98 @@ _PROGRAM_IN_PROSE = re.compile(
     r"\b(?:openclaw|hermes|sudo|crontab|systemctl|launchctl|chmod|chown|setfacl|curl|wget|scp|rsync|ssh|nc|"
     r"git\s+(?:push|remote|config)|pip3?\s+install|npm\s+install)\s"
 )
+_ANSI_ESCAPE = re.compile(r"\\(x[0-9A-Fa-f]{1,2}|[0-7]{1,3}|[nrtabefv'\"\\?])")
 
 
-def program_variants(command: str) -> list[str]:
-    """The command as the shell reads it, where the reading would miss it: the program word unquoted and unescaped,
-    and each shell function's body."""
-    out = []
-    plain = _QUOTED_PROGRAM.sub(lambda m: m.group(1) + m.group(3), command)
-    if plain != command:
-        out.append(plain)
+def _ansi_c(body: str) -> str:
+    def one(m: re.Match[str]) -> str:
+        e = m.group(1)
+        if e[0] == "x":
+            return chr(int(e[1:], 16))
+        if e[0].isdigit():
+            return chr(int(e, 8) & 0xFF)
+        return {
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "a": "\a",
+            "b": "\b",
+            "e": "\x1b",
+            "f": "\f",
+            "v": "\v",
+        }.get(e, e)
+
+    return _ANSI_ESCAPE.sub(one, body)
+
+
+def shell_unquote(word: str) -> str:
+    """A shell word as the shell passes it on: quotes removed (`her'mes'`, `her""mes`), `$'...'` decoded, backslashes
+    dropped (`\\hermes`, `her\\mes`)."""
+    out: list[str] = []
+    i, n = 0, len(word)
+    while i < n:
+        c = word[i]
+        if c == "\\":
+            out.append(word[i + 1 : i + 2])
+            i += 2
+        elif word.startswith("$'", i):
+            j = word.find("'", i + 2)
+            j = n if j < 0 else j
+            out.append(_ansi_c(word[i + 2 : j]))
+            i = j + 1
+        elif c in "'\"":
+            j = word.find(c, i + 1)
+            j = n if j < 0 else j
+            out.append(word[i + 1 : j])
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def program_variants(command: str, aliases: dict[str, str] | None = None) -> list[str]:
+    """The command as the shell reads it, where the reading would miss it: each simple command's program word
+    shell-unquoted, a simple alias resolved, and each shell function's body."""
+    aliases = {
+        **(aliases or {}),
+        **{m.group(1): m.group(3).strip() for m in _ALIAS.finditer(command)},
+    }
+    parts = _COMMAND_START.split(command)
+    changed = False
+    for k in range(0, len(parts), 2):  # even items are command text, odd ones the separators
+        m = re.match(r"(\s*)(\S+)(.*)", parts[k], re.S)
+        if not m:
+            continue
+        word = shell_unquote(m.group(2))
+        word = aliases.get(word, word)
+        if word != m.group(2):
+            parts[k] = m.group(1) + word + m.group(3)
+            changed = True
+    plain = "".join(parts) if changed else command
+    out = [plain] if changed else []
     out += [m.group(1).strip() for m in _FUNCTION_BODY.finditer(plain) if m.group(1).strip()]
     return out
 
 
+def aliases_in(commands: Iterable[str]) -> dict[str, str]:
+    return {m.group(1): m.group(3).strip() for c in commands for m in _ALIAS.finditer(c)}
+
+
+#: The longest stretch read for one command named in prose, and the most such commands read from one field.
+_PROSE_COMMAND_LIMIT = 200
+
+
 def prose_commands(text: str) -> list[str]:
     """Commands a description or reason field names in prose ("Run hermes config set ... first"): the text from each
-    known program word to the end of its sentence."""
-    out = []
+    known program word to the end of its sentence (at most `MAX_COMMAND_CHARS` on)."""
+    out: list[str] = []
     for m in _PROGRAM_IN_PROSE.finditer(text):
-        end = _CLAUSE_END_RE.search(text, m.start())
-        out.append(text[m.start() : end.start() if end else len(text)][:MAX_COMMAND_CHARS].strip())
+        window = text[m.start() : m.start() + MAX_COMMAND_CHARS]
+        end = _CLAUSE_END_RE.search(window)
+        out.append(window[: end.start() if end else len(window)].strip())
+        if len(out) >= _PROSE_COMMAND_LIMIT:
+            break
     return out
 
 
@@ -1427,8 +1633,17 @@ def front_matter_description(text: str) -> str | None:
 # ---- the reading ------------------------------------------------------------------------------------------------
 
 
-def save_adds(prepared: Any) -> SaveReading:
-    """What a declared self-edit's saved content adds (`ADDS`), and why the reading cannot vouch for it (`HELD`)."""
+@dataclass(frozen=True)
+class _Finding:
+    cls: str | None
+    reason: str | None
+
+
+def save_adds(prepared: Any, *, rule_findings: list[dict[str, Any]] | None = None) -> SaveReading:
+    """What a declared self-edit's saved content adds (`ADDS`), and why the reading cannot vouch for it (`HELD`).
+
+    `rule_findings`: the rule-based probe's findings on the save itself (its evidence entries for the pending call),
+    reused instead of running the rules on the save again; None runs them here."""
     planir = prepared.planir
     store = planir.self_edit.store.value if planir.self_edit is not None else "other"
     pending: CanonicalCall = prepared.pending
@@ -1511,7 +1726,19 @@ def save_adds(prepared: Any) -> SaveReading:
         adds.update((PERMISSION, DESTINATION))
         held.add(RISKY_STEP)
     # the command an exec save runs is the pending call itself, which the permission rules read as the target
-    rule(PERMISSION, lambda: _permission(prepared, candidates, findings, exec_save=exec_save))
+    target = (
+        None
+        if rule_findings is None
+        else [
+            _Finding(f.get("class"), f.get("reason")) for f in rule_findings if isinstance(f, dict)
+        ]
+    )
+    rule(
+        PERMISSION,
+        lambda: _permission(
+            prepared, candidates, findings, exec_save=exec_save, target_findings=target
+        ),
+    )
     shell = [command, *candidates] if exec_save else candidates
     rule(DESTINATION, lambda: _destination(prepared, reads, others, shell))
     rule(SECRET, lambda: _secret(plain))
