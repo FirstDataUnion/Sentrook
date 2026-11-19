@@ -594,8 +594,8 @@ def _scan_one(
                     "sid": sid,
                     "request_id": planir["request_id"],
                     "on_error": False,
-                    # Hermes keeps one review per rule key, so another chat's prompt for the same action can take
-                    # this entry's place: the answer sets the grant only from the chat it was asked in.
+                    # The same action can wait in several chats under one key (`Store.put_review` keeps one entry
+                    # per session): the answer sets the grant only from the chat it was asked in.
                     **(
                         {
                             "hint": hint,
@@ -857,7 +857,8 @@ def on_post_approval_response(**kw: Any) -> None:
             return
         cfg, _ = _load()
         store, traffic = _state(cfg)
-        review = store.pop_review(key)
+        # the same action can wait in several chats under one key: take the answering session's review
+        review = store.pop_review(key, str(kw.get("session_id") or kw.get("task_id") or "") or None)
         if not review:
             return
         choice = str(kw.get("choice") or kw.get("decision") or "").strip().lower()

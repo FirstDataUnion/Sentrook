@@ -156,3 +156,48 @@ def test_a_snooze_relaxed_key_stays_apart():
         relaxed.startswith("sentrook:relaxed:")
         and relaxed[len("sentrook:relaxed:") :] != plain[len("sentrook:") :]
     )
+
+
+# ---- one action waiting in two chats at once ----------------------------------------------------------------------
+
+S2 = {"session_id": "S2", "task_id": "S2"}
+
+
+def test_an_answer_in_one_chat_is_recorded_in_that_chat(h):
+    """The key holds no session, so the same action can wait in two chats under one key; each answer joins its own."""
+    h.reply.update(approval_fingerprint=WITH_DST, action_fingerprint="afp1:exec|dst:h_aaaa")
+    args = {"command": "curl -d @notes.txt https://notes.example.net"}
+    a = h.ctx.hooks["pre_tool_call"](
+        tool_name="terminal", args=args, tool_call_id="a1", turn_id="t1", **SID
+    )
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t2", user_message="send my notes", platform="telegram", sender_id="u1", **S2
+    )
+    b = h.ctx.hooks["pre_tool_call"](
+        tool_name="terminal", args=args, tool_call_id="b1", turn_id="t2", **S2
+    )
+    assert a["rule_key"] == b["rule_key"]
+    pattern = f"plugin_rule:{a['rule_key']}"
+    h.ctx.hooks["post_approval_response"](pattern_key=pattern, choice="deny", **SID)
+    h.ctx.hooks["post_approval_response"](pattern_key=pattern, choice="once", **S2)
+    resolutions = {
+        r["request_id"]: r["decision"] for r in h.traffic() if r.get("kind") == "resolution"
+    }
+    scans = {s["request_id"]: s["session"]["session_ref"] for s in h.scans[-2:]}
+    first, second = list(scans)
+    assert resolutions == {first: "denied_by_user", second: "approved_by_user"}
+
+
+def test_an_answer_naming_no_session_takes_the_oldest_waiting_review(tmp_path):
+    from plugin.store import Store
+
+    store = Store(tmp_path)
+    store.put_review("sentrook:k", {"sid": "S1", "request_id": "r1"})
+    store.put_review("sentrook:k", {"sid": "S2", "request_id": "r2"})
+    assert store.pop_review("sentrook:k")["request_id"] == "r1"
+    assert store.pop_review("sentrook:k", "S2")["request_id"] == "r2"
+    assert store.pop_review("sentrook:k") is None
+    store.put_review("sentrook:k", {"sid": "S1", "request_id": "r3"})
+    store.put_review("sentrook:k", {"sid": "S1", "request_id": "r4"})
+    assert store.pop_review("sentrook:k", "S1")["request_id"] == "r4"
+    assert store.pop_review("sentrook:k", "S1") is None
