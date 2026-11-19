@@ -276,7 +276,7 @@ const plugin = {
      * Background saves sent to the Skill Workshop drafts, by request id, until OpenClaw reports what it did with the
      * draft: kept it, did not keep it, or ran the call's own save instead.
      */
-    const pendingDrafts = new Map<string, (outcome: bg.Announced) => Json>();
+    const pendingDrafts = new Map<string, (outcome: bg.Announced, drafts: bg.PatchDraftCount | null) => Json>();
 
     const remember = (runId: string | undefined, ctx: any, patch: Json) => {
       store.mergeRun(runId, {
@@ -423,8 +423,13 @@ const plugin = {
             else if (!saved) entry.decision = "draft_failed";
             const announce = pendingDrafts.get(entry.request_id);
             pendingDrafts.delete(entry.request_id);
+            // A kept patch draft is announced with its place in the run: drafts of one skill undo each other.
+            const drafts =
+              outcome === "drafted" && typeof entry._patch_skill === "string"
+                ? bg.patchDraftCount(sess.history, entry._patch_skill)
+                : null;
             let notice: Json | null = null;
-            if (announce) safely("draft notice", () => void (notice = announce(outcome)));
+            if (announce) safely("draft notice", () => void (notice = announce(outcome, drafts)));
             traffic.write({
               kind: "resolution",
               request_id: entry.request_id,
@@ -586,7 +591,7 @@ const plugin = {
       const workshopAction = event.toolName === "skill_workshop" ? selfEdit.workshopAction(event?.params) : "";
       const toDraft = (resp: ScanOk["response"]): { params: Record<string, unknown> | null } | null => {
         const version = hostVersion ?? process.env.OPENCLAW_VERSION;
-        const patch = bg.patchDraft(event.toolName, event?.params, version, resp, selfEditBlock !== null, () => agentDirOf(ctx), new Date());
+        const patch = bg.patchDraft(event.toolName, event?.params, version, resp, selfEditBlock !== null, () => agentDirOf(ctx), new Date(), built.planir.request_id);
         if (patch) {
           patchDraft = "params" in patch ? "drafted" : patch.skip;
           return "params" in patch ? { params: patch.params } : null;
@@ -658,9 +663,10 @@ const plugin = {
           // OpenClaw reports what it did with the draft (after_tool_call).
           entry.decision = "drafted";
           if (drafting.params) hook = { params: drafting.params };
+          if (patchDraft === "drafted" && typeof drafting.params?.name === "string") entry._patch_skill = drafting.params.name;
           const save = bgSave;
-          pendingDrafts.set(built.planir.request_id, (outcome) =>
-            backgroundNotice(cfg, outcome, built, resp, event.toolName, save, triggerKind, run, false, workshopAction),
+          pendingDrafts.set(built.planir.request_id, (outcome, drafts) =>
+            backgroundNotice(cfg, outcome, built, resp, event.toolName, save, triggerKind, run, false, workshopAction, drafts),
           );
           if (pendingDrafts.size > 200) pendingDrafts.delete(pendingDrafts.keys().next().value!);
         } else if (bgSave) {
@@ -924,7 +930,8 @@ const plugin = {
      * Tells the owner what happened to one of OpenClaw's background saves (blocked, let through, kept as a draft, lost
      * as a draft, saved live instead of a draft, held): once per outcome and run (cron job for the collection review)
      * per quiet period. `retry`: a hold of a block-level score, with a quiet period of its own. `action`: the
-     * `skill_workshop` action; a patch sent to the drafts has notices and quiet periods of its own. Never throws.
+     * `skill_workshop` action; a patch sent to the drafts has notices and quiet periods of its own. `drafts`: a kept
+     * patch draft's place in its run (`bg.patchDraftCount`). Never throws.
      */
     function backgroundNotice(
       cfg: PluginConfig,
@@ -937,14 +944,17 @@ const plugin = {
       run: any,
       retry = false,
       action = "",
+      drafts: bg.PatchDraftCount | null = null,
     ): Json {
       const sref: string = built.planir.session.session_ref;
       const { where, jobId } = unattendedRun(sref, triggerKind, run, save.kind);
       const rid = cfg.trafficLog.enabled ? built.planir.request_id : null;
+      // Kept patch drafts: each one its own key, up to the last one announced, which says more are not.
+      const nth = drafts ? Math.min(drafts.run, bg.PATCH_DRAFT_NOTICES) : null;
       const out = quietNotice(
         cfg,
-        bg.quietKey(retry ? "held_retry" : outcome, jobId, sref, bg.patchDraftNotice(outcome, tool, action)),
-        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry, action),
+        bg.quietKey(retry ? "held_retry" : outcome, jobId, sref, bg.patchDraftNotice(outcome, tool, action), nth),
+        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry, action, drafts),
         "background-save",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);

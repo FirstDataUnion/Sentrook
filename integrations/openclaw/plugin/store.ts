@@ -88,6 +88,8 @@ export interface HistoryEntry {
   decision: string;
   /** Plugin-only bookkeeping, stripped before sending. */
   _host_call_id?: string;
+  /** Plugin-only: the skill a background patch sent to the drafts changes; stripped before sending. */
+  _patch_skill?: string;
 }
 
 export interface BufferedInput {

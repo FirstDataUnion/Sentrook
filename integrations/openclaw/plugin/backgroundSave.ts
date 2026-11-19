@@ -35,7 +35,7 @@
  * every save. Observe mode changes nothing and sends nothing.
  */
 
-import { closeSync, constants as fsConstants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 import { BLOCK_CATEGORIES, blockCategory, describe } from "./decision.ts";
@@ -174,6 +174,7 @@ export type PatchDraft =
   | "not_file"
   | "too_large"
   | "unreadable"
+  | "not_utf8"
   | "no_match"
   | "several_matches";
 
@@ -208,21 +209,35 @@ export function applyPatch(live: string, oldText: string, newText: string): { co
 }
 
 /**
- * The live `SKILL.md` of Workshop skill `name` under `agentDir`, or why it cannot be read safely. It must lie at
- * `<agentDir>/workshop-skills/<name>/SKILL.md` once every link is resolved (no link in the skill's folder or on the
- * file itself, as OpenClaw refuses them too), be a regular file with no other hard link, and hold at most
- * `MAX_SKILL_FILE_BYTES`. Never throws.
+ * The live `SKILL.md` of Workshop skill `name` under `agentDir`, or why it cannot be read safely. Confined on its own:
+ * `name` must be one Workshop skill name (OpenClaw's pattern: no slash, no dots), and the file must lie at
+ * `<real Workshop folder>/<name>/SKILL.md` once every link is resolved (no link in the skill's folder or on the file
+ * itself, as OpenClaw refuses them too). It must be a regular file (never a FIFO or device, which could block the
+ * gateway on open) with no other hard link, holding at most `MAX_SKILL_FILE_BYTES` of valid UTF-8. It is checked
+ * before it is opened, and again on the open file: the file opened must be the one checked, still at that path with
+ * no link on the way (a folder swapped for a link in between is refused). Never throws.
  */
 export function readLiveSkill(agentDir: string, name: string): { live: string } | { skip: PatchDraft } {
+  if (typeof name !== "string" || !SKILL_NAME.test(name)) return { skip: "bad_name" };
   let fd: number | null = null;
   try {
     const root = realpathSync(path.join(agentDir, "workshop-skills"));
-    const real = realpathSync(path.join(agentDir, "workshop-skills", name, "SKILL.md"));
-    if (real !== path.join(root, name, "SKILL.md")) return { skip: "outside" };
-    // O_NOFOLLOW: a link swapped in after the check above is refused, not followed.
-    fd = openSync(real, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const expected = path.join(root, name, "SKILL.md");
+    const rel = path.relative(root, expected);
+    if (rel !== path.join(name, "SKILL.md") || rel.split(path.sep).includes("..")) return { skip: "outside" };
+    if (realpathSync(path.join(agentDir, "workshop-skills", name, "SKILL.md")) !== expected) return { skip: "outside" };
+    const checked = lstatSync(expected);
+    if (!checked.isFile() || checked.nlink !== 1) return { skip: "not_file" };
+    if (checked.size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
+    // O_NOFOLLOW: a link swapped in for the file is refused; O_NONBLOCK: a FIFO swapped in never blocks the open.
+    fd = openSync(expected, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
     const st = fstatSync(fd);
     if (!st.isFile() || st.nlink !== 1) return { skip: "not_file" };
+    if (st.dev !== checked.dev || st.ino !== checked.ino) return { skip: "outside" };
+    // The folders on the way may have been swapped for links since the check: the path must still lead to this file.
+    if (realpathSync(expected) !== expected) return { skip: "outside" };
+    const now = lstatSync(expected);
+    if (now.dev !== st.dev || now.ino !== st.ino) return { skip: "outside" };
     if (st.size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
     // Read to one byte past the bound, in case the file grew since fstat.
     const buf = Buffer.alloc(MAX_SKILL_FILE_BYTES + 1);
@@ -233,7 +248,11 @@ export function readLiveSkill(agentDir: string, name: string): { live: string } 
       size += n;
     }
     if (size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
-    return { live: buf.subarray(0, size).toString("utf8") };
+    const bytes = buf.subarray(0, size);
+    const live = bytes.toString("utf8");
+    // Text that is not valid UTF-8 would come back changed (replacement characters) beyond the one change.
+    if (!Buffer.from(live, "utf8").equals(bytes)) return { skip: "not_utf8" };
+    return { live };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     const why: Record<string, PatchDraft> = { ENOENT: "missing", ENOTDIR: "missing", ELOOP: "outside", EISDIR: "not_file" };
@@ -249,10 +268,14 @@ export function readLiveSkill(agentDir: string, name: string): { live: string } 
   }
 }
 
-/** The reason stored with a patch draft: fixed words and the UTC minute the live skill was read. */
-export function patchDraftReason(now: Date): string {
+/**
+ * The reason stored with a patch draft: fixed words, the scan's short id (what `/sentrook-why` takes, so two drafts of
+ * one skill can be told apart) and the UTC minute the live skill was read.
+ */
+export function patchDraftReason(now: Date, requestId: string): string {
   const at = now.toISOString().slice(0, 16).replace("T", " ");
-  return `Held by Sentrook for your review: the skill as it stood at ${at} UTC, with one change applied.`;
+  const id = String(requestId ?? "").replace(/[^0-9a-f]/gi, "").slice(0, 8) || "unknown";
+  return `Held by Sentrook (scan ${id}) for your review: the skill as it stood at ${at} UTC, with one change applied.`;
 }
 
 /**
@@ -270,6 +293,8 @@ export function isSkillPatch(tool: string, params: any): "skill" | "support_file
  * The parameters that turn a reviewed background `patch` of a skill's `SKILL.md` into a Skill Workshop draft of the
  * whole patched skill, or why it stays held; null when the call is no such patch or the host takes no drafts
  * (`DRAFT_FLOOR`). The patch is applied as OpenClaw applies it to the live file, read safely (`readLiveSkill`).
+ * OpenClaw also refuses a background patch of a skill the run has not viewed first; a draft does not check that, so
+ * such a change can still reach the owner's drafts (inert until applied).
  * `declared`: the save was sent as a self-edit, so the response's `self_edit` is the scanner's reading of it. `agentDir`
  * is asked only when everything else allows a draft; whatever it returns or throws, nothing is allowed.
  *
@@ -286,6 +311,7 @@ export function patchDraft(
   declared: boolean,
   agentDir: () => unknown,
   now: Date,
+  requestId: string,
 ): { params: Record<string, unknown> } | { skip: PatchDraft } | null {
   const kind = isSkillPatch(tool, params);
   if (!kind || !atLeast(hostVersion)) return null;
@@ -309,7 +335,7 @@ export function patchDraft(
   if ("skip" in read) return read;
   const patched = applyPatch(read.live, oldText, newText);
   if ("skip" in patched) return patched;
-  return { params: { action: "draft", name, content: patched.content, reason: patchDraftReason(now) } };
+  return { params: { action: "draft", name, content: patched.content, reason: patchDraftReason(now, requestId) } };
 }
 
 /**
@@ -322,8 +348,35 @@ export function quietKey(
   jobId: string | null | undefined,
   sessionRef: string,
   patch = false,
+  nth: number | null = null,
 ): string {
-  return `background_${outcome}${patch ? "_patch" : ""}:${jobId ? `job:${jobId}` : `session:${sessionRef}`}`;
+  const run = jobId ? `job:${jobId}` : `session:${sessionRef}`;
+  return `background_${outcome}${patch ? "_patch" : ""}:${run}${nth === null ? "" : `#${nth}`}`;
+}
+
+/**
+ * How many changes kept as drafts a run announces one by one, each with its own quiet key: two drafts of one skill
+ * look alike and undo each other when applied in turn, so none may go unannounced. The last one announced says that
+ * further ones are not.
+ */
+export const PATCH_DRAFT_NOTICES = 5;
+
+/** A kept patch draft's place in its run: the drafts of its skill and of every skill this run has kept so far. */
+export interface PatchDraftCount {
+  skill: number;
+  run: number;
+}
+
+/** The kept patch drafts in a session's history (marked `_patch_skill` when sent): of skill `name`, and of every skill. */
+export function patchDraftCount(history: Array<{ decision: string; _patch_skill?: string }>, name: string): PatchDraftCount {
+  let skill = 0;
+  let run = 0;
+  for (const h of history) {
+    if (h.decision !== "drafted" || typeof h._patch_skill !== "string") continue;
+    run += 1;
+    if (h._patch_skill === name) skill += 1;
+  }
+  return { skill, run };
 }
 
 /** Whether a notice is about a patch sent to the drafts (kept, run live, or not kept): it has words of its own. */
@@ -355,6 +408,7 @@ export function noticeText(
   isJob: boolean,
   retry = false,
   action = "",
+  drafts: PatchDraftCount | null = null,
 ): string {
   const what = `${STORE_WORDS[store]}: ${inert(describe(resp, tool), 160)} (${inert(tool, 80)})`;
   // the id only means something while the traffic log keeps the scan
@@ -362,7 +416,7 @@ export function noticeText(
   const look = id ? `/sentrook-why ${id}; /sentrook-history lists every background save.` : "/sentrook-history lists every background save.";
   const scope = isJob ? "job" : "run";
   if (patchDraftNotice(outcome, tool, action)) {
-    return patchNotice(outcome as "drafted" | "draft_ignored" | "draft_failed", what, where, id, look, scope).join("\n");
+    return patchNotice(outcome as "drafted" | "draft_ignored" | "draft_failed", what, where, id, look, scope, drafts).join("\n");
   }
   const act = tool === "skill_workshop" && Object.hasOwn(HELD_WORKSHOP_ACTS, action) ? HELD_WORKSHOP_ACTS[action]! : null;
   const lines: Record<Announced, string[]> = {
@@ -429,8 +483,11 @@ function patchNotice(
   id: string | null,
   look: string,
   scope: string,
+  drafts: PatchDraftCount | null,
 ): string[] {
   if (outcome === "drafted") {
+    const skill = drafts?.skill ?? 1;
+    const last = (drafts?.run ?? 1) >= PATCH_DRAFT_NOTICES;
     return [
       "Sentrook saved a change to an existing skill from one of OpenClaw's background runs as a Skill Workshop draft, " +
         "for you to review: the skill is unchanged until you apply it.",
@@ -439,8 +496,19 @@ function patchNotice(
       "To review and apply it: the Skill Workshop drafts in the Control UI, or /learn drafts in a chat with the agent.",
       "Applying it replaces the skill with the version from when the change was held, with this one change: any later " +
         "change to that skill would be undone. It can be brought back from the skill's history.",
+      ...(skill > 1
+        ? [
+            `This ${scope} has now saved ${skill} drafts of this skill, each holding only its own change: applying them ` +
+              "one after another keeps only the last one's change. Apply one, or combine them with /learn drafts. " +
+              "Each draft's note names its scan.",
+          ]
+        : []),
       ...(id ? [`Why it was not saved directly: /sentrook-why ${id}`] : []),
-      `More changes sent to drafts from this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+      last
+        ? `Further changes sent to drafts from this ${scope} are not announced for ${QUIET_HOURS} hours; the Skill ` +
+          "Workshop drafts list them all."
+        : `Each change sent to the drafts from this ${scope} is announced, up to ${PATCH_DRAFT_NOTICES} in ` +
+          `${QUIET_HOURS} hours.`,
     ];
   }
   if (outcome === "draft_ignored") {

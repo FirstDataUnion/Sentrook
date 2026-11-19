@@ -590,8 +590,8 @@ export function buildPlanir(b: BuildInput): Built {
   // A held call is a review nobody has answered yet, and so is a background skill save sent to the drafts for the
   // owner (kept there or not): PlanIR has no word for these, so they go as `review_timed_out` (what was asked for did
   // not run, and a retry of it is a retry after a review).
-  const history = window.map(({ _host_call_id: _drop, ...h }) =>
-    (DRAFT_OR_HELD.has(h.decision) ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id">,
+  const history = window.map(({ _host_call_id: _drop, _patch_skill: _dropSkill, ...h }) =>
+    (DRAFT_OR_HELD.has(h.decision) ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id" | "_patch_skill">,
   );
 
   const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);
