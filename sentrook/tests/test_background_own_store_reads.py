@@ -10,9 +10,10 @@ reached its save:
   in the working directory. The host marks a cell on its hook event and the plugin passes that on as
   `pending_call.input_kind` `javascript`; a marked cell's own text then names no written file, only the writes its
   command strings spell out (each nested call is scanned on its own as well). Without the mark (older hosts), a
-  redirect target starting with a bare `(` still names no file: a shell cannot run it.
-- `echo ...` and `printf ...` were read as writing the files their arguments name. They print their arguments; only a
-  redirect makes them write.
+  redirect target the parser can only read as an error starting with a bare `(` names no file.
+- `echo ...` and `printf ...` were read as writing every word they print, resolved in the working directory. Only a
+  path among what they print counts now (a word with a `/`, or starting with `~` or `$`, also inside a command
+  string they print): what they print can feed `xargs rm`, `$(...)` or a shell, so such a path is still written.
 
 These are parsing rules, the same for every session: a background run gets no relief of its own. Writes (a redirect
 or a writing command, also inside a cell's command strings), reads outside the store, `..` escapes out of it and
@@ -388,3 +389,59 @@ def test_a_marked_cell_that_prints_the_key_gets_no_credential_relief():
         assert "relief.credential_own_service" not in codes(res)
         if why:
             assert res.prepared.credential_home_check == why
+
+
+# --------------------------------------------------------------------------- what echo and printf print
+
+EXT = "~/.openclaw/extensions/sentrook"
+#: Paths `echo` or `printf` print that a writer or a shell then acts on: each still counts as written, with the same
+#: finding as when `echo` counted every argument.
+PRINTED_INTO_A_WRITER = {
+    f"rm -rf $(echo {EXT})": "guardrail.state_dir_write",
+    f'rm -rf "$(echo {EXT})"': "guardrail.state_dir_write",
+    f"echo {EXT} | xargs rm -rf": "guardrail.state_dir_write",
+    f"printf '%s\\0' {EXT} | xargs -0 rm -rf": "guardrail.state_dir_write",
+    f'echo {EXT} | while read d; do rm -rf "$d"; done': "guardrail.state_dir_write",
+    f"echo 'rm -rf {EXT}' | sh": "guardrail.state_dir_write",
+    f"echo 'rm -rf {EXT}' | bash": "guardrail.state_dir_write",
+    f"echo 'rm -rf {EXT}' > /tmp/x.sh && sh /tmp/x.sh": "guardrail.state_dir_write",
+    f'eval "$(echo rm -rf {EXT})"': "guardrail.state_dir_write",
+    f"sh -c \"$(printf 'rm -rf %s' {EXT})\"": "guardrail.state_dir_write",
+    "echo ~/.openclaw/openclaw.json | xargs truncate -s 0": "selfmod.config",
+    "echo ~/.openclaw/openclaw.json | xargs sed -i 's/ask/off/'": "selfmod.config",
+    "tee -a $(echo ~/.bashrc) < /tmp/p": "selfmod.startup",
+    "f=$(echo ~/.bashrc); cat /tmp/p >> $f": "selfmod.startup",
+    "for f in $(echo ~/.bashrc ~/.profile); do echo x >> $f; done": "selfmod.startup",
+    "echo ~/.bashrc | xargs -I{} cp /tmp/p {}": "selfmod.startup",
+    "echo ~/.ssh/authorized_keys | xargs -n1 cp /tmp/k": "selfmod.startup",
+    "printf 'echo x >> ~/.bashrc' | sh": "selfmod.startup",
+}
+
+
+@pytest.mark.parametrize("trigger", ["owner", "review run"])
+@pytest.mark.parametrize(
+    "command, reason", PRINTED_INTO_A_WRITER.items(), ids=PRINTED_INTO_A_WRITER.keys()
+)
+def test_a_path_echo_or_printf_prints_still_counts_as_written(command, reason, trigger):
+    raw = (
+        shell(command, trigger=OWNER, workspace=WORKSPACE) if trigger == "owner" else shell(command)
+    )
+    env = run(raw)
+    assert reason in reasons(env)
+    if reason.startswith("guardrail."):
+        assert env.floors, "the guardrail floor still applies"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ...",
+        "echo done",
+        "echo '--- counts'",
+        "printf '%s\\n' done",
+        "echo -n ok",
+        "printf '%d items' 3",
+    ],
+)
+def test_echo_and_printf_of_plain_words_write_nothing(command):
+    assert selfmod(run(shell(command))) == set()
