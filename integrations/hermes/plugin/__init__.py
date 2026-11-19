@@ -31,6 +31,7 @@ from . import (
     scan_failure_notice,
     skill_review,
     snooze,
+    staging,
 )
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
@@ -61,7 +62,9 @@ from .traffic import TrafficLog
 logger = logging.getLogger("sentrook")
 
 #: History decisions after which the tool did not run.
-NOT_RUN = frozenset({"blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held"})
+NOT_RUN = frozenset(
+    {"blocked", "denied_by_user", "review_timed_out", "blocked_on_error", "held", "staged"}
+)
 
 #: Every key the plugin reads from `plugins.entries.sentrook.settings` in config.yaml.
 SETTINGS_KEYS = (
@@ -518,6 +521,9 @@ def _scan_one(
     relaxed = False
     let_through = False
     held: dict[str, Any] | None = None
+    stage: dict[str, Any] | None = (
+        None  # what became of a held background save (`_stage_background`)
+    )
     notice: dict[str, Any] | None = (
         None  # the owner's notice of a background save or a scan failure
     )
@@ -577,10 +583,24 @@ def _scan_one(
         elif loop_save:
             # Held, but not as an approvable hold: approving could not make the save (the hold keeps no arguments and
             # suggests no grant for a background save), and a curator pass must not crowd out other runs' holds.
-            # History and status record it; the owner gets a notice.
-            entry["decision"] = "held"
-            directive = {"action": "block", "message": hold.HELD_TEXT}
-            notice = _background_notice(cfg, built, resp, "held")
+            # Where Hermes can replay it, the save is staged in Hermes's own pending store for the owner instead
+            # (`staging`). History and status record it; the owner gets a notice.
+            stage = _stage_background(
+                cfg, built, resp, tool_name, kw.get("args"), redactor, self_edit is not None
+            )
+            if stage["status"] == "staged":
+                entry["decision"] = "staged"
+                directive = {"action": "block", "message": staging.STAGED_TEXT}
+                notice = _background_notice(cfg, built, resp, "staged", stage)
+            elif stage["status"] == "host":
+                # Hermes's own gate stages this change instead of making it: the call goes to it, and
+                # `post_tool_call` reads what it did and tells the owner.
+                entry["decision"] = "host_staging"
+                entry["_background"] = _background_info(built, resp)
+            else:
+                entry["decision"] = "held"
+                directive = {"action": "block", "message": hold.HELD_TEXT}
+                notice = _background_notice(cfg, built, resp, "held")
         elif unattended:
             # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
             entry["decision"] = "held"
@@ -689,6 +709,7 @@ def _scan_one(
             **({"relaxed": True} if relaxed else {}),
             **({"hold": held} if held is not None else {}),
             **({"notice": notice} if notice is not None else {}),
+            **({"staging": stage} if stage is not None else {}),
             **({"skill_review": True} if loop_save else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
@@ -788,21 +809,90 @@ def _notice_target(owner_channel: str) -> tuple[str | None, str]:
     return target, why
 
 
+def _stage_background(
+    cfg: PluginConfig,
+    built: dict[str, Any],
+    resp: dict[str, Any],
+    tool: str,
+    args: Any,
+    redactor: Redactor,
+    declared: bool,
+) -> dict[str, Any]:
+    """Keeps a held background save in Hermes's pending store where it may be (`staging`). Returns what the scan
+    record says: status `staged` (with the store and the pending id), `host` (Hermes's own gate will stage it) or
+    `held` (with why not). Never raises: anything that fails holds the save as before."""
+    try:
+        why = staging.refusal(
+            resp, declared=declared, redacted=redactor.value(args) != args, block_at=cfg.block_at
+        )
+        if why is not None:
+            return {"status": "held", "reason": why}
+        p = staging.plan(tool, args, redactor)
+        if isinstance(p, str):
+            return {"status": "held", "reason": p}
+        if p.by == "hermes":
+            return {"status": "host", "store": p.store, "by": "hermes"}
+        text = staging.summary(p, rule=resp.get("enforced") == "review")
+        pending_id, reason = staging.stage(p, text, cfg.state_dir)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook could not stage a held background save: %s", exc)
+        return {"status": "held", "reason": "failed"}
+    if pending_id is None:
+        if reason != "over_cap":
+            logger.warning("sentrook could not stage a held background save: %s", reason)
+        return {"status": "held", "reason": reason}
+    return {"status": "staged", "store": p.store, "id": pending_id, "by": "sentrook"}
+
+
+def _background_info(built: dict[str, Any], resp: dict[str, Any]) -> dict[str, Any] | None:
+    """What a background-save notice says about the save, from the plugin's own words and the response's display
+    fields only; None when the response is malformed."""
+    try:
+        planir = built["planir"]
+        return {
+            "tool": built["tool"],
+            "shown": describe(resp, built["tool"]),
+            "where": _where(built),
+            "category": BLOCK_CATEGORIES[block_category(resp)],
+            "rule": resp.get("enforced") == "review",
+            "request_id": planir["request_id"],
+            "session_ref": planir["session"]["session_ref"],
+        }
+    except Exception as exc:  # noqa: BLE001 - a malformed response: not announced
+        logger.warning("sentrook could not build a background-save notice: %s", exc)
+        return None
+
+
 def _background_notice(
     cfg: PluginConfig,
     built: dict[str, Any],
     resp: dict[str, Any],
     outcome: str,
+    stage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Tells the owner a background save was blocked, held, or let through without asking (`outcome`: blocked,
-    held, allowed-lenient or allowed-snoozed): once per kind and session per quiet period. Returns what the scan record says about the notice. Never raises:
-    the save's outcome stands whatever happens here."""
+    """Tells the owner a background save was blocked, held, staged, or let through without asking (`outcome`:
+    blocked, held, staged, allowed-lenient or allowed-snoozed; `stage` as `_stage_background` returns it): once per
+    kind and session per quiet period. Returns what the scan record says about the notice. Never raises: the save's
+    outcome stands whatever happens here."""
+    return _send_background_notice(cfg, _background_info(built, resp), outcome, stage)
+
+
+def _send_background_notice(
+    cfg: PluginConfig,
+    info: dict[str, Any] | None,
+    outcome: str,
+    stage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`_background_notice` from the notice's facts (`_background_info`); also used once Hermes says what it did
+    with a change its own gate stages (outcomes staged, unstaged-saved, unstaged-unknown, held)."""
     target, why = _notice_target(cfg.owner_channel)
     if not target:
         logger.warning("sentrook %s a background save but sent no notice: %s", outcome, why)
         return {"status": "unsent", "target": None, "reason": why}
-    planir = built["planir"]
-    key = skill_review.quiet_key(outcome, planir["session"]["session_ref"])
+    if info is None:
+        return {"status": "unsent", "target": None, "reason": "notice could not be built"}
+    kind = "unstaged" if outcome.startswith("unstaged") else outcome
+    key = skill_review.quiet_key(kind, info["session_ref"])
     try:
         stamp = scan_failure_notice.claim(cfg.state_dir, key, datetime.now(UTC))
         if stamp is None:
@@ -817,28 +907,36 @@ def _background_notice(
         scan_failure_notice.release(cfg.state_dir, key, stamp)
 
     try:
-        where = _where(built)
-        shown = describe(resp, built["tool"])
+        tool, shown, where = info["tool"], info["shown"], info["where"]
         details = (
-            f"Details: {commands.CMD('why')} {planir['request_id'][:8]}; every background save is in "
+            f"Details: {commands.CMD('why')} {info['request_id'][:8]}; every background save is in "
             f"{commands.CMD('history')}."
             if cfg.traffic_log_enabled
             else None
         )
-        text = (
-            skill_review.stopped_text(
-                outcome,
-                built["tool"],
+        if outcome in ("blocked", "held"):
+            text = skill_review.stopped_text(outcome, tool, shown, where, info["category"], details)
+        elif outcome == "staged":
+            stage = stage or {}  # a staged notice without its record is not built
+            text = skill_review.staged_text(
+                tool,
                 shown,
                 where,
-                BLOCK_CATEGORIES[block_category(resp)],
+                info["category"],
+                info["rule"],
+                str(stage["store"]),
+                str(stage["id"]),
                 details,
+                by_hermes=stage.get("by") == "hermes",
             )
-            if outcome in ("blocked", "held")
-            else skill_review.let_through_text(
-                built["tool"], shown, where, details, outcome == "allowed-snoozed"
+        elif outcome.startswith("unstaged"):
+            text = skill_review.unstaged_text(
+                tool, shown, where, details, saved=outcome == "unstaged-saved"
             )
-        )
+        else:
+            text = skill_review.let_through_text(
+                tool, shown, where, details, outcome == "allowed-snoozed"
+            )
     except Exception as exc:  # noqa: BLE001 - a malformed response: not announced
         logger.warning("sentrook could not build a background-save notice: %s", exc)
         release()
@@ -1073,6 +1171,8 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
             if entry is None:
                 return
             status = str(kw.get("status") or "ok")
+            if entry.get("decision") == "host_staging":
+                _host_staging_done(cfg, entry, status, result)
             text = (
                 result
                 if isinstance(result, str)
@@ -1122,6 +1222,53 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
             store.save_session(sid, s, cfg.history_limit * 2)
     except Exception as exc:  # noqa: BLE001
         logger.warning("post_tool_call failed: %s", exc)
+
+
+#: What Hermes did with a change its own gate stages -> (the history decision, the resolution, the notice).
+_HOST_OUTCOMES = {
+    "staged": ("staged", "host_staged", "staged"),
+    "saved": ("allowed", "host_saved", "unstaged-saved"),
+    "unknown": ("allowed", "host_unknown", "unstaged-unknown"),
+    "not_saved": ("held", "host_not_saved", "held"),
+}
+
+
+def _host_staging_done(cfg: PluginConfig, entry: dict[str, Any], status: str, result: Any) -> None:
+    """A destructive background memory change the plugin left to Hermes's own gate has run: records what Hermes did
+    (staged it, made it, or neither) truthfully and tells the owner. Never raises."""
+    try:
+        outcome = staging.host_outcome(status, result)
+        decision, resolution, notice_kind = _HOST_OUTCOMES[outcome["result"]]
+        entry["decision"] = decision
+        stage = None
+        if outcome["result"] == "staged":
+            stage = {
+                "status": "staged",
+                "store": staging.MEMORY,
+                "id": outcome["id"],
+                "by": "hermes",
+            }
+            staging.keep_private(staging.MEMORY, outcome["id"])
+        info = entry.pop("_background", None)
+        notice = _send_background_notice(cfg, info, notice_kind, stage)
+        traffic = _state(cfg)[1]
+        traffic.write(
+            {
+                "kind": "resolution",
+                "request_id": entry["request_id"],
+                "resolution": resolution,
+                "decision": decision,
+                **({"pending_id": outcome["id"]} if stage else {}),
+                "notice": notice,
+            }
+        )
+        if outcome["result"] != "staged":
+            logger.warning(
+                "sentrook left a background memory change to Hermes to stage, but Hermes did not: %s",
+                outcome["result"],
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentrook could not record what Hermes did with a background save: %s", exc)
 
 
 def register(ctx: Any) -> None:

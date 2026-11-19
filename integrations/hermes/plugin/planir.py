@@ -31,7 +31,7 @@ from .redact import Redactor, cap_args
 from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
 from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.15"
+PLUGIN_VERSION = "2.0.0-beta.16"
 
 TOOL_KIND = {
     "terminal": "exec",
@@ -313,8 +313,14 @@ def _text(v: Any) -> str:
 
 
 #: History decisions the plugin keeps that PlanIR has no word for, and the word it sends instead. A held
-#: call is a review nobody has answered yet: it did not run, and a retry of it is a retry after a review.
-_SENT_DECISION = {"held": "review_timed_out"}
+#: call is a review nobody has answered yet: it did not run, and a retry of it is a retry after a review. So is a
+#: background save staged for the owner in Hermes's pending store (by the plugin, or by Hermes's own gate before
+#: the plugin hears what it did): it is not saved until the owner approves it.
+_SENT_DECISION = {
+    "held": "review_timed_out",
+    "staged": "review_timed_out",
+    "host_staging": "review_timed_out",
+}
 
 
 def request_turn_id(sess: dict[str, Any]) -> Any:

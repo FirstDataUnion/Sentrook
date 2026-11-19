@@ -851,3 +851,40 @@ After a turn, Hermes's background review saves skills and memory, and its curato
   - More secret spellings: `pw`, "PIN code", "was changed to", "password - x", spaced card digits, base32 seeds in groups or lower case, numbered or line-split recovery phrases and "backup words".
   - The rule-based probe's findings on the save itself are reused instead of running the rules again, and the remaining unbounded patterns are bounded.
   - Tests: `test_self_edit_save` (must not be lenient: each of the above; must be lenient: a push to `origin`, `chmod +x`, a prose list, an edit that keeps every word it replaces, a rewording with `weakens_oversight` below 0.5 (and not at 0.5 or above, or without the answer), a link that only points to reading; the one-pass fence reading against the skill reading; the reading of four large crafted saves within 5 s; the response otherwise identical with and without the field for thirteen self-edit requests; and the round's new cases).
+
+### Hermes plugin 2.0.0-beta.16: a held background save is staged in Hermes for the owner (2026-11-19)
+A background skill or memory save Sentrook reviews and does not let through is held, and nothing kept its content, so
+the owner could only ask the agent for it again. Now, where Hermes can replay it, the plugin puts it in Hermes's own
+pending store (`tools.write_approval.stage_write`, the store `skills.write_approval` / `memory.write_approval` use;
+those settings are not needed or changed), and the owner looks at it and approves or rejects it with Hermes's own
+`/skills diff|approve|reject <id>` and `/memory pending|approve|reject <id>`.
+- Staged: `skill_manage` create, edit, patch, write_file, remove_file and batches of only those; `memory` add and
+  batches of only adds; from the review fork and the curator alike, with the origin Hermes reports. A review a rule
+  floor enforces is staged, and its summary says a rule asked for it. The staged payload is the call's own arguments.
+- Never staged, held as before: a block; a block-level score a retry rule capped at review; a save whose scan reports
+  `secret` in `self_edit.adds` (or, when the response has no `self_edit` object, a save the plugin's own redaction
+  changed); a skill delete (Hermes hard-deletes an approved staged delete); a save sent without the `self_edit` block
+  (`skill_review: review`).
+- Memory patch and remove (alone or in a batch): never staged by the plugin, which would have to pin the entry
+  itself. Hermes's own gate stages these when its unattended background review makes them; the plugin lets such a
+  change through to that gate only when it can establish the gate in the running Hermes (the call is an unattended
+  review, `tools.memory_tool` has the gate, the gate reads that condition and stages, and the memory tool calls it
+  before it writes), never from a version string. `post_tool_call` reads Hermes's result: staged (with its pending
+  id) is recorded and announced as staged; a result that says the change was saved, or does not say, is recorded and
+  announced as not staged; a refusal as not saved. Without that gate the change is held as before.
+- The plugin writes each record's summary: "Held by Sentrook ...", the kind of change, at most 200 characters, with
+  control and bidi characters removed, a skill name shown only when it cannot render as a link or mention, never the
+  saved text. The staged file is made 0600. At most 20 records the plugin staged wait in each store; past that, saves
+  are held as before. Any failure to import or stage holds the save as before, with the held notice.
+- The agent is told the save was not saved, is staged for the owner and must not be retried in this run. The owner's
+  notice (same channel and quiet-window rules, its own kind) gives the pending id and the commands to look first and
+  then approve or reject, never the saved text.
+- History shows "staged (self-edit)" with review "pending in Hermes"; a change left to Hermes's gate shows "sent to
+  Hermes to stage", then "staged (by Hermes, ...)", "saved (not staged by Hermes, ...)" or "held". `status` counts
+  staged saves; the dashboard puts them with reviews. The scanner is told a staged save did not run
+  (`review_timed_out`). Observe mode, attended calls and lenient let-throughs are unchanged.
+- Tests: `test_staged_saves` (each stageable action staged with its exact payload, origin, summary and 0600 file; every
+  background run; summary and notice texts carry the id and commands and never the save; each never-stage case held;
+  import failure, a raising or silent `stage_write`, a file that cannot be made private, a bad id; the cap per store;
+  observe, lenient and attended unchanged; Hermes's gate: patch, remove and a mixed batch let through and the result
+  read as staged, saved, refused, blocked or unreadable; the gate held when it cannot be established).

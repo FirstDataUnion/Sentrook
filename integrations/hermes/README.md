@@ -344,7 +344,7 @@ through. A save is reviewed or blocked when it carries instructions that came fr
 other people, weakens one of your rules, claims approvals you never gave, or stores secrets you did not ask it to
 keep. These saves never ask you (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 
-Every background save is scanned and logged, and `status` counts them: allowed, blocked, held and let through. Only Hermes's
+Every background save is scanned and logged, and `status` counts them: allowed, blocked, held, staged and let through. Only Hermes's
 automatic review and curator count: a skill or memory change you ask for in a turn, or a `/refine` you run, is
 scanned like any other call, and so is every other tool those background runs call. Every call a background run
 makes is sent with your last message as its request and the number of the turn it follows, and does not count as
@@ -370,20 +370,56 @@ instead:
 |---|---|---|
 | Allow | It is saved. | Nothing; it is in history. |
 | Review, and Sentrook finds nothing in the save that needs you | It is saved without asking. | A notice that a save Sentrook would normally ask about was let through. |
-| Review, otherwise | It is held: not saved. There is nothing to approve, because approving could not make the save; to keep it, ask the agent for it in a chat. | A notice that a background save was held. |
+| Review, and Hermes can keep it for you (see below) | It is held, not saved, and **staged** in Hermes's own pending list: you can look at it and approve or reject it with Hermes's commands. | A notice with its pending id and the commands. |
+| Review, otherwise | It is held: not saved, and nothing keeps it; to keep it, ask the agent for it in a chat. | A notice that a background save was held. |
 | Block | It is not saved. | A notice that a background save was blocked. |
 | The scan failed | As on an unattended run: with `on_scan_error` `review` or `deny` it is not saved, with `allow` it is (see [When the scan service fails](#when-the-scan-service-fails)). | The scan-failure notice when it is not saved. |
 
 The notices go to the home channel of the platform in `owner_channel`. They say whether it was a skill or a memory
 save and what it saved, as a review would describe it, and point to `/sentrook why <id>` and `/sentrook history`.
-You get at most one notice of each kind (let through, held, blocked) per session every 6 hours; history has every
-save, and shows a held one as "not saved".
+You get at most one notice of each kind (let through, held, staged, blocked) per session every 6 hours; history has
+every save, and shows a held one as "not saved" and a staged one as "pending in Hermes".
 Without `owner_channel` (for example when you use Hermes only on the local terminal) the saves are handled the same
 way, but nothing tells you: `status` and `verify` say so, and the saves show only in `/sentrook history` and the
 `skill review` counts in `status`. A snooze on the session (or on every session) lets a save through that would
 otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal session or a
 platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
 cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
+
+#### Approving a held save in Hermes
+
+A held background save that Hermes can replay is put in Hermes's own pending list (the one its `skills.write_approval`
+and `memory.write_approval` settings use; you do not need to switch those on). The notice gives its id and the
+commands, which work in a chat and on the local terminal:
+
+- A skill save: `/skills diff <id>` shows what it would write; then `/skills approve <id>` saves it, or
+  `/skills reject <id>` drops it. `/skills pending` lists every pending skill save.
+- A memory save: `/memory pending` lists it; then `/memory approve <id>` or `/memory reject <id>`. The list shows
+  what kind of change it is, not the text; the text is in `pending/memory/<id>.json` in the Hermes home folder.
+
+Approving replays the save through Hermes's own skill or memory tool, with Hermes's own checks. If the skill has
+changed since, so that an edit no longer fits, the diff and the approval say so and nothing is written; reject it.
+Sentrook writes each entry's summary itself ("Held by Sentrook ...": the kind of change, never what it saves), makes
+the staged file readable by you only, and keeps at most 20 of its own entries waiting in each list; past that, saves
+are held as before until you approve or reject some. The agent is told the save was not made, is waiting for you,
+and must not be retried in that run.
+
+What is staged: a new skill, a skill edit or patch, writing or removing a file in a skill (alone or in one batch),
+and adding memory entries (alone or in one batch). These stay held and are lost, as before:
+
+- deleting a skill (Hermes deletes an approved skill for good, not to its archive);
+- a save Sentrook finds a secret in, which staging would write to a file in plain text;
+- a save Sentrook blocks, or one that scored at the block line;
+- with `skill_review: review`, every held save.
+
+Changing or removing memory entries is held too, except where Hermes itself stages it: Hermes never lets its
+unattended background review change or remove memory entries and puts the change in its pending list instead. When
+Sentrook can see that gate in the Hermes it runs in, it leaves the change to it, and the notice says what Hermes did:
+staged it (with its id), or, if Hermes reports otherwise, that it was saved without your approval. Where Sentrook
+cannot see that gate, the change is held and lost as before.
+
+Staging needs the plugin to run inside Hermes's own process, as Hermes loads plugins by default. If staging fails
+for any reason, the save is held as before and the notice says it was not saved.
 
 ### When the scan service fails
 

@@ -1,5 +1,5 @@
 name: sentrook
-version: 2.0.0-beta.15
+version: 2.0.0-beta.16
 # Hermes installers cap install at manifest_version 1; no v2-only fields are used.
 manifest_version: 1
 api_version: 1
@@ -87,7 +87,8 @@ config_schema:
       review and the curator) to Sentrook and sends the recent conversation, redacted, so the save is judged
       against what was said. Either way these saves never ask for approval (nobody is there to answer):
       a review Sentrook marks lenient (only with allow) lets the save through, any other review holds it
-      (not saved), and the owner is told on owner_channel. review sends them like any other
+      (not saved; with allow, a save Hermes can replay is staged in Hermes's pending list for the owner's
+      /skills or /memory approve), and the owner is told on owner_channel. review sends them like any other
       call, without the conversation, and deletes the kept conversations. false (off, no) reads as review and
       true as allow; any other value reads as allow (status and the startup log name it). Env SENTROOK_SKILL_REVIEW.
   timeout_ms:
