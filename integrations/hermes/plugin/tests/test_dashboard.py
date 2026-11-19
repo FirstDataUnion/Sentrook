@@ -6,6 +6,7 @@ import json
 import shutil
 import sys
 import types
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -73,8 +74,28 @@ def test_build_model_adds_lines_mode_and_state(tmp_path):
     assert m["mode"] == "enforce"
     assert isinstance(m["state"]["grants"], str)
     assert isinstance(m["state"]["snooze"], str)
-    assert m["commands"]["grants"] == "/sentrook grants"
+    assert m["commands"] == dashboard.COMMANDS
+    assert m["commands"]["prefix"] == "/sentrook "
+    assert m["pending"]["review_window_s"] == 300
     assert len(m["scans"]) == 6
+
+
+def test_pending_matches_the_shared_fixture(tmp_path):
+    shutil.copy(DASH / "holds.json", tmp_path / "holds.json")
+    model = dashboard.scans_model(FIXTURES / "traffic.jsonl", True, 50)
+    now = datetime(2026, 10, 29, 9, 47, tzinfo=UTC)
+    got = dashboard.pending_of(model, tmp_path, now, 300)
+    assert got == json.loads((DASH / "pending.json").read_text())
+    assert RAW not in json.dumps(got)
+    later = datetime(2026, 10, 29, 9, 51, tzinfo=UTC)
+    assert dashboard.pending_of(model, tmp_path, later, 300)["reviews"] == []
+
+
+def test_pending_with_an_unreadable_holds_file(tmp_path):
+    (tmp_path / "holds.json").write_text("not json")
+    got = dashboard.pending_of({"scans": []}, tmp_path, datetime.now(UTC), 300)
+    assert got["holds"] == []
+    assert got["holds_readable"] is False
 
 
 def test_view_is_the_openclaw_view_byte_for_byte():
@@ -119,10 +140,12 @@ def api(monkeypatch, tmp_path):
     fastapi.APIRouter = _Router
     monkeypatch.setitem(sys.modules, "fastapi", fastapi)
     settings = {}
+    approvals = {}
     hermes_cli = types.ModuleType("hermes_cli")
     hermes_config = types.ModuleType("hermes_cli.config")
     hermes_config.load_config_readonly = lambda: {
-        "plugins": {"entries": {"sentrook": {"settings": dict(settings)}}}
+        "plugins": {"entries": {"sentrook": {"settings": dict(settings)}}},
+        "approvals": dict(approvals),
     }
     hermes_cli.config = hermes_config
     monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
@@ -142,6 +165,7 @@ def api(monkeypatch, tmp_path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.settings = settings
+    mod.approvals = approvals
     mod.home = home
     return mod
 
@@ -188,3 +212,12 @@ def test_api_does_not_load_the_agent_side_plugin(api, tmp_path):
     # The plugin's __init__.py hooks into the agent; the dashboard process must not run it.
     pkg = sys.modules["_sentrook_dashboard_plugin"]
     assert not hasattr(pkg, "register")
+
+
+def test_api_takes_the_answer_window_from_hermes_approvals_timeout(api, tmp_path):
+    api.home["path"] = _home_with_log(tmp_path / "default")
+    assert api.build(None)["pending"]["review_window_s"] == 300
+    api.approvals["timeout"] = 120
+    assert api.build(None)["pending"]["review_window_s"] == 120
+    api.approvals["timeout"] = "soon"
+    assert api.build(None)["pending"]["review_window_s"] == 300

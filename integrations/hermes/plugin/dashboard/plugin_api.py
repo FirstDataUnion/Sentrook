@@ -35,8 +35,8 @@ def _module(name: str) -> Any:
     return importlib.import_module(f"{_PACKAGE}.{name}")
 
 
-def _settings() -> dict[str, Any]:
-    """The plugin's settings (`plugins.entries.sentrook.settings`), as the agent's `ctx.get_config` reads them."""
+def _hermes_config() -> dict[str, Any]:
+    """Hermes's config.yaml for this request's profile; empty outside Hermes or when unreadable."""
     try:
         from hermes_cli import config as hermes_config
     except ImportError:
@@ -50,7 +50,21 @@ def _settings() -> dict[str, Any]:
         data = load() or {}
     except Exception:  # noqa: BLE001 - unreadable config: env and defaults, as the agent falls back
         return {}
-    plugins = data.get("plugins") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+def _review_window_s(data: dict[str, Any], default: float) -> float:
+    """`approvals.timeout`: how long Hermes waits for an answer to an approval prompt, in seconds."""
+    approvals = data.get("approvals")
+    raw = approvals.get("timeout") if isinstance(approvals, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        return default
+    return float(raw)
+
+
+def _settings(data: dict[str, Any]) -> dict[str, Any]:
+    """The plugin's settings (`plugins.entries.sentrook.settings`), as the agent's `ctx.get_config` reads them."""
+    plugins = data.get("plugins")
     entries = plugins.get("entries") if isinstance(plugins, dict) else None
     entry = entries.get("sentrook") if isinstance(entries, dict) else None
     if not isinstance(entry, dict):
@@ -77,8 +91,10 @@ def _env() -> dict[str, str]:
 def build(n: str | None) -> dict[str, Any]:
     config = _module("config")
     dashboard = _module("dashboard")
-    cfg = config.resolve_config(_settings(), _env())
-    return dashboard.build_model(cfg, dashboard.limit_of(n))
+    data = _hermes_config()
+    cfg = config.resolve_config(_settings(data), _env())
+    window = _review_window_s(data, dashboard.DEFAULT_REVIEW_WINDOW_S)
+    return dashboard.build_model(cfg, dashboard.limit_of(n), review_window_s=window)
 
 
 @router.get("/model")

@@ -14,6 +14,7 @@
       "review": "-",
       "bucket": "blocked",
       "flags": [],
+      "open_review": false,
       "failure": null,
       "risk": 86.4,
       "enforced": "block",
@@ -183,6 +184,7 @@
       "flags": [
         "snoozed"
       ],
+      "open_review": false,
       "failure": null,
       "risk": 61,
       "enforced": null,
@@ -294,6 +296,7 @@
       "review": "-",
       "bucket": "observed",
       "flags": [],
+      "open_review": false,
       "failure": null,
       "risk": 61,
       "enforced": null,
@@ -407,6 +410,7 @@
       "flags": [
         "relaxed"
       ],
+      "open_review": false,
       "failure": null,
       "risk": 38,
       "enforced": null,
@@ -530,6 +534,7 @@
       "review": "-",
       "bucket": "allowed",
       "flags": [],
+      "open_review": false,
       "failure": null,
       "risk": 4,
       "enforced": null,
@@ -634,6 +639,7 @@
       "review": "-",
       "bucket": "scan_error",
       "flags": [],
+      "open_review": false,
       "failure": "timeout",
       "risk": null,
       "enforced": null,

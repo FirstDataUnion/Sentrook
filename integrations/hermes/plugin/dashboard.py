@@ -27,6 +27,7 @@ from .history import (
     recent_scans,
     review_of,
 )
+from .store import Store, read_time
 
 MODEL_VERSION = 1
 
@@ -146,6 +147,12 @@ def scan_model(scan: dict[str, Any], resolution: dict[str, Any] | None) -> dict[
         "review": review_of(action, resolution),
         "bucket": bucket_of(scan, action),
         "flags": [f for f in FLAGS if scan.get(f) is True],
+        # An approval prompt that had no answer when the log was read: still open if recent (`pending_of`).
+        "open_review": resp is not None
+        and scan.get("mode") != "observe"
+        and scan.get("verdict") == "review"
+        and scan.get("decision") == "review_timed_out"
+        and resolution is None,
         "failure": (_str(_obj(scan.get("failure")).get("kind"), 40) or "unknown")
         if resp is None
         else None,
@@ -213,7 +220,85 @@ def limit_of(raw: str | None) -> int:
     return min(int(raw), HISTORY_MAX)
 
 
-def build_model(cfg: PluginConfig, limit: int, now: datetime | None = None) -> dict[str, Any]:
+#: How the page names this host's commands: the plugin's own (prefix + verb) and Hermes's approval answers.
+COMMANDS = {
+    "prefix": "/sentrook ",
+    "review_answer": [
+        "Answer in the chat where it was asked, with Hermes's own commands:",
+        "/approve",
+        "/approve session",
+        "/approve always",
+        "/deny",
+    ],
+}
+
+#: Hermes's `approvals.timeout` default, in seconds.
+DEFAULT_REVIEW_WINDOW_S = 300
+
+
+def _ts(v: Any) -> datetime | None:
+    if not isinstance(v, str):
+        return None
+    try:
+        at = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+
+def pending_of(
+    model: dict[str, Any], state_dir: Path, now: datetime, window_s: float
+) -> dict[str, Any]:
+    """What waits for the owner: approval prompts still inside their answer window (the host's approval
+    timeout), and held calls (unattended reviews) not yet approved or expired, newest first."""
+    reviews = []
+    for s in model["scans"]:
+        at = _ts(s["ts"]) if s.get("open_review") else None
+        if at is not None and at <= now and (now - at).total_seconds() < window_s:
+            reviews.append(s["id"])
+    holds: list[dict[str, Any]] = []
+    readable = True
+    try:
+        data = Store(state_dir).load_holds()
+        if data is None:
+            readable = False
+        for h in (data or {}).get("holds") or []:
+            if not isinstance(h, dict) or not isinstance(h.get("id"), str):
+                continue
+            expires = read_time(h.get("expires_at"))
+            if expires is None or expires <= now:
+                continue
+            grant = grants.hint_grant(h.get("hint"))
+            holds.append(
+                {
+                    "id": _text(h["id"], 12),
+                    "request_id": _str(h.get("request_id"), 40),
+                    "tool": _str(h.get("tool"), 80),
+                    "where": _str(h.get("where"), 200),
+                    "held_at": h.get("held_at") if isinstance(h.get("held_at"), str) else None,
+                    "expires_at": h.get("expires_at")
+                    if isinstance(h.get("expires_at"), str)
+                    else None,
+                    "grant": grants.describe_grant(grant) if grant else None,
+                }
+            )
+        holds.reverse()
+    except Exception:  # noqa: BLE001 - the page still shows the scans
+        readable = False
+    return {
+        "reviews": reviews,
+        "holds": holds,
+        "holds_readable": readable,
+        "review_window_s": round(window_s),
+    }
+
+
+def build_model(
+    cfg: PluginConfig,
+    limit: int,
+    now: datetime | None = None,
+    review_window_s: float = DEFAULT_REVIEW_WINDOW_S,
+) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     model = scans_model(cfg.traffic_log_path, cfg.traffic_log_enabled, limit)
     try:
@@ -230,10 +315,6 @@ def build_model(cfg: PluginConfig, limit: int, now: datetime | None = None) -> d
         "lines": {"review_at": cfg.review_at, "block_at": cfg.block_at},
         "mode": cfg.mode,
         "state": {"grants": grants_text, "snooze": snooze_text},
-        "commands": {
-            "history": "/sentrook history",
-            "why": "/sentrook why <id>",
-            "grants": "/sentrook grants",
-            "snooze": "/sentrook snooze",
-        },
+        "pending": pending_of(model, cfg.state_dir, now, review_window_s),
+        "commands": COMMANDS,
     }

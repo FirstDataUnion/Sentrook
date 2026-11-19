@@ -1,0 +1,36 @@
+{
+  "reviews": [
+    "8888a1b2-0000-4000-8000-000000000008"
+  ],
+  "holds": [
+    {
+      "id": "h-3d3d3d",
+      "request_id": "aaaa0000-0000-4000-8000-000000000004",
+      "tool": "terminal",
+      "where": "subagent",
+      "held_at": "2026-10-29T09:40:00Z",
+      "expires_at": "2026-10-30T09:40:00Z",
+      "grant": null
+    },
+    {
+      "id": "h-2c2c2c",
+      "request_id": "aaaa0000-0000-4000-8000-000000000003",
+      "tool": "message",
+      "where": "cron job \"daily-brief\" (job 7f3a)",
+      "held_at": "2026-10-29T09:30:00Z",
+      "expires_at": "2026-10-30T09:30:00Z",
+      "grant": "destination channel:1234567890"
+    },
+    {
+      "id": "h-1b1b1b",
+      "request_id": "aaaa0000-0000-4000-8000-000000000002",
+      "tool": "web_fetch",
+      "where": "heartbeat",
+      "held_at": "2026-10-29T07:00:00Z",
+      "expires_at": "2026-10-30T07:00:00Z",
+      "grant": null
+    }
+  ],
+  "holds_readable": true,
+  "review_window_s": 300
+}

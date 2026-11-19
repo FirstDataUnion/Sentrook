@@ -21,6 +21,7 @@ import type { PluginConfig } from "./config.ts";
 import * as grants from "./grants.ts";
 import { actionOf, HISTORY_DEFAULT, HISTORY_MAX, recentScans, responseOf, reviewOf, text } from "./history.ts";
 import * as snooze from "./snooze.ts";
+import { readTime, Store } from "./store.ts";
 
 type Rec = Record<string, any>;
 
@@ -105,6 +106,8 @@ export function scanModel(scan: Rec, resolution: Rec | null): Rec {
     review: reviewOf(action, resolution),
     bucket: bucketOf(scan, action),
     flags: FLAGS.filter((f) => scan[f] === true),
+    // An approval prompt that had no answer when the log was read: still open if it is recent (`pendingOf`).
+    open_review: resp !== null && scan.mode !== "observe" && scan.verdict === "review" && scan.decision === "review_timed_out" && resolution === null,
     failure: resp === null ? (str(obj(scan.failure).kind, 40) ?? "unknown") : null,
     risk: finite(r.risk),
     enforced: r.enforced === "review" || r.enforced === "block" ? r.enforced : null,
@@ -138,6 +141,44 @@ export function limitOf(raw: string | null): number {
 
 const CMD: grants.Cmd = (sub) => `/sentrook-${sub}`;
 
+/**
+ * What waits for the owner: approval prompts still inside their answer window (`windowMs`, the host's approval
+ * timeout), and held calls (unattended reviews) not yet approved or expired, newest first.
+ */
+export function pendingOf(model: Rec, stateDir: string, now: Date, windowMs: number): Rec {
+  const reviews = (model.scans as Rec[])
+    .filter((s) => {
+      const at = s.open_review && typeof s.ts === "string" ? Date.parse(s.ts) : Number.NaN;
+      return Number.isFinite(at) && at <= now.getTime() && now.getTime() - at < windowMs;
+    })
+    .map((s) => s.id);
+  let holds: Rec[] = [];
+  let holdsReadable = true;
+  try {
+    const data = new Store(stateDir).loadHolds();
+    if (data === null) holdsReadable = false;
+    holds = (data?.holds ?? [])
+      .filter((h): h is Rec => !!h && typeof h === "object" && typeof (h as Rec).id === "string")
+      .filter((h) => (readTime(h.expires_at)?.getTime() ?? 0) > now.getTime())
+      .map((h) => {
+        const grant = grants.hintGrant(h.hint);
+        return {
+          id: text(h.id, 12),
+          request_id: str(h.request_id, 40),
+          tool: str(h.tool, 80),
+          where: str(h.where, 200),
+          held_at: typeof h.held_at === "string" ? h.held_at : null,
+          expires_at: typeof h.expires_at === "string" ? h.expires_at : null,
+          grant: grant ? grants.describeGrant(grant) : null,
+        };
+      })
+      .reverse();
+  } catch {
+    holdsReadable = false;
+  }
+  return { reviews, holds, holds_readable: holdsReadable, review_window_s: Math.round(windowMs / 1000) };
+}
+
 export function buildModel(cfg: PluginConfig, limit: number, now: Date = new Date()): Rec {
   const model = scansModel(cfg.trafficLog.path, cfg.trafficLog.enabled, limit);
   let grantsText: string;
@@ -158,9 +199,21 @@ export function buildModel(cfg: PluginConfig, limit: number, now: Date = new Dat
     lines: { review_at: cfg.reviewAt, block_at: cfg.blockAt },
     mode: cfg.mode,
     state: { grants: grantsText, snooze: snoozeText },
-    commands: { history: "/sentrook-history", why: "/sentrook-why <id>", grants: "/sentrook-grants", snooze: "/sentrook-snooze" },
+    pending: pendingOf(model, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs),
+    commands: COMMANDS,
   };
 }
+
+/** How the page names this host's commands: the plugin's own (prefix + verb) and the host's approval answers. */
+export const COMMANDS = {
+  prefix: "/sentrook-",
+  review_answer: [
+    "Answer on the approval card in the chat where it was asked, or with OpenClaw's own command and the id the prompt shows:",
+    "/approve <approval id> allow-once",
+    "/approve <approval id> allow-always",
+    "/approve <approval id> deny",
+  ],
+};
 
 let viewSource: string | null = null;
 

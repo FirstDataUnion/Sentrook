@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { Script } from "node:vm";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { resolveConfig } from "./config.ts";
-import { buildModel, handleRequest, limitOf, renderPage, ROUTE, scanModel, scansModel, scriptJson, TAB, viewScript } from "./dashboard.ts";
+import { buildModel, COMMANDS, handleRequest, limitOf, pendingOf, renderPage, ROUTE, scanModel, scansModel, scriptJson, TAB, viewScript } from "./dashboard.ts";
 import plugin from "./index.ts";
 
 /** Shared with the Hermes plugin's tests: both plugins build the same model for the same log. */
@@ -135,13 +135,37 @@ test("the page limit: default 10, at most 50", () => {
   assert.equal(limitOf("999"), 50);
 });
 
+test("pending: open prompts inside the answer window and live holds, matching the shared fixture", () => {
+  const holdsDir = mkdtempSync(path.join(tmpdir(), "sentrook-holds-"));
+  copyFileSync(path.join(DASH, "holds.json"), path.join(holdsDir, "holds.json"));
+  const model = scansModel(path.join(FIXTURES, "traffic.jsonl"), true, 50);
+  const now = new Date("2026-10-29T09:47:00Z");
+  const got = pendingOf(model, holdsDir, now, 300_000);
+  assert.deepStrictEqual(got, JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8")));
+  assert.ok(!JSON.stringify(got).includes(RAW), "a hold's notice is never shown");
+  // Past the answer window the prompt has timed out: no longer pending.
+  assert.deepStrictEqual(pendingOf(model, holdsDir, new Date("2026-10-29T09:51:00Z"), 300_000).reviews, []);
+  // A prompt that was answered is never pending.
+  assert.ok(model.scans.filter((s: any) => s.review !== "no answer").every((s: any) => !s.open_review));
+});
+
+test("pending: an unreadable holds file says so and shows none", () => {
+  const holdsDir = mkdtempSync(path.join(tmpdir(), "sentrook-holds-"));
+  writeFileSync(path.join(holdsDir, "holds.json"), "not json");
+  const got = pendingOf({ scans: [] }, holdsDir, new Date(), 300_000);
+  assert.deepStrictEqual(got.holds, []);
+  assert.equal(got.holds_readable, false);
+});
+
 test("buildModel adds the review and block lines, mode, grants and snooze text", () => {
   const m = buildModel(cfg(), 10);
   assert.deepStrictEqual(m.lines, { review_at: 45, block_at: 80 });
   assert.equal(m.mode, "enforce");
   assert.equal(typeof m.state.grants, "string");
   assert.equal(typeof m.state.snooze, "string");
-  assert.equal(m.commands.grants, "/sentrook-grants");
+  assert.deepStrictEqual(m.commands, COMMANDS);
+  assert.equal(m.commands.prefix, "/sentrook-");
+  assert.equal(m.pending.review_window_s, 300);
 });
 
 test("GET draws the page with the model embedded, a nonce CSP and no raw markup from the log", () => {
@@ -337,11 +361,11 @@ function drawView(model: unknown): FakeNode {
   doc.getElementById = (id: string) =>
     id === "sentrook-root" ? root : id === "sentrook-model" ? data : doc.head.children.find((c: FakeNode) => c.id === id) ?? null;
   const window: any = { location: { search: "" } };
-  new Script(viewScript()).runInNewContext({ document: doc, window });
+  new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout: () => 0, navigator: {} });
   return root;
 }
 
-function viewModel() {
+function viewModel(): any {
   return { ...scansModel(logFile, true, 50), lines: { review_at: 45, block_at: 80 }, mode: "enforce", state: { grants: "g", snooze: "s" }, commands: {} };
 }
 
@@ -379,6 +403,68 @@ test("the view shows relief and the ceiling, and a failed scan without scores", 
   const failed = root.byClass("srk-detail").find((d) => d.textContent.includes("The scan failed"))!;
   assert.match(failed.textContent, /The scan failed \(timeout\)/);
   assert.equal(failed.byClass("srk-tier").length, 0);
+});
+
+test("signals start collapsed; every tier, signal and value carries a hover hint", () => {
+  const root = drawView(viewModel());
+  const detail = root.byClass("srk-detail")[0]!;
+  const signals = detail.byClass("srk-signals");
+  assert.equal(signals.length, 3);
+  for (const d of signals) assert.equal(d.getAttribute("open"), null, "collapsed by default");
+  for (const tier of detail.byClass("srk-tier")) {
+    assert.ok(tier.byClass("srk-tier-name")[0]!.getAttribute("title"));
+    assert.ok(tier.byClass("srk-tier-score")[0]!.getAttribute("title"));
+  }
+  for (const leaf of detail.byClass("srk-leaf")) {
+    const label = leaf.byClass("srk-leaf-top")[0]!.children[0]!;
+    assert.ok((label.getAttribute("title") ?? "").length > 20, `${label.textContent} has a hint`);
+    assert.ok(leaf.byClass("srk-leaf-val")[0]!.getAttribute("title"));
+  }
+  for (const chip of detail.byClass("srk-chip")) assert.ok(chip.getAttribute("title"), chip.textContent);
+  for (const dt of detail.all().filter((n) => n.tag === "dt")) assert.ok(dt.getAttribute("title"), dt.textContent);
+});
+
+test("the timeline has one cell per scan, oldest first, and opens a scan on click", () => {
+  const model = viewModel();
+  const root = drawView(model);
+  const cells = root.byClass("srk-tl-cell");
+  assert.equal(cells.length, model.scans.length);
+  assert.match(cells[0]!.getAttribute("title")!, /web_fetch/);
+  assert.match(cells.at(-1)!.getAttribute("title")!, /terminal · risk 86 · blocked/);
+  assert.equal(root.byClass("srk-detail").length, 1);
+  cells[0]!.click();
+  assert.equal(root.byClass("srk-detail").length, 2);
+  // No count chips above the list any more: counts live in the timeline legend.
+  assert.equal(root.byClass("srk-head")[0]!.byClass("srk-chip").length, 0);
+});
+
+test("pending items sit at the top with the commands to answer them", () => {
+  const model: any = viewModel();
+  const review = model.scans.find((s: any) => s.bucket === "review");
+  model.pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  model.pending.reviews = [review.id];
+  model.commands = COMMANDS;
+  const root = drawView(model);
+  assert.equal(root.children[1]!.className, "srk-pending", "right under the header");
+  const text = root.byClass("srk-pending")[0]!.textContent;
+  assert.match(text, /Waiting for you \(4\)/);
+  assert.match(text, /\/approve <approval id> deny/);
+  assert.match(text, new RegExp(`/sentrook-why ${review.id.slice(0, 8)}`));
+  assert.match(text, /\/sentrook-approve h-2c2c2c/);
+  assert.match(text, /destination channel:1234567890/);
+  assert.match(text, /There is no suggested grant/);
+  // Nothing pending: no panel.
+  assert.equal(drawView(viewModel()).byClass("srk-pending").length, 0);
+});
+
+test("grants and snooze sections explain the commands, in this host's command form", () => {
+  const model: any = { ...viewModel(), commands: { prefix: "/sentrook " } };
+  const root = drawView(model);
+  const sections = root.byClass("srk-howto");
+  assert.equal(sections.length, 2);
+  assert.equal(sections[0]!.getAttribute("open"), null);
+  assert.match(sections[0]!.textContent, /\/sentrook grant destination api\.example\.com --persistent --expires 30d/);
+  assert.match(sections[1]!.textContent, /\/sentrook snooze 2h --all/);
 });
 
 test("the view never writes markup: no innerHTML, outerHTML, insertAdjacentHTML or document.write", () => {
