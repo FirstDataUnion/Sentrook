@@ -3574,6 +3574,94 @@
     {}
    ],
    "expect": "quiet"
+  },
+  {
+   "name": "state db cp over",
+   "call": [
+    "ex",
+    [
+     "cp /tmp/oc.db ~/.openclaw/state/openclaw.sqlite"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "state db mv loosened copy",
+   "call": [
+    "ex",
+    [
+     "sqlite3 /tmp/x.db \"UPDATE exec_approvals_config SET default_security='full'\" && mv /tmp/x.db ~/.openclaw/state/openclaw.sqlite"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "state db stdin file",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite < /tmp/fix.sql"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "state db piped cat",
+   "call": [
+    "ex",
+    [
+     "cat /tmp/fix.sql | sqlite3 ~/.openclaw/state/openclaw.sqlite"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "state db .read",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite '.read /tmp/x.sql'"
+    ],
+    {}
+   ],
+   "expect": "review"
+  },
+  {
+   "name": "state db where lt quoted",
+   "call": [
+    "ex",
+    [
+     "sqlite3 ~/.openclaw/state/openclaw.sqlite \"select * from sessions where n<5\""
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "state db backup out",
+   "call": [
+    "ex",
+    [
+     "cp ~/.openclaw/state/openclaw.sqlite ~/workspace/backup.sqlite"
+    ],
+    {}
+   ],
+   "expect": "quiet"
+  },
+  {
+   "name": "state db piped echo select",
+   "call": [
+    "ex",
+    [
+     "echo 'select 1;' | sqlite3 ~/.openclaw/state/openclaw.sqlite"
+    ],
+    {}
+   ],
+   "expect": "quiet"
   }
  ]
 }

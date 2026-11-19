@@ -451,7 +451,12 @@ approval_loosening:
   # other write to the table there gets the review tier, and so does any write whose database the
   # scan cannot place (a variable, an `openclaw.sqlite` outside the trees, a custom state dir).
   # Another database outside the trees is not the host's. Reads never fire.
-  # `files`: the state DB relative to a tree root. `basename`: a state DB the scan cannot place.
+  # The state DB of a host tree replaced from another file (`cp`, `mv`, `ln -sf`, `curl -o`,
+  # `cat src >`), or run against SQL the call does not show (stdin from a file, a pipe from an
+  # unreadable source, `.read`, `-init`), gets the review tier, like a host approvals file
+  # replaced from elsewhere. Backups out of it and reads stay quiet.
+  # `files`: the state DB (and its WAL, shm and journal) relative to a tree root. `basename`: a
+  # state DB the scan cannot place.
   # `columns`: a column -> the approvals setting it holds. `writers`: inline code that uses a SQLite
   # library (the `sqlite3` CLI is read as a command). `connect`: calls in inline code whose first
   # argument is the database; code that writes the table through a connection the scan does not
@@ -460,7 +465,7 @@ approval_loosening:
   # another database gets the review tier.
   state_db:
     host: openclaw
-    files: 'state/openclaw\.sqlite'
+    files: 'state/openclaw\.sqlite(?:-wal|-shm|-journal)?'
     basename: 'openclaw\.sqlite'
     table: 'exec_approvals_config'
     columns:
