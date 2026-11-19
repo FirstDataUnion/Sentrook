@@ -25,8 +25,8 @@ from typing import Any
 
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
-from .entities import SKILL_TOOLS
 
+SKILL_TOOLS = frozenset({"skill_manage", "skill_workshop"})
 WRITTEN_KEYS = ("content", "file_content", "new_string", "new_text", "newText")
 #: Lists of edits whose entries carry written text of their own.
 NESTED_KEYS = ("operations", "edits")
@@ -53,6 +53,36 @@ _RISKY = re.compile(
     r"\||\bcurl\b|\bwget\b|https?://|@|~/|\.ssh|\.env\b|base64|\bnc\b|\bsudo\b|\beval\b|\$\(|>\s*/",
     re.I,
 )
+
+
+def skills_changed(call: CanonicalCall) -> frozenset[str] | None:
+    """For a host skill-tool call (`SKILL_TOOLS`, host provider): the skills it changes, by name (trimmed, lower-cased),
+    from its own `action` and `name` and from each entry of an `operations` batch (a curator merging skills sends its
+    changes that way). A read action (`selfmod.yaml` `read_actions`) changes nothing. None for any other call.
+
+    These tools take only a skill name (and, for a support file, a path relative to the skill), so the retry matcher
+    compares skill-tool calls by the skills they change rather than by entities: the name is not a path, and a
+    relative support-file path would match the same file name in another skill."""
+    from ..aira.lists import load_lists
+
+    if call.tool not in SKILL_TOOLS or call.provider.kind is not ProviderKind.HOST:
+        return None
+    reads = {a.lower() for a in load_lists().strings("selfmod", "read_actions")}
+    ops: list[Any] = [call.raw]
+    nested = call.raw.get("operations")
+    if isinstance(nested, list):
+        ops.extend(nested)
+    out: set[str] = set()
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        action = op.get("action")
+        if isinstance(action, str) and action.strip().lower() in reads:
+            continue
+        name = op.get("name")
+        if isinstance(name, str) and name.strip():
+            out.add(name.strip().lower())
+    return frozenset(out)
 
 
 def patch_added_text(patch: str) -> str:

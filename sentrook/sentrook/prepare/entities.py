@@ -2097,44 +2097,6 @@ def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
     return out
 
 
-#: The host skill tools, which name the skill they act on by its name alone.
-SKILL_TOOLS = frozenset({"skill_manage", "skill_workshop"})
-#: Skill-tool actions that only read; any other action (or none) changes the skill.
-SKILL_READ_ACTIONS = frozenset(
-    {"view", "read", "list", "inspect", "search", "status", "get", "show"}
-)
-#: The value prefix of the entity a skill-tool change names: `skill:<name>`.
-SKILL_PREFIX = "skill:"
-
-
-def skill_changed(call: CanonicalCall) -> list[str]:
-    """The skills a skill-tool call changes, each as `skill:<name>` (the name trimmed and lower-cased, as skill names
-    are written): from the call's own `action` and `name`, and from each entry of an `operations` list (a batch of
-    changes, as a curator merging skills sends). Empty for another tool, a read, or no usable name. The name is the
-    only target these tools take, so without it a retry of a refused skill change could match nothing and every
-    skill change shared one action fingerprint."""
-    if call.tool not in SKILL_TOOLS:
-        return []
-    ops: list[Any] = [call.raw]
-    nested = call.raw.get("operations")
-    if isinstance(nested, list):
-        ops.extend(nested)
-    out: list[str] = []
-    for op in ops:
-        if not isinstance(op, dict):
-            continue
-        action = op.get("action")
-        if isinstance(action, str) and action.strip().lower() in SKILL_READ_ACTIONS:
-            continue
-        name = op.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        skill = SKILL_PREFIX + name.strip().lower()
-        if skill not in out:
-            out.append(skill)
-    return out
-
-
 def extract_call(
     call: CanonicalCall, *, home: str | None, workspace_root: str | None
 ) -> list[Found]:
@@ -2231,15 +2193,6 @@ def _extract_call(
     else:  # mcp, other
         writeish = bool(_WRITEISH_TOOL.search(call.tool))
         runish = bool(_RUNISH_TOOL.search(call.tool))
-        for skill in skill_changed(call):
-            found.append(
-                Found(
-                    EntityKind.PATH,
-                    skill,
-                    f"skill {skill[len(SKILL_PREFIX) :]}",
-                    Role.DATA_DESTINATION,
-                )
-            )
         url = call.get("url")
         if url:
             h = host_of_url(url) or normalise_host(url) if "." in url else None
