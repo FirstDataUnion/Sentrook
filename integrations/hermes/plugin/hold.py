@@ -14,6 +14,9 @@ process with no terminal. There the plugin holds the call:
 - After 24 hours the hold expires and nothing runs. Expiry is found and recorded when the holds are
   next changed (a new hold or an approval).
 
+Hermes's own background skill and memory saves are held without an entry here (`skill_review`): approving
+could not make the save.
+
 A block (at the block line, or one the scanner enforces) is never held, except a retry of a review nobody
 answered that the scanner caps at review (`decision.unattended_view`). Attended runs are unchanged: a review there
 is still a review prompt.

@@ -278,7 +278,8 @@ is not told which checks fired or the risk score; you can see those with `hermes
 Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms and the local terminal
 count as attended. Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
-prompts, add it with `attended_platforms` (see [Settings](#settings)).
+prompts, add it with `attended_platforms` (see [Settings](#settings)). Hermes's own background skill and memory saves
+never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 
 ### What a review looks like
 
@@ -341,10 +342,9 @@ Sentrook that the call is one of these background saves and sends the part of th
 and Sentrook judges the save against that conversation. A save that follows from what you said and did goes
 through. A save is reviewed or blocked when it carries instructions that came from content the agent read or from
 other people, weakens one of your rules, claims approvals you never gave, or stores secrets you did not ask it to
-keep. As for any call, on unattended runs (the API server, webhooks, cron) a review holds the save for you, because
-nobody is there to answer it; in a chat or the local terminal you are asked.
+keep. These saves never ask you (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 
-Every background save is scanned and logged, and `status` counts them: allowed, blocked, asked and held. Only Hermes's
+Every background save is scanned and logged, and `status` counts them: allowed, blocked, held and let through. Only Hermes's
 automatic review and curator count: a skill or memory change you ask for in a turn, or a `/refine` you run, is
 scanned like any other call, and so is every other tool those background runs call. Every call a background run
 makes is sent with your last message as its request and the number of the turn it follows, and does not count as
@@ -353,10 +353,37 @@ instead. Set `skill_review` to `review`
 to send the background saves like any other call, without the conversation; with nothing to judge them against,
 expect more of them to be reviewed or blocked.
 
-On the local terminal the background review cannot show you its prompts, so Hermes denies them itself; history shows
-such a save as "auto-denied by the review loop". If you then ask the agent to make that save, or a save whose review
+On the local terminal the background review cannot show you its prompts, so Hermes denies them itself. That still
+happens to the review's other calls (reading a file, for example) and to a `/refine` you run there; history shows
+such a call as "auto-denied by the review loop". If you then ask the agent to make that call, or one whose review
 timed out, Sentrook treats it as a retry of a review nobody answered: it can ask you (or, on an unattended run, be
 held for you), but it is not blocked for being a retry. A retry of a call you denied yourself, or one Sentrook blocked, is scored as before.
+
+### Background skill and memory saves
+
+Hermes's background review and curator save after your turn is over, so nobody is there to answer a question about
+a save: on the local terminal Hermes would deny it unseen, and in a chat the question would reach nobody. So
+Sentrook never asks about these saves, wherever Hermes runs and whatever your approval settings, and tells you
+instead:
+
+| Sentrook's verdict | What happens to the save | What you get |
+|---|---|---|
+| Allow | It is saved. | Nothing; it is in history. |
+| Review, and Sentrook finds nothing in the save that needs you | It is saved without asking. | A notice that a save Sentrook would normally ask about was let through. |
+| Review, otherwise | It is held: not saved. There is nothing to approve, because approving could not make the save; to keep it, ask the agent for it in a chat. | A notice that a background save was held. |
+| Block | It is not saved. | A notice that a background save was blocked. |
+| The scan failed | As on an unattended run: with `on_scan_error` `review` or `deny` it is not saved, with `allow` it is (see [When the scan service fails](#when-the-scan-service-fails)). | The scan-failure notice when it is not saved. |
+
+The notices go to the home channel of the platform in `owner_channel`. They say whether it was a skill or a memory
+save and what it saved, as a review would describe it, and point to `/sentrook why <id>` and `/sentrook history`.
+You get at most one notice of each kind (let through, held, blocked) per session every 6 hours; history has every
+save, and shows a held one as "not saved".
+Without `owner_channel` (for example when you use Hermes only on the local terminal) the saves are handled the same
+way, but nothing tells you: `status` and `verify` say so, and the saves show only in `/sentrook history` and the
+`skill review` counts in `status`. A snooze on the session (or on every session) lets a save through that would
+otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal session or a
+platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
+cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
 
 ### When the scan service fails
 
@@ -488,8 +515,8 @@ settings (see [step 2](#2-add-the-credentials-to-hermes)).
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
 | `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
-| `owner_channel` | | The platform whose home channel gets the notices of held calls and of scan failures on unattended runs, such as `telegram`. No notice is sent until it is set |
-| `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
+| `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. No notice is sent until it is set |
+| `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Either way they never ask (see [Background skill and memory saves](#background-skill-and-memory-saves)). A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
 | `channel_bindings` | | Channels this deployment normally delivers to |
