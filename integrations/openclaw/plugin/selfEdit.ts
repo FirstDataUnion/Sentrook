@@ -22,9 +22,10 @@
  * With `skillReview: allow` (the default) every call of a recognised run is sent with trigger `system` (no owner, no
  * snooze) and, as its request, the last message the host flags as the owner's in the conversation the run read (a
  * fixed text when there is none), and its saves are declared as self-edits with the conversation the process
- * read (`conversation.ts`); the scanner judges them against it, and the verdict is applied like any other. Its other
- * calls (exec, reads) are scored as usual. `skillReview: review` changes nothing: every call is sent as before. Any
- * other value reads as allow, and status and the startup log name it.
+ * read (`conversation.ts`); the scanner judges them against it. Its other calls (exec, reads) are scored as usual.
+ * `skillReview: review` changes nothing: every call is sent as before. Any other value reads as allow, and status and
+ * the startup log name it. Whatever the setting, a recognised run's saves are never asked about: nobody can answer a
+ * prompt there (`backgroundSave.ts` says what happens instead).
  *
  * Out of reach: dreaming (memory-core writes MEMORY.md and DREAMS.md in code) and the session-memory hook (writes
  * recent messages into memory/ on /new and /reset) make no tool call, so no plugin hook sees them.
@@ -33,7 +34,7 @@
 import path from "node:path";
 
 import { textOf } from "./conversation.ts";
-import { actionOf, recentScans } from "./history.ts";
+import { actionOf, isBackgroundSave, recentScans } from "./history.ts";
 import type { RunContext } from "./store.ts";
 
 export type SelfEditKind = "background_review" | "memory_flush" | "curator";
@@ -187,14 +188,16 @@ export function settingText(setting: SkillReviewSetting, unknown: string | null)
 }
 
 /** Self-edits in the recent traffic log, by what was done. */
-export function counts(file: string): { allowed: number; blocked: number; asked: number; held: number } {
-  const out = { allowed: 0, blocked: 0, asked: 0, held: 0 };
+export function counts(file: string): { allowed: number; lenient: number; blocked: number; drafted: number; asked: number; held: number } {
+  const out = { allowed: 0, lenient: 0, blocked: 0, drafted: 0, asked: 0, held: 0 };
   for (const [scan, resolution] of recentScans(file, 10_000)) {
-    if (scan.skill_review !== true) continue;
+    if (!isBackgroundSave(scan)) continue;
     const action = actionOf(scan, resolution);
     if (action.startsWith("blocked")) out.blocked += 1;
     else if (action.startsWith("review")) out.asked += 1;
     else if (action.startsWith("held")) out.held += 1;
+    else if (action.startsWith("drafted")) out.drafted += 1;
+    else if (action.startsWith("allowed (lenient")) out.lenient += 1;
     else out.allowed += 1;
   }
   return out;
@@ -204,7 +207,9 @@ export function counts(file: string): { allowed: number; blocked: number; asked:
 export function statusLine(setting: string, file: string | null): string {
   if (file === null) return `${setting} (self-edits not counted: the traffic log is off)`;
   const c = counts(file);
+  const lenient = c.lenient ? `, ${c.lenient} let through without asking` : "";
+  const drafted = c.drafted ? `, ${c.drafted} saved as drafts` : "";
   const asked = c.asked ? `, ${c.asked} asked` : "";
   const held = c.held ? `, ${c.held} held` : "";
-  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${asked}${held}`;
+  return `${setting}; self-edits in the traffic log: ${c.allowed} allowed, ${c.blocked} blocked${lenient}${drafted}${asked}${held}`;
 }

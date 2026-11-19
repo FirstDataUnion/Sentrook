@@ -584,10 +584,11 @@ export function buildPlanir(b: BuildInput): Built {
   const windowIds = new Set(window.map((h) => h.call_id));
   // Every tool result must refer to a call in the history window (a scanner invariant).
   const sentInputs = sess.buffer.filter((i) => windowIds.has(i.call_id));
-  // A held call is a review nobody has answered yet: PlanIR has no word for `held`, so it goes as
-  // `review_timed_out` (it did not run, and a retry of it is a retry after a review).
+  // A held call is a review nobody has answered yet, and so is a background skill save kept as a draft for the owner:
+  // PlanIR has no word for `held` or `drafted`, so they go as `review_timed_out` (what was asked for did not run, and
+  // a retry of it is a retry after a review).
   const history = window.map(({ _host_call_id: _drop, ...h }) =>
-    (h.decision === "held" ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id">,
+    (h.decision === "held" || h.decision === "drafted" ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id">,
   );
 
   const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);

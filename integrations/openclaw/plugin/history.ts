@@ -161,10 +161,19 @@ function time(ts: unknown): string {
   return typeof ts === "string" && ts.length >= 19 ? `${ts.slice(0, 10)} ${ts.slice(11, 19)}` : "?";
 }
 
-/** What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`. */
+/** One of OpenClaw's own background saves: declared as a self-edit, or recognised as a save with `skillReview: review`. */
+export function isBackgroundSave(scan: Rec): boolean {
+  const bg = scan.background_save;
+  return scan.skill_review === true || (bg !== null && typeof bg === "object" && !Array.isArray(bg));
+}
+
+/**
+ * What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`, and one the scanner let
+ * through without asking is `lenient`.
+ */
 export function actionOf(scan: Rec, resolution: Rec | null): string {
   const action = baseAction(scan, resolution);
-  if (scan.skill_review !== true || responseOf(scan) === null) return action;
+  if (!isBackgroundSave(scan) || responseOf(scan) === null) return action;
   return action.endsWith(")") ? `${action.slice(0, -1)}, self-edit)` : `${action} (self-edit)`;
 }
 
@@ -178,7 +187,10 @@ function baseAction(scan: Rec, resolution: Rec | null): string {
   if (verdict === "block") return "blocked";
   if (verdict === "review") {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";
+    if (decision === "allowed" && scan.lenient === true) return "allowed (lenient)";
     if (decision === "held") return "held";
+    // a background skill save kept as a Skill Workshop draft for the owner
+    if (decision === "drafted") return "drafted";
     return decision === "blocked" ? "blocked (no reviewer)" : "review";
   }
   if (verdict === "allow") return "allowed";

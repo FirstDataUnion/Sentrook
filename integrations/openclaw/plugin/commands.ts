@@ -16,6 +16,7 @@
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
+import { noticeStatus } from "./backgroundSave.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import {
@@ -267,6 +268,7 @@ function statusText(ctx: CommandContext): string {
     resolveSecretString(ctx.pluginConfig.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
   ].filter(Boolean);
+  const target = new Store(cfg.stateDir).loadNotify();
   const lines = [
     `Sentrook plugin: ${PLUGIN_VERSION}`,
     `mode: ${cfg.mode}`,
@@ -278,7 +280,8 @@ function statusText(ctx: CommandContext): string {
     `grants: ${grantCount}`,
     `channel bindings: ${bindingCount}`,
     `snooze: ${snooze.statusLine(snooze.load(cfg.stateDir), new Date())}`,
-    `held calls: ${hold.statusLine(cfg.stateDir, new Store(cfg.stateDir).loadNotify(), new Date())}`,
+    `held calls: ${hold.statusLine(cfg.stateDir, target, new Date())}`,
+    `background-save notices: ${noticeStatus(target)}`,
     `skill review: ${selfEdit.statusLine(
       selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
       cfg.trafficLog.enabled ? cfg.trafficLog.path : null,

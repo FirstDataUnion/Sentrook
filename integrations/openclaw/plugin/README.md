@@ -31,10 +31,15 @@ In short, for anyone deciding whether to install it:
   approves a call on your behalf. Where nobody can answer (cron jobs, subagents), a review holds the call: it does not
   run, and you get one notice as a direct message, on the chat you chose with `/sentrook-notify here`, with an id to
   approve within 24 hours (`/sentrook-approve`). A call blocked there because the scan failed sends you a notice on
-  the same chat, at most once per job (per session for other runs) every 6 hours. Those notices are the only
-  messages the plugin sends.
+  the same chat, at most once per job (per session for other runs) every 6 hours.
+- **Background skill and memory saves:** OpenClaw's own saves (the Skill Workshop review, the memory flush, the skill
+  collection review) are never asked about, because nobody can answer a prompt in those runs. A save Sentrook would
+  ask about is let through when it can be, saved as a Skill Workshop draft for you to apply (a new skill, OpenClaw
+  2026.11.5 or newer), or held; a blocked or reviewed save sends you a notice on the same chat, at most one of each
+  kind per run every 6 hours. Turning a save into a draft is the only change the plugin makes to a call, and these
+  notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
-  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls and where their notices go; when each job last had a scan-failure notice; the conversations
+  rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls and where their notices go; when each job or run last had a notice with a quiet period; the conversations
   above), or to the paths
   you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
   no shell commands and starts no background processes.

@@ -8,6 +8,7 @@
 
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
+import * as bg from "./backgroundSave.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
 import { type PluginConfig, resolveConfig } from "./config.ts";
 import * as conversation from "./conversation.ts";
@@ -65,6 +66,8 @@ export interface BeforeToolCallResult {
     allowedDecisions?: Array<"allow-once" | "allow-always" | "deny">;
     onResolution?: (decision: Resolution) => void | Promise<void>;
   };
+  /** Parameters OpenClaw merges over the call's own before it runs (a background skill save turned into a draft). */
+  params?: Record<string, unknown>;
 }
 
 /**
@@ -431,8 +434,12 @@ const plugin = {
       const run = store.loadRun(runId);
       const redactor = createRedactor("standard", store.salt());
       // OpenClaw's own background process: sent as the host's, and its saves as self-edits (selfEdit.ts).
-      const hostKind = cfg.skillReview === "allow" ? selfEdit.kindAtCall(run, ctx) : null;
-      const saveStore = hostKind ? selfEdit.saveStoreOf(hostKind, event.toolName, event?.params, run) : null;
+      const runKind = selfEdit.kindAtCall(run, ctx);
+      const runStore = runKind ? selfEdit.saveStoreOf(runKind, event.toolName, event?.params, run) : null;
+      // One of its saves: never asked about, whatever the settings say (backgroundSave.ts).
+      const bgSave = runKind && runStore ? { kind: runKind, store: runStore } : null;
+      const hostKind = cfg.skillReview === "allow" ? runKind : null;
+      const saveStore = hostKind ? runStore : null;
       let selfEditBlock: Json | null = null;
       if (hostKind && saveStore) {
         try {
@@ -461,6 +468,8 @@ const plugin = {
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
       const timing = resolveApprovalTiming(cfg.approval, intentKindOf(triggerKind), undefined);
+      // Nobody can answer a prompt in a background save's run, on any OpenClaw: the host cancels it or ends the run.
+      const unattended = timing.unattended || bgSave !== null;
 
       let result: ScanOk | ScanFailure;
       const { scan, issuer } = cfg.endpoints;
@@ -496,8 +505,11 @@ const plugin = {
       let verdict: Verdict | null = null;
       let onError = false;
       let snoozed = false;
-      let failureNotice: Json | null = null;
+      /** What the scan record says about a notice other than a hold's (a scan failure, a background save). */
+      let notice: Json | null = null;
       let relaxed = false;
+      let lenient = false;
+      let draft: Record<string, unknown> | null = null;
       let held: Json | null = null;
       /** The suggested grant "allow always" sets, when the prompt offers it. */
       let remember: grants.Entry | null = null;
@@ -505,12 +517,12 @@ const plugin = {
         const resp = result.response;
         // A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
         // retry is held for the owner. The attended-owner ceiling is dropped there (`unattendedView`).
-        verdict = decide(timing.unattended ? unattendedView(resp) : resp, cfg);
+        verdict = decide(unattended ? unattendedView(resp) : resp, cfg);
         if (
           // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
           cfg.mode !== "observe" &&
           triggerKind === "message" &&
-          !timing.unattended &&
+          !unattended &&
           snooze.relaxes(resp, verdict) &&
           snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
         ) {
@@ -529,23 +541,34 @@ const plugin = {
         } else if (verdict === "block") {
           entry.decision = "blocked";
           hook = { block: true, blockReason: blockReason(resp) };
+          if (bgSave) notice = backgroundNotice(cfg, "blocked", built, resp, event.toolName, bgSave, triggerKind, run);
         } else if (
           // Only a human's message: a run whose trigger is unknown or not a message is never snoozed,
           // whatever the approval timeout policy calls attended.
           !relaxed &&
           triggerKind === "message" &&
-          !timing.unattended &&
+          !unattended &&
           snooze.applies(resp, cfg.blockAt) &&
           snooze.active(store.loadSnooze(), built.planir.session.session_ref, new Date())
         ) {
           // The owner snoozed reviews for this session: scanned and logged, not asked.
           entry.decision = "allowed";
           snoozed = true;
-        } else if (timing.unattended) {
+        } else if (bgSave && bg.lenientOf(resp, cfg.blockAt)) {
+          // A background save the scanner marks lenient: kept, and the owner told.
+          entry.decision = "allowed";
+          lenient = true;
+          notice = backgroundNotice(cfg, "lenient", built, resp, event.toolName, bgSave, triggerKind, run);
+        } else if (bgSave && (draft = bg.draftParams(event.toolName, event?.params, hostVersion ?? process.env.OPENCLAW_VERSION))) {
+          // A new skill OpenClaw can keep as a Workshop draft: inert until the owner applies it.
+          entry.decision = "drafted";
+          hook = { params: draft };
+          notice = backgroundNotice(cfg, "drafted", built, resp, event.toolName, bgSave, triggerKind, run);
+        } else if (unattended) {
           // Nobody can answer a review here: the call waits for the owner (hold.ts).
           entry.decision = "held";
           hook = { block: true, blockReason: hold.HELD_TEXT };
-          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
+          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, bgSave?.kind ?? null);
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -578,12 +601,14 @@ const plugin = {
             ? undefined
             : scanErrorToHookResult(result, {
                 onScanError: cfg.onScanError,
-                unattended: timing.unattended,
+                unattended,
                 interactiveTimeoutMs: cfg.approval.interactiveTimeoutMs,
               });
         entry.decision = hook?.block || hook?.requireApproval ? "blocked_on_error" : "allowed_on_error";
         api.logger.warn(`${LOG} scan failed (${result.kind}): ${result.detail}`);
-        if (hook?.block && timing.unattended) failureNotice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run);
+        if (hook?.block && unattended) {
+          notice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run, bgSave?.kind ?? null);
+        }
       }
 
       sess.history.push(entry);
@@ -600,10 +625,12 @@ const plugin = {
         decision: entry.decision,
         ...(snoozed ? { snoozed: true } : {}),
         ...(relaxed ? { relaxed: true } : {}),
+        ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
-        ...(failureNotice ? { notice: failureNotice } : {}),
+        ...(notice ? { notice } : {}),
         ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
         ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
+        ...(bgSave ? { background_save: bgSave } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
         host_labels: hostLabels(run, ctx),
         planir: built.planir,
@@ -613,7 +640,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );
@@ -673,19 +700,24 @@ const plugin = {
     }
 
     /**
-     * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
-     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     * The unattended run a call belongs to, as the owner's notices name it: a cron job by its id, else the run (one of
+     * OpenClaw's background runs by what it is).
      */
-    /** The unattended run a call belongs to, as the owner's notices name it: a cron job by its id, else the run. */
-    function unattendedRun(sref: string, triggerKind: string, run: any): { where: string; jobId: string | null } {
+    function unattendedRun(
+      sref: string,
+      triggerKind: string,
+      run: any,
+      kind: selfEdit.SelfEditKind | null = null,
+    ): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
         heartbeat: "heartbeat run",
         hook: "webhook or event run",
         subagent: "subagent run",
       };
-      const job = triggerKind === "scheduled" ? hold.cronJobOf(run?.prompt) : null;
-      return { where: hold.whereText(label[triggerKind] ?? "unattended run", sref, job?.id, job?.name), jobId: job?.id ?? null };
+      const job = triggerKind === "scheduled" || kind === "curator" ? hold.cronJobOf(run?.prompt) : null;
+      const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
+      return { where: hold.whereText(name, sref, job?.id, job?.name), jobId: job?.id ?? null };
     }
 
     function outboundOf(): hold.Outbound | undefined {
@@ -697,45 +729,115 @@ const plugin = {
     }
 
     /**
-     * Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session) per quiet
-     * period. Returns what the scan record says about the notice. Never throws: the call is blocked whatever happens.
+     * Sends a notice that has a quiet period: none for `key` while it is in one. Returns what the scan record says about
+     * it. Never throws: the call's outcome stands whatever happens here.
      */
-    function scanFailureCall(cfg: PluginConfig, built: { planir: any }, failure: ScanFailure, tool: string, triggerKind: string, run: any): Json {
-      const sref: string = built.planir.session.session_ref;
-      const { where, jobId } = unattendedRun(sref, triggerKind, run);
+    function quietNotice(cfg: PluginConfig, key: string, text: () => string, what: string): Json {
       const target = store.loadNotify();
       const outbound = outboundOf();
       if (!target) return { status: "unsent", target: null, reason: hold.NOTIFY_UNSET };
       if (!outbound?.loadAdapter) return { status: "unsent", target: null, reason: "this OpenClaw has no outbound adapters for plugins" };
-      const key = scanFailure.quietKey(jobId, sref);
       let stamp: string | null;
       try {
         stamp = scanFailure.claim(cfg.stateDir, key, new Date());
         if (stamp === null) return { status: "quiet" };
       } catch (err) {
-        if (!(err instanceof hold.LockTimeoutError)) api.logger.warn(`${LOG} could not read or write scan-failure notices: ${String(err)}`);
+        if (!(err instanceof hold.LockTimeoutError)) api.logger.warn(`${LOG} could not read or write notice times: ${String(err)}`);
         return { status: "unsent", target: null, reason: err instanceof hold.LockTimeoutError ? "notice file locked" : "notice file not written" };
       }
-      const text = scanFailure.noticeText(failure, tool, where, jobId !== null, "openclaw sentrook verify");
+      const reopen = () => {
+        try {
+          scanFailure.release(cfg.stateDir, key, stamp!);
+        } catch (err) {
+          api.logger.warn(`${LOG} could not reopen ${what} notices for ${key}: ${String(err)}`);
+        }
+      };
+      let body: string;
+      try {
+        body = text();
+      } catch (err) {
+        // A malformed response: the outcome stands, not announced.
+        api.logger.warn(`${LOG} could not build a ${what} notice: ${String(err)}`);
+        reopen();
+        return { status: "unsent", target: null, reason: "notice could not be built" };
+      }
       hold.track(
-        hold.deliver(outbound, hostConfig(), target, text).then((why) => {
+        hold.deliver(outbound, hostConfig(), target, body).then((why) => {
           if (!why) return;
-          api.logger.warn(`${LOG} scan-failure notice not delivered: ${why}`);
-          // Not delivered: the next failure in this job is announced instead.
-          try {
-            scanFailure.release(cfg.stateDir, key, stamp!);
-          } catch (err) {
-            api.logger.warn(`${LOG} could not reopen scan-failure notices for ${key}: ${String(err)}`);
-          }
+          api.logger.warn(`${LOG} ${what} notice not delivered: ${why}`);
+          // Not delivered: the next one with this key is announced instead.
+          reopen();
         }),
       );
       return { status: "queued", target: target.channel };
     }
 
-    function holdCall(cfg: PluginConfig, built: { planir: any }, resp: any, tool: string, triggerKind: string, run: any): Json {
+    /**
+     * Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session) per quiet
+     * period. Returns what the scan record says about the notice. Never throws: the call is blocked whatever happens.
+     */
+    function scanFailureCall(
+      cfg: PluginConfig,
+      built: { planir: any },
+      failure: ScanFailure,
+      tool: string,
+      triggerKind: string,
+      run: any,
+      kind: selfEdit.SelfEditKind | null,
+    ): Json {
+      const sref: string = built.planir.session.session_ref;
+      const { where, jobId } = unattendedRun(sref, triggerKind, run, kind);
+      return quietNotice(
+        cfg,
+        scanFailure.quietKey(jobId, sref),
+        () => scanFailure.noticeText(failure, tool, where, jobId !== null, "openclaw sentrook verify"),
+        "scan-failure",
+      );
+    }
+
+    /**
+     * Tells the owner what happened to one of OpenClaw's background saves (blocked, let through, saved as a draft): once
+     * per outcome and run (cron job for the collection review) per quiet period. Never throws.
+     */
+    function backgroundNotice(
+      cfg: PluginConfig,
+      outcome: bg.Announced,
+      built: { planir: any },
+      resp: any,
+      tool: string,
+      save: { kind: selfEdit.SelfEditKind; store: selfEdit.SelfEditStore },
+      triggerKind: string,
+      run: any,
+    ): Json {
+      const sref: string = built.planir.session.session_ref;
+      const { where, jobId } = unattendedRun(sref, triggerKind, run, save.kind);
+      const out = quietNotice(
+        cfg,
+        bg.quietKey(outcome, jobId, sref),
+        () =>
+          bg.noticeText(outcome, resp, tool, save.store, where, cfg.trafficLog.enabled ? built.planir.request_id : null, jobId !== null),
+        "background-save",
+      );
+      if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);
+      return out;
+    }
+
+    /**
+     * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
+     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     */
+    function holdCall(
+      cfg: PluginConfig,
+      built: { planir: any },
+      resp: any,
+      tool: string,
+      triggerKind: string,
+      run: any,
+      kind: selfEdit.SelfEditKind | null,
+    ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const { where } = unattendedRun(sref, triggerKind, run);
+      const { where } = unattendedRun(sref, triggerKind, run, kind);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
