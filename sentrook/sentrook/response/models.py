@@ -247,6 +247,12 @@ class Response(_Model):
     action_fingerprint: str | None = Field(
         default=None, description="Echoed back by the plugin in history; opaque to it"
     )
+    approval_fingerprint: str | None = Field(
+        default=None,
+        description="The same action in every session of this deployment (its entities hashed with a salt derived "
+        "from the scanner's key, not the session's): what a plugin keys an owner's remembered approval on; opaque "
+        "to it and used for nothing else",
+    )
     state: str | None = Field(default=None, description="New signed state token")
     error: ScanError | None = Field(default=None, description="Only when status is error")
     metadata: Metadata

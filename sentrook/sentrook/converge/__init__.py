@@ -484,6 +484,7 @@ def converge(
         tool_description=describe(prepared, category),
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),
+        approval_fingerprint=prepared.approval_fingerprint or None,
         state=token,
         metadata=Metadata(
             scanner_version=scanner_version,
