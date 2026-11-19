@@ -53,10 +53,11 @@ def _droppable(v: dict) -> bool:
 
 
 def test_the_reproducer_ends_within_its_budget():
-    """Must fire: dropping one step used to leave the view at 1,180 against 1,172."""
+    """Must fire: dropping one step used to leave this view (1,223) at 1,200 against 1,199."""
     v = _view(_raw())
-    assert fit_self_edit(v, 1172)
-    assert est_tokens(v) <= 1172
+    assert est_tokens(v) == 1223
+    assert fit_self_edit(v, 1199)
+    assert est_tokens(v) <= 1199
     assert v["self_edit"]["scanner_dropped"]["history"] >= 1
 
 

@@ -797,4 +797,4 @@ The call view was fitted to its budget before the oracle ran; the call probe the
 `fit_self_edit` wrote `self_edit.scanner_dropped` after its drop loops, outside the size checks, so a view that stopped just under its budget ended over it by the count's size (about 12 tokens).
 - The count is written before each next size check, as the call view's fitter marks its dropped history. A view within its budget is unchanged.
 - Suite: no self-edit view is fitted at the selfedit-v3 budget, so every view is byte-identical to before. The logged beta traffic has no self-edit requests.
-- Tests: `test_self_edit_fit_marker` (the reproducer, every budget across four conversation shapes, an unfitted view untouched).
+- Tests: `test_self_edit_fit_marker` (a view main leaves at 1,200 against 1,199, every budget across four conversation shapes, an unfitted view untouched).

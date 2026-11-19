@@ -1069,7 +1069,7 @@ def _call_view_with_inputs(
     if over > 0 and refits > 0 and est_tokens(state) > unredacted:
         # placeholders longer than the secrets they replace took the view over its budget: fit it tighter, to what it
         # was before the redaction less the overshoot (the fit budget alone may be far above the view), and less what
-        # the fitter itself overshot its target by (the self-edit fitter's drop count lands after its size check)
+        # the fitter itself overshot its target by (only when it ran out of entries to drop)
         target = min(budget_tokens, unredacted) - over - max(0, unredacted - budget_tokens)
         return _call_view_with_inputs(
             raw,
