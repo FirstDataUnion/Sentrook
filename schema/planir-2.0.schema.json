@@ -176,6 +176,15 @@
       "title": "ConversationRole",
       "type": "string"
     },
+    "DecidedBy": {
+      "description": "Who settled a history step's `decision`, when it was not what the decision itself says. `review_loop`: a\nhost's own review loop answered the review prompt (Hermes's background self-improvement review denies its\nown prompts), so the owner never saw the review. Sent with `blocked`; a retry of such a step counts as a\nretry after an unanswered review.",
+      "enum": [
+        "review_loop",
+        "unknown"
+      ],
+      "title": "DecidedBy",
+      "type": "string"
+    },
     "Decision": {
       "description": "What happened to an earlier step. `review_timed_out`, `denied_by_user` and `blocked` feed\n`retry_after_denial`; the `*_on_error` values mark steps with no usable scan.",
       "enum": [
@@ -311,6 +320,18 @@
         "call_id": {
           "title": "Call Id",
           "type": "string"
+        },
+        "decided_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecidedBy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Who settled `decision` when nobody was asked: `review_loop` for a review the host's own review loop denied unseen (sent with `blocked`)"
         },
         "decision": {
           "$ref": "#/$defs/Decision",

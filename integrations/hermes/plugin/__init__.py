@@ -852,6 +852,11 @@ def on_post_approval_response(**kw: Any) -> None:
             for h in s["history"]:
                 if h.get("request_id") == review["request_id"]:
                     h["decision"] = final
+                    # the scanner tells this unseen deny from a real block: a retry of it may ask, not block
+                    if auto:
+                        h["decided_by"] = history.REVIEW_LOOP
+                    else:
+                        h.pop("decided_by", None)
             store.save_session(sid, s, cfg.history_limit * 2)
         traffic.write(
             {

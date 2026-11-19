@@ -21,8 +21,9 @@ The strong signals:
   (`reputation.unknown_in_written_selfmod`): naming it sanctions only sending to it, never running its code.
 
 Three further strong signals are parameters: a look-alike of a vouched-for entry or of a host, package or person the
-owner named (`lookalike`, on unless a parameter set turns it off); a retry of an action the owner denied (`retry_min`,
-0.8 unless a set changes it); and this request's new untrusted content judged to instruct the agent while the call is
+owner named (`lookalike`, on unless a parameter set turns it off); a retry of an action the owner denied or the scanner
+blocked (`retry_min`, 0.8 unless a set changes it; not a retry whose every match is a review nobody answered, which
+`retry_cap` holds at review); and this request's new untrusted content judged to instruct the agent while the call is
 judged not to follow from the owner's request (`fresh_injection`, model judgements only, off unless a set turns it on).
 
 Attended is derived from the PlanIR, not from a plugin flag: the turn is a message (not scheduled, heartbeat,
@@ -253,6 +254,8 @@ def check(
     relief_subjects: Iterable[tuple[str | None, str]],
     floors: list[str],
     params: ConvergenceParams,
+    *,
+    unanswered_retry: bool = False,
 ) -> CapCheck:
     """`claims`: every claim before relief; `kept`: the claims relief left; `relief_subjects`: (subject, reason)
     per relief applied; `floors`: the floors applied. Returns whether the call is in an attended owner session
@@ -260,7 +263,9 @@ def check(
     out = CapCheck(attended=attended_owner(prepared.planir))
     if not out.attended:
         return out
-    out.strong = strong_signals(prepared, claims, kept, relief_subjects, floors, params)
+    out.strong = strong_signals(
+        prepared, claims, kept, relief_subjects, floors, params, unanswered_retry=unanswered_retry
+    )
     return out
 
 
@@ -271,9 +276,12 @@ def strong_signals(
     relief_subjects: Iterable[tuple[str | None, str]],
     floors: list[str],
     params: ConvergenceParams,
+    *,
+    unanswered_retry: bool = False,
 ) -> list[str]:
     """The independent strong signals the call carries (the module note lists them), whoever is attending.
-    Same arguments as `check`."""
+    Same arguments as `check`. `unanswered_retry`: every step the retry matches is a review nobody answered
+    (`retry_cap.unanswered_retry`), so the retry is not a strong signal."""
     claims, kept = list(claims), list(kept)
     strong: list[str] = []
     if floors:
@@ -300,9 +308,14 @@ def strong_signals(
         (c.reason or "").startswith(LOOKALIKE_PREFIXES) for c in claims
     ):
         strong.append("lookalike")
-    if params.attended_owner_retry_min is not None and any(
-        c.signal == "suspicion.retry_after_denial" and c.value >= params.attended_owner_retry_min
-        for c in kept
+    if (
+        params.attended_owner_retry_min is not None
+        and not unanswered_retry
+        and any(
+            c.signal == "suspicion.retry_after_denial"
+            and c.value >= params.attended_owner_retry_min
+            for c in kept
+        )
     ):
         strong.append("retry_after_denial")
     if params.attended_owner_injection_exposure_min is not None:

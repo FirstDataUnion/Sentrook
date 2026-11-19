@@ -337,6 +337,11 @@ instead. Set `skill_review` to `review`
 to send the background saves like any other call, without the conversation; with nothing to judge them against,
 expect more of them to be reviewed or blocked.
 
+On the local terminal the background review cannot show you its prompts, so Hermes denies them itself; history shows
+such a save as "auto-denied by the review loop". If you then ask the agent to make that save, or a save whose review
+timed out, Sentrook treats it as a retry of a review nobody answered: it can ask you, but it is not blocked for being
+a retry. A retry of a call you denied yourself, or one Sentrook blocked, is scored as before.
+
 ### When the scan service fails
 
 A scan gives no usable answer when the scan service returns an error, does not answer within `timeout_ms` (30

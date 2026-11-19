@@ -43,7 +43,16 @@ from ..planir.canonical import (
     canonical_pending,
     canonical_sibling,
 )
-from ..planir.models import InputKind, NewInput, PlanIR, ProviderKind, ResultStatus, ToolKind
+from ..planir.models import (
+    DecidedBy,
+    Decision,
+    InputKind,
+    NewInput,
+    PlanIR,
+    ProviderKind,
+    ResultStatus,
+    ToolKind,
+)
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
 from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
 from . import views
@@ -406,6 +415,17 @@ class Prepared:
             for c in self.history
             if c.step is not None and by_step[c.step].decision.value in denied
         ]
+
+    def unanswered_review(self, step: int | None) -> bool:
+        """History step `step` was sent to review and nobody answered it: the review timed out (or is held), or
+        the host's own review loop denied it unseen (`blocked` with `decided_by: review_loop`). A retry of such
+        a step may ask the owner, never block on its own (`converge.retry_cap`)."""
+        h = next((h for h in self.planir.history if h.step == step), None)
+        if h is None:
+            return False
+        if h.decision is Decision.REVIEW_TIMED_OUT:
+            return True
+        return h.decision is Decision.BLOCKED and h.decided_by is DecidedBy.REVIEW_LOOP
 
 
 def _mark_request_named(

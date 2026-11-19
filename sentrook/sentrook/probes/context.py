@@ -1288,7 +1288,9 @@ class ContextProbe:
         carries the denied step's echoed consequence tier (`retry_carry_consequence`), except for a
         read-shaped call on the same data, which is scored at `retry_same_source_only` and carries
         nothing. A destructive SQL statement that names the object a denied destructive statement
-        named is the same action through whatever tool it now goes."""
+        named is the same action through whatever tool it now goes. Each match records whether its
+        step was a review nobody answered (`Prepared.unanswered_review`); convergence caps a retry
+        whose every match is one at review (`converge.retry_cap`)."""
         p = self.params
         denied = prepared.denied_steps()
         if not denied:
@@ -1373,7 +1375,13 @@ class ContextProbe:
             if carry and cons is not None:
                 carried = max(carried, float(cons))
             matches.append(
-                {"step": call.step, "reason": reason, "value": round(value, 4), "carry": carry}
+                {
+                    "step": call.step,
+                    "reason": reason,
+                    "value": round(value, 4),
+                    "carry": carry,
+                    "unanswered": prepared.unanswered_review(call.step),
+                }
             )
             if sql_shared:
                 matches[-1]["sql_target"] = sql_shared[0]
@@ -1388,6 +1396,8 @@ class ContextProbe:
             "denied_steps": [c.step for c in denied],
             "matches": matches,
             "carried_consequence": carried,
+            # every matched step is a review nobody answered: the retry may ask, never block on its own
+            "unanswered_only": bool(matches) and all(m["unanswered"] for m in matches),
         }
         if copies:
             evidence["retry"]["copies"] = copies

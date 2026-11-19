@@ -1,7 +1,7 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
 Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
-→ floors → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → tool description → flags
+→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → tool description → flags
 and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
@@ -38,6 +38,8 @@ from .merge import Claim, Merged, collect, merge
 from .params import ConvergenceParams, load_params
 from .registry import SIGNALS, reason_text
 from .relief import Relief, compute_relief
+from .retry_cap import REASON as RETRY_CAP_REASON
+from .retry_cap import risk_without_retry, unanswered_retry
 
 __all__ = ["converge", "ConvergeResult", "ConvergenceParams", "load_params"]
 
@@ -299,11 +301,12 @@ def converge(
         known_good_exact=known_good_exact,
         exposure=merged.get("suspicion.exposure"),
     )
+    excluded = {pair for r in relief for pair in r.excluded}
     if relief:
-        excluded = {pair for r in relief for pair in r.excluded}
         merged = merge(claims, excluded)
         tiers = compute(merged, envelopes, params, exposure_unjudged=unjudged)
 
+    retry_unanswered = unanswered_retry(envelopes)
     cap = attended_check(
         prepared,
         claims,
@@ -311,6 +314,7 @@ def converge(
         [(r.subject, r.reason) for r in relief],
         [f.floor for env in envelopes if env.status is ProbeStatus.OK for f in env.floors],
         params,
+        unanswered_retry=retry_unanswered,
     )
 
     floors: list[FloorApplied] = []
@@ -350,6 +354,24 @@ def converge(
             enforced = Enforce.REVIEW
     tiers.risk = round(risk, 6)
 
+    # A retry of a review nobody answered may ask, never block on its own (`retry_cap`).
+    retry_cap: dict | None = None
+    if retry_unanswered:
+        alone = risk_without_retry(
+            claims,
+            excluded,
+            envelopes,
+            params,
+            [f.min_risk for f in floors],
+            exposure_unjudged=unjudged,
+        )
+        retry_cap = {
+            "risk_without_retry": round(alone * 100.0, 2),
+            "capped": enforced is not Enforce.BLOCK
+            and alone < DEFAULT_BLOCK_LINE
+            and tiers.risk > alone,
+        }
+
     flags = set(prepared.state.flags)
     for env in envelopes:
         if env.status is ProbeStatus.OK:
@@ -376,7 +398,9 @@ def converge(
     )
     # One check: the mark in every parameter set, the ceiling only where the parameters turn it on.
     relax = relaxable(cap, held_back, enforced)
-    ceiling: str | None = "review" if relax and params.attended_owner_cap else None
+    attended_ceiling = relax and params.attended_owner_cap
+    retry_capped = bool(retry_cap and retry_cap["capped"])
+    ceiling: str | None = "review" if attended_ceiling or retry_capped else None
     attended = {
         "attended": cap.attended,
         "strong": cap.strong,
@@ -405,9 +429,14 @@ def converge(
     latency = None if started is None else round((time.perf_counter() - started) * 1000, 1)
     entities: dict[str, EntityDisplay] = entity_table(prepared)
     reasons = _reasons(merged, tiers, floors, relief, params, params.u)
-    if ceiling is not None:
-        # why the call is held for review rather than blocked: first when the risk reaches the default block line
-        cap_reason = Reason(code="cap.attended_owner", detail={"ceiling": ceiling})
+    # why the call is held for review rather than blocked: first when the risk reaches the default block line
+    for code, applies in (
+        (RETRY_CAP_REASON, retry_capped),
+        ("cap.attended_owner", attended_ceiling),
+    ):
+        if not applies:
+            continue
+        cap_reason = Reason(code=code, detail={"ceiling": "review"})
         if tiers.risk >= DEFAULT_BLOCK_LINE:
             reasons.insert(0, cap_reason)
         else:
@@ -473,6 +502,7 @@ def converge(
                 "token_status": prepared.state.status.value,
                 "coverage_notes": sorted(coverage_codes),
                 "attended_owner": attended,
+                **({"unanswered_retry": retry_cap} if retry_cap is not None else {}),
             },
         ),
     )
