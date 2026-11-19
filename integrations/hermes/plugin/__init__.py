@@ -465,13 +465,15 @@ def _scan_one(
     )
     planir = built["planir"]
     built["loop_save"] = loop_save
-    # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
-    unattended = loop_save or is_unattended(
+    # Whether the session itself is one nobody attends (for a loop save: the session it follows).
+    run_unattended = is_unattended(
         built["platform"],
         env,
         subagent=built["subagent"],
         attended_platforms=cfg.attended_platforms,
     )
+    # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
+    unattended = loop_save or run_unattended
 
     ep = cfg.endpoints
     result: ScanOk | ScanFailure
@@ -548,18 +550,31 @@ def _scan_one(
             loop_save
             and snooze.applies(resp, cfg.block_at)
             and (
-                skill_review.lenient(resp)
-                or snooze.active(
-                    store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+                skill_review.lenient(resp, declared=self_edit is not None)
+                or (
+                    # unattended runs are never snoozed: only a save after a session the owner attends
+                    not run_unattended
+                    and snooze.active(
+                        store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
+                    )
                 )
             )
         ):
             # A reviewed background save the scanner marks lenient, or one a snooze covers, runs and the owner is
             # told; never one the scanner enforces or that scores at the block line.
             entry["decision"] = "allowed"
-            let_through = skill_review.lenient(resp)
+            let_through = skill_review.lenient(resp, declared=self_edit is not None)
             snoozed = not let_through
-            notice = _background_notice(cfg, built, resp, "allowed", snoozed=snoozed)
+            notice = _background_notice(
+                cfg, built, resp, "allowed-snoozed" if snoozed else "allowed-lenient"
+            )
+        elif loop_save:
+            # Held, but not as an approvable hold: approving could not make the save (the hold keeps no arguments and
+            # suggests no grant for a background save), and a curator pass must not crowd out other runs' holds.
+            # History and status record it; the owner gets a notice.
+            entry["decision"] = "held"
+            directive = {"action": "block", "message": hold.HELD_TEXT}
+            notice = _background_notice(cfg, built, resp, "held")
         elif unattended:
             # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
             entry["decision"] = "held"
@@ -744,11 +759,9 @@ def _background_notice(
     built: dict[str, Any],
     resp: dict[str, Any],
     outcome: str,
-    *,
-    snoozed: bool = False,
 ) -> dict[str, Any]:
-    """Tells the owner a background save was blocked (`outcome` blocked) or let through without asking (allowed):
-    once per kind and session per quiet period. Returns what the scan record says about the notice. Never raises:
+    """Tells the owner a background save was blocked, held, or let through without asking (`outcome`: blocked,
+    held, allowed-lenient or allowed-snoozed): once per kind and session per quiet period. Returns what the scan record says about the notice. Never raises:
     the save's outcome stands whatever happens here."""
     target, why = _notice_target(cfg.owner_channel)
     if not target:
@@ -779,11 +792,18 @@ def _background_notice(
             else None
         )
         text = (
-            skill_review.block_notice_text(
-                built["tool"], shown, where, BLOCK_CATEGORIES[block_category(resp)], details
+            skill_review.stopped_text(
+                outcome,
+                built["tool"],
+                shown,
+                where,
+                BLOCK_CATEGORIES[block_category(resp)],
+                details,
             )
-            if outcome == "blocked"
-            else skill_review.let_through_text(built["tool"], shown, where, details, snoozed)
+            if outcome in ("blocked", "held")
+            else skill_review.let_through_text(
+                built["tool"], shown, where, details, outcome == "allowed-snoozed"
+            )
         )
     except Exception as exc:  # noqa: BLE001 - a malformed response: not announced
         logger.warning("sentrook could not build a background-save notice: %s", exc)

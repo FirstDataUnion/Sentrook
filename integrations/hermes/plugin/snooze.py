@@ -10,8 +10,9 @@ A snooze never allows:
 - a scan error, or observe mode.
 
 Hermes's own background skill and memory saves (`skill_review`) never ask. One whose review would otherwise be
-held is allowed when a snooze covers its session (or every session), under the same rules: never a block, an
-enforced review or one at the block line. The owner gets a notice that it was let through.
+held is allowed when a snooze covers its session (or every session) and that session is one the owner attends (a
+chat or the terminal), under the same rules: never a block, an enforced review or one at the block line, and never
+after an unattended run. The owner gets a notice that it was let through.
 
 In a chat the owner attends, a snooze also turns a block the scanner marks `relaxable` (the owner attends,
 nothing independent points to an attack and nothing is enforced: the score alone blocks) into a review. It is

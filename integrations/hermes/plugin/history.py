@@ -196,6 +196,8 @@ def _base_action(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str
 def review_of(action: str, resolution: dict[str, Any] | None) -> str:
     """How the review was answered; `-` when there was none."""
     if resolution is None:
+        if action.startswith("held") and action.endswith("self-edit)"):
+            return "not saved"  # a background save is held with nothing to approve
         return "no answer" if action.startswith(("review", "held")) else "-"
     choice = str(resolution.get("resolution") or "").strip().lower()
     if choice == "deny" and resolution.get("decided_by") == REVIEW_LOOP:

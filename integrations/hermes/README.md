@@ -355,18 +355,20 @@ instead:
 |---|---|---|
 | Allow | It is saved. | Nothing; it is in history. |
 | Review, and Sentrook finds nothing in the save that needs you | It is saved without asking. | A notice that a save Sentrook would normally ask about was let through. |
-| Review, otherwise | It is held, like a call on an unattended run (see [Held calls](#held-calls-on-unattended-runs)). | The held-call notice. |
+| Review, otherwise | It is held: not saved. There is nothing to approve, because approving could not make the save; to keep it, ask the agent for it in a chat. | A notice that a background save was held. |
 | Block | It is not saved. | A notice that a background save was blocked. |
 | The scan failed | As on an unattended run: with `on_scan_error` `review` or `deny` it is not saved, with `allow` it is (see [When the scan service fails](#when-the-scan-service-fails)). | The scan-failure notice when it is not saved. |
 
 The notices go to the home channel of the platform in `owner_channel`. They say whether it was a skill or a memory
 save and what it saved, as a review would describe it, and point to `/sentrook why <id>` and `/sentrook history`.
-You get at most one "let through" and one "blocked" notice per session every 6 hours; history has every save.
+You get at most one notice of each kind (let through, held, blocked) per session every 6 hours; history has every
+save, and shows a held one as "not saved".
 Without `owner_channel` (for example when you use Hermes only on the local terminal) the saves are handled the same
 way, but nothing tells you: `status` and `verify` say so, and the saves show only in `/sentrook history` and the
-`skill review` counts in `status`. Approving a held save does not save it again; to keep it, ask the agent in a
-chat. A snooze on the session (or on every session) lets a save through that would otherwise be held, with the
-"let through" notice; it never lets a blocked save through. History marks these saves "(self-edit)".
+`skill review` counts in `status`. A snooze on the session (or on every session) lets a save through that would
+otherwise be held, with the "let through" notice, when the save follows a chat or a terminal session you attend;
+it never lets a blocked save through, and never one after a cron job, a webhook, the API server or another
+unattended run. History marks these saves "(self-edit)".
 
 ### When the scan service fails
 

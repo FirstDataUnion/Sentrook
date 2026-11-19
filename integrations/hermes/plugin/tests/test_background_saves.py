@@ -7,11 +7,13 @@ every surface and whatever Hermes's approval settings:
 
 - allow: the save runs;
 - block: the save is blocked and the owner gets a notice;
-- review the scanner marks lenient (`self_edit.lenient`): the save runs and the owner gets a notice that it was let
-  through; a review with no such mark is held for the owner (`hold`), with the hold notice;
+- review the scanner marks lenient (`self_edit.lenient`, on an ok scan of a save sent with its `self_edit` block): the
+  save runs and the owner gets a notice that it was let through; any other review is held: not saved, recorded in
+  history and status (not in the approvable holds, since approving could not make the save), with a notice;
 - scan failure: what any unattended run does (`on_scan_error`), with the scan-failure notice when it blocks.
 
-Notices go to the `owner_channel` home channel, at most one of each kind per session every 6 hours. Without a home
+A snooze lets a would-be-held save through only when the save follows a session the owner attends (a chat or the
+terminal). Notices go to the `owner_channel` home channel, at most one of each kind per session every 6 hours. Without a home
 channel nothing changes but the notice, and `status` and `verify` say so. History marks these saves "(self-edit)".
 An owner's own skill or memory change, an owner's `/refine`, and any other tool the background run calls are not
 background saves and are unchanged.
@@ -143,10 +145,7 @@ def test_a_background_save_never_asks(h, monkeypatch, save, surface, verdict):
     assert shown(h)[0] == action
     if notice:
         assert len(h.sent) == 1 and h.sent[0]["args"]["target"] == "telegram"
-        assert (
-            rec.get("notice", {}).get("status") == "queued"
-            or rec["hold"]["notice"]["status"] == "queued"
-        )
+        assert rec["notice"]["status"] == "queued" and "hold" not in rec
     else:
         assert h.sent == [] and "notice" not in rec
 
@@ -162,7 +161,7 @@ def test_without_a_home_channel_only_the_notice_is_missing(h, monkeypatch, save,
     assert out is None if told is None else out["action"] == "block"
     assert rec["decision"] == decision and shown(h)[0] == action
     assert h.sent == []
-    sent = rec["hold"]["notice"] if verdict == "review" else rec["notice"]
+    sent = rec["notice"]
     assert sent["status"] == "unsent" and "owner_channel is not set" in sent["reason"]
 
 
@@ -220,6 +219,22 @@ def test_only_a_json_true_lenient_lets_a_review_through(h, monkeypatch, self_edi
     assert rec["decision"] == "held" and "lenient" not in rec
 
 
+@pytest.mark.parametrize("status", ["degraded", None, "partial"])
+def test_lenient_counts_only_on_an_ok_scan(h, monkeypatch, status):
+    h.reply.update(risk=55, status=status, self_edit=LENIENT)
+    out, rec = run(h, monkeypatch, "fork-memory", "telegram")
+    assert out == {"action": "block", "message": hold.HELD_TEXT}
+    assert rec["decision"] == "held" and "lenient" not in rec
+
+
+def test_lenient_counts_only_when_the_save_was_declared(h, monkeypatch):
+    """With `skill_review: review` no `self_edit` block is sent, so a lenient mark answers nothing the plugin asked."""
+    h.ctx.settings["skill_review"] = "review"
+    h.reply.update(risk=55, self_edit=LENIENT)
+    out, rec = run(h, monkeypatch, "fork-skill", "telegram")
+    assert out == {"action": "block", "message": hold.HELD_TEXT} and "lenient" not in rec
+
+
 @pytest.mark.parametrize("floor", ["review", "block"])
 def test_lenient_never_overrides_an_enforced_floor(h, monkeypatch, floor):
     h.reply.update(risk=20, enforced=floor, self_edit=LENIENT)
@@ -266,12 +281,56 @@ def test_the_block_notice(h, monkeypatch):
     )
 
 
-def test_the_hold_notice_names_the_background_save(h, monkeypatch):
+def test_the_held_notice_offers_no_approval(h, monkeypatch):
+    """Approving could not make the save, so the notice says it was not made and where to see it."""
     h.reply.update(risk=55)
     _, rec = run(h, monkeypatch, "fork-skill", "cli")
     (text,) = notices(h)
-    assert f"Run: background save, session {rec['session_ref']}" in text.splitlines()
-    assert f"/sentrook approve {rec['hold']['id']}" in text
+    rid = rec["request_id"][:8]
+    assert text.splitlines() == [
+        "Sentrook held a background skill save for you, so it was not saved. To keep it, ask the agent for it "
+        "in a chat.",
+        f"Run: background save, session {rec['session_ref']}",
+        "Save: skill_manage: Saves a skill",
+        "Held because it changes the agent's own setup, such as its configuration, memory, plugins, skills or "
+        "scheduled jobs.",
+        f"Details: /sentrook why {rid}; every background save is in /sentrook history.",
+        "More background saves held in this session are not announced for 6 hours.",
+    ]
+    assert "approve" not in text
+
+
+def test_history_says_a_held_background_save_was_not_saved(h, monkeypatch):
+    h.reply.update(risk=55)
+    run(h, monkeypatch, "fork-skill", "telegram")
+    assert shown(h) == ("held (self-edit)", "not saved")
+
+
+def test_a_curator_pass_sends_one_held_notice(h, monkeypatch):
+    h.reply.update(risk=55)
+    for _ in range(25):
+        _, rec = run(h, monkeypatch, "curator", "api_server")
+        assert rec["decision"] == "held"
+    assert len(h.sent) == 1 and rec["notice"] == {"status": "quiet"}
+
+
+def test_held_background_saves_never_evict_approvable_holds(h, monkeypatch):
+    h.reply.update(risk=55)
+    h.prov["origin"] = "assistant_tool"
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="x", platform="cron", sender_id="u1", **SID
+    )
+    h.ctx.hooks["pre_tool_call"](
+        tool_name="terminal", args={"command": "echo hi"}, tool_call_id="c0", turn_id="t1", **SID
+    )
+    first = [r for r in h.traffic() if r.get("kind") == "scan"][-1]["hold"]["id"]
+    h.prov["origin"] = "background_review"
+    for _ in range(hold.MAX_HOLDS + 5):
+        run(h, monkeypatch, "fork-skill", "telegram")
+    ids = [x["id"] for x in json.loads((h.dir / "sentrook" / "holds.json").read_text())["holds"]]
+    assert ids == [first]
+    status = commands.run_status("", dict(h.ctx.settings))
+    assert f"{hold.MAX_HOLDS + 5} held" in status
 
 
 def test_notice_text_is_built_only_from_display_fields(h, monkeypatch):
@@ -298,6 +357,15 @@ def test_one_notice_of_each_kind_per_session_in_the_quiet_period(h, monkeypatch)
     assert rec["notice"]["status"] == "queued" and len(h.sent) == 2
     _, rec = run(h, monkeypatch, "fork-skill", "telegram")
     assert rec["notice"] == {"status": "quiet"} and len(h.sent) == 2
+
+
+def test_a_snoozed_let_through_does_not_silence_a_lenient_one(h, monkeypatch):
+    snooze(h, "1h")
+    h.reply.update(risk=55)
+    run(h, monkeypatch, "fork-skill", "telegram")
+    h.reply.update(self_edit=LENIENT)
+    _, rec = run(h, monkeypatch, "fork-skill", "telegram")
+    assert rec["notice"]["status"] == "queued" and len(h.sent) == 2
 
 
 def test_an_undelivered_notice_is_announced_next_time(h, monkeypatch):
@@ -340,11 +408,15 @@ def snooze(h, rest):
     return commands.run_snooze(rest, dict(h.ctx.settings), None, {"basis": ["cli"]}, "S1")
 
 
+@pytest.mark.parametrize("surface", ["telegram", "cli"])
 @pytest.mark.parametrize("scope", ["session", "all"])
-def test_a_snooze_lets_a_reviewed_background_save_through_with_the_notice(h, monkeypatch, scope):
+def test_a_snooze_lets_a_reviewed_background_save_through_with_the_notice(
+    h, monkeypatch, scope, surface
+):
+    """Only after a session the owner attends: a chat or the terminal."""
     snooze(h, "1h" if scope == "session" else "--all 1h")
     h.reply.update(risk=55)
-    out, rec = run(h, monkeypatch, "fork-skill", "api_server")
+    out, rec = run(h, monkeypatch, "fork-skill", surface)
     assert out is None and rec["decision"] == "allowed" and rec["snoozed"] is True
     assert shown(h)[0] == "allowed (snoozed, self-edit)"
     (text,) = notices(h)
@@ -360,6 +432,33 @@ def test_a_lenient_save_under_a_snooze_is_let_through_as_lenient(h, monkeypatch)
     out, rec = run(h, monkeypatch, "fork-skill", "telegram")
     assert out is None and rec["lenient"] is True and "snoozed" not in rec
     assert notices(h)[0].startswith("Sentrook let a background skill save through without asking")
+
+
+@pytest.mark.parametrize("platform", ["cron", "webhook", "api_server", "curator"])
+def test_a_snooze_never_reaches_a_save_after_an_unattended_session(h, monkeypatch, platform):
+    """Unattended runs are never snoozed, and a background save after one is no exception."""
+    reply = snooze(h, "--all 1h")
+    assert "unattended runs are not snoozed" in reply
+    h.reply.update(risk=55)
+    out, rec = run(h, monkeypatch, "fork-skill", platform)
+    assert out == {"action": "block", "message": hold.HELD_TEXT}
+    assert rec["decision"] == "held" and "snoozed" not in rec
+
+
+def test_a_snooze_never_lets_a_retry_capped_review_through(h, monkeypatch):
+    snooze(h, "--all 1h")
+    h.reply.update(risk=92, ceiling="review", reasons=[{"code": "cap.unanswered_retry"}])
+    out, rec = run(h, monkeypatch, "fork-skill", "telegram")
+    assert rec["decision"] == "held" and "snoozed" not in rec
+
+
+def test_an_owner_chat_save_under_a_snooze_is_unchanged(h, monkeypatch):
+    """Snoozed in the chat the owner attends, as before: allowed without asking, and no background notice."""
+    snooze(h, "1h")
+    h.prov["origin"] = "assistant_tool"
+    h.reply.update(risk=55)
+    out, rec = run(h, monkeypatch, "fork-skill", "telegram")
+    assert out is None and rec["snoozed"] is True and "skill_review" not in rec and h.sent == []
 
 
 def test_a_snooze_of_another_session_does_not(h, monkeypatch):

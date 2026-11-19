@@ -24,10 +24,15 @@ loop save is decided as an unattended run's call is, and the owner is told:
 - allow: it runs;
 - block: it is blocked, and the owner gets a notice (`block_notice_text`);
 - review the scanner marks lenient (`lenient`), below the block line and not enforced: it runs, and the owner
-  gets a notice that it was let through (`let_through_text`); the same when a snooze covers the session;
-- any other review: it is held for the owner (`hold`), with the hold notice;
+  gets a notice that it was let through (`let_through_text`). `lenient` counts only on an ok scan of a save sent
+  with its `self_edit` block. The same when a snooze covers the session and that session is one the owner attends
+  (a chat or the terminal): unattended runs are never snoozed;
+- any other review: it is held, so not saved, with a notice (`stopped_text`). It is not an approvable hold in
+  `holds.json`: the hold keeps no arguments and suggests no grant for a background save, so approving could not
+  make the save, and a curator pass must not crowd out other runs' holds. History and status record it;
 - scan failure: as on any unattended run (`scan_error_policy`), with the scan-failure notice when it blocks.
-These notices are sent at most once per kind per session every 6 hours (`scan_failure_notice` keeps the times).
+These notices (blocked, held, let through as lenient, let through by a snooze) are sent at most once per kind per
+session every 6 hours (`scan_failure_notice` keeps the times).
 
 Every call the fork or the curator makes (a loop save or not) carries the session's last owner request
 and that turn's number, and is not counted as a new turn: the fork fires no `pre_llm_call`, and the
@@ -119,11 +124,18 @@ def store_of(tool: str) -> str:
     return "memory" if tool == "memory" else "skills"
 
 
-def lenient(resp: dict[str, Any]) -> bool:
+def lenient(resp: dict[str, Any], *, declared: bool) -> bool:
     """The scanner marks this reviewed save as one to let through without asking: `self_edit.lenient` is a JSON
-    true. A missing block or flag (an older scanner) is not lenient."""
+    true, on a scan whose status is ok, of a save the plugin declared with its `self_edit` block (`declared`). A
+    missing block or flag (an older scanner), a degraded scan, or a mark on a save sent without the block (with
+    `skill_review: review`) is not lenient."""
     block = resp.get("self_edit")
-    return isinstance(block, dict) and block.get("lenient") is True
+    return (
+        declared
+        and resp.get("status") == "ok"
+        and isinstance(block, dict)
+        and block.get("lenient") is True
+    )
 
 
 def what(tool: str) -> str:
@@ -170,16 +182,26 @@ def let_through_text(
     )
 
 
-def block_notice_text(tool: str, shown: str, where: str, category: str, details: str | None) -> str:
-    """The owner's notice that a loop save was blocked; `category` as the agent's block text names it."""
+def stopped_text(
+    outcome: str, tool: str, shown: str, where: str, category: str, details: str | None
+) -> str:
+    """The owner's notice that a loop save was blocked or held (`outcome`); `category` as the agent's block text
+    names it. A held save offers no approval: approving could not make it. To keep it, the owner asks for it."""
+    first = (
+        f"Sentrook blocked a background {what(tool)} save, so it was not saved."
+        if outcome == "blocked"
+        else f"Sentrook held a background {what(tool)} save for you, so it was not saved. To keep it, ask the "
+        "agent for it in a chat."
+    )
+    more = "More blocked background saves" if outcome == "blocked" else "More background saves held"
     return "\n".join(
         (
-            f"Sentrook blocked a background {what(tool)} save, so it was not saved.",
+            first,
             f"Run: {where}",
             _save_line(tool, shown),
-            f"Blocked because {category}.",
+            f"{'Blocked' if outcome == 'blocked' else 'Held'} because {category}.",
             *_details(details),
-            f"More blocked background saves in this session are not announced for {_quiet_hours()} hours.",
+            f"{more} in this session are not announced for {_quiet_hours()} hours.",
         )
     )
 

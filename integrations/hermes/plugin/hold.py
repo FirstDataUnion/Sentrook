@@ -1,8 +1,7 @@
 """Holds: a review on an unattended run waits for the owner instead of becoming a block.
 
-Nobody can answer a review prompt on a cron job, a subagent, a run with approvals off or YOLO, a
-process with no terminal, or Hermes's own background skill and memory saves (`skill_review`), which run
-after the owner's turn is over. There the plugin holds the call:
+Nobody can answer a review prompt on a cron job, a subagent, a run with approvals off or YOLO, or a
+process with no terminal. There the plugin holds the call:
 - the call does not run, and the agent is told it is held for the owner's approval and must not be
   retried in this run (`HELD_TEXT`);
 - the owner gets one notice on the home channel of the platform in `owner_channel`: which run, the
@@ -14,6 +13,9 @@ after the owner's turn is over. There the plugin holds the call:
   With no suggested grant, approving sets nothing and the reply says so.
 - After 24 hours the hold expires and nothing runs. Expiry is found and recorded when the holds are
   next changed (a new hold or an approval).
+
+Hermes's own background skill and memory saves are held without an entry here (`skill_review`): approving
+could not make the save.
 
 A block (at the block line, or one the scanner enforces) is never held, except a retry of a review nobody
 answered that the scanner caps at review (`decision.unattended_view`). Attended runs are unchanged: a review there
