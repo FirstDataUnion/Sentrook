@@ -14,7 +14,7 @@ import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import { reviewCard } from "./card.ts";
-import { blockReason, decide, severity, tiersOf, type Verdict } from "./decision.ts";
+import { blockReason, decide, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
@@ -503,9 +503,9 @@ const plugin = {
       let remember: grants.Entry | null = null;
       if (result.ok) {
         const resp = result.response;
-        // The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
-        // block to a review with it, so a lowered block is never held.
-        verdict = decide(timing.unattended ? { ...resp, ceiling: null } : resp, cfg);
+        // A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
+        // retry is held for the owner. The attended-owner ceiling is dropped there (`unattendedView`).
+        verdict = decide(timing.unattended ? unattendedView(resp) : resp, cfg);
         if (
           // Only a human's message, as for a snoozed review: an unattended run is never relaxed.
           cfg.mode !== "observe" &&

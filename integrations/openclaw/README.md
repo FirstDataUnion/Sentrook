@@ -352,7 +352,7 @@ by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats a
   The held call itself is never run again.
 - A hold nobody approves expires after 24 hours, and nothing runs.
 
-A block (at `blockAt` or above, or one the scanner enforces) is never held: it stays a block. The traffic log records
+A block (at `blockAt` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out or was held) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
 the scan with decision `held`, then the approval or the expiry; `/sentrook-history` shows them.
 
 ### Skills and memory the agent saves on its own
