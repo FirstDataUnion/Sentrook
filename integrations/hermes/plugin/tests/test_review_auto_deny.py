@@ -85,7 +85,9 @@ def test_the_review_loops_auto_deny_on_the_terminal_is_not_the_owners(h, attende
     h.prov["attended"] = attended
     key = ask(h, *SAVE)
     answer(h, key, "deny")
-    assert next_history(h)[0]["decision"] == "blocked"
+    sent = next_history(h)[0]
+    # the scan of a retry is told the review loop denied it, so the retry may ask rather than block
+    assert (sent["decision"], sent["decided_by"]) == ("blocked", "review_loop")
     res = resolution(h)
     assert (res["resolution"], res["decision"], res["decided_by"]) == (
         "deny",
@@ -127,7 +129,8 @@ def test_an_owner_denial_of_an_ordinary_call_is_still_denied_by_user(h):
     h.prov["origin"] = "assistant_tool"
     key = ask(h, "terminal", {"command": "rm -rf build"})
     answer(h, key, "deny")
-    assert next_history(h)[0]["decision"] == "denied_by_user"
+    sent = next_history(h)[0]
+    assert sent["decision"] == "denied_by_user" and "decided_by" not in sent
     res = resolution(h)
     assert res["decision"] == "denied_by_user" and "decided_by" not in res
     assert shown(h)[0] == "denied"
@@ -197,7 +200,8 @@ def test_without_hermes_approval_plumbing_the_denial_is_the_owners(h, monkeypatc
 def test_other_unanswered_outcomes_in_the_fork_are_unchanged(h, choice, decision, review):
     key = ask(h, *SAVE)
     answer(h, key, choice)
-    assert next_history(h)[0]["decision"] == decision
+    sent = next_history(h)[0]
+    assert sent["decision"] == decision and "decided_by" not in sent
     assert "decided_by" not in resolution(h)
     assert shown(h)[0] == review
 

@@ -64,6 +64,7 @@ from .formulas import compute
 from .merge import Claim, merge
 from .params import ConvergenceParams
 from .relief import Relief
+from .retry_cap import unanswered_retry
 
 #: The grant kind a hint offers for each entity kind.
 HINT_KIND: dict[EntityKind, str] = {
@@ -300,7 +301,13 @@ def grant_hints(
     excluded = {pair for r in relief for pair in r.excluded}
     kept = [c for cs in merge(claims, excluded).claims.values() for c in cs]
     if strong_signals(
-        prepared, claims, kept, [(r.subject, r.reason) for r in relief], floors, params
+        prepared,
+        claims,
+        kept,
+        [(r.subject, r.reason) for r in relief],
+        floors,
+        params,
+        unanswered_retry=unanswered_retry(envelopes),
     ):
         return []
     if not owner_turn(prepared):

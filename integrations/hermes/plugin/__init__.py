@@ -33,7 +33,7 @@ from . import (
 )
 from .auth import resolve_oidc_credentials
 from .config import PluginConfig, resolve_config
-from .decision import block_reason, decide, tiers_of
+from .decision import block_reason, decide, tiers_of, unattended_view
 from .intent import (
     conversation_sender_of,
     hermes_config,
@@ -483,11 +483,9 @@ def _scan_one(
     failure_notice: dict[str, Any] | None = None
     if isinstance(result, ScanOk):
         resp = result.response
-        # The scanner sets a ceiling only for an owner it sees attending; a run nobody can answer never lowers a
-        # block to a review with it, so a lowered block is never held.
-        verdict = decide(
-            {**resp, "ceiling": None} if unattended else resp, cfg.review_at, cfg.block_at
-        )
+        # A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
+        # retry is held for the owner. The attended-owner ceiling is dropped there (`decision.unattended_view`).
+        verdict = decide(unattended_view(resp) if unattended else resp, cfg.review_at, cfg.block_at)
         if (
             cfg.mode != "observe"
             and not unattended
@@ -852,6 +850,11 @@ def on_post_approval_response(**kw: Any) -> None:
             for h in s["history"]:
                 if h.get("request_id") == review["request_id"]:
                     h["decision"] = final
+                    # the scanner tells this unseen deny from a real block: a retry of it may ask, not block
+                    if auto:
+                        h["decided_by"] = history.REVIEW_LOOP
+                    else:
+                        h.pop("decided_by", None)
             store.save_session(sid, s, cfg.history_limit * 2)
         traffic.write(
             {

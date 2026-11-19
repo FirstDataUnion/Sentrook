@@ -313,7 +313,7 @@ Where nobody can answer a review (the runs above), the call is **held**:
   again.
 - A hold nobody approves expires after 24 hours, and nothing runs.
 
-A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The traffic log records
+A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
 the scan with decision `held`, then the approval or the expiry; `/sentrook history` shows them.
 
 ### Hermes's own skill and memory saves
@@ -336,6 +336,11 @@ a turn of its own; if you have not written anything in the session yet, the requ
 instead. Set `skill_review` to `review`
 to send the background saves like any other call, without the conversation; with nothing to judge them against,
 expect more of them to be reviewed or blocked.
+
+On the local terminal the background review cannot show you its prompts, so Hermes denies them itself; history shows
+such a save as "auto-denied by the review loop". If you then ask the agent to make that save, or a save whose review
+timed out, Sentrook treats it as a retry of a review nobody answered: it can ask you (or, on an unattended run, be
+held for you), but it is not blocked for being a retry. A retry of a call you denied yourself, or one Sentrook blocked, is scored as before.
 
 ### When the scan service fails
 

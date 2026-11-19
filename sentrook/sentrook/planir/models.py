@@ -181,6 +181,17 @@ class Decision(TolerantStrEnum):
     UNKNOWN = "unknown"
 
 
+class DecidedBy(TolerantStrEnum):
+    """Who settled a history step's `decision`, when it was not what the decision itself says. `review_loop`: a
+    host's own review loop answered the review prompt (Hermes's background self-improvement review denies its
+    own prompts), so the owner never saw the review. Sent with `blocked`; a retry of such a step counts as a
+    retry after an unanswered review."""
+
+    __fallback__ = "unknown"
+    REVIEW_LOOP = "review_loop"
+    UNKNOWN = "unknown"
+
+
 class GrantScope(TolerantStrEnum):
     """An unknown scope is read as the weaker one (`session`), so relief is never widened by a value
     the scanner does not understand."""
@@ -328,6 +339,11 @@ class HistoryStep(_Model):
     tiers: Tiers | None = None
     request_id: str | None = None
     decision: Decision = Decision.UNKNOWN
+    decided_by: DecidedBy | None = Field(
+        default=None,
+        description="Who settled `decision` when nobody was asked: `review_loop` for a review the host's own "
+        "review loop denied unseen (sent with `blocked`)",
+    )
 
 
 class Sibling(_Model):
