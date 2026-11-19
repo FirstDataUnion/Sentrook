@@ -191,7 +191,7 @@ export function scriptJson(value: unknown): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-export function renderPage(model: unknown, nonce: string): string {
+export function renderPage(model: unknown, nonce: string, script: string = viewScript()): string {
   return [
     "<!doctype html>",
     '<html lang="en"><head><meta charset="utf-8">',
@@ -199,7 +199,7 @@ export function renderPage(model: unknown, nonce: string): string {
     "<title>Sentrook</title></head>",
     '<body><div id="sentrook-root"></div>',
     `<script type="application/json" id="sentrook-model">${scriptJson(model)}</script>`,
-    `<script nonce="${nonce}">${viewScript().replace(/<\/script/gi, "<\\/script")}</script>`,
+    `<script nonce="${nonce}">${script.replace(/<\/script/gi, "<\\/script")}</script>`,
     "</body></html>",
   ].join("\n");
 }

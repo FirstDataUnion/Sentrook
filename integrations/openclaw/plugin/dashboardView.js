@@ -504,10 +504,12 @@
     var data = document.getElementById("sentrook-model");
     var root = document.getElementById("sentrook-root");
     if (data && root) {
-      document.documentElement.className = "srk-page";
+      // `data-theme="host"`: take colours from the page's own theme variables (the local preview of Hermes).
+      var standalone = root.getAttribute("data-theme") !== "host";
+      if (standalone) document.documentElement.className = "srk-page";
       try {
         render(root, JSON.parse(data.textContent || "{}"), {
-          standalone: true,
+          standalone: standalone,
           setLimit: function (n) {
             window.location.search = "?n=" + n;
           },
