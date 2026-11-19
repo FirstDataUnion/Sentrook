@@ -663,13 +663,41 @@ def _reputation_rank(entry: dict[str, Any]) -> int:
     return 2 if verdict == "known_good" else 3
 
 
+#: Over the cap, an entry longer than its share of the block has its long values cut head and tail to fit it, so any
+#: `REPUTATION_MAX_ENTRIES` entries fit together and a long known_bad host is shortened, never dropped.
+REPUTATION_ENTRY_CAP_CHARS = (
+    REPUTATION_CAP_CHARS - REPUTATION_MAX_ENTRIES - 1
+) // REPUTATION_MAX_ENTRIES
+_REPUTATION_CUT = "…"
+
+
+def _shorten_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """`entry` with its longest string values cut, two thirds head and one third tail around `…`, until it fits
+    `REPUTATION_ENTRY_CAP_CHARS`. The registrable end of a host or address stays in the tail."""
+    out = dict(entry)
+    while (excess := _json_chars(out) - REPUTATION_ENTRY_CAP_CHARS) > 0:
+        key = max(
+            (k for k, x in out.items() if isinstance(x, str)),
+            key=lambda k: len(out[k]),
+            default=None,
+        )
+        if key is None or len(out[key]) <= 8:
+            break
+        value = out[key]
+        keep = max(8, len(value) - excess - len(_REPUTATION_CUT))
+        head = keep * 2 // 3
+        out[key] = value[:head] + _REPUTATION_CUT + value[len(value) - (keep - head) :]
+    return out
+
+
 def cap_reputation(verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The entries a `reputation` block keeps: all of them when they fit `REPUTATION_MAX_ENTRIES` and
-    `REPUTATION_CAP_CHARS`, otherwise the highest-ranked (`_reputation_rank`, then their order) up to the first that
-    does not fit, in their original order."""
+    """The entries a `reputation` block keeps: all of them, unchanged, when they fit `REPUTATION_MAX_ENTRIES` and
+    `REPUTATION_CAP_CHARS`; otherwise the highest-ranked (`_reputation_rank`, then their order), each shortened to
+    `REPUTATION_ENTRY_CAP_CHARS` where longer, up to the first that does not fit, in their original order."""
     entries = [dict(v) for v in verdicts]
     if len(entries) <= REPUTATION_MAX_ENTRIES and _json_chars(entries) <= REPUTATION_CAP_CHARS:
         return entries
+    entries = [_shorten_entry(e) for e in entries]
     kept: list[int] = []
     for i in sorted(range(len(entries)), key=lambda i: (_reputation_rank(entries[i]), i)):
         if len(kept) == REPUTATION_MAX_ENTRIES:
@@ -964,8 +992,8 @@ def _call_view_with_inputs(
 ) -> BuiltView:
     """A call view (or a self-edit view) with the turn's inputs, capped, fitted to the budget, then redacted. The
     self-edit views keep their own fitting: their conversation goes after the inputs. If the redaction grew the view
-    past its budget, it is built again fitted to a budget smaller by the growth (`shrink_tokens`), up to `refits`
-    times."""
+    past its budget, it is built again fitted to its unredacted size less the growth (`shrink_tokens` below the budget),
+    up to `refits` times."""
     given_budget = budget_tokens
     v = view(trim(raw), name)
     batch_redactions = 0
@@ -1012,13 +1040,16 @@ def _call_view_with_inputs(
             truncated = True
     state, count = second_pass(v)
     over = est_tokens(state) - sent_budget
-    if over > 0 and refits > 0 and est_tokens(state) > est_tokens(v):
-        # placeholders longer than the secrets they replace took the view over its budget: fit it tighter
+    unredacted = est_tokens(v)
+    if over > 0 and refits > 0 and est_tokens(state) > unredacted:
+        # placeholders longer than the secrets they replace took the view over its budget: fit it tighter, to what it
+        # was before the redaction less the overshoot (the fit budget alone may be far above the view)
+        target = min(budget_tokens, unredacted) - over
         return _call_view_with_inputs(
             raw,
             name,
             budget_tokens=given_budget,
-            shrink_tokens=shrink_tokens + over,
+            shrink_tokens=sent_budget - target,
             refits=refits - 1,
         )
     return BuiltView(

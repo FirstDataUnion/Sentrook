@@ -109,10 +109,33 @@ def test_more_known_bad_than_the_cap_keeps_only_known_bad():
     assert kept and all(v["verdict"] == "known_bad" for v in kept)
 
 
+def test_a_long_known_bad_host_is_shortened_not_dropped():
+    """A host of many long labels under a known_bad parent domain matches it; over the cap it is cut, not dropped,
+    and the entries after it stay."""
+    host = ".".join(["a" * 60] * 28) + ".evil.example"
+    bad = {"kind": "host", "value": host, "verdict": "known_bad", "tier": "exfil_sink"}
+    good = {"kind": "host", "value": "ok.example", "verdict": "known_good"}
+    state = with_reputation({}, [bad, good])
+    kept = state[REPUTATION]
+    assert [e["verdict"] for e in kept] == ["known_bad", "known_good"]
+    assert kept[0]["value"].endswith(".evil.example") and "…" in kept[0]["value"]
+    assert kept[1] == good and REPUTATION_OMITTED not in state
+    assert len(canonical_json(kept)) <= REPUTATION_CAP_CHARS
+
+
+def test_any_eight_long_entries_fit_together():
+    verdicts = [
+        _entry(i, "known_bad", width=900, near=True) for i in range(REPUTATION_MAX_ENTRIES + 3)
+    ]
+    kept = cap_reputation(verdicts)
+    assert len(kept) == REPUTATION_MAX_ENTRIES
+    assert len(canonical_json(kept)) <= REPUTATION_CAP_CHARS
+
+
 def test_long_values_are_capped_by_size():
     verdicts = [_entry(i, "known_good", width=400) for i in range(REPUTATION_MAX_ENTRIES)]
     kept = cap_reputation(verdicts)
-    assert 0 < len(kept) < REPUTATION_MAX_ENTRIES
+    assert len(kept) == REPUTATION_MAX_ENTRIES
     assert len(canonical_json(kept)) <= REPUTATION_CAP_CHARS
 
 
@@ -212,6 +235,21 @@ def test_a_view_that_grows_under_redaction_stays_within_its_budget(attack_case, 
     assert est_tokens(built.state) <= room
     assert built.fitted and built.history_trimmed
     assert "x" not in {h["arguments"].get("api_token") for h in built.state["history"]}
+
+
+@pytest.mark.parametrize("view_name", [CALL_V3, CALL_V7])
+@pytest.mark.parametrize("short_by", [1, 5, 20, 40])
+def test_a_view_just_over_after_redaction_is_refitted(attack_case, view_name, short_by):
+    """Room far above the unredacted view and just under the redacted one: the refit fits from the view's own size."""
+    raw = _short_secrets(attack_case, steps=100)["fixture"]
+    redacted = est_tokens(
+        build_views(raw, exposure_input_seqs=None, call_budget_tokens=10**6)[view_name].state
+    )
+    room = redacted - short_by
+    built = build_views(
+        raw, exposure_input_seqs=None, call_budget_tokens=room + REPUTATION_RESERVE_TOKENS
+    )[view_name]
+    assert est_tokens(built.state) <= room and built.fitted
 
 
 def test_a_self_edit_view_that_grows_under_redaction_stays_within_its_budget(attack_case):
