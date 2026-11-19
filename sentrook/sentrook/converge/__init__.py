@@ -11,9 +11,12 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
+from ..aira.detectors import call_label
 from ..enums import Enforce, ProbeStatus, ProbeStep, ScanStatus, SessionFlag
+from ..planir.models import ToolKind
 from ..prepare import INPUT_TOO_LARGE, Prepared
 from ..prepare.entities import EntityKind
+from ..prepare.save_adds import SaveReading
 from ..probes.base import Envelope
 from ..response.models import (
     ConfidenceTier,
@@ -40,6 +43,7 @@ from .registry import SIGNALS, reason_text
 from .relief import Relief, compute_relief
 from .retry_cap import REASON as RETRY_CAP_REASON
 from .retry_cap import risk_without_retry, unanswered_retry
+from .self_edit import self_edit_save
 
 __all__ = ["converge", "ConvergeResult", "ConvergenceParams", "load_params"]
 
@@ -260,7 +264,10 @@ def converge(
     started: float | None = None,
     probes_enabled: list[str] | None = None,
     views: str = "trim-v1",
+    self_edit_reading: SaveReading | None = None,
 ) -> ConvergeResult:
+    """`self_edit_reading`: what a self-edit's saved content adds and whether the reading can vouch for it
+    (`prepare.save_adds`), None for any other scan; it sets `Response.self_edit` and nothing else."""
     claims = collect(envelopes)
     if params.credential_home and prepared.credential_home is not None:
         claims = cap_model_sensitivity(claims, params.credential_home_model_sensitivity_cap)
@@ -486,6 +493,16 @@ def converge(
         action_fingerprint=prepared.fingerprint.render(),
         approval_fingerprint=prepared.approval_fingerprint or None,
         state=token,
+        self_edit=self_edit_save(
+            self_edit_reading,
+            envelopes,
+            floors,
+            status=status,
+            pending_label=call_label(prepared.pending),
+            exec_save=prepared.pending.tool_kind is ToolKind.EXEC,
+        )
+        if self_edit_reading is not None
+        else None,
         metadata=Metadata(
             scanner_version=scanner_version,
             latency_ms=latency,
