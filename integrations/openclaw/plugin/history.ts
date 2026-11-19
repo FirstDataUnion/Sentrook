@@ -161,10 +161,19 @@ function time(ts: unknown): string {
   return typeof ts === "string" && ts.length >= 19 ? `${ts.slice(0, 10)} ${ts.slice(11, 19)}` : "?";
 }
 
-/** What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`. */
+/** One of OpenClaw's own background saves: declared as a self-edit, or recognised as a save with `skillReview: review`. */
+export function isBackgroundSave(scan: Rec): boolean {
+  const bg = scan.background_save;
+  return scan.skill_review === true || (bg !== null && typeof bg === "object" && !Array.isArray(bg));
+}
+
+/**
+ * What the plugin did with the call; OpenClaw's own background saves are marked `self-edit`, and one Sentrook let
+ * through without asking is `let through`.
+ */
 export function actionOf(scan: Rec, resolution: Rec | null): string {
   const action = baseAction(scan, resolution);
-  if (scan.skill_review !== true || responseOf(scan) === null) return action;
+  if (!isBackgroundSave(scan) || responseOf(scan) === null) return action;
   return action.endsWith(")") ? `${action.slice(0, -1)}, self-edit)` : `${action} (self-edit)`;
 }
 
@@ -178,7 +187,17 @@ function baseAction(scan: Rec, resolution: Rec | null): string {
   if (verdict === "block") return "blocked";
   if (verdict === "review") {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";
+    if (decision === "allowed" && scan.lenient === true) return "allowed (let through)";
     if (decision === "held") return "held";
+    // a background skill save sent to the Skill Workshop drafts: kept there, lost, or run live instead, once
+    // OpenClaw says which
+    if (decision === "drafted" || decision === "draft_failed") {
+      const choice = resolution?.resolution;
+      if (choice === "draft_saved") return "drafted";
+      if (choice === "draft_ignored") return "saved live (draft ignored)";
+      if (choice === "draft_failed" || decision === "draft_failed") return "not saved (draft refused)";
+      return "sent to drafts";
+    }
     return decision === "blocked" ? "blocked (no reviewer)" : "review";
   }
   if (verdict === "allow") return "allowed";
@@ -187,6 +206,8 @@ function baseAction(scan: Rec, resolution: Rec | null): string {
 
 /** How the review was answered; `-` when there was none. */
 export function reviewOf(action: string, resolution: Rec | null): string {
+  if (action.startsWith("drafted")) return "in drafts";
+  if (action.startsWith("sent to drafts") || action.startsWith("not saved") || action.startsWith("saved live")) return "-";
   if (resolution === null) return action.startsWith("review") || action.startsWith("held") ? "no answer" : "-";
   const choice = String(resolution.resolution ?? "").trim().toLowerCase();
   if (choice === "deny" && resolution.decided_by === REVIEW_LOOP) return "auto-denied by the review loop";

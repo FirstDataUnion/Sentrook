@@ -13,6 +13,7 @@
     "dashboardView.js",
     "approvalPolicy.ts",
     "auth.ts",
+    "backgroundSave.ts",
     "card.ts",
     "cli.ts",
     "commands.ts",

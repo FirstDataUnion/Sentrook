@@ -31,6 +31,11 @@ export interface ScanResponse {
   grant_hints?: unknown;
   tool_description?: { category?: string; template?: string } | null;
   entities?: Record<string, { kind?: string; display?: string }>;
+  /**
+   * For a declared self-edit: what the save adds (`command`, `destination`, `permission`, `secret`) and whether a
+   * review of it may be let through in a background run; read through `backgroundSave.lenientOf`, never trusted as typed.
+   */
+  self_edit?: unknown;
   action_fingerprint?: string | null;
   state?: string | null;
   error?: { code?: string; message?: string } | null;

@@ -5,6 +5,7 @@
 
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { resolveConfig } from "./config.ts";
+import { noticeStatus } from "./backgroundSave.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
 import { NOTIFY_UNSET, targetText } from "./hold.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
@@ -92,6 +93,9 @@ export async function runVerify(
   // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
   const target = new Store(cfg.stateDir).loadNotify();
   checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
+  // Reported, not failed: OpenClaw's background saves are never asked about; without a target the owner is not told
+  // what was let through, saved as a draft, held or blocked.
+  checks.push({ name: "background-save notices", ok: true, detail: noticeStatus(target) });
   // Reported, not failed: OpenClaw's own memory writers that no plugin sees, with the setting that turns each off.
   checks.push(...memoryWriterChecks(opts.hostConfig));
   return checks;

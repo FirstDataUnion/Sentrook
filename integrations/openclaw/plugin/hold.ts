@@ -17,7 +17,7 @@
  *
  * A block (at the block line, or one the scanner enforces) is never held, except a retry of a review nobody answered
  * that the scanner caps at review (`unattendedView`). Attended runs are unchanged: a review there is still the host's
- * approval prompt.
+ * approval prompt. OpenClaw's own background saves are held here too when nothing better applies (backgroundSave.ts).
  *
  * The traffic log gets the scan with decision `held` and, later, a `resolution` record with resolution
  * `hold_approved` or `hold_expired`, joined by `request_id` as review answers are. Holds are kept in
