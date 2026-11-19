@@ -488,6 +488,7 @@ def converge(
         tool_description=describe(prepared, category),
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),
+        approval_fingerprint=prepared.approval_fingerprint or None,
         state=token,
         self_edit=self_edit_save(self_edit_adds, envelopes, floors)
         if self_edit_adds is not None
