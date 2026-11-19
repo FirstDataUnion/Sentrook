@@ -473,36 +473,128 @@ def test_a_configured_attended_platform_counts(h, monkeypatch):
     assert out is None and rec["snoozed"] is True
 
 
-@pytest.mark.parametrize(
-    ("platform", "tty", "want"),
-    [
-        ("telegram", False, "allowed"),
-        ("cli", True, "allowed"),
-        ("cli", False, "held"),
-        ("webhook", True, "held"),
-        ("api_server", True, "held"),
-        ("cron", True, "held"),
-        ("", True, "held"),
-    ],
-)
-def test_a_snooze_through_the_forks_own_turn(h, monkeypatch, platform, tty, want):
-    """The real fork: the owner's turn first, then the fork's calls under a turn id of their own with no
-    `pre_llm_call`, the platform read from the session facts Hermes copies to the fork's thread."""
-    snooze(h, "--all 1h")
-    h.reply.update(risk=55)
+def parent_turn(h, platform, turn_id="t1", sid=SID, **extra):
+    """The owner's (or a run's) turn as Hermes starts it: `pre_llm_call` under the assistant's own write origin."""
     h.prov["origin"] = "assistant_tool"
     h.ctx.hooks["pre_llm_call"](
-        turn_id="t1", user_message="hi", platform=platform, sender_id="u1", **SID
+        turn_id=turn_id, user_message="hi", platform=platform, sender_id="u1", **sid, **extra
     )
+
+
+def fork_save(h, monkeypatch, facts, *, tty=True, sid=SID, turn_id="fork-turn"):
+    """The review fork as real Hermes runs it: no `pre_llm_call` of its own (its persistence is off), a turn id of its
+    own, the parent's session id, and the session facts Hermes copies to its thread: a gateway binds the chat's
+    platform; the terminal binds none (the CLI) or an empty one (the TUI)."""
     h.prov["origin"] = "background_review"
-    h.facts = {"platform": platform} if platform else {}
+    h.facts = facts
     if tty:
         monkeypatch.setattr(sys, "stdin", Tty())
-    h.ctx.hooks["pre_tool_call"](
-        tool_name=SKILL[0], args=SKILL[1], tool_call_id="f1", turn_id="fork-turn", **SID
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name=SKILL[0], args=SKILL[1], tool_call_id="f1", turn_id=turn_id, **sid
     )
     rec = [r for r in h.traffic() if r.get("kind") == "scan"][-1]
-    assert rec["decision"] == want and rec["skill_review"] is True
+    assert rec["skill_review"] is True
+    return out, rec
+
+
+TERMINAL_FACTS = [{}, {"platform": "", "source": "cli"}, {"platform": "", "source": "tui"}]
+
+
+@pytest.mark.parametrize(
+    ("parent", "facts", "tty", "want"),
+    [
+        ("telegram", {"platform": "telegram", "chat_type": "dm"}, False, "allowed"),
+        *[("cli", f, True, "allowed") for f in TERMINAL_FACTS],
+        ("tui", {"platform": "", "source": "tui"}, True, "allowed"),
+        ("tui", {}, True, "allowed"),
+        # the local terminal still needs a terminal, as for the owner's own calls there
+        ("cli", {}, False, "held"),
+        *[
+            (p, f, tty, "held")
+            for p in ("cron", "webhook", "api_server", "curator", "subagent", "")
+            for f in ({}, {"platform": p} if p else {"platform": "", "source": "cli"})
+            for tty in (True, False)
+        ],
+    ],
+)
+def test_a_snooze_through_the_forks_own_turn(h, monkeypatch, parent, facts, tty, want):
+    """A fork whose own turn and thread name no platform takes it from the turn it follows in the same session: the
+    owner at the terminal gets the snooze; after a cron, webhook, API-server, curator or sub-agent turn it never does,
+    terminal or not."""
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, parent)
+    out, rec = fork_save(h, monkeypatch, facts, tty=tty)
+    assert rec["decision"] == want
+    if want == "allowed":
+        assert out is None and rec["snoozed"] is True
+    else:
+        assert out == {"action": "block", "message": hold.HELD_TEXT} and "snoozed" not in rec
+
+
+def test_a_fork_after_a_sub_agent_turn_at_the_terminal_is_not_attended(h, monkeypatch):
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, "cli", parent_session_id="P0")
+    _out, rec = fork_save(h, monkeypatch, {})
+    assert rec["decision"] == "held"
+
+
+def test_a_terminal_turn_of_another_session_never_makes_a_fork_attended(h, monkeypatch):
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, "cli", sid={"session_id": "S2", "task_id": "S2"})
+    _out, rec = fork_save(h, monkeypatch, {})
+    assert rec["decision"] == "held"
+
+
+@pytest.mark.parametrize("later", ["webhook", "api_server", "cron"])
+def test_only_the_turn_the_fork_follows_counts(h, monkeypatch, later):
+    """An earlier terminal turn of the session does not carry over a later unattended one."""
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, "cli")
+    parent_turn(h, later, turn_id="t2")
+    _out, rec = fork_save(h, monkeypatch, {})
+    assert rec["decision"] == "held"
+
+
+def test_a_later_turn_without_an_id_ends_the_carry(h, monkeypatch):
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, "cli")
+    parent_turn(h, "webhook", turn_id=None)
+    _out, rec = fork_save(h, monkeypatch, {})
+    assert rec["decision"] == "held"
+
+
+def test_a_fork_without_a_session_id_is_not_attended(h, monkeypatch):
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, "cli", sid={})
+    _out, rec = fork_save(h, monkeypatch, {}, sid={})
+    assert rec["decision"] == "held"
+
+
+def test_a_fork_in_a_session_with_no_turn_is_not_attended_with_a_terminal(h, monkeypatch):
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    _out, rec = fork_save(h, monkeypatch, {})
+    assert rec["decision"] == "held"
+
+
+def test_the_curators_own_turn_is_never_carried_from_the_owners(h, monkeypatch):
+    """The curator fires `pre_llm_call` under the background-review origin with platform `curator`: its saves stay
+    not attended even in a session whose last owner turn was at the terminal."""
+    snooze(h, "--all 1h")
+    h.reply.update(risk=55)
+    parent_turn(h, "cli")
+    h.prov["origin"] = "background_review"
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="cur-1", user_message="curate", platform="curator", sender_id="", **SID
+    )
+    _out, rec = fork_save(h, monkeypatch, {}, turn_id="cur-1")
+    assert rec["decision"] == "held"
 
 
 def test_a_snooze_never_lets_a_retry_capped_review_through(h, monkeypatch):

@@ -559,7 +559,7 @@ def _scan_one(
                 skill_review.lenient(resp, declared=self_edit is not None)
                 or (
                     # unattended runs are never snoozed: only a save after a session the owner attends
-                    owner_attends(built["platform"], env, **attendance)
+                    _background_save_attended(store, sess, kw, built, env, attendance)
                     and snooze.active(
                         store.load_snooze(), planir["session"]["session_ref"], datetime.now(UTC)
                     )
@@ -751,6 +751,33 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
     if built["platform"] == "cron":
         return hold.where_text("cron job", sref), None
     return hold.where_text("unattended run", sref), None
+
+
+def _background_save_attended(
+    store: Store,
+    sess: dict[str, Any],
+    kw: dict[str, Any],
+    built: dict[str, Any],
+    env: dict[str, str],
+    attendance: dict[str, Any],
+) -> bool:
+    """A background save follows a session the owner attends (`owner_attends`), so a snooze may cover it.
+
+    Hermes's review fork fires no `pre_llm_call` (its persistence is off) and calls under a turn id of its own, so its
+    own turn names no platform; on a gateway its thread still holds the chat's platform, but the terminal binds none
+    (the CLI) or an empty one (the TUI). A save whose own turn, thread and environment name no platform takes it from
+    the turn it follows: the latest turn of the same session that fired `pre_llm_call` (`last_turn_id`; the
+    background review never moves it). Only when the call names its session, and never from another session's turn
+    or an earlier one: a later run in the session (a webhook, the API server), or a turn without an id, ends it. A
+    platform found that way is judged like any other, sub-agent included; an empty one is not attended."""
+    platform, subagent = built["platform"], attendance["subagent"]
+    if not platform and kw.get("session_id"):
+        last = store.load_turn(sess.get("last_turn_id"))
+        found = last.get("platform") if last.get("pre_llm_call") else None
+        if isinstance(found, str) and found.strip():
+            platform = found.strip().lower()
+            subagent = subagent or platform == "subagent" or bool(last.get("parent_session_id"))
+    return owner_attends(platform, env, **{**attendance, "subagent": subagent})
 
 
 def _notice_target(owner_channel: str) -> tuple[str | None, str]:
