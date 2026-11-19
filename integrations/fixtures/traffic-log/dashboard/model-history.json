@@ -1,0 +1,842 @@
+{
+  "version": 1,
+  "log": "on",
+  "limit": 50,
+  "scans": [
+    {
+      "id": "8888a1b2-0000-4000-8000-000000000008",
+      "ts": "2026-10-29T09:45:00.000Z",
+      "session": "s_1",
+      "tool": "terminal",
+      "step": 8,
+      "mode": "enforce",
+      "action": "review",
+      "review": "no answer",
+      "bucket": "review",
+      "flags": [],
+      "open_review": true,
+      "failure": null,
+      "risk": 66,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "egress.new_host",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": []
+    },
+    {
+      "id": "7777a1b2-0000-4000-8000-000000000007",
+      "ts": "2026-10-29T09:40:00.000Z",
+      "session": "s_1",
+      "tool": "write_file",
+      "step": 7,
+      "mode": "observe",
+      "action": "observed (would review)",
+      "review": "-",
+      "bucket": "observed",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 47,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "fs.outside_workspace",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": []
+    },
+    {
+      "id": "6666a1b2-0000-4000-8000-000000000006",
+      "ts": "2026-10-29T09:30:00.000Z",
+      "session": "s_1",
+      "tool": "terminal",
+      "step": 6,
+      "mode": "enforce",
+      "action": "review",
+      "review": "denied",
+      "bucket": "review",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 58,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "egress.new_host",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": []
+    },
+    {
+      "id": "5555a1b2-0000-4000-8000-000000000005",
+      "ts": "2026-10-29T09:25:00.000Z",
+      "session": "s_1",
+      "tool": "web_fetch",
+      "step": 5,
+      "mode": "enforce",
+      "action": "blocked (scan error)",
+      "review": "-",
+      "bucket": "scan_error",
+      "flags": [],
+      "open_review": false,
+      "failure": "http",
+      "risk": null,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [],
+      "floors": [],
+      "relief": [],
+      "reasons": [],
+      "entities": []
+    },
+    {
+      "id": "4444a1b2-0000-4000-8000-000000000004",
+      "ts": "2026-10-29T09:20:00.000Z",
+      "session": "s_1",
+      "tool": "terminal",
+      "step": 4,
+      "mode": "enforce",
+      "action": "blocked",
+      "review": "-",
+      "bucket": "blocked",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 92,
+      "enforced": "block",
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.92,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "exfil.exec_egress",
+          "signal": null,
+          "subject": null,
+          "text": null
+        },
+        {
+          "code": "secret.read",
+          "signal": null,
+          "subject": null,
+          "text": null
+        },
+        {
+          "code": "exfil.exec_egress",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": [
+        {
+          "id": "E1",
+          "kind": "host",
+          "display": "cl0ud-sync.io"
+        },
+        {
+          "id": "E2",
+          "kind": "file",
+          "display": "~/.ssh/id_ed25519"
+        }
+      ]
+    },
+    {
+      "id": "3333a1b2-0000-4000-8000-000000000003",
+      "ts": "2026-10-29T09:05:00.000+00:00",
+      "session": "s_1",
+      "tool": "terminal",
+      "step": 3,
+      "mode": "enforce",
+      "action": "review",
+      "review": "approved",
+      "bucket": "review",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 55,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "egress.new_host",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": [
+        {
+          "id": "E1",
+          "kind": "host",
+          "display": "cl0ud-sync.io"
+        }
+      ]
+    },
+    {
+      "id": "2222a1b2-0000-4000-8000-000000000002",
+      "ts": "2026-10-29T09:01:00.000+00:00",
+      "session": "s_1",
+      "tool": "terminal",
+      "step": 2,
+      "mode": "enforce",
+      "action": "blocked (no reviewer)",
+      "review": "-",
+      "bucket": "blocked",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 61,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "exec.unattended",
+          "signal": null,
+          "subject": "RAW-ARG-MAR…",
+          "text": null
+        }
+      ],
+      "entities": []
+    },
+    {
+      "id": "1111a1b2-0000-4000-8000-000000000001",
+      "ts": "2026-10-29T09:00:00.000+00:00",
+      "session": "s_1",
+      "tool": "read_file",
+      "step": 1,
+      "mode": "enforce",
+      "action": "allowed",
+      "review": "-",
+      "bucket": "allowed",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 5,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.05,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.1,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.9,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [],
+      "entities": []
+    }
+  ],
+  "totals": {
+    "blocked": 2,
+    "review": 3,
+    "observed": 1,
+    "allowed": 1,
+    "scan_error": 1
+  }
+}

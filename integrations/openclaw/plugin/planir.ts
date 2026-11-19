@@ -17,7 +17,7 @@ import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from 
 /** History decisions sent as `review_timed_out`. */
 const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
 
-export const PLUGIN_VERSION = "2.0.0-beta.12";
+export const PLUGIN_VERSION = "2.0.0-beta.13";
 
 const TOOL_KIND: Record<string, string> = {
   exec: "exec",

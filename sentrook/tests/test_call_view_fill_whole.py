@@ -19,6 +19,7 @@ from sentrook.prepare.views import (
     CALL_INPUT_CAP_CHARS,
     CALL_V3,
     CALL_V5,
+    REPUTATION_RESERVE_TOKENS,
     VIEW_VERSIONS,
     _call_view_with_inputs,
     build_views,
@@ -55,10 +56,15 @@ def _kept(inputs: list) -> list[int]:
     return [(e.get("scanner_truncated") or {}).get("kept_chars", len(e["content"])) for e in inputs]
 
 
+def _fitted(raw, name, room):
+    """The view fitted to `room`: the reputation block's room is kept free on top."""
+    return _call_view_with_inputs(raw, name, budget_tokens=room + REPUTATION_RESERVE_TOKENS)
+
+
 def test_an_input_that_fits_whole_is_sent_whole(attack_case):
     """Must fire: three 3,000-character inputs and a budget the two latest fit whole in."""
     raw = _raw(attack_case, [3000, 3000, 3000])
-    built = _call_view_with_inputs(raw, CALL_V5, budget_tokens=3185)
+    built = _fitted(raw, CALL_V5, 3185)
     inputs = built.state["new_inputs"]
     assert est_tokens(built.state) <= 3185
     assert _kept(inputs) == [0, 3000, 3000]
@@ -69,7 +75,7 @@ def test_an_input_that_fits_whole_is_sent_whole(attack_case):
 def test_call_v3_fills_as_before(attack_case):
     """Must stay silent: the older views keep the old search, dip included, byte for byte."""
     raw = _raw(attack_case, [3000, 3000, 3000])
-    built = _call_view_with_inputs(raw, CALL_V3, budget_tokens=3185)
+    built = _fitted(raw, CALL_V3, 3185)
     assert _kept(built.state["new_inputs"]) == [0, 2946, 3000]
 
 
@@ -140,7 +146,7 @@ def test_a_short_result_is_kept_whole_when_emptying_everything_does_not_fit():
 def test_the_fill_still_keeps_the_most_recent_input_longest(attack_case):
     raw = _raw(attack_case, [2000, 2000, 2000, 2000])
     for budget in (1500, 2100, 2600, 3000):
-        kept = _kept(_call_view_with_inputs(raw, CALL_V5, budget_tokens=budget).state["new_inputs"])
+        kept = _kept(_fitted(raw, CALL_V5, budget).state["new_inputs"])
         assert kept == sorted(kept) and kept[-1] > 0, (budget, kept)
 
 
