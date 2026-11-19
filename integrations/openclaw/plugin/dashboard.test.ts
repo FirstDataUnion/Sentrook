@@ -129,6 +129,34 @@ test("the risk tree keeps every leaf, unassessed leaves as null, and unknown num
   assert.deepStrictEqual(scan.entities.map((e: any) => e.id), ["E1", "E2", "E10"]);
 });
 
+test("background saves count where they ended: drafts under review, a lost draft under blocked, a let-through save flagged", () => {
+  const scan = (decision: string, extra: Record<string, unknown> = {}) => ({
+    request_id: `r-${decision}`,
+    mode: "enforce",
+    verdict: "review",
+    decision,
+    background_save: { kind: "background_review", store: "skills" },
+    response: { risk: 55, status: "ok" },
+    ...extra,
+  });
+  const rows: Array<[Record<string, unknown>, Record<string, unknown> | null, string, string]> = [
+    [scan("drafted"), null, "sent to drafts (self-edit)", "review"],
+    [scan("drafted"), { resolution: "draft_saved" }, "drafted (self-edit)", "review"],
+    [scan("drafted"), { resolution: "draft_failed" }, "not saved (draft refused, self-edit)", "blocked"],
+    [scan("draft_failed"), null, "not saved (draft refused, self-edit)", "blocked"],
+    [scan("drafted"), { resolution: "draft_ignored" }, "saved live (draft ignored, self-edit)", "allowed"],
+    [scan("held"), null, "held (self-edit)", "review"],
+    [scan("allowed", { lenient: true }), null, "allowed (let through, self-edit)", "allowed"],
+  ];
+  for (const [s, res, action, bucket] of rows) {
+    const m = scanModel(s, res);
+    assert.equal(m.action, action);
+    assert.equal(m.bucket, bucket, action);
+  }
+  assert.deepEqual(scanModel(scan("allowed", { lenient: true }), null).flags, ["lenient"]);
+  assert.deepEqual(scanModel(scan("drafted"), null).flags, []);
+});
+
 test("a failed scan has no tiers and only the failure kind", () => {
   const failed = scansModel(logFile, true, 50).scans.at(-1);
   assert.equal(failed.failure, "timeout");

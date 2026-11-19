@@ -255,8 +255,11 @@ const plugin = {
     }
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
-    /** Background saves sent to the Skill Workshop drafts, by request id, until OpenClaw reports the draft kept or not. */
-    const pendingDrafts = new Map<string, (saved: boolean) => Json>();
+    /**
+     * Background saves sent to the Skill Workshop drafts, by request id, until OpenClaw reports what it did with the
+     * draft: kept it, did not keep it, or ran the call's own save instead.
+     */
+    const pendingDrafts = new Map<string, (outcome: bg.Announced) => Json>();
 
     const remember = (runId: string | undefined, ctx: any, patch: Json) => {
       store.mergeRun(runId, {
@@ -393,17 +396,22 @@ const plugin = {
           if (!entry) return;
           const text = fullResults.get(hostId) ?? resultText(event?.result ?? event?.error);
           if (entry.decision === "drafted") {
-            // Only now is the draft known kept or lost: recorded and announced here, not when it was sent.
-            const saved = bg.draftSaved(event, text);
-            if (!saved) entry.decision = "draft_failed";
+            // Only now is the draft known kept, lost, or ignored (OpenClaw ran the call's own create, so the skill
+            // was saved live): recorded and announced here, not when it was sent.
+            const ignored = bg.draftIgnored(event);
+            const saved = !ignored && bg.draftSaved(event, text);
+            const outcome: bg.Announced = ignored ? "draft_ignored" : saved ? "drafted" : "draft_failed";
+            // a save that ran live goes to the scanner as one that ran
+            if (ignored) entry.decision = "allowed";
+            else if (!saved) entry.decision = "draft_failed";
             const announce = pendingDrafts.get(entry.request_id);
             pendingDrafts.delete(entry.request_id);
             let notice: Json | null = null;
-            if (announce) safely("draft notice", () => void (notice = announce(saved)));
+            if (announce) safely("draft notice", () => void (notice = announce(outcome)));
             traffic.write({
               kind: "resolution",
               request_id: entry.request_id,
-              resolution: saved ? "draft_saved" : "draft_failed",
+              resolution: ignored ? "draft_ignored" : saved ? "draft_saved" : "draft_failed",
               decision: entry.decision,
               ...(notice ? { notice } : {}),
             });
@@ -599,35 +607,42 @@ const plugin = {
           // The owner snoozed reviews for this session: scanned and logged, not asked.
           entry.decision = "allowed";
           snoozed = true;
-        } else if (selfEditBlock && bgSave && bg.lenientOf(resp, cfg.blockAt)) {
-          // A declared background save the scanner marks lenient: kept, and the owner told.
+        } else if (
+          selfEditBlock &&
+          bgSave &&
+          selfEdit.contentSave(event.toolName, event?.params) &&
+          bg.lenientOf(resp, cfg.blockAt)
+        ) {
+          // A declared background save the scanner marks lenient, whose content the scan read: kept, and the owner
+          // told. A change that carries no content (a restore, an archive) saves what the scan never saw: held below.
           entry.decision = "allowed";
           lenient = true;
           notice = backgroundNotice(cfg, "lenient", built, resp, event.toolName, bgSave, triggerKind, run);
         } else if (
           bgSave &&
           !bg.capped(resp, cfg.blockAt) &&
-          (draft = bg.draftParams(event.toolName, event?.params, hostVersion ?? process.env.OPENCLAW_VERSION))
+          ((event.toolName === "skill_workshop" && selfEdit.workshopAction(event?.params) === "draft") ||
+            (draft = bg.draftParams(event.toolName, event?.params, hostVersion ?? process.env.OPENCLAW_VERSION)))
         ) {
-          // A new skill OpenClaw can keep as a Workshop draft: inert until the owner applies it. The owner is told once
-          // OpenClaw reports the draft kept or lost (after_tool_call).
+          // The model's own draft, or a new skill OpenClaw can keep as a Workshop draft: inert until the owner applies
+          // it. The owner is told once OpenClaw reports what it did with the draft (after_tool_call).
           entry.decision = "drafted";
-          hook = { params: draft };
+          if (draft) hook = { params: draft };
           const save = bgSave;
-          pendingDrafts.set(built.planir.request_id, (saved) =>
-            backgroundNotice(cfg, saved ? "drafted" : "draft_failed", built, resp, event.toolName, save, triggerKind, run),
+          pendingDrafts.set(built.planir.request_id, (outcome) =>
+            backgroundNotice(cfg, outcome, built, resp, event.toolName, save, triggerKind, run),
           );
           if (pendingDrafts.size > 200) pendingDrafts.delete(pendingDrafts.keys().next().value!);
         } else if (bgSave) {
-          // Nothing better applies: not saved, and the owner told. A block-level score the scanner capped at review is
-          // always announced, whatever was announced before in this run.
+          // Nothing better applies: not saved, and the owner told; nobody can approve it, so the agent is told so. The
+          // first block-level score the scanner capped at review in a run is announced whatever was announced before;
+          // later ones wait out their own quiet period, so a model that keeps retrying cannot flood the channel.
           entry.decision = "held";
-          hook = { block: true, blockReason: hold.HELD_TEXT };
-          const always = bg.capped(resp, cfg.blockAt);
+          hook = { block: true, blockReason: bg.HELD_TEXT };
           held = {
             id: null,
             background: true,
-            notice: backgroundNotice(cfg, "held", built, resp, event.toolName, bgSave, triggerKind, run, !always),
+            notice: backgroundNotice(cfg, "held", built, resp, event.toolName, bgSave, triggerKind, run, bg.capped(resp, cfg.blockAt)),
           };
         } else if (unattended) {
           // Nobody can answer a review here: the call waits for the owner (hold.ts).
@@ -865,8 +880,8 @@ const plugin = {
 
     /**
      * Tells the owner what happened to one of OpenClaw's background saves (blocked, let through, kept as a draft, lost
-     * as a draft, held): once per outcome and run (cron job for the collection review) per quiet period, or every time
-     * when `quiet` is false. Never throws.
+     * as a draft, saved live instead of a draft, held): once per outcome and run (cron job for the collection review)
+     * per quiet period. `retry`: a hold of a block-level score, with a quiet period of its own. Never throws.
      */
     function backgroundNotice(
       cfg: PluginConfig,
@@ -877,15 +892,15 @@ const plugin = {
       save: { kind: selfEdit.SelfEditKind; store: selfEdit.SelfEditStore },
       triggerKind: string,
       run: any,
-      quiet = true,
+      retry = false,
     ): Json {
       const sref: string = built.planir.session.session_ref;
       const { where, jobId } = unattendedRun(sref, triggerKind, run, save.kind);
       const rid = cfg.trafficLog.enabled ? built.planir.request_id : null;
       const out = quietNotice(
         cfg,
-        quiet ? bg.quietKey(outcome, jobId, sref) : null,
-        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, quiet),
+        bg.quietKey(retry ? "held_retry" : outcome, jobId, sref),
+        () => bg.noticeText(outcome, resp, tool, save.store, where, rid, jobId !== null, retry),
         "background-save",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);

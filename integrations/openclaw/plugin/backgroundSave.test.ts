@@ -306,7 +306,7 @@ function assertResult(cell: Cell, decision: string, out: any) {
   assert.equal(out?.requireApproval, undefined, "a background save is never asked about");
   if (decision === "allowed") assert.equal(out, undefined);
   else if (decision === "drafted") assert.deepEqual(out, { params: { action: "draft", name: "deploy-staging", content: SKILL, reason: bg.DRAFT_REASON } });
-  else if (decision === "held") assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  else if (decision === "held") assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
   else if (decision === "blocked") assert.match(out.blockReason, /^Sentrook security block: .*changes the agent's own setup/);
   else {
     assert.equal(out.block, true, cell);
@@ -419,7 +419,7 @@ for (const [name, call] of [
     await r.command("sentrook-notify", "here");
     setVerdict("strict");
     const { out, rec } = await r.save("review", call as any);
-    assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+    assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
     assert.equal(rec.decision, "held");
     assert.match(r.sent[0].text, /^Sentrook held one of OpenClaw's background saves/);
   });
@@ -430,7 +430,7 @@ for (const version of ["2026.11.4", "2026.10.3", "2026.11.5-beta.1", "not-a-vers
     const r = registered({ version });
     setVerdict("strict");
     const { out, rec } = await r.save("review");
-    assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+    assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
     assert.equal(rec.decision, "held");
   });
 }
@@ -476,7 +476,7 @@ test("must stay strict: a review with no self_edit field, or one not exactly len
     const r = registered();
     reply = { ...VERDICTS.strict, self_edit };
     const { out, rec } = await r.save("flush");
-    assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT }, JSON.stringify(self_edit));
+    assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT }, JSON.stringify(self_edit));
     assert.equal(rec.lenient, undefined);
   }
 });
@@ -485,7 +485,7 @@ test("must stay strict: a review the scanner enforces is never let through, leni
   const r = registered();
   reply = { ...VERDICTS.lenient, risk: 20, enforced: "review" };
   const { out, rec } = await r.save("flush");
-  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
   assert.equal(rec.decision, "held");
   assert.equal(bg.lenientOf({ ...BASE, ...VERDICTS.lenient, enforced: "review" } as any, 80), false);
   assert.equal(bg.lenientOf({ ...BASE, ...VERDICTS.lenient, enforced: null } as any, 80), true);
@@ -495,7 +495,7 @@ test("must stay strict: a block-level score the scanner caps at review (a retry 
   const r = registered();
   reply = { ...VERDICTS.lenient, risk: 92, ceiling: "review", reasons: [{ code: "cap.unanswered_retry" }] };
   const { out, rec } = await r.save("flush");
-  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
   assert.equal(rec.verdict, "review");
   assert.equal(rec.lenient, undefined);
   assert.equal(bg.lenientOf({ ...VERDICTS.lenient, risk: 80 } as any, 80), false);
@@ -587,7 +587,7 @@ test("with skillReview review the saves are not declared as self-edits, and a re
   const { out, planir, rec } = await r.save("curator");
   assert.equal(planir.self_edit, undefined);
   assert.equal(planir.trigger.kind, "scheduled");
-  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
   assert.equal(rec.skill_review, undefined);
   assert.equal(actionOf(rec, null), "held (self-edit)");
 });
@@ -663,7 +663,7 @@ test("must stay strict: a degraded scan is never let through, lenient or not", a
   const r = registered();
   reply = { ...VERDICTS.lenient, status: "degraded" };
   const { out, rec } = await r.save("flush");
-  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
   assert.equal(rec.lenient, undefined);
   assert.equal(bg.lenientOf({ ...VERDICTS.lenient, status: "degraded" } as any, 80), false);
 });
@@ -673,7 +673,7 @@ test("must stay strict: lenient counts only when the save was declared as a self
   setVerdict("lenient");
   const flush = await r.save("flush");
   assert.equal(flush.planir.self_edit, undefined);
-  assert.deepEqual(flush.out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.deepEqual(flush.out, { block: true, blockReason: bg.HELD_TEXT });
   assert.equal(flush.rec.lenient, undefined);
   const review = await r.save("review");
   assert.equal(review.rec.decision, "drafted", "a new skill still drafts");
@@ -683,7 +683,7 @@ test("a write_file with no file_path cannot be drafted: held", async () => {
   const r = registered();
   setVerdict("strict");
   const { out, rec } = await r.save("review", { toolName: "skill_workshop", params: { action: "write_file", name: "deploy-staging", content: SKILL } });
-  assert.deepEqual(out, { block: true, blockReason: hold.HELD_TEXT });
+  assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
   assert.equal(rec.decision, "held");
 });
 
@@ -717,15 +717,34 @@ test("a held save is announced once per run; a block-level retry after a draft i
   const retry = await r.save("review");
   assert.equal(retry.planir.history.at(-1).decision, "review_timed_out");
   assert.equal(retry.rec.verdict, "review");
-  assert.deepEqual(retry.out, { block: true, blockReason: hold.HELD_TEXT }, "never a second draft");
+  assert.deepEqual(retry.out, { block: true, blockReason: bg.HELD_TEXT }, "never a second draft");
   assert.equal(retry.rec.decision, "held");
   assert.deepEqual(retry.rec.hold.notice, { status: "queued", target: "telegram" }, "not silenced by the earlier held notice");
   assert.equal(r.sent.length, 3);
   assert.match(r.sent[2].text, /^Sentrook held one of OpenClaw's background saves/);
-  assert.ok(!/not announced/.test(r.sent[2].text), "a block-level hold has no quiet period");
+  assert.match(r.sent[2].text, /^More held retries of a blocked save in this run are not announced for 6 hours\.$/m);
   const again = await r.save("review");
   assert.equal(again.rec.decision, "held");
-  assert.equal(r.sent.length, 4, "and the next one is announced too");
+  assert.deepEqual(again.rec.hold.notice, { status: "quiet" }, "a model that keeps retrying does not flood the channel");
+  assert.equal(r.sent.length, 3);
+});
+
+test("must hold, announced once: repeated block-level retries in one run send one notice; another run gets its own", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  reply = { ...VERDICTS.block, ceiling: "review", reasons: [{ code: "cap.unanswered_retry" }, { code: "selfmod.plugin" }] };
+  const outs = [];
+  for (let i = 0; i < 5; i++) outs.push(await r.save("flush"));
+  for (const o of outs) {
+    assert.equal(o.rec.decision, "held");
+    assert.deepEqual(o.out, { block: true, blockReason: bg.HELD_TEXT });
+  }
+  assert.equal(r.sent.length, 1, "the first retry is announced, the rest are quiet");
+  assert.deepEqual(outs[0]!.rec.hold.notice, { status: "queued", target: "telegram" });
+  assert.deepEqual(outs[4]!.rec.hold.notice, { status: "quiet" });
+  await r.save("curator");
+  assert.equal(r.sent.length, 2, "another run's first retry is announced");
+  assert.equal(bg.quietKey("held_retry", null, "s_ab"), "background_held_retry:session:s_ab");
 });
 
 test("a draft is announced only once OpenClaw reports it kept", async () => {
@@ -844,3 +863,155 @@ test("atLeast reads OpenClaw's calendar versions", () => {
   assert.equal(bg.atLeast(""), false);
   assert.equal(bg.atLeast(undefined), false);
 });
+
+// ---- only saves whose content the scan read are let through; the model's own drafts -----------------------------
+
+const UNREAD_ACTIONS = [
+  { action: "restore", name: "deploy-staging", version: "v1" },
+  { action: "archive", name: "security-checks", reason: "merged" },
+  { action: "remove_file", name: "deploy-staging", file_path: "scripts/check.sh" },
+  { action: "apply", name: "deploy-staging", draft_id: "d-1" },
+  { action: "delete", name: "deploy-staging" },
+];
+
+for (const params of UNREAD_ACTIONS) {
+  test(`must hold: a lenient skill_workshop ${params.action} (no content the scan read) is held, not let through`, async () => {
+    const r = registered();
+    await r.command("sentrook-notify", "here");
+    setVerdict("lenient");
+    const { out, rec } = await r.save("review", { toolName: "skill_workshop", params });
+    assert.deepEqual(out, { block: true, blockReason: bg.HELD_TEXT });
+    assert.equal(rec.decision, "held");
+    assert.equal(rec.lenient, undefined);
+    assert.match(r.sent[0].text, /^Sentrook held one of OpenClaw's background saves/);
+  });
+}
+
+test("must stay as before: content-less skill_workshop actions still run on an allow and are blocked on a block", async () => {
+  const r = registered();
+  setVerdict("allow");
+  assert.equal((await r.save("review", { toolName: "skill_workshop", params: UNREAD_ACTIONS[0]! })).out, undefined);
+  setVerdict("block");
+  assert.equal((await r.save("review", { toolName: "skill_workshop", params: UNREAD_ACTIONS[0]! })).rec.decision, "blocked");
+});
+
+const READ_SAVES: Array<[keyof typeof RUNS, { toolName: string; params: Record<string, unknown> }]> = [
+  ["review", { toolName: "skill_workshop", params: { action: "create", name: "deploy-staging", content: SKILL } }],
+  ["review", { toolName: "skill_workshop", params: { action: " Patch ", name: "deploy-staging", old_text: "a", new_text: "b" } }],
+  ["review", { toolName: "skill_workshop", params: { action: "write_file", name: "deploy-staging", file_path: "scripts/run.sh", content: "echo" } }],
+  ["review", { toolName: "skill_workshop", params: { action: "draft", name: "deploy-staging", content: SKILL } }],
+  ["curator", { toolName: "write", params: { path: "deploy-staging/SKILL.md", content: SKILL } }],
+  ["curator", { toolName: "edit", params: { path: "deploy-staging/SKILL.md", oldText: "a", newText: "b" } }],
+  ["curator", { toolName: "apply_patch", params: { input: "*** Begin Patch\n*** Update File: deploy-staging/SKILL.md\n@@\n-a\n+b\n*** End Patch" } }],
+  ["flush", SAVES.flush],
+];
+
+for (const [run, call] of READ_SAVES) {
+  test(`must allow: a lenient ${call.toolName} ${String(call.params.action ?? "").trim()} in the ${run} is let through`, async () => {
+    const r = registered();
+    setVerdict("lenient");
+    const { out, rec } = await r.save(run, call);
+    assert.equal(out, undefined);
+    assert.equal(rec.decision, "allowed");
+    assert.equal(rec.lenient, true);
+  });
+}
+
+test("must allow as a draft: the model's own skill_workshop draft in the review band runs as a draft, announced once kept", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const call = { toolName: "skill_workshop", params: { action: "draft", name: "deploy-staging", content: SKILL } };
+  const { out, rec } = await r.save("review", call);
+  assert.equal(out, undefined, "runs as the model asked: a draft does nothing until the owner applies it");
+  assert.equal(rec.decision, "drafted");
+  assert.equal(r.sent.length, 0, "nothing before the host has run the draft");
+  const { ctx } = RUNS.review;
+  await r.fire("after_tool_call", { ...call, toolCallId: "t1", runId: ctx.runId, ...DRAFT_KEPT }, ctx);
+  await hold.waitForNotices();
+  assert.equal(r.sent.length, 1);
+  assert.match(r.sent[0].text, /as a Skill Workshop draft/);
+  assert.match(history(), /drafted \(self-edit\) +in drafts$/m);
+});
+
+test("must hold: the model's own draft on a block-level score capped at review is held, and blocked on a block or an enforced block", async () => {
+  const call = { toolName: "skill_workshop", params: { action: "draft", name: "deploy-staging", content: SKILL } };
+  const r = registered();
+  reply = { ...VERDICTS.block, ceiling: "review", reasons: [{ code: "cap.unanswered_retry" }] };
+  const capped = await r.save("review", call);
+  assert.deepEqual(capped.out, { block: true, blockReason: bg.HELD_TEXT });
+  assert.equal(capped.rec.decision, "held");
+  setVerdict("block");
+  assert.equal((await r.save("review", call)).rec.decision, "blocked");
+  reply = { ...VERDICTS.strict, risk: 30, enforced: "block" };
+  assert.equal((await r.save("review", call)).rec.decision, "blocked");
+});
+
+// ---- the host ran the save live instead of the draft ------------------------------------------------------------
+
+const CREATED_LIVE = {
+  result: { content: [{ type: "text", text: 'Created "deploy-staging" (new). Undo with action=archive name=deploy-staging.' }], details: {} },
+};
+
+test("a create OpenClaw ran live instead of the draft is recorded as saved live and announced as such, not as not saved", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  setVerdict("strict");
+  const { out, rec } = await r.save("review", SAVES.review, null);
+  assert.equal(out.params.action, "draft");
+  const { ctx } = RUNS.review;
+  // the host passed the call's own parameters on: the rewrite was not applied
+  await r.fire("after_tool_call", { ...SAVES.review, toolCallId: "t1", runId: ctx.runId, ...CREATED_LIVE }, ctx);
+  await hold.waitForNotices();
+  const [resolution] = r.records("resolution");
+  assert.equal(resolution.request_id, rec.request_id);
+  assert.equal(resolution.resolution, "draft_ignored");
+  const [scan, res] = recentScans(path.join(stateDir, "traffic.jsonl"), 1)[0]!;
+  assert.equal(actionOf(scan, res), "saved live (draft ignored, self-edit)");
+  assert.doesNotMatch(history(), /not saved/);
+  assert.equal(r.sent.length, 1);
+  assert.match(r.sent[0].text, /^Sentrook sent a new skill .* but OpenClaw saved it as a live skill instead/);
+  assert.doesNotMatch(r.sent[0].text, /not made|not saved/);
+  assert.ok(!r.sent[0].text.includes(BODY_MARKER));
+  setVerdict("allow");
+  const next = await r.save("review", { toolName: "skill_workshop", params: { action: "list" } });
+  assert.equal(next.planir.history.at(-1).decision, "allowed", "the scanner is told the save ran");
+  const status = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+  assert.match(status, /1 saved live \(draft ignored\)/);
+});
+
+test("with no params on after_tool_call the draft is judged by its result as before", async () => {
+  const r = registered();
+  setVerdict("strict");
+  await r.save("review", SAVES.review, null);
+  const { ctx } = RUNS.review;
+  await r.fire("after_tool_call", { toolName: "skill_workshop", toolCallId: "t1", runId: ctx.runId, ...DRAFT_KEPT }, ctx);
+  assert.equal(r.records("resolution")[0].resolution, "draft_saved");
+});
+
+// ---- what a background hold tells the agent ---------------------------------------------------------------------
+
+test("a background hold tells the agent the save was not made, the owner was told, and not to retry; it never offers approval", async () => {
+  assert.notEqual(bg.HELD_TEXT, hold.HELD_TEXT);
+  assert.match(bg.HELD_TEXT, /not saved/);
+  assert.match(bg.HELD_TEXT, /owner has been told/);
+  assert.match(bg.HELD_TEXT, /Do not retry/);
+  assert.doesNotMatch(bg.HELD_TEXT, /approv/i);
+  const r = registered();
+  setVerdict("strict");
+  assert.equal((await r.save("flush")).out.blockReason, bg.HELD_TEXT);
+});
+
+// ---- patches: a target outside the store is never a save --------------------------------------------------------
+
+for (const indent of ["  ", "\t", "  "]) {
+  test(`must not declare a save: a curator patch with an indented (${JSON.stringify(indent)}) header outside the store`, async () => {
+    const r = registered();
+    setVerdict("lenient");
+    const input = `*** Begin Patch\n*** Add File: deploy-staging/SKILL.md\n+x\n${indent}*** Add File: /home/node/.openclaw/hooks/x.js\n+y\n*** End Patch`;
+    const { rec, planir } = await r.save("curator", { toolName: "apply_patch", params: { input } });
+    assert.equal(rec.background_save, undefined);
+    assert.equal(rec.lenient, undefined);
+    assert.equal(planir.self_edit, undefined);
+  });
+}

@@ -8,25 +8,28 @@
  * never asked about, on any OpenClaw version and whatever the settings say. Instead:
  * - allow: the save runs;
  * - block: it does not run, and the owner is told;
- * - review, when the plugin declared the save as a self-edit, the scan is complete (`status: ok`), the score is below
- *   the block line and the scanner marks it `lenient`: it runs, and the owner is told it was let through;
- * - any other review below the block line: on OpenClaw 2026.11.5 or newer, a new skill (`skill_workshop` `create`, or
- *   `write_file` of its `SKILL.md`) is saved as a Skill Workshop draft instead, which does nothing until the owner
- *   applies it. The owner is told once OpenClaw reports the draft saved (`after_tool_call`), or that the save was lost
- *   when it reports a failure;
- * - everything else (a patch, a memory note, a file write, an older or unknown OpenClaw, or a block-level score the
- *   scanner capped at review because it retries a review nobody answered) is held: it does not run, the run is told
- *   not to retry it, and the owner is told. These holds are not kept in the holds file: `/sentrook-approve` could do
- *   nothing for them (it never makes the save), and they must not push out holds it can approve;
+ * - review, when the plugin declared the save as a self-edit, the save carries the content it saves (so the scan read
+ *   it: `selfEdit.contentSave`), the scan is complete (`status: ok`), the score is below the block line and the
+ *   scanner marks it `lenient`: it runs, and the owner is told it was let through;
+ * - any other review below the block line: the model's own `skill_workshop` `draft` runs as it is, and on OpenClaw
+ *   2026.11.5 or newer a new skill (`skill_workshop` `create`, or `write_file` of its `SKILL.md`) is saved as a Skill
+ *   Workshop draft instead. A draft does nothing until the owner applies it. The owner is told once OpenClaw reports
+ *   the draft saved (`after_tool_call`), that the save was lost when it reports a failure, or that the skill was saved
+ *   live when OpenClaw ran the call's own `create` instead of the draft;
+ * - everything else (a patch, a memory note, a file write, a change that carries no content such as a restore, an
+ *   older or unknown OpenClaw, or a block-level score the scanner capped at review because it retries a review nobody
+ *   answered) is held: it does not run, the run is told it was not saved and not to retry it (`HELD_TEXT`), and the
+ *   owner is told. These holds are not kept in the holds file: `/sentrook-approve` could do nothing for them (it never
+ *   makes the save), and they must not push out holds it can approve;
  * - a scan that gives no answer: the scan-error policy for unattended runs, with its failure notice
  *   (`scanErrorPolicy.ts`, `scanFailureNotice.ts`).
  *
  * The notices go where held-call notices go (`/sentrook-notify here`). They are built only from fixed text, the run
  * label, the tool name and the call's description as a review card shows it (entity display strings, made inert), so
  * nothing the saving model wrote reaches the owner beyond what a card shows. A notice of each kind goes once per run
- * (per cron job for the collection review) in the scan-failure notices' quiet period, except a hold of a block-level
- * score, which is always announced; `/sentrook-history` lists every save. Observe mode changes nothing and sends
- * nothing.
+ * (per cron job for the collection review) in the scan-failure notices' quiet period. A hold of a block-level score
+ * has its own kind, so the first one in a run is announced whatever was announced before; `/sentrook-history` lists
+ * every save. Observe mode changes nothing and sends nothing.
  */
 
 import path from "node:path";
@@ -38,8 +41,15 @@ import { QUIET_MS } from "./scanFailureNotice.ts";
 import type { SelfEditKind, SelfEditStore } from "./selfEdit.ts";
 import type { NotifyTarget } from "./store.ts";
 
-/** The outcomes a background save announces. `draft_failed`: OpenClaw did not keep a save sent to the drafts. */
-export type Announced = "lenient" | "drafted" | "draft_failed" | "held" | "blocked";
+/**
+ * The outcomes a background save announces. `draft_failed`: OpenClaw did not keep a save sent to the drafts.
+ * `draft_ignored`: OpenClaw ran the call's own `create` instead of the draft, so the skill was saved live.
+ */
+export type Announced = "lenient" | "drafted" | "draft_failed" | "draft_ignored" | "held" | "blocked";
+
+/** What the agent is told when a background save is held: nobody can approve it, so retrying never helps. */
+export const HELD_TEXT =
+  "Sentrook did not allow this save, so it was not saved. The owner has been told. Do not retry it in this run.";
 
 /** The first OpenClaw that takes a Skill Workshop draft from a plugin's rewritten parameters in a background review. */
 export const DRAFT_FLOOR: readonly [number, number, number] = [2026, 11, 5];
@@ -87,6 +97,18 @@ export function draftSaved(event: any, text: string): boolean {
 }
 
 /**
+ * Whether OpenClaw ran a save sent to the drafts as the call's own action instead of the draft, from `after_tool_call`:
+ * its parameters are there and are not a draft, and it did not fail. Without parameters this cannot be told.
+ */
+export function draftIgnored(event: any): boolean {
+  const params = event?.params;
+  if (!params || typeof params !== "object" || Array.isArray(params)) return false;
+  if (String(params.action ?? "").trim().toLowerCase() === "draft") return false;
+  const status = String(event?.result?.details?.status ?? "").toLowerCase();
+  return !event?.error && !["error", "failed", "failure", "refused", "denied", "cancelled", "blocked"].includes(status);
+}
+
+/**
  * Whether `version` (OpenClaw's calendar version, `2026.11.5`) is at least `floor`. Unknown or unreadable versions are
  * not, and neither is a pre-release of the floor itself (`2026.11.5-beta.1`).
  */
@@ -123,14 +145,17 @@ export function draftParams(tool: string, params: any, hostVersion: unknown): Re
   return { action: "draft", name: params.name, content: params.content, reason: DRAFT_REASON };
 }
 
-/** The quiet-period key of a notice: one per outcome and run (cron job, else session). */
-export function quietKey(outcome: Announced, jobId: string | null | undefined, sessionRef: string): string {
+/**
+ * The quiet-period key of a notice: one per outcome and run (cron job, else session). `held_retry`: a hold of a
+ * block-level score, kept apart from other holds so the first one in a run is always announced.
+ */
+export function quietKey(outcome: Announced | "held_retry", jobId: string | null | undefined, sessionRef: string): string {
   return `background_${outcome}:${jobId ? `job:${jobId}` : `session:${sessionRef}`}`;
 }
 
 /**
- * The notice for a background save; `where` is `hold.whereText`'s, already made inert. `quiet`: further notices of this
- * kind wait out the quiet period (every kind but a block-level hold).
+ * The notice for a background save; `where` is `hold.whereText`'s, already made inert. `retry`: a hold of a block-level
+ * score (a retry of a review nobody answered), whose further notices wait out their own quiet period.
  */
 export function noticeText(
   outcome: Announced,
@@ -140,7 +165,7 @@ export function noticeText(
   where: string,
   requestId: string | null,
   isJob: boolean,
-  quiet = true,
+  retry = false,
 ): string {
   const what = `${STORE_WORDS[store]}: ${inert(describe(resp, tool), 160)} (${inert(tool, 80)})`;
   // the id only means something while the traffic log keeps the scan
@@ -156,6 +181,14 @@ export function noticeText(
       `To look at it: ${look}`,
       `More saves let through in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
     ],
+    draft_ignored: [
+      "Sentrook sent a new skill from one of OpenClaw's background runs to the Skill Workshop drafts, but OpenClaw " +
+        "saved it as a live skill instead, without asking you.",
+      `Run: ${where}`,
+      `Saved ${what}`,
+      `To remove it, ask the agent in a chat to archive it. To look at it: ${look}`,
+      `More skills saved live from this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+    ],
     draft_failed: [
       "Sentrook sent a new skill from one of OpenClaw's background runs to the Skill Workshop drafts, but OpenClaw did " +
         "not keep the draft, so the save was not made.",
@@ -170,7 +203,9 @@ export function noticeText(
       `Save ${what}`,
       `Held because ${BLOCK_CATEGORIES[blockCategory(resp)]}.`,
       `To keep it, ask the agent for it in a chat. To look at it: ${look}`,
-      `More held saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+      retry
+        ? `More held retries of a blocked save in this ${scope} are not announced for ${QUIET_HOURS} hours.`
+        : `More held saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
     ],
     drafted: [
       "Sentrook saved a new skill from one of OpenClaw's background runs as a Skill Workshop draft, for you to " +
@@ -190,8 +225,7 @@ export function noticeText(
       `More blocked saves in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
     ],
   };
-  const out = lines[outcome];
-  return (quiet ? out : out.filter((l) => !l.startsWith("More "))).join("\n");
+  return lines[outcome].join("\n");
 }
 
 /** Where background-save notices go, as status and verify say it. */
