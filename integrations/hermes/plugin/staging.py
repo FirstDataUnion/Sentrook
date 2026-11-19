@@ -14,8 +14,9 @@ the scan judged.
 What is never staged, and stays held as before (`refusal`, `plan`):
 - a block, and a score at the block line that a retry rule capped at review;
 - a save the plugin did not declare with its `self_edit` block (`skill_review: review`);
-- a save whose scan says it adds a secret (`self_edit.adds` has `secret`): staging would write it in plain text to a
-  file. A scanner that sends no `self_edit` object: a save the plugin's own redaction changed;
+- a save whose scan says it adds a secret (`self_edit.adds` has `secret`), or that the plugin's own redaction changed:
+  staging would write the secret in plain text to a file;
+- a save larger than the copy the scanner was sent (`input_cap_bytes`): the scan did not see all of it;
 - a skill `delete` (Hermes deletes an approved staged skill for good, not to its archive);
 - a memory `patch` or `remove` (alone or in a batch). Hermes pins each to the whole entry it matches when it stages
   one, which the plugin must not work out itself. Hermes's own gate stages these when its unattended background
@@ -97,11 +98,19 @@ class Plan:
 # ---- what may be staged ------------------------------------------------------------------------------
 
 
-def refusal(resp: dict[str, Any], *, declared: bool, redacted: bool, block_at: float) -> str | None:
+def refusal(
+    resp: dict[str, Any], *, declared: bool, redacted: bool, whole: bool, block_at: float
+) -> str | None:
     """Why a reviewed background save must stay held whatever it saves, or None. `declared`: the plugin sent the
-    save with its `self_edit` block; `redacted`: the plugin's own redaction changed the call's arguments."""
+    save with its `self_edit` block; `redacted`: the plugin's own redaction changed the call's arguments (a secret
+    the scanner may not have seen, if it was cut from the scanned copy); `whole`: the scanner was sent the whole
+    call, not a copy cut to the input cap, so what it reports covers everything that would be staged."""
     if not declared:
         return "not_declared"
+    if redacted:
+        return "redacted"
+    if not whole:
+        return "too_large"
     risk = resp.get("risk")
     if isinstance(risk, bool) or not isinstance(risk, (int, float)) or risk >= block_at:
         return "block_level"
@@ -109,8 +118,8 @@ def refusal(resp: dict[str, Any], *, declared: bool, redacted: bool, block_at: f
         return "block_level"
     block = resp.get("self_edit")
     if block is None:
-        # an older scanner: it does not say whether the save carries a secret, so only the plugin's redaction can
-        return "redacted" if redacted else None
+        # an older scanner: it does not say whether the save carries a secret; the plugin's redaction found none
+        return None
     adds = block.get("adds") if isinstance(block, dict) else None
     if not isinstance(adds, list):
         return "self_edit_unreadable"
@@ -282,14 +291,27 @@ def host_stages(payload: dict[str, Any]) -> bool:
             s in gate_src for s in ("is_unattended_review", "stage_write", "proposal_staged")
         ):
             return False
-        at, written = tool_src.find("_background_delete_gate("), tool_src.find("_applied(")
-        if at < 0 or written < 0 or at > written:
+        if not _gated_before_every_write(tool_src):
             return False
         if "_memory_tool(" not in inspect.getsource(entry):
             return False
         return bool(mt.destructive_ops(payload))
     except Exception:  # noqa: BLE001 - an older, newer or different host: held
         return False
+
+
+def _gated_before_every_write(source: str) -> bool:
+    """In the memory tool's source, every write (`_applied(`) has a call of the gate after the write before it:
+    each path through the tool consults the gate before it writes."""
+    writes = [i for i in range(len(source)) if source.startswith("_applied(", i)]
+    if not writes:
+        return False
+    start = 0
+    for at in writes:
+        if source.find("_background_delete_gate(", start, at) < 0:
+            return False
+        start = at
+    return True
 
 
 # ---- the summary --------------------------------------------------------------------------------------
@@ -405,7 +427,8 @@ def host_outcome(status: str, result: Any) -> dict[str, Any]:
         except ValueError:
             data = None
     if not isinstance(data, dict):
-        return {"result": "not_saved" if status in ("blocked", "cancelled") else "unknown"}
+        # a blocked call never ran; a cancelled one may still finish in Hermes, so it is unknown
+        return {"result": "not_saved" if status == "blocked" else "unknown"}
     pending_id = data.get("pending_id")
     staged = data.get("staged") is True or data.get("proposal_staged") is True
     if (
@@ -418,7 +441,7 @@ def host_outcome(status: str, result: Any) -> dict[str, Any]:
         return {"result": "staged", "id": pending_id}
     if status == "ok" and data.get("success") is True and not staged:
         return {"result": "saved"}
-    if data.get("success") is False or status in ("blocked", "cancelled"):
+    if data.get("success") is False or status == "blocked":
         return {"result": "not_saved"}
     return {"result": "unknown"}
 

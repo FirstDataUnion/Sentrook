@@ -11,7 +11,8 @@ since the version the catalog pins.
   it (`/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>`; `/memory pending`, `/memory approve <id>`,
   `/memory reject <id>`). Hermes's `write_approval` settings do not need to be on. Staged: new skills, skill edits
   and patches, writing or removing a skill's file, and memory additions (alone or in a batch). Still held and lost:
-  skill deletes, saves Sentrook finds a secret in, blocked saves, and every save with `skill_review: review`.
+  skill deletes, saves Sentrook finds a secret in, saves too large to scan whole, blocked saves, and every save with
+  `skill_review: review`.
 - Changing or removing memory entries in Hermes's unattended background review is left to Hermes's own gate, which
   stages it, when the plugin can see that gate in the running Hermes; the notice says what Hermes did. Otherwise it is
   held as before.

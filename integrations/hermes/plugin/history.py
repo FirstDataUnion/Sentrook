@@ -196,8 +196,10 @@ def _base_action(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str
             choice = (resolution or {}).get("resolution")
             if choice == "host_staged":
                 return "staged (by Hermes)"
-            if choice in ("host_saved", "host_unknown"):
+            if choice == "host_saved":
                 return "saved (not staged by Hermes)"
+            if choice == "host_unknown":
+                return "sent to Hermes (outcome unknown)"
             if choice == "host_not_saved":
                 return "held"
             return "sent to Hermes to stage"
@@ -211,8 +213,12 @@ def review_of(action: str, resolution: dict[str, Any] | None) -> str:
     """How the review was answered; `-` when there was none."""
     if action.startswith("staged"):
         return "pending in Hermes"  # the owner approves or rejects it with Hermes's own commands
-    if action.startswith(("saved", "sent to Hermes")):
-        return "saved without approval" if action.startswith("saved") else "-"
+    if action.startswith("saved"):
+        return "saved without approval"
+    if action.startswith("sent to Hermes (outcome"):
+        return "may have been saved"
+    if action.startswith("sent to Hermes"):
+        return "-"
     if resolution is None:
         if action.startswith("held") and action.endswith("self-edit)"):
             return "not saved"  # a background save is held with nothing to approve

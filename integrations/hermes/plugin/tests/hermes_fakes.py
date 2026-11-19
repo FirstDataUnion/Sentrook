@@ -147,6 +147,16 @@ def _memory_tool_gate_after_write(action, target, content, old_text, new_text, o
     return result
 
 
+def _memory_tool_batch_only(action, target, content, old_text, new_text, operations, store):
+    """A Hermes whose memory tool consults the gate for a batch only."""
+    if operations:
+        denied = _background_delete_gate(store, action, operations, target)
+        if denied is not None:
+            return "rejected", denied
+        return _applied({"success": True})
+    return _applied({"success": True})
+
+
 def _background_delete_gate_denies(
     store, action, operations, target="memory", content=None, old_text=None
 ):

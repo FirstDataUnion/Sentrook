@@ -822,8 +822,13 @@ def _stage_background(
     record says: status `staged` (with the store and the pending id), `host` (Hermes's own gate will stage it) or
     `held` (with why not). Never raises: anything that fails holds the save as before."""
     try:
+        size = len(json.dumps(args, ensure_ascii=False, default=str).encode("utf-8"))
         why = staging.refusal(
-            resp, declared=declared, redacted=redactor.value(args) != args, block_at=cfg.block_at
+            resp,
+            declared=declared,
+            redacted=redactor.value(args) != args,
+            whole=size <= cfg.input_cap_bytes,
+            block_at=cfg.block_at,
         )
         if why is not None:
             return {"status": "held", "reason": why}
@@ -1171,16 +1176,21 @@ def on_post_tool_call(tool_name: str = "", args: Any = None, result: Any = "", *
             if entry is None:
                 return
             status = str(kw.get("status") or "ok")
+            # A change Hermes's own gate staged did not run: like any call that did not run, it sends no result.
+            host_staged = False
             if entry.get("decision") == "host_staging":
                 _host_staging_done(cfg, entry, status, result)
+                host_staged = entry["decision"] == "staged"
             text = (
                 result
                 if isinstance(result, str)
                 else json.dumps(result, ensure_ascii=False, default=str)
             )
             size = len(text.encode("utf-8"))
-            ran = status not in ("blocked", "cancelled") and not (
-                entry["decision"] in NOT_RUN and status != "ok"
+            ran = (
+                status not in ("blocked", "cancelled")
+                and not (entry["decision"] in NOT_RUN and status != "ok")
+                and not host_staged
             )
             entry["result"] = {
                 "status": "ok" if status == "ok" and ran else "error",

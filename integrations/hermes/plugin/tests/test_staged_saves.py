@@ -412,6 +412,24 @@ def test_an_old_scanner_never_stages_a_save_the_plugins_redaction_changed(h):
     assert h.wa.calls == [] and pending(h, "memory") == []
 
 
+def test_a_save_the_plugins_redaction_changed_is_never_staged_whatever_the_scanner_says(h):
+    """The scanner may not have seen the secret: a copy cut to the input cap can leave it out."""
+    out, rec = save(h, "memory", {"action": "add", "target": "memory", "content": SECRET_NOTE})
+    assert out == HELD and rec["staging"] == {"status": "held", "reason": "redacted"}
+    assert h.wa.calls == []
+
+
+def test_a_save_larger_than_the_scanned_copy_is_never_staged(h):
+    h.ctx.settings["input_cap_bytes"] = 1024
+    out, rec = save(
+        h,
+        "memory",
+        {"action": "add", "target": "memory", "content": "Prefers short replies. " * 60},
+    )
+    assert out == HELD and rec["staging"] == {"status": "held", "reason": "too_large"}
+    assert h.wa.calls == []
+
+
 def test_an_undeclared_save_is_never_staged(h):
     """With `skill_review: review` no `self_edit` block is sent."""
     h.ctx.settings["skill_review"] = "review"
@@ -628,6 +646,16 @@ def test_a_destructive_memory_change_goes_to_hermess_own_gate(gate, name):
     )
 
 
+def test_a_change_hermes_staged_is_sent_to_the_scanner_as_not_run(gate):
+    h = gate
+    save(h, "memory", DESTRUCTIVE["remove"])
+    done(h, DESTRUCTIVE["remove"], h.memory_tool.memory_tool(**DESTRUCTIVE["remove"]))
+    save(h, "read_file", {"path": "notes.md"})
+    (earlier,) = [x for x in h.scans[-1]["history"] if x["tool"] == "memory"]
+    assert earlier["decision"] == "review_timed_out" and earlier["result"]["size_bytes"] == 0
+    assert not any(i.get("call_id") == earlier["call_id"] for i in h.scans[-1]["new_inputs"])
+
+
 def test_a_destructive_change_hermes_saved_is_announced_truthfully(gate):
     h = gate
     save(h, "memory", DESTRUCTIVE["remove"])
@@ -658,6 +686,7 @@ def test_a_destructive_change_hermes_saved_is_announced_truthfully(gate):
         ),
         ("Sentrook security block: blocked", "blocked", "host_not_saved", "Sentrook held"),
         ("not json", "ok", "host_unknown", "Sentrook let"),
+        ("worker abandoned", "cancelled", "host_unknown", "Sentrook let"),
         (
             json.dumps({"success": True, "staged": True, "pending_id": "../x"}),
             "ok",
@@ -665,7 +694,7 @@ def test_a_destructive_change_hermes_saved_is_announced_truthfully(gate):
             "Sentrook let",
         ),
     ],
-    ids=["refused", "blocked", "unreadable", "bad-id"],
+    ids=["refused", "blocked", "unreadable", "cancelled", "bad-id"],
 )
 def test_what_hermes_did_is_read_from_the_result(gate, result, status, resolution, first):
     h = gate
@@ -675,6 +704,8 @@ def test_what_hermes_did_is_read_from_the_result(gate, result, status, resolutio
     assert notices(h)[0].startswith(first)
     if resolution == "host_not_saved":
         assert shown(h) == ("held (self-edit)", "not saved")
+    else:
+        assert shown(h) == ("sent to Hermes (outcome unknown, self-edit)", "may have been saved")
 
 
 def test_a_destructive_change_carrying_a_secret_stays_held(gate):
@@ -688,6 +719,9 @@ UNSURE = {
     "no-memory-tool": lambda m: None,
     "gate-missing": lambda m: delattr(m, "_background_delete_gate"),
     "gate-not-called": lambda m: setattr(m, "_memory_tool", hermes_fakes._memory_tool_unwired),
+    "gate-on-one-path-only": lambda m: setattr(
+        m, "_memory_tool", hermes_fakes._memory_tool_batch_only
+    ),
     "gate-after-write": lambda m: setattr(
         m, "_memory_tool", hermes_fakes._memory_tool_gate_after_write
     ),
@@ -748,7 +782,8 @@ def test_the_summary_is_bounded_and_inert():
         ("ok", {"success": True}, "saved"),
         ("ok", {"success": False}, "not_saved"),
         ("error", "boom", "unknown"),
-        ("cancelled", "x", "not_saved"),
+        ("cancelled", "x", "unknown"),
+        ("blocked", "x", "not_saved"),
         ("ok", {"success": True, "staged": True}, "unknown"),
     ],
 )

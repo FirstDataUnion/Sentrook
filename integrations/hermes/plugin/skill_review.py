@@ -325,9 +325,9 @@ def counts(path: Path) -> dict[str, int]:
             else "held"
             if action.startswith("held")
             else "staged"
-            if action.startswith(("staged", "sent to Hermes"))
+            if action.startswith(("staged", "sent to Hermes to stage"))
             else "let_through"
-            if action.startswith("saved")
+            if action.startswith(("saved", "sent to Hermes (outcome"))
             or scan.get("decision") == "allowed"
             and (scan.get("lenient") is True or scan.get("snoozed") is True)
             else "allowed"

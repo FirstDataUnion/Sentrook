@@ -409,6 +409,7 @@ and adding memory entries (alone or in one batch). These stay held and are lost,
 
 - deleting a skill (Hermes deletes an approved skill for good, not to its archive);
 - a save Sentrook finds a secret in, which staging would write to a file in plain text;
+- a save too large for Sentrook to scan whole (over `input_cap_bytes`);
 - a save Sentrook blocks, or one that scored at the block line;
 - with `skill_review: review`, every held save.
 

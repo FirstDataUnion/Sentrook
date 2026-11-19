@@ -862,16 +862,18 @@ those settings are not needed or changed), and the owner looks at it and approve
   batches of only adds; from the review fork and the curator alike, with the origin Hermes reports. A review a rule
   floor enforces is staged, and its summary says a rule asked for it. The staged payload is the call's own arguments.
 - Never staged, held as before: a block; a block-level score a retry rule capped at review; a save whose scan reports
-  `secret` in `self_edit.adds` (or, when the response has no `self_edit` object, a save the plugin's own redaction
-  changed); a skill delete (Hermes hard-deletes an approved staged delete); a save sent without the `self_edit` block
+  `secret` in `self_edit.adds`, or that the plugin's own redaction changed (the scanned copy may have been cut before
+  the secret); a save larger than `input_cap_bytes`, which the scan did not see whole; a skill delete (Hermes hard-deletes an approved staged delete); a save sent without the `self_edit` block
   (`skill_review: review`).
 - Memory patch and remove (alone or in a batch): never staged by the plugin, which would have to pin the entry
   itself. Hermes's own gate stages these when its unattended background review makes them; the plugin lets such a
   change through to that gate only when it can establish the gate in the running Hermes (the call is an unattended
-  review, `tools.memory_tool` has the gate, the gate reads that condition and stages, and the memory tool calls it
-  before it writes), never from a version string. `post_tool_call` reads Hermes's result: staged (with its pending
-  id) is recorded and announced as staged; a result that says the change was saved, or does not say, is recorded and
-  announced as not staged; a refusal as not saved. Without that gate the change is held as before.
+  review, `tools.memory_tool` has the gate, the gate reads that condition and stages, and every write in the memory
+  tool comes after a call of it), never from a version string. `post_tool_call` reads Hermes's result: staged (with
+  its pending id) is recorded and announced as staged and, like any call that did not run, sends the scanner no
+  result; a result that says the change was saved is recorded and announced as saved without approval; one that does
+  not say (or a cancelled call) as an unknown outcome that may have been saved; a refusal as not saved. Without that
+  gate the change is held as before.
 - The plugin writes each record's summary: "Held by Sentrook ...", the kind of change, at most 200 characters, with
   control and bidi characters removed, a skill name shown only when it cannot render as a link or mention, never the
   saved text. The staged file is made 0600. At most 20 records the plugin staged wait in each store; past that, saves
@@ -880,11 +882,13 @@ those settings are not needed or changed), and the owner looks at it and approve
   notice (same channel and quiet-window rules, its own kind) gives the pending id and the commands to look first and
   then approve or reject, never the saved text.
 - History shows "staged (self-edit)" with review "pending in Hermes"; a change left to Hermes's gate shows "sent to
-  Hermes to stage", then "staged (by Hermes, ...)", "saved (not staged by Hermes, ...)" or "held". `status` counts
+  Hermes to stage", then "staged (by Hermes, ...)", "saved (not staged by Hermes, ...)", "sent to Hermes (outcome
+  unknown, ...)" or "held". `status` counts
   staged saves; the dashboard puts them with reviews. The scanner is told a staged save did not run
   (`review_timed_out`). Observe mode, attended calls and lenient let-throughs are unchanged.
 - Tests: `test_staged_saves` (each stageable action staged with its exact payload, origin, summary and 0600 file; every
   background run; summary and notice texts carry the id and commands and never the save; each never-stage case held;
   import failure, a raising or silent `stage_write`, a file that cannot be made private, a bad id; the cap per store;
   observe, lenient and attended unchanged; Hermes's gate: patch, remove and a mixed batch let through and the result
-  read as staged, saved, refused, blocked or unreadable; the gate held when it cannot be established).
+  read as staged, saved, refused, blocked, cancelled or unreadable; a staged one sends the scanner no result; the gate
+  held when it cannot be established, including one consulted on one path only; redacted and over-cap saves held).
