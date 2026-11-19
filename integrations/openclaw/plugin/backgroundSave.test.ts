@@ -1525,7 +1525,20 @@ test("must hold: a skill folder swapped for a link between the check and the ope
     fs.realpathSync = real;
     syncBuiltinESMExports();
   }
-  assert.ok(calls >= 3, "containment is checked again after the open");
+  assert.ok(calls >= 2, "containment is confirmed after the open");
+});
+
+test("readLiveSkill decides on the open file: a folder, a FIFO and a link named SKILL.md are refused, a missing one is missing", { timeout: 10_000 }, () => {
+  const folder = agentHome(null);
+  mkdirSync(folder.file);
+  assert.deepEqual(bg.readLiveSkill(folder.dir, "deploy-staging"), { skip: "not_file" });
+  const fifo = agentHome(null);
+  execFileSync("mkfifo", [fifo.file]);
+  assert.deepEqual(bg.readLiveSkill(fifo.dir, "deploy-staging"), { skip: "not_file" }, "opens at once and is refused");
+  const link = agentHome(null);
+  symlinkSync("/dev/null", link.file);
+  assert.deepEqual(bg.readLiveSkill(link.dir, "deploy-staging"), { skip: "outside" }, "a link to a device is never followed");
+  assert.deepEqual(bg.readLiveSkill(agentHome(null).dir, "deploy-staging"), { skip: "missing" });
 });
 
 test("readLiveSkill confines on its own: a name that climbs out, is absolute or has a slash is refused", () => {

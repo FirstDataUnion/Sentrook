@@ -210,34 +210,27 @@ export function applyPatch(live: string, oldText: string, newText: string): { co
 
 /**
  * The live `SKILL.md` of Workshop skill `name` under `agentDir`, or why it cannot be read safely. Confined on its own:
- * `name` must be one Workshop skill name (OpenClaw's pattern: no slash, no dots), and the file must lie at
- * `<real Workshop folder>/<name>/SKILL.md` once every link is resolved (no link in the skill's folder or on the file
- * itself, as OpenClaw refuses them too). It must be a regular file (never a FIFO or device, which could block the
- * gateway on open) with no other hard link, holding at most `MAX_SKILL_FILE_BYTES` of valid UTF-8. It is checked
- * before it is opened, and again on the open file: the file opened must be the one checked, still at that path with
- * no link on the way (a folder swapped for a link in between is refused). Never throws.
+ * `name` must be one Workshop skill name (OpenClaw's pattern: no slash, no dots). Every decision is made on the open
+ * file, never on a check of the path made before opening it:
+ * - it is opened read-only without following a link on the file itself (`O_NOFOLLOW`), without waiting (`O_NONBLOCK`:
+ *   a FIFO with no writer opens at once on Linux and macOS, so it can never block the gateway) and without becoming a
+ *   controlling terminal (`O_NOCTTY`);
+ * - the open file must be a regular file (not a FIFO, device or folder) with no other hard link, holding at most
+ *   `MAX_SKILL_FILE_BYTES` of valid UTF-8;
+ * - only then is its place confirmed: the path must still resolve, every link followed, to
+ *   `<real Workshop folder>/<name>/SKILL.md`, and the file there must be the one that was opened (same device and
+ *   inode). A link anywhere on the way (OpenClaw refuses them too), or a folder swapped for one, is refused.
+ * Never throws.
  */
 export function readLiveSkill(agentDir: string, name: string): { live: string } | { skip: PatchDraft } {
   if (typeof name !== "string" || !SKILL_NAME.test(name)) return { skip: "bad_name" };
+  const file = path.join(agentDir, "workshop-skills", name, "SKILL.md");
   let fd: number | null = null;
   try {
-    const root = realpathSync(path.join(agentDir, "workshop-skills"));
-    const expected = path.join(root, name, "SKILL.md");
-    const rel = path.relative(root, expected);
-    if (rel !== path.join(name, "SKILL.md") || rel.split(path.sep).includes("..")) return { skip: "outside" };
-    if (realpathSync(path.join(agentDir, "workshop-skills", name, "SKILL.md")) !== expected) return { skip: "outside" };
-    const checked = lstatSync(expected);
-    if (!checked.isFile() || checked.nlink !== 1) return { skip: "not_file" };
-    if (checked.size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
-    // O_NOFOLLOW: a link swapped in for the file is refused; O_NONBLOCK: a FIFO swapped in never blocks the open.
-    fd = openSync(expected, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+    const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0) | (fsConstants.O_NOCTTY ?? 0);
+    fd = openSync(file, flags);
     const st = fstatSync(fd);
     if (!st.isFile() || st.nlink !== 1) return { skip: "not_file" };
-    if (st.dev !== checked.dev || st.ino !== checked.ino) return { skip: "outside" };
-    // The folders on the way may have been swapped for links since the check: the path must still lead to this file.
-    if (realpathSync(expected) !== expected) return { skip: "outside" };
-    const now = lstatSync(expected);
-    if (now.dev !== st.dev || now.ino !== st.ino) return { skip: "outside" };
     if (st.size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
     // Read to one byte past the bound, in case the file grew since fstat.
     const buf = Buffer.alloc(MAX_SKILL_FILE_BYTES + 1);
@@ -248,6 +241,14 @@ export function readLiveSkill(agentDir: string, name: string): { live: string } 
       size += n;
     }
     if (size > MAX_SKILL_FILE_BYTES) return { skip: "too_large" };
+    // Where the opened file is: the path must lead, with no link on the way, to this very file in this Workshop.
+    const root = realpathSync(path.join(agentDir, "workshop-skills"));
+    const expected = path.join(root, name, "SKILL.md");
+    const rel = path.relative(root, expected);
+    if (rel !== path.join(name, "SKILL.md") || rel.split(path.sep).includes("..")) return { skip: "outside" };
+    if (realpathSync(file) !== expected) return { skip: "outside" };
+    const there = lstatSync(expected);
+    if (there.dev !== st.dev || there.ino !== st.ino) return { skip: "outside" };
     const bytes = buf.subarray(0, size);
     const live = bytes.toString("utf8");
     // Text that is not valid UTF-8 would come back changed (replacement characters) beyond the one change.
@@ -255,7 +256,15 @@ export function readLiveSkill(agentDir: string, name: string): { live: string } 
     return { live };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
-    const why: Record<string, PatchDraft> = { ENOENT: "missing", ENOTDIR: "missing", ELOOP: "outside", EISDIR: "not_file" };
+    const why: Record<string, PatchDraft> = {
+      ENOENT: "missing",
+      ENOTDIR: "missing",
+      ELOOP: "outside",
+      EMLINK: "outside",
+      EISDIR: "not_file",
+      ENXIO: "not_file",
+      EOPNOTSUPP: "not_file",
+    };
     return { skip: code && Object.hasOwn(why, code) ? why[code]! : "unreadable" };
   } finally {
     if (fd !== null) {
