@@ -283,7 +283,7 @@ Details: /sentrook why 3f9c2a1b
   shortened in the middle; on small screens (a Discord message holds 300 characters) the reasons and your options
   are kept and the description of the call is shortened first.
 - **Once** runs this call. **Session** and **Always** also run the same action (same tool, source and destination)
-  without asking again: for this session, or from now on. A call that names no file, address or other target is
+  without asking again: for this session, or from now on, in every later session too. A call that names no file, address or other target is
   covered only when it is repeated exactly. Where a grant would cover calls like this, the prompt says what
   **Always** also sets, or gives the command.
 - `/sentrook why <id>` shows everything behind the decision: the scores, the checks that fired, the files and

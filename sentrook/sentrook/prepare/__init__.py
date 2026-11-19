@@ -31,6 +31,8 @@ before any probe.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -260,6 +262,18 @@ class CoverageNote:
     detail: str
 
 
+#: The label the approval salt is derived under; a new label gives every action a new approval fingerprint.
+APPROVAL_SALT_LABEL = b"sentrook approval fingerprint v1"
+
+
+def approval_salt(token_key: str | bytes) -> str:
+    """The salt of the approval fingerprint: derived from the scanner's state-token key (HMAC under a versioned
+    label), so it is the same in every session of a deployment, is never the key itself, and cannot be computed
+    without the key."""
+    key = token_key.encode() if isinstance(token_key, str) else token_key
+    return hmac.new(key, APPROVAL_SALT_LABEL, hashlib.sha256).hexdigest()[:32]
+
+
 @dataclass
 class Prepared:
     planir: PlanIR
@@ -274,6 +288,10 @@ class Prepared:
     entities: EntityTable
     fingerprint: Fingerprint
     views: dict[str, dict[str, Any]]
+    #: The pending call's entities hashed with `approval_salt` instead of the session's salt: the same action has
+    #: the same approval fingerprint in every session, so a plugin can remember an owner's "Always" for it. Used
+    #: for nothing else (not scoring, retry matching or the token).
+    approval_fingerprint: str = ""
     created_paths: dict[str, int] = field(default_factory=dict)
     written_file: WrittenFile | None = None
     #: The pending command read through its siblings' writes (`sibling_join.resolve_pending`):
@@ -1756,8 +1774,11 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     _inherit_recipient_domain(table)
     _address_only_hosts(words, table)
 
-    # 7. fingerprint
+    # 7. fingerprint, and the session-independent approval fingerprint of the same entities
     fp = fingerprint(pending.tool_kind, table.pending(), state.salt)
+    approval_fp = fingerprint(
+        pending.tool_kind, table.pending(), approval_salt(options.token_key)
+    ).render()
 
     # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
     # sent in the common case, less reads of the agent's own skills and memory; call: the full trimmed call view)
@@ -1801,6 +1822,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         inputs=inputs,
         entities=table,
         fingerprint=fp,
+        approval_fingerprint=approval_fp,
         views=jev_views,
         created_paths=created,
         written_file=written,
