@@ -1,6 +1,117 @@
 {
   "reviews": [
-    "8888a1b2-0000-4000-8000-000000000008"
+    {
+      "id": "8888a1b2-0000-4000-8000-000000000008",
+      "ts": "2026-10-29T09:45:00.000Z",
+      "session": "s_1",
+      "tool": "terminal",
+      "step": 8,
+      "mode": "enforce",
+      "action": "review",
+      "review": "no answer",
+      "bucket": "review",
+      "flags": [],
+      "open_review": true,
+      "failure": null,
+      "risk": 66,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.5,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.8,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "egress.new_host",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": []
+    }
   ],
   "holds": [
     {
@@ -10,16 +121,129 @@
       "where": "subagent",
       "held_at": "2026-10-29T09:40:00Z",
       "expires_at": "2026-10-30T09:40:00Z",
-      "grant": null
+      "grant": null,
+      "scan": null
     },
     {
       "id": "h-2c2c2c",
-      "request_id": "aaaa0000-0000-4000-8000-000000000003",
+      "request_id": "7777a1b2-0000-4000-8000-000000000007",
       "tool": "message",
       "where": "cron job \"daily-brief\" (job 7f3a)",
-      "held_at": "2026-10-29T09:30:00Z",
-      "expires_at": "2026-10-30T09:30:00Z",
-      "grant": "destination channel:1234567890"
+      "held_at": "2026-10-29T09:40:01Z",
+      "expires_at": "2026-10-30T09:40:01Z",
+      "grant": "destination channel:1234567890",
+      "scan": {
+        "id": "7777a1b2-0000-4000-8000-000000000007",
+        "ts": "2026-10-29T09:40:00.000Z",
+        "session": "s_1",
+        "tool": "write_file",
+        "step": 7,
+        "mode": "observe",
+        "action": "observed (would review)",
+        "review": "-",
+        "bucket": "observed",
+        "flags": [],
+        "open_review": false,
+        "failure": null,
+        "risk": 47,
+        "enforced": null,
+        "ceiling": null,
+        "tiers": [
+          {
+            "name": "suspicion",
+            "score": 0.5,
+            "leaves": [
+              {
+                "name": "misalignment",
+                "value": null
+              },
+              {
+                "name": "concealment",
+                "value": null
+              },
+              {
+                "name": "overreach",
+                "value": null
+              },
+              {
+                "name": "distrust",
+                "value": null
+              },
+              {
+                "name": "request_origin",
+                "value": null
+              },
+              {
+                "name": "retry_after_denial",
+                "value": null
+              },
+              {
+                "name": "untrusted_origin",
+                "value": null
+              },
+              {
+                "name": "exposure",
+                "value": null
+              },
+              {
+                "name": "session_exposure",
+                "value": null
+              }
+            ]
+          },
+          {
+            "name": "consequence",
+            "score": 0.5,
+            "leaves": [
+              {
+                "name": "sensitivity",
+                "value": null
+              },
+              {
+                "name": "reach",
+                "value": null
+              },
+              {
+                "name": "irreversibility",
+                "value": null
+              },
+              {
+                "name": "self_modification",
+                "value": null
+              }
+            ]
+          },
+          {
+            "name": "confidence",
+            "score": 0.8,
+            "leaves": [
+              {
+                "name": "agreement",
+                "value": null
+              },
+              {
+                "name": "coverage",
+                "value": null
+              },
+              {
+                "name": "model_certainty",
+                "value": null
+              }
+            ]
+          }
+        ],
+        "floors": [],
+        "relief": [],
+        "reasons": [
+          {
+            "code": "fs.outside_workspace",
+            "signal": null,
+            "subject": null,
+            "text": null
+          }
+        ],
+        "entities": []
+      }
     },
     {
       "id": "h-1b1b1b",
@@ -28,7 +252,8 @@
       "where": "heartbeat",
       "held_at": "2026-10-29T07:00:00Z",
       "expires_at": "2026-10-30T07:00:00Z",
-      "grant": null
+      "grant": null,
+      "scan": null
     }
   ],
   "holds_readable": true,

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 
-import { COMMANDS, limitOf, renderPage, scansModel } from "./dashboard.ts";
+import { COMMANDS, queryOf, queryScans, renderPage } from "./dashboard.ts";
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 const LOG = process.env.SENTROOK_PREVIEW_LOG || here("../../fixtures/traffic-log/dashboard/traffic.jsonl");
@@ -36,23 +36,25 @@ const HERMES_COMMANDS = {
   review_answer: ["Answer in the chat where it was asked, with Hermes's own commands:", "/approve", "/approve session", "/approve always", "/deny"],
 };
 
-/** Example pending items (PREVIEW_PENDING=0 hides them): the newest review scan as an open prompt, and one hold. */
-function pending(scans: Array<Record<string, any>>): unknown {
-  if (process.env.PREVIEW_PENDING === "0") return { reviews: [], holds: [], holds_readable: true, review_window_s: 300 };
-  const review = scans.find((s) => s.bucket === "review" || s.open_review);
-  const soon = new Date(Date.now() + 20 * 3600_000).toISOString();
+/** Example pending items (PREVIEW_PENDING=0 leaves them out): a recent open prompt and one held call, with scans. */
+async function pending(): Promise<unknown> {
+  const empty = { reviews: [], holds: [], holds_readable: true, review_window_s: 300 };
+  if (process.env.PREVIEW_PENDING === "0") return empty;
+  const recent = await queryScans(LOG, { ...queryOf(new URLSearchParams()), limit: 50 });
+  const review = recent.scans.find((s: Record<string, any>) => s.bucket === "review");
+  const held = recent.scans.find((s: Record<string, any>) => s.bucket === "observed") ?? null;
   return {
-    reviews: review ? [review.id] : [],
+    reviews: review ? [{ ...review, review: "no answer", ts: new Date(Date.now() - 60_000).toISOString() }] : [],
     holds: [
       {
         id: "h-3fa2c1",
-        // Points at a scan in the list so the example shows its breakdown.
-        request_id: scans.find((s) => s.bucket === "observed")?.id ?? "d6d6d6d6-0000-4000-8000-000000000006",
+        request_id: held?.id ?? null,
         tool: "message",
         where: 'cron job "daily-brief" (job 7f3a)',
         held_at: new Date(Date.now() - 4 * 3600_000).toISOString(),
-        expires_at: soon,
+        expires_at: new Date(Date.now() + 20 * 3600_000).toISOString(),
         grant: "destination channel:1234567890",
+        scan: held,
       },
     ],
     holds_readable: true,
@@ -60,14 +62,14 @@ function pending(scans: Array<Record<string, any>>): unknown {
   };
 }
 
-function model(limit: number, hermes: boolean): unknown {
-  const scans = scansModel(LOG, true, limit);
-  // The example open review needs a recent time to show a sensible countdown.
-  const first = scans.scans.find((s: Record<string, any>) => s.bucket === "review");
-  if (first && process.env.PREVIEW_PENDING !== "0") first.ts = new Date(Date.now() - 60_000).toISOString();
+async function model(params: URLSearchParams, hermes: boolean): Promise<unknown> {
+  const q = queryOf(params);
   return {
-    ...scans,
-    pending: pending(scans.scans),
+    version: 1,
+    log: "on",
+    limit: q.limit,
+    ...(await queryScans(LOG, q)),
+    pending: await pending(),
     commands: hermes ? HERMES_COMMANDS : COMMANDS,
     host: "preview",
     lines: { review_at: 45, block_at: 80 },
@@ -79,7 +81,7 @@ function model(limit: number, hermes: boolean): unknown {
   };
 }
 
-createServer((req, res) => {
+createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://preview.invalid");
   if (url.pathname !== "/" && url.pathname !== "/hermes") {
     res.statusCode = 404;
@@ -87,7 +89,7 @@ createServer((req, res) => {
     return;
   }
   try {
-    let html = renderPage(model(limitOf(url.searchParams.get("n")), url.pathname === "/hermes"), "preview", readFileSync(here("./dashboardView.js"), "utf8"));
+    let html = renderPage(await model(url.searchParams, url.pathname === "/hermes"), "preview", readFileSync(here("./dashboardView.js"), "utf8"));
     if (url.pathname === "/hermes") {
       html = html
         .replace("</head>", `${HERMES_TEAL}</head>`)

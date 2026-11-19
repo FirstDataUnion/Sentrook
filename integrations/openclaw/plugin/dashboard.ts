@@ -14,6 +14,7 @@
 
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { type FileHandle, open } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -128,9 +129,13 @@ export function scanModel(scan: Rec, resolution: Rec | null): Rec {
 /** The scans part of the model; both plugins build the same JSON for the same log. */
 export function scansModel(file: string, enabled: boolean, limit: number): Rec {
   const scans = enabled ? recentScans(file, limit).map(([s, res]) => scanModel(s, res)) : [];
+  return { version: MODEL_VERSION, log: enabled ? "on" : "off", limit, scans, totals: totalsOf(scans) };
+}
+
+function totalsOf(scans: Rec[]): Record<string, number> {
   const totals: Record<string, number> = { blocked: 0, review: 0, observed: 0, allowed: 0, scan_error: 0 };
   for (const s of scans) totals[s.bucket] = (totals[s.bucket] ?? 0) + 1;
-  return { version: MODEL_VERSION, log: enabled ? "on" : "off", limit, scans, totals };
+  return totals;
 }
 
 /** `?n=` from the page's limit links: the history default when absent or malformed, at most the history max. */
@@ -139,19 +144,228 @@ export function limitOf(raw: string | null): number {
   return Math.min(Number(raw), HISTORY_MAX);
 }
 
+// --- Searching the log.
+//
+// The traffic log is a plain JSON-lines file, newest last, rotated once to `<path>.1`, so there is no index. A
+// query reads it backwards from the end, as history does, and keeps the cost down three ways:
+// - every line starts `{"ts": "...", "kind": "...", "request_id": "..."`, so a scan outside the time window, or
+//   one before the paging cursor, is skipped on its first bytes without parsing the line (scan lines carry the
+//   whole PlanIR and are the large ones);
+// - reading stops at the window's start, at a full page, or after QUERY_BUDGET_BYTES;
+// - a page is at most HISTORY_MAX scans, and "older" continues from the last scan shown (a request-id cursor).
+// Resolution lines are small and always read, so a scan on any page is joined to its answer.
+
+export const QUERY_BUDGET_BYTES = 64 * 1024 * 1024;
+const MB = 1024 * 1024;
+
+/** Enough to read the whole log (the file and its one rotation) at the configured size, within 16 to 256 MB. */
+export function budgetFor(maxBytes: number): number {
+  return Math.min(Math.max(2 * maxBytes + MB, 16 * MB), 256 * MB);
+}
+const CHUNK = 64 * 1024;
+const OUTCOMES = ["blocked", "review", "observed", "allowed", "scan_error"];
+const CURSOR = /^[0-9a-fA-F-]{4,40}$/;
+const HEAD = /^\{"ts": ?"([^"]{10,40})", ?"kind": ?"([a-z_]{1,20})"(?:, ?"request_id": ?"([^"]{1,64})")?/;
+
+export interface Query {
+  limit: number;
+  /** Older than this scan: the request id of the last scan on the page before. */
+  before: string | null;
+  /** Time window, epoch ms, inclusive. */
+  from: number | null;
+  to: number | null;
+  /** Tool name contains this, ignoring case. */
+  tool: string | null;
+  outcome: string | null;
+  minRisk: number | null;
+  session: string | null;
+}
+
+/** Reads the page's query string; anything malformed is left out rather than refused. */
+export function queryOf(params: URLSearchParams): Query {
+  const time = (k: string) => {
+    const v = params.get(k);
+    // With an explicit zone only, so both plugins read it the same (the page sends UTC).
+    const at = v && v.length <= 40 && /(Z|[+-]\d\d:\d\d)$/.test(v) ? Date.parse(v) : Number.NaN;
+    return Number.isFinite(at) ? at : null;
+  };
+  const textParam = (k: string, max: number) => {
+    const v = (params.get(k) ?? "").trim();
+    return v && v.length <= max ? v : null;
+  };
+  const before = params.get("before");
+  const outcome = params.get("outcome");
+  const risk = params.get("risk");
+  return {
+    limit: limitOf(params.get("n")),
+    before: before && CURSOR.test(before) ? before.toLowerCase() : null,
+    from: time("from"),
+    to: time("to"),
+    tool: textParam("tool", 80),
+    outcome: outcome && OUTCOMES.includes(outcome) ? outcome : null,
+    minRisk: risk && /^[0-9]{1,3}$/.test(risk) && Number(risk) <= 100 ? Number(risk) : null,
+    session: textParam("session", 80),
+  };
+}
+
+/** The query as the page shows it back (times as ISO strings). */
+function queryEcho(q: Query): Rec {
+  const iso = (v: number | null) => (v === null ? null : new Date(v).toISOString());
+  return { limit: q.limit, before: q.before, from: iso(q.from), to: iso(q.to), tool: q.tool, outcome: q.outcome, min_risk: q.minRisk, session: q.session };
+}
+
+/** Lines of `file` then `<file>.1`, newest first, with the bytes read so far; stops when the budget is spent. */
+async function* linesBackward(file: string, budget: { left: number; read: number }): AsyncGenerator<string> {
+  for (const f of [file, `${file}.1`]) {
+    let fh: FileHandle;
+    try {
+      fh = await open(f, "r");
+    } catch {
+      continue;
+    }
+    try {
+      let pos = (await fh.stat()).size;
+      let head = Buffer.alloc(0);
+      while (pos > 0 && budget.left > 0) {
+        const step = Math.min(CHUNK, pos, budget.left);
+        pos -= step;
+        budget.left -= step;
+        budget.read += step;
+        const chunk = Buffer.alloc(step);
+        await fh.read(chunk, 0, step, pos);
+        const buf = Buffer.concat([chunk, head]);
+        const parts: string[] = [];
+        let end = buf.length;
+        for (let i = buf.length - 1; i >= 0; i--) {
+          if (buf[i] === 0x0a) {
+            parts.push(buf.subarray(i + 1, end).toString("utf8"));
+            end = i;
+          }
+        }
+        head = buf.subarray(0, end);
+        yield* parts;
+      }
+      if (pos === 0 && head.length) yield head.toString("utf8");
+      if (budget.left <= 0) return;
+    } finally {
+      await fh.close();
+    }
+  }
+}
+
+interface Head {
+  at: number;
+  kind: string;
+  rid: string | null;
+}
+
+/** The time, kind and request id from a line's first bytes; null when the line does not start as the plugins write. */
+function headOf(line: string): Head | null {
+  const m = HEAD.exec(line.slice(0, 200));
+  if (!m) return null;
+  const at = Date.parse(m[1]!);
+  return Number.isFinite(at) ? { at, kind: m[2]!, rid: m[3] ?? null } : null;
+}
+
+function parse(line: string): Rec | null {
+  try {
+    const v = JSON.parse(line);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function matches(s: Rec, q: Query): boolean {
+  if (q.tool !== null && !(s.tool ?? "").toLowerCase().includes(q.tool.toLowerCase())) return false;
+  if (q.outcome !== null && s.bucket !== q.outcome) return false;
+  if (q.minRisk !== null && !(typeof s.risk === "number" && s.risk >= q.minRisk)) return false;
+  if (q.session !== null && s.session !== q.session) return false;
+  return true;
+}
+
+/**
+ * One page of scans matching `q`, newest first. `more`: the page filled up, so older matches may follow from
+ * `next` (the last scan's id). `budget_hit`: the read stopped at the budget before the log or window ran out.
+ * `cursor_lost`: the `before` scan was not found (rotated away), so nothing older could be listed.
+ */
+export async function queryScans(file: string, q: Query, budgetBytes = QUERY_BUDGET_BYTES): Promise<Rec> {
+  const budget = { left: budgetBytes, read: 0 };
+  const resolutions = new Map<string, Rec>();
+  const seen = new Set<string>();
+  const scans: Rec[] = [];
+  let passed = q.before === null;
+  let stopped = false;
+  let exhausted = true;
+  for await (const line of linesBackward(file, budget)) {
+    if (!line.trim()) continue;
+    let head = headOf(line);
+    let rec: Rec | null = null;
+    if (head === null) {
+      rec = parse(line);
+      const at = typeof rec?.ts === "string" ? Date.parse(rec.ts) : Number.NaN;
+      if (!rec || !Number.isFinite(at)) continue;
+      head = { at, kind: String(rec.kind), rid: typeof rec.request_id === "string" ? rec.request_id : null };
+    }
+    if (head.kind === "resolution") {
+      rec ??= parse(line);
+      const rid = rec?.request_id;
+      if (typeof rid === "string" && !resolutions.has(rid)) resolutions.set(rid, rec!);
+      continue;
+    }
+    if (head.kind !== "scan" || head.rid === null) continue;
+    if (!passed) {
+      if (head.rid.toLowerCase() === q.before) passed = true;
+      continue;
+    }
+    if (q.to !== null && head.at > q.to) continue;
+    if (q.from !== null && head.at < q.from) {
+      exhausted = false;
+      stopped = true;
+      break;
+    }
+    if (seen.has(head.rid)) continue;
+    // A tool name the line does not contain cannot match: skip it unparsed.
+    if (q.tool !== null && !line.toLowerCase().includes(q.tool.toLowerCase())) continue;
+    rec ??= parse(line);
+    if (!rec || rec.request_id !== head.rid) continue;
+    seen.add(head.rid);
+    const model = scanModel(rec, resolutions.get(head.rid) ?? null);
+    if (!matches(model, q)) continue;
+    scans.push(model);
+    if (scans.length >= q.limit) {
+      exhausted = false;
+      stopped = true;
+      break;
+    }
+  }
+  const budgetHit = !stopped && budget.left <= 0;
+  if (budgetHit) exhausted = false;
+  const full = scans.length >= q.limit;
+  return {
+    scans,
+    totals: totalsOf(scans),
+    query: queryEcho(q),
+    page: {
+      more: full,
+      next: full ? scans.at(-1)!.id : null,
+      read_bytes: budget.read,
+      budget_hit: budgetHit,
+      cursor_lost: !passed,
+      reached_start: exhausted && passed,
+    },
+  };
+}
+
 const CMD: grants.Cmd = (sub) => `/sentrook-${sub}`;
 
 /**
- * What waits for the owner: approval prompts still inside their answer window (`windowMs`, the host's approval
- * timeout), and held calls (unattended reviews) not yet approved or expired, newest first.
+ * What waits for the owner, read on its own so it does not depend on the page's search: approval prompts still
+ * inside their answer window (`windowMs`, the host's approval timeout), and held calls (unattended reviews) not
+ * yet approved or expired, newest first, each with its scan when that is still in the log. Reading stops at the
+ * oldest of these.
  */
-export function pendingOf(model: Rec, stateDir: string, now: Date, windowMs: number): Rec {
-  const reviews = (model.scans as Rec[])
-    .filter((s) => {
-      const at = s.open_review && typeof s.ts === "string" ? Date.parse(s.ts) : Number.NaN;
-      return Number.isFinite(at) && at <= now.getTime() && now.getTime() - at < windowMs;
-    })
-    .map((s) => s.id);
+export async function pendingOf(file: string, enabled: boolean, stateDir: string, now: Date, windowMs: number, budgetBytes = QUERY_BUDGET_BYTES): Promise<Rec> {
   let holds: Rec[] = [];
   let holdsReadable = true;
   try {
@@ -170,17 +384,53 @@ export function pendingOf(model: Rec, stateDir: string, now: Date, windowMs: num
           held_at: typeof h.held_at === "string" ? h.held_at : null,
           expires_at: typeof h.expires_at === "string" ? h.expires_at : null,
           grant: grant ? grants.describeGrant(grant) : null,
+          scan: null as Rec | null,
         };
       })
       .reverse();
   } catch {
     holdsReadable = false;
   }
+  const reviews: Rec[] = [];
+  const windowStart = now.getTime() - windowMs;
+  let start = windowStart;
+  const wanted = new Map<string, Rec>();
+  for (const h of holds) {
+    if (h.request_id) wanted.set(h.request_id, h);
+    const at = h.held_at ? Date.parse(h.held_at) : Number.NaN;
+    // A hold is made right after its scan; a minute's margin covers the scan's own time.
+    if (Number.isFinite(at)) start = Math.min(start, at - 60_000);
+  }
+  if (enabled) {
+    const budget = { left: budgetBytes, read: 0 };
+    const resolutions = new Map<string, Rec>();
+    for await (const line of linesBackward(file, budget)) {
+      const head = headOf(line);
+      if (head === null) continue;
+      if (head.at < start) break;
+      if (head.kind === "resolution") {
+        const rec = parse(line);
+        if (rec && typeof rec.request_id === "string" && !resolutions.has(rec.request_id)) resolutions.set(rec.request_id, rec);
+        continue;
+      }
+      if (head.kind !== "scan" || head.rid === null) continue;
+      const hold = wanted.get(head.rid);
+      const recent = head.at >= windowStart && head.at <= now.getTime();
+      if (!hold && !recent) continue;
+      const rec = parse(line);
+      if (!rec || rec.request_id !== head.rid) continue;
+      const model = scanModel(rec, resolutions.get(head.rid) ?? null);
+      if (hold && hold.scan === null) hold.scan = model;
+      if (recent && model.open_review && !reviews.some((r) => r.id === model.id)) reviews.push(model);
+    }
+  }
   return { reviews, holds, holds_readable: holdsReadable, review_window_s: Math.round(windowMs / 1000) };
 }
 
-export function buildModel(cfg: PluginConfig, limit: number, now: Date = new Date()): Rec {
-  const model = scansModel(cfg.trafficLog.path, cfg.trafficLog.enabled, limit);
+export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Date()): Promise<Rec> {
+  const enabled = cfg.trafficLog.enabled;
+  const budget = budgetFor(cfg.trafficLog.maxBytes);
+  const page = enabled ? await queryScans(cfg.trafficLog.path, q, budget) : { scans: [], totals: totalsOf([]), query: queryEcho(q), page: { more: false, next: null, read_bytes: 0, budget_hit: false, cursor_lost: false, reached_start: true } };
   let grantsText: string;
   let snoozeText: string;
   try {
@@ -194,12 +444,15 @@ export function buildModel(cfg: PluginConfig, limit: number, now: Date = new Dat
     snoozeText = "Snooze state could not be read.";
   }
   return {
-    ...model,
+    version: MODEL_VERSION,
+    log: enabled ? "on" : "off",
+    limit: q.limit,
+    ...page,
     host: "openclaw",
     lines: { review_at: cfg.reviewAt, block_at: cfg.blockAt },
     mode: cfg.mode,
     state: { grants: grantsText, snooze: snoozeText },
-    pending: pendingOf(model, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs),
+    pending: await pendingOf(cfg.trafficLog.path, enabled, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs, budget),
     commands: COMMANDS,
   };
 }
@@ -282,7 +535,7 @@ function send(res: Res, status: number, type: string, body: string, head: boolea
  * The route handler: GET or HEAD of `/sentrook` (or `/sentrook/`) draws the page; nothing else is served. A path
  * that only shares the prefix (`/sentrook-x`) is not ours and is left to the Gateway (false).
  */
-export function handleRequest(req: Req, res: Res, loadConfig: () => PluginConfig, now: () => Date = () => new Date()): boolean {
+export async function handleRequest(req: Req, res: Res, loadConfig: () => PluginConfig, now: () => Date = () => new Date()): Promise<boolean> {
   const pathname = new URL(req.url ?? ROUTE, "http://gateway.invalid").pathname;
   if (pathname !== ROUTE && !pathname.startsWith(`${ROUTE}/`)) return false;
   const method = (req.method ?? "GET").toUpperCase();
@@ -296,7 +549,7 @@ export function handleRequest(req: Req, res: Res, loadConfig: () => PluginConfig
   }
   let model: unknown;
   try {
-    model = buildModel(loadConfig(), limitOf(url.searchParams.get("n")), now());
+    model = await buildModel(loadConfig(), queryOf(url.searchParams), now());
   } catch {
     return send(res, 500, "text/plain; charset=utf-8", "The Sentrook dashboard could not read its state.", head);
   }

@@ -69,7 +69,7 @@ def test_limit_of(raw, n):
 def test_build_model_adds_lines_mode_and_state(tmp_path):
     cfg = resolve_config({"state_dir": str(tmp_path)}, {})
     shutil.copy(DASH / "traffic.jsonl", tmp_path / "traffic.jsonl")
-    m = dashboard.build_model(cfg, 10)
+    m = dashboard.build_model(cfg, dashboard.query_of({"n": "10"}))
     assert m["lines"] == {"review_at": 45, "block_at": 80}
     assert m["mode"] == "enforce"
     assert isinstance(m["state"]["grants"], str)
@@ -82,20 +82,51 @@ def test_build_model_adds_lines_mode_and_state(tmp_path):
 
 def test_pending_matches_the_shared_fixture(tmp_path):
     shutil.copy(DASH / "holds.json", tmp_path / "holds.json")
-    model = dashboard.scans_model(FIXTURES / "traffic.jsonl", True, 50)
+    log = FIXTURES / "traffic.jsonl"
     now = datetime(2026, 10, 29, 9, 47, tzinfo=UTC)
-    got = dashboard.pending_of(model, tmp_path, now, 300)
+    got = dashboard.pending_of(log, True, tmp_path, now, 300)
     assert got == json.loads((DASH / "pending.json").read_text())
     assert RAW not in json.dumps(got)
     later = datetime(2026, 10, 29, 9, 51, tzinfo=UTC)
-    assert dashboard.pending_of(model, tmp_path, later, 300)["reviews"] == []
+    assert dashboard.pending_of(log, True, tmp_path, later, 300)["reviews"] == []
+    off = dashboard.pending_of(log, False, tmp_path, now, 300)
+    assert off["reviews"] == []
+    assert all(h["scan"] is None for h in off["holds"])
 
 
 def test_pending_with_an_unreadable_holds_file(tmp_path):
     (tmp_path / "holds.json").write_text("not json")
-    got = dashboard.pending_of({"scans": []}, tmp_path, datetime.now(UTC), 300)
+    got = dashboard.pending_of(DASH / "traffic.jsonl", True, tmp_path, datetime.now(UTC), 300)
     assert got["holds"] == []
     assert got["holds_readable"] is False
+
+
+def test_query_cases_match_the_shared_fixture():
+    logs = {
+        "dashboard": DASH / "traffic.jsonl",
+        "history": FIXTURES / "traffic.jsonl",
+        "edge": FIXTURES / "edge" / "traffic.jsonl",
+    }
+    for case in json.loads((DASH / "query-cases.json").read_text()):
+        r = dashboard.query_scans(logs[case["log"]], dashboard.query_of(case["params"]))
+        got = {"ids": [s["id"] for s in r["scans"]], "page": r["page"], "query": r["query"]}
+        want = {"ids": case["ids"], "page": case["page"], "query": case["query"]}
+        assert got == want, case["name"]
+
+
+def test_query_stops_at_the_budget_and_says_so():
+    q = dashboard.query_of({"tool": "nothing-matches"})
+    r = dashboard.query_scans(DASH / "traffic.jsonl", q, 1024)
+    assert r["page"]["budget_hit"] is True
+    assert r["page"]["read_bytes"] == 1024
+    assert r["scans"] == []
+
+
+def test_budget_covers_the_whole_log_within_bounds():
+    mb = 1024 * 1024
+    assert dashboard.budget_for(50 * mb) == 101 * mb
+    assert dashboard.budget_for(1 * mb) == 16 * mb
+    assert dashboard.budget_for(1024 * mb) == 256 * mb
 
 
 def test_view_is_the_openclaw_view_byte_for_byte():
@@ -138,6 +169,7 @@ def api(monkeypatch, tmp_path):
     """plugin_api.py with stand-ins for FastAPI and Hermes's config and profile home."""
     fastapi = types.ModuleType("fastapi")
     fastapi.APIRouter = _Router
+    fastapi.Request = object
     monkeypatch.setitem(sys.modules, "fastapi", fastapi)
     settings = {}
     approvals = {}
@@ -178,18 +210,19 @@ def _home_with_log(root: Path) -> Path:
 
 def test_api_serves_the_model_from_the_profile_home(api, tmp_path):
     api.home["path"] = _home_with_log(tmp_path / "default")
-    m = asyncio.run(api.router.routes["/model"]("25"))
+    request = types.SimpleNamespace(query_params={"n": "25", "tool": "web"})
+    m = asyncio.run(api.router.routes["/model"](request))
     assert m["host"] == "hermes"
     assert m["limit"] == 25
-    assert len(m["scans"]) == 6
+    assert [s["tool"] for s in m["scans"]] == ["web_fetch", "web_fetch"]
     assert RAW not in json.dumps(m)
 
 
 def test_api_resolves_the_profile_per_request(api, tmp_path):
     api.home["path"] = _home_with_log(tmp_path / "work")
-    assert len(api.build(None)["scans"]) == 6
+    assert len(api.build({})["scans"]) == 6
     api.home["path"] = tmp_path / "empty"
-    assert api.build(None)["scans"] == []
+    assert api.build({})["scans"] == []
 
 
 def test_api_reads_the_plugin_settings(api, tmp_path):
@@ -199,16 +232,16 @@ def test_api_reads_the_plugin_settings(api, tmp_path):
     shutil.copy(DASH / "traffic.jsonl", elsewhere)
     api.settings["traffic_log"] = {"path": str(elsewhere)}
     api.settings["review_at"] = 30
-    m = api.build("5")
+    m = api.build({"n": "5"})
     assert len(m["scans"]) == 5
     assert m["lines"]["review_at"] == 30
     api.settings["traffic_log"] = {"enabled": False}
-    assert api.build(None)["log"] == "off"
+    assert api.build({})["log"] == "off"
 
 
 def test_api_does_not_load_the_agent_side_plugin(api, tmp_path):
     api.home["path"] = _home_with_log(tmp_path / "default")
-    api.build(None)
+    api.build({})
     # The plugin's __init__.py hooks into the agent; the dashboard process must not run it.
     pkg = sys.modules["_sentrook_dashboard_plugin"]
     assert not hasattr(pkg, "register")
@@ -216,8 +249,8 @@ def test_api_does_not_load_the_agent_side_plugin(api, tmp_path):
 
 def test_api_takes_the_answer_window_from_hermes_approvals_timeout(api, tmp_path):
     api.home["path"] = _home_with_log(tmp_path / "default")
-    assert api.build(None)["pending"]["review_window_s"] == 300
+    assert api.build({})["pending"]["review_window_s"] == 300
     api.approvals["timeout"] = 120
-    assert api.build(None)["pending"]["review_window_s"] == 120
+    assert api.build({})["pending"]["review_window_s"] == 120
     api.approvals["timeout"] = "soon"
-    assert api.build(None)["pending"]["review_window_s"] == 300
+    assert api.build({})["pending"]["review_window_s"] == 300

@@ -7,7 +7,23 @@ import { Script } from "node:vm";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { resolveConfig } from "./config.ts";
-import { buildModel, COMMANDS, handleRequest, limitOf, pendingOf, renderPage, ROUTE, scanModel, scansModel, scriptJson, TAB, viewScript } from "./dashboard.ts";
+import {
+  budgetFor,
+  buildModel,
+  COMMANDS,
+  handleRequest,
+  limitOf,
+  pendingOf,
+  queryOf,
+  queryScans,
+  renderPage,
+  ROUTE,
+  scanModel,
+  scansModel,
+  scriptJson,
+  TAB,
+  viewScript,
+} from "./dashboard.ts";
 import plugin from "./index.ts";
 
 /** Shared with the Hermes plugin's tests: both plugins build the same model for the same log. */
@@ -41,9 +57,9 @@ afterEach(() => {
 const cfg = () => resolveConfig({}, process.env);
 
 type Captured = { status: number; headers: Record<string, string>; body: string | undefined };
-function call(method: string, url: string, load = cfg): Captured {
+async function call(method: string, url: string, load = cfg): Promise<Captured> {
   const out: Captured = { status: 0, headers: {}, body: undefined };
-  handleRequest(
+  await handleRequest(
     { method, url },
     {
       set statusCode(v: number) {
@@ -135,30 +151,57 @@ test("the page limit: default 10, at most 50", () => {
   assert.equal(limitOf("999"), 50);
 });
 
-test("pending: open prompts inside the answer window and live holds, matching the shared fixture", () => {
+test("pending: open prompts inside the answer window and live holds with their scans, matching the shared fixture", async () => {
   const holdsDir = mkdtempSync(path.join(tmpdir(), "sentrook-holds-"));
   copyFileSync(path.join(DASH, "holds.json"), path.join(holdsDir, "holds.json"));
-  const model = scansModel(path.join(FIXTURES, "traffic.jsonl"), true, 50);
-  const now = new Date("2026-10-29T09:47:00Z");
-  const got = pendingOf(model, holdsDir, now, 300_000);
+  const log = path.join(FIXTURES, "traffic.jsonl");
+  const got = await pendingOf(log, true, holdsDir, new Date("2026-10-29T09:47:00Z"), 300_000);
   assert.deepStrictEqual(got, JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8")));
-  assert.ok(!JSON.stringify(got).includes(RAW), "a hold's notice is never shown");
+  assert.ok(!JSON.stringify(got).includes(RAW), "a hold's notice and the scans' raw content are never shown");
   // Past the answer window the prompt has timed out: no longer pending.
-  assert.deepStrictEqual(pendingOf(model, holdsDir, new Date("2026-10-29T09:51:00Z"), 300_000).reviews, []);
-  // A prompt that was answered is never pending.
-  assert.ok(model.scans.filter((s: any) => s.review !== "no answer").every((s: any) => !s.open_review));
+  assert.deepStrictEqual((await pendingOf(log, true, holdsDir, new Date("2026-10-29T09:51:00Z"), 300_000)).reviews, []);
+  // With the log off, holds still show, without scans.
+  const off = await pendingOf(log, false, holdsDir, new Date("2026-10-29T09:47:00Z"), 300_000);
+  assert.deepStrictEqual(off.reviews, []);
+  assert.ok(off.holds.every((h: any) => h.scan === null));
 });
 
-test("pending: an unreadable holds file says so and shows none", () => {
+test("pending: an unreadable holds file says so and shows none", async () => {
   const holdsDir = mkdtempSync(path.join(tmpdir(), "sentrook-holds-"));
   writeFileSync(path.join(holdsDir, "holds.json"), "not json");
-  const got = pendingOf({ scans: [] }, holdsDir, new Date(), 300_000);
+  const got = await pendingOf(logFile, true, holdsDir, new Date(), 300_000);
   assert.deepStrictEqual(got.holds, []);
   assert.equal(got.holds_readable, false);
 });
 
-test("buildModel adds the review and block lines, mode, grants and snooze text", () => {
-  const m = buildModel(cfg(), 10);
+test("query: every shared case gives the same page as the Hermes plugin", async () => {
+  const logs: Record<string, string> = {
+    dashboard: logFile,
+    history: path.join(FIXTURES, "traffic.jsonl"),
+    edge: path.join(FIXTURES, "edge", "traffic.jsonl"),
+  };
+  for (const c of JSON.parse(readFileSync(path.join(DASH, "query-cases.json"), "utf8"))) {
+    const r = await queryScans(logs[c.log]!, queryOf(new URLSearchParams(c.params)));
+    assert.deepStrictEqual({ ids: r.scans.map((s: any) => s.id), page: r.page, query: r.query }, { ids: c.ids, page: c.page, query: c.query }, c.name);
+  }
+});
+
+test("query: the read stops at the budget and says so", async () => {
+  const r = await queryScans(logFile, queryOf(new URLSearchParams("tool=nothing-matches")), 1024);
+  assert.equal(r.page.budget_hit, true);
+  assert.equal(r.page.read_bytes, 1024);
+  assert.deepStrictEqual(r.scans, []);
+});
+
+test("query: the read budget covers the whole log at its configured size, within 16 to 256 MB", () => {
+  const MB = 1024 * 1024;
+  assert.equal(budgetFor(50 * MB), 101 * MB);
+  assert.equal(budgetFor(1 * MB), 16 * MB);
+  assert.equal(budgetFor(1024 * MB), 256 * MB);
+});
+
+test("buildModel adds the review and block lines, mode, grants and snooze text", async () => {
+  const m = await buildModel(cfg(), queryOf(new URLSearchParams("n=10")));
   assert.deepStrictEqual(m.lines, { review_at: 45, block_at: 80 });
   assert.equal(m.mode, "enforce");
   assert.equal(typeof m.state.grants, "string");
@@ -166,10 +209,13 @@ test("buildModel adds the review and block lines, mode, grants and snooze text",
   assert.deepStrictEqual(m.commands, COMMANDS);
   assert.equal(m.commands.prefix, "/sentrook-");
   assert.equal(m.pending.review_window_s, 300);
+  assert.equal(m.scans.length, 6);
+  assert.equal(m.page.reached_start, true);
+  assert.equal(m.query.limit, 10);
 });
 
-test("GET draws the page with the model embedded, a nonce CSP and no raw markup from the log", () => {
-  const res = call("GET", `${ROUTE}?n=25`);
+test("GET draws the page with the model embedded, a nonce CSP and no raw markup from the log", async () => {
+  const res = await call("GET", `${ROUTE}?n=25`);
   assert.equal(res.status, 200);
   assert.match(res.headers["content-type"]!, /^text\/html/);
   assert.equal(res.headers["cache-control"], "no-store");
@@ -182,27 +228,29 @@ test("GET draws the page with the model embedded, a nonce CSP and no raw markup 
   assert.ok(!res.body!.includes("<script>alert(1)"));
   const model = embeddedModel(res.body!);
   assert.equal(model.limit, 25);
+  assert.equal((await call("GET", `${ROUTE}?tool=web&outcome=review`)).body!.includes('"ids"'), false);
+  assert.deepStrictEqual(embeddedModel((await call("GET", `${ROUTE}?tool=web&outcome=review`)).body!).scans.map((s: any) => s.tool), ["web_fetch"]);
   assert.equal(model.scans[0].entities[0].display, "<script>alert(1)</script>evil.example");
-  assert.equal(call("GET", `${ROUTE}/`).status, 200);
+  assert.equal((await call("GET", `${ROUTE}/`)).status, 200);
 });
 
-test("HEAD sends the headers and no body", () => {
-  const res = call("HEAD", ROUTE);
+test("HEAD sends the headers and no body", async () => {
+  const res = await call("HEAD", ROUTE);
   assert.equal(res.status, 200);
   assert.equal(res.body, undefined);
 });
 
-test("every other method is refused: the dashboard is read-only", () => {
+test("every other method is refused: the dashboard is read-only", async () => {
   for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
-    const res = call(method, ROUTE);
+    const res = await call(method, ROUTE);
     assert.equal(res.status, 405, method);
     assert.equal(res.headers.allow, "GET, HEAD");
   }
 });
 
-test("a path that only shares the prefix is left to the Gateway", () => {
+test("a path that only shares the prefix is left to the Gateway", async () => {
   let touched = false;
-  const handled = handleRequest(
+  const handled = await handleRequest(
     { method: "GET", url: "/sentrook-other" },
     { statusCode: 0, setHeader: () => (touched = true), end: () => (touched = true) },
     cfg,
@@ -211,14 +259,14 @@ test("a path that only shares the prefix is left to the Gateway", () => {
   assert.equal(touched, false);
 });
 
-test("other paths under the route are not served", () => {
-  assert.equal(call("GET", `${ROUTE}/api/resolve`).status, 404);
+test("other paths under the route are not served", async () => {
+  assert.equal((await call("GET", `${ROUTE}/api/resolve`)).status, 404);
   // Normalised to /etc/passwd: not under the route, so not answered here.
-  assert.equal(call("GET", `${ROUTE}/../etc/passwd`).status, 0);
+  assert.equal((await call("GET", `${ROUTE}/../etc/passwd`)).status, 0);
 });
 
-test("a config that cannot be read gives a 500 without details", () => {
-  const res = call("GET", ROUTE, () => {
+test("a config that cannot be read gives a 500 without details", async () => {
+  const res = await call("GET", ROUTE, () => {
     throw new Error(`${RAW} secret`);
   });
   assert.equal(res.status, 500);
@@ -256,7 +304,7 @@ function registered(extra: Record<string, unknown>) {
   return { routes, tabs, api };
 }
 
-test("register adds the route behind gateway auth and the tab through session.controls", () => {
+test("register adds the route behind gateway auth and the tab through session.controls", async () => {
   const tabs: any[] = [];
   const flat: any[] = [];
   const { routes } = registered({
@@ -271,7 +319,7 @@ test("register adds the route behind gateway auth and the tab through session.co
   assert.deepStrictEqual(flat, []);
   // The registered handler serves this install's log.
   const out: Captured = { status: 0, headers: {}, body: undefined };
-  routes[0].handler(
+  await routes[0].handler(
     { method: "GET", url: "/sentrook" },
     { statusCode: 0, setHeader: () => {}, end: (b?: string) => (out.body = b) },
   );
@@ -327,6 +375,18 @@ class FakeNode {
   setAttribute(k: string, v: string) {
     this.attrs[k] = v;
   }
+  private typed: string | null = null;
+  /** As the DOM has it: an input's value starts from its attribute; a select's is its selected option's. */
+  get value(): string {
+    if (this.tag === "select") {
+      const opt = this.children.find((c) => c.attrs.selected !== undefined) ?? this.children[0];
+      return opt?.attrs.value ?? "";
+    }
+    return this.typed ?? this.attrs.value ?? "";
+  }
+  set value(v: string) {
+    this.typed = v;
+  }
   getAttribute(k: string) {
     return this.attrs[k] ?? null;
   }
@@ -345,6 +405,10 @@ class FakeNode {
 }
 
 function drawView(model: unknown): FakeNode {
+  return drawViewWith(model).root;
+}
+
+function drawViewWith(model: unknown): { root: FakeNode; window: any } {
   const doc: any = { documentElement: null, head: null };
   const make = (tag: string) => new FakeNode(tag, doc);
   doc.createElement = make;
@@ -361,8 +425,8 @@ function drawView(model: unknown): FakeNode {
   doc.getElementById = (id: string) =>
     id === "sentrook-root" ? root : id === "sentrook-model" ? data : doc.head.children.find((c: FakeNode) => c.id === id) ?? null;
   const window: any = { location: { search: "" } };
-  new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout: () => 0, navigator: {} });
-  return root;
+  new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout: () => 0, navigator: {}, encodeURIComponent });
+  return { root, window };
 }
 
 function viewModel(): any {
@@ -438,11 +502,9 @@ test("the timeline has one cell per scan, oldest first, and opens a scan on clic
   assert.equal(root.byClass("srk-head")[0]!.byClass("srk-chip").length, 0);
 });
 
-test("pending items sit at the top with the commands to answer them", () => {
+test("pending items sit at the top with the commands to answer them and their full breakdown", () => {
   const model: any = viewModel();
-  const review = model.scans.find((s: any) => s.bucket === "review");
   model.pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
-  model.pending.reviews = [review.id];
   model.commands = COMMANDS;
   const root = drawView(model);
   assert.equal(root.children[1]!.className, "srk-pending-section", "right under the header");
@@ -454,24 +516,69 @@ test("pending items sit at the top with the commands to answer them", () => {
   // History follows as its own section.
   assert.equal(root.children[2]!.textContent, "History6");
   assert.match(text, /\/approve <approval id> deny/);
-  assert.match(text, new RegExp(`/sentrook-why ${review.id.slice(0, 8)}`));
+  assert.match(text, /\/sentrook-why 8888a1b2/);
   assert.match(text, /\/sentrook-approve h-2c2c2c/);
   assert.match(text, /destination channel:1234567890/);
   assert.match(text, /There is no suggested grant/);
-  // The open prompt carries the same breakdown as an opened scan, without repeating its why command.
-  const panel = section;
-  const details = panel.byClass("srk-detail");
-  assert.equal(details.length, 1, "the review's scan is in the list; the holds' scans are not");
-  assert.equal(details[0]!.byClass("srk-tier").length, 3);
-  assert.equal(details[0]!.byClass("srk-meter").length, 1);
-  assert.match(panel.textContent, /Its scan is older than the scans shown here; \/sentrook-why h-2c2c2c shows it/);
-  // A hold whose scan is in the list shows its breakdown too.
-  model.pending.holds[0].request_id = model.scans[0].id;
-  assert.equal(drawView(model).byClass("srk-pending-section")[0]!.byClass("srk-detail").length, 2);
+  // The open prompt and the hold whose scan is still in the log carry the full breakdown, without repeating why.
+  const details = section.byClass("srk-detail");
+  assert.equal(details.length, 2);
+  for (const d of details) {
+    assert.equal(d.byClass("srk-tier").length, 3);
+    assert.equal(d.byClass("srk-meter").length, 1);
+    assert.equal(d.byClass("srk-cmd").length, 0);
+  }
+  assert.match(text, /Its scan is no longer in the traffic log; \/sentrook-why h-3d3d3d shows it/);
   // Nothing pending: no section, and History comes first.
   const quiet = drawView(viewModel());
   assert.equal(quiet.byClass("srk-pending-section").length, 0);
   assert.equal(quiet.children[1]!.textContent, "History6");
+});
+
+test("search: the form shows the query, the status says how far the log was read, Older pages on", () => {
+  const model: any = {
+    ...viewModel(),
+    limit: 2,
+    scans: viewModel().scans.slice(0, 2),
+    query: { limit: 2, before: null, from: "2026-11-19T09:00:00.000Z", to: null, tool: "web", outcome: "review", min_risk: 40, session: null },
+    page: { more: true, next: "d5d5d5d5-0000-4000-8000-000000000005", read_bytes: 3 * 1024 * 1024, budget_hit: false, cursor_lost: false, reached_start: false },
+  };
+  const { root, window } = drawViewWith(model);
+  // No <form>: OpenClaw's sandboxed tab frame blocks form submission.
+  assert.equal(root.all().filter((n) => n.tag === "form").length, 0);
+  const form = root.byClass("srk-search")[0]!;
+  const inputs = form.all().filter((n) => n.tag === "input");
+  assert.equal(inputs[0]!.attrs.value, "web");
+  assert.match(root.byClass("srk-status")[0]!.textContent, /Showing 2 matching scans, newest first\. Read 3\.0 MB of the log\./);
+  const older = root.byClass("srk-pager")[0]!.all().find((n) => n.tag === "button" && n.textContent === "Older →")!;
+  older.click();
+  const qs = new URLSearchParams(window.location.search.slice(1));
+  assert.equal(qs.get("before"), "d5d5d5d5-0000-4000-8000-000000000005");
+  assert.equal(qs.get("tool"), "web");
+  assert.equal(qs.get("outcome"), "review");
+  assert.equal(qs.get("risk"), "40");
+  assert.equal(qs.get("from"), "2026-11-19T09:00:00.000Z");
+  assert.equal(qs.get("n"), "2");
+  // Search navigates with the form's values and starts again from the newest.
+  model.page.more = false;
+  const fresh = drawViewWith(model);
+  fresh.root.byClass("srk-search")[0]!.all().find((n) => n.tag === "button" && n.textContent === "Search")!.click();
+  const sq = new URLSearchParams(fresh.window.location.search.slice(1));
+  assert.equal(sq.get("tool"), "web");
+  assert.equal(sq.get("before"), null);
+  // A page that continued from a cursor offers the way back to the newest.
+  model.query.before = "d5d5d5d5-0000-4000-8000-000000000005";
+  const back = drawViewWith(model).root.byClass("srk-pager")[0]!.all().find((n) => n.tag === "button" && n.textContent === "← Newest");
+  assert.ok(back);
+});
+
+test("search: the read limit, a lost cursor and an empty result each say so", () => {
+  const base: any = { ...viewModel(), query: { limit: 10, before: "abcd1234", tool: "x" } };
+  const hit = drawView({ ...base, scans: [], page: { read_bytes: 1, budget_hit: true, cursor_lost: false } });
+  assert.match(hit.byClass("srk-status")[0]!.textContent, /Stopped after the read limit/);
+  assert.match(hit.byClass("srk-empty")[0]!.textContent, /No scans match this search/);
+  const lost = drawView({ ...base, scans: [], page: { read_bytes: 1, budget_hit: false, cursor_lost: true } });
+  assert.match(lost.byClass("srk-status")[0]!.textContent, /no longer in the log/);
 });
 
 test("grants and snooze sections explain the commands, in this host's command form", () => {

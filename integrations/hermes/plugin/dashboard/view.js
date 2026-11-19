@@ -187,6 +187,15 @@
     ".srk-cmd code{display:block;font-size:12px;padding:5px 8px;border-radius:6px;background:var(--srk-soft);overflow-x:auto;white-space:pre}",
     ".srk-cmd-note{grid-column:1/-1;color:var(--srk-muted);font-size:12px}",
     ".srk-note{color:var(--srk-muted);font-size:12px;margin-top:20px}",
+    // Search.
+    ".srk-search{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;border:1px solid var(--srk-border);border-radius:var(--srk-radius);background:var(--srk-card);padding:10px 12px;margin:0 0 10px}",
+    ".srk-field{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--srk-muted)}",
+    ".srk-field input,.srk-field select{font:inherit;font-size:13px;color:inherit;background:var(--srk-soft);border:1px solid var(--srk-border);border-radius:6px;padding:4px 8px;min-width:0}",
+    ".srk-field input[type=number]{width:80px}.srk-field input[type=text]{width:160px}",
+    ".srk-btn-primary{border-color:var(--srk-accent);color:var(--srk-accent);font-weight:600}",
+    ".srk-status{color:var(--srk-muted);font-size:12px;margin:0 0 8px}.srk-status b{color:inherit}",
+    ".srk-warn{color:var(--srk-mid)}",
+    ".srk-pager{display:flex;gap:8px;justify-content:center;margin:12px 0}",
     ".srk-empty{color:var(--srk-muted);padding:24px;text-align:center;border:1px dashed var(--srk-border);border-radius:var(--srk-radius)}",
     "@media (max-width:560px){.srk-caret{display:none}.srk-row{gap:10px}.srk-action{font-size:11px;padding:2px 8px;max-width:40%;white-space:normal;text-align:center}}",
   ].join("\n");
@@ -596,13 +605,10 @@
   function pendingPanel(model, open) {
     var p = model.pending || {};
     var cmd = cmdOf(model);
-    var byId = {};
-    model.scans.forEach(function (s) {
-      byId[s.id] = s;
+    // Pending items carry their own scans: they are read apart from the page's search.
+    var reviews = (p.reviews || []).filter(function (s) {
+      return s && typeof s === "object";
     });
-    var reviews = (p.reviews || []).map(function (id) {
-      return byId[id];
-    }).filter(Boolean);
     var holds = p.holds || [];
     if (!reviews.length && !holds.length) return null;
     var answer = (model.commands && model.commands.review_answer) || [];
@@ -631,9 +637,9 @@
           command(cmd("why") + " " + h.id, "The held call's scan and what approving would set."),
         ]),
         el("div", { class: "srk-help", text: "To refuse it, do nothing: the hold expires and the call never runs." }),
-        h.request_id && byId[h.request_id]
-          ? el("div", { class: "srk-pending-detail" }, [detail(byId[h.request_id], model, open, { noCommands: true })])
-          : el("div", { class: "srk-help", text: "Its scan is older than the scans shown here; " + cmd("why") + " " + h.id + " shows it." }),
+        h.scan
+          ? el("div", { class: "srk-pending-detail" }, [detail(h.scan, model, open, { noCommands: true })])
+          : el("div", { class: "srk-help", text: "Its scan is no longer in the traffic log; " + cmd("why") + " " + h.id + " shows it." }),
       ]));
     });
     if (p.holds_readable === false) items.push(el("div", { class: "srk-help", text: "The holds file could not be read, so held calls may be missing here." }));
@@ -692,6 +698,173 @@
     ]);
   }
 
+  var WINDOWS = [
+    ["", "Any time"],
+    ["1h", "Last hour", 3600e3],
+    ["24h", "Last 24 hours", 86400e3],
+    ["7d", "Last 7 days", 7 * 86400e3],
+    ["custom", "Between…"],
+  ];
+
+  /** `2026-11-19T09:00` in this browser's time zone, for a datetime-local input. */
+  function localInput(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var pad = function (n) {
+      return (n < 10 ? "0" : "") + n;
+    };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  function fromLocalInput(v) {
+    if (!v) return null;
+    var d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  function mb(bytes) {
+    return bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + " KB" : (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  /** The search box. `go(params)` loads a new page: params are the server's query keys. */
+  function searchForm(model, go) {
+    var q = model.query || {};
+    var field = function (label, hint, input) {
+      return el("label", { class: "srk-field", title: hint }, [label, input]);
+    };
+    var tool = el("input", { type: "text", value: q.tool || "", placeholder: "e.g. terminal", maxlength: "80" });
+    var outcome = el("select", null, [["", "Any"]].concat(Object.keys(BUCKETS).map(function (k) {
+      return [k, BUCKETS[k][0]];
+    })).map(function (o) {
+      var opt = el("option", { value: o[0], text: o[1] });
+      if ((q.outcome || "") === o[0]) opt.setAttribute("selected", "");
+      return opt;
+    }));
+    var custom = q.from || q.to;
+    var when = el("select", null, WINDOWS.map(function (w) {
+      var opt = el("option", { value: w[0], text: w[1] });
+      if ((custom ? "custom" : "") === w[0]) opt.setAttribute("selected", "");
+      return opt;
+    }));
+    var from = el("input", { type: "datetime-local", value: localInput(q.from) });
+    var to = el("input", { type: "datetime-local", value: localInput(q.to) });
+    var between = el("span", { style: "display:" + (custom ? "contents" : "none") }, [
+      field("From", "Scans at or after this time (your time zone).", from),
+      field("To", "Scans at or before this time (your time zone).", to),
+    ]);
+    when.addEventListener("change", function () {
+      between.setAttribute("style", "display:" + (when.value === "custom" ? "contents" : "none"));
+    });
+    var risk = el("input", { type: "number", min: "0", max: "100", value: q.min_risk == null ? "" : String(q.min_risk), placeholder: "0" });
+    var size = el("select", null, [10, 25, 50].map(function (n) {
+      var opt = el("option", { value: String(n), text: String(n) });
+      if (model.limit === n) opt.setAttribute("selected", "");
+      return opt;
+    }));
+    var params = function () {
+      var p = { n: size.value, tool: tool.value.trim(), outcome: outcome.value, risk: risk.value.trim() };
+      if (q.session) p.session = q.session;
+      var w = WINDOWS.filter(function (x) {
+        return x[0] === when.value;
+      })[0];
+      if (w && w[2]) p.from = new Date(Date.now() - w[2]).toISOString();
+      if (when.value === "custom") {
+        p.from = fromLocalInput(from.value);
+        p.to = fromLocalInput(to.value);
+      }
+      return p;
+    };
+    // Not a <form>: OpenClaw's tab frame is sandboxed without allow-forms, so a submit would be blocked.
+    // The button and Enter navigate instead.
+    var search = function () {
+      go(params());
+    };
+    var form = el("div", { class: "srk-search", role: "search" }, [
+      field("Tool", "Tool name contains this text (any case).", tool),
+      field("Outcome", "Only scans with this outcome.", outcome),
+      field("When", "Only scans in this time window. A window also makes the search faster: the log is read only back to its start.", when),
+      between,
+      field("Risk at least", "Only scans at or above this risk (0 to 100).", risk),
+      field("Per page", "How many scans to show at once.", size),
+      el("button", { class: "srk-btn srk-btn-primary", type: "button", text: "Search", onclick: search }),
+      el("button", {
+        class: "srk-btn",
+        type: "button",
+        text: "Clear",
+        title: "Back to the newest scans, no filters.",
+        onclick: function () {
+          go({ n: String(model.limit || 10) });
+        },
+      }),
+    ]);
+    [tool, risk, from, to].forEach(function (input) {
+      input.addEventListener("keydown", function (e) {
+        if (e && e.key === "Enter") search();
+      });
+    });
+    return form;
+  }
+
+  /** What the page shows and how far the log was read; null for a plain first page with nothing to say. */
+  function statusLine(model) {
+    var q = model.query || {};
+    var pg = model.page || {};
+    var filtered = !!(q.tool || q.outcome || q.min_risk != null || q.from || q.to || q.session);
+    var parts = [];
+    if (model.scans.length) {
+      parts.push(el("span", { text: "Showing " + model.scans.length + (filtered ? " matching" : "") + " scan" + (model.scans.length === 1 ? "" : "s") + ", newest first" + (q.before ? ", older than the page before" : "") + ". " }));
+    } else if (model.log === "on") {
+      parts.push(el("span", { text: filtered || q.before ? "No scans match. " : "" }));
+    }
+    if (pg.read_bytes) parts.push(el("span", { title: "The traffic log has no index: a search reads it backwards from the newest line.", text: "Read " + mb(pg.read_bytes) + " of the log. " }));
+    if (pg.budget_hit) parts.push(el("span", { class: "srk-warn", text: "Stopped after the read limit; narrow the time window to look further back. " }));
+    if (pg.cursor_lost) parts.push(el("span", { class: "srk-warn", text: "The scan this page continued from is no longer in the log; start again from the newest. " }));
+    if (pg.reached_start && !pg.more && (filtered || q.before)) parts.push(el("span", { text: "That is everything in the log for this search." }));
+    var text = parts.filter(function (p) {
+      return p.textContent;
+    });
+    return text.length ? el("p", { class: "srk-status" }, text) : null;
+  }
+
+  function pager(model, go) {
+    var q = model.query || {};
+    var pg = model.page || {};
+    var keep = function () {
+      var p = { n: String(model.limit || 10) };
+      ["tool", "outcome", "session", "from", "to"].forEach(function (k) {
+        if (q[k]) p[k] = q[k];
+      });
+      if (q.min_risk != null) p.risk = String(q.min_risk);
+      return p;
+    };
+    var buttons = [];
+    if (q.before) {
+      buttons.push(el("button", { class: "srk-btn", type: "button", text: "← Newest", title: "Back to the newest scans for this search.", onclick: function () {
+        go(keep());
+      } }));
+    }
+    if (pg.more && pg.next) {
+      buttons.push(el("button", { class: "srk-btn srk-btn-primary", type: "button", text: "Older →", title: "The next " + (model.limit || 10) + " older scans for this search.", onclick: function () {
+        var p = keep();
+        p.before = pg.next;
+        go(p);
+      } }));
+    }
+    return buttons.length ? el("div", { class: "srk-pager" }, buttons) : null;
+  }
+
+  /** Drops empty values: the query string the page sends. */
+  function queryString(params) {
+    var out = [];
+    for (var k in params) {
+      if (Object.prototype.hasOwnProperty.call(params, k) && params[k] != null && params[k] !== "") {
+        out.push(encodeURIComponent(k) + "=" + encodeURIComponent(params[k]));
+      }
+    }
+    return out.join("&");
+  }
+
   function render(root, model, opts) {
     ensureStyle(root.ownerDocument || document);
     opts = opts || {};
@@ -699,48 +872,45 @@
     model.scans = model.scans || [];
     model.totals = model.totals || {};
     model.lines = model.lines || { review_at: 45, block_at: 80 };
+    var go = opts.navigate || function () {};
     var open = opts.open || new Set();
     // The newest scan opens on first draw; later draws keep what the viewer opened or closed.
     if (opts.openFirst !== false && !open.size && model.scans.length) open.add(model.scans[0].id);
     while (root.firstChild) root.removeChild(root.firstChild);
     root.className = "srk" + (opts.standalone ? " srk-standalone" : "");
     var cmd = cmdOf(model);
-    var limits = [10, 25, 50].map(function (n) {
-      return el("button", {
-        class: "srk-btn",
-        type: "button",
-        title: "Show the last " + n + " scans",
-        "aria-pressed": model.limit === n ? "true" : "false",
-        text: "Last " + n,
-        onclick: function () {
-          if (opts.setLimit) opts.setLimit(n);
-        },
-      });
-    });
     root.appendChild(el("div", { class: "srk-head" }, [
       el("h1", { text: "Sentrook" }),
-      el("span", { class: "srk-sub", text: "Recent scans · read-only · mode: " + (model.mode || "?") }),
-      el("span", { class: "srk-spacer" }),
-    ].concat(limits)));
+      el("span", { class: "srk-sub", text: "read-only · mode: " + (model.mode || "?") }),
+    ]));
     var pending = pendingPanel(model, open);
     if (pending) root.appendChild(pending);
     root.appendChild(el("h2", { class: "srk-section" }, [
-      hinted("span", "History", "Recent scans from the traffic log, newest first."),
+      hinted("span", "History", "Scans from the traffic log, newest first. Search by tool, outcome, time or risk; page back with Older."),
       model.scans.length ? el("span", { class: "srk-section-count", text: String(model.scans.length) }) : null,
     ]));
     if (model.log !== "on") {
       root.appendChild(el("div", { class: "srk-empty", text: "The traffic log is off, so there is no scan history." }));
-    } else if (!model.scans.length) {
-      root.appendChild(el("div", { class: "srk-empty", text: "No scans in the traffic log yet." }));
     } else {
-      var cards = {};
-      var list = el("div", { class: "srk-list" }, model.scans.map(function (s) {
-        var card = scanCard(s, model, open);
-        cards[s.id] = card;
-        return card;
-      }));
-      root.appendChild(timeline(model, cards));
-      root.appendChild(list);
+      root.appendChild(searchForm(model, go));
+      var status = statusLine(model);
+      if (status) root.appendChild(status);
+      if (!model.scans.length) {
+        var q = model.query || {};
+        var any = q.tool || q.outcome || q.min_risk != null || q.from || q.to || q.session || q.before;
+        root.appendChild(el("div", { class: "srk-empty", text: any ? "No scans match this search." : "No scans in the traffic log yet." }));
+      } else {
+        var cards = {};
+        var list = el("div", { class: "srk-list" }, model.scans.map(function (s) {
+          var card = scanCard(s, model, open);
+          cards[s.id] = card;
+          return card;
+        }));
+        root.appendChild(timeline(model, cards));
+        root.appendChild(list);
+      }
+      var more = pager(model, go);
+      if (more) root.appendChild(more);
     }
     root.appendChild(el("h2", { text: "Change what Sentrook allows" }));
     root.appendChild(grantsSection(model));
@@ -768,15 +938,21 @@
       var ref = React.useRef(null);
       var openRef = React.useRef(new Set());
       var drawnRef = React.useRef(false);
-      var limitState = React.useState(10);
-      var limit = limitState[0];
-      var setLimit = limitState[1];
+      var queryState = React.useState("n=10");
+      var query = queryState[0];
+      var setQuery = queryState[1];
       React.useEffect(function () {
         var alive = true;
-        SDK.fetchJSON("/api/plugins/sentrook/model?n=" + limit)
+        SDK.fetchJSON("/api/plugins/sentrook/model?" + query)
           .then(function (model) {
             if (!alive || !ref.current) return;
-            render(ref.current, model, { setLimit: setLimit, open: openRef.current, openFirst: !drawnRef.current });
+            render(ref.current, model, {
+              navigate: function (params) {
+                setQuery(queryString(params));
+              },
+              open: openRef.current,
+              openFirst: !drawnRef.current,
+            });
             drawnRef.current = true;
           })
           .catch(function () {
@@ -785,7 +961,7 @@
         return function () {
           alive = false;
         };
-      }, [limit]);
+      }, [query]);
       return React.createElement("div", { ref: ref, className: "srk" });
     };
     HOST.register("sentrook", SentrookPage);
@@ -800,8 +976,8 @@
       try {
         render(root, JSON.parse(data.textContent || "{}"), {
           standalone: standalone,
-          setLimit: function (n) {
-            window.location.search = "?n=" + n;
+          navigate: function (params) {
+            window.location.search = "?" + queryString(params);
           },
         });
       } catch (e) {

@@ -252,6 +252,8 @@ Where slash commands don't reach the plugin, use `hermes sentrook <command>` on 
 down: the three scores the scanner combines (suspicion, consequence and confidence), every signal under each one with
 the reasons that raised it, and any floor or grant that changed the result. Grants and snooze are shown as they stand.
 
+Anything waiting for you comes first: an approval prompt still open, or a call held for your approval, each with the command that answers it. Below, the history shows 10, 25 or 50 scans a page; **Older** pages back. Search by tool name, outcome, time window or minimum risk. The traffic log has no index, so a search reads it backwards from the newest line, skipping lines outside the time window without parsing them; a time window makes searches faster. A search reads at most the whole log at its configured size (twice `traffic_log.max_bytes`, up to 256 MB) and says when it stopped early.
+
 The tab only reads. To change a grant or a snooze, use the commands above. It shows the same records as
 `/sentrook history` and `/sentrook why`, never a call's arguments, and nothing when the traffic log is off. It reads
 the traffic log of the profile the dashboard is showing.

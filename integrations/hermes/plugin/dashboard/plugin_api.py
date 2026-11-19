@@ -1,7 +1,7 @@
 """Backend of the Sentrook dashboard tab, mounted by `hermes dashboard` at /api/plugins/sentrook/.
 
 One read-only route, `GET /model`, returns the dashboard model (`dashboard.py`) built from this profile's
-traffic log. Hermes loads this file on its own, outside the plugin package, so it loads the plugin's modules
+traffic log, for the page's search (`n`, `before`, `from`, `to`, `tool`, `outcome`, `risk`, `session`). Hermes loads this file on its own, outside the plugin package, so it loads the plugin's modules
 by path under a private package name without running the plugin's `__init__.py` (which hooks into the agent).
 Everything is resolved per request: Hermes scopes the dashboard to a profile per request, and
 `hermes config set` changes apply without a restart.
@@ -17,7 +17,7 @@ import types
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 router = APIRouter()
 
@@ -88,16 +88,21 @@ def _env() -> dict[str, str]:
     return env
 
 
-def build(n: str | None) -> dict[str, Any]:
+#: The page's query parameters (see `dashboard.query_of`).
+PARAMS = ("n", "before", "from", "to", "tool", "outcome", "risk", "session")
+
+
+def build(params: dict[str, str | None]) -> dict[str, Any]:
     config = _module("config")
     dashboard = _module("dashboard")
     data = _hermes_config()
     cfg = config.resolve_config(_settings(data), _env())
     window = _review_window_s(data, dashboard.DEFAULT_REVIEW_WINDOW_S)
-    return dashboard.build_model(cfg, dashboard.limit_of(n), review_window_s=window)
+    return dashboard.build_model(cfg, dashboard.query_of(params), review_window_s=window)
 
 
 @router.get("/model")
-async def model(n: str | None = None) -> dict[str, Any]:
+async def model(request: Request) -> dict[str, Any]:
+    params = {k: request.query_params.get(k) for k in PARAMS}
     # The traffic-log read is blocking file I/O; keep it off the shared event loop.
-    return await asyncio.to_thread(build, n)
+    return await asyncio.to_thread(build, params)
