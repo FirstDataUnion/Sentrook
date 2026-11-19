@@ -187,6 +187,34 @@ class ProbeMeta(_Model):
     versions: dict[str, str | None] = Field(default_factory=dict)
 
 
+SaveAdds = Literal["command", "destination", "permission", "secret"]
+
+
+class SelfEditSave(_Model):
+    """What a self-edit's saved content adds, read by rule from the written text, and whether the save qualifies for
+    lenient handling. Present only on a self-edit (trigger `system` with a `self_edit` block)."""
+
+    adds: list[SaveAdds] = Field(
+        default_factory=list,
+        description=(
+            "Sorted and de-duplicated: `command` runnable steps; `destination` a host, URL, mail address, recipient "
+            "or remote a later run reaches or sends to; `permission` a step that changes permissions, tool "
+            "allowlists, host or agent config, plugins, hooks, the scheduler, approval or safety settings, or "
+            "privilege (not the write into the memory or skill store itself); `secret` a secret-like value or a "
+            "redaction placeholder"
+        ),
+    )
+    lenient: bool = Field(
+        default=False,
+        description=(
+            "True only when `adds` is empty or only `command`, the self-edit judge answered and none of its "
+            "directive-from-read-content, loosened-oversight and unsupported-owner-claim answers reached 0.7, and "
+            "no floor applies. Says nothing about the verdict: a plugin consults it only when the risk is in its "
+            "review band, for a background save nobody can be asked about"
+        ),
+    )
+
+
 class Metadata(_Model):
     scanner_version: str
     latency_ms: float | None = Field(default=None, ge=0)
@@ -249,6 +277,12 @@ class Response(_Model):
     )
     state: str | None = Field(default=None, description="New signed state token")
     error: ScanError | None = Field(default=None, description="Only when status is error")
+    self_edit: SelfEditSave | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Only on a self-edit: what the saved content adds and whether the save qualifies for lenient "
+        "handling; absent otherwise",
+    )
     metadata: Metadata
 
     @classmethod

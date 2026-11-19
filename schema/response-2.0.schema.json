@@ -560,6 +560,34 @@
       "title": "ScanStatus",
       "type": "string"
     },
+    "SelfEditSave": {
+      "additionalProperties": true,
+      "description": "What a self-edit's saved content adds, read by rule from the written text, and whether the save qualifies for\nlenient handling. Present only on a self-edit (trigger `system` with a `self_edit` block).",
+      "properties": {
+        "adds": {
+          "description": "Sorted and de-duplicated: `command` runnable steps; `destination` a host, URL, mail address, recipient or remote a later run reaches or sends to; `permission` a step that changes permissions, tool allowlists, host or agent config, plugins, hooks, the scheduler, approval or safety settings, or privilege (not the write into the memory or skill store itself); `secret` a secret-like value or a redaction placeholder",
+          "items": {
+            "enum": [
+              "command",
+              "destination",
+              "permission",
+              "secret"
+            ],
+            "type": "string"
+          },
+          "title": "Adds",
+          "type": "array"
+        },
+        "lenient": {
+          "default": false,
+          "description": "True only when `adds` is empty or only `command`, the self-edit judge answered and none of its directive-from-read-content, loosened-oversight and unsupported-owner-claim answers reached 0.7, and no floor applies. Says nothing about the verdict: a plugin consults it only when the risk is in its review band, for a background save nobody can be asked about",
+          "title": "Lenient",
+          "type": "boolean"
+        }
+      },
+      "title": "SelfEditSave",
+      "type": "object"
+    },
     "SuspicionTier": {
       "additionalProperties": true,
       "description": "How much the call looks like it serves a goal the owner did not set. Higher is worse.",
@@ -879,6 +907,18 @@
       "default": null,
       "description": "0–100; null only when status is error",
       "title": "Risk"
+    },
+    "self_edit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SelfEditSave"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Only on a self-edit: what the saved content adds and whether the save qualifies for lenient handling; absent otherwise"
     },
     "state": {
       "anyOf": [

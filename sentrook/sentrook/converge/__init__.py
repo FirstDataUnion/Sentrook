@@ -40,6 +40,7 @@ from .registry import SIGNALS, reason_text
 from .relief import Relief, compute_relief
 from .retry_cap import REASON as RETRY_CAP_REASON
 from .retry_cap import risk_without_retry, unanswered_retry
+from .self_edit import self_edit_save
 
 __all__ = ["converge", "ConvergeResult", "ConvergenceParams", "load_params"]
 
@@ -260,7 +261,10 @@ def converge(
     started: float | None = None,
     probes_enabled: list[str] | None = None,
     views: str = "trim-v1",
+    self_edit_adds: tuple[str, ...] | None = None,
 ) -> ConvergeResult:
+    """`self_edit_adds`: what a self-edit's saved content adds (`prepare.save_adds`), None for any other scan; it
+    sets `Response.self_edit` and nothing else."""
     claims = collect(envelopes)
     if params.credential_home and prepared.credential_home is not None:
         claims = cap_model_sensitivity(claims, params.credential_home_model_sensitivity_cap)
@@ -485,6 +489,9 @@ def converge(
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),
         state=token,
+        self_edit=self_edit_save(self_edit_adds, envelopes, floors)
+        if self_edit_adds is not None
+        else None,
         metadata=Metadata(
             scanner_version=scanner_version,
             latency_ms=latency,
