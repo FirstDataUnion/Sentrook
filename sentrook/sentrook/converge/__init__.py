@@ -385,6 +385,10 @@ def converge(
         or prepared.state.fresh
     )
     status = ScanStatus.DEGRADED if degraded else ScanStatus.OK
+    if retry_cap is not None and degraded:
+        # the risk without the retry rests on partial evidence: no cap, as for the attended ceiling
+        retry_cap["capped"] = False
+        retry_cap["withheld"] = "degraded"
 
     held_back = (
         withheld(

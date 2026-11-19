@@ -6,7 +6,9 @@ nobody answered (the review timed out or is held, or the host's own review loop 
 retry can raise the verdict to review but not to block: when the call scored without the retry (its suspicion and
 the consequence it carried from the denied step) stays under the default block line, the response carries a
 verdict ceiling of `review`. The risk stays as scored. A retry that also matches a step the owner refused or the
-scanner blocked is unchanged, and so is a call that would block without the retry.
+scanner blocked is unchanged, and so is a call that would block without the retry. A degraded scan (a probe failed,
+timed out or fell back, coverage was lost, or the session state was lost) sets no cap: the risk without the retry
+would rest on partial evidence.
 """
 
 from __future__ import annotations

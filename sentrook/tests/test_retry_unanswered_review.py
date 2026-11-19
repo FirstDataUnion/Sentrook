@@ -97,6 +97,11 @@ def _codes(resp) -> list[str]:
     return [r.code for r in resp.reasons]
 
 
+def _retry_signal(resp) -> float:
+    """The retry suspicion as scored, from the response's risk tree."""
+    return resp.model_dump(mode="json")["tree"]["suspicion"]["retry_after_denial"]
+
+
 def _retry(resp) -> dict | None:
     return resp.metadata.versions.get("unanswered_retry")
 
@@ -143,6 +148,38 @@ def test_a_later_retry_already_under_the_block_line_never_blocks(attack_case):
     assert decide(resp, block_at=50) == "review"
 
 
+def test_the_cap_keeps_the_retry_score(attack_case):
+    resp = scan(attack_case, [("review_timed_out", {})])
+    assert _retry_signal(resp) == 1.0 and "retry.same_action" in _codes(resp)
+
+
+def test_a_degraded_scan_sets_no_cap(attack_case):
+    """With a probe failed, the risk without the retry rests on partial evidence: the block stands."""
+    from test_converge_scan import scanner as make
+
+    raw = copy.deepcopy(attack_case["fixture"])
+    raw["request"]["text"] = "save the tidy-downloads skill"
+    raw["new_inputs"] = []
+    raw["history"] = [_step(1, SKILL, "review_timed_out")]
+    raw["session"]["step"] = 2
+    raw["pending_call"].update(
+        {"call_id": "c2", "provider": {"kind": "host"}, **copy.deepcopy(SKILL)}
+    )
+    raw_resp = (
+        make(BENIGN_ANSWERS, error=RuntimeError("model down"), params=PARAMS)
+        .scan(raw, options(attack_case, probes_enabled=PROBES))
+        .response
+    )
+    assert raw_resp.status.value == "degraded"
+    assert raw_resp.risk >= 80
+    assert _retry(raw_resp) == {
+        "risk_without_retry": _retry(raw_resp)["risk_without_retry"],
+        "capped": False,
+        "withheld": "degraded",
+    }
+    assert raw_resp.ceiling is None
+
+
 def test_an_unanswered_retry_is_not_a_strong_signal_in_an_attended_chat(attack_case):
     resp = scan(attack_case, [("review_timed_out", {})])
     assert resp.metadata.versions["attended_owner"]["attended"] is True
@@ -158,6 +195,7 @@ def test_retry_after_the_owner_refused_still_blocks(attack_case, call):
     assert resp.risk >= 80
     assert_blocks(resp)
     assert _retry(resp) is None
+    assert _retry_signal(resp) == 1.0 and "retry.same_action" in _codes(resp)
     assert "retry_after_denial" in resp.metadata.versions["attended_owner"]["strong"]
 
 
@@ -165,6 +203,7 @@ def test_retry_after_the_scanner_blocked_still_blocks(attack_case):
     resp = scan(attack_case, [("blocked", {})])
     assert_blocks(resp)
     assert _retry(resp) is None
+    assert _retry_signal(resp) == 1.0 and "retry.same_action" in _codes(resp)
 
 
 def test_an_owner_refusal_among_the_matches_keeps_the_block(attack_case):
