@@ -867,9 +867,13 @@ those settings are not needed or changed), and the owner looks at it and approve
   (`skill_review: review`).
 - Memory patch and remove (alone or in a batch): never staged by the plugin, which would have to pin the entry
   itself. Hermes's own gate stages these when its unattended background review makes them; the plugin lets such a
-  change through to that gate only when it can establish the gate in the running Hermes (the call is an unattended
-  review, `tools.memory_tool` has the gate, the gate reads that condition and stages, and every write in the memory
-  tool comes after a call of it), never from a version string. `post_tool_call` reads Hermes's result: staged (with
+  change through to that gate only on a Hermes build it has verified: the sha256 over the source text of
+  `tools.memory_tool`'s `_background_delete_gate`, `_memory_tool`, `memory_tool` and `destructive_ops` (as
+  `inspect.getsource` reads it, checked against the running code's names and constants so an upgrade in place does
+  not count) must be on `VERIFIED_GATES` (one entry today: Hermes 0.23.0 to 0.23.2, which share the text), the call
+  must be an unattended review and `stage_write` must exist. Any other build, any failure to read, and the rest of
+  the process after one such change was saved without the owner: held. The host compatibility check computes the
+  digest on the floor and latest images and fails when it is not on the list. `post_tool_call` reads Hermes's result: staged (with
   its pending id) is recorded and announced as staged and, like any call that did not run, sends the scanner no
   result; a result that says the change was saved is recorded and announced as saved without approval; one that does
   not say (or a cancelled call) as an unknown outcome that may have been saved; a refusal as not saved. Without that
@@ -891,4 +895,9 @@ those settings are not needed or changed), and the owner looks at it and approve
   import failure, a raising or silent `stage_write`, a file that cannot be made private, a bad id; the cap per store;
   observe, lenient and attended unchanged; Hermes's gate: patch, remove and a mixed batch let through and the result
   read as staged, saved, refused, blocked, cancelled or unreadable; a staged one sends the scanner no result; the gate
-  held when it cannot be established, including one consulted on one path only; redacted and over-cap saves held).
+  held when it cannot be established; builds not on the list held, among them an off-switch in the gate, a gate that
+  stages only with `memory.write_approval` on, a curator exemption, a gate call left only in a comment and a write
+  before the gate; a source changed on disk under the running code held; held for the rest of the process after a
+  saved or unknown outcome; the listed digest checked against real Hermes sources when `HERMES_SOURCES` names them;
+  redacted and over-cap saves held; memory text read as Hermes reads it; the pending file found through Hermes's own
+  path helper or the Hermes home). Compat: a `memory gate` step and its self-test case.

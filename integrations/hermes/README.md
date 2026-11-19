@@ -413,11 +413,13 @@ and adding memory entries (alone or in one batch). These stay held and are lost,
 - a save Sentrook blocks, or one that scored at the block line;
 - with `skill_review: review`, every held save.
 
-Changing or removing memory entries is held too, except where Hermes itself stages it: Hermes never lets its
-unattended background review change or remove memory entries and puts the change in its pending list instead. When
-Sentrook can see that gate in the Hermes it runs in, it leaves the change to it, and the notice says what Hermes did:
-staged it (with its id), or, if Hermes reports otherwise, that it was saved without your approval. Where Sentrook
-cannot see that gate, the change is held and lost as before.
+Changing or removing memory entries is held too, except on Hermes builds Sentrook has verified. Hermes itself never
+lets its unattended background review change or remove memory entries: it puts the change in its pending list
+instead. Sentrook checks the code of that safeguard in the Hermes it runs in against a list of Hermes builds it has
+verified (at present Hermes 0.23.0 to 0.23.2). On those builds it leaves the change to Hermes, and the notice says
+what Hermes did: staged it (with its id), or, if Hermes reports otherwise, that it may have been saved without your
+approval; after that, Sentrook holds such changes until Hermes restarts. On any other Hermes build the change is held
+and lost as before.
 
 Staging needs the plugin to run inside Hermes's own process, as Hermes loads plugins by default. If staging fails
 for any reason, the save is held as before and the notice says it was not saved.

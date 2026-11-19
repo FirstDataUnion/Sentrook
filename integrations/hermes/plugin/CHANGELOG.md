@@ -14,8 +14,9 @@ since the version the catalog pins.
   skill deletes, saves Sentrook finds a secret in, saves too large to scan whole, blocked saves, and every save with
   `skill_review: review`.
 - Changing or removing memory entries in Hermes's unattended background review is left to Hermes's own gate, which
-  stages it, when the plugin can see that gate in the running Hermes; the notice says what Hermes did. Otherwise it is
-  held as before.
+  stages it, only on Hermes builds the plugin has verified (0.23.0 to 0.23.2); the notice says what Hermes did. On any
+  other build, and for the rest of the process once Hermes saved such a change without the owner, it is held as
+  before.
 - The plugin writes each pending entry's summary itself (never the saved text), makes the staged file readable by the
   owner only, and keeps at most 20 of its own entries waiting in each list. History shows a staged save as
   "staged ... pending in Hermes", and `status` counts staged saves.

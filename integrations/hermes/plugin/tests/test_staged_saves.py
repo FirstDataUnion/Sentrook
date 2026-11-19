@@ -175,13 +175,22 @@ def h(loop_h, monkeypatch):
     return fake
 
 
-@pytest.fixture
-def gate(h, monkeypatch):
-    """Hermes's memory tool with its unattended-review gate (`tools.memory_tool`), as `hermes_fakes` shapes it."""
-    mod = hermes_fakes.memory_tool_module()
+def load_gate(h, monkeypatch, source=hermes_fakes.MEMORY_TOOL, name="memory_tool"):
+    """Hermes's memory tool loaded from `source` as `tools.memory_tool`."""
+    mod = hermes_fakes.memory_tool_module(h.dir / "hermes-src" / name, source)
     sys.modules["tools"].memory_tool = mod
     monkeypatch.setitem(sys.modules, "tools.memory_tool", mod)
     h.memory_tool = mod
+    return mod
+
+
+@pytest.fixture
+def gate(h, monkeypatch):
+    """Hermes's memory tool with its unattended-review gate (`tools.memory_tool`), as `hermes_fakes` shapes it, on
+    the plugin's list of verified builds (the real list holds only real Hermes builds)."""
+    mod = load_gate(h, monkeypatch)
+    monkeypatch.setattr(staging, "VERIFIED_GATES", {staging.gate_build(mod): "the test's Hermes"})
+    monkeypatch.setattr(staging, "_gate_distrusted", False)
     return h
 
 
@@ -529,6 +538,57 @@ def test_a_bad_record_id_holds_the_save(h):
     assert out == HELD and rec["staging"]["reason"] == "failed"
 
 
+def test_a_record_that_cannot_be_made_private_or_discarded_holds_the_save(h, monkeypatch):
+    monkeypatch.setattr(staging, "make_private", lambda _path: False)
+    h.wa.fail = "discard"
+    out, rec = save(h, *STAGEABLE["memory-add"][:2])
+    assert out == HELD and rec["staging"] == {"status": "held", "reason": "not_written"}
+
+
+def test_the_record_is_found_where_hermess_own_helper_puts_it(h):
+    elsewhere = h.dir / "profiles" / "work"
+    h.wa._pending_path = lambda store, pid: elsewhere / "pending" / store / f"{pid}.json"
+    out, rec = save(h, *STAGEABLE["skill-create"][:2])
+    path = elsewhere / "pending" / "skills" / f"{rec['staging']['id']}.json"
+    assert out == STAGED and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_without_hermess_helper_the_record_is_found_under_the_hermes_home(h):
+    del h.wa._pending_path
+    out, rec = save(h, *STAGEABLE["skill-create"][:2])
+    (path,) = pending(h, "skills")
+    assert out == STAGED and path.stem == rec["staging"]["id"]
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    ("args", "content"),
+    [
+        ({"content": "   ", "new_text": "Works in UTC."}, "   "),
+        ({"content": "", "new_text": "Works in UTC."}, "Works in UTC."),
+        ({"new_text": "Works in UTC."}, "Works in UTC."),
+    ],
+    ids=["blank-content-kept", "empty-content", "new-text-only"],
+)
+def test_a_memory_add_reads_its_text_as_hermes_does(h, args, content):
+    """Hermes takes `content`, and `new_text` only when `content` is empty: never stripped."""
+    out, rec = save(h, "memory", {"action": "add", "target": "memory", **args})
+    assert out == STAGED and h.wa.calls[0]["payload"]["content"] == content
+
+
+def test_the_size_check_measures_the_copy_the_scanner_gets(h):
+    """A save that fits the input cap is sent whole and staged; one byte more is cut for the scan and held."""
+    h.ctx.settings["input_cap_bytes"] = 2048
+    base = {"action": "add", "target": "memory", "content": ""}
+    size = len(json.dumps(base, ensure_ascii=False).encode("utf-8"))
+    fits = {**base, "content": "a" * (2048 - size)}
+    out, rec = save(h, "memory", fits)
+    assert out == STAGED and h.scans[-1]["pending_call"]["arguments"] == fits
+    out, rec = save(h, "memory", {**base, "content": "a" * (2049 - size)})
+    assert out == HELD and rec["staging"]["reason"] == "too_large"
+    assert h.scans[-1]["pending_call"]["arguments"] != {**base, "content": "a" * (2049 - size)}
+
+
 def seed(h, store, n, summary):
     d = h.dir / "pending" / store
     d.mkdir(parents=True, exist_ok=True)
@@ -716,20 +776,10 @@ def test_a_destructive_change_carrying_a_secret_stays_held(gate):
 
 
 UNSURE = {
-    "no-memory-tool": lambda m: None,
+    "no-memory-tool": None,
     "gate-missing": lambda m: delattr(m, "_background_delete_gate"),
-    "gate-not-called": lambda m: setattr(m, "_memory_tool", hermes_fakes._memory_tool_unwired),
-    "gate-on-one-path-only": lambda m: setattr(
-        m, "_memory_tool", hermes_fakes._memory_tool_batch_only
-    ),
-    "gate-after-write": lambda m: setattr(
-        m, "_memory_tool", hermes_fakes._memory_tool_gate_after_write
-    ),
-    "gate-never-stages": lambda m: setattr(
-        m, "_background_delete_gate", hermes_fakes._background_delete_gate_denies
-    ),
-    "source-unreadable": lambda m: setattr(m, "_memory_tool", len),
-    "not-destructive-to-hermes": lambda m: setattr(m, "destructive_ops", lambda _p: []),
+    "not-a-plain-function": lambda m: setattr(m, "_memory_tool", len),
+    "a-function-from-elsewhere": lambda m: setattr(m, "destructive_ops", lambda _p: [_p]),
     "no-stage-write": lambda m: delattr(sys.modules["tools.write_approval"], "stage_write"),
 }
 
@@ -744,6 +794,77 @@ def test_when_hermess_gate_cannot_be_established_the_change_is_held(gate, monkey
         UNSURE[case](h.memory_tool)
     out, rec = save(h, "memory", DESTRUCTIVE["remove"])
     assert out == HELD and rec["staging"] == {"status": "held", "reason": "destructive_memory"}
+
+
+@pytest.mark.parametrize("variant", list(hermes_fakes.DRIFT))
+def test_a_hermes_build_not_on_the_list_is_held(gate, monkeypatch, variant):
+    """Later builds that keep every name and string a reading of the source would look for, but make the change
+    live: their gate's digest is not on the list, so the change is held."""
+    h = gate
+    mod = load_gate(h, monkeypatch, hermes_fakes.DRIFT[variant], name=variant)
+    assert staging.gate_build(mod) not in staging.VERIFIED_GATES
+    out, rec = save(h, "memory", DESTRUCTIVE["remove"])
+    assert out == HELD and rec["staging"] == {"status": "held", "reason": "destructive_memory"}
+
+
+def test_a_gate_whose_source_changed_on_disk_under_the_running_hermes_is_held(gate):
+    """An upgrade in place: the file now says something else than the code that runs."""
+    h = gate
+    path = h.dir / "hermes-src" / "memory_tool" / "memory_tool.py"
+    path.write_text(
+        path.read_text().replace('"background review consolidation"', '"consolidation"')
+    )
+    with pytest.raises(ValueError, match="not the code that runs"):
+        staging.gate_build(h.memory_tool)
+    out, rec = save(h, "memory", DESTRUCTIVE["remove"])
+    assert out == HELD and rec["staging"]["reason"] == "destructive_memory"
+
+
+@pytest.mark.parametrize("result", [json.dumps({"success": True}), "not json"])
+def test_once_hermes_saved_such_a_change_without_the_owner_they_are_held(gate, result):
+    h = gate
+    save(h, "memory", DESTRUCTIVE["remove"])
+    done(h, DESTRUCTIVE["remove"], result)
+    out, rec = save(h, "memory", DESTRUCTIVE["patch"], call_id="c9")
+    assert out == HELD and rec["staging"] == {"status": "held", "reason": "destructive_memory"}
+
+
+def test_a_change_hermes_staged_keeps_the_gate_trusted(gate):
+    h = gate
+    save(h, "memory", DESTRUCTIVE["remove"])
+    done(h, DESTRUCTIVE["remove"], h.memory_tool.memory_tool(**DESTRUCTIVE["remove"]))
+    out, rec = save(h, "memory", DESTRUCTIVE["patch"], call_id="c9")
+    assert out is None and rec["staging"]["status"] == "host"
+
+
+def test_post_tool_call_never_arriving_leaves_a_truthful_label(gate):
+    h = gate
+    save(h, "memory", DESTRUCTIVE["remove"])
+    assert shown(h) == ("sent to Hermes to stage (self-edit)", "-")
+
+
+def test_the_verified_build_is_real_hermess(monkeypatch):
+    """The listed digest is that of real Hermes sources: run with HERMES_SOURCES set to one or more Hermes source
+    roots (separated by the path separator) to check them. Hermes's code is not vendored here; the host
+    compatibility check computes the digest on the real images."""
+    roots = [r for r in os.environ.get("HERMES_SOURCES", "").split(os.pathsep) if r]
+    if not roots:
+        pytest.skip("HERMES_SOURCES is not set")
+    import ast
+    from pathlib import Path
+
+    for root in roots:
+        path = next(
+            p for p in (Path(root) / "tools", Path(root) / "hermes" / "tools") if p.is_dir()
+        )
+        text = (path / "memory_tool.py").read_text()
+        lines = text.splitlines(keepends=True)
+        defs = {n.name: n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef)}
+        sources = {
+            name: "".join(lines[defs[name].lineno - 1 : defs[name].end_lineno])
+            for name in staging.GATE_FUNCTIONS
+        }
+        assert staging.gate_digest(sources) in staging.VERIFIED_GATES, root
 
 
 def test_an_attended_review_is_never_left_to_hermess_gate(gate):

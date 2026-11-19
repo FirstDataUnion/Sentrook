@@ -51,7 +51,12 @@ versions). Inside the image, as the `hermes` user, it runs:
 3. `hermes config set` for the scan client ID and secret;
 4. `hermes sentrook verify` and `hermes sentrook status` against `mock_services.py`;
 5. one agent turn, `hermes chat`, with the model served by the same mock: it asks for two terminal calls, and
-   the plugin's `pre_tool_call` must block the first and allow the second.
+   the plugin's `pre_tool_call` must block the first and allow the second;
+6. `gate_build.py`: the digest of Hermes's background-review memory gate must be on the plugin's list of verified
+   builds (`VERIFIED_GATES` in `integrations/hermes/plugin/staging.py`). Only on those builds does the plugin leave
+   a background review's memory patch or remove to Hermes's own staging; elsewhere it holds them. A bump to a Hermes
+   that changes the gate fails here until someone checks the new gate still stages every such change and adds its
+   digest.
 
 Results land in the output directory (`steps.tsv`, `validate.json`, a log per step, and the mock's request log).
 

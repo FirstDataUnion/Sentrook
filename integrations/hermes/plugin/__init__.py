@@ -1248,6 +1248,9 @@ def _host_staging_done(cfg: PluginConfig, entry: dict[str, Any], status: str, re
     (staged it, made it, or neither) truthfully and tells the owner. Never raises."""
     try:
         outcome = staging.host_outcome(status, result)
+        if outcome["result"] in ("saved", "unknown"):
+            # Hermes's gate did not do what the plugin relied on: hold such changes for the rest of this process.
+            staging.distrust_gate()
         decision, resolution, notice_kind = _HOST_OUTCOMES[outcome["result"]]
         entry["decision"] = decision
         stage = None
