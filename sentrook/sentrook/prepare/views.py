@@ -671,22 +671,43 @@ REPUTATION_ENTRY_CAP_CHARS = (
 _REPUTATION_CUT = "…"
 
 
+#: An entry's fields that are never cut: what the entry is about and its verdict.
+_REPUTATION_FIXED = frozenset({"kind", "verdict"})
+_REPUTATION_MIN_KEEP = 9
+
+
 def _shorten_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """`entry` with its longest string values cut, two thirds head and one third tail around `…`, until it fits
-    `REPUTATION_ENTRY_CAP_CHARS`. The registrable end of a host or address stays in the tail."""
+    """`entry` with its long string values cut, two thirds head and one third tail around `…`, until it fits
+    `REPUTATION_ENTRY_CAP_CHARS` or nothing more can be cut. The longest value is cut first, down to the next longest,
+    so the excess is shared between long values; `kind` and `verdict` are never cut. The registrable end of a host or
+    address stays in the tail."""
     out = dict(entry)
     while (excess := _json_chars(out) - REPUTATION_ENTRY_CAP_CHARS) > 0:
-        key = max(
-            (k for k, x in out.items() if isinstance(x, str)),
-            key=lambda k: len(out[k]),
-            default=None,
+        lengths = sorted(
+            (
+                (len(x), k)
+                for k, x in out.items()
+                if isinstance(x, str) and k not in _REPUTATION_FIXED
+            ),
+            reverse=True,
         )
-        if key is None or len(out[key]) <= 8:
+        if not lengths or lengths[0][0] <= _REPUTATION_MIN_KEEP:
             break
+        longest, key = lengths[0]
+        tied = sum(1 for n, _ in lengths if n == longest)
+        second = next((n for n, _ in lengths if n < longest), 0)
+        # values tied for longest share the excess; the longest alone is cut no shorter than the next
+        new_len = max(_REPUTATION_MIN_KEEP, longest - -(-excess // tied), second)
+        if new_len >= longest:
+            new_len = max(_REPUTATION_MIN_KEEP, longest - 1)
         value = out[key]
-        keep = max(8, len(value) - excess - len(_REPUTATION_CUT))
-        head = keep * 2 // 3
-        out[key] = value[:head] + _REPUTATION_CUT + value[len(value) - (keep - head) :]
+        head = (new_len - 1) * 2 // 3
+        cut = value[:head] + _REPUTATION_CUT + value[len(value) - (new_len - 1 - head) :]
+        before = _json_chars(out)
+        out[key] = cut
+        if _json_chars(out) >= before:
+            out[key] = value
+            break
     return out
 
 
@@ -1043,8 +1064,9 @@ def _call_view_with_inputs(
     unredacted = est_tokens(v)
     if over > 0 and refits > 0 and est_tokens(state) > unredacted:
         # placeholders longer than the secrets they replace took the view over its budget: fit it tighter, to what it
-        # was before the redaction less the overshoot (the fit budget alone may be far above the view)
-        target = min(budget_tokens, unredacted) - over
+        # was before the redaction less the overshoot (the fit budget alone may be far above the view), and less what
+        # the fitter itself overshot its target by (the self-edit fitter's drop count lands after its size check)
+        target = min(budget_tokens, unredacted) - over - max(0, unredacted - budget_tokens)
         return _call_view_with_inputs(
             raw,
             name,

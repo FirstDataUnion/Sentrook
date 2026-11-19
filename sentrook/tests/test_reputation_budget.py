@@ -24,10 +24,12 @@ from sentrook.prepare.views import (
     CALL_V7,
     REPUTATION,
     REPUTATION_CAP_CHARS,
+    REPUTATION_ENTRY_CAP_CHARS,
     REPUTATION_MAX_ENTRIES,
     REPUTATION_OMITTED,
     REPUTATION_RESERVE_TOKENS,
     SELFEDIT_V2,
+    _shorten_entry,
     build_views,
     cap_reputation,
     set_state_budget_tokens,
@@ -121,6 +123,38 @@ def test_a_long_known_bad_host_is_shortened_not_dropped():
     assert kept[0]["value"].endswith(".evil.example") and "…" in kept[0]["value"]
     assert kept[1] == good and REPUTATION_OMITTED not in state
     assert len(canonical_json(kept)) <= REPUTATION_CAP_CHARS
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {
+            "kind": "host",
+            "verdict": "known_bad",
+            "value": "\x01" * 40,
+            "near_miss": "\x02" * 40,
+            "tier": "\x03" * 40,
+        },
+        {"kind": "host", "verdict": "known_bad", "value": "a" * 500, "seen": list(range(200))},
+    ],
+    ids=["escaped", "long-non-string"],
+)
+def test_shortening_ends_and_never_cuts_kind_or_verdict(entry):
+    out = _shorten_entry(entry)
+    assert out["kind"] == "host" and out["verdict"] == "known_bad"
+
+
+def test_a_long_tier_and_a_long_host_share_the_cut():
+    entry = {
+        "kind": "host",
+        "verdict": "known_bad",
+        "value": "a" * 3000 + ".evil.example",
+        "tier": "t" * 3000,
+    }
+    out = _shorten_entry(entry)
+    assert len(canonical_json(out)) <= REPUTATION_ENTRY_CAP_CHARS
+    assert out["value"].endswith("evil.example")
+    assert abs(len(out["value"]) - len(out["tier"])) <= 1
 
 
 def test_any_eight_long_entries_fit_together():
@@ -250,6 +284,22 @@ def test_a_view_just_over_after_redaction_is_refitted(attack_case, view_name, sh
         raw, exposure_input_seqs=None, call_budget_tokens=room + REPUTATION_RESERVE_TOKENS
     )[view_name]
     assert est_tokens(built.state) <= room and built.fitted
+
+
+@pytest.mark.parametrize("steps", [20, 60, 200])
+@pytest.mark.parametrize("short_by", [1, 2, 10, 40])
+def test_a_self_edit_view_just_over_after_redaction_is_refitted(attack_case, steps, short_by):
+    """The self-edit fitter adds its drop count after its size check; the refit makes up for it."""
+    raw = _short_secrets(attack_case, steps=steps)["fixture"]
+    raw["self_edit"] = {"kind": "memory", "conversation": [{"role": "user", "text": "remember"}]}
+    redacted = est_tokens(
+        build_views(raw, exposure_input_seqs=None, selfedit_budget_tokens=10**6)[SELFEDIT_V2].state
+    )
+    room = redacted - short_by
+    built = build_views(
+        raw, exposure_input_seqs=None, selfedit_budget_tokens=room + REPUTATION_RESERVE_TOKENS
+    )[SELFEDIT_V2]
+    assert est_tokens(built.state) <= room
 
 
 def test_a_self_edit_view_that_grows_under_redaction_stays_within_its_budget(attack_case):
