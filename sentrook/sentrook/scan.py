@@ -30,7 +30,7 @@ from .planir.validate import InvalidPlanIR
 from .prepare import Prepared, PrepareOptions, prepare
 from .prepare.redact import REDACTION_VERSION
 from .prepare.redact_shapes import load_shapes
-from .prepare.save_adds import save_adds
+from .prepare.save_adds import UNREAD_SAVE, save_adds
 from .prepare.views import (
     CALL,
     EXPOSURE,
@@ -336,7 +336,12 @@ class Scanner:
         ordered = [envelopes[step] for step in ALL_PROBES]
 
         # What a background save adds, for the plugins' handling of a save nobody can be asked about; no score reads it.
-        reading = save_adds(prepared) if prepared.planir.is_self_edit else None
+        reading = None
+        if prepared.planir.is_self_edit:
+            try:
+                reading = save_adds(prepared)
+            except Exception:  # noqa: BLE001 (the reading never fails a scan: unread, the save is not lenient)
+                reading = UNREAD_SAVE
         result = converge(
             prepared,
             ordered,

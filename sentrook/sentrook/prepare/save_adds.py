@@ -71,8 +71,11 @@ a fence the hunk shows stays a fence); every other string argument but the repla
 field) is read for destinations and secrets too, and for commands when the call has no written text. A save made by
 running a command or a program is read as that command: it adds `command`, and its own text is read for the rest. A
 rule that fails counts its kind as added (or the save as held), since the scanner cannot vouch for what it did not
-read. Fences and `<pre>` blocks are found in one pass over the lines, so the reading's cost grows linearly with the
-text. Nothing here changes a score.
+read. The reading's cost grows linearly with the text: fences and `<pre>` blocks are found in one pass over the
+lines, sentence bounds once per text (each sentence is read at most twice for links), heredocs in one pass, and every
+pattern bounds its runs of spaces and repeats. Text is read as a reader would take it (`normalise`: compatibility
+forms folded, invisible characters dropped, entities decoded, defanged addresses restored). Nothing here changes a
+score.
 """
 
 from __future__ import annotations
@@ -80,6 +83,7 @@ from __future__ import annotations
 import html
 import re
 import shlex
+import unicodedata
 from bisect import bisect_right
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -87,7 +91,7 @@ from typing import Any
 
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
-from .entities import _EMAIL_RE
+from .entities import _EMAIL_RE, _FILE_EXTENSIONS
 from .skill_steps import (
     _COMMANDISH,
     _INLINE,
@@ -178,7 +182,9 @@ _VAR_PROGRAM = re.compile(
     r"(?:^|[;&|]\s*|\$\(\s*|\(\s*|\{\s+)(?:[A-Za-z_]\w*=\S*\s+)*\$\{?[A-Za-z_]\w*\}?(?=\s|$|;)"
 )
 #: A line that starts a subshell, a group, a command substitution or a variable: shell, not prose.
-_SHELL_START = re.compile(r"^(?:\(\s*\S|\{\s+\S|\$\(|\$\{?[A-Za-z_]|[A-Za-z_]\w*=\S*\s*;)")
+_SHELL_START = re.compile(
+    r"^(?:\(\s*\S|\{\s+\S|\$\(|\$\{?[A-Za-z_]|[A-Za-z_]\w*=\S*\s*;|\\\w|([\"'])[\w./-]+\1\s+\S|\w+\s*\(\)\s*\{)"
+)
 #: A line that starts like a log or output line: a date or time, a bracketed tag, an upper-case level, a placeholder.
 _LOG_LINE = re.compile(
     r"^(?:\d{4}-\d{2}-\d{2}(?:[T ]|$)|\d{1,2}:\d{2}(?::\d{2})?\b|\[[A-Za-z0-9][^\]\n]*\](?:\s|$)"
@@ -226,13 +232,40 @@ _NET_URL = re.compile(r"\b(?:https?|ftps?|sftp|ssh|git|wss?|rsync|smb|s3|gs)://\
 #: long, so "account: home/work" is not one.
 _CREDENTIAL_PAIR = re.compile(
     r"(?i:\b(?:log[ -]?in|sign[ -]?in|credentials?|creds|user(?:name)?|account)\b)"
-    r"[ \t]*(?:(?:is|are|was)\b[ \t]*)?[:=]?[ \t]*"
-    r"[\w.@+-]{1,64}[ \t]*(?:/|:|[ \t](?i:pass(?:word|phrase)?|pw|pwd)[ \t]*[:=]?)[ \t]*"
+    r"[ \t]{0,4}(?:(?:is|are|was)\b[ \t]{0,4})?[:=]?[ \t]{0,4}"
+    r"[\w.@+-]{1,64}[ \t]{0,4}(?:/|:|[ \t](?i:pass(?:word|phrase)?|pw|pwd)[ \t]{0,4}[:=]?)[ \t]{0,4}"
     r"(?P<v>[^\s/,;]{4,128})"
 )
 #: A sign-in pair's value counts when it is this long, or holds a digit, a capital or a symbol.
 _PAIR_PLAIN_CHARS = 12
 _PAIR_MIXED = re.compile(r"[0-9A-Z]|[^\w]")
+#: "the password is <word>", "Wifi passphrase: <word>", "PIN is <digits>" in any case. Words that say where a secret
+#: is kept or what happened to it are not values.
+_SECRET_IS = re.compile(
+    r"(?i:\b(?P<cue>password|passwd|passphrase|passcode|pass\s?code|pin|pwd)\b)[ \t]{0,4}(?i:is|was|:|=)[ \t]{0,4}"
+    r"[\"'`]?(?P<v>[^\s\"'`,;]{3,128})"
+)
+_NOT_VALUES = frozenset(
+    """the a an in on at set stored saved kept not empty required changed same different there here below above
+    managed rotated unknown missing none null secret redacted hidden available needed""".split()
+)
+#: A card number: 13 to 19 digits, single spaces or dashes allowed between them (checked with the Luhn sum).
+_CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
+#: A base32 seed after a 2FA, OTP or TOTP cue.
+_OTP_SEED = re.compile(
+    r"(?i:\b(?:2fa|mfa|otp|totp|authenticator|seed)\b)[^\n]{0,24}?(?<![A-Za-z0-9])([A-Z2-7]{16,64})(?![A-Za-z0-9])"
+)
+#: A recovery phrase: twelve or more short lower-case words after a seed, recovery or mnemonic cue.
+_RECOVERY = re.compile(
+    r"(?i:\b(?:seed|recovery|mnemonic)\b)[^\n]{0,24}?(?:\b[a-z]{3,8}\b[ \t,]{1,3}){11,23}\b[a-z]{3,8}\b"
+)
+#: Vendor token prefixes, read in a run of spaced characters once joined.
+_PREFIXED_TOKEN = re.compile(
+    r"(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_\w{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[\w-]{10,}"
+    r"|AKIA[0-9A-Z]{12,}|glpat-[\w-]{16,}|AIza[\w-]{30,})"
+)
+#: A run of single characters separated by single spaces ("g h p _ a b c ..."), joined before the vendor shapes run.
+_SPACED = re.compile(r"(?<!\S)(?:\S ){11,}\S(?!\S)")
 
 
 @dataclass(frozen=True)
@@ -255,6 +288,9 @@ class SaveReading:
     held: tuple[str, ...] = ()
     rewrites: bool = False
 
+
+#: The reading of a save the reading could not finish: every kind counted as added, every hold set.
+UNREAD_SAVE = SaveReading(ADDS, HELD)
 
 #: Suffixes of instruction text, whose commands are its fenced and inline code.
 PROSE_SUFFIXES = (".md", ".markdown", ".txt", ".rst")
@@ -324,10 +360,11 @@ def saved_texts(arguments: Any) -> list[SavedText]:
         if not isinstance(obj, dict):
             return
         path = next((obj[k] for k in PATH_KEYS if isinstance(obj.get(k), str)), path)
-        for k in WRITTEN_KEYS:
+        for k in (*WRITTEN_KEYS, *_EXTRA_NEW_KEYS):
             if isinstance(obj.get(k), str):
                 text = obj[k]
-                out.append(SavedText(text, fragment=k in FRAGMENT_KEYS, script=_script(path, text)))
+                fragment = k in FRAGMENT_KEYS or k in _EXTRA_NEW_KEYS
+                out.append(SavedText(text, fragment=fragment, script=_script(path, text)))
         patch = obj.get(PATCH_KEY)
         if isinstance(patch, str) and "\n+" in patch:
             new_side = patch_new_side(patch)
@@ -348,7 +385,7 @@ def saved_texts(arguments: Any) -> list[SavedText]:
 
 def _all_strings(obj: Any, key: str | None = None) -> list[str]:
     """Every string in the arguments but the text an edit replaces and a raw patch (read by its new side)."""
-    if key in REPLACED_KEYS or key == PATCH_KEY:
+    if key in REPLACED_KEYS or key in _EXTRA_OLD_KEYS or key == PATCH_KEY:
         return []
     if isinstance(obj, str):
         return [obj]
@@ -642,6 +679,8 @@ def _candidates(reads: Iterable[_Read]) -> list[str]:
     for r in reads:
         for cmd in (*r.raw, *r.lines, *r.listed):
             out.setdefault(cmd, None)
+            for v in program_variants(cmd):
+                out.setdefault(v, None)
     return list(out)
 
 
@@ -817,37 +856,75 @@ def _remote_destination(command: str) -> bool:
     return False
 
 
-def _reference_url(prose: str, at: int) -> bool:
-    """The URL at `at` in prose is only a pointer to reading matter: its sentence names it right after "see", "docs
-    at", "reference:" and the like, and has no send or run verb."""
-    from .written_selfmod import _DOC_LEAD, _RUN_VERB, _SEND
+#: A pointer to reading matter directly before a URL: "see the docs at", "docs:", "reference:", "handbook:".
+_REF_LEAD = re.compile(
+    r"(?:\b(?:see(?:\s+(?:the\s+)?(?:docs?|documentation|reference|guide|details|notes))?|docs?|documentation"
+    r"|reference|details|read\s+more|learn\s+more|more\s+info|source)(?:\s+(?:at|on|in|here))?"
+    r"|\b(?:handbook|guide|manual|wiki|runbook)\s*:)\s*[:(<\[]?\s*$",
+    re.I,
+)
+#: Words that make a sentence more than a pointer to reading: a send, a run, a fetch, following what the page says,
+#: or naming an endpoint.
+_REF_SPOILERS = re.compile(
+    r"\b(?:post|send|upload|forward|submit|transmit|exfiltrate|beacon|deliver|push|leak|report|share|sync|mirror|"
+    r"copy|ping|e-?mail|mail|back\s?up|run|execute|exec|install|source|eval|launch|bash|sh|follow|obey|apply|"
+    r"open|fetch|load|download|curl|wget|import|retrieve|endpoint|webhook|callback)(?:s|es|ed|d|ing)?\b|\bdo\s+what\b",
+    re.I,
+)
+#: A later sentence that points back at the page ("there", "that page", "it").
+_REFERS_BACK = re.compile(
+    r"\b(?:there|it|them|that|this)(?:\s+(?:page|url|link|site|address|endpoint))?\b", re.I
+)
+_SENTENCE_END = re.compile(r"\n|[.!?](?=\s|$)")
+#: How far before a URL its pointer phrase is looked for.
+_LEAD_WINDOW = 80
 
-    start = max(prose.rfind("\n", 0, at), *(prose.rfind(p, 0, at) for p in (". ", "! ", "? "))) + 1
-    end = len(prose)
-    for stop in ("\n", ". ", "! ", "? "):
-        i = prose.find(stop, at)
-        if i != -1:
-            end = min(end, i)
-    before, sentence = prose[start:at], prose[start:end]
-    return bool(
-        _DOC_LEAD.search(before)
-        and not _SEND.search(sentence)
-        and not re.search(rf"\b{_RUN_VERB}\b|\b(?:endpoint|webhook|callback)s?\b", sentence, re.I)
-    )
+
+def _sentence_spans(prose: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    at = 0
+    for m in _SENTENCE_END.finditer(prose):
+        spans.append((at, m.start()))
+        at = m.end()
+    spans.append((at, len(prose)))
+    return spans
 
 
 def _prose_urls(reads: Iterable[_Read]) -> bool:
     """A network URL in a saved text's prose (outside fences, `<pre>` blocks and inline code) that is not only a
-    pointer to reading matter."""
+    pointer to reading matter: one with a pointer phrase directly before it, in a sentence with no send, run, fetch
+    or follow word, and not pointed back at by the next sentence with such a word. Sentence bounds are found once per
+    text and each sentence is read at most twice, so the cost grows linearly with the text."""
     for r in reads:
         if r.st.script:
             if _NET_URL.search(r.st.text):
                 return True
             continue
         prose = re.sub(r"`[^`\n]+`", lambda m: " " * len(m.group(0)), _blank(r.st.text, r.fences))
-        for m in _NET_URL.finditer(prose):
-            if not _reference_url(prose, m.start()):
-                return True
+        if _NET_URL.search(prose) and _unreferenced_url(prose):
+            return True
+    return False
+
+
+def _unreferenced_url(prose: str) -> bool:
+    spans = _sentence_spans(prose)
+    ends = [e for _, e in spans]
+    spoiled: dict[tuple[int, bool], bool] = {}
+
+    def spoils(i: int, back: bool) -> bool:
+        if (i, back) not in spoiled:
+            text = prose[spans[i][0] : spans[i][1]]
+            hit = bool(_REF_SPOILERS.search(text))
+            spoiled[(i, back)] = hit and bool(_REFERS_BACK.search(text)) if back else hit
+        return spoiled[(i, back)]
+
+    for m in _NET_URL.finditer(prose):
+        i = min(bisect_right(ends, m.start()), len(spans) - 1)
+        before = prose[max(spans[i][0], m.start() - _LEAD_WINDOW) : m.start()]
+        if not _REF_LEAD.search(before) or spoils(i, False):
+            return True
+        if i + 1 < len(spans) and spoils(i + 1, True):
+            return True
     return False
 
 
@@ -862,6 +939,118 @@ def _code_urls(reads: Iterable[_Read]) -> bool:
     return False
 
 
+#: A host-shaped token (two to nine labels and an alphabetic top-level label) or an IPv4 address, with an optional
+#: port and path.
+_HOSTISH = re.compile(
+    r"(?<![\w@/.:+-])((?:[A-Za-z0-9-]{1,63}\.){1,8}[A-Za-z]{2,24}|\d{1,3}(?:\.\d{1,3}){3})"
+    r"(:\d{2,5})?(/[^\s<>()\[\]'\"`]*)?(?![\w-]|\.[\w-])"
+)
+#: Top-level labels a host-shaped token without a path or a port is taken for a host by: the generic ones, the
+#: country codes in wide use, and cheap ones often used to host collectors. A token with a path or a port only needs
+#: a top-level label that is not a file extension; a dotted field name (`text.link.url`) has neither.
+_COMMON_TLDS = frozenset(
+    """com net org edu gov mil int io dev ai app co me info biz xyz site online tech cloud page sh gg tv us uk de
+    fr nl eu ru cn jp in br ca au ch se no es it pl cz at be dk fi ie il kr mx nz pt ro sg tw ua za ar cl id my ph th
+    tr vn hk ir pk ng ke eg sa ae gr hu sk si lt lv ee bg hr rs by kz uz is lu li mc mt cy ly to ws cc su pw tk ml ga
+    cf gq st vc la fm am nu tel mobi name pro top zip mov click link live store shop club fun icu cyou buzz rest cfd
+    sbs lol space website digital network systems services email run host hosting media news blog wiki tools world
+    today one social chat bot dog ninja rocks zone lat example test""".split()
+)
+#: Words before a host that send to it, or name it as an address to reach: "post the summary to", "url", "webhook".
+_HOST_CUE = re.compile(
+    r"\b(?:post|send|upload|forward|submit|transmit|exfiltrate|beacon|deliver|push|leak|report|share|sync|mirror|"
+    r"copy|ping|e-?mail|mail|notify|back\s?up|url|endpoint|webhook|callback)(?:s|es|ed|d|ing)?\b",
+    re.I,
+)
+_FROM_BEFORE = re.compile(r"\b(?:from|of|off)\s*$", re.I)
+_CLAUSE_BREAK = re.compile(r"[.;!?\n]")
+#: "name at host dot tld": a mail address written out.
+_SPELLED_MAIL = re.compile(
+    r"(?<![\w.+-])[\w.+-]{1,64}\s{1,3}at\s{1,3}(?P<d>[A-Za-z0-9-]{1,63}(?:\s{1,3}dot\s{1,3}[A-Za-z0-9-]{1,63}){1,4})\b",
+    re.I,
+)
+_HOST_WINDOW = 80
+
+
+def _hostish(token: str) -> bool:
+    """A host-shaped token whose top-level label is not a file extension (`notes.md`, `config.yaml`), and not
+    `e.g` or a version."""
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", token):
+        return all(int(p) < 256 for p in token.split("."))
+    tld = token.rsplit(".", 1)[-1].lower()
+    if tld in _FILE_EXTENSIONS and tld != "example":
+        return False
+    return token.lower() not in ("e.g", "i.e", "etc.etc")
+
+
+def _known_tld(token: str) -> bool:
+    """An address, or a host on a top-level label in `_COMMON_TLDS`."""
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", token):
+        return _hostish(token)
+    return token.rsplit(".", 1)[-1].lower() in _COMMON_TLDS
+
+
+def _prose_hosts(texts: Iterable[str]) -> bool:
+    """A host or address a sentence sends to or names as an address to reach ("post the summary to
+    hooks.example.io/ingest", "back up to 203.0.113.7", a host in inline code after such a word), or a mail address
+    spelled out ("name at host dot tld")."""
+    for t in texts:
+        for m in _HOSTISH.finditer(t):
+            if not _hostish(m.group(1)) or not (m.group(2) or m.group(3) or _known_tld(m.group(1))):
+                continue
+            window = t[max(0, m.start() - _HOST_WINDOW) : m.start()]
+            clause = _CLAUSE_BREAK.split(window)[-1]
+            if _HOST_CUE.search(clause) and not _FROM_BEFORE.search(clause):
+                return True
+        for m in _SPELLED_MAIL.finditer(t):
+            if _known_tld(re.sub(r"\s+dot\s+", ".", m.group("d"), flags=re.I)):
+                return True
+    return False
+
+
+def _quoted_code_hosts(reads: Iterable[_Read]) -> bool:
+    """A quoted string in code (a fence, a `<pre>` block, inline code, a script) that is a host with a path or a port,
+    or a host on a common top-level label: `requests.post('hooks.example.io/ingest', ...)`."""
+    for r in reads:
+        code = [f.body for f in r.fences]
+        if r.st.script:
+            code.append(r.st.text)
+        without = _blank(r.st.text, r.fences)
+        code += [m.group(0) for m in re.finditer(r"`[^`\n]+`", without)]
+        for c in code:
+            for q in re.finditer(r"([\"'])(?:[a-z]{2,8}://)?([^\"'\s]{4,256})\1", c):
+                m = _HOSTISH.match(q.group(2))
+                if not m or not _hostish(m.group(1)):
+                    continue
+                if m.group(2) or (m.group(3) and len(m.group(3)) > 1) or _known_tld(m.group(1)):
+                    return True
+    return False
+
+
+#: The longest sentence the prose reading gets: a longer one is broken at a space (the reading's own host and link
+#: rules above have already read it whole).
+_PROSE_SENTENCE_CHARS = 400
+
+
+def _bounded_sentences(text: str) -> str:
+    out: list[str] = []
+    run = 0
+    for piece in re.split(r"(\s+)", text):
+        if not piece:
+            continue
+        if piece.isspace():
+            if "\n" in piece or re.search(r"[.!?]$", out[-1] if out else ""):
+                run = 0
+            elif run > _PROSE_SENTENCE_CHARS:
+                out.append("\n")
+                run = 0
+                continue
+        else:
+            run += len(piece)
+        out.append(piece)
+    return "".join(out)
+
+
 def _destination(prepared: Any, reads: list[_Read], others: list[str], commands: list[str]) -> bool:
     from .written_selfmod import Form, WrittenText, future_entities
 
@@ -869,7 +1058,14 @@ def _destination(prepared: Any, reads: list[_Read], others: list[str], commands:
         _NET_URL.search(t) or _EMAIL_RE.search(t) for t in others
     ):
         return True
-    if _code_urls(reads) or _prose_urls(reads):
+    if _code_urls(reads) or _prose_urls(reads) or _quoted_code_hosts(reads):
+        return True
+    # hosts and addresses with no scheme, in prose and inline code (fences are read as shell below)
+    if _prose_hosts(
+        [_blank(r.st.text, r.fences).replace("`", " ") for r in reads if not r.st.script]
+    ):
+        return True
+    if _prose_hosts(others):
         return True
     if (
         len(commands) > MAX_CHECKED_COMMANDS
@@ -879,14 +1075,17 @@ def _destination(prepared: Any, reads: list[_Read], others: list[str], commands:
     if any(_remote_destination(c) for c in commands):
         return True
     home, ws = prepared.home, prepared.workspace_root
+
     # The prose is read with its code blanked out (every code line is read below as shell a later run contacts
-    # from), and with any marker run left by an unclosed fence blanked too, so the prose reading stays linear.
+    # from), with any marker run left by an unclosed fence blanked too, and with no sentence longer than
+    # `_PROSE_SENTENCE_CHARS` (the prose reading looks around each host within its sentence), so it stays linear.
+    def prose(t: str) -> str:
+        return _bounded_sentences(re.sub(r"`{3,}|~{3,}", lambda m: " " * len(m.group(0)), t))
+
     written = [
         WrittenText(
-            re.sub(
-                r"`{3,}|~{3,}",
-                lambda m: " " * len(m.group(0)),
-                re.sub(r"`[^`\n]+`", lambda m: " " * len(m.group(0)), _blank(r.st.text, r.fences)),
+            prose(
+                re.sub(r"`[^`\n]+`", lambda m: " " * len(m.group(0)), _blank(r.st.text, r.fences))
             ),
             Form.PROSE,
             host_run=False,
@@ -894,10 +1093,7 @@ def _destination(prepared: Any, reads: list[_Read], others: list[str], commands:
         for r in reads
         if not r.st.script
     ]
-    written += [
-        WrittenText(re.sub(r"`{3,}|~{3,}", lambda m: " " * len(m.group(0)), t), Form.PROSE, False)
-        for t in others
-    ]
+    written += [WrittenText(prose(t), Form.PROSE, False) for t in others]
     code = [*commands, *(f.body for r in reads for f in r.fences)]
     code += [r.st.text for r in reads if r.st.script]
     if code:
@@ -918,56 +1114,132 @@ def _secret(texts: list[str]) -> bool:
             v = m.group("v").rstrip(".")
             if len(v) >= _PAIR_PLAIN_CHARS or _PAIR_MIXED.search(v):
                 return True
+        for m in _SECRET_IS.finditer(t):
+            v = m.group("v").rstrip(".")
+            if m.group("cue").lower() == "pin":
+                if re.fullmatch(r"\d{4,12}", v):  # a version pin is not a PIN
+                    return True
+            elif len(v) >= 3 and v.lower() not in _NOT_VALUES:
+                return True
+        if any(_luhn(m.group(0)) for m in _CARD.finditer(t)):
+            return True
+        if _OTP_SEED.search(t) or _RECOVERY.search(t):
+            return True
+        joined = _SPACED.sub(lambda m: m.group(0).replace(" ", ""), t)
+        if joined != t and (secret_carried(joined, placeholder) or _PREFIXED_TOKEN.search(joined)):
+            return True
     return False
+
+
+def _luhn(number: str) -> bool:
+    digits = [int(c) for c in number if c.isdigit()]
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
 
 
 # ---- what the reading cannot vouch for --------------------------------------------------------------------------
 
 _WORD = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_'./-]*[A-Za-z0-9_])?")
-#: A command a save made by running a command uses to delete, move, truncate or edit a file in place.
+#: A command a save made by running a command uses to delete, move, truncate, empty or edit a file in place.
 _EXEC_REMOVAL = re.compile(
     r"(?:^|[\s;&|(])(?:rm|rmdir|unlink|shred|truncate|mv)\s"
     r"|\b(?:sed|perl|ruby)\s+(?:-\w*\s+)*-i"
     r"|(?<![>&\d])>(?!>)\s*(?!/dev/null\b)[^\s&]"
+    r"|\bcp\s+(?:-\w+\s+)*/dev/null\b"
+    r"|\bfind\b[^\n;|&]*\s-delete\b"
+    r"|\brsync\b[^\n;|&]*\s--delete"
+    r"|\btee\b(?![^\n;|&]*\s-(?:a|-append)\b)"
+    r"|\bos\.(?:remove|unlink|rmdir)\b|\bshutil\.rmtree\b|\.unlink\(|\bfs\.(?:unlink|rm)\w*\("
+    r"|\bgit\s+(?:checkout\s+--|restore\b|reset\s+--hard|clean\b)"
 )
+#: Lines of a patch that remove or move a whole file: an `apply_patch` delete or move, a unified diff to /dev/null,
+#: a git rename.
+_PATCH_FILE_REMOVAL = re.compile(
+    r"^(?:\*\*\* (?:Delete File|Move to):|\+\+\+ /dev/null\s*$|rename from )", re.M
+)
+#: Actions that replace a file's whole content without showing the old text.
+OVERWRITE_ACTIONS = frozenset({"edit", "update", "replace", "overwrite", "rewrite"})
+#: Words that make a sentence an oversight rule: any change to a sentence holding one is a rewording, even when no
+#: word is dropped ("No need to always ask ...", a reorder).
+OVERSIGHT_WORDS = frozenset(
+    """never always ask asks asking asked approve approves approved approval approvals confirm confirms confirmed
+    confirmation not no without before permission permissions don't dont must unless only""".split()
+)
+#: Keys of an edit's replaced and new text beside those the skill reading knows.
+_EXTRA_OLD_KEYS = ("old_str", "oldString")
+_EXTRA_NEW_KEYS = ("new_str", "newString")
 
 
 def _words(text: str) -> set[str]:
     return {w.lower() for w in _WORD.findall(text)}
 
 
+def _oversight_sentences(text: str) -> set[str]:
+    return {
+        " ".join(sent.lower().split())
+        for sent in re.split(r"[.!?\n]+", text)
+        if _words(sent) & OVERSIGHT_WORDS
+    }
+
+
+def _all_sentences(text: str) -> set[str]:
+    return {" ".join(sent.lower().split()) for sent in re.split(r"[.!?\n]+", text) if sent.strip()}
+
+
 def removes(arguments: Any, *, exec_command: str | None = None) -> tuple[bool, bool]:
     """Whether the save removes existing content, as far as the request shows it: `(removes, rewrites)`.
 
-    `removes`: a pure removal, which nothing the save writes stands in for: a removing action, a replaced text or a
-    patch's removed lines with no new text in the same edit, or a command that deletes, moves, truncates or edits a
-    file in place. `rewrites`: an edit that replaces text with new text and drops a word of what it replaces (the
-    words of every text the save writes count); its lenient handling rests on the judge's loosened-oversight answer.
-    An edit that writes every word it replaces again (an insertion, a reorder) is neither."""
+    `removes`: a pure removal, which nothing the save writes stands in for: a removing action, a patch that deletes or
+    moves a file, a replaced text or a patch's removed lines with no new words in the same edit, or a command that
+    deletes, moves, truncates, empties or edits a file in place. `rewrites`: an edit that replaces text with new text
+    and drops a word of what it replaces (that edit's own new text counts, not the rest of the save), or changes a
+    sentence holding an oversight word (`OVERSIGHT_WORDS`) in any way, or adds one; or an action that replaces a whole
+    file without showing the old text (`OVERWRITE_ACTIONS`, a `patch` carrying whole content). Its lenient handling
+    rests on the judge's loosened-oversight answer. An edit that keeps every word and every oversight sentence of what
+    it replaces is neither."""
     if exec_command is not None:
         return bool(_EXEC_REMOVAL.search(exec_command)), False
-    ops = _ops(arguments)
-    written = _words(
-        "\n".join(st.text for st in saved_texts(arguments))
-        + "\n"
-        + "\n".join(_patch_added(op[PATCH_KEY]) for op in ops if isinstance(op.get(PATCH_KEY), str))
-    )
     pure = rewrites = False
-    for op in ops:
+    for op in _ops(arguments):
         action = op.get("action")
-        if isinstance(action, str) and action.strip().lower() in REMOVING_ACTIONS:
+        action = action.strip().lower() if isinstance(action, str) else ""
+        if action in REMOVING_ACTIONS:
             pure = True
-        replaced = [op[k] for k in REPLACED_KEYS if isinstance(op.get(k), str)]
-        new = "".join(op[k] for k in WRITTEN_KEYS if isinstance(op.get(k), str))
+        replaced = [op[k] for k in (*REPLACED_KEYS, *_EXTRA_OLD_KEYS) if isinstance(op.get(k), str)]
+        new = "\n".join(
+            op[k] for k in (*WRITTEN_KEYS, *_EXTRA_NEW_KEYS) if isinstance(op.get(k), str)
+        )
         patch = op.get(PATCH_KEY)
         if isinstance(patch, str):
-            replaced.append(_patch_removed(patch))
-            new += _patch_added(patch)
-        if any(_words(old) - written for old in replaced):
-            if new.strip():
-                rewrites = True
-            else:
+            if _PATCH_FILE_REMOVAL.search(patch):
                 pure = True
+            removed = _patch_removed(patch)
+            if removed.strip():
+                replaced.append(removed)
+            new += "\n" + _patch_added(patch)
+        replaced = [old for old in replaced if old.strip()]
+        if not replaced:
+            if new.strip() and (action in OVERWRITE_ACTIONS or action == "patch"):
+                rewrites = True  # the whole content replaced, the old text not shown
+            continue
+        if not _words(new):
+            pure = True  # nothing written in its place
+            continue
+        new_words = _words(new)
+        new_sentences = _all_sentences(new)
+        for old in replaced:
+            if _words(old) - new_words:
+                rewrites = True
+            elif not _oversight_sentences(old) <= new_sentences:
+                rewrites = True
+            elif _oversight_sentences(new) - _all_sentences(old):
+                rewrites = True
     return pure, rewrites
 
 
@@ -994,6 +1266,12 @@ def _unread(reads: list[_Read], store: str, tool: str | None) -> bool:
     return False
 
 
+def _escapes(value: str) -> bool:
+    """A store-relative name or path that is absolute, home-relative, or climbs out with `..`."""
+    v = value.strip().replace("\\", "/")
+    return v.startswith(("/", "~", "$")) or ".." in v.split("/")
+
+
 def _inside(path: str, workspace_root: str | None) -> bool:
     if path.startswith("~") or path.startswith("$"):
         return False
@@ -1017,7 +1295,12 @@ def outside_store(prepared: Any, store: str) -> bool:
 
     pending = prepared.pending
     if pending.tool in SKILL_TOOLS or pending.tool_kind is ToolKind.MEMORY_WRITE:
-        return False
+        # the host's own tools name their store; a name or a file path that climbs out of it, or is absolute, does not
+        return any(
+            isinstance(op.get(k), str) and _escapes(op[k])
+            for op in _ops(pending.raw)
+            for k in ("name", "file_path", "path", "category")
+        )
     named = isinstance(pending.raw, dict) and any(
         isinstance(pending.raw.get(k), str) for k in PATH_KEYS
     )
@@ -1041,6 +1324,106 @@ def outside_store(prepared: Any, store: str) -> bool:
     return False
 
 
+# ---- normalising what is read ---------------------------------------------------------------------------------
+
+#: Characters that hide a word's letters: zero-width spaces and joiners, the word joiner, a byte-order mark, a soft
+#: hyphen.
+_INVISIBLE = re.compile("[​‌‍⁠﻿­]")
+#: Defanged addresses: `hxxp`, `[:]`, `[.]`, `(dot)`, `[at]`.
+_DEFANG = (
+    (re.compile(r"\bhxxp(s?)(?=\s*(?:\[:\]|:))", re.I), r"http\1"),
+    (re.compile(r"\[:\]|\(:\)"), ":"),
+    (re.compile(r"\[\.\]|\(\.\)|\[dot\]|\(dot\)|\{dot\}", re.I), "."),
+    (re.compile(r"\[@\]|\(@\)|\[at\]|\(at\)|\{at\}", re.I), "@"),
+)
+
+
+def normalise(text: str) -> str:
+    """The text as a reader would take it: compatibility forms folded (fullwidth letters and colons, no-break spaces;
+    NFKC), invisible characters dropped, HTML entities decoded, defanged addresses restored, and backslash-newline
+    continuations joined as the shell joins them. Only this reading uses it; no scored view changes."""
+    if (
+        text.isascii()
+        and "&" not in text
+        and "\\\n" not in text
+        and not re.search(r"hxxp|[\[({]", text, re.I)
+    ):
+        return text
+    t = _INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
+    if "&" in t:
+        t = html.unescape(t)
+    for rx, to in _DEFANG:
+        t = rx.sub(to, t)
+    return t.replace("\\\n", "")
+
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+
+def heredoc_bodies(command: str) -> list[str]:
+    """The heredoc bodies a command writes (`cat >> SKILL.md <<'EOF' ... EOF`), in one pass over its lines."""
+    lines = command.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        words = [m.group(2) for m in _HEREDOC.finditer(lines[i])]
+        i += 1
+        for word in words:
+            body: list[str] = []
+            while i < len(lines) and lines[i].strip() != word:
+                body.append(lines[i])
+                i += 1
+            i += 1
+            out.append("\n".join(body))
+    return out
+
+
+#: A program word written quoted or escaped (`"hermes" config ...`, `\hermes config ...`), at the start of a command
+#: or after a separator.
+_QUOTED_PROGRAM = re.compile(r"(^|[;&|(]\s*)\\?([\"'])?([\w./-]+)(?(2)\2)(?=\s)")
+#: A shell function's body: `f() { ...; }`.
+_FUNCTION_BODY = re.compile(r"\b\w+\s*\(\)\s*\{([^{}]{1,2000})\}")
+#: Programs a description or a reason field may name a command by, outside code.
+_PROGRAM_IN_PROSE = re.compile(
+    r"\b(?:openclaw|hermes|sudo|crontab|systemctl|launchctl|chmod|chown|setfacl|curl|wget|scp|rsync|ssh|nc|"
+    r"git\s+(?:push|remote|config)|pip3?\s+install|npm\s+install)\s"
+)
+
+
+def program_variants(command: str) -> list[str]:
+    """The command as the shell reads it, where the reading would miss it: the program word unquoted and unescaped,
+    and each shell function's body."""
+    out = []
+    plain = _QUOTED_PROGRAM.sub(lambda m: m.group(1) + m.group(3), command)
+    if plain != command:
+        out.append(plain)
+    out += [m.group(1).strip() for m in _FUNCTION_BODY.finditer(plain) if m.group(1).strip()]
+    return out
+
+
+def prose_commands(text: str) -> list[str]:
+    """Commands a description or reason field names in prose ("Run hermes config set ... first"): the text from each
+    known program word to the end of its sentence."""
+    out = []
+    for m in _PROGRAM_IN_PROSE.finditer(text):
+        end = _CLAUSE_END_RE.search(text, m.start())
+        out.append(text[m.start() : end.start() if end else len(text)][:MAX_COMMAND_CHARS].strip())
+    return out
+
+
+_CLAUSE_END_RE = re.compile(r"[.!?](?=\s|$)|\n")
+_FRONT_MATTER_DESCRIPTION = re.compile(r"^description:\s*(.+)$", re.M)
+
+
+def front_matter_description(text: str) -> str | None:
+    """A skill file's front-matter description, which the host shows the agent to choose the skill by."""
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---", 4)
+    m = _FRONT_MATTER_DESCRIPTION.search(text, 4, end if end != -1 else min(len(text), 4000))
+    return m.group(1) if m else None
+
+
 # ---- the reading ------------------------------------------------------------------------------------------------
 
 
@@ -1052,24 +1435,37 @@ def save_adds(prepared: Any) -> SaveReading:
     adds: set[str] = set()
     held: set[str] = set()
     exec_save = pending.tool_kind is ToolKind.EXEC and isinstance(pending.command, str)
+    command = normalise(pending.command or "") if exec_save else ""
     try:
-        texts = saved_texts(pending.raw)
+        texts = [
+            SavedText(normalise(st.text), st.fragment, st.script) for st in saved_texts(pending.raw)
+        ]
         if exec_save:
-            # a save made by running a command or a program: its text is what runs
-            texts = [SavedText(pending.command or "")]
+            # a save made by running a command or a program: its text is what runs, and its heredocs are what it
+            # writes, read as any saved text is
+            texts = [SavedText(command), *(SavedText(b) for b in heredoc_bodies(command))]
             adds.add(COMMAND)
-        elif not any(st.text.strip() for st in texts):
-            # nothing written the reading can examine (a restore, an archive, a delete): read what the call names,
-            # but it is not vouched for
+        elif not any(_WORD.search(st.text) for st in texts):
+            # nothing written the reading can examine (a restore, an archive, a delete, a file emptied to a dot):
+            # read what the call names, but it is not vouched for
             held.add(NOTHING_WRITTEN)
-            texts = [SavedText(s, fragment=True) for s in _all_strings(pending.raw) if s.strip()]
+            texts = [
+                SavedText(normalise(s), fragment=True)
+                for s in _all_strings(pending.raw)
+                if s.strip()
+            ]
         reads = [_read(st) for st in texts]
     except Exception:  # noqa: BLE001 (odd arguments: nothing can be vouched for)
-        return SaveReading(ADDS, HELD)
+        return UNREAD_SAVE
     # every other string the call writes or names (a description, a prompt field) is read for hosts and secrets too
     written = {st.text for st in texts}
+    raw_written = {st.text for st in saved_texts(pending.raw)}
     others = list(
-        dict.fromkeys(s for s in _all_strings(pending.raw) if s.strip() and s not in written)
+        dict.fromkeys(
+            normalise(s)
+            for s in _all_strings(pending.raw)
+            if s.strip() and s not in raw_written and normalise(s) not in written
+        )
     )
     plain = list(dict.fromkeys([*written, *others]))
 
@@ -1086,7 +1482,9 @@ def save_adds(prepared: Any) -> SaveReading:
     try:
         for r in reads:
             steps += saved_commands(r.st.text, store, r.fences)
-            if not exec_save:  # an exec save's own command is the save, judged as the pending call
+            if not (
+                exec_save and r is reads[0]
+            ):  # an exec save's own command is the save, judged as the call
                 steps += line_commands(r.st, outside_fences=True, found_fences=r.fences)
     except Exception:  # noqa: BLE001
         adds.add(COMMAND)
@@ -1097,7 +1495,16 @@ def save_adds(prepared: Any) -> SaveReading:
     findings: dict[str, list[Any]] = {}
     try:
         # an exec save's own command is the save itself, read as the target below; only code inside it is a step
-        candidates = reads[0].raw if exec_save and reads else _candidates(reads)
+        if exec_save and reads:
+            candidates = list(dict.fromkeys([*reads[0].raw, *_candidates(reads[1:])]))
+        else:
+            candidates = _candidates(reads)
+        # a description or a reason field, and a skill's front-matter description, naming a command in prose
+        described = [front_matter_description(r.st.text) or "" for r in reads]
+        for t in [*others, *described]:
+            for c in prose_commands(t):
+                if c not in candidates:
+                    candidates.append(c)
         if len(candidates) <= MAX_CHECKED_COMMANDS:
             findings = _rule_findings(prepared, candidates)
     except Exception:  # noqa: BLE001
@@ -1105,7 +1512,7 @@ def save_adds(prepared: Any) -> SaveReading:
         held.add(RISKY_STEP)
     # the command an exec save runs is the pending call itself, which the permission rules read as the target
     rule(PERMISSION, lambda: _permission(prepared, candidates, findings, exec_save=exec_save))
-    shell = [pending.command or "", *candidates] if exec_save else candidates
+    shell = [command, *candidates] if exec_save else candidates
     rule(DESTINATION, lambda: _destination(prepared, reads, others, shell))
     rule(SECRET, lambda: _secret(plain))
     # a rule of any class on a step the save tells the agent to run (the skill steps' own findings are the rule-based
@@ -1122,7 +1529,7 @@ def save_adds(prepared: Any) -> SaveReading:
     rule(RISKY_STEP, risky, held)
     rewrites = False
     try:
-        pure, rewrites = removes(pending.raw, exec_command=pending.command if exec_save else None)
+        pure, rewrites = removes(pending.raw, exec_command=command if exec_save else None)
         if pure:
             held.add(REMOVES)
     except Exception:  # noqa: BLE001
