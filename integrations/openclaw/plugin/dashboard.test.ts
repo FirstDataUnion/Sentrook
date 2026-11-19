@@ -453,6 +453,16 @@ test("pending items sit at the top with the commands to answer them", () => {
   assert.match(text, /\/sentrook-approve h-2c2c2c/);
   assert.match(text, /destination channel:1234567890/);
   assert.match(text, /There is no suggested grant/);
+  // The open prompt carries the same breakdown as an opened scan, without repeating its why command.
+  const panel = root.byClass("srk-pending")[0]!;
+  const details = panel.byClass("srk-detail");
+  assert.equal(details.length, 1, "the review's scan is in the list; the holds' scans are not");
+  assert.equal(details[0]!.byClass("srk-tier").length, 3);
+  assert.equal(details[0]!.byClass("srk-meter").length, 1);
+  assert.match(panel.textContent, /Its scan is older than the scans shown here; \/sentrook-why h-2c2c2c shows it/);
+  // A hold whose scan is in the list shows its breakdown too.
+  model.pending.holds[0].request_id = model.scans[0].id;
+  assert.equal(drawView(model).byClass("srk-pending")[0]!.byClass("srk-detail").length, 2);
   // Nothing pending: no panel.
   assert.equal(drawView(viewModel()).byClass("srk-pending").length, 0);
 });

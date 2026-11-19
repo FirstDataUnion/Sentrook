@@ -46,7 +46,8 @@ function pending(scans: Array<Record<string, any>>): unknown {
     holds: [
       {
         id: "h-3fa2c1",
-        request_id: "d6d6d6d6-0000-4000-8000-000000000006",
+        // Points at a scan in the list so the example shows its breakdown.
+        request_id: scans.find((s) => s.bucket === "observed")?.id ?? "d6d6d6d6-0000-4000-8000-000000000006",
         tool: "message",
         where: 'cron job "daily-brief" (job 7f3a)',
         held_at: new Date(Date.now() - 4 * 3600_000).toISOString(),

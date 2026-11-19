@@ -119,6 +119,8 @@
     ".srk-pending{border:2px solid var(--srk-mid);border-radius:var(--srk-radius);background:var(--srk-card);padding:12px 14px;margin:12px 0}",
     ".srk-pending h2{margin:0 0 8px;display:flex;align-items:center;gap:8px}",
     ".srk-pending-item{border-top:1px solid var(--srk-border);padding:10px 0 4px}.srk-pending-item:first-of-type{border-top:0;padding-top:2px}",
+    ".srk-pending-detail{border:1px solid var(--srk-border);border-radius:var(--srk-radius);margin:10px 0 6px;overflow:hidden}",
+    ".srk-pending-detail>.srk-detail{border-top:0}",
     ".srk-pending-title{font-weight:600}.srk-pending-meta{color:var(--srk-muted);font-size:12px;margin:2px 0 6px}",
     // Timeline.
     ".srk-tl-wrap{border:1px solid var(--srk-border);border-radius:var(--srk-radius);background:var(--srk-card);padding:10px 12px 8px;margin:12px 0}",
@@ -141,7 +143,7 @@
     ".srk-caret{flex:none;color:var(--srk-muted);transition:transform .15s}.srk-open .srk-caret{transform:rotate(90deg)}",
     ".srk-detail{border-top:1px solid var(--srk-border);padding:14px 14px 16px}",
     ".srk-meter{position:relative;height:14px;border-radius:7px;overflow:hidden;display:flex;margin:6px 0 4px;cursor:help}",
-    ".srk-zone{height:100%;opacity:.22}.srk-marker{position:absolute;top:-3px;bottom:-3px;width:4px;border-radius:2px;",
+    ".srk-zone{height:100%;opacity:.85}.srk-marker{position:absolute;top:-3px;bottom:-3px;width:5px;border-radius:2px;",
     "background:currentColor;box-shadow:0 0 0 2px var(--srk-card)}",
     ".srk-scale{display:flex;justify-content:space-between;color:var(--srk-muted);font-size:11px;font-variant-numeric:tabular-nums}",
     ".srk-formula{margin:12px 0;padding:8px 12px;border-radius:8px;background:var(--srk-soft);font-size:13px}",
@@ -451,7 +453,8 @@
     return out.length ? el("div", { class: "srk-bar-row" }, out) : null;
   }
 
-  function detail(scan, model, open) {
+  function detail(scan, model, open, opts) {
+    opts = opts || {};
     var cmd = cmdOf(model);
     var kids = [];
     if (scan.failure != null) {
@@ -501,7 +504,7 @@
       acc.push(hinted("dt", f[0], f[2]), el("dd", { text: f[1] }));
       return acc;
     }, [])));
-    if (scan.bucket === "blocked" || scan.bucket === "review" || scan.bucket === "observed") {
+    if (!opts.noCommands && (scan.bucket === "blocked" || scan.bucket === "review" || scan.bucket === "observed")) {
       kids.push(el("div", { class: "srk-cmds" }, [
         command(cmd("why") + " " + scan.id.slice(0, 8), "The same scan as text, with any grant that would allow calls like it next time."),
       ]));
@@ -589,7 +592,7 @@
     ]);
   }
 
-  function pendingPanel(model) {
+  function pendingPanel(model, open) {
     var p = model.pending || {};
     var cmd = cmdOf(model);
     var byId = {};
@@ -611,7 +614,8 @@
         answer.length ? el("div", { class: "srk-help", text: answer[0] }) : null,
         el("div", { class: "srk-cmds" }, answer.slice(1).map(function (c) {
           return command(c);
-        }).concat([command(cmd("why") + " " + s.id.slice(0, 8), "What the scanner found, before you answer.")])),
+        }).concat([command(cmd("why") + " " + s.id.slice(0, 8), "The same breakdown as text.")])),
+        el("div", { class: "srk-pending-detail" }, [detail(s, model, open, { noCommands: true })]),
       ]));
     });
     holds.forEach(function (h) {
@@ -626,6 +630,9 @@
           command(cmd("why") + " " + h.id, "The held call's scan and what approving would set."),
         ]),
         el("div", { class: "srk-help", text: "To refuse it, do nothing: the hold expires and the call never runs." }),
+        h.request_id && byId[h.request_id]
+          ? el("div", { class: "srk-pending-detail" }, [detail(byId[h.request_id], model, open, { noCommands: true })])
+          : el("div", { class: "srk-help", text: "Its scan is older than the scans shown here; " + cmd("why") + " " + h.id + " shows it." }),
       ]));
     });
     if (p.holds_readable === false) items.push(el("div", { class: "srk-help", text: "The holds file could not be read, so held calls may be missing here." }));
@@ -710,7 +717,7 @@
       el("span", { class: "srk-sub", text: "Recent scans · read-only · mode: " + (model.mode || "?") }),
       el("span", { class: "srk-spacer" }),
     ].concat(limits)));
-    var pending = pendingPanel(model);
+    var pending = pendingPanel(model, open);
     if (pending) root.appendChild(pending);
     if (model.log !== "on") {
       root.appendChild(el("div", { class: "srk-empty", text: "The traffic log is off, so there is no scan history." }));
