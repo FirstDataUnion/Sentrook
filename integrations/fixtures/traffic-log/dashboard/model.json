@@ -1,0 +1,661 @@
+{
+  "version": 1,
+  "log": "on",
+  "limit": 50,
+  "scans": [
+    {
+      "id": "d1d1d1d1-0000-4000-8000-000000000001",
+      "ts": "2026-11-19T09:04:00.000Z",
+      "session": "s_dash",
+      "tool": "terminal",
+      "step": 6,
+      "mode": "enforce",
+      "action": "blocked",
+      "review": "-",
+      "bucket": "blocked",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 86.4,
+      "enforced": "block",
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.91,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": 0.2
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": 0.35
+            },
+            {
+              "name": "distrust",
+              "value": 0.8
+            },
+            {
+              "name": "request_origin",
+              "value": 0.0
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": 1.0
+            },
+            {
+              "name": "exposure",
+              "value": 0.9
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            },
+            {
+              "name": "future_leaf",
+              "value": 0.4
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.95,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": 1.0
+            },
+            {
+              "name": "reach",
+              "value": 0.95
+            },
+            {
+              "name": "irreversibility",
+              "value": 0.6
+            },
+            {
+              "name": "self_modification",
+              "value": 0.0
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.7,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": 1.0
+            },
+            {
+              "name": "coverage",
+              "value": 0.7
+            },
+            {
+              "name": "model_certainty",
+              "value": 0.82
+            }
+          ]
+        }
+      ],
+      "floors": [
+        {
+          "floor": "credential_exfiltration",
+          "min_risk": 0.85,
+          "subject": "E2"
+        }
+      ],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "floor.credential_exfiltration",
+          "signal": null,
+          "subject": "E2",
+          "text": "sends a credential file to {E1}"
+        },
+        {
+          "code": "distrust.unknown_destination",
+          "signal": "suspicion.distrust",
+          "subject": "E1",
+          "text": "sends data to {E1}, which you have not used before"
+        },
+        {
+          "code": "exposure.injected_instructions",
+          "signal": "suspicion.exposure",
+          "subject": null,
+          "text": "the page it read told the agent what to do"
+        },
+        {
+          "code": "sensitivity.credential",
+          "signal": "consequence.sensitivity",
+          "subject": "E2",
+          "text": null
+        },
+        {
+          "code": "model.split",
+          "signal": "confidence.agreement",
+          "subject": null,
+          "text": null
+        },
+        {
+          "code": "future.thing",
+          "signal": "suspicion.not_a_leaf",
+          "subject": null,
+          "text": "a reason on a signal this page does not know"
+        }
+      ],
+      "entities": [
+        {
+          "id": "E1",
+          "kind": "host",
+          "display": "<script>alert(1)</script>evil.example"
+        },
+        {
+          "id": "E2",
+          "kind": "file",
+          "display": "~/.ssh/id_ed25519"
+        },
+        {
+          "id": "E10",
+          "kind": "host",
+          "display": "tenth.example"
+        }
+      ]
+    },
+    {
+      "id": "d5d5d5d5-0000-4000-8000-000000000005",
+      "ts": "2026-11-19T09:03:30.000Z",
+      "session": "s_dash",
+      "tool": "skill_manage",
+      "step": 5,
+      "mode": "enforce",
+      "action": "allowed (snoozed)",
+      "review": "-",
+      "bucket": "allowed",
+      "flags": [
+        "snoozed"
+      ],
+      "open_review": false,
+      "failure": null,
+      "risk": 61,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.62,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": 0.62
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.98,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": 0.98
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.9,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "origin.not_owner",
+          "signal": "suspicion.request_origin",
+          "subject": null,
+          "text": "the request came from a scheduled run"
+        }
+      ],
+      "entities": []
+    },
+    {
+      "id": "d4d4d4d4-0000-4000-8000-000000000004",
+      "ts": "2026-11-19T09:03:00.000Z",
+      "session": "s_dash",
+      "tool": "skill_manage",
+      "step": 4,
+      "mode": "observe",
+      "action": "observed (would review)",
+      "review": "-",
+      "bucket": "observed",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 61,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.62,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": 0.62
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.98,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": 0.98
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.9,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "origin.not_owner",
+          "signal": "suspicion.request_origin",
+          "subject": null,
+          "text": "the request came from a scheduled run"
+        }
+      ],
+      "entities": []
+    },
+    {
+      "id": "d2d2d2d2-0000-4000-8000-000000000002",
+      "ts": "2026-11-19T09:02:00.000Z",
+      "session": "s_dash",
+      "tool": "web_fetch",
+      "step": 3,
+      "mode": "enforce",
+      "action": "review",
+      "review": "approved",
+      "bucket": "review",
+      "flags": [
+        "relaxed"
+      ],
+      "open_review": false,
+      "failure": null,
+      "risk": 38,
+      "enforced": null,
+      "ceiling": "review",
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.3,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": 0.1
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": 0.0
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": 0.0
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.6,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": 0.6
+            },
+            {
+              "name": "reach",
+              "value": 1.0
+            },
+            {
+              "name": "irreversibility",
+              "value": 0.2
+            },
+            {
+              "name": "self_modification",
+              "value": 0.0
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 0.4,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": 0.4
+            },
+            {
+              "name": "coverage",
+              "value": 1.0
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [
+        {
+          "effect": "distrust+untrusted_origin",
+          "grant_ref": "g-3",
+          "subject": "E1"
+        }
+      ],
+      "reasons": [
+        {
+          "code": "agreement.split",
+          "signal": "confidence.agreement",
+          "subject": null,
+          "text": "the checks disagree"
+        }
+      ],
+      "entities": [
+        {
+          "id": "E1",
+          "kind": "host",
+          "display": "api.example.com"
+        }
+      ]
+    },
+    {
+      "id": "d3d3d3d3-0000-4000-8000-000000000003",
+      "ts": "2026-11-19T09:01:00.000Z",
+      "session": "s_dash",
+      "tool": "read_file",
+      "step": 2,
+      "mode": "enforce",
+      "action": "allowed",
+      "review": "-",
+      "bucket": "allowed",
+      "flags": [],
+      "open_review": false,
+      "failure": null,
+      "risk": 4,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.05,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.1,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 1,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [],
+      "entities": []
+    },
+    {
+      "id": "d0d0d0d0-0000-4000-8000-000000000000",
+      "ts": "2026-11-19T09:00:00.000Z",
+      "session": "s_dash",
+      "tool": "web_fetch",
+      "step": 1,
+      "mode": "enforce",
+      "action": "blocked (scan error)",
+      "review": "-",
+      "bucket": "scan_error",
+      "flags": [],
+      "open_review": false,
+      "failure": "timeout",
+      "risk": null,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [],
+      "floors": [],
+      "relief": [],
+      "reasons": [],
+      "entities": []
+    }
+  ],
+  "totals": {
+    "blocked": 1,
+    "review": 1,
+    "observed": 1,
+    "allowed": 2,
+    "scan_error": 1
+  }
+}

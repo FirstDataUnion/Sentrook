@@ -1,0 +1,543 @@
+[
+  {
+    "name": "default page",
+    "log": "dashboard",
+    "params": {},
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001",
+      "d5d5d5d5-0000-4000-8000-000000000005",
+      "d4d4d4d4-0000-4000-8000-000000000004",
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003",
+      "d0d0d0d0-0000-4000-8000-000000000000"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "page size 2",
+    "log": "dashboard",
+    "params": {
+      "n": "2"
+    },
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001",
+      "d5d5d5d5-0000-4000-8000-000000000005"
+    ],
+    "page": {
+      "more": true,
+      "next": "d5d5d5d5-0000-4000-8000-000000000005",
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 2,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "older than the second scan",
+    "log": "dashboard",
+    "params": {
+      "n": "2",
+      "before": "d4d4d4d4-0000-4000-8000-000000000004"
+    },
+    "ids": [
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003"
+    ],
+    "page": {
+      "more": true,
+      "next": "d3d3d3d3-0000-4000-8000-000000000003",
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 2,
+      "before": "d4d4d4d4-0000-4000-8000-000000000004",
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "cursor in capitals",
+    "log": "dashboard",
+    "params": {
+      "n": "2",
+      "before": "D4D4D4D4-0000-4000-8000-000000000004"
+    },
+    "ids": [
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003"
+    ],
+    "page": {
+      "more": true,
+      "next": "d3d3d3d3-0000-4000-8000-000000000003",
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 2,
+      "before": "d4d4d4d4-0000-4000-8000-000000000004",
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "tool contains, ignoring case",
+    "log": "dashboard",
+    "params": {
+      "tool": "WEB"
+    },
+    "ids": [
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d0d0d0d0-0000-4000-8000-000000000000"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": "WEB",
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "outcome blocked",
+    "log": "dashboard",
+    "params": {
+      "outcome": "blocked"
+    },
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": "blocked",
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "outcome scan error",
+    "log": "dashboard",
+    "params": {
+      "outcome": "scan_error"
+    },
+    "ids": [
+      "d0d0d0d0-0000-4000-8000-000000000000"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": "scan_error",
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "risk at least 60",
+    "log": "dashboard",
+    "params": {
+      "risk": "60"
+    },
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001",
+      "d5d5d5d5-0000-4000-8000-000000000005",
+      "d4d4d4d4-0000-4000-8000-000000000004"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": 60,
+      "session": null
+    }
+  },
+  {
+    "name": "time window",
+    "log": "dashboard",
+    "params": {
+      "from": "2026-11-19T09:01:00Z",
+      "to": "2026-11-19T09:03:15Z"
+    },
+    "ids": [
+      "d4d4d4d4-0000-4000-8000-000000000004",
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": "2026-11-19T09:01:00.000Z",
+      "to": "2026-11-19T09:03:15.000Z",
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "window with an offset zone",
+    "log": "dashboard",
+    "params": {
+      "from": "2026-11-19T10:01:00+01:00"
+    },
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001",
+      "d5d5d5d5-0000-4000-8000-000000000005",
+      "d4d4d4d4-0000-4000-8000-000000000004",
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": "2026-11-19T09:01:00.000Z",
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "window without a zone is ignored",
+    "log": "dashboard",
+    "params": {
+      "from": "2026-11-19T09:03:00"
+    },
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001",
+      "d5d5d5d5-0000-4000-8000-000000000005",
+      "d4d4d4d4-0000-4000-8000-000000000004",
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003",
+      "d0d0d0d0-0000-4000-8000-000000000000"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "filters together",
+    "log": "dashboard",
+    "params": {
+      "tool": "skill",
+      "outcome": "observed",
+      "risk": "50"
+    },
+    "ids": [
+      "d4d4d4d4-0000-4000-8000-000000000004"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": "skill",
+      "outcome": "observed",
+      "min_risk": 50,
+      "session": null
+    }
+  },
+  {
+    "name": "unknown cursor",
+    "log": "dashboard",
+    "params": {
+      "before": "ffffffff-0000-4000-8000-000000000000"
+    },
+    "ids": [],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": true,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 10,
+      "before": "ffffffff-0000-4000-8000-000000000000",
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "malformed values are ignored",
+    "log": "dashboard",
+    "params": {
+      "n": "x",
+      "outcome": "nope",
+      "risk": "101",
+      "before": "<script>"
+    },
+    "ids": [
+      "d1d1d1d1-0000-4000-8000-000000000001",
+      "d5d5d5d5-0000-4000-8000-000000000005",
+      "d4d4d4d4-0000-4000-8000-000000000004",
+      "d2d2d2d2-0000-4000-8000-000000000002",
+      "d3d3d3d3-0000-4000-8000-000000000003",
+      "d0d0d0d0-0000-4000-8000-000000000000"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 6773,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "into the rotated file",
+    "log": "history",
+    "params": {
+      "n": "3",
+      "before": "5555a1b2-0000-4000-8000-000000000005"
+    },
+    "ids": [
+      "4444a1b2-0000-4000-8000-000000000004",
+      "3333a1b2-0000-4000-8000-000000000003",
+      "2222a1b2-0000-4000-8000-000000000002"
+    ],
+    "page": {
+      "more": true,
+      "next": "2222a1b2-0000-4000-8000-000000000002",
+      "read_bytes": 7035,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": false
+    },
+    "query": {
+      "limit": 3,
+      "before": "5555a1b2-0000-4000-8000-000000000005",
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "session",
+    "log": "history",
+    "params": {
+      "session": "s_1"
+    },
+    "ids": [
+      "8888a1b2-0000-4000-8000-000000000008",
+      "7777a1b2-0000-4000-8000-000000000007",
+      "6666a1b2-0000-4000-8000-000000000006",
+      "5555a1b2-0000-4000-8000-000000000005",
+      "4444a1b2-0000-4000-8000-000000000004",
+      "3333a1b2-0000-4000-8000-000000000003",
+      "2222a1b2-0000-4000-8000-000000000002",
+      "1111a1b2-0000-4000-8000-000000000001"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 7035,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": "s_1"
+    }
+  },
+  {
+    "name": "window older than the log",
+    "log": "history",
+    "params": {
+      "to": "2020-01-01T00:00:00Z"
+    },
+    "ids": [],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 7035,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": "2020-01-01T00:00:00.000Z",
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  },
+  {
+    "name": "torn lines",
+    "log": "edge",
+    "params": {},
+    "ids": [
+      "aaaa0001-0000-4000-8000-000000000001"
+    ],
+    "page": {
+      "more": false,
+      "next": null,
+      "read_bytes": 1844,
+      "budget_hit": false,
+      "cursor_lost": false,
+      "reached_start": true
+    },
+    "query": {
+      "limit": 10,
+      "before": null,
+      "from": null,
+      "to": null,
+      "tool": null,
+      "outcome": null,
+      "min_risk": null,
+      "session": null
+    }
+  }
+]

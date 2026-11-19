@@ -134,12 +134,12 @@ function chars(s: string): string[] {
   return [...s];
 }
 
-function text(v: unknown, limit: number): string {
+export function text(v: unknown, limit: number): string {
   const s = chars(String(v).replace(/\s+/g, " ").trim());
   return s.length <= limit ? s.join("") : `${s.slice(0, limit - 1).join("")}…`;
 }
 
-function responseOf(scan: Rec): ScanResponse | null {
+export function responseOf(scan: Rec): ScanResponse | null {
   const r = scan.response;
   return r && typeof r === "object" && !Array.isArray(r) ? (r as ScanResponse) : null;
 }
