@@ -331,7 +331,7 @@ for (const run of Object.keys(RUNS) as (keyof typeof RUNS)[]) {
       assert.ok(planir.self_edit, "declared as a self-edit");
       const [scan, resolution] = recentScans(path.join(stateDir, "traffic.jsonl"), 1)[0]!;
       assert.equal(actionOf(scan, resolution), want.action);
-      assert.match(history(), new RegExp(`${want.action.replace(/[()]/g, "\\$&")}`));
+      assert.ok(history().includes(want.action), `history shows ${want.action}`);
       if (want.notice) {
         assert.equal(r.sent.length, 1, "one notice");
         const text: string = r.sent[0].text;
