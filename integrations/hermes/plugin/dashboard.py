@@ -82,6 +82,17 @@ def _list(v: Any) -> list[dict[str, Any]]:
     return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
 
 
+def _step(v: Any) -> int | None:
+    """A whole-number step, as JavaScript's Number.isInteger reads it (3.0 counts)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return None
+
+
 def _tiers(tree: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for name, known in TIERS:
@@ -129,7 +140,7 @@ def scan_model(scan: dict[str, Any], resolution: dict[str, Any] | None) -> dict[
         "ts": scan.get("ts") if isinstance(scan.get("ts"), str) else None,
         "session": _str(scan.get("session_ref"), 80),
         "tool": _str(scan.get("tool"), 80),
-        "step": step if isinstance(step, int) and not isinstance(step, bool) else None,
+        "step": _step(step),
         "mode": _str(scan.get("mode"), 20),
         "action": action,
         "review": review_of(action, resolution),

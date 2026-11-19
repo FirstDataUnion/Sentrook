@@ -22,9 +22,23 @@ RAW = "RAW-ARG-MARKER"
 OPENCLAW_VIEW = PLUGIN.parents[1] / "openclaw" / "plugin" / "dashboardView.js"
 
 
-def test_scans_model_matches_the_shared_fixture():
-    expected = json.loads((DASH / "model.json").read_text())
-    assert dashboard.scans_model(DASH / "traffic.jsonl", True, 50) == expected
+@pytest.mark.parametrize(
+    ("log", "expected"),
+    [
+        (DASH / "traffic.jsonl", "model.json"),
+        (FIXTURES / "traffic.jsonl", "model-history.json"),
+        (FIXTURES / "edge" / "traffic.jsonl", "model-edge.json"),
+    ],
+)
+def test_scans_model_matches_the_shared_fixture(log, expected):
+    assert dashboard.scans_model(log, True, 50) == json.loads((DASH / expected).read_text())
+
+
+@pytest.mark.parametrize(
+    ("raw", "step"), [(3, 3), (3.0, 3), (3.5, None), (True, None), ("3", None)]
+)
+def test_step_reads_as_javascript_does(raw, step):
+    assert dashboard.scan_model({"request_id": "x", "step": raw}, None)["step"] == step
 
 
 @pytest.mark.parametrize(

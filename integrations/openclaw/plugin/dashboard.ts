@@ -225,8 +225,13 @@ function send(res: Res, status: number, type: string, body: string, head: boolea
   return true;
 }
 
-/** The route handler: GET or HEAD of `/sentrook` (or `/sentrook/`) draws the page; nothing else is served. */
-export function handleRequest(req: Req, res: Res, loadConfig: () => PluginConfig, now: () => Date = () => new Date()): true {
+/**
+ * The route handler: GET or HEAD of `/sentrook` (or `/sentrook/`) draws the page; nothing else is served. A path
+ * that only shares the prefix (`/sentrook-x`) is not ours and is left to the Gateway (false).
+ */
+export function handleRequest(req: Req, res: Res, loadConfig: () => PluginConfig, now: () => Date = () => new Date()): boolean {
+  const pathname = new URL(req.url ?? ROUTE, "http://gateway.invalid").pathname;
+  if (pathname !== ROUTE && !pathname.startsWith(`${ROUTE}/`)) return false;
   const method = (req.method ?? "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
     return send(res, 405, "text/plain; charset=utf-8", "The Sentrook dashboard is read-only.", false, { Allow: "GET, HEAD" });

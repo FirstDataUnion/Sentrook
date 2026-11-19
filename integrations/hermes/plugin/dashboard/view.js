@@ -317,12 +317,12 @@
 
   function detail(scan, model) {
     var kids = [];
-    if (scan.risk == null) {
-      kids.push(el("p", { text: "The scan failed (" + (scan.failure || "unknown") + "), so there are no scores. The plugin applied its scan-error setting." }));
+    if (scan.failure != null) {
+      kids.push(el("p", { text: "The scan failed (" + scan.failure + "), so there are no scores. The plugin applied its scan-error setting." }));
     } else {
       kids.push(el("div", { class: "srk-tier-top" }, [
         el("span", { class: "srk-tier-name", text: "Risk" }),
-        el("span", { class: "srk-tier-score", style: "color:" + riskColour(scan.risk, model.lines), text: String(Math.round(scan.risk)) }),
+        el("span", { class: "srk-tier-score", style: "color:" + riskColour(scan.risk, model.lines), text: scan.risk == null ? "–" : String(Math.round(scan.risk)) }),
       ]));
       kids.push(meter(scan, model.lines));
       kids.push(chips(scan));
@@ -409,6 +409,10 @@
   function render(root, model, opts) {
     ensureStyle(root.ownerDocument || document);
     opts = opts || {};
+    model = model || {};
+    model.scans = model.scans || [];
+    model.totals = model.totals || {};
+    model.lines = model.lines || { review_at: 45, block_at: 80 };
     var open = opts.open || new Set();
     // The newest scan opens on first draw; later draws keep what the viewer opened or closed.
     if (opts.openFirst !== false && !open.size && model.scans.length) open.add(model.scans[0].id);

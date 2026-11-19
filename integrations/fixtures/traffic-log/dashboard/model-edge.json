@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "log": "on",
+  "limit": 50,
+  "scans": [
+    {
+      "id": "aaaa0001-0000-4000-8000-000000000001",
+      "ts": "2026-10-29T11:00:00.000Z",
+      "session": null,
+      "tool": "mcp__🙂tools__éééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "step": 1,
+      "mode": "enforce",
+      "action": "review",
+      "review": "approved",
+      "bucket": "review",
+      "flags": [],
+      "failure": null,
+      "risk": 92.5,
+      "enforced": null,
+      "ceiling": null,
+      "tiers": [
+        {
+          "name": "suspicion",
+          "score": 0.125,
+          "leaves": [
+            {
+              "name": "misalignment",
+              "value": null
+            },
+            {
+              "name": "concealment",
+              "value": null
+            },
+            {
+              "name": "overreach",
+              "value": null
+            },
+            {
+              "name": "distrust",
+              "value": null
+            },
+            {
+              "name": "request_origin",
+              "value": null
+            },
+            {
+              "name": "retry_after_denial",
+              "value": null
+            },
+            {
+              "name": "untrusted_origin",
+              "value": null
+            },
+            {
+              "name": "exposure",
+              "value": null
+            },
+            {
+              "name": "session_exposure",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "consequence",
+          "score": 0.005,
+          "leaves": [
+            {
+              "name": "sensitivity",
+              "value": null
+            },
+            {
+              "name": "reach",
+              "value": null
+            },
+            {
+              "name": "irreversibility",
+              "value": null
+            },
+            {
+              "name": "self_modification",
+              "value": null
+            }
+          ]
+        },
+        {
+          "name": "confidence",
+          "score": 1,
+          "leaves": [
+            {
+              "name": "agreement",
+              "value": null
+            },
+            {
+              "name": "coverage",
+              "value": null
+            },
+            {
+              "name": "model_certainty",
+              "value": null
+            }
+          ]
+        }
+      ],
+      "floors": [],
+      "relief": [],
+      "reasons": [
+        {
+          "code": "egress.new_host",
+          "signal": null,
+          "subject": null,
+          "text": null
+        }
+      ],
+      "entities": [
+        {
+          "id": "E1",
+          "kind": "host",
+          "display": "one example line"
+        },
+        {
+          "id": "E2",
+          "kind": "note",
+          "display": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂…"
+        },
+        {
+          "id": "E10",
+          "kind": "host",
+          "display": "ten.example"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "blocked": 0,
+    "review": 1,
+    "observed": 0,
+    "allowed": 0,
+    "scan_error": 0
+  }
+}

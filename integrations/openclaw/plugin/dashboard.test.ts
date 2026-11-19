@@ -7,7 +7,7 @@ import { Script } from "node:vm";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { resolveConfig } from "./config.ts";
-import { buildModel, handleRequest, limitOf, renderPage, ROUTE, scansModel, scriptJson, TAB, viewScript } from "./dashboard.ts";
+import { buildModel, handleRequest, limitOf, renderPage, ROUTE, scanModel, scansModel, scriptJson, TAB, viewScript } from "./dashboard.ts";
 import plugin from "./index.ts";
 
 /** Shared with the Hermes plugin's tests: both plugins build the same model for the same log. */
@@ -70,9 +70,20 @@ function embeddedModel(html: string): any {
   return JSON.parse(m[1]!);
 }
 
-test("the scans model matches the shared fixture the Hermes plugin also builds", () => {
-  const expected = JSON.parse(readFileSync(path.join(DASH, "model.json"), "utf8"));
-  assert.deepStrictEqual(scansModel(logFile, true, 50), expected);
+test("the scans model matches the shared fixtures the Hermes plugin also builds", () => {
+  for (const [log, expected] of [
+    [logFile, "model.json"],
+    [path.join(FIXTURES, "traffic.jsonl"), "model-history.json"],
+    [path.join(FIXTURES, "edge", "traffic.jsonl"), "model-edge.json"],
+  ]) {
+    assert.deepStrictEqual(scansModel(log!, true, 50), JSON.parse(readFileSync(path.join(DASH, expected!), "utf8")), expected);
+  }
+});
+
+test("a step reads as a whole number only", () => {
+  for (const [raw, step] of [[3, 3], [3.0, 3], [3.5, null], [true, null], ["3", null]] as const) {
+    assert.equal(scanModel({ request_id: "x", step: raw }, null).step, step);
+  }
 });
 
 test("the model never carries arguments, PlanIR, reason or floor details, descriptions or failure details", () => {
@@ -165,9 +176,21 @@ test("every other method is refused: the dashboard is read-only", () => {
   }
 });
 
+test("a path that only shares the prefix is left to the Gateway", () => {
+  let touched = false;
+  const handled = handleRequest(
+    { method: "GET", url: "/sentrook-other" },
+    { statusCode: 0, setHeader: () => (touched = true), end: () => (touched = true) },
+    cfg,
+  );
+  assert.equal(handled, false);
+  assert.equal(touched, false);
+});
+
 test("other paths under the route are not served", () => {
   assert.equal(call("GET", `${ROUTE}/api/resolve`).status, 404);
-  assert.equal(call("GET", `${ROUTE}/../etc/passwd`).status, 404);
+  // Normalised to /etc/passwd: not under the route, so not answered here.
+  assert.equal(call("GET", `${ROUTE}/../etc/passwd`).status, 0);
 });
 
 test("a config that cannot be read gives a 500 without details", () => {
@@ -241,4 +264,127 @@ test("register falls back to the flat tab method on hosts without session.contro
 test("a host without HTTP routes still loads the plugin", () => {
   const api: any = { pluginConfig: {}, registrationMode: "full", logger: { info() {}, warn() {}, error() {} }, on() {} };
   assert.doesNotThrow(() => plugin.register(api));
+});
+
+// --- The view, drawn into a minimal DOM: what the page shows for the fixture model.
+
+class FakeNode {
+  tag: string;
+  children: FakeNode[] = [];
+  attrs: Record<string, string> = {};
+  className = "";
+  id = "";
+  listeners: Record<string, Array<() => void>> = {};
+  private ownText: string | null = null;
+  ownerDocument: any;
+  constructor(tag: string, doc: any) {
+    this.tag = tag;
+    this.ownerDocument = doc;
+  }
+  set textContent(v: string) {
+    this.ownText = v;
+    this.children = [];
+  }
+  get textContent(): string {
+    return this.ownText ?? this.children.map((c) => c.textContent).join("");
+  }
+  get firstChild() {
+    return this.children[0] ?? null;
+  }
+  appendChild(n: FakeNode) {
+    this.ownText = this.ownText === null ? null : this.ownText;
+    this.children.push(n);
+    return n;
+  }
+  removeChild(n: FakeNode) {
+    this.children = this.children.filter((c) => c !== n);
+    return n;
+  }
+  setAttribute(k: string, v: string) {
+    this.attrs[k] = v;
+  }
+  getAttribute(k: string) {
+    return this.attrs[k] ?? null;
+  }
+  addEventListener(type: string, fn: () => void) {
+    (this.listeners[type] ??= []).push(fn);
+  }
+  click() {
+    for (const fn of this.listeners.click ?? []) fn();
+  }
+  all(): FakeNode[] {
+    return [this, ...this.children.flatMap((c) => c.all())];
+  }
+  byClass(cls: string): FakeNode[] {
+    return this.all().filter((n) => n.className.split(" ").includes(cls));
+  }
+}
+
+function drawView(model: unknown): FakeNode {
+  const doc: any = { documentElement: null, head: null };
+  const make = (tag: string) => new FakeNode(tag, doc);
+  doc.createElement = make;
+  doc.createTextNode = (t: string) => {
+    const n = make("#text");
+    n.textContent = t;
+    return n;
+  };
+  doc.documentElement = make("html");
+  doc.head = make("head");
+  const root = make("div");
+  const data = make("script");
+  data.textContent = JSON.stringify(model);
+  doc.getElementById = (id: string) =>
+    id === "sentrook-root" ? root : id === "sentrook-model" ? data : doc.head.children.find((c: FakeNode) => c.id === id) ?? null;
+  const window: any = { location: { search: "" } };
+  new Script(viewScript()).runInNewContext({ document: doc, window });
+  return root;
+}
+
+function viewModel() {
+  return { ...scansModel(logFile, true, 50), lines: { review_at: 45, block_at: 80 }, mode: "enforce", state: { grants: "g", snooze: "s" }, commands: {} };
+}
+
+test("the view draws the newest scan's risk tree: tiers, leaves, badges and reasons under their leaf", () => {
+  const root = drawView(viewModel());
+  const detail = root.byClass("srk-detail");
+  assert.equal(detail.length, 1, "the newest scan opens on first draw");
+  const text = detail[0]!.textContent;
+  assert.match(text, /Floor: credential_exfiltration ≥ 85/);
+  assert.match(text, /Scanner requires: block/);
+  const tiers = detail[0]!.byClass("srk-tier");
+  assert.deepStrictEqual(tiers.map((t) => t.byClass("srk-tier-name")[0]!.textContent), ["Suspicion", "Consequence", "Confidence"]);
+  // Every leaf shows its number as text, or "not assessed".
+  const leaves = detail[0]!.byClass("srk-leaf");
+  assert.equal(leaves.length, 9 + 1 + 4 + 3);
+  for (const leaf of leaves) assert.match(leaf.byClass("srk-leaf-val")[0]!.textContent, /^(\d+|not assessed)$/);
+  const concealment = leaves.find((l) => l.textContent.startsWith("Concealment"))!;
+  assert.ok(concealment.className.includes("srk-na"));
+  // A reason sits under the leaf its signal names, with entity names filled in as text.
+  const distrust = leaves.find((l) => l.textContent.startsWith("Distrust"))!;
+  assert.match(distrust.textContent, /distrust\.unknown_destination.*sends data to <script>alert\(1\)<\/script>evil\.example/);
+  const other = text.slice(text.indexOf("Other reasons"));
+  assert.match(other, /floor\.credential_exfiltration/);
+  assert.match(other, /future\.thing/);
+});
+
+test("the view shows relief and the ceiling, and a failed scan without scores", () => {
+  const root = drawView(viewModel());
+  const rows = root.byClass("srk-row");
+  rows.find((r) => r.textContent.includes("38"))!.click();
+  const relief = root.byClass("srk-detail").find((d) => d.textContent.includes("Relief"))!;
+  assert.match(relief.textContent, /Relief: distrust\+untrusted_origin \(grant g-3\)/);
+  assert.match(relief.textContent, /At most: review/);
+  rows.at(-1)!.click();
+  const failed = root.byClass("srk-detail").find((d) => d.textContent.includes("The scan failed"))!;
+  assert.match(failed.textContent, /The scan failed \(timeout\)/);
+  assert.equal(failed.byClass("srk-tier").length, 0);
+});
+
+test("the view never writes markup: no innerHTML, outerHTML, insertAdjacentHTML or document.write", () => {
+  assert.doesNotMatch(viewScript(), /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
+});
+
+test("the view copes with a model missing its lines, totals and state", () => {
+  assert.doesNotThrow(() => drawView({ log: "on", limit: 10, scans: [] }));
 });
