@@ -146,17 +146,36 @@ def _self_edit(store: Store, sid: str, tool: str, args: Any, redactor: Redactor)
         return {"kind": kind, "store": where, "conversation": []}
 
 
-def _rule_key(fingerprint: str | None, request_id: str, snoozes: str | None = None) -> str:
-    """Hermes persists Session/Always approvals per rule key. Keyed on the action fingerprint, an approval
-    covers the same action (same source and destination) again, not other calls of the same tool.
+def _rule_key(
+    fingerprint: str | None,
+    request_id: str,
+    snoozes: str | None = None,
+    *,
+    tool: str = "",
+    args: Any = None,
+) -> str:
+    """Hermes persists Session/Always approvals per rule key, and approves a later review with the same key without
+    asking. The key is the tool and the action fingerprint, so an approval covers the same action (same source and
+    destination) through the same tool again, never another tool's call. A fingerprint that names nothing (no source,
+    destination or code: `afp1:<kind>` alone, or with only the tool's provider) would cover every such call of that
+    kind, or of that tool, so its key also holds the call's arguments: the approval covers that exact call. No fingerprint: a key of the request alone.
 
-    A block a snooze turned into a review is keyed on the action and the snoozes covering it (`snoozes`, from
+    A block a snooze turned into a review is keyed the same way plus the snoozes covering it (`snoozes`, from
     `snooze.covering`) under its own prefix: Session or Always covers the same action while those snoozes last, as
     the card says, and never a review or a later snooze."""
+    if fingerprint:
+        material = f"{tool}|{fingerprint}"
+        # parts after `afp1:<kind>`; a tool provider (`prov:`) alone is the server, not what the call acts on
+        targets = [part for part in fingerprint.split("|")[1:] if not part.startswith("prov:")]
+        if not targets:
+            arguments = json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+            material += "|args:" + hashlib.sha256(arguments.encode()).hexdigest()
+    else:
+        material = request_id
     if snoozes is not None:
-        material = f"{fingerprint or request_id}|{snoozes}"
+        material = f"{material}|{snoozes}"
         return "sentrook:relaxed:" + hashlib.sha256(material.encode()).hexdigest()[:16]
-    return "sentrook:" + hashlib.sha256((fingerprint or request_id).encode()).hexdigest()[:16]
+    return "sentrook:" + hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
 def _error_rule_key(session_ref: str, outage: str, cause: str) -> str:
@@ -534,7 +553,13 @@ def _scan_one(
                 if relaxed
                 else None
             )
-            key = _rule_key(resp.get("action_fingerprint"), planir["request_id"], snoozes)
+            key = _rule_key(
+                resp.get("action_fingerprint"),
+                planir["request_id"],
+                snoozes,
+                tool=tool_name,
+                args=kw.get("args"),
+            )
             # The grant the scan suggests: the prompt shows its command, and approving always sets it where
             # the owner is the one answering (never for a block a snooze turned into a review).
             hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None

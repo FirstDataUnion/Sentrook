@@ -104,6 +104,7 @@ from ..prepare.entities import (
     normalise_path,
 )
 from ..prepare.fingerprint import ROLE_TAGS, Fingerprint, fingerprint
+from ..prepare.skill_steps import skills_changed
 from ..prepare.trust import Trust
 from ..state.token import entity_hash
 from .base import Contribution, Envelope, Floor
@@ -1288,7 +1289,9 @@ class ContextProbe:
         carries the denied step's echoed consequence tier (`retry_carry_consequence`), except for a
         read-shaped call on the same data, which is scored at `retry_same_source_only` and carries
         nothing. A destructive SQL statement that names the object a denied destructive statement
-        named is the same action through whatever tool it now goes. Each match records whether its
+        named is the same action through whatever tool it now goes. A skill-tool call that changes a skill a
+        denied skill-tool call changed is the same action (`skill_steps.skills_changed`); two skill-tool
+        calls match on nothing else. Each match records whether its
         step was a review nobody answered (`Prepared.unanswered_review`); convergence caps a retry
         whose every match is one at review (`converge.retry_cap`)."""
         p = self.params
@@ -1308,6 +1311,7 @@ class ContextProbe:
         read_shaped = self._read_shaped(prepared)
         p_sql = _sql_objects(prepared.lineage.sql_targets)
         p_paths = self._path_hashes(prepared.entities.pending(), step_now, prepared)
+        p_skills = skills_changed(prepared.pending)
         by_step = {h.step: h for h in prepared.planir.history}
         best, best_reason, matches = 0.0, "retry.none", []
         carried = 0.0
@@ -1337,10 +1341,18 @@ class ContextProbe:
                 h_paths = self._path_hashes(h_entities, call.step or step_now, prepared)
                 if p_paths and h_paths and not p_paths & h_paths:
                     sql_shared = []
-            if not (src_shared or dst_shared or code_shared or sql_shared):
+            # Two skill-tool calls are compared by the skills they change, and by nothing else: a skill is
+            # named, not a path, and a support file's relative path names the same file in every skill.
+            h_skills = skills_changed(call) if p_skills is not None else None
+            skill_shared: list[str] = []
+            if h_skills is not None:
+                skill_shared = sorted(p_skills & h_skills)
+                src_shared = dst_shared = code_shared = False
+                sql_shared = []
+            if not (src_shared or dst_shared or code_shared or sql_shared or skill_shared):
                 continue
             carry = True
-            if sql_shared:
+            if sql_shared or skill_shared:
                 value, reason = p.retry_same_action, "retry.same_action"
             elif two_sided:  # the denied step moved data from a source to a destination
                 if src_shared and dst_shared:
@@ -1385,6 +1397,8 @@ class ContextProbe:
             )
             if sql_shared:
                 matches[-1]["sql_target"] = sql_shared[0]
+            if skill_shared:
+                matches[-1]["skill"] = skill_shared[0]
             if value > best:
                 best, best_reason = value, reason
         if len(matches) > 1:

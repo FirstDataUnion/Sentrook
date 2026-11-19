@@ -28,6 +28,9 @@ from sentrook.prepare.views import (
     CALL_V5,
     HISTORY_ARG_KEEP_CHARS,
     HISTORY_KEEP_STEPS,
+    REPUTATION,
+    REPUTATION_RESERVE_TOKENS,
+    VIEW_KEYS,
     build_views,
     cap_inputs,
 )
@@ -75,6 +78,10 @@ def _raw(
 
 
 def _view(raw, budget=BUDGET, name=CALL_V5):
+    """The view fitted to `budget`: a view that carries the reputation block keeps its room free, so it is given that
+    much more."""
+    if REPUTATION in VIEW_KEYS[name]:
+        budget += REPUTATION_RESERVE_TOKENS
     return build_views(raw, exposure_input_seqs=None, call_budget_tokens=budget)[name]
 
 
