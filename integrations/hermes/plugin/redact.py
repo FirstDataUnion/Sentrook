@@ -56,6 +56,18 @@ _NAMED_THING = re.compile(
     r"|^(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$"
 )
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
+# Code that reads a secret from where it is kept, cut where its quoted argument starts: `token_data[` in
+# `access_token = token_data['access_token']`, `os.environ[`, `creds.get(`, `getpass(`, `resp.json()[`. A
+# name, maybe dotted, called or subscripted, that ends in an open bracket or parenthesis. Each part of the
+# name reads as a word (`token_data`, `getSecret`, `JSON`, `oauth2`): a random value that happens to end
+# in a bracket is still a value.
+_CODE_READ = re.compile(
+    r"(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
+    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))"
+    r"(?:\.(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
+    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))"
+    r"|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*[\[(]"
+)
 
 
 def _is_ordinary(v: str) -> bool:
@@ -65,9 +77,16 @@ def _is_ordinary(v: str) -> bool:
 
 
 def _key_value(v: str) -> bool:
-    """Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the name
-    of an environment variable (`token: GITHUB_TOKEN`)."""
+    """Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the
+    name of an environment variable (`token: GITHUB_TOKEN`)."""
     return "://" not in v and not _ENV_NAME.fullmatch(v)
+
+
+def _unquoted_key_value(v: str) -> bool:
+    """An unquoted value after a key: also not code that reads the secret from somewhere
+    (`token = creds.get('token')`, cut where its quoted argument starts). A quoted value or one under an
+    object key is whole, so it is never code cut short."""
+    return _key_value(v) and not _CODE_READ.fullmatch(v)
 
 
 def _inner_key_value(v: str) -> bool:
@@ -76,12 +95,14 @@ def _inner_key_value(v: str) -> bool:
 
 
 def _stated_value(v: str) -> bool:
-    """After "password is" or "token:": six or more characters that are not words or a number."""
+    """After "password is" or "token:": six or more characters that are not words, a number or code that
+    reads the secret from somewhere."""
     return (
         len(v) >= 6
         and not _is_ordinary(v)
         and not re.fullmatch(r"[0-9]+", v)
         and not _NAMED_THING.search(v)
+        and not _CODE_READ.fullmatch(v)
     )
 
 
@@ -312,7 +333,7 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
             + r"(?=[.:!?)\]])))"
         ),
         "v",
-        _key_value,
+        _unquoted_key_value,
     ),
     (
         # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation

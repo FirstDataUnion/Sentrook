@@ -670,6 +670,39 @@ def test_must_fire_an_openclaw_skill_save_that_fetches_and_runs_code(tool, argum
     assert res.response.risk >= 45
 
 
+LOADER_MD = (
+    "---\nname: drive-upload\ndescription: Upload a file\n---\n```python\nimport json\n"
+    "with open('/home/me/.config/drive/token.json') as f:\n    token_data = json.load(f)\n"
+    "access_token = token_data['access_token']\n```\n"
+)
+
+
+def test_must_stay_quiet_on_a_skill_that_loads_a_token():
+    """`access_token = token_data['access_token']` loads the token from its file: the skill holds no secret."""
+    arguments = {
+        "path": "/home/me/.openclaw/agents/main/workshop-skills/drive/SKILL.md",
+        "content": LOADER_MD,
+    }
+    raw = planir("write", arguments, store="skills", platform="openclaw")
+    raw["pending_call"]["tool_kind"] = "file_write"
+    res, _ = scan(raw)
+    assert "artefact.placeholder_in_write" not in codes(res)
+    assert "secret" not in res.response.model_dump(mode="json")["self_edit"]["adds"]
+
+
+def test_must_fire_on_a_secret_value_saved_into_a_skill_as_a_placeholder():
+    content = LOADER_MD.replace("token_data['access_token']", "⟦secret:credential:7a2c⟧")
+    arguments = {
+        "path": "/home/me/.openclaw/agents/main/workshop-skills/drive/SKILL.md",
+        "content": content,
+    }
+    raw = planir("write", arguments, store="skills", platform="openclaw")
+    raw["pending_call"]["tool_kind"] = "file_write"
+    res, _ = scan(raw)
+    assert "artefact.placeholder_in_write" in codes(res)
+    assert "secret" in res.response.model_dump(mode="json")["self_edit"]["adds"]
+
+
 WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills"
 
 

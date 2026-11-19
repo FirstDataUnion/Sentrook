@@ -1257,6 +1257,57 @@ def test_must_be_lenient_words_near_secret_cues_that_are_not_secrets(content):
     assert field(memory(content)) == {"adds": [], "lenient": True}
 
 
+# Code that loads a secret from where it is kept holds none: current plugins send it as it is, and a skill or note that
+# only loads a token saves no secret. A value under the same key arrives as a placeholder and is a secret saved, and so
+# is a raw sign-in code beside the loader, or a placeholder an older plugin left on such code (the scanner cannot tell
+# it from a value followed by other text).
+LOADER_SKILL = (
+    "---\nname: drive-upload\ndescription: Upload a file to the shared drive\n---\n"
+    "Load the token from the secrets file, then upload:\n\n```python\nimport json, os\n"
+    "with open(os.path.expanduser('~/.config/drive/token.json')) as f:\n    token_data = json.load(f)\n"
+    "access_token = token_data['access_token']\n```\n"
+)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        skill(LOADER_SKILL),
+        memory("Load it with `token = creds.get('token')`."),
+        memory('The deploy script asks with `password = getpass("Password: ")`.'),
+        memory("The script reads it with password = input('Password: ') and never stores it."),
+    ],
+    ids=["loader skill", "get", "getpass", "input"],
+)
+def test_must_not_add_a_secret_for_code_that_reads_one(raw):
+    assert "secret" not in field(raw)["adds"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        LOADER_SKILL.replace("token_data['access_token']", "⟦secret:credential:7a2c⟧"),
+        LOADER_SKILL
+        + '\nThe token file holds:\n\n```json\n{"access_token": "⟦secret:credential:9e01⟧"}\n```\n',
+        LOADER_SKILL
+        + '\nExchange it:\n\n```json\n{"code": "4/0Ab'
+        + "Xk29fQv7Lm2Pq8" * 3
+        + '"}\n```\n',
+        LOADER_SKILL.replace(
+            "token_data['access_token']", "⟦secret:credential:7a2c⟧'access_token']"
+        ),
+    ],
+    ids=[
+        "value placeholder",
+        "value placeholder beside code",
+        "raw code beside code",
+        "older plugin's placeholder",
+    ],
+)
+def test_must_add_a_secret_saved_beside_code_that_reads_one(content):
+    assert "secret" in field(skill(content))["adds"]
+
+
 # ---- removals and rewordings, per edit --------------------------------------------------------------------------
 
 SAFE = "Never push to a remote without asking the owner first."
