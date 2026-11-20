@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, copyFileSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -177,8 +177,14 @@ test("--save writes a file only the owner can read", async () => {
   const out = await run("aaaa1b2c --save");
   const file = out.split(" to ")[1]!.split(" (readable")[0]!;
   assert.equal(path.dirname(file), path.join(path.dirname(logFile), "reports"));
-  assert.equal(statSync(file).mode & 0o777, 0o600);
-  assert.equal(readFileSync(file, "utf8"), `${[golden("summary-aaaa1b2c.txt"), report.FULL_WARNING, golden("full-aaaa1b2c.txt")].join("\n\n")}\n`);
+  // One handle for the mode and the content, so both describe the same file.
+  const fd = openSync(file, "r");
+  try {
+    assert.equal(fstatSync(fd).mode & 0o777, 0o600);
+    assert.equal(readFileSync(fd, "utf8"), `${[golden("summary-aaaa1b2c.txt"), report.FULL_WARNING, golden("full-aaaa1b2c.txt")].join("\n\n")}\n`);
+  } finally {
+    closeSync(fd);
+  }
   assert.ok(out.includes(SUPPORT_EMAIL) && out.includes('"Sentrook wrong scan aaaa1b2c"'));
   assert.ok(!hasPrivate(out));
 });
