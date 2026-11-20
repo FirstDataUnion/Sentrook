@@ -7,8 +7,9 @@ a long simple command with many heads (`rsync rsync …`, `uvx uvx …`) is quad
 (`a@a@…`). For the patterns in `LINEAR` the search here reads the gap ranges of all the heads once,
 left to right, and tries each later piece once at each position in them. It finds where the leftmost
 match starts; `search` then lets the regex match from there, which is the match `rx.search` returns.
-For the patterns in `FOUND_ONLY`, whose match itself can still take the regex long to build, only
-`found` is linear: their callers ask for a yes or no.
+A chain of such gaps (`<piece>[^;&|\n]*<piece>…`) has its matches built here too, the regex's
+longest gaps taken (`chain_spans`): the regex can take long to build one. For the patterns in
+`FOUND_ONLY`, only `found` is linear: their callers ask for a yes or no.
 
 Patterns of the form `<command>(?:<option>)*<end>` that preparation reads (the host of `ssh -o x
 host`, the module of `python -m`, the program of `perl -e`, the file of `sed -i`) retry the run of
@@ -103,6 +104,55 @@ def chain_first(text: str, pieces: Sequence[Piece], pos: int = 0) -> int:
     return after[pos] if after[pos] <= n else -1
 
 
+def chain_spans(text: str, pieces: Sequence[Piece], pos: int = 0) -> Iterator[tuple[int, int]]:
+    """The spans of `rx.finditer(text, pos)` for the chain `<piece>[^;&|\\n]*<piece>…`, in linear time.
+
+    Each piece matches at most one way where it matches, or (its shortest given) every length from
+    its shortest to its greedy longest, the longest preferred. The regex, from a start, takes each
+    gap as long as it can be: of the ways to match from there it makes the one where the second
+    piece starts last, then (from there) the third, and so on, and the last piece ends where that
+    way's does. Read right to left, each position keeps where the match ends when a piece starts
+    there (none when the rest cannot follow), and each gap the latest start of the next piece in it
+    that has an end; each piece is tried once at each position. Starts are found left to right from
+    where the last match ended, as `finditer` does."""
+    for rx, _ in pieces:
+        if rx.search(text, pos) is None:
+            return
+    n = len(text)
+    is_sep = [c in ";&|\n" for c in text]
+    gap_end: list[int] | None = None  # from each position, where a match ends: the gap read longest
+    ends: list[int] = []
+    for k in range(len(pieces) - 1, -1, -1):
+        rx, shortest = pieces[k]
+        ends = [-1] * (n + 1)  # where the match ends when this piece starts at each position
+        for p in range(pos, n + 1):
+            m = rx.match(text, p)
+            if m is None:
+                continue
+            if gap_end is None:
+                ends[p] = m.end()
+                continue
+            lo = p + shortest if shortest is not None else m.end()
+            for e in range(m.end(), lo - 1, -1):
+                if gap_end[e] >= 0:
+                    ends[p] = gap_end[e]
+                    break
+        if k == 0:
+            break
+        gap_end = [-1] * (n + 2)
+        for q in range(n, pos - 1, -1):
+            later = gap_end[q + 1] if q < n and not is_sep[q] else -1
+            gap_end[q] = later if later >= 0 else ends[q]
+    p = pos
+    while p <= n:
+        while p <= n and ends[p] < 0:
+            p += 1
+        if p > n:
+            return
+        yield p, ends[p]
+        p = ends[p] if ends[p] > p else p + 1
+
+
 def regex_tail(pattern: str) -> Callable[[str, int], bool]:
     rx = _rx(pattern)
     return lambda text, p: rx.match(text, p) is not None
@@ -154,7 +204,9 @@ def _rx(pattern: str) -> re.Pattern[str]:
 
 
 Search = Callable[[str, int], int]
-_CHAINS: set[str] = set()
+#: The chains of `LINEAR` (pattern text -> the spans of its matches from a position): a chain's match
+#: is built here, not by the regex, which can take long to build it.
+CHAIN_SPANS: dict[str, Callable[[str, int], Iterator[tuple[int, int]]]] = {}
 
 
 def _command(
@@ -211,7 +263,8 @@ def _chain(*pieces: str | tuple[str, int]) -> tuple[str, Search]:
     `(pattern, shortest)` can match more than one length."""
     parts = [(p, None) if isinstance(p, str) else p for p in pieces]
     text = r"[^;&|\n]*".join(p for p, _ in parts)
-    _CHAINS.add(text)
+    assert re.compile(text).groups == 0, text  # a match is built from its span alone
+    CHAIN_SPANS[text] = lambda t, pos: chain_spans(t, [(_rx(p), k) for p, k in parts], pos)
     return text, lambda t, pos: chain_first(t, [(_rx(p), k) for p, k in parts], pos)
 
 
@@ -316,8 +369,11 @@ LINEAR: dict[str, Search] = dict(
 )
 
 #: Of `LINEAR`, the patterns whose match is not built from the start found (`search` asks the regex):
-#: a chain, whose match can take the regex long to build, and the remote-copy marker.
-FOUND_ONLY: frozenset[str] = frozenset({_REMOTE_COPY, *_CHAINS})
+#: the remote-copy marker, whose callers only ask whether it is there.
+FOUND_ONLY: frozenset[str] = frozenset({_REMOTE_COPY})
+
+#: A match with a given span: a chain has no groups, so its match is its span.
+_SPAN = re.compile(r".*", re.S)
 
 
 _FLAGS = re.compile("", re.IGNORECASE).flags
@@ -339,6 +395,9 @@ def search(rx: re.Pattern[str], text: str, pos: int = 0) -> re.Match[str] | None
     """`rx.search(text, pos)`: for the patterns in `LINEAR` the leftmost start is found in linear time
     and the regex matches from there (none found, nothing to match)."""
     linear = _linear(rx)
+    if linear is not None and rx.pattern in CHAIN_SPANS:
+        span = next(CHAIN_SPANS[rx.pattern](text, pos), None)
+        return None if span is None else _SPAN.match(text, *span)
     if linear is None or rx.pattern in FOUND_ONLY:
         if linear is not None and linear(text, pos) < 0:
             return None
@@ -590,9 +649,14 @@ OPTION_RUNS: dict[tuple[str, int], tuple[OptionRun, ...]] = {
 
 
 def finditer(rx: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
-    """`rx.finditer(text)`, each next match found as `search` finds one (for a pattern in
-    `FOUND_ONLY`, the regex's own matches once one is known to exist)."""
+    """`rx.finditer(text)`, each next match found as `search` finds one (for a chain, its matches'
+    spans read in one pass; for a pattern in `FOUND_ONLY`, the regex's own matches once one is known
+    to exist)."""
     linear = _linear(rx)
+    if linear is not None and rx.pattern in CHAIN_SPANS:
+        for span in CHAIN_SPANS[rx.pattern](text, 0):
+            yield _SPAN.match(text, *span)  # type: ignore[misc]
+        return
     if linear is None or rx.pattern in FOUND_ONLY:
         if linear is None or linear(text, 0) >= 0:
             yield from rx.finditer(text)

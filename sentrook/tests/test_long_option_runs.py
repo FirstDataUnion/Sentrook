@@ -505,9 +505,15 @@ _CHAINS = {
     r"\b(?:echo|printf)\b[^;&|\n]*(?:registry|index-url)\s*=\s*https?://[^;&|\n]*>>?\s*"
     r"[^;&|\n]*(?:\.npmrc|pip\.conf|\.pypirc)": [
         ["echo", "printf"],
-        ["registry=https://r", "index-url = http://r", "registry =\nhttps://r", "registry=http:/"],
-        [">", ">>", "> \n", ">\n", ">>\n\n"],
-        [".npmrc", "pip.conf", ".pypirc", "npmrc"],
+        [
+            "registry=https://r",
+            "index-url = http://r",
+            "registry =\nhttps://r",
+            "registry=http:/",
+            "REGISTRY\u2003=\u00a0https://r",
+        ],
+        [">", ">>", "> \n", ">\n", ">>\n\n", ">\u00a0", "> >", ">>>", ">\t\n "],
+        [".npmrc", "pip.conf", ".pypirc", "npmrc", ".npmrc.npmrc"],
     ],
     r"\bDOCKER_HOST=\S+\s+docker\s+(?:rm|rmi|system\s+prune|volume\s+rm)\b": [
         ["DOCKER_HOST=", "docker_host=", "xDOCKER_HOST="],
@@ -550,6 +556,11 @@ def test_chains_agree_with_their_patterns_piece_by_piece(pattern):
         assert linear_search.found(rx, text) == (want is not None), text
         got = linear_search.search(rx, text)
         assert (got is None) == (want is None) and (want is None or got.span() == want.span()), text
+        assert [m.span() for m in linear_search.finditer(rx, text)] == [
+            m.span() for m in rx.finditer(text)
+        ], text
+        if want is not None:
+            assert got.group(0) == want.group(0) and got.groups() == want.groups() == ()
         matched += want is not None
     assert matched > 5
 
@@ -601,13 +612,20 @@ def test_every_linear_search_is_fast_on_long_texts():
         "systemctl": "openclaw; " + "systemctl stop " * 6300,
         "chown": "+s; " + "chown root chmod " * 5500,
         "echo|printf": ".npmrc; " + "echo registry=https://r > " * 3600,
+        # matching chains: the regex builds each match from many ways to make it
+        "echo|printf ": "echo registry=https://r > x " * 3300
+        + "; echo registry=https://r > .npmrc",
+        "echo|printf  ": "echo registry=https://r > .npmrc " * 2700,
+        "echo|printf   ": "echo registry=https://r >> pip.conf; " * 2600,
+        "systemctl ": "systemctl stop openclaw " * 3900,
+        "chown ": "chown root chmod +s " * 4700,
     }
     for pattern in linear_search.LINEAR:
         rx = re.compile(pattern, re.IGNORECASE)
         units = [u for key, us in _SLOW_UNITS.items() if key in pattern for u in us]
         assert units, pattern
         for text in [u * (SIZE // len(u)) for u in units] + [
-            t for key, t in texts.items() if key in pattern
+            t for key, t in texts.items() if key.strip() in pattern
         ]:
             start = time.perf_counter()
             linear_search.found(rx, text)
