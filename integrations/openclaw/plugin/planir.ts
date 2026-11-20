@@ -37,6 +37,22 @@ const TOOL_KIND: Record<string, string> = {
   memory_write: "memory_write",
 };
 
+/** OpenClaw's hook-event mark for a Code Mode cell: the `exec` that runs JavaScript, not the shell `exec`. */
+export const CODE_MODE_EXEC = "code_mode_exec";
+
+/**
+ * The `input_kind` the scanner gets for this call: `javascript` when OpenClaw marks the call a Code Mode cell on the
+ * hook event (or its context). Only the host's mark counts, never the call's arguments: a shell `exec` whose
+ * arguments carry `code` or `input_kind` is still shell.
+ */
+export function inputKindOf(
+  event: { toolKind?: unknown; toolInputKind?: unknown },
+  ctx?: { toolKind?: unknown; toolInputKind?: unknown },
+): string | undefined {
+  const marked = event.toolKind === CODE_MODE_EXEC ? event : ctx?.toolKind === CODE_MODE_EXEC ? ctx : undefined;
+  return marked?.toolInputKind === "javascript" ? "javascript" : undefined;
+}
+
 export function toolKind(name: string): string {
   if (TOOL_KIND[name]) return TOOL_KIND[name]!;
   if (name.includes("__")) return "mcp";
@@ -502,8 +518,24 @@ export interface BuildInput {
   hostConfig: any;
   cfg: PluginConfig;
   redactor: Redactor;
-  event: { toolName: string; params?: Record<string, unknown>; toolCallId?: string; runId?: string };
-  ctx: { sessionKey?: string; sessionId?: string; agentId?: string; runId?: string; requester?: any; toolCallId?: string };
+  event: {
+    toolName: string;
+    params?: Record<string, unknown>;
+    toolCallId?: string;
+    runId?: string;
+    toolKind?: unknown;
+    toolInputKind?: unknown;
+  };
+  ctx: {
+    sessionKey?: string;
+    sessionId?: string;
+    agentId?: string;
+    runId?: string;
+    requester?: any;
+    toolCallId?: string;
+    toolKind?: unknown;
+    toolInputKind?: unknown;
+  };
   sid: string;
   sess: Session;
   run: RunContext;
@@ -564,6 +596,8 @@ export function buildPlanir(b: BuildInput): Built {
   const inBatch = !!wrapper || calls.some((c) => c.id === hostCallId);
   const narration: string | undefined = (inBatch && assistant.text) || run.lastAssistantText || undefined;
   const tk = toolKind(event.toolName);
+  // OpenClaw marks only its Code Mode tool, which is named `exec`.
+  const inputKind = event.toolName === "exec" ? inputKindOf(event, ctx) : undefined;
   const provider = providerFor(b.hostConfig, event.toolName);
   const args = redactor.value(event.params ?? {});
   const siblings = inBatch
@@ -650,6 +684,7 @@ export function buildPlanir(b: BuildInput): Built {
       host_approval: "unknown",
       ...(narration ? { agent_narration: redactor.string(String(narration)).slice(0, 4000) } : {}),
       arguments: capArgs(args, cfg.inputCapBytes),
+      ...(inputKind ? { input_kind: inputKind } : {}),
       batch: { siblings },
     },
     grants: relevantGrants(b.grants ?? cfg.grants.filter((g) => g.scope === "persistent"), JSON.stringify(event.params ?? {}), {

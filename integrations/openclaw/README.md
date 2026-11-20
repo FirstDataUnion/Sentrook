@@ -516,6 +516,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 - the request you gave the agent in this turn (with `allowConversationAccess`), and whether it came from you, a
   scheduled job, a subagent or another sender;
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
+  for a Code Mode `exec` (JavaScript that runs other tools), OpenClaw's mark that it is one, so the code is not read
+  as a shell command;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
 - host facts: platform and plugin version, operating system, home and workspace paths, and how OpenClaw is

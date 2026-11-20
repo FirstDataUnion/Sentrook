@@ -262,8 +262,12 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
         if _secret_in_call(a, ctx) is not None:
             return None, "secret_in_call"
         anchors = set(names) | {posixpath.basename(v) for v in env_ids.values()}
-        if a.inline_code:
-            if _code_puts_key_elsewhere(a.call.command or "", anchors):
+        if a.inline_code or a.call.code_cell:
+            # A Code Mode cell is JavaScript too: its writes and prints are code, and the shell reading of it names
+            # no written file. Its nested calls' command strings are still read as shell.
+            if _code_puts_key_elsewhere(a.call.command or "", anchors) or (
+                a.call.code_cell and _shell_puts_key_elsewhere(a, ctx, names)
+            ):
                 return None, "key_put_elsewhere"
         elif _shell_puts_key_elsewhere(a, ctx, names):
             return None, "key_put_elsewhere"
