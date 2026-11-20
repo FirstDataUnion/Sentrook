@@ -328,7 +328,13 @@ class Scanner:
                     prepared.credential_home,
                     prepared.credential_home_check,
                 ) = credential_home_check(prepared)
-        with ThreadPoolExecutor(max_workers=len(ALL_PROBES)) as pool:
+        # The probes share one deadline: a probe still running then is recorded as timed out and left
+        # behind (a thread cannot be stopped; what it returns later is never read), and the pool is
+        # shut down without waiting for it. The deadline bounds the waits, not one long call: a probe
+        # inside a single regex search holds the interpreter until the search returns, and the scan
+        # answers only then. Keeping each search linear is what keeps the answer near the deadline.
+        pool = ThreadPoolExecutor(max_workers=len(ALL_PROBES))
+        try:
             futures = {}
             for step in ALL_PROBES:
                 if step in envelopes:
@@ -342,13 +348,16 @@ class Scanner:
                     envelopes[step] = Envelope.skipped(step, "not configured")
                 else:
                     futures[step] = pool.submit(self._run_probe, step, probe, prepared, options)
+            deadline = time.monotonic() + PROBE_TIMEOUT_S
             for step, fut in futures.items():
                 try:
-                    envelopes[step] = fut.result(timeout=PROBE_TIMEOUT_S)
+                    envelopes[step] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
                 except Exception as e:  # noqa: BLE001
                     envelopes[step] = Envelope.failed(
                         step, ProbeStatus.TIMEOUT, f"probe did not finish: {e!r}"
                     )
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         ordered = [envelopes[step] for step in ALL_PROBES]
 
         # What a background save adds, for the plugins' handling of a save nobody can be asked about; no score reads it.
