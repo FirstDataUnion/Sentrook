@@ -31,7 +31,7 @@ from .redact import Redactor, cap_args
 from .skill_review import REQUEST_TEXT as LOOP_REQUEST_TEXT
 from .skill_review import TRIGGER as LOOP_TRIGGER
 
-PLUGIN_VERSION = "2.0.0-beta.16"
+PLUGIN_VERSION = "2.0.0-beta.17"
 
 TOOL_KIND = {
     "terminal": "exec",

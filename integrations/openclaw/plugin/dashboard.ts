@@ -4,8 +4,9 @@
  * `buildModel` turns the tail of the traffic log into the JSON the page draws. It holds only what the scanner
  * returned (risk, the tier and leaf scores, floors, relief, reason codes and texts, entity display strings) plus
  * the plugin's own labels for what it did. The PlanIR as sent, the call's arguments, `reasons[].detail` and
- * failure details are never included, as with `/sentrook-why`. The Hermes plugin builds the same model for the
- * same log (fixtures/traffic-log/dashboard).
+ * failure details are never included, as with `/sentrook-why`; a scan's report panel (`reportOf`) holds only its
+ * summary, links and commands. The Hermes plugin builds the same model for the same log
+ * (fixtures/traffic-log/dashboard).
  *
  * The page is served on a Gateway route with `auth: "gateway"`. Inside the Control UI tab the browser holds a
  * short-lived grant that allows only GET and HEAD with `operator.read`, so the page cannot change anything;
@@ -20,7 +21,8 @@ import { fileURLToPath } from "node:url";
 
 import type { PluginConfig } from "./config.ts";
 import * as grants from "./grants.ts";
-import { actionOf, HISTORY_DEFAULT, HISTORY_MAX, recentScans, responseOf, reviewOf, text } from "./history.ts";
+import { actionOf, HISTORY_DEFAULT, HISTORY_MAX, parseRef, recentScans, responseOf, reviewOf, text } from "./history.ts";
+import * as report from "./report.ts";
 import * as snooze from "./snooze.ts";
 import { readTime, Store } from "./store.ts";
 
@@ -430,7 +432,20 @@ export async function pendingOf(file: string, enabled: boolean, stateDir: string
   return { reviews, holds, holds_readable: holdsReadable, review_window_s: Math.round(windowMs / 1000) };
 }
 
-export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Date()): Promise<Rec> {
+/**
+ * The report panel for the scan the page asked about (`report=<request id or its start>`), or null when it asked
+ * about none: the summary `/sentrook-report` prints, the issue and email links, and the owner's commands for the
+ * full record, which the model never holds.
+ */
+export function reportOf(cfg: PluginConfig, ref: string | null | undefined, budget: number): Rec | null {
+  const r = (ref ?? "").trim();
+  if (!r) return null;
+  const match = r.toLowerCase() === "last" ? null : parseRef(r);
+  const found = match !== null && cfg.trafficLog.enabled ? report.find(cfg.trafficLog.path, match, budget) : null;
+  return found !== null ? report.model(found, CMD) : { id: r.slice(0, 36), missing: true };
+}
+
+export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Date(), reportRef: string | null = null): Promise<Rec> {
   const enabled = cfg.trafficLog.enabled;
   const budget = budgetFor(cfg.trafficLog.maxBytes);
   const page = enabled ? await queryScans(cfg.trafficLog.path, q, budget) : { scans: [], totals: totalsOf([]), query: queryEcho(q), page: { more: false, next: null, read_bytes: 0, budget_hit: false, cursor_lost: false, reached_start: true } };
@@ -446,7 +461,7 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
   } catch {
     snoozeText = "Snooze state could not be read.";
   }
-  return {
+  const model: Rec = {
     version: MODEL_VERSION,
     log: enabled ? "on" : "off",
     limit: q.limit,
@@ -458,6 +473,9 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
     pending: await pendingOf(cfg.trafficLog.path, enabled, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs, budget),
     commands: COMMANDS,
   };
+  const panel = reportOf(cfg, reportRef, budget);
+  if (panel !== null) model.report = panel;
+  return model;
 }
 
 /** How the page names this host's commands: the plugin's own (prefix + verb) and the host's approval answers. */
@@ -552,7 +570,7 @@ export async function handleRequest(req: Req, res: Res, loadConfig: () => Plugin
   }
   let model: unknown;
   try {
-    model = await buildModel(loadConfig(), queryOf(url.searchParams), now());
+    model = await buildModel(loadConfig(), queryOf(url.searchParams), now(), url.searchParams.get("report"));
   } catch {
     return send(res, 500, "text/plain; charset=utf-8", "The Sentrook dashboard could not read its state.", head);
   }

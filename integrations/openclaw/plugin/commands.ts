@@ -4,7 +4,7 @@
  * Both routes run the same subcommand table, so they print the same text. Subcommands report what the
  * plugin can see locally and never print credential values.
  *
- * `history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
+ * `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
  * grants and channel bindings set by command, `snooze` relaxes review prompts, `approve` answers a call
  * held on an unattended run and `notify` says where the notice of one goes (see `hold.ts`), so only the
  * owner may run them. `snooze` and a session `grant` cover the session the command was sent from; the
@@ -31,6 +31,7 @@ import {
   recentScans,
 } from "./history.ts";
 import { OWNER_SCOPES, refusal } from "./owner.ts";
+import * as report from "./report.ts";
 import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
@@ -99,6 +100,15 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     args: "[request_id|last]",
     description: "One scan's risk, tier scores, reason codes and entities; for a held call's id, also the hold and the grant Sentrook suggests",
     run: (ctx, rest) => whyText(ctx, rest),
+  },
+  report: {
+    command: "sentrook-report",
+    args: "[request_id|last] [--full|--github|--save]",
+    description:
+      "A report of a scan that looks wrong, to send to Sentrook: --full adds the exact request (send it privately), " +
+      "--github links a public issue with the summary filled in, --save writes the report and full record to a file to email",
+    cliRest: true,
+    run: (ctx, rest) => reportText(ctx, rest),
   },
   grants: {
     command: "sentrook-grants",
@@ -256,6 +266,22 @@ function whyText(ctx: CommandContext, rest: string): string {
   const [found] = recentScans(cfg.trafficLog.path, 1, match);
   if (found) return formatWhy(...found);
   return rest === "" || rest.toLowerCase() === "last" ? NO_SCANS : `No scan ${rest} in the recent traffic log.`;
+}
+
+export const REPORT_USAGE =
+  "usage: /sentrook-report [request_id|last] [--full|--github|--save], with an id (or its start) from /sentrook-history";
+
+function reportText(ctx: CommandContext, rest: string): string {
+  const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
+  if (!cfg.trafficLog.enabled) return LOG_OFF;
+  const args = report.parseArgs(rest);
+  const match = args === null ? null : parseRef(args[0]);
+  if (args === null || match === null) return REPORT_USAGE;
+  const found = report.find(cfg.trafficLog.path, match);
+  if (found === null) {
+    return args[0] === "" || args[0].toLowerCase() === "last" ? NO_SCANS : `No scan ${args[0]} in the recent traffic log.`;
+  }
+  return report.reply(found, args[1], CMD, cfg.stateDir);
 }
 
 function statusText(ctx: CommandContext): string {

@@ -1,0 +1,15 @@
+----- BEGIN SENTROOK REPORT v1 -----
+scan: bbbb1b2c-0000-4000-8000-00000000000b
+time: 2026-11-20 10:05:00 UTC
+tool: web_fetch, step 4
+risk: - (scan failed: http, HTTP 503)
+action: allowed (scan error)
+review: -
+reasons: none
+entities: none
+host: openclaw 2026.11.3, plugin 2.0.0-beta.13, macos
+mode: observe
+scanner: ?
+expected: (allow, review or block)
+what you were doing: (in your own words)
+----- END SENTROOK REPORT v1 -----

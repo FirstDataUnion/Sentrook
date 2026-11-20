@@ -123,6 +123,8 @@ CLI_COMMANDS = tuple(name for name in COMMANDS if name != "help")
 #: `grant`'s valued flags, declared to argparse so they may come before or after the positionals;
 #: the values themselves are checked by the shared parser.
 GRANT_FLAGS = ("scope", "session", "allows", "expires")
+#: `report`'s flags, declared so one may come without an id (`hermes sentrook report --full`).
+REPORT_FLAGS = ("full", "github", "save")
 
 
 def _rest(cmd: str, args: argparse.Namespace) -> str:
@@ -135,6 +137,8 @@ def _rest(cmd: str, args: argparse.Namespace) -> str:
         words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
     if cmd == "snooze" and args.all:
         words.append("--all")
+    if cmd == "report":
+        words += [f"--{f}" for f in REPORT_FLAGS if getattr(args, f)]
     return " ".join(words)
 
 
@@ -149,6 +153,10 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
                 p.add_argument("--persistent", action="store_true")
                 for flag in GRANT_FLAGS:
                     p.add_argument(f"--{flag}")
+            elif name == "report":
+                p.add_argument("sentrook_arg", nargs="*", metavar="request_id|last")
+                for flag in REPORT_FLAGS:
+                    p.add_argument(f"--{flag}", action="store_true")
             elif name == "snooze":
                 p.add_argument("sentrook_arg", nargs="*", metavar="duration|off|status")
                 p.add_argument("--all", action="store_true", help="every session")

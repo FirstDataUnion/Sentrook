@@ -254,3 +254,47 @@ def test_api_takes_the_answer_window_from_hermes_approvals_timeout(api, tmp_path
     assert api.build({})["pending"]["review_window_s"] == 120
     api.approvals["timeout"] = "soon"
     assert api.build({})["pending"]["review_window_s"] == 300
+
+
+REPORT_FIXTURES = FIXTURES / "report"
+
+
+def test_build_model_adds_the_report_panel_only_when_asked(tmp_path):
+    from plugin import history, report
+
+    cfg = resolve_config({"state_dir": str(tmp_path)}, {})
+    shutil.copy(REPORT_FIXTURES / "traffic.jsonl", tmp_path / "traffic.jsonl")
+    assert "report" not in dashboard.build_model(cfg, dashboard.query_of({"n": "10"}))
+    m = dashboard.build_model(cfg, dashboard.query_of({"n": "10"}), report_ref="aaaa1b2c")
+    found = report.find(tmp_path / "traffic.jsonl", history.parse_ref("aaaa1b2c"))
+    assert m["report"] == report.model(found, dashboard.CMD)
+    assert m["report"]["full_commands"] == [
+        "/sentrook report aaaa1b2c --save",
+        "/sentrook report aaaa1b2c --full",
+    ]
+    assert not any(
+        marker in json.dumps(m) for marker in ("PLANIR-BODY-MARKER", "PRIVATE-PATH-MARKER")
+    )
+    assert m["report"]["summary"] == (REPORT_FIXTURES / "summary-aaaa1b2c.txt").read_text().rstrip(
+        "\n"
+    )
+    for ref in ("abcdef12", "last", "../etc"):
+        got = dashboard.build_model(cfg, dashboard.query_of({}), report_ref=ref)["report"]
+        assert got == {"id": ref, "missing": True}, ref
+    off = resolve_config({"state_dir": str(tmp_path), "traffic_log": {"enabled": False}}, {})
+    assert dashboard.build_model(off, dashboard.query_of({}), report_ref="aaaa1b2c")["report"][
+        "missing"
+    ]
+
+
+def test_api_serves_the_report_panel(api, tmp_path):
+    home = tmp_path / "default"
+    (home / "sentrook").mkdir(parents=True)
+    shutil.copy(REPORT_FIXTURES / "traffic.jsonl", home / "sentrook" / "traffic.jsonl")
+    api.home["path"] = home
+    request = types.SimpleNamespace(query_params={"n": "10", "report": "aaaa1b2c"})
+    m = asyncio.run(api.router.routes["/model"](request))
+    assert m["report"]["id"] == "aaaa1b2c-0000-4000-8000-00000000000a"
+    assert "PLANIR-BODY-MARKER" not in json.dumps(
+        m
+    )  # the full record stays with the owner's commands
