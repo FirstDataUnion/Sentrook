@@ -629,6 +629,45 @@ OPTION_RUNS: dict[tuple[str, int], tuple[OptionRun, ...]] = {
             r"[\s=]+",
             re.UNICODE,
         ),
+        # written_selfmod: a shell running what a fetch prints through a substitution, an inline
+        # program that may fetch and run, and wget's combined short flags ending in `O` (without the
+        # group around the options its substitution reads)
+        (
+            None,
+            (
+                OptionRun(
+                    r"(?:\b(?:ba|z|k|da|fi)?sh|\beval|\bsource|(?:^|[\s;&|(])\.)\s+",
+                    r"-\w+\s+",
+                    r"[\"']?(?:\$\(|`|<\()\s*(?:\S+/)?(?:curl|wget|fetch)\b",
+                    truncate=False,
+                ),
+            ),
+            "",
+            re.UNICODE,
+        ),
+        (
+            None,
+            (
+                OptionRun(
+                    r"\b(?:python[23]?|node|deno|bun|perl|ruby|php)\s+",
+                    r"-\w+\s+",
+                    r"(?:-c|-e|-E|-r|--eval)\b",
+                    truncate=False,
+                ),
+            ),
+            "",
+            re.UNICODE | re.IGNORECASE,
+        ),
+        (
+            None,
+            (
+                OptionRun(
+                    r"\bwget\s+", r"-\S+\s+", r"-([A-Za-z]+)O(?=\s)", lazy=True, truncate=False
+                ),
+            ),
+            "",
+            re.UNICODE,
+        ),
         # written_selfmod: the file an in-place sed edits
         (
             None,

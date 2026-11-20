@@ -64,6 +64,18 @@ SHAPES = {
     "a run of distinct hosts": lambda size: _write(
         AGENTS, "".join(f"run a{i}.io " for i in range(size // 13))
     ),
+    # shell text written to a shell startup file
+    "a shell with many options": lambda size: _write(BASHRC, _repeat("sh ", "-sh ", "", size)),
+    "wget with many options": lambda size: _write(BASHRC, _repeat("wget ", "-wget ", "", size)),
+    "node with many options": lambda size: _write(
+        BASHRC, _repeat("node ", "-node ", " fetch( exec", size)
+    ),
+    # a command writing a shell startup file, with many echoes before the write
+    "many echoes, then tee": lambda size: ex(_repeat("", "echo ", "\ntee ~/.bashrc", size)),
+    "many echoes, then sed": lambda size: ex(_repeat("", "echo ", "; sed -i s ~/.bashrc", size)),
+    "an echo of much text into the file": lambda size: ex(
+        _repeat("echo ", "a ", " >> ~/.bashrc", size)
+    ),
     "mail to many addresses": lambda size: _write(
         AGENTS, "".join(f"send to u{i}@a.io " for i in range(size // 19))
     ),
@@ -235,3 +247,26 @@ def test_prose_roles_agree_with_the_per_host_reading():
         assert _roles(written_selfmod._prose_roles, text) == want, text
         found += bool(want) and not isinstance(want, tuple)
     assert found > 300
+
+
+# --------------------------------------------------------------------------- echoes written to a file
+
+_ECHO_WORDS = [
+    *"echo printf xecho echox -n -e -E -nE -x a b ~/.bashrc > >> >>> < | ; & ' \" x=1 é".split(),
+    *["\n", " ", "  ", "\t", "\u00a0", "\n\n", ""],
+]
+_ECHO_SEPARATORS = [" ", " ", "", "\t", "\n", "  ", "\u2003", " \n "]
+
+
+def test_unquoted_echoes_agree_with_the_regex():
+    rng = random.Random(20261120)
+    matched = 0
+    for _ in range(8000):
+        text = "".join(
+            rng.choice(_ECHO_WORDS) + rng.choice(_ECHO_SEPARATORS)
+            for _ in range(rng.randint(0, 14))
+        )
+        want = [m.group(1) for m in written_selfmod._UNQUOTED_ECHO.finditer(text)]
+        assert written_selfmod._unquoted_echoes(text) == want, text
+        matched += bool(want)
+    assert matched > 300

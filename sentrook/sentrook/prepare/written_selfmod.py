@@ -1213,8 +1213,7 @@ def _exec_written(
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body and (_hosts_in(body) or _ECHOED.search(rest, 0, m.start())):
             bodies.append(_SED_APPEND.sub("", body.replace('\\"', '"'), count=1))
-    for m in _UNQUOTED_ECHO.finditer(rest):
-        bodies.append(m.group(1))
+    bodies.extend(_unquoted_echoes(rest))
     cron_user = any(_SYSTEM_CRON.search(t) for t in _write_targets(rest))
     return [WrittenText(b, form, host_run, cron_user) for b in dict.fromkeys(bodies) if b.strip()]
 
@@ -1226,6 +1225,80 @@ _SED_APPEND = re.compile(r"^\s*(?:(?:\$|\d+|/[^/]*/)\s*[aic]\\?\s*|[aic]\\\s*)")
 _ECHOED = re.compile(r"(?:^|[;&|(\n])\s*(?:sudo\s+)?(?:echo|printf)\b[^;&|\n]*$")
 #: An unquoted `echo` or `printf` redirected into a file: what it writes.
 _UNQUOTED_ECHO = re.compile(r"\b(?:echo|printf)\s+(?:-[neE]+\s+)?([^'\"<>|;&\n]+?)\s*>>?\s*\S+")
+_ECHO_WORD = re.compile(r"\b(?:echo|printf)")
+_ECHO_FLAGS = re.compile(r"-[neE]+")
+_NOT_ECHOED = frozenset("'\"<>|;&\n")
+
+
+def _unquoted_echoes(text: str) -> list[str]:
+    """`[m.group(1) for m in _UNQUOTED_ECHO.finditer(text)]`, in linear time.
+
+    The regex, at each `echo`, grows its lazy text one character at a time to where a redirect could
+    follow, then gives up at the end of the run of characters the text may hold: every `echo` in a
+    long run (`echo echo …` with no `>`) re-read the rest of the run. The same matches are built
+    here from facts about each position, read once:
+    - where the text starts (`g`): the regex tries the whitespace after the command word longest
+      first, the flags (`-n`) and the whitespace after them before none, and takes the first start
+      from which a match can be made;
+    - from `g`, one can when the run of text characters from `g` ends where whitespace (which may
+      cross a newline) leads to a `>` with a non-space character somewhere after it;
+    - the text then ends at the first position from which only whitespace leads to that `>` (the
+      lazy group), and the match after the target word the redirect names."""
+    if ">" not in text or not _ECHO_WORD.search(text):
+        return []
+    n = len(text)
+    space = [c.isspace() for c in text]
+    next_word = [n] * (n + 2)  # the first non-space character at or after each position
+    run_end = [n] * (n + 1)  # where the run of text characters from each position ends
+    word_end = [n] * (n + 1)  # where the run of non-space characters from each position ends
+    for i in range(n - 1, -1, -1):
+        next_word[i] = next_word[i + 1] if space[i] else i
+        run_end[i] = i if text[i] in _NOT_ECHOED else run_end[i + 1]
+        word_end[i] = i if space[i] else word_end[i + 1]
+    space_start = [0] * (n + 1)  # where the run of whitespace ending at each position starts
+    for i in range(1, n + 1):
+        space_start[i] = space_start[i - 1] if space[i - 1] else i
+
+    def redirect(
+        r: int,
+    ) -> bool:  # whitespace from `r` to a `>` with a non-space character after it
+        k = next_word[r]
+        return k < n and text[k] == ">" and next_word[k + 1] < n
+
+    last_start = [-1] * (n + 1)  # the last position at or before each one that text can start at
+    for g in range(n + 1):
+        ok = g < n and text[g] not in _NOT_ECHOED and redirect(run_end[g])
+        last_start[g] = g if ok else last_start[g - 1] if g else -1
+
+    out: list[str] = []
+    pos = 0
+    for head in _ECHO_WORD.finditer(text):
+        h, p0 = head.span()
+        if h < pos or p0 >= n or not space[p0]:
+            continue
+        w_end = next_word[p0]
+        g = -1
+        flags = _ECHO_FLAGS.match(text, w_end)
+        if flags is not None and flags.end() < n and space[flags.end()]:
+            fe = flags.end()
+            if last_start[next_word[fe]] >= fe + 1:
+                g = last_start[next_word[fe]]
+        if g < 0 and last_start[w_end] >= p0 + 1:
+            g = last_start[w_end]
+        if g < 0:
+            continue
+        r = run_end[g]
+        j = max(g + 1, space_start[r])
+        k = next_word[r]  # the `>`
+        if k + 1 < n and text[k + 1] == ">" and next_word[k + 2] < n:
+            end = word_end[next_word[k + 2]]
+        elif k + 1 < n and text[k + 1] == ">":
+            end = word_end[k + 1]
+        else:
+            end = word_end[next_word[k + 1]]
+        out.append(text[g:j])
+        pos = end
+    return out
 
 
 _REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\s*([^\s;&|<>]+)")
@@ -1406,13 +1479,37 @@ _PWSH_RUN = re.compile(r"\b(?:iex|invoke-expression|start-process)\b", re.I)
 
 #: A fetch piped into the current shell (fish's `curl ... | source`, `curl ... | . /dev/stdin`).
 _PIPE_SOURCE = re.compile(r"\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:source|\.)(?=\s|$)")
+#: Its pieces, searched in linear time (`_pipes_to_source`).
+_PIPE_SOURCE_HEAD = re.compile(r"\b(?:curl|wget|fetch)\b")
+_PIPE_SOURCE_GAP = re.compile(r"[^|;&]*")
+_PIPE_SOURCE_TAIL = re.compile(r"\|\s*(?:source|\.)(?=\s|$)")
+
+
+def _pipes_to_source(line: str) -> bool:
+    """`_PIPE_SOURCE.search(line)` holds: each position after a fetch word, up to where its command
+    ends, is tried once (searched as the regex, every fetch word in a long run re-read the rest)."""
+    return (
+        linear_search.gap_tail_first(
+            line,
+            _PIPE_SOURCE_HEAD,
+            lambda text, p: _PIPE_SOURCE_TAIL.match(text, p) is not None,
+            gap=_PIPE_SOURCE_GAP,
+        )
+        >= 0
+    )
+
+
+def _found(rx: re.Pattern[str], text: str) -> bool:
+    """`rx.search(text)` holds, for a pattern of the form `<command>(?:<option>)*<end>` read in
+    linear time (a long run of options repeats the command: `sh -sh -sh …`)."""
+    return next(linear_search.option_run_finditer(rx, text), None) is not None
 
 
 def _runs_fetched(line: str) -> bool:
     """The line fetches code and runs it by a route the pipe check does not read."""
-    if _SUBST_RUN.search(line) or _PIPE_SOURCE.search(line):
+    if _found(_SUBST_RUN, line) or _pipes_to_source(line):
         return True
-    if _INLINE_PROGRAM.search(line) and _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line):
+    if _found(_INLINE_PROGRAM, line) and _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line):
         return True
     return bool(_PWSH_FETCH.search(line) and _PWSH_RUN.search(line))
 
@@ -1432,6 +1529,26 @@ _LOCAL_SEND = re.compile(
 
 #: wget's combined short flags ending in `O` (`-qO FILE`), split so the download parser reads the file.
 _WGET_COMBINED_O = re.compile(r"\bwget\s+((?:-\S+\s+)*?)-([A-Za-z]+)O(?=\s)")
+#: The same matches, found in linear time (`_split_wget_o`).
+_WGET_COMBINED_O_RUN = re.compile(r"\bwget\s+(?:-\S+\s+)*?-([A-Za-z]+)O(?=\s)")
+
+
+def _split_wget_o(line: str) -> str:
+    """`_WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)`: each match found as the pattern without
+    its options group finds it (in linear time), then built by the pattern from where it starts."""
+    out: list[str] = []
+    pos = 0
+    for found in linear_search.option_run_finditer(_WGET_COMBINED_O_RUN, line):
+        m = _WGET_COMBINED_O.match(line, found.start())
+        if m is None or m.span() != found.span():  # not reached: the two patterns match alike
+            return _WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)
+        out.append(line[pos : m.start()])
+        out.append(m.expand(r"wget \1-\2 -O "))
+        pos = m.end()
+    if not out:
+        return line
+    out.append(line[pos:])
+    return "".join(out)
 
 
 def _sends_local(text: str) -> bool:
@@ -1472,10 +1589,7 @@ def _shell_roles(
     a copy or a raw socket). Base64 the text decodes is read too."""
     from ..aira.normalize import normalise_text
 
-    lines = [
-        _WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)
-        for line in _resolve_vars(_shell_lines(text, cron_user=cron_user))
-    ]
+    lines = [_split_wget_o(line) for line in _resolve_vars(_shell_lines(text, cron_user=cron_user))]
     if not lines:
         return []
     decoded = [d for d in (normalise_text(line) for line in lines) if d not in lines]
