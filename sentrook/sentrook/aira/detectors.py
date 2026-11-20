@@ -402,6 +402,114 @@ def _in_pipeline_tail(shape: ExecShape, index: int) -> bool:
     return any(index in p[1:] for p in shape.pipelines)
 
 
+# ------------------------------------------------------------------ exec markers in linear time
+#
+# A marker `<head>[^;&|\n]*<tail>` (a command, any words to the end of its simple command, then a tail),
+# searched as a regex, retries the gap from every head and the tail at every position after it: a long
+# simple command with many heads (`rsync rsync …`) is quadratic, and the remote-copy tail `\S+@\S+:` is
+# cubic in a long word (`a@a@…`). For the markers listed here the search finds the same answer in linear
+# time: the gap ranges of all the heads are read once, left to right, and the tail is tried once at each
+# position in them. The list keeps the pattern (the mechanism shown, and searched as it is if changed).
+
+_GAP_END = re.compile(r"[;&|\n]")
+
+
+def _gap_tail_search(text: str, head: re.Pattern[str], tail_at: Callable[[str, int], bool]) -> bool:
+    """Whether `<head>[^;&|\\n]*<tail>` occurs in `text`, for a head whose matches never overlap and
+    end where they end (one end per start). `tail_at(text, p)`: whether the tail matches at `p`; it is
+    called once per position, in ascending order."""
+    tried = -1  # every position up to here has been tried
+    end = -1  # where the last head's simple command ends (a separator, or the end of the text)
+    for m in head.finditer(text):
+        e = m.end()
+        if e > end:
+            sep = _GAP_END.search(text, e)
+            end = sep.start() if sep else len(text)
+        for p in range(max(e, tried + 1), end + 1):
+            if tail_at(text, p):
+                return True
+        tried = max(tried, end)
+    return False
+
+
+def _regex_tail(pattern: str) -> Callable[[str, int], bool]:
+    rx = re.compile(pattern, re.IGNORECASE)
+    return lambda text, p: rx.match(text, p) is not None
+
+
+class _RemoteCopyTail:
+    """The remote-copy tail `\\S+@\\S+:|\\b[\\w.-]+\\.[a-z]{2,}:|\\brsync://|\\bsftp://` tried at
+    ascending positions. `user@host:` holds, within one run of non-space characters, for a prefix of the
+    run's positions (an `@` after the position, a `:` two after that, both in the run), and `host.tld:`
+    likewise within a run of `[\\w.-]` among the positions at a word boundary (the run must end at the
+    `:`): after it fails at a position, the rest of that run is not tried again."""
+
+    #: `\S+@\S+:` at a position, without its backtracking: the first `@` after the first character,
+    #: then the first `:` after the character after it.
+    USER_HOST = re.compile(r"\S[^\s@]*@\S[^\s:]*:")
+    HOST = re.compile(r"\b[\w.-]+\.[a-z]{2,}:", re.IGNORECASE)
+    URL = re.compile(r"\b(?:rsync|sftp)://", re.IGNORECASE)
+    WORD = re.compile(r"\S+")
+    HOST_RUN = re.compile(r"\b[\w.-]+")
+
+    def __init__(self) -> None:
+        self.user_host_failed_until = -1
+        self.host_failed_until = -1
+
+    def __call__(self, text: str, p: int) -> bool:
+        if p >= self.user_host_failed_until:
+            if self.USER_HOST.match(text, p):
+                return True
+            word = self.WORD.match(text, p)
+            if word:
+                self.user_host_failed_until = word.end()
+        if p >= self.host_failed_until:
+            if self.HOST.match(text, p):
+                return True
+            run = self.HOST_RUN.match(text, p)
+            if run:
+                self.host_failed_until = run.end()
+        return self.URL.match(text, p) is not None
+
+
+_HEAD_RX: dict[str, re.Pattern[str]] = {}
+
+
+def _head(pattern: str) -> re.Pattern[str]:
+    if pattern not in _HEAD_RX:
+        _HEAD_RX[pattern] = re.compile(pattern, re.IGNORECASE)
+    return _HEAD_RX[pattern]
+
+
+#: Marker pattern (as in `egress.yaml`) -> its linear search.
+_LINEAR_MARKERS: dict[str, Callable[[str], bool]] = {
+    r"\b(?:scp|rsync|sftp)\b[^;&|\n]*(?:\S+@\S+:|\b[\w.-]+\.[a-z]{2,}:|\brsync://|\bsftp://)": (
+        lambda text: _gap_tail_search(text, _head(r"\b(?:scp|rsync|sftp)\b"), _RemoteCopyTail())
+    ),
+    r"\baws\s+s3\s+(?:cp|sync|mv)\b[^;&|\n]*\ss3://": (
+        lambda text: _gap_tail_search(
+            text, _head(r"\baws\s+s3\s+(?:cp|sync|mv)\b"), _regex_tail(r"\ss3://")
+        )
+    ),
+    r"\bgsutil\s+(?:cp|rsync|mv)\b[^;&|\n]*\sgs://": (
+        lambda text: _gap_tail_search(
+            text, _head(r"\bgsutil\s+(?:cp|rsync|mv)\b"), _regex_tail(r"\sgs://")
+        )
+    ),
+    r"\brclone\s+(?:copy|sync|move)\b[^;&|\n]*\s\w+:": (
+        lambda text: _gap_tail_search(
+            text, _head(r"\brclone\s+(?:copy|sync|move)\b"), _regex_tail(r"\s\w+:")
+        )
+    ),
+}
+
+
+def _marker_found(rx: re.Pattern[str], text: str) -> bool:
+    """`rx.search(text)`, in linear time for the markers that have a linear search."""
+    linear = _LINEAR_MARKERS.get(rx.pattern) if rx.flags & re.IGNORECASE else None
+    return linear(text) if linear is not None else rx.search(text) is not None
+
+
 def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     sinks: list[Sink] = []
     shape = a.shape
@@ -424,7 +532,7 @@ def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
             if rule.get("requires_pipe"):
                 if shape is None or index is None or not _in_pipeline_tail(shape, index):
                     continue
-            if not rule.regex.search(seg_text):
+            if not _marker_found(rule.regex, seg_text):
                 continue
             reason = str(rule.get("reason", "exfil.exec_egress"))
             if reason in seen:
@@ -1399,6 +1507,181 @@ def _after_options(tokens: list[str], start: int) -> Iterator[int]:
             return
 
 
+class _OptionRuns:
+    """`_after_options` for every start of one command at once. The positions it yields from `start` are
+    `start` to `end(start)`; one pass finds them all, so trying each word after a run of options as the
+    subcommand, and each word after that as the verb, takes time linear in the words, however long the
+    run (a walk per start would be quadratic, and a walk per start inside a walk per start cubic)."""
+
+    __slots__ = ("_option", "_stop")
+
+    def __init__(self, tokens: list[str]) -> None:
+        n = len(tokens)
+        self._option = [t.startswith("-") and len(t) > 1 for t in tokens]
+        # `_stop[i]`: the first position from `i` on where a walk that has already passed the word
+        # before it stops (a word that is not an option and not the value of the option before it);
+        # the last position when there is none.
+        stop = [n - 1] * (n + 1)
+        for i in range(n - 1, 0, -1):
+            prev = tokens[i - 1]
+            takes_value = self._option[i - 1] and "=" not in prev and prev != "--"
+            stop[i] = i if not self._option[i] and not takes_value else stop[i + 1]
+        self._stop = stop
+
+    def end(self, start: int) -> int:
+        """The last position `_after_options(tokens, start)` yields; `start - 1` when it yields none."""
+        if start >= len(self._option):
+            return start - 1
+        if not self._option[start]:
+            return start
+        return self._stop[start + 1]
+
+
+def _next_index(words: list[str], wanted: Callable[[str], bool]) -> list[int]:
+    """`out[i]`: the first position from `i` on whose word is `wanted`; `len(words)` when none is."""
+    out = [len(words)] * (len(words) + 1)
+    for i in range(len(words) - 1, -1, -1):
+        out[i] = i if wanted(words[i]) else out[i + 1]
+    return out
+
+
+def _grows_with_rest(rx: re.Pattern[str]) -> bool:
+    """Whether a search for `rx` that finds a match in some words also finds one in any longer run of
+    words ending in them (`a b` → `x a b`): true unless the pattern anchors at the start or looks
+    behind for what must not be there. Read from the pattern's text, erring towards false."""
+    return not re.search(r"\^|\\A|\(\?<!", rx.pattern)
+
+
+class _Rests:
+    """The words after each position of one command, joined (`" ".join(tokens[v + 1 :])`), and the
+    last position whose rest passes a test that, passing on a rest, passes on every longer one (a
+    substring, or a search for patterns that `_grows_with_rest`). The rests then pass for exactly
+    the positions up to that one, found in a logarithmic number of tests."""
+
+    __slots__ = ("_joined", "_last", "_offsets")
+
+    def __init__(self, tokens: list[str]) -> None:
+        self._joined = " ".join(tokens)
+        offsets: list[int] = []
+        at = 0
+        for t in tokens:
+            offsets.append(at)
+            at += len(t) + 1
+        offsets.append(max(at, len(self._joined)))
+        self._offsets = offsets
+        self._last: dict[str, int] = {}
+
+    def after(self, v: int) -> str:
+        return self._joined[self._offsets[v + 1] :]
+
+    def last_passing(self, name: str, test: Callable[[str], bool]) -> int:
+        if name not in self._last:
+            lo, hi = 0, len(self._offsets) - 1  # the first position whose rest fails is in [lo, hi]
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if test(self.after(mid)):
+                    lo = mid + 1
+                else:
+                    hi = mid
+            self._last[name] = lo - 1
+        return self._last[name]
+
+
+#: How many of a report's settings it shows (`report` in `_approval_loosening`).
+_SHOWN_SETTINGS = 4
+
+
+def _setting(hit: tuple[str, str, str]) -> str:
+    return f"{hit[0]}={hit[1]}"
+
+
+def _least(hits: Iterable[tuple[str, str, str]]) -> tuple[tuple[str, str, str], ...]:
+    """Of a set of hits, the ones a report shows whatever else it holds: per tier, the
+    `_SHOWN_SETTINGS` with the least `key=value`. A report of any superset of these, drawn from the
+    full set, reads the same as a report of the full set."""
+    by_tier: dict[str, list[tuple[str, str, str]]] = {}
+    for h in dict.fromkeys(hits):
+        by_tier.setdefault(h[2], []).append(h)
+    out: list[tuple[str, str, str]] = []
+    for tier_hits in by_tier.values():
+        out.extend(sorted(tier_hits, key=_setting)[:_SHOWN_SETTINGS])
+    return tuple(out)
+
+
+def _suffix_least(
+    n: int, hit_at: Callable[[int], tuple[str, str, str] | None]
+) -> list[tuple[tuple[str, str, str], ...]]:
+    """`out[i]`: `_least` of the hits at positions `i` and after, for every `i`, in one pass."""
+    out: list[tuple[tuple[str, str, str], ...]] = [()] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        h = hit_at(i)
+        out[i] = out[i + 1] if h is None or h in out[i + 1] else _least((*out[i + 1], h))
+    return out
+
+
+class _ArgsAfter:
+    """What the words after a position of one command hold (`tokens[v + 1 :]`, a verb's arguments),
+    for every position, each fact worked out once in one pass over the words."""
+
+    __slots__ = ("_allowlist", "_last", "_least", "_positional", "tokens")
+
+    def __init__(self, tokens: list[str]) -> None:
+        self.tokens = tokens
+        self._positional: list[int] | None = None
+        self._last: dict[tuple[str, bool], int] = {}
+        self._least: dict[str, list[tuple[Hit, ...]]] = {}
+        self._allowlist: tuple[int, list[tuple[Hit, ...]]] | None = None
+
+    def positional(self, v: int) -> list[str]:
+        """The first two words after `v` that are not options."""
+        tokens, n = self.tokens, len(self.tokens)
+        if self._positional is None:
+            self._positional = _next_index(tokens, lambda t: not t.startswith("-"))
+        first = self._positional[v + 1]
+        if first >= n:
+            return []
+        second = self._positional[first + 1]
+        return [tokens[first]] if second >= n else [tokens[first], tokens[second]]
+
+    def has(self, v: int, word: str, *, by_name: bool = False) -> bool:
+        """Whether `word` is among the words after `v` (`by_name`: as `word` or `word=…`)."""
+        key = (word, by_name)
+        if key not in self._last:
+            names = (t.split("=", 1)[0] if by_name else t for t in self.tokens)
+            self._last[key] = max((j for j, t in enumerate(names) if t == word), default=-1)
+        return self._last[key] > v
+
+    def least(
+        self, name: str, hit_at: Callable[[list[str], int], Hit | None]
+    ) -> list[tuple[Hit, ...]]:
+        """`out[i]`: `_least` of the hits `hit_at` finds at positions `i` and after."""
+        if name not in self._least:
+            self._least[name] = _suffix_least(len(self.tokens), lambda j: hit_at(self.tokens, j))
+        return self._least[name]
+
+    def allowlist(self, start: int, broad: Callable[[str], bool]) -> tuple[Hit, ...]:
+        """`_least` of the broad entries among the words from `start` on: the words that are not
+        options, an option's value skipped (an option without `=` takes the next word, whatever it
+        is). Worked out right to left for both states (the word at a position skipped or not), from
+        the first start asked for."""
+        tokens, n = self.tokens, len(self.tokens)
+        if self._allowlist is None or start < self._allowlist[0]:
+            free: list[tuple[Hit, ...]] = [()] * (n + 1)
+            skipped: list[tuple[Hit, ...]] = [()] * (n + 1)
+            for j in range(n - 1, start - 1, -1):
+                t = tokens[j]
+                skipped[j] = free[j + 1]
+                if t.startswith("-"):
+                    free[j] = (free if "=" in t else skipped)[j + 1]
+                elif broad(t):
+                    h: Hit = ("allowlist", t, BLOCK)
+                    free[j] = free[j + 1] if h in free[j + 1] else _least((*free[j + 1], h))
+                else:
+                    free[j] = free[j + 1]
+            self._allowlist = (start, free)
+        return self._allowlist[1][start] if start <= n else ()
+
+
 def _program_name(token: str) -> str:
     """`/usr/bin/hermes` -> `hermes`, `openclaw@latest` -> `openclaw`."""
     name = os.path.basename(token).lower()
@@ -1536,10 +1819,14 @@ def _cli_tokens(tokens: list[str], heads: set[str], lists: Lists) -> list[str]:
                 if [t.lower() for t in current[1:n]] != words[1:]:
                     continue
                 # The last launchable word wins: in `npx -p openclaw openclaw …` the first is the
-                # value of `-p`.
+                # value of `-p`. (The words are cut once, at the end: a cut per launchable word is
+                # quadratic in a long run of `-p openclaw`.)
+                last = None
                 for i in _after_options(current, n):
                     if launches(_program_name(current[i])):
-                        following = current[i:]
+                        last = i
+                if last is not None:
+                    following = current[last:]
                 break
         if following is None:
             break
@@ -2940,119 +3227,197 @@ def _approval_loosening(
             return True
         return "mode" not in names and not {"security", "ask"} <= names
 
+    cli_memo: dict[tuple[str, str, str], Any] = {}
+
     def cli(tokens: list[str], line: str, command: str) -> None:
         """The host CLIs: config commands, approvals commands, launch flags."""
         head = tokens[0]
         flags = rules.launch_flags.get(head, frozenset())
         if flags and any(t in flags for t in tokens[1:]):
             cli_hit(line, "launch_flag", {(t, "on", BLOCK) for t in tokens[1:] if t in flags})
-        for at in _after_options(tokens, 1):
-            sub = tokens[at].lower()
-            verbs = [(v, tokens[v].lower()) for v in _after_options(tokens, at + 1)]
-            for entry in config_cli:
-                if head != entry.get("head") or sub != entry.get("subcommand"):
+        configs = [e for e in config_cli if head == e.get("head")]
+        approvals = [e for e in rules.approvals_cli if head == e.get("head")]
+        subcommands = {e.get("subcommand") for e in (*configs, *approvals)}
+        if not subcommands:
+            return
+        # `<head> [options] <subcommand> [options] <verb> …`: every word that can follow the options
+        # is tried as the subcommand, and every word that can follow the subcommand's options as the
+        # verb. What a verb finds depends only on its position (its subcommand is the entry's), so
+        # each position is read once per entry however many subcommand words reach it, and what it
+        # reads of the words after it comes from one pass over them (`_ArgsAfter`): linear in the
+        # words however long the option runs. Only repeated reports are left out, which change no
+        # finding.
+        low = [t.lower() for t in tokens]
+        runs = _OptionRuns(tokens)
+        after = _ArgsAfter(tokens)
+        read_upto: dict[tuple[str, int], int] = {}
+        files_read: dict[int, int] = {}
+        for at in range(1, runs.end(1) + 1):
+            sub = low[at]
+            if sub not in subcommands:
+                continue
+            lo, hi = at + 1, runs.end(at + 1)
+            for k, entry in enumerate(configs):
+                if sub != entry.get("subcommand"):
                     continue
-                for v, verb in verbs:
-                    if verb not in {str(x).lower() for x in entry.get("mutating_verbs", [])}:
-                        continue
-                    args = tokens[v + 1 :]
-                    positional = [t for t in args if not t.startswith("-")]
-                    hits: set[Hit] = set()
-                    removes = verb in ("unset", "rm", "remove", "delete", "del")
-                    if removes and head == "openclaw":
-                        hits = {
-                            (path, "unset", BLOCK)
-                            for path in positional[:1]
-                            if _match_any(rules.unset_paths, path.strip("'\""))
-                        }
-                    if verb == "patch":
-                        hits |= _loosening_hits(
-                            _heredocs(command) or command, "", rules, cli_where(head)
-                        )
-                    if "--dry-run" not in args:
-                        # Content the call does not show: a patch or batch file, or a patch
-                        # read on stdin from a file.
-                        for i, t in enumerate(args):
-                            name, eq, val = t.partition("=")
-                            if name in ("--file", "--batch-file") and (
-                                verb == "patch" or name == "--batch-file"
-                            ):
-                                val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
-                                # `-` (dropped from the words) is stdin: a heredoc there is read.
-                                if val and val != "-":
-                                    hits.add(("read from", val, REVIEW))
-                        if (
-                            verb == "patch"
-                            and "--stdin" in args
-                            and not _heredocs(command)
-                            and _STDIN_FILE.search(command)
-                        ):
-                            hits.add(("read from", "stdin", REVIEW))
-                    if any(t.split("=", 1)[0] == "--batch-json" for t in args):
-                        for m in _BATCH_ITEM.finditer(command):
-                            hits |= set_value(head, m.group(1), m.group(2).strip("'\""))
-                    if not removes and len(positional) >= 2:
-                        hits |= set_value(head, positional[0], positional[1])
-                        if head == "openclaw" and drops_policy(
-                            positional[0], positional[1], "--merge" in args
-                        ):
-                            hits.add((positional[0], "policy dropped", BLOCK))
-                    elif not removes and len(positional) == 1 and "=" in positional[0]:
-                        path, _, value = positional[0].partition("=")
-                        hits |= set_value(head, path, value)
-                    if hits:
-                        cli_hit(line, f"{head} {sub} {verb}", hits)
-            for entry in rules.approvals_cli:
-                if head != entry.get("head") or sub != entry.get("subcommand"):
+                mutating = {str(x).lower() for x in entry.get("mutating_verbs", [])}
+                done = read_upto.get(("config", k), -1)
+                for v in range(max(lo, done + 1), hi + 1):
+                    if low[v] in mutating:
+                        config_verb(tokens, line, command, sub, v, after)
+                read_upto["config", k] = max(done, hi)
+            for k, entry in enumerate(approvals):
+                if sub != entry.get("subcommand"):
                     continue
-                for v, verb in verbs:
-                    if verb != entry.get("verb"):
-                        continue
-                    args = tokens[v + 1 :]
-                    mech = f"{head} {sub} {verb}"
-                    presets = {str(p).lower() for p in entry.get("presets") or []}
-                    if presets and any(t.lower() in presets for t in args):
-                        cli_hit(
-                            line, mech, {("preset", t, BLOCK) for t in args if t.lower() in presets}
-                        )
-                    flag_rx = entry.get("flags") or {}
-                    found: set[Hit] = set()
-                    for i, t in enumerate(args):
-                        name, eq, val = t.partition("=")
-                        if name in flag_rx:
-                            val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
-                            if re.fullmatch(str(flag_rx[name]), val, re.IGNORECASE):
-                                found.add((name, val, BLOCK))
-                    if found:
-                        cli_hit(line, mech, found)
-                    if entry.get("content"):
-                        doc = _heredocs(command) or command
-                        hits = _loosening_hits(doc, "", rules, cli_where(head, "approvals"))
-                        if hits:
-                            cli_hit(line, mech, hits)
-                    file_flag = entry.get("file_flag")
-                    for i, t in enumerate(args):
-                        name, eq, val = t.partition("=")
-                        if file_flag and name == file_flag:
-                            val = val if eq else (args[i + 1] if i + 1 < len(args) else "")
-                            src = resolve(val)
-                            if val and not _host_where(src, rules, ctx).classes & {"approvals"}:
-                                cli_hit(line, mech, {("read from", display(src), REVIEW)})
-                    add = entry.get("allowlist_add")
-                    if add and args and args[0].lower() == str(add):
-                        # Entries: the words after the options; an option's value is skipped.
-                        entries: list[str] = []
-                        skip = False
-                        for t in args[1:]:
-                            if skip:
-                                skip = False
-                            elif t.startswith("-"):
-                                skip = "=" not in t
-                            else:
-                                entries.append(t)
-                        broad = {("allowlist", e, BLOCK) for e in entries if _broad(e, rules)}
-                        if broad:
-                            cli_hit(line, mech, broad)
+                done = read_upto.get(("approvals", k), -1)
+                for v in range(max(lo, done + 1), hi + 1):
+                    if low[v] == entry.get("verb"):
+                        approvals_verb(entry, k, tokens, line, command, sub, v, after, files_read)
+                read_upto["approvals", k] = max(done, hi)
+
+    def once(key: tuple[str, str, str], compute: Callable[[], Any]) -> Any:
+        """What a command's whole text gives, read once however many verbs ask."""
+        if key not in cli_memo:
+            cli_memo[key] = compute()
+        return cli_memo[key]
+
+    def config_verb(
+        tokens: list[str], line: str, command: str, sub: str, v: int, after: _ArgsAfter
+    ) -> None:
+        """`<head> config <verb> <args>` with the verb at `v`."""
+        head, verb = tokens[0], tokens[v].lower()
+        positional = after.positional(v)
+        hits: set[Hit] = set()
+        removes = verb in ("unset", "rm", "remove", "delete", "del")
+        if removes and head == "openclaw":
+            hits = {
+                (path, "unset", BLOCK)
+                for path in positional[:1]
+                if _match_any(rules.unset_paths, path.strip("'\""))
+            }
+        if verb == "patch":
+            hits.update(
+                once(
+                    ("patch", head, command),
+                    lambda: _least(
+                        _loosening_hits(_heredocs(command) or command, "", rules, cli_where(head))
+                    ),
+                )
+            )
+        if not after.has(v, "--dry-run"):
+            # Content the call does not show: a patch or batch file, or a patch read on stdin
+            # from a file. `-` (dropped from the words) is stdin: a heredoc there is read.
+            hits.update(after.least("--batch-file", read_from("--batch-file"))[v + 1])
+            if verb == "patch":
+                hits.update(after.least("--file", read_from("--file"))[v + 1])
+            if (
+                verb == "patch"
+                and after.has(v, "--stdin")
+                and once(
+                    ("stdin", "", command),
+                    lambda: not _heredocs(command) and bool(_STDIN_FILE.search(command)),
+                )
+            ):
+                hits.add(("read from", "stdin", REVIEW))
+        if after.has(v, "--batch-json", by_name=True):
+
+            def batch() -> tuple[Hit, ...]:
+                found: set[Hit] = set()
+                for m in _BATCH_ITEM.finditer(command):
+                    found |= set_value(head, m.group(1), m.group(2).strip("'\""))
+                return _least(found)
+
+            hits.update(once(("batch", head, command), batch))
+        if not removes and len(positional) >= 2:
+            hits |= set_value(head, positional[0], positional[1])
+            if head == "openclaw" and drops_policy(
+                positional[0], positional[1], after.has(v, "--merge")
+            ):
+                hits.add((positional[0], "policy dropped", BLOCK))
+        elif not removes and len(positional) == 1 and "=" in positional[0]:
+            path, _, value = positional[0].partition("=")
+            hits |= set_value(head, path, value)
+        if hits:
+            cli_hit(line, f"{head} {sub} {verb}", hits)
+
+    def read_from(flag: str) -> Callable[[list[str], int], Hit | None]:
+        """`<flag> <file>` or `<flag>=<file>` at a position: the file read, unless stdin."""
+
+        def hit_at(tokens: list[str], j: int) -> Hit | None:
+            name, eq, val = tokens[j].partition("=")
+            if name != flag:
+                return None
+            val = val if eq else (tokens[j + 1] if j + 1 < len(tokens) else "")
+            return ("read from", val, REVIEW) if val and val != "-" else None
+
+        return hit_at
+
+    def approvals_verb(
+        entry: dict[str, Any],
+        k: int,
+        tokens: list[str],
+        line: str,
+        command: str,
+        sub: str,
+        v: int,
+        after: _ArgsAfter,
+        files_read: dict[int, int],
+    ) -> None:
+        """An OpenClaw approvals command (`approvals_cli`) with the verb at `v`."""
+        head, verb, n = tokens[0], tokens[v].lower(), len(tokens)
+        mech = f"{head} {sub} {verb}"
+        presets = {str(p).lower() for p in entry.get("presets") or []}
+        if presets:
+            found_presets = after.least(
+                f"presets {k}",
+                lambda ts, j: ("preset", ts[j], BLOCK) if ts[j].lower() in presets else None,
+            )[v + 1]
+            if found_presets:
+                cli_hit(line, mech, set(found_presets))
+        flag_rx = entry.get("flags") or {}
+        if flag_rx:
+
+            def flag_at(ts: list[str], j: int) -> Hit | None:
+                name, eq, val = ts[j].partition("=")
+                if name not in flag_rx:
+                    return None
+                val = val if eq else (ts[j + 1] if j + 1 < len(ts) else "")
+                if re.fullmatch(str(flag_rx[name]), val, re.IGNORECASE):
+                    return (name, val, BLOCK)
+                return None
+
+            found = after.least(f"flags {k}", flag_at)[v + 1]
+            if found:
+                cli_hit(line, mech, set(found))
+        if entry.get("content"):
+
+            def content() -> tuple[Hit, ...]:
+                doc = _heredocs(command) or command
+                return _least(_loosening_hits(doc, "", rules, cli_where(head, "approvals")))
+
+            hits = once(("content", head, command), content)
+            if hits:
+                cli_hit(line, mech, set(hits))
+        file_flag = entry.get("file_flag")
+        if file_flag:
+            # One report per file read; a later verb of the same entry reads a subset of the same
+            # words (verbs are read left to right), so only the files after the first one count.
+            upto = files_read.get(k, n - 1)
+            files_read[k] = min(upto, v)
+            for j in range(v + 1, upto + 1):
+                name, eq, val = tokens[j].partition("=")
+                if name != file_flag:
+                    continue
+                val = val if eq else (tokens[j + 1] if j + 1 < n else "")
+                src = resolve(val)
+                if val and not _host_where(src, rules, ctx).classes & {"approvals"}:
+                    cli_hit(line, mech, {("read from", display(src), REVIEW)})
+        add = entry.get("allowlist_add")
+        if add and v + 1 < n and tokens[v + 1].lower() == str(add):
+            # Entries: the words after the options; an option's value is skipped.
+            broad = after.allowlist(v + 2, lambda e: _broad(e, rules))
+            if broad:
+                cli_hit(line, mech, set(broad))
 
     def code(text: str, cwd: str, depth: int) -> None:
         """Inline code (`python -c`, `node -e`, Hermes `execute_code`, a script in a heredoc):
@@ -3438,6 +3803,114 @@ def _render(head: str, seg: ExecSegment, heredocs: str) -> str | None:
     return None
 
 
+def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
+    """The guardrail reasons of the CLI forms in one command (`tokens`, launchers peeled), each once,
+    in the order they are first found: `<head> [options] <subcommand> [options] <verb> …`, where
+    every word that can follow the options is tried as the subcommand, and every word that can follow
+    the subcommand's options as the verb, with the words after it.
+
+    Linear in the words however long the option runs: the walk ends come from `_OptionRuns`, the first
+    word of a kind in a span from `_next_index`, and a test of the words after a verb is read once for
+    the longest such rest (`_Rests`): whether any verb in a span passes is whether its first one does."""
+    head = tokens[0]
+    kinds = ("plugin_cli", "plugin_command_cli", "config_cli", "gateway_cli")
+    entries = {
+        kind: [e for e in lists.get("guardrail", kind, default=[]) or [] if head == e.get("head")]
+        for kind in kinds
+    }
+    subcommands = {e.get("subcommand") for kind in kinds for e in entries[kind]}
+    if not subcommands:
+        return []
+    low = [t.lower() for t in tokens]
+    runs = _OptionRuns(tokens)
+    rests = _Rests(tokens)
+    nexts: dict[tuple[str, int], list[int]] = {}
+
+    def first(kind: str, k: int, wanted: Callable[[str], bool], lo: int) -> int:
+        if (kind, k) not in nexts:
+            nexts[kind, k] = _next_index(low, wanted)
+        return nexts[kind, k][lo]
+
+    plugin_ids = [s.lower() for s in lists.strings("guardrail", "plugin_ids")]
+    set_rx = lists.patterns("guardrail", "host_approvals", "config_set_patterns")
+    key_rx = lists.patterns("guardrail", "config_key_patterns")
+    by_suffix = all(_grows_with_rest(rx) for rx in (*set_rx, *key_rx))
+
+    def names_plugin(rest: str) -> bool:
+        low_rest = rest.lower()
+        return any(pid in low_rest for pid in plugin_ids)
+
+    def sets_approval(rest: str) -> bool:
+        return _match_any(set_rx, rest) is not None
+
+    def names_key(rest: str) -> bool:
+        return _match_any(key_rx, rest) is not None
+
+    found: list[str] = []
+
+    def hit(reason: str) -> None:
+        if reason not in found:
+            found.append(reason)
+
+    for at in range(1, runs.end(1) + 1):
+        sub = low[at]
+        if sub not in subcommands:
+            continue
+        # The verbs: the words from `lo` to `hi`.
+        lo, hi = at + 1, runs.end(at + 1)
+        if lo > hi:
+            continue
+        for k, entry in enumerate(entries["plugin_cli"]):
+            if sub == entry.get("subcommand"):
+                blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
+                v = first("plugin_cli", k, blocked.__contains__, lo)
+                if v <= hi and v <= rests.last_passing("names_plugin", names_plugin):
+                    hit("guardrail.plugin_disable")
+        for k, entry in enumerate(entries["plugin_command_cli"]):
+            if sub == entry.get("subcommand"):
+                # Any word that could be the verb and is not an allowed one; no verb at all is the
+                # help text.
+                allowed = {v.lower() for v in entry.get("allowed_verbs", [])}
+                v = first(
+                    "plugin_command_cli",
+                    k,
+                    lambda w, allowed=allowed: not w.startswith("-") and w not in allowed,
+                    lo,
+                )
+                if v <= hi:
+                    hit("guardrail.plugin_command")
+        for k, entry in enumerate(entries["config_cli"]):
+            if sub == entry.get("subcommand"):
+                mutating = {v.lower() for v in entry.get("mutating_verbs", [])}
+                v = first("config_cli", k, mutating.__contains__, lo)
+                if v > hi:
+                    continue
+                if by_suffix:
+                    # The rests that set an approval are those of the verbs up to `approvals`;
+                    # after those, the ones that name a config key, up to `keys`.
+                    approvals = rests.last_passing("sets_approval", sets_approval)
+                    keys = rests.last_passing("names_key", names_key)
+                    if v <= approvals:
+                        hit("guardrail.host_approvals")
+                    after = first("config_cli", k, mutating.__contains__, max(lo, approvals + 1))
+                    if after <= min(hi, keys):
+                        hit("guardrail.config_entry")
+                    continue
+                for w in range(v, hi + 1):  # a pattern the shortcut does not hold for
+                    if low[w] in mutating:
+                        rest = rests.after(w)
+                        if sets_approval(rest):
+                            hit("guardrail.host_approvals")
+                        elif names_key(rest):
+                            hit("guardrail.config_entry")
+        for k, entry in enumerate(entries["gateway_cli"]):
+            if sub == entry.get("subcommand"):
+                blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
+                if first("gateway_cli", k, blocked.__contains__, lo) <= hi:
+                    hit("guardrail.gateway_stop")
+    return found
+
+
 def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     """C4*: guardrail tampering per `guardrail.yaml`. Never fires on reads, lists, restart or
     reload."""
@@ -3562,45 +4035,10 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         tokens = _cli_tokens(words, cli_heads, lists)
         if not tokens:
             continue
-        head = tokens[0]
-        for at in _after_options(tokens, 1):
-            sub = tokens[at].lower()
-            # The verb is found like the subcommand: each word that can follow the options, with
-            # the words after it.
-            verbs = [
-                (tokens[v].lower(), " ".join(tokens[v + 1 :]))
-                for v in _after_options(tokens, at + 1)
-            ]
-            for entry in plugin_cli:
-                if head == entry.get("head") and sub == entry.get("subcommand"):
-                    blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
-                    if any(verb in blocked and names_plugin(rest) for verb, rest in verbs):
-                        emit("guardrail.plugin_disable", None, {"match": line[:120]})
-            for entry in command_cli:
-                if head == entry.get("head") and sub == entry.get("subcommand"):
-                    # Any word that could be the verb and is not an allowed one; no verb at all is
-                    # the help text.
-                    allowed = {v.lower() for v in entry.get("allowed_verbs", [])}
-                    if any(not verb.startswith("-") and verb not in allowed for verb, _ in verbs):
-                        emit("guardrail.plugin_command", None, {"match": line[:120]})
-            for entry in config_cli:
-                if head == entry.get("head") and sub == entry.get("subcommand"):
-                    mutating = {v.lower() for v in entry.get("mutating_verbs", [])}
-                    for verb, rest in verbs:
-                        if verb not in mutating:
-                            continue
-                        if _match_any(
-                            lists.patterns("guardrail", "host_approvals", "config_set_patterns"),
-                            rest,
-                        ):
-                            emit("guardrail.host_approvals", None, {"match": line[:120]})
-                        elif _match_any(lists.patterns("guardrail", "config_key_patterns"), rest):
-                            emit("guardrail.config_entry", None, {"match": line[:120]})
-            for entry in gateway_cli:
-                if head == entry.get("head") and sub == entry.get("subcommand"):
-                    blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
-                    if any(verb in blocked for verb, _ in verbs):
-                        emit("guardrail.gateway_stop", None, {"match": line[:120]})
+        # A command whose head is in no entry (`ls`, `curl`) has no CLI form to find.
+        if tokens[0] in cli_heads:
+            for reason in _cli_guardrail_reasons(tokens, lists):
+                emit(reason, None, {"match": line[:120]})
         if _match_any(lists.patterns("guardrail", "process_kill_patterns"), line):
             emit("guardrail.gateway_stop", None, {"match": line[:120], "mechanism": "process_kill"})
     if _match_any(lists.patterns("guardrail", "process_kill_patterns"), a.scan_text):
