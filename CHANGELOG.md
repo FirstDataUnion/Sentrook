@@ -924,3 +924,34 @@ The plugins replaced code that loads a secret from where it is kept, under a cre
 - Why: OpenClaw's Skill Workshop review can work in the agent's own skill folder, so these misreadings put a "write" into the agent's own directory, which scored as a self-modification at block level and stopped the review before it reached its save. These are parsing rules for every session: background runs get no relief of their own, and writes, reads outside the skill folder, `..` escapes from it and attended sessions score as before.
 - Measured offline (judge answers from a cache, no new judge calls): in a replay of real background runs (OpenClaw Skill Workshop reviews and curator runs, memory flushes, Hermes background reviews; 630 calls), the 5 blocked non-save calls of one review run become allows (risk 83 to 100 down to 8 to 36); no other call, and no save, changes. Suite (dev split, rule-based reading): one case's reason list loses a placeholder-in-write reason that came from an `echo` of a JSON blob (no path); its risk (100, block) is unchanged in a cache-only replay. No baseline bump.
 - Tests: `test_background_own_store_reads` (quiet: a review run's Code Mode cell listing or reading its skill folder, with parenthesised and bare arrow functions; a shell read with `echo` separators; `printf`; a plain read; a listing of the workspace skills folder; `skill_workshop` list and view; the same reads attended. Still fires, in the review run and attended: `echo` and `printf` redirected into the host's config and a startup file, `tee` into a skill, a redirect through `..` out of the skill folder, a cell whose command string writes the host's config or a startup file, appends to a skill with `tee` or copies over the host's config; credential reads, also through `..`. The mark: an unmarked cell is shell; a shell call cannot claim the mark through its arguments, or with a `code` argument; the mark counts only on an OpenClaw tool named `exec`; it is not in the judge's views; a marked cell that sends a key home and prints the result gets no credential relief. Lineage: a destination that came only from a skill the review read is still `origin.only_in_untrusted` when a later call sends to it. Printed paths, attended and in the review run, with the same finding as before: `rm -rf $(echo …)`, `echo … | xargs rm -rf`, `printf '%s\0' … | xargs -0 rm -rf`, `echo … | while read`, `echo 'rm -rf …' | sh` and `| bash`, a printed script run with `sh`, `eval "$(echo …)"`, `sh -c "$(printf …)"` (guardrail floor); `| xargs truncate` and `| xargs sed -i` on the host config; `tee -a $(echo ~/.bashrc)`, `f=$(echo …); cat >> $f`, a `for` over printed paths, `| xargs cp` into `~/.bashrc` and `authorized_keys`, `printf 'echo x >> ~/.bashrc' | sh` (startup); plain words stay quiet) and the OpenClaw plugin's `index.test.ts` (the mark is sent only for an `exec` the host marks as a JavaScript cell, on the event or its context; never from arguments).
+
+### Plugins: report a scan that looks wrong (2026-11-20)
+Until wrong-scan feedback goes through Rookery, a report of a wrong scan came back as a description that could not be
+matched to a scan. Both plugins now pack one scan into a report the owner can send.
+- `report [request_id|last]` (Hermes `/sentrook report`, OpenClaw `/sentrook-report`, and each host's CLI), owner
+  only. The summary is the `why` text without grant suggestions, plus the host, plugin and scanner versions read from
+  the scan's own record (`planir.host`, `response.metadata`: `scanner_version`, scan-wide `versions`, probe
+  `versions`; whole numbers, strings and booleans only), between `BEGIN/END SENTROOK REPORT v1` lines, and two lines
+  for the owner to fill in. It holds no PlanIR body, arguments, `reasons[].detail`, failure detail, workspace or home
+  path.
+- `--full` adds the full record: the scan's traffic-log line and its resolution's, byte for byte as the log holds them,
+  between `BEGIN/END SENTROOK FULL RECORD v1` lines, after a warning that it can hold conversation text and must be
+  sent privately. `--save` writes the summary, warning and full record to `<state dir>/reports/` (mode 0600) and says
+  to email it to sentrook@firstdataunion.org, where records are kept for up to 30 days. `--github` prints a link to
+  the new `wrong_scan.yml` issue form with the title, summary, host and plugin version filled in from query
+  parameters (percent-encoded as `encodeURIComponent` does on both hosts); over 6,000 characters it drops entity lines
+  from the end ("(trimmed, N more)"), then leaves the report out for the owner to paste.
+- Dashboard: **Report this scan…** on every scan opens a panel with the summary (copy, with a select-to-copy fallback
+  where the frame blocks the clipboard), the GitHub link, and for the full record the owner's commands and the email
+  link (subject and a short note only). The model gets a `report` key only when the page asks for one; it never holds
+  the full record, because the OpenClaw page is served to anyone with gateway access while the commands need the
+  admin scope.
+- Issue form `wrong_scan.yml`: the report, the expected outcome, what the owner was doing, host, version, and a
+  required check that private data was removed; it says where to email the full record.
+- Tests: shared fixtures in `integrations/fixtures/traffic-log/report/` (summaries, full records, issue and email
+  links, the trimmed and the blank fallback) checked by both plugins; no PlanIR, path or detail marker in any summary,
+  link or dashboard model; the full record byte-identical to the log lines; the link's parameters are the form's field
+  ids; `--save` is 0600 and stays in its folder for an id with path characters; lone surrogates in a record become
+  U+FFFD so links encode; usage errors, unknown ids, a missing or disabled log, non-owners refused, CLI equals chat
+  (a flag with no id too); the
+  dashboard button keeps the search and adds the id, the panel's parts, Close, and a scan no longer in the log.

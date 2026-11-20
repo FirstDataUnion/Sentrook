@@ -181,6 +181,7 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
       "sentrook",
       "sentrook-history",
       "sentrook-why",
+      "sentrook-report",
       "sentrook-grants",
       "sentrook-grant",
       "sentrook-revoke",

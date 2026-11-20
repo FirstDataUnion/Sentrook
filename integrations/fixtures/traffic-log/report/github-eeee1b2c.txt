@@ -1,0 +1,2 @@
+blank
+https://github.com/FirstDataUnion/Sentrook/issues/new?template=wrong_scan.yml&title=Wrong%20scan%3A%20terminal%20(eeee1b2c)&host=hermes%200.23.1&version=2.0.0-beta.16

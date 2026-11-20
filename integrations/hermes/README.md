@@ -214,6 +214,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls and where their notices go, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
 | `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold and the grant approving it sets |
+| `report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
 | `grants` | Grants in force: from config (read-only) and set by command |
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
@@ -258,8 +259,30 @@ The tab only reads. To change a grant or a snooze, use the commands above. It sh
 `/sentrook history` and `/sentrook why`, never a call's arguments, and nothing when the traffic log is off. It reads
 the traffic log of the profile the dashboard is showing.
 
+Every scan has **Report this scan…**, which opens the report described in [Report a wrong scan](#report-a-wrong-scan):
+the summary to copy, a button for a public GitHub issue with it filled in, and the commands and email address for the
+full record, which the tab does not show.
+
 The tab appears once the plugin is enabled (`plugins.enabled`). After installing or updating the plugin, restart
 `hermes dashboard`. The Hermes desktop app does not show dashboard tabs.
+
+## Report a wrong scan
+
+If Sentrook stopped something it should have allowed, or let through something it should have stopped, send us a
+report. `/sentrook report <id>` (the id from `/sentrook history`; `last` or nothing for the newest scan) prints the
+scan as `why` shows it, plus the host, plugin and scanner versions, between `BEGIN` and `END` lines. Fill in its last
+two lines (what you expected, what you were doing) where you paste it. It holds no call arguments or conversation
+text. Then:
+
+- **Colleagues:** paste it into Discord or chat. If we ask for the full record, `/sentrook report <id> --full`
+  prints it too.
+- **Everyone else:** `/sentrook report <id> --github` gives a link that opens a GitHub issue with the report filled
+  in. The issue is public: read the report and remove anything private before you submit it.
+- **The full record, privately:** `/sentrook report <id> --save` writes the report and the full record (the exact
+  request Sentrook saw) to a file only you can read, under the plugin's state folder. Email it to
+  sentrook@firstdataunion.org with the subject the command gives. The full record can hold conversation text, file
+  paths, names and addresses: read it first, and never post it in an issue. Email is not end-to-end encrypted; we keep
+  emailed records for up to 30 days, then delete them.
 
 ## How enforce mode decides
 

@@ -20,6 +20,10 @@ export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
 export const DEFAULT_ROOKERY_URL = "https://rookery.firstdataunion.org";
 export const DEFAULT_OIDC_ISSUER = "https://identity.firstdataunion.org";
 export const TRUSTED_ENDPOINT_DOMAIN = "firstdataunion.org";
+/** Where owners send wrong-scan reports privately, and ask for support. */
+export const SUPPORT_EMAIL = "sentrook@firstdataunion.org";
+/** The public issue form for a wrong scan (`.github/ISSUE_TEMPLATE/wrong_scan.yml`). */
+export const WRONG_SCAN_ISSUE_URL = "https://github.com/FirstDataUnion/Sentrook/issues/new?template=wrong_scan.yml";
 
 export const DEFAULT_REVIEW_AT = 45;
 export const DEFAULT_BLOCK_AT = 80;

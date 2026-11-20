@@ -28,6 +28,7 @@
     "owner.ts",
     "planir.ts",
     "redact.ts",
+    "report.ts",
     "scanClient.ts",
     "scanErrorPolicy.ts",
     "scanFailureNotice.ts",

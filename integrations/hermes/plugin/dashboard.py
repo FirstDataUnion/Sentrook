@@ -2,8 +2,9 @@
 
 It holds only what the scanner returned (risk, the tier and leaf scores, floors, relief, reason codes and
 texts, entity display strings) plus the plugin's own labels for what it did. The PlanIR as sent, the call's
-arguments, `reasons[].detail` and failure details are never included, as with `/sentrook why`. The OpenClaw
-plugin builds the same model for the same log (fixtures/traffic-log/dashboard).
+arguments, `reasons[].detail` and failure details are never included, as with `/sentrook why`; a scan's report
+panel (`report_of`) holds only its summary, links and commands. The OpenClaw plugin builds the same model for the
+same log (fixtures/traffic-log/dashboard).
 
 `dashboard/plugin_api.py` serves it to the Hermes dashboard tab; the page cannot change anything.
 """
@@ -19,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import grants, snooze
+from . import grants, report, snooze
 from .config import PluginConfig
 from .history import (
     HISTORY_DEFAULT,
@@ -28,6 +29,7 @@ from .history import (
     _response,
     _text,
     action_of,
+    parse_ref,
     recent_scans,
     review_of,
 )
@@ -561,11 +563,28 @@ def pending_of(
     }
 
 
+def report_of(cfg: PluginConfig, ref: str | None, budget: int) -> dict[str, Any] | None:
+    """The report panel for the scan the page asked about (`report=<request id or its start>`), or None when it
+    asked about none: the summary `/sentrook report` prints, the issue and email links, and the owner's commands
+    for the full record, which the model never holds."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    match = parse_ref(ref) if ref.lower() != "last" else None
+    found = (
+        report.find(cfg.traffic_log_path, match, budget)
+        if match is not None and cfg.traffic_log_enabled
+        else None
+    )
+    return report.model(found, CMD) if found is not None else {"id": ref[:36], "missing": True}
+
+
 def build_model(
     cfg: PluginConfig,
     q: Query,
     now: datetime | None = None,
     review_window_s: float = DEFAULT_REVIEW_WINDOW_S,
+    report_ref: str | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(UTC)
     enabled = cfg.traffic_log_enabled
@@ -594,7 +613,7 @@ def build_model(
         snooze_text = snooze.status_line(snooze.load(cfg.state_dir), now)
     except Exception:  # noqa: BLE001 - the page still shows the scans
         snooze_text = "Snooze state could not be read."
-    return {
+    model: dict[str, Any] = {
         "version": MODEL_VERSION,
         "log": "on" if enabled else "off",
         "limit": q.limit,
@@ -608,3 +627,7 @@ def build_model(
         ),
         "commands": COMMANDS,
     }
+    panel = report_of(cfg, report_ref, budget)
+    if panel is not None:
+        model["report"] = panel
+    return model

@@ -200,9 +200,17 @@
     ".srk-status{color:var(--srk-muted);font-size:12px;margin:0 0 8px}.srk-status b{color:inherit}",
     ".srk-warn{color:var(--srk-mid)}",
     ".srk-pager{display:flex;gap:8px;justify-content:center;margin:12px 0}",
+    // Wrong-scan report.
+    ".srk-report{border:1px solid var(--srk-accent);border-radius:var(--srk-radius);background:var(--srk-card);padding:2px 14px 10px;margin:0 0 16px}",
+    ".srk-report textarea{display:block;width:100%;box-sizing:border-box;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:inherit;background:var(--srk-soft);border:1px solid var(--srk-border);border-radius:6px;padding:8px;resize:vertical}",
+    ".srk-report-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}",
+    "a.srk-btn{text-decoration:none;display:inline-block}",
     ".srk-empty{color:var(--srk-muted);padding:24px;text-align:center;border:1px dashed var(--srk-border);border-radius:var(--srk-radius)}",
     "@media (max-width:560px){.srk-caret{display:none}.srk-row{gap:10px}.srk-action{font-size:11px;padding:2px 8px;max-width:40%;white-space:normal;text-align:center}}",
   ].join("\n");
+
+  /** Where the page goes for new query parameters; set on each draw. */
+  var NAV = function () {};
 
   function el(tag, attrs, kids) {
     var node = document.createElement(tag);
@@ -536,6 +544,22 @@
     if (!opts.noCommands && (scan.bucket === "blocked" || scan.bucket === "review" || scan.bucket === "observed")) {
       kids.push(el("div", { class: "srk-cmds" }, [
         command(cmd("why") + " " + scan.id.slice(0, 8), "The same scan as text, with any grant that would allow calls like it next time."),
+      ]));
+    }
+    if (!opts.noCommands) {
+      kids.push(el("div", { class: "srk-report-actions" }, [
+        el("button", {
+          class: "srk-btn",
+          type: "button",
+          text: "Report this scan…",
+          title: "Sentrook got this one wrong? Get a report to send us: in chat, as a public GitHub issue, or privately by email.",
+          onclick: function (e) {
+            if (e && e.stopPropagation) e.stopPropagation();
+            var p = paramsOf(model);
+            p.report = scan.id;
+            NAV(p);
+          },
+        }),
       ]));
     }
     return el("div", { class: "srk-detail" }, kids);
@@ -873,6 +897,96 @@
     return buttons.length ? el("div", { class: "srk-pager" }, buttons) : null;
   }
 
+  /** The page's current search and position, as query parameters. */
+  function paramsOf(model) {
+    var q = model.query || {};
+    var p = { n: String(model.limit || 10) };
+    ["tool", "outcome", "session", "from", "to", "before"].forEach(function (k) {
+      if (q[k]) p[k] = q[k];
+    });
+    if (q.min_risk != null) p.risk = String(q.min_risk);
+    return p;
+  }
+
+  /** Copies `get()` to the clipboard; where the frame does not allow that, selects `field` for the viewer to copy. */
+  function copyButton(label, get, field) {
+    var btn = el("button", {
+      class: "srk-btn",
+      type: "button",
+      text: label,
+      onclick: function () {
+        var manual = function () {
+          try {
+            field.focus();
+            field.select();
+            btn.textContent = "Selected: press Ctrl+C (⌘C)";
+          } catch (e) {
+            btn.textContent = "Copy blocked here: select the text and copy it";
+          }
+        };
+        try {
+          navigator.clipboard.writeText(get()).then(function () {
+            btn.textContent = "Copied";
+          }, manual);
+        } catch (e) {
+          manual();
+        }
+      },
+    });
+    return btn;
+  }
+
+  /** The report for the scan the viewer chose: a summary to copy or file as a public issue, and the full record to send privately. */
+  function reportPanel(model, go) {
+    var r = model.report;
+    if (!r) return null;
+    var sid = String(r.id || "").slice(0, 8);
+    var close = el("button", { class: "srk-btn", type: "button", text: "Close", onclick: function () {
+      go(paramsOf(model));
+    } });
+    if (r.missing) {
+      return el("div", { class: "srk-report", id: "srk-report" }, [
+        el("h2", { text: "Report scan " + sid }),
+        el("p", { text: "This scan is not in the recent traffic log (or the traffic log is off), so it cannot be reported from here." }),
+        el("div", { class: "srk-report-actions" }, [close]),
+      ]);
+    }
+    var summary = el("textarea", { readonly: "readonly", rows: "14", spellcheck: "false", "aria-label": "Report summary", text: r.summary });
+    var fullCmds = r.full_commands || [];
+    var fit = { trimmed: " Some entity lines were cut to fit the link.", blank: " The summary is too long for a link: copy it and paste it into the form." }[r.github_fit] || "";
+    return el("div", { class: "srk-report", id: "srk-report" }, [
+      el("h2", { text: "Report scan " + sid }),
+      el("p", { text: "If Sentrook got this scan wrong, send us this report. Where you paste it, fill in its last two lines: what you expected, and what you were doing." }),
+      summary,
+      el("div", { class: "srk-report-actions" }, [
+        copyButton("Copy report", function () {
+          return r.summary;
+        }, summary),
+        el("a", { class: "srk-btn srk-btn-primary", href: r.github, target: "_blank", rel: "noopener noreferrer", text: "Report on GitHub (public)" }),
+        copyButton("Copy GitHub link", function () {
+          return r.github;
+        }, null),
+        close,
+      ]),
+      el("p", { class: "srk-cmd-note", text: "Colleagues: paste the report into Discord or chat. GitHub: the issue opens with this summary filled in and anyone can read it, so read it first and remove anything private." + fit }),
+      el("details", { class: "srk-howto" }, [
+        el("summary", {}, [el("span", { class: "srk-howto-title", text: "Send full details privately" })]),
+        el("div", { class: "srk-howto-body" }, [
+          el("p", { class: "srk-warn", text: r.full_warning }),
+          el("p", { text: "This page does not show the full record. Get it with your owner command, in a direct chat with the agent or on the machine:" }),
+          el("div", { class: "srk-cmds" }, [
+            fullCmds[0] ? command(fullCmds[0], "Writes the report and the full record to a file only you can read: attach it to the email.") : null,
+            fullCmds[1] ? command(fullCmds[1], "Prints them in the chat instead, to copy into a private message to a colleague.") : null,
+          ]),
+          el("div", { class: "srk-report-actions" }, [
+            el("a", { class: "srk-btn", href: r.mailto, text: "Email " + r.email }),
+          ]),
+          el("p", { class: "srk-cmd-note", text: "Use the subject \u201c" + r.subject + "\u201d. If the button does not open your mail app, write to " + r.email + "." }),
+        ]),
+      ]),
+    ]);
+  }
+
   /** Drops empty values: the query string the page sends. */
   function queryString(params) {
     var out = [];
@@ -892,6 +1006,7 @@
     model.totals = model.totals || {};
     model.lines = model.lines || { review_at: 45, block_at: 80 };
     var go = opts.navigate || function () {};
+    NAV = go;
     var open = opts.open || new Set();
     // The newest scan opens on first draw; later draws keep what the viewer opened or closed.
     if (opts.openFirst !== false && !open.size && model.scans.length) open.add(model.scans[0].id);
@@ -903,6 +1018,8 @@
       el("h1", { text: "Sentrook" }),
       el("span", { class: "srk-sub", text: "read-only · mode: " + (model.mode || "?") }),
     ]));
+    var panel = reportPanel(model, go);
+    if (panel) root.appendChild(panel);
     var pending = pendingPanel(model, open);
     if (pending) root.appendChild(pending);
     root.appendChild(el("h2", { class: "srk-section" }, [
