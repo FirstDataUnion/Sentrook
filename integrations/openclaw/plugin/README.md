@@ -34,15 +34,17 @@ In short, for anyone deciding whether to install it:
   the same chat, at most once per job (per session for other runs) every 6 hours.
 - **Background skill and memory saves:** OpenClaw's own saves (the Skill Workshop review, the memory flush, the skill
   collection review) are never asked about, because nobody can answer a prompt in those runs. A save Sentrook would
-  ask about is let through when it can be, saved as a Skill Workshop draft for you to apply (a new skill, OpenClaw
-  2026.11.5 or newer), or held; a blocked or reviewed save sends you a notice on the same chat, at most one of each
+  ask about is let through when it can be, saved as a Skill Workshop draft for you to apply (a new skill, or a change
+  to a skill's `SKILL.md` applied to the live skill, OpenClaw 2026.11.5 or newer), or held; a blocked or reviewed save
+  sends you a notice on the same chat, at most one of each
   kind per run every 6 hours. Turning a save into a draft is the only change the plugin makes to a call, and these
   notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
   rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls and where their notices go; when each job or run last had a notice with a quiet period; the conversations
   above), or to the paths
-  you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on. It runs
-  no shell commands and starts no background processes.
+  you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on, and, to
+  turn a reviewed background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
+  starts no background processes.
 - **Credentials:** the scan credentials (`SENTROOK_SCAN_CLIENT_ID`, `SENTROOK_SCAN_CLIENT_SECRET`) belong in
   OpenClaw's `~/.openclaw/.env`, referenced from the plugin's config as env SecretRefs. The plugin also reads
   `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it uses only its own
