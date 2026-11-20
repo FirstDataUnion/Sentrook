@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v6): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v7): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
@@ -101,7 +101,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v6"
+    assert REDACTION_VERSION == "redact-v7"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -134,6 +134,10 @@ def test_two_shapes_on_one_value_count_once():
         "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
         "the password changed, it's now " * 30_000,
         "the token was rotated and" * 40_000,
+        "token = " + "get." * 250_000,
+        "token = " + "getSecret" * 100_000 + "x",
+        "token = " + "a_" * 400_000 + ".",
+        "token: " + "x()" * 300_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
@@ -221,6 +225,16 @@ MUST_REPLACE = [
     (f"GITHUB_TOKEN={PW}.", PW),
     (f'DB_PASSWORD="{PW}!"', PW),
     (f"SENTROOK_SECRET_MARKERS={PW}?", PW),
+    # A value under a credential key is still a secret when the line goes on as code.
+    (f"access_token = {PW}  # from the console", PW),
+    (f"access_token = '{PW}'['x']", PW),
+    (f'api_key = "{PW}"', PW),
+    (f"token = {PW}[", PW),
+    (f"token = {PW}('x')", PW),
+    (f"token = {PW.lower()}('x')", PW.lower()),
+    # A quoted value is whole, so a code-shaped one is still a value.
+    ('DB_PASSWORD="Summer2024["', "Summer2024"),
+    ('"password": "Summer2024("', "Summer2024"),
 ]
 
 MUST_STAY = [
@@ -292,6 +306,20 @@ MUST_STAY = [
     "the secret changed, it's now at ~/.config/app/secret.txt",
     "the token moved, it's now in vault-prod-secrets",
     "password: see ~/.pgpass.",
+    # Code that reads a secret from where it is kept, cut where its quoted argument starts: the name of
+    # the place, not the secret.
+    "access_token = token_data['access_token']",
+    'api_key = os.environ["OPENAI_API_KEY"]',
+    "token = creds.get('token')",
+    'password = getpass("Password: ")',
+    "access_token = resp.json()['access_token']",
+    "refresh_token = json.load(f)['refresh_token']",
+    "secret_key = settings.SECRETS[0]['key']",
+    'const apiKey = process.env["API_KEY"];',
+    "token = os.environ.get('GITHUB_TOKEN', '')",
+    "accessToken = getSecretValue('prod/db')",
+    "token: token_data['access_token']",
+    "the token: token_data['access_token']",
 ]
 
 
@@ -398,7 +426,7 @@ def test_rules_are_the_plugins_rules():
     assert [rx.pattern for rx, _ in redact._CONTEXT] == theirs
     shapes = {kind: rx.pattern for kind, rx, _, _ in plugin._SHAPES}
     assert redact._PRIVATE_KEY.pattern == shapes["private_key"]
-    for name in ("_ORDINARY_WORD", "_NAMED_THING", "_ENV_NAME", "_CREDENTIAL_FIELD"):
+    for name in ("_ORDINARY_WORD", "_NAMED_THING", "_ENV_NAME", "_CREDENTIAL_FIELD", "_CODE_READ"):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
 
 
@@ -434,6 +462,7 @@ OBJECT_MUST_REPLACE = [
     ({"env": {"DB_PASS": PW}}, PW),
     ({"credentials": PW}, PW),
     ({"items": [{"name": "db", "password": PW}, [{"tok": PW}]]}, PW),
+    ({"password": "Summer2024("}, "Summer2024"),
 ]
 
 OBJECT_MUST_STAY = [

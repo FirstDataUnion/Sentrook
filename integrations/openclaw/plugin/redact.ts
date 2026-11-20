@@ -67,14 +67,31 @@ const NAMED_THING =
   /^[/~.*{\[(]|:\/\/|\(|^[0-9]{4}-[0-9]{2}-[0-9]{2}|^0x[0-9a-fA-F]{40}$|^(?:SHA256|MD5):|^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}$|^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.[a-z]{2,24}(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~%\/-]*)?$|^(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$/;
 
 /**
+ * Code that reads a secret from where it is kept, cut where its quoted argument starts: `token_data[` in
+ * `access_token = token_data['access_token']`, `os.environ[`, `creds.get(`, `getpass(`, `resp.json()[`. A name,
+ * maybe dotted, called or subscripted, that ends in an open bracket or parenthesis. Each part of the name reads
+ * as a word (`token_data`, `getSecret`, `JSON`, `oauth2`): a random value that happens to end in a bracket is
+ * still a value.
+ */
+const CODE_READ =
+  /^(?:(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))(?:\.(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*[\[(])$/;
+
+/**
  * Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the name of
  * an environment variable (`token: GITHUB_TOKEN`).
  */
 const keyValue = (v: string) => !v.includes("://") && !/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v);
+/**
+ * An unquoted value after a key: also not code that reads the secret from somewhere (`token = creds.get('token')`,
+ * cut where its quoted argument starts). A quoted value or one under an object key is whole, so it is never code cut
+ * short.
+ */
+const unquotedKeyValue = (v: string) => keyValue(v) && !CODE_READ.test(v);
 /** An upper-case name with a credential word inside it names many things; only a long value counts. */
 const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v);
-/** After "password is" or "token:": six or more characters that are not words or a number. */
-const statedValue = (v: string) => v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v);
+/** After "password is" or "token:": six or more characters that are not words, a number or code that reads one. */
+const statedValue = (v: string) =>
+  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !CODE_READ.test(v);
 /** Straight after a cue word ("backup key X"): twelve or more characters with letters and digits. */
 const bareValue = (v: string) =>
   v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
@@ -215,7 +232,7 @@ const SHAPES: Shape[] = [
       "gi",
     ),
     group: "v",
-    check: keyValue,
+    check: unquotedKeyValue,
   },
   {
     // `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included,
