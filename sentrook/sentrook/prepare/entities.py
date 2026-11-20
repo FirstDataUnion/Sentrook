@@ -13,6 +13,7 @@ module only has to be right enough for the oracle and the context probe to ask t
 
 from __future__ import annotations
 
+import bisect
 import itertools
 import re
 from collections.abc import Iterable
@@ -667,12 +668,12 @@ def _non_host_spans(text: str, *, inline_program: bool) -> tuple[list[range], li
     """Spans where a bare dotted token is not a host: (always skipped, inline program text). In
     program text a token is kept only when it is a whole quoted string literal. The object a SQL
     statement defines, destroys or inserts into is always skipped."""
-    skip = [range(*m.span(1)) for m in _PY_MODULE_RE.finditer(text)]
+    skip = [range(*m.span(1)) for m in linear_search.option_run_finditer(_PY_MODULE_RE, text)]
     skip += _config_key_spans(text)
     skip += _search_pattern_spans(text)
     skip += [range(*m.span(1)) for m in _SQL_OBJECT_RE.finditer(text)]
     programs = [range(0, len(text))] if inline_program else []
-    for m in _INLINE_PROGRAM_RE.finditer(text):
+    for m in linear_search.option_run_finditer(_INLINE_PROGRAM_RE, text):
         programs.append(range(*_quoted_span(text, m.end())))
     return skip, programs
 
@@ -681,51 +682,87 @@ def _config_key_spans(text: str) -> list[range]:
     """The key argument of `openclaw config set|get|unset <key>`, `hermes config [verb] <key>` and
     `git [-C dir] config [verb] <key>`, skipping flags (and the value of `--file`/`-f`/`--blob`)."""
     spans: list[range] = []
+    words = _Words(text)
     for m in _CONFIG_HEAD_RE.finditer(text):
         head = m.group(1)
-        toks = list(
-            itertools.islice(_TOKEN_RE.finditer(text, m.end(), _line_end(text, m.end())), 32)
-        )
+        toks = words.after(m.end(), 32)
         i = 0
-        while head == "git" and i < len(toks) and toks[i].group(0) in ("-C", "-c"):
+        while head == "git" and i < len(toks) and toks[i][2] in ("-C", "-c"):
             i += 2
-        if i >= len(toks) or toks[i].group(0) != "config":
+        if i >= len(toks) or toks[i][2] != "config":
             continue
         i += 1
-        if i < len(toks) and toks[i].group(0) in _CONFIG_VERBS[head]:
+        if i < len(toks) and toks[i][2] in _CONFIG_VERBS[head]:
             i += 1
         elif head == "openclaw":
             continue
-        while i < len(toks) and toks[i].group(0).startswith("-"):
-            i += 2 if toks[i].group(0) in _CONFIG_VALUE_FLAGS else 1
+        while i < len(toks) and toks[i][2].startswith("-"):
+            i += 2 if toks[i][2] in _CONFIG_VALUE_FLAGS else 1
         if i < len(toks):
-            key = _CONFIG_KEY_TOKEN_RE.match(toks[i].group(0))
+            start, end, _ = toks[i]
+            key = _CONFIG_KEY_TOKEN_RE.match(text, start, end)
             if key:
-                spans.append(range(toks[i].start(), toks[i].start() + key.end()))
+                spans.append(range(start, key.end()))
     return spans
+
+
+class _Words:
+    """The whitespace-separated words of a text, found once. `after(pos, limit)` gives the first `limit`
+    of the words `_TOKEN_RE.finditer(text, pos, _line_end(text, pos))` gives (a word `pos` is inside
+    starts at `pos`), each as (start, end, a prefix of it): reading the words after each head with the
+    regex reads the rest of a long word again at every head inside it (`hermes.hermes.…`). The prefix
+    is the whole word up to `PREFIX` characters, longer than any word the walks compare a word with or
+    test it starts with, so it answers those questions as the word would."""
+
+    PREFIX = 64
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.spans = [m.span() for m in _TOKEN_RE.finditer(text)]
+        self.starts = [s for s, _ in self.spans]
+
+    def after(self, pos: int, limit: int) -> list[tuple[int, int, str]]:
+        text = self.text
+        out: list[tuple[int, int, str]] = []
+        i = bisect.bisect_right(self.starts, pos) - 1
+        if i >= 0 and self.spans[i][1] > pos:
+            out.append(
+                (pos, self.spans[i][1], text[pos : min(self.spans[i][1], pos + self.PREFIX)])
+            )
+            prev = self.spans[i][1]
+        else:
+            prev = pos
+        i += 1
+        while len(out) < limit and i < len(self.spans):
+            start, end = self.spans[i]
+            if text.find("\n", prev, start) >= 0:
+                break
+            out.append((start, end, text[start : min(end, start + self.PREFIX)]))
+            prev = end
+            i += 1
+        return out[:limit]
 
 
 def _search_pattern_spans(text: str) -> list[range]:
     """The pattern argument of grep-like tools: each `-e`/`--regexp` value, or else the first
     positional. Later positionals are files and are left alone."""
     spans: list[range] = []
+    words = _Words(text)
     for m in _SEARCH_HEAD_RE.finditer(text):
-        toks = itertools.islice(_TOKEN_RE.finditer(text, m.end(), _line_end(text, m.end())), 32)
         explicit = False
         take: str | None = None  # "pattern" or "value": what the previous flag consumes
-        for tok in toks:
-            word = tok.group(0)
+        for start, end, word in words.after(m.end(), 32):
             if word in _SHELL_SEPARATORS:
                 break
             if take is not None:
                 if take == "pattern":
-                    spans.append(range(*tok.span()))
+                    spans.append(range(start, end))
                 take = None
                 continue
             if word in _SEARCH_PATTERN_FLAGS:
                 take, explicit = "pattern", True
             elif word.startswith("--regexp="):
-                spans.append(range(tok.start() + len("--regexp="), tok.end()))
+                spans.append(range(start + len("--regexp="), end))
                 explicit = True
             elif word in _SEARCH_VALUE_FLAGS:
                 take = "value"
@@ -733,7 +770,7 @@ def _search_pattern_spans(text: str) -> list[range]:
                 continue
             else:
                 if not explicit:
-                    spans.append(range(*tok.span()))
+                    spans.append(range(start, end))
                 break
     return spans
 
@@ -776,7 +813,7 @@ def _hosts_in(text: str, *, inline_program: bool = False, emails: bool = True) -
     for m in _EMAIL_RE.finditer(text) if emails else ():
         hosts.append(normalise_host(m.group(1).split("@", 1)[1]))
     for rx in (_SSH_HOST_RE, _NC_HOST_RE, _DEV_TCP_RE):
-        for m in rx.finditer(text):
+        for m in linear_search.option_run_finditer(rx, text):
             hosts.append(normalise_host(m.group(1)))
     for m in _IPV4_RE.finditer(text):
         hosts.append(m.group(1))
@@ -1210,6 +1247,15 @@ def shell_segments_sep(command: str) -> list[tuple[str, list[str]]]:
     return [(sep, list(tokens)) for sep, tokens in _segments_of(command or "")]
 
 
+def _drop_wrappers(tokens: list[str]) -> list[str]:
+    """The tokens after any leading wrappers (`sudo`, `env`, …) and variable assignments (counted, then
+    cut once: dropping them one copy at a time is quadratic in a long run of them)."""
+    i = 0
+    while i < len(tokens) and (tokens[i] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[i])):
+        i += 1
+    return tokens[i:]
+
+
 @lru_cache(maxsize=64)
 def _segments_of(command: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
     """`shell_segments_sep` for one command, parsed once: preparation and every probe split the same
@@ -1230,8 +1276,7 @@ def _segments_of(command: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
             tokens = shlex.split(seg, comments=True)
         except ValueError:
             tokens = seg.split()
-        while tokens and (tokens[0] in _WRAPPER_HEADS or _ENV_ASSIGN_RE.match(tokens[0])):
-            tokens = tokens[1:]
+        tokens = _drop_wrappers(tokens)
         if tokens:
             out.append((sep, tuple(tokens)))
     return tuple(out)

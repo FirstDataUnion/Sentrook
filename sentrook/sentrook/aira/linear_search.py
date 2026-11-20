@@ -10,6 +10,11 @@ match starts; `search` then lets the regex match from there, which is the match 
 For the patterns in `FOUND_ONLY`, whose match itself can still take the regex long to build, only
 `found` is linear: their callers ask for a yes or no.
 
+Patterns of the form `<command>(?:<option>)*<end>` that preparation reads (the host of `ssh -o x
+host`, the module of `python -m`, the program of `perl -e`, the file of `sed -i`) retry the run of
+options from every head in it (`-scp -scp …`): `option_run_finditer` reads each position of the run
+once, for the patterns in `OPTION_RUNS`, with the regex's own matches.
+
 The lists keep the patterns: an entry here is keyed by the pattern's text, so a pattern changed in a
 list (or an overlay) is searched as the regex it is. Every entry is checked against its regex.
 """
@@ -18,6 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 
 #: The gap of a command pattern: any characters but a separator of simple commands.
 COMMAND_GAP = re.compile(r"[^;&|\n]*")
@@ -341,6 +347,246 @@ def search(rx: re.Pattern[str], text: str, pos: int = 0) -> re.Match[str] | None
     if start < 0:
         return None
     return rx.match(text, start) or rx.search(text, pos)
+
+
+@dataclass(frozen=True)
+class OptionRun:
+    """One branch `<head>(?:<option>)*<end>` of a pattern (`*?` when `lazy`), read where:
+    - the head matches at most one way, ending in a whitespace run that the option and the end cannot
+      start with (so the run is taken whole);
+    - an option matches at most one way that lets anything follow: a word, then the whole whitespace run
+      after it (a shorter word or run leaves whitespace, or a non-space, where none can be);
+    - the end is the last piece of the pattern. With `truncate`, it holds no `$`, `\\b` or lookahead
+      at its end, so the pattern matched up to where the end's match ends gives that same match.
+    `end_at`, when given, decides whether the end matches at a position (for an end with a `.*`, whose
+    regex reads to the end of the text each time) and is built once per text."""
+
+    head: str
+    option: str | None
+    end: str
+    lazy: bool = False
+    truncate: bool = True
+    end_at: Callable[[str, int], Callable[[int], bool]] | None = None
+
+
+def option_run_finditer(rx: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
+    """`rx.finditer(text)` for a pattern in `OPTION_RUNS`, in linear time; any other pattern is
+    searched as the regex it is.
+
+    The regex, at each head, takes every option word after it (`-x -x …`) and tries the end after
+    each count, the most first (`*`) or the fewest (`*?`); at a later head in the same run it tries the
+    same positions again, which is quadratic in the run. The positions after a head form a chain (each
+    option word leads to the one after it), shared by every head in the run: here each position is
+    read once, with the answer for the chain from it (the last, or first, position on it where the end
+    matches) kept. A head whose chain has such a position starts a match, and the regex then builds
+    it from that head, bounded by where the end's match ends; the regex reads no further than that
+    match then."""
+    branches = OPTION_RUNS.get((rx.pattern, rx.flags))
+    if branches is None:
+        yield from rx.finditer(text)
+        return
+    compiled = [_option_run_compiled(b, rx.flags) for b in branches]
+    starts = sorted(
+        (m.start(), i) for i, (find, *_rest) in enumerate(compiled) for m in find.finditer(text)
+    )
+    memo: list[dict[int, int]] = [{} for _ in branches]
+    end_at: list[Callable[[int], bool] | None] = [None] * len(branches)
+    pos = 0
+    for h, i in starts:
+        if h < pos:
+            continue
+        branch = branches[i]
+        _find, head, option, end = compiled[i]
+        q0 = head.match(text, h)
+        if q0 is None:
+            continue
+        if end_at[i] is None:
+            end_at[i] = (
+                branch.end_at(text, rx.flags)  # type: ignore[call-arg]
+                if branch.end_at is not None
+                else (lambda q, end=end: end.match(text, q) is not None)
+            )
+        at = _option_run_best(text, q0.end(), option, end_at[i], branch.lazy, memo[i])  # type: ignore[arg-type]
+        if at < 0:
+            continue
+        m = None
+        if branch.truncate:
+            e = end.match(text, at)
+            assert e is not None
+            m = rx.match(text, h, e.end())
+            if m is not None and m.end() != e.end():
+                m = None
+        if m is None:
+            m = rx.match(text, h)
+        if m is None:  # not reached: the chain says the regex matches here
+            yield from _finditer_from(rx, text, pos)
+            return
+        yield m
+        pos = m.end() if m.end() > m.start() else m.end() + 1
+
+
+def _finditer_from(rx: re.Pattern[str], text: str, pos: int) -> Iterator[re.Match[str]]:
+    while pos <= len(text):
+        m = rx.search(text, pos)
+        if m is None:
+            return
+        yield m
+        pos = m.end() if m.end() > m.start() else m.end() + 1
+
+
+def _option_run_best(
+    text: str,
+    q: int,
+    option: re.Pattern[str] | None,
+    end_at: Callable[[int], bool],
+    lazy: bool,
+    memo: dict[int, int],
+) -> int:
+    """The position on the chain from `q` where the regex's end match is made: the last one where
+    the end matches (the first, `lazy`); -1 for none. Fills `memo` for every position walked."""
+    chain: list[int] = []
+    p: int | None = q
+    while p is not None and p not in memo:
+        chain.append(p)
+        o = option.match(text, p) if option is not None else None
+        p = o.end() if o is not None else None
+    after = memo[p] if p is not None else -1
+    for p in reversed(chain):
+        if lazy:
+            after = p if end_at(p) else after
+        elif after < 0:
+            after = p if end_at(p) else -1
+        memo[p] = after
+    return memo[q]
+
+
+_OPTION_RUN_RX: dict[tuple[OptionRun, int], tuple] = {}
+
+
+def _option_run_compiled(
+    b: OptionRun, flags: int
+) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str] | None, re.Pattern[str]]:
+    """The branch's head finder (every position its head matches at, overlapping ones too), head,
+    option and end, compiled with the pattern's flags."""
+    key = (b, flags)
+    if key not in _OPTION_RUN_RX:
+        _OPTION_RUN_RX[key] = (
+            re.compile(f"(?=(?:{b.head}))", flags),
+            re.compile(b.head, flags),
+            re.compile(b.option, flags) if b.option is not None else None,
+            re.compile(b.end, flags),
+        )
+    return _OPTION_RUN_RX[key]
+
+
+def option_run_pattern(prefix: str, branches: Sequence[OptionRun], suffix: str = "") -> str:
+    """The pattern text the branches spell: `prefix(?:b1|b2|…)suffix`, or the one branch bare when
+    there is one and no prefix or suffix. Each branch reads `head(?:option)*end` (`*?` when lazy), its
+    head and end taken without the prefix and suffix they were given."""
+    parts = []
+    for b in branches:
+        head = b.head[len(prefix) :] if prefix and b.head.startswith(prefix) else b.head
+        end = b.end[: len(b.end) - len(suffix)] if suffix else b.end
+        run = f"(?:{b.option})*{'?' if b.lazy else ''}" if b.option is not None else ""
+        parts.append(head + run + end)
+    if len(parts) == 1 and not prefix and not suffix:
+        return parts[0]
+    return prefix + "(?:" + "|".join(parts) + ")" + suffix
+
+
+def _sed_end_at(text: str, flags: int) -> Callable[[int], bool]:
+    """`(?:-i\\S*|--in-place\\S*)\\s.*\\s(\\S+)\\s*(?:$|[;&])` at a position: the option word and a
+    space, then (`.*` taking any run) the last place in the text where `\\s(\\S+)\\s*(?:$|[;&])`
+    matches, if it is no earlier. That place is found once."""
+    word = re.compile(r"(?:-i\S*|--in-place\S*)\s", flags)
+    m = re.compile(r".*(\s)(\S+)\s*(?:$|[;&])", flags | re.S).match(text)
+    last = m.start(1) if m is not None else -1
+
+    def at(q: int) -> bool:
+        w = word.match(text, q)
+        return w is not None and last >= w.end()
+
+    return at
+
+
+_PY_HEAD = r"\bpython[\d.]*\s+"
+_LONG_OPTION = r"-\S+\s+"
+
+#: Patterns of the form `<head>(?:<option>)*<end>` (and alternations of them), by pattern text and
+#: flags -> their branches. `option_run_finditer` reads them in linear time; the tests check each
+#: against its regex.
+OPTION_RUNS: dict[tuple[str, int], tuple[OptionRun, ...]] = {
+    (
+        option_run_pattern("", bs, sfx) if pre is None else option_run_pattern(pre, bs, sfx),
+        flags,
+    ): bs
+    for pre, bs, sfx, flags in [
+        # entities: hosts given to ssh-like commands and to netcat-like commands
+        (
+            None,
+            (
+                OptionRun(
+                    r"(?:ssh|scp|rsync|sftp)\s+",
+                    _LONG_OPTION,
+                    r"(?:[\w.-]+@)?([A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+                ),
+            ),
+            "",
+            re.UNICODE,
+        ),
+        (
+            None,
+            (
+                OptionRun(
+                    r"\b(?:nc|ncat|netcat|telnet)\s+",
+                    r"-\w+\s+",
+                    r"([A-Za-z0-9.-]+\.[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})",
+                ),
+            ),
+            "",
+            re.UNICODE,
+        ),
+        # entities: the module `python -m` runs, and where an inline program's text starts
+        (
+            None,
+            (OptionRun(_PY_HEAD, r"-[A-Za-z]+\s+", r"-m\s*([\w.]+)", lazy=True),),
+            "",
+            re.UNICODE,
+        ),
+        (
+            r"\b",
+            (
+                OptionRun(_PY_HEAD, r"-[A-Za-z]+\s+", r"-[A-Za-z]*c[\s=]+", lazy=True),
+                OptionRun(
+                    r"\b(?:node|nodejs|bun)\s+",
+                    _LONG_OPTION,
+                    r"(?:-e|--eval|-p|--print)[\s=]+",
+                    lazy=True,
+                ),
+                OptionRun(r"\b(?:perl|ruby)\s+", _LONG_OPTION, r"-[A-Za-z]*[eE][\s=]+", lazy=True),
+                OptionRun(r"\bphp\s+", _LONG_OPTION, r"-r[\s=]+", lazy=True),
+                OptionRun(r"\bdeno\s+eval", None, r"[\s=]+"),
+            ),
+            r"[\s=]+",
+            re.UNICODE,
+        ),
+        # written_selfmod: the file an in-place sed edits
+        (
+            None,
+            (
+                OptionRun(
+                    r"\bsed\s+",
+                    r"-\w+\s+",
+                    r"(?:-i\S*|--in-place\S*)\s.*\s(\S+)\s*(?:$|[;&])",
+                    truncate=False,
+                    end_at=_sed_end_at,
+                ),
+            ),
+            "",
+            re.UNICODE | re.S,
+        ),
+    ]
+}
 
 
 def finditer(rx: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:

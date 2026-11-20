@@ -71,6 +71,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
+from ..aira import linear_search
 from ..aira.lists import Lists, load_lists
 from ..planir.canonical import CanonicalCall
 from ..planir.models import ToolKind
@@ -741,19 +742,26 @@ def _argv_pipeline(command: str) -> list[tuple[str, list[str]]]:
             t.rstrip(")") if i == len(argv) - 1 and t.count(")") > t.count("(") else t
             for i, t in enumerate(argv)
         ]
-        argv = [t for t in argv if t]
-        while argv:
-            if re.match(r"^[A-Za-z_]\w*=", argv[0]):
-                argv = argv[1:]
-            elif argv[0] in _LAUNCHERS or tuple(argv[:2]) in _LAUNCHER_PAIRS:
-                argv = argv[1:] if argv[0] in _LAUNCHERS else argv[2:]
-                while argv and argv[0].startswith("-"):
-                    argv = argv[2:] if argv[0] in ("-u", "-g", "-C", "--with", "-p") else argv[1:]
-            else:
-                break
+        argv = _drop_launchers([t for t in argv if t])
         if argv:
             cleaned.append((sep, argv))
     return cleaned
+
+
+def _drop_launchers(argv: list[str]) -> list[str]:
+    """The words after any leading launchers (with their options) and variable assignments, counted and
+    then cut once: dropping them one copy at a time is quadratic in a long run (`npx npx …`)."""
+    i, n = 0, len(argv)
+    while i < n:
+        if re.match(r"^[A-Za-z_]\w*=", argv[i]):
+            i += 1
+        elif argv[i] in _LAUNCHERS or (argv[i], *argv[i + 1 : i + 2]) in _LAUNCHER_PAIRS:
+            i += 1 if argv[i] in _LAUNCHERS else 2
+            while i < n and argv[i].startswith("-"):
+                i += 2 if argv[i] in ("-u", "-g", "-C", "--with", "-p") else 1
+        else:
+            break
+    return argv[i:]
 
 
 def _argv_segments(command: str) -> list[list[str]]:
@@ -1229,7 +1237,7 @@ def _write_targets(command: str) -> list[str]:
     for tokens in shell_segments(command):
         if tokens[0] == "tee":
             out.extend(t for t in tokens[1:] if not t.startswith("-"))
-    for m in _SED_IN_PLACE.finditer(command):
+    for m in linear_search.option_run_finditer(_SED_IN_PLACE, command):
         # the file is the last word of the command: the script before it may hold a `|` the split above cuts at
         out.append(m.group(1).strip("'\""))
     return out
