@@ -127,6 +127,8 @@ def _mint_session_sets(prepared: Prepared, envelopes: list[Envelope]) -> None:
                 withdrawn = prepared.trusted_by_input.get(m.input_seq, [])
                 state.drop_trusted(withdrawn)
                 state.add_untrusted(withdrawn)
+                # Other content named them: a skill naming them too no longer excuses them.
+                state.drop_skill_named(withdrawn)
             elif m.subject is not None:
                 ent = prepared.entities.by_id(m.subject)
                 if ent is not None and ent.hash and ent.kind is EntityKind.PATH:

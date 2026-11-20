@@ -98,6 +98,7 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
+from .own_store import SKILL as OWN_STORE_SKILL
 from .own_store import memory_path_spellings, own_store_read
 from .session_sets import (
     SessionBinding,
@@ -914,23 +915,17 @@ def _find_executed(
     )
 
 
-def _own_store_inputs(
-    planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
-) -> frozenset[int]:
-    """The new tool results that read the agent's own skills or memory (`own_store.own_store_read`): a host tool
-    that succeeded, by both the input and its history step, with that step's arguments. A memory file the session's
-    tainted set holds, under any spelling lineage may have recorded, is not one."""
+def _own_store_reads(
+    planir: PlanIR, inputs: list[PreparedInput], *, home: str, ws: str
+) -> list[tuple[PreparedInput, str, dict[str, Any]]]:
+    """The tool results that read the agent's own skills or memory (`own_store.own_store_read`), new or not: a host
+    tool that succeeded, by both the input and its history step. Each with what it read and that step's arguments."""
     steps = {h.call_id: h for h in planir.history if h.call_id}
-    prior_tainted = frozenset(state.tainted)
     platform = planir.host.platform
-    out: set[int] = set()
+    out: list[tuple[PreparedInput, str, dict[str, Any]]] = []
     for pi in inputs:
         item = pi.input
-        if (
-            not pi.new
-            or item.kind is not InputKind.TOOL_RESULT
-            or item.status is not ResultStatus.OK
-        ):
+        if item.kind is not InputKind.TOOL_RESULT or item.status is not ResultStatus.OK:
             continue
         if item.provider is None or item.provider.kind is not ProviderKind.HOST:
             continue
@@ -943,13 +938,78 @@ def _own_store_inputs(
             continue
         args = step.arguments or {}
         kind = own_store_read(platform, item.tool, args, home=home, workspace_root=ws)
-        if kind is None:
+        if kind is not None:
+            out.append((pi, kind, args))
+    return out
+
+
+def _own_store_inputs(
+    planir: PlanIR, inputs: list[PreparedInput], state: SessionState, *, home: str, ws: str
+) -> frozenset[int]:
+    """The new tool results that read the agent's own skills or memory (`_own_store_reads`). A memory file the
+    session's tainted set holds, under any spelling lineage may have recorded, is not one."""
+    prior_tainted = frozenset(state.tainted)
+    platform = planir.host.platform
+    out: set[int] = set()
+    for pi, _kind, args in _own_store_reads(planir, inputs, home=home, ws=ws):
+        if not pi.new:
             continue
-        spellings = memory_path_spellings(platform, item.tool, args, home=home, workspace_root=ws)
+        spellings = memory_path_spellings(
+            platform, pi.input.tool, args, home=home, workspace_root=ws
+        )
         if any(entity_hash(state.salt, "path", p) in prior_tainted for p in spellings):
             continue
-        out.add(item.input_seq)
+        out.add(pi.input.input_seq)
     return frozenset(out)
+
+
+def _skill_read_inputs(
+    planir: PlanIR, inputs: list[PreparedInput], *, home: str, ws: str
+) -> frozenset[int]:
+    """The tool results, new or not, that read the agent's own installed skills (not its memory, which is written
+    from conversations and can carry what content put there)."""
+    return frozenset(
+        pi.input.input_seq
+        for pi, kind, _args in _own_store_reads(planir, inputs, home=home, ws=ws)
+        if kind == OWN_STORE_SKILL
+    )
+
+
+def _mark_skill_named(
+    table: EntityTable, state: SessionState, skill_inputs: frozenset[int]
+) -> None:
+    """A host that only reads of the agent's installed skills named, in this request and on every earlier step the
+    token remembers, is marked `skill_named` and kept in the token's skill-named set; a host any other content names
+    leaves the set for good. Runs after `in_session_untrusted` is set from the token. Only the credential-home check
+    reads the mark: everything else still scores the host as untrusted."""
+    skill_refs = {f"input:{seq}" for seq in skill_inputs}
+    prior = frozenset(state.skill_named)
+    added: list[str] = []
+    dropped: list[str] = []
+    for ent in table:
+        if ent.kind is not EntityKind.HOST or ent.hash is None:
+            continue
+        refs = ent.origins.get(Origin.UNTRUSTED_INPUT) or ()
+        if any(ref not in skill_refs for ref in refs):
+            dropped.append(ent.hash)
+            continue
+        if ent.in_session_untrusted and ent.hash not in prior:
+            continue  # other content named it on an earlier step
+        if not refs and not ent.in_session_untrusted:
+            continue
+        ent.skill_named = True
+        if refs:
+            added.append(ent.hash)
+    # The hosts this call or its batch uses go in last, so a skill listing many hosts cannot push them out of the
+    # bounded set in the same request.
+    used = {
+        e.hash
+        for e in table
+        if e.hash and e.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE)
+    }
+    added.sort(key=lambda h: h in used)
+    state.drop_skill_named(dropped)
+    state.add_skill_named(added)
 
 
 def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str, int]:
@@ -1708,6 +1768,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             if ent.hash is not None:
                 trusted_by_input.setdefault(int(ref.removeprefix("input:")), []).append(ent.hash)
     state.add_trusted([h for hashes in trusted_by_input.values() for h in hashes])
+    _mark_skill_named(table, state, _skill_read_inputs(planir, inputs, home=home, ws=ws))
     binding = _session_binding(pending, table, state, lineage, home=home, workspace_root=ws)
     produced = {
         pi.input.input_seq: producer_artefacts(

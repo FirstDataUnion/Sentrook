@@ -2,7 +2,7 @@
 
 Sentrook stays stateless: it returns a signed token holding the session flags, a bounded set of hashed
 untrusted entities, a smaller bounded set of hashed steered hosts (named in content that tried to steer the
-agent, `prepare.steering`), the hashing salt and the highest `input_seq` scanned so far. Three more bounded
+agent, `prepare.steering`), the hashing salt and the highest `input_seq` scanned so far. Four more bounded
 sets bind the session judgements to what they are about:
 
 - `sensitive`: files (and database tables) whose content a check judged sensitive, plus what the agent wrote
@@ -11,6 +11,9 @@ sets bind the session judgements to what they are about:
 - `tainted`: what an injected result produced or came from (the file or table its call names), plus what
   the agent wrote from them.
 - `trusted`: entities the owner's own configuration supplied (a scanned read of the agent's config files).
+- `skill_named`: hosts in the untrusted set that only the agent's own installed skills named (a read of an installed
+  skill, `prepare.own_store`), and no other content. A host other content names leaves it for good. Only the
+  credential-home check reads it (`prepare.credential_home`); everything else still scores these hosts as untrusted.
 
 A token without one of these sets (issued before it existed) reads as an empty one. The token is an HS256
 JWT bound to its `session_ref` and the step it was issued at; it is accepted only when presented with
@@ -40,6 +43,7 @@ STEERED_CAP = 32
 SENSITIVE_CAP = 32
 TAINTED_CAP = 32
 TRUSTED_CAP = 64
+SKILL_NAMED_CAP = 32
 HASH_HEX = 12
 #: Seed prefix for a database table (`table:job_records`); everything else is guessed from its shape.
 TABLE_PREFIX = "table:"
@@ -70,6 +74,8 @@ class SessionState:
     tainted: list[str] = field(default_factory=list)
     #: Entities the owner's own configuration supplied.
     trusted: list[str] = field(default_factory=list)
+    #: Untrusted hosts only the agent's installed skills named.
+    skill_named: list[str] = field(default_factory=list)
     max_input_seq: int | None = None
     deployment: str | None = None
     issued_step: int | None = None
@@ -110,6 +116,13 @@ class SessionState:
 
     def drop_trusted(self, hashes: list[str]) -> None:
         self.trusted[:] = [h for h in self.trusted if h not in set(hashes)]
+
+    def add_skill_named(self, hashes: list[str]) -> None:
+        _add_capped(self.skill_named, hashes, SKILL_NAMED_CAP)
+
+    def drop_skill_named(self, hashes: list[str]) -> None:
+        drop = set(hashes)
+        self.skill_named[:] = [h for h in self.skill_named if h not in drop]
 
 
 def _add_capped(into: list[str], hashes: list[str], cap: int) -> None:
@@ -177,6 +190,7 @@ def decode_state(
         sensitive_unbound=claims.get("snu") is True,
         tainted=[str(h) for h in claims.get("tnt", [])][-TAINTED_CAP:],
         trusted=[str(h) for h in claims.get("tru", [])][-TRUSTED_CAP:],
+        skill_named=[str(h) for h in claims.get("skn", [])][-SKILL_NAMED_CAP:],
         max_input_seq=claims.get("seq"),
         deployment=claims.get("dep") or deployment,
         issued_step=claims["step"],
@@ -205,6 +219,7 @@ def encode_state(
         "snu": state.sensitive_unbound,
         "tnt": list(state.tainted[-TAINTED_CAP:]),
         "tru": list(state.trusted[-TRUSTED_CAP:]),
+        "skn": list(state.skill_named[-SKILL_NAMED_CAP:]),
     }
     return jwt.encode(claims, key, algorithm=ALGORITHM)
 
@@ -226,6 +241,7 @@ def seed_state(seed: dict, *, salt: str, deployment: str | None = None) -> Sessi
     state.sensitive_unbound = seed.get("sensitive_unbound") is True
     state.add_tainted(_seed_hashes(seed.get("tainted_entities"), salt))
     state.add_trusted(_seed_hashes(seed.get("trusted_entities"), salt))
+    state.add_skill_named(_seed_hashes(seed.get("skill_named_entities"), salt))
     return state
 
 
