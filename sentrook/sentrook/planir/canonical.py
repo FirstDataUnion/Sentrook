@@ -116,6 +116,9 @@ class CanonicalCall:
     #: What was over preparation's bounds (`bounds.bound_arguments`) when the arguments were cut to
     #: them; `raw`, `args` and the texts then hold the cut arguments. None when nothing was cut.
     too_large: str | None = None
+    #: An OpenClaw Code Mode cell (`pending_call.input_kind` `javascript` on an `exec`): `command` is
+    #: JavaScript, not shell. Its nested tool calls are scanned on their own.
+    code_cell: bool = False
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.args.get(key, default)
@@ -435,8 +438,12 @@ def canonicalise(
     )
 
 
+#: `pending_call.input_kind` of an OpenClaw Code Mode cell.
+CODE_CELL_INPUT = "javascript"
+
+
 def canonical_pending(platform: str, call: PendingCall) -> CanonicalCall:
-    return canonicalise(
+    out = canonicalise(
         platform,
         source="pending",
         tool=call.tool,
@@ -445,6 +452,13 @@ def canonical_pending(platform: str, call: PendingCall) -> CanonicalCall:
         arguments=call.arguments,
         call_id=call.call_id,
     )
+    out.code_cell = (
+        platform == "openclaw"
+        and call.tool == "exec"
+        and call.tool_kind is ToolKind.EXEC
+        and call.input_kind == CODE_CELL_INPUT
+    )
+    return out
 
 
 def canonical_sibling(platform: str, sib: Sibling) -> CanonicalCall:

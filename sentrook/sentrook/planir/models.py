@@ -376,6 +376,13 @@ class PendingCall(_Model):
     arguments: dict[str, Any] = Field(
         default_factory=dict, description="Raw host arguments; canonicalised server-side"
     )
+    input_kind: str | None = Field(
+        default=None,
+        description="What the host says the call's input is, when the tool name does not tell: `javascript` for "
+        "an OpenClaw Code Mode cell (the `exec` that runs JavaScript, which reaches files, commands and the "
+        "network only through nested tool calls the host hooks one by one). Absent for a shell `exec`. Only the "
+        "plugin sets it, from the host's hook event, never from the call's arguments",
+    )
     batch: Batch | None = None
 
 
