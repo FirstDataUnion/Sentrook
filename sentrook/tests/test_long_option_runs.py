@@ -645,3 +645,14 @@ def test_inline_code_that_writes_into_sentrook_state_still_takes_the_floor():
     code = "open('/home/me/.openclaw/sentrook/grants.json', 'w')\n" + "a/" * 20000
     _, env = run(planir("execute_code", "exec", {"code": code}, platform="hermes"))
     assert "guardrail.state_dir_write" in floor_reasons(env)
+
+
+def test_a_listed_pattern_compiled_with_other_flags_is_searched_as_the_plain_regex():
+    import re
+
+    from sentrook.aira import linear_search
+
+    pattern = next(iter(linear_search.LINEAR))
+    assert linear_search._linear(re.compile(pattern, re.IGNORECASE)) is not None
+    for flags in (re.IGNORECASE | re.MULTILINE, re.IGNORECASE | re.ASCII, 0):
+        assert linear_search._linear(re.compile(pattern, flags)) is None
