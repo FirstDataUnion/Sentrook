@@ -72,4 +72,5 @@ In short, for anyone deciding whether to install it:
 
 5. Check: `openclaw sentrook verify`. Every line should start with `ok`.
 
-License: MIT.
+License: MIT. The Sentrook name and logo, including the package icon, are trademarks of First International Data
+Union Ltd and are not covered by the licence: see [TRADEMARKS.md](https://github.com/FirstDataUnion/Sentrook/blob/main/TRADEMARKS.md).

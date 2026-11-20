@@ -7,6 +7,9 @@
 | `sentrook-tile.svg`, `sentrook-icon-512.png` | The store icon: white mark on FIDU purple `#3e1964`, rounded square. The PNG is what plugin stores take. |
 | `tiles/` | Other colour options for the tile, each as SVG and 512 px PNG. |
 
+The name and logo are trademarks of First International Data Union Ltd. The repository's MIT License does not
+cover these files; [TRADEMARKS.md](../TRADEMARKS.md) says how they may be used.
+
 Only `sentrook-mark.svg` is edited by hand. Everything else comes from it:
 
 ```bash

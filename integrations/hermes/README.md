@@ -544,3 +544,8 @@ credentials Hermes keeps in its `.env`. To remove those too, delete the folder, 
 `SENTROOK_SCAN_CLIENT_*` lines from the file `hermes config env-path` prints, and delete the credentials on the identity
 service's **Sentrook** tab. To install again later, start from
 step 3.
+
+## License
+
+MIT. The Sentrook name and logo are trademarks of First International Data Union Ltd and are not covered by
+the licence: see [TRADEMARKS.md](https://github.com/FirstDataUnion/Sentrook/blob/main/TRADEMARKS.md).
