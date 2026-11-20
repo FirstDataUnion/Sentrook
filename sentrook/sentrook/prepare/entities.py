@@ -643,7 +643,7 @@ def _is_code_reference(text: str, start: int, end: int) -> bool:
 
 
 _SPACE_RE = re.compile(r"\s")
-_WORD_RE = re.compile(r"\w")
+_WORD_CHAR_RE = re.compile(r"\w")
 # States of `_IMPORT_LIST_RE` read left to right: after `import`, in the whitespace after it (an
 # import list may end here), in a name, in the whitespace after a name, at `a`, at `as`, in the
 # whitespace after `as`, in the alias, in the whitespace after the alias, after a comma (an import
@@ -706,7 +706,7 @@ class _CodeReferences:
                     if states & (_NAME | _NAME_WS | _ALIAS | _ALIAS_WS):
                         nxt |= _COMMA
                 else:
-                    word = _WORD_RE.match(c) is not None
+                    word = _WORD_CHAR_RE.match(c) is not None
                     if (word or c == ".") and states & (_OPEN | _NAME | _COMMA):
                         nxt |= _NAME
                     if c == "a" and states & _NAME_WS:
@@ -720,7 +720,7 @@ class _CodeReferences:
                 c == "t"
                 and j - 5 >= ls
                 and text[j - 5 : j + 1] == "import"
-                and (j - 5 == ls or _WORD_RE.match(text[j - 6]) is None)
+                and (j - 5 == ls or _WORD_CHAR_RE.match(text[j - 6]) is None)
             ):
                 nxt |= _PRE
             states = nxt
@@ -740,7 +740,7 @@ class _CodeReferences:
                 c == "m"
                 and j - 3 >= ls
                 and text[j - 3 : j + 1] == "from"
-                and (j - 3 == ls or _WORD_RE.match(text[j - 4]) is None)
+                and (j - 3 == ls or _WORD_CHAR_RE.match(text[j - 4]) is None)
             )
 
 
