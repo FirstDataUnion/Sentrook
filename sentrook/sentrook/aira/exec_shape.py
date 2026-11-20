@@ -572,6 +572,12 @@ def _write_target(node: Any, source: bytes) -> str | None:
                 operator = text.strip()
                 continue
         if operator is not None and destination is None:
+            if child.type == "ERROR" and text.lstrip().startswith(("(", ")")):
+                # A target the parser could only read as an error starting with a bare parenthesis names no file
+                # here: JavaScript read as shell gives these, and `t => (t.name || t.id)` would otherwise "write" a
+                # file `(` in the working directory. (zsh reads `>> (a|b)` as a glob group that does name files;
+                # the scan did not resolve that form before either.) A quoted name is a `string` node and counts.
+                return None
             destination = _unquote(text.strip())
     if operator not in _WRITE_REDIRECT_OPS or destination is None:
         return None

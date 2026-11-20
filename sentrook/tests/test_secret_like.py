@@ -216,6 +216,22 @@ def test_secret_carried_reports_why():
     assert secret_carried("token: " + "ghp_" + "x" * 36, ph, owner_asked=True) == SHAPE
 
 
+def test_a_placeholder_still_marks_a_secret_whatever_follows_it():
+    """Plugins before `redact-v7` replaced code that reads a secret (`access_token = token_data['access_token']`) as if
+    it were one, leaving a placeholder that runs into `'access_token']`. The scanner cannot tell that from a real
+    secret followed by text an attacker wrote after it, so every placeholder still counts; current plugins send such
+    code as it is."""
+    ph = "⟦secret"
+    for text in (
+        "access_token = ⟦secret:credential:7a2c⟧'access_token']",
+        "token = ⟦secret:credential:89be⟧'x')",
+        'password = ⟦secret:credential:fa90⟧"Password: ")',
+    ):
+        assert secret_carried(text, ph) == PLACEHOLDER
+    assert secret_carried("access_token = token_data['access_token']", ph) is None
+    assert secret_carried('api_key = os.environ["OPENAI_API_KEY"]', ph) is None
+
+
 def test_linear_time_on_adversarial_input():
     texts = [
         "gate code for " + "x " * 200_000,

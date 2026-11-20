@@ -92,6 +92,7 @@ from typing import Any
 from ..planir.canonical import CanonicalCall, canonicalise
 from ..planir.models import Provider, ProviderKind, ToolKind
 from .entities import _EMAIL_RE, _FILE_EXTENSIONS
+from .redact import is_code_read
 from .skill_steps import (
     _COMMANDISH,
     _INLINE,
@@ -241,7 +242,7 @@ _PAIR_PLAIN_CHARS = 12
 _PAIR_MIXED = re.compile(r"[0-9A-Z]|[^\w]")
 #: "the password is <word>", "Wifi passphrase: <word>", "pw is '<word>'", "password was changed to <word>",
 #: "password - <word>", "PIN code is <digits>" in any case. Words that say where a secret is kept or what happened to
-#: it are not values.
+#: it are not values, and nor is code that reads one (`password = getpass("Password: ")`).
 _SECRET_IS = re.compile(
     r"(?i:\b(?P<cue>password|passwd|passphrase|passcode|pass\s?code|pin(?:\s+(?:code|number))?|pwd|pw)\b)"
     r"[ \t]{0,4}(?i:is|was|:|=|-)[ \t]{0,4}(?i:(?:(?:changed|set|reset|updated)\s+to|now)\s+)?"
@@ -1194,8 +1195,8 @@ def _secret(texts: list[str]) -> bool:
             if m.group("cue").lower().startswith("pin"):
                 if re.fullmatch(r"\d{4,12}", v):  # a version pin is not a PIN
                     return True
-            elif len(v) >= 3 and v.lower() not in _NOT_VALUES:
-                return True
+            elif len(v) >= 3 and v.lower() not in _NOT_VALUES and not is_code_read(v):
+                return True  # `password = getpass("Password: ")` reads one, it holds none
         if any(_luhn(m.group(0)) for m in _CARD.finditer(t)):
             return True
         for m in _OTP_SEED.finditer(t):

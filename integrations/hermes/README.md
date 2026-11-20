@@ -507,8 +507,9 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are kept,
-because the scanner needs them to judge where data is going. Your files, messages and tool output can still contain
-personal information, and that is sent as it is.
+because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
+kept, such as `os.environ["API_KEY"]`: it names the place, not the secret. Your files, messages and tool output can
+still contain personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.hermes/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with
@@ -582,3 +583,8 @@ credentials Hermes keeps in its `.env`. To remove those too, delete the folder, 
 `SENTROOK_SCAN_CLIENT_*` lines from the file `hermes config env-path` prints, and delete the credentials on the identity
 service's **Sentrook** tab. To install again later, start from
 step 3.
+
+## License
+
+MIT. The Sentrook name and logo are trademarks of First International Data Union Ltd and are not covered by
+the licence: see [TRADEMARKS.md](https://github.com/FirstDataUnion/Sentrook/blob/main/TRADEMARKS.md).

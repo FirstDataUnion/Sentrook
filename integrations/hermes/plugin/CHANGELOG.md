@@ -39,6 +39,8 @@ since the version the catalog pins.
   to set a home channel. `status` counts background saves let through.
 - History marks Hermes's own background saves "(self-edit)", and shows a save let through as
   "allowed (let through, self-edit)".
+- The Sentrook tab shows the Sentrook logo in its corner, drawn in the dashboard theme's text colour. The README
+  says the name and logo are trademarks, not covered by the MIT licence.
 
 ## 2.0.0-beta.14
 
