@@ -83,6 +83,17 @@ _WORDS = {
         *"--print -r -x -python -perl -php -node -ne -pe -lne x= = 'print(1)' \"x\"".split(),
         *"-é é -c= -e= --x=y".split(),
     ],
+    written_selfmod._SUBST_RUN: [
+        *"sh bash zsh xsh eval source . ;. (. -c -x -sh -bash -e -- $( ` <( \"$( '$( ".split(),
+        *"curl wget fetch /usr/bin/curl a/curl curlx $(curl -é é".split(),
+    ],
+    written_selfmod._INLINE_PROGRAM: [
+        *"python python2 python3 PYTHON node deno bun perl ruby php xnode -c -e -E -r".split(),
+        *"--eval --evalx -x -u -node -python -ce -é é".split(),
+    ],
+    written_selfmod._WGET_COMBINED_O_RUN: [
+        *"wget xwget WGET -q -qO -O -qqO -qO- -wget -x -é --out -aO1 O é-qO".split(),
+    ],
     written_selfmod._SED_IN_PLACE: [
         *"sed xsed -i -i.bak --in-place --in-place=.b -n -e -sed -E s/a/b/ f.txt".split(),
         *"; & ;x x; a&b -é é".split(),
@@ -264,3 +275,27 @@ def test_launchers_and_wrappers_are_dropped_as_before():
         argv = [rng.choice(words) for _ in range(rng.randint(0, 10))]
         assert written_selfmod._drop_launchers(argv) == _reference_drop_launchers(argv), argv
         assert entities._drop_wrappers(argv) == _reference_wrappers(argv), argv
+
+
+def test_wget_combined_flags_are_split_as_the_regex_splits_them():
+    rng = random.Random(11)
+    words = _WORDS[written_selfmod._WGET_COMBINED_O_RUN] + ["a", "f"]
+    split = 0
+    for _ in range(4000):
+        text = _text(rng, words)
+        want = written_selfmod._WGET_COMBINED_O.sub(r"wget \1-\2 -O ", text)
+        assert written_selfmod._split_wget_o(text) == want, text
+        split += want != text
+    assert split > 50
+
+
+def test_a_fetch_piped_to_source_is_found_as_the_regex_finds_it():
+    rng = random.Random(12)
+    words = [*"curl wget fetch xcurl curlx | |source | . |. source . ; & -x a /dev/stdin".split()]
+    found = 0
+    for _ in range(4000):
+        text = _text(rng, words)
+        want = written_selfmod._PIPE_SOURCE.search(text) is not None
+        assert written_selfmod._pipes_to_source(text) == want, text
+        found += want
+    assert found > 100

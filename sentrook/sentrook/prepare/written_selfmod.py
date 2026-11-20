@@ -1213,8 +1213,7 @@ def _exec_written(
         body = m.group(1) if m.group(1) is not None else m.group(2)
         if body and (_hosts_in(body) or _ECHOED.search(rest, 0, m.start())):
             bodies.append(_SED_APPEND.sub("", body.replace('\\"', '"'), count=1))
-    for m in _UNQUOTED_ECHO.finditer(rest):
-        bodies.append(m.group(1))
+    bodies.extend(_unquoted_echoes(rest))
     cron_user = any(_SYSTEM_CRON.search(t) for t in _write_targets(rest))
     return [WrittenText(b, form, host_run, cron_user) for b in dict.fromkeys(bodies) if b.strip()]
 
@@ -1226,6 +1225,80 @@ _SED_APPEND = re.compile(r"^\s*(?:(?:\$|\d+|/[^/]*/)\s*[aic]\\?\s*|[aic]\\\s*)")
 _ECHOED = re.compile(r"(?:^|[;&|(\n])\s*(?:sudo\s+)?(?:echo|printf)\b[^;&|\n]*$")
 #: An unquoted `echo` or `printf` redirected into a file: what it writes.
 _UNQUOTED_ECHO = re.compile(r"\b(?:echo|printf)\s+(?:-[neE]+\s+)?([^'\"<>|;&\n]+?)\s*>>?\s*\S+")
+_ECHO_WORD = re.compile(r"\b(?:echo|printf)")
+_ECHO_FLAGS = re.compile(r"-[neE]+")
+_NOT_ECHOED = frozenset("'\"<>|;&\n")
+
+
+def _unquoted_echoes(text: str) -> list[str]:
+    """`[m.group(1) for m in _UNQUOTED_ECHO.finditer(text)]`, in linear time.
+
+    The regex, at each `echo`, grows its lazy text one character at a time to where a redirect could
+    follow, then gives up at the end of the run of characters the text may hold: every `echo` in a
+    long run (`echo echo …` with no `>`) re-read the rest of the run. The same matches are built
+    here from facts about each position, read once:
+    - where the text starts (`g`): the regex tries the whitespace after the command word longest
+      first, the flags (`-n`) and the whitespace after them before none, and takes the first start
+      from which a match can be made;
+    - from `g`, one can when the run of text characters from `g` ends where whitespace (which may
+      cross a newline) leads to a `>` with a non-space character somewhere after it;
+    - the text then ends at the first position from which only whitespace leads to that `>` (the
+      lazy group), and the match after the target word the redirect names."""
+    if ">" not in text or not _ECHO_WORD.search(text):
+        return []
+    n = len(text)
+    space = [c.isspace() for c in text]
+    next_word = [n] * (n + 2)  # the first non-space character at or after each position
+    run_end = [n] * (n + 1)  # where the run of text characters from each position ends
+    word_end = [n] * (n + 1)  # where the run of non-space characters from each position ends
+    for i in range(n - 1, -1, -1):
+        next_word[i] = next_word[i + 1] if space[i] else i
+        run_end[i] = i if text[i] in _NOT_ECHOED else run_end[i + 1]
+        word_end[i] = i if space[i] else word_end[i + 1]
+    space_start = [0] * (n + 1)  # where the run of whitespace ending at each position starts
+    for i in range(1, n + 1):
+        space_start[i] = space_start[i - 1] if space[i - 1] else i
+
+    def redirect(
+        r: int,
+    ) -> bool:  # whitespace from `r` to a `>` with a non-space character after it
+        k = next_word[r]
+        return k < n and text[k] == ">" and next_word[k + 1] < n
+
+    last_start = [-1] * (n + 1)  # the last position at or before each one that text can start at
+    for g in range(n + 1):
+        ok = g < n and text[g] not in _NOT_ECHOED and redirect(run_end[g])
+        last_start[g] = g if ok else last_start[g - 1] if g else -1
+
+    out: list[str] = []
+    pos = 0
+    for head in _ECHO_WORD.finditer(text):
+        h, p0 = head.span()
+        if h < pos or p0 >= n or not space[p0]:
+            continue
+        w_end = next_word[p0]
+        g = -1
+        flags = _ECHO_FLAGS.match(text, w_end)
+        if flags is not None and flags.end() < n and space[flags.end()]:
+            fe = flags.end()
+            if last_start[next_word[fe]] >= fe + 1:
+                g = last_start[next_word[fe]]
+        if g < 0 and last_start[w_end] >= p0 + 1:
+            g = last_start[w_end]
+        if g < 0:
+            continue
+        r = run_end[g]
+        j = max(g + 1, space_start[r])
+        k = next_word[r]  # the `>`
+        if k + 1 < n and text[k + 1] == ">" and next_word[k + 2] < n:
+            end = word_end[next_word[k + 2]]
+        elif k + 1 < n and text[k + 1] == ">":
+            end = word_end[k + 1]
+        else:
+            end = word_end[next_word[k + 1]]
+        out.append(text[g:j])
+        pos = end
+    return out
 
 
 _REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\s*([^\s;&|<>]+)")
@@ -1406,13 +1479,37 @@ _PWSH_RUN = re.compile(r"\b(?:iex|invoke-expression|start-process)\b", re.I)
 
 #: A fetch piped into the current shell (fish's `curl ... | source`, `curl ... | . /dev/stdin`).
 _PIPE_SOURCE = re.compile(r"\b(?:curl|wget|fetch)\b[^|;&]*\|\s*(?:source|\.)(?=\s|$)")
+#: Its pieces, searched in linear time (`_pipes_to_source`).
+_PIPE_SOURCE_HEAD = re.compile(r"\b(?:curl|wget|fetch)\b")
+_PIPE_SOURCE_GAP = re.compile(r"[^|;&]*")
+_PIPE_SOURCE_TAIL = re.compile(r"\|\s*(?:source|\.)(?=\s|$)")
+
+
+def _pipes_to_source(line: str) -> bool:
+    """`_PIPE_SOURCE.search(line)` holds: each position after a fetch word, up to where its command
+    ends, is tried once (searched as the regex, every fetch word in a long run re-read the rest)."""
+    return (
+        linear_search.gap_tail_first(
+            line,
+            _PIPE_SOURCE_HEAD,
+            lambda text, p: _PIPE_SOURCE_TAIL.match(text, p) is not None,
+            gap=_PIPE_SOURCE_GAP,
+        )
+        >= 0
+    )
+
+
+def _found(rx: re.Pattern[str], text: str) -> bool:
+    """`rx.search(text)` holds, for a pattern of the form `<command>(?:<option>)*<end>` read in
+    linear time (a long run of options repeats the command: `sh -sh -sh …`)."""
+    return next(linear_search.option_run_finditer(rx, text), None) is not None
 
 
 def _runs_fetched(line: str) -> bool:
     """The line fetches code and runs it by a route the pipe check does not read."""
-    if _SUBST_RUN.search(line) or _PIPE_SOURCE.search(line):
+    if _found(_SUBST_RUN, line) or _pipes_to_source(line):
         return True
-    if _INLINE_PROGRAM.search(line) and _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line):
+    if _found(_INLINE_PROGRAM, line) and _PROGRAM_FETCH.search(line) and _PROGRAM_RUN.search(line):
         return True
     return bool(_PWSH_FETCH.search(line) and _PWSH_RUN.search(line))
 
@@ -1432,6 +1529,26 @@ _LOCAL_SEND = re.compile(
 
 #: wget's combined short flags ending in `O` (`-qO FILE`), split so the download parser reads the file.
 _WGET_COMBINED_O = re.compile(r"\bwget\s+((?:-\S+\s+)*?)-([A-Za-z]+)O(?=\s)")
+#: The same matches, found in linear time (`_split_wget_o`).
+_WGET_COMBINED_O_RUN = re.compile(r"\bwget\s+(?:-\S+\s+)*?-([A-Za-z]+)O(?=\s)")
+
+
+def _split_wget_o(line: str) -> str:
+    """`_WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)`: each match found as the pattern without
+    its options group finds it (in linear time), then built by the pattern from where it starts."""
+    out: list[str] = []
+    pos = 0
+    for found in linear_search.option_run_finditer(_WGET_COMBINED_O_RUN, line):
+        m = _WGET_COMBINED_O.match(line, found.start())
+        if m is None or m.span() != found.span():  # not reached: the two patterns match alike
+            return _WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)
+        out.append(line[pos : m.start()])
+        out.append(m.expand(r"wget \1-\2 -O "))
+        pos = m.end()
+    if not out:
+        return line
+    out.append(line[pos:])
+    return "".join(out)
 
 
 def _sends_local(text: str) -> bool:
@@ -1472,10 +1589,7 @@ def _shell_roles(
     a copy or a raw socket). Base64 the text decodes is read too."""
     from ..aira.normalize import normalise_text
 
-    lines = [
-        _WGET_COMBINED_O.sub(r"wget \1-\2 -O ", line)
-        for line in _resolve_vars(_shell_lines(text, cron_user=cron_user))
-    ]
+    lines = [_split_wget_o(line) for line in _resolve_vars(_shell_lines(text, cron_user=cron_user))]
     if not lines:
         return []
     decoded = [d for d in (normalise_text(line) for line in lines) if d not in lines]
@@ -1523,12 +1637,12 @@ def _shell_roles(
 
 #: An explicit instruction not to run or send: a warning word alone ("never skip", "to avoid", "not installed")
 #: never hides a command.
-_DONT = re.compile(
-    r"\b(?:never|do\s+not|don'?t|must\s+not|mustn'?t|should\s+not|shouldn'?t)\s+(?:ever\s+)?(?:\w+\s+)??"
+_DONT_NEG = r"\b(?:never|do\s+not|don'?t|must\s+not|mustn'?t|should\s+not|shouldn'?t)"
+_DONT_VERB = (
     r"(?:run|execute|exec|use|type|paste|call|invoke|install|source|eval|download|fetch|curl|wget|post|send|"
-    r"upload|forward|submit|push|ping|pipe|share|report)\b",
-    re.I,
+    r"upload|forward|submit|push|ping|pipe|share|report)"
 )
+_DONT = re.compile(_DONT_NEG + r"\s+(?:ever\s+)?(?:\w+\s+)??" + _DONT_VERB + r"\b", re.I)
 
 
 #: A negation whose object is the command that follows: "do not run this:", "never paste the following". Only words
@@ -1621,33 +1735,263 @@ def _prose_roles(text: str, *, home: str | None, workspace_root: str | None) -> 
     for sentence in _SENTENCE.split(words):
         if not sentence.strip():
             continue
+        facts = _Sentence(sentence)
         for host in _hosts_in(sentence, emails=False):
             if _local(host):
                 continue
-            at = _position(sentence, host)
+            at = facts.position(host)
             if at < 0:
                 continue
-            # the words before the token that names the host (a URL's scheme is part of that token)
-            before = re.sub(r"\S*$", "", sentence[:at])
-            after = sentence[at:].split(None, 1)[1] if " " in sentence[at:] else ""
-            if _DONT.search(_CLAUSE_BREAK.split(before)[-1]):
+            # the words before the token that names the host (a URL's scheme is part of that token),
+            # and the words after it
+            before, after = facts.word_start(at), facts.after(at)
+            if facts.dont(before):
                 continue
-            fetch_before = re.search(rf"\b{_FETCH_VERB}\b", before, re.I)
-            if _RUN_FROM.search(before) or (fetch_before and _RUN_AFTER.search(after)):
+            if facts.run_from(before) or (facts.fetch(before) and facts.run_after(after)):
                 out.append(Found(EntityKind.HOST, host, host, Role.CODE_SOURCE))
             elif (
-                not _DOC_LEAD.search(before)
-                and not _FROM_HOST.search(before)
-                and (_SEND.search(before) or (not before.strip() and _SEND_THERE.search(after)))
+                not facts.doc_lead(before)
+                and not facts.from_host(before)
+                and (facts.send(before) or (facts.blank(before) and facts.send_there(after)))
             ):
                 out.append(Found(EntityKind.HOST, host, host, Role.DATA_DESTINATION))
         # mail to an address the text names: the address is a recipient of the later run
         for m in _EMAIL_RE.finditer(sentence):
-            before = sentence[: m.start()]
-            if _SEND.search(before) and not _DONT.search(_CLAUSE_BREAK.split(before)[-1]):
+            if facts.send(m.start()) and not facts.dont(m.start()):
                 addr = normalise_recipient(m.group(1))
                 out.append(Found(EntityKind.RECIPIENT, addr, addr, Role.RECIPIENT))
     return out
+
+
+def _lookahead(rx: re.Pattern[str]) -> re.Pattern[str]:
+    """`rx` at every position: a zero-width match at each start where `rx` matches, its match the
+    group."""
+    if rx not in _LOOKAHEAD:
+        _LOOKAHEAD[rx] = re.compile(f"(?=({rx.pattern}))", rx.flags)
+    return _LOOKAHEAD[rx]
+
+
+_LOOKAHEAD: dict[re.Pattern[str], re.Pattern[str]] = {}
+_FETCH_WORD = re.compile(rf"\b{_FETCH_VERB}\b", re.I)
+_RUN_WORD = re.compile(rf"\b{_RUN_VERB}\b", re.I)
+_SEND_WORD = re.compile(rf"\b(?:{_SEND_VERB})\b", re.I)
+_PIPE_WORD = re.compile(r"\b(?:pipe|feed)\b", re.I)
+_TO_SHELL_WORDS = re.compile(r"\b(?:to|into)\s+(?:a\s+)?(?:shell|bash|sh|python|node)\b", re.I)
+_RUN_FROM_END = re.compile(r"\b(?:from|at|hosted\s+(?:at|on))\s*$", re.I)
+_AND_THEN = re.compile(r"\b(?:and|then|&&)\b", re.I)
+_AND_THEN_WORDS = re.compile(r"\b(?:and|then)\b", re.I)
+_OBEY = re.compile(r"\b(?:follow|obey|apply|carry\s+out|do\s+what)\b", re.I)
+_THERE = re.compile(r"\b(?:there|to\s+it|to\s+that\b)", re.I)
+#: `_DONT` with each choice of its optional parts made: `ever` or not, one more word or not.
+_DONT_WAYS = [
+    re.compile(_DONT_NEG + r"\s+" + ever + word + _DONT_VERB + r"\b", re.I)
+    for ever in ("", r"ever\s+")
+    for word in ("", r"\w+\s+")
+]
+_ASCII_FOLD = str.maketrans(
+    {
+        **{chr(c): chr(c + 32) for c in range(65, 91)},
+        "\u0130": "i",
+        "\u0131": "i",
+        "\u017f": "s",
+        "\u212a": "k",
+    }
+)
+_ASCII_HOST = re.compile(r"[a-z0-9._:-]+")
+_WORD_OR_DASH = re.compile(r"[\w-]")
+
+
+class _Sentence:
+    """What `_prose_roles` asks of the words before and after each host or address in a sentence,
+    read once for the sentence.
+
+    Asked per host, each question read the words before the host (or after it) again: quadratic in a
+    long sentence that names many hosts, or (a pattern of the form `<word>[^.]*<word>` searched in
+    them) in a long run of its first word (`and and …`, `run run …`, `pipe pipe …`). Here each
+    pattern is matched once at each position of the sentence, and the answer for the words before
+    or after any position is read off. A sentence holds no newline (sentences are split at them).
+
+    `before` is where the words before a host end: the sentence up to the start of the token that
+    names it, which is the start of the sentence or follows whitespace (so no word-final pattern
+    ends there, and the regexes' answers on that prefix are the same as on the whole sentence).
+    `after` is where the words after it start (after the token and the whitespace after it), the
+    sentence's length when there are none."""
+
+    def __init__(self, sentence: str) -> None:
+        s = self.s = sentence
+        n = self.n = len(s)
+        space = [c.isspace() for c in s]
+        self.space = space
+        # where the run of non-space characters (or of space characters) ending at each position starts
+        self.word_starts = word = [0] * (n + 1)
+        self.space_starts = gap = [0] * (n + 1)
+        for i in range(1, n + 1):
+            word[i] = i if space[i - 1] else word[i - 1]
+            gap[i] = i if not space[i - 1] else gap[i - 1]
+        # the first space (or non-space) character at or after each position
+        self.next_space = after_word = [n] * (n + 1)
+        self.next_word = after_space = [n] * (n + 1)
+        for i in range(n - 1, -1, -1):
+            after_word[i] = i if space[i] else after_word[i + 1]
+            after_space[i] = i if not space[i] else after_space[i + 1]
+        self.first_word = after_space[0]
+        self.last_space = s.rfind(" ")
+        self._dont: list[bool] | None = None
+        self._folded: str | None = None
+        self._before: dict[str, object] = {}
+        self._after: dict[str, list[int]] = {}
+
+    # ---- the host and the words around it
+
+    def position(self, host: str) -> int:
+        """`_position(sentence, host)`: where the host is first named. A host of ASCII lowercase
+        characters is found in the sentence with the characters the regex takes for them (either
+        case, and the four non-ASCII letters that ignoring case matches to ASCII ones) folded."""
+        if not _ASCII_HOST.fullmatch(host):
+            return _position(self.s, host)
+        if self._folded is None:
+            self._folded = self.s.translate(_ASCII_FOLD)
+        s, end = self.s, len(host)
+        p = self._folded.find(host)
+        while p >= 0:
+            # the host's own lookarounds: no word character or `-` on either side
+            if (p == 0 or not _WORD_OR_DASH.match(s, p - 1)) and not _WORD_OR_DASH.match(
+                s, p + end
+            ):
+                return p
+            p = self._folded.find(host, p + 1)
+        return -1
+
+    def word_start(self, at: int) -> int:
+        return self.word_starts[at]
+
+    def after(self, at: int) -> int:
+        """Where `sentence[at:].split(None, 1)[1]` starts (when `sentence[at:]` holds a space; else
+        there are no words after)."""
+        if self.last_space < at:
+            return self.n
+        a = self.next_word[self.next_space[at]]
+        if a == self.n:  # what the split does: there is no second part
+            raise IndexError("list index out of range")
+        return a
+
+    # ---- the words before a position `b`
+
+    def blank(self, b: int) -> bool:
+        return self.first_word >= b
+
+    def dont(self, b: int) -> bool:
+        """`_DONT` in the clause before `b` (from the last `_CLAUSE_BREAK` before it)."""
+        if self._dont is None:
+            n = self.n
+            ends = [n + 1] * (n + 1)  # the shortest way `_DONT` matches from each start ends
+            for way in _DONT_WAYS:
+                for m in _lookahead(way).finditer(self.s):
+                    ends[m.start()] = min(ends[m.start()], m.end(1))
+            breaks = {m.end() for m in _CLAUSE_BREAK.finditer(self.s)}
+            out = self._dont = [False] * (n + 1)
+            least = n + 1
+            for x in range(n + 1):
+                if x in breaks:
+                    least = n + 1
+                out[x] = least <= x
+                least = min(least, ends[x])
+        return self._dont[b]
+
+    def _first_end(self, rx: re.Pattern[str]) -> int:
+        """Where the earliest-ending match of `rx` (a word: one end per start) ends."""
+        key = rx.pattern
+        if key not in self._before:
+            self._before[key] = min(
+                (m.end(1) for m in _lookahead(rx).finditer(self.s)), default=self.n + 1
+            )
+        return self._before[key]  # type: ignore[return-value]
+
+    def fetch(self, b: int) -> bool:
+        return self._first_end(_FETCH_WORD) <= b
+
+    def send(self, b: int) -> bool:
+        return self._first_end(_SEND_WORD) <= b
+
+    def run_from(self, b: int) -> bool:
+        """`_RUN_FROM` in the words before `b`."""
+        if "pipe_to_shell" not in self._before:
+            pipe = self._first_end(_PIPE_WORD)
+            self._before["pipe_to_shell"] = min(
+                (
+                    m.end(1)
+                    for m in _lookahead(_TO_SHELL_WORDS).finditer(self.s)
+                    if m.start() >= pipe
+                ),
+                default=self.n + 1,
+            )
+        if self._before["pipe_to_shell"] <= b:  # type: ignore[operator]
+            return True
+        # a run word, then no full stop up to `from`, `at` or `hosted at` ending the words
+        if "run_ends" not in self._before:
+            last = [-1] * (self.n + 1)  # the last run word ending at or before each position
+            for m in _lookahead(_RUN_WORD).finditer(self.s):
+                last[m.end(1)] = max(last[m.end(1)], m.end(1))
+            dot = [-1] * (self.n + 1)  # the last full stop before each position
+            for i in range(1, self.n + 1):
+                last[i] = max(last[i], last[i - 1])
+                dot[i] = i - 1 if self.s[i - 1] == "." else dot[i - 1]
+            self._before["run_ends"] = (last, dot)
+        last, dot = self._before["run_ends"]  # type: ignore[misc]
+        k = self.space_starts[b]
+        starts = [k - 4, k - 2]
+        if k >= 2:
+            j = self.space_starts[k - 2]
+            starts.append(j - 6)
+        for t in starts:
+            if t >= 0 and _RUN_FROM_END.match(self.s, t, b) and last[t] > dot[t]:
+                return True
+        return False
+
+    def doc_lead(self, b: int) -> bool:
+        """`_DOC_LEAD` in the words before `b`: it ends them, so it starts within a few words of `b`
+        (a `read  more` lead reaching back over its whitespace)."""
+        k = self.space_starts[b]
+        if k > 0 and self.s[k - 1] in ":([":
+            k = self.space_starts[k - 1]
+        lo = k - 77
+        for m in range(max(0, k - 68), k + 1):
+            lo = min(lo, self.space_starts[m] - 5)
+        return _DOC_LEAD.search(self.s, max(0, lo), b) is not None
+
+    def from_host(self, b: int) -> bool:
+        return _FROM_HOST.search(self.s, max(0, self.space_starts[b] - 4), b) is not None
+
+    # ---- the words from a position `a` on
+
+    def _last_start(self, head: re.Pattern[str], tail: re.Pattern[str]) -> int:
+        """Where the last `<head>[^.]*<tail>` starts (-1 for none)."""
+        key = head.pattern + "\0" + tail.pattern
+        if key not in self._after:
+            n = self.n
+            nxt = [n + 1] * (n + 2)  # the first tail starting at or after each position
+            for m in _lookahead(tail).finditer(self.s):
+                nxt[m.start()] = m.start()
+            dot = [n] * (n + 2)  # the first full stop at or after each position
+            for i in range(n - 1, -1, -1):
+                nxt[i] = min(nxt[i], nxt[i + 1])
+                dot[i] = i if self.s[i] == "." else dot[i + 1]
+            last = -1
+            for m in _lookahead(head).finditer(self.s):
+                e = m.end(1)
+                if nxt[e] <= dot[e]:
+                    last = m.start()
+            self._after[key] = [last]
+        return self._after[key][0]
+
+    def run_after(self, a: int) -> bool:
+        return (
+            self._last_start(_AND_THEN, _RUN_WORD) >= a
+            or self._last_start(_AND_THEN_WORDS, _OBEY) >= a
+        )
+
+    def send_there(self, a: int) -> bool:
+        return self._last_start(_SEND_WORD, _THERE) >= a
 
 
 def _position(text: str, host: str) -> int:

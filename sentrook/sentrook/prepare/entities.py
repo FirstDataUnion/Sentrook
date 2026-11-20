@@ -634,12 +634,117 @@ class Found:
 
 
 def _is_code_reference(text: str, start: int, end: int) -> bool:
+    """Whether the dotted name at `start:end` is code: called or indexed, in an import list, or the
+    module of a `from … import`. Reads the line before it; `_CodeReferences` answers the same for
+    every name in a text with one pass over it."""
     if text[end : end + 1] in ("(", "["):
         return True
     line = text[text.rfind("\n", 0, start) + 1 : start]
     if _IMPORT_LIST_RE.search(line):
         return True
     return bool(_FROM_IMPORT_RE.search(line) and _IMPORT_AFTER_RE.match(text, end))
+
+
+_SPACE_RE = re.compile(r"\s")
+_WORD_CHAR_RE = re.compile(r"\w")
+# States of `_IMPORT_LIST_RE` read left to right: after `import`, in the whitespace after it (an
+# import list may end here), in a name, in the whitespace after a name, at `a`, at `as`, in the
+# whitespace after `as`, in the alias, in the whitespace after the alias, after a comma (an import
+# list may end here).
+_PRE, _OPEN, _NAME, _NAME_WS, _A, _AS, _AS_WS, _ALIAS, _ALIAS_WS, _COMMA = (
+    1 << i for i in range(10)
+)
+
+
+class _CodeReferences:
+    """`_is_code_reference` for the names in one text, its lines read once.
+
+    `_IMPORT_LIST_RE` (`\\bimport\\s+(?:[\\w.]+(?:\\s+as\\s+\\w+)?\\s*,\\s*)*$`) searched in the line
+    before a name holds when some `import` in that line starts a list that can end just before the
+    name. Read left to right, a line's positions keep which states of that pattern can be reached
+    there from any `import` before them; `_FROM_IMPORT_RE` (`\\bfrom\\s+$`) likewise, the line
+    before the name ending in `from` and whitespace. Searched per name instead, the line before each
+    name was read again: quadratic in a long line of names."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.import_open: set[int] = set()
+        self.from_open: set[int] = set()
+        ls = 0
+        for le in [*(m.start() for m in re.finditer("\n", text)), len(text)]:
+            chunk = text[ls:le]
+            if "import" in chunk:
+                self._read_imports(ls, le)
+            if "from" in chunk:
+                self._read_froms(ls, le)
+            ls = le + 1
+
+    def __call__(self, start: int, end: int) -> bool:
+        text = self.text
+        if text[end : end + 1] in ("(", "["):
+            return True
+        if start in self.import_open:
+            return True
+        return start in self.from_open and _IMPORT_AFTER_RE.match(text, end) is not None
+
+    def _read_imports(self, ls: int, le: int) -> None:
+        text = self.text
+        states = 0
+        for j in range(ls, le):
+            c = text[j]
+            nxt = 0
+            if states:
+                if _SPACE_RE.match(c) is not None:
+                    if states & (_PRE | _OPEN):
+                        nxt |= _OPEN
+                    if states & (_NAME | _NAME_WS):
+                        nxt |= _NAME_WS
+                    if states & (_AS | _AS_WS):
+                        nxt |= _AS_WS
+                    if states & (_ALIAS | _ALIAS_WS):
+                        nxt |= _ALIAS_WS
+                    if states & _COMMA:
+                        nxt |= _COMMA
+                elif c == ",":
+                    if states & (_NAME | _NAME_WS | _ALIAS | _ALIAS_WS):
+                        nxt |= _COMMA
+                else:
+                    word = _WORD_CHAR_RE.match(c) is not None
+                    if (word or c == ".") and states & (_OPEN | _NAME | _COMMA):
+                        nxt |= _NAME
+                    if c == "a" and states & _NAME_WS:
+                        nxt |= _A
+                    if c == "s" and states & _A:
+                        nxt |= _AS
+                    if word and states & (_AS_WS | _ALIAS):
+                        nxt |= _ALIAS
+            # `import` ending here, at a word boundary (the line's start is one)
+            if (
+                c == "t"
+                and j - 5 >= ls
+                and text[j - 5 : j + 1] == "import"
+                and (j - 5 == ls or _WORD_CHAR_RE.match(text[j - 6]) is None)
+            ):
+                nxt |= _PRE
+            states = nxt
+            if states & (_OPEN | _COMMA):
+                self.import_open.add(j + 1)
+
+    def _read_froms(self, ls: int, le: int) -> None:
+        text = self.text
+        after_from = False
+        for j in range(ls, le):
+            c = text[j]
+            if _SPACE_RE.match(c) is not None:
+                if after_from:
+                    self.from_open.add(j + 1)
+                continue
+            after_from = (
+                c == "m"
+                and j - 3 >= ls
+                and text[j - 3 : j + 1] == "from"
+                and (j - 3 == ls or _WORD_CHAR_RE.match(text[j - 4]) is None)
+            )
 
 
 def _line_end(text: str, start: int) -> int:
@@ -827,6 +932,7 @@ def _hosts_in(text: str, *, inline_program: bool = False, emails: bool = True) -
 
     stripped = _URL_RE.sub(_blank, _EMAIL_RE.sub(_blank, text))
     skip, programs = _non_host_spans(stripped, inline_program=inline_program)
+    is_code_reference = _CodeReferences(stripped)
     for m in _HOST_RE.finditer(stripped):
         cand = m.group(1)
         start, end = m.span(1)
@@ -835,7 +941,7 @@ def _hosts_in(text: str, *, inline_program: bool = False, emails: bool = True) -
             continue
         if cand[0].isdigit() and cand.replace(".", "").isdigit():
             continue
-        if _is_code_reference(stripped, start, end):
+        if is_code_reference(start, end):
             continue
         if any(start < r.stop and end > r.start for r in skip):
             continue
