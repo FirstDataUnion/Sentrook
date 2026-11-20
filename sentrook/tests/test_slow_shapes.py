@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 
 import pytest
 from test_aira_detectors import ex, planir
@@ -21,10 +22,12 @@ from test_long_option_runs import _repeat
 from sentrook.aira.exec_shape import MAX_PARSE_CHARS
 from sentrook.enums import ProbeStatus, ProbeStep
 from sentrook.planir.bounds import MAX_CALL_CHARS
-from sentrook.prepare import entities
+from sentrook.prepare import entities, written_selfmod
 
 SIZES = [MAX_PARSE_CHARS, 95_000]
 HOME = "/home/me"
+AGENTS = f"{HOME}/.openclaw/workspace/AGENTS.md"
+BASHRC = f"{HOME}/.bashrc"
 
 
 def _write(path: str, content: str) -> dict:
@@ -53,6 +56,16 @@ SHAPES = {
     ),
     "an import list of host-like names": lambda size: ex(
         _repeat("python -c 'import ", "a.io, ", "b.io'", size)
+    ),
+    # written into an agent instruction file: prose read for where code comes from
+    "fetch, then many ands": lambda size: _write(AGENTS, _repeat("fetch a.io ", "and ", "", size)),
+    "many runs, then a host": lambda size: _write(AGENTS, _repeat("", "run ", " a.io", size)),
+    "many pipes, then a host": lambda size: _write(AGENTS, _repeat("", "pipe ", " a.io", size)),
+    "a run of distinct hosts": lambda size: _write(
+        AGENTS, "".join(f"run a{i}.io " for i in range(size // 13))
+    ),
+    "mail to many addresses": lambda size: _write(
+        AGENTS, "".join(f"send to u{i}@a.io " for i in range(size // 19))
     ),
 }
 
@@ -96,3 +109,129 @@ def test_code_references_agree_with_the_per_name_check():
                 assert refs(start, e) == want, (text, start, e)
                 seen += want
     assert seen > 1000
+
+
+# --------------------------------------------------------------------------- written prose
+
+
+def _reference_prose_roles(text: str, *, home: str | None, workspace_root: str | None) -> list:
+    """`_prose_roles` as it read each host's words before the sentence was read once."""
+    w = written_selfmod
+    out: list = []
+    commands = w._commands(text)
+    if commands:
+        out.extend(
+            w._shell_roles(
+                "\n".join(commands), home=home, workspace_root=workspace_root, contacts=False
+            )
+        )
+    words = w._CODE.sub(lambda m: " " * len(m.group(0)), text)
+    for sentence in w._SENTENCE.split(words):
+        if not sentence.strip():
+            continue
+        for host in w._hosts_in(sentence, emails=False):
+            if w._local(host):
+                continue
+            at = w._position(sentence, host)
+            if at < 0:
+                continue
+            before = re.sub(r"\S*$", "", sentence[:at])
+            after = sentence[at:].split(None, 1)[1] if " " in sentence[at:] else ""
+            if w._DONT.search(w._CLAUSE_BREAK.split(before)[-1]):
+                continue
+            fetch_before = re.search(rf"\b{w._FETCH_VERB}\b", before, re.I)
+            if w._RUN_FROM.search(before) or (fetch_before and w._RUN_AFTER.search(after)):
+                out.append(w.Found(w.EntityKind.HOST, host, host, w.Role.CODE_SOURCE))
+            elif (
+                not w._DOC_LEAD.search(before)
+                and not w._FROM_HOST.search(before)
+                and (w._SEND.search(before) or (not before.strip() and w._SEND_THERE.search(after)))
+            ):
+                out.append(w.Found(w.EntityKind.HOST, host, host, w.Role.DATA_DESTINATION))
+        for m in w._EMAIL_RE.finditer(sentence):
+            before = sentence[: m.start()]
+            if w._SEND.search(before) and not w._DONT.search(w._CLAUSE_BREAK.split(before)[-1]):
+                addr = w.normalise_recipient(m.group(1))
+                out.append(w.Found(w.EntityKind.RECIPIENT, addr, addr, w.Role.RECIPIENT))
+    return out
+
+
+_PROSE_WORDS = [
+    *"fetch download Get curl wget read run execute exec install source bash sh RUN".split(),
+    *"and then && pipe feed to into a shell python node from at hosted on From AT".split(),
+    *"see docs documentation reference guide details read more learn here at in".split(),
+    *"send upload post backing back-up there it that sync mail e-mail emailed".split(),
+    *"never don't dont do not must should ever instead Instead follow obey apply carry out".split(),
+    *"what , . ; ! ? : ( [ x y the".split(),
+    *"a.io b.co A.IO x.a.io a.io/x https://c.io/x bob@d.io e.io: a.io. -a.io xa.io a.io-".split(),
+    *"ſh.io K.io k.io sh.io a.io,b.io localhost 127.0.0.1 1.2.3.4 é.io".split(),
+]
+_PROSE_SEPARATORS = [" ", " ", " ", "  ", "\t", "\n", " ", " ", ". ", "! ", "", " \n"]
+
+
+def _prose(rng: random.Random) -> str:
+    return "".join(
+        rng.choice(_PROSE_WORDS) + rng.choice(_PROSE_SEPARATORS) for _ in range(rng.randint(0, 18))
+    )
+
+
+#: Phrases that make the questions asked of the words around a host come out either way.
+_PROSE_PHRASES = [
+    "never run",
+    "do not ever download the",
+    "don't x run",
+    "mustn't fetch",
+    "never, run",
+    "never instead run",
+    "run it from",
+    "execute what is hosted at",
+    "install from",
+    "run. from",
+    "pipe it to a shell",
+    "feed it into python",
+    "pipe it to a  sh",
+    "fetch",
+    "download the file from",
+    "and then run it",
+    "and follow it",
+    "then carry out",
+    "and. run",
+    "upload logs there",
+    "send it to it",
+    "back up to that",
+    "see the docs at",
+    "read  more on",
+    "reference: (",
+    "docs [",
+    "copy the example from",
+    "of",
+    "send to",
+    "mail",
+    "ſend",
+    "Kelvin",
+]
+
+
+def _phrased(rng: random.Random) -> str:
+    words = _PROSE_PHRASES * 3 + _PROSE_WORDS
+    return "".join(
+        rng.choice(words) + rng.choice(_PROSE_SEPARATORS[:8]) for _ in range(rng.randint(1, 12))
+    )
+
+
+def _roles(fn, text: str):
+    try:
+        return fn(text, home=HOME, workspace_root=None)
+    except IndexError as e:
+        return ("IndexError", str(e))
+
+
+def test_prose_roles_agree_with_the_per_host_reading():
+    rng = random.Random(20261120)
+    found = 0
+    for i in range(6000):
+        text = _prose(rng) if i % 2 else _phrased(rng)
+        want = _roles(_reference_prose_roles, text)
+        assert _roles(written_selfmod._prose_roles, text) == want, text
+        found += bool(want) and not isinstance(want, tuple)
+    assert found > 300
