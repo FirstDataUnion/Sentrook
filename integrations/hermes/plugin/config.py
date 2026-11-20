@@ -22,6 +22,12 @@ DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org"
 DEFAULT_ROOKERY_URL = "https://rookery.firstdataunion.org"
 DEFAULT_OIDC_ISSUER = "https://identity.firstdataunion.org"
 TRUSTED_ENDPOINT_DOMAIN = "firstdataunion.org"
+#: Where owners send wrong-scan reports privately, and ask for support.
+SUPPORT_EMAIL = "sentrook@firstdataunion.org"
+#: The public issue form for a wrong scan (`.github/ISSUE_TEMPLATE/wrong_scan.yml`).
+WRONG_SCAN_ISSUE_URL = (
+    "https://github.com/FirstDataUnion/Sentrook/issues/new?template=wrong_scan.yml"
+)
 
 DEFAULT_REVIEW_AT = 45.0
 DEFAULT_BLOCK_AT = 80.0

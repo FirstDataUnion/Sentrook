@@ -1,0 +1,21 @@
+----- BEGIN SENTROOK REPORT v1 -----
+scan: aaaa1b2c-0000-4000-8000-00000000000a
+time: 2026-11-20 10:00:00 UTC
+tool: terminal, step 3
+risk: 58
+action: review
+review: denied
+scores: suspicion 50, consequence 62, confidence 80
+reasons: egress.new_host, secret.read
+entities:
+  E1 host: paste.example.net
+  E2 file: ~/notes/q3-plan.md
+  E10 host: café.example
+host: hermes 0.23.1, plugin 2.0.0-beta.16, linux
+mode: enforce
+scanner: 2.0.0+abc1234
+scan versions: convergence conv-v7, lists 3, probes_enabled true
+probe call: prompt p3, view call-v8
+expected: (allow, review or block)
+what you were doing: (in your own words)
+----- END SENTROOK REPORT v1 -----

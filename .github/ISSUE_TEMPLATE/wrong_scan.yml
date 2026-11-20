@@ -1,0 +1,62 @@
+name: Wrong scan
+description: Sentrook stopped something it should have allowed, or let through something it should have stopped
+title: "Wrong scan: "
+labels: ["wrong-scan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for telling us. The plugin's report button (or `report <id> --github`) fills in the summary below.
+
+        **This issue is public.** The summary holds the scan's tool, scores, reason codes and the hosts, files and
+        recipients Sentrook found. Read it and remove anything private before you submit.
+
+        The full record (the exact request Sentrook saw) is **not** in this issue, and never paste it here: it can
+        hold conversation text, paths and addresses. To help us replay the scan, email it privately to
+        sentrook@firstdataunion.org with the scan id in the subject (in the dashboard: "Send full details privately";
+        or run `report <id> --save` and attach the file). Email is not end-to-end encrypted; we keep emailed records
+        for up to 30 days, then delete them.
+  - type: textarea
+    id: report
+    attributes:
+      label: Sentrook report
+      description: The summary from the plugin, from `----- BEGIN SENTROOK REPORT v1 -----` to the END line.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: expected
+    attributes:
+      label: What should Sentrook have done?
+      options:
+        - Allow it
+        - Ask for review
+        - Block it
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: doing
+    attributes:
+      label: What were you or the agent doing?
+      description: In your own words. Leave out anything private.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: The agent host and its version.
+      placeholder: "hermes 0.23.1 / openclaw 2026.11.3"
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      placeholder: "2.0.0-beta.16"
+  - type: checkboxes
+    id: private
+    attributes:
+      label: Privacy
+      options:
+        - label: I have read the report and removed anything private. I understand this issue is public.
+          required: true

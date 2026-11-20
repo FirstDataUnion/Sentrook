@@ -25,6 +25,7 @@ import {
   viewScript,
 } from "./dashboard.ts";
 import plugin from "./index.ts";
+import * as report from "./report.ts";
 
 /** Shared with the Hermes plugin's tests: both plugins build the same model for the same log. */
 const FIXTURES = fileURLToPath(new URL("../../fixtures/traffic-log/", import.meta.url));
@@ -654,4 +655,78 @@ test("the view never writes markup: no innerHTML, outerHTML, insertAdjacentHTML 
 
 test("the view copes with a model missing its lines, totals and state", () => {
   assert.doesNotThrow(() => drawView({ log: "on", limit: 10, scans: [] }));
+});
+
+const REPORT_FIXTURES = path.join(FIXTURES, "report");
+
+test("report: buildModel adds the asked-for scan's report panel only when asked, and says when it is gone", async () => {
+  copyFileSync(path.join(REPORT_FIXTURES, "traffic.jsonl"), logFile);
+  const plain = await buildModel(cfg(), queryOf(new URLSearchParams("n=10")));
+  assert.equal("report" in plain, false);
+  const m = await buildModel(cfg(), queryOf(new URLSearchParams("n=10")), new Date(), "aaaa1b2c");
+  const found = report.find(logFile, (id) => id.startsWith("aaaa1b2c"))!;
+  assert.deepStrictEqual(m.report, report.model(found, (v) => `/sentrook-${v}`));
+  assert.deepStrictEqual(m.report.full_commands, ["/sentrook-report aaaa1b2c --save", "/sentrook-report aaaa1b2c --full"]);
+  assert.ok(!/PLANIR-BODY-MARKER|PRIVATE-PATH-MARKER/.test(JSON.stringify(m)));
+  assert.equal(m.report.summary, readFileSync(path.join(REPORT_FIXTURES, "summary-aaaa1b2c.txt"), "utf8").trimEnd());
+  for (const ref of ["abcdef12", "last", "../etc"]) {
+    assert.deepStrictEqual((await buildModel(cfg(), queryOf(new URLSearchParams("")), new Date(), ref)).report, { id: ref, missing: true }, ref);
+  }
+});
+
+test("report: GET with report= embeds the panel, never the full record", async () => {
+  copyFileSync(path.join(REPORT_FIXTURES, "traffic.jsonl"), logFile);
+  const body = (await call("GET", `${ROUTE}?n=10&report=aaaa1b2c`)).body!;
+  const model = embeddedModel(body);
+  assert.equal(model.report.id, "aaaa1b2c-0000-4000-8000-00000000000a");
+  assert.ok(!body.includes("PLANIR-BODY-MARKER") && !body.includes("PRIVATE-PATH-MARKER"));
+  assert.equal("report" in embeddedModel((await call("GET", `${ROUTE}?n=10`)).body!), false);
+});
+
+test("report: every scan offers a report button that keeps the search and adds the scan id", () => {
+  const model: any = { ...viewModel(), query: { limit: 10, tool: "web", min_risk: 40 } };
+  const { root, window } = drawViewWith(model);
+  const buttons = root.all().filter((n) => n.tag === "button" && n.textContent === "Report this scan…");
+  assert.ok(buttons.length >= 1);
+  buttons[0]!.click();
+  const qs = new URLSearchParams(window.location.search.slice(1));
+  assert.equal(qs.get("report"), model.scans[0].id);
+  assert.equal(qs.get("tool"), "web");
+  assert.equal(qs.get("risk"), "40");
+});
+
+test("report: the panel shows the summary, the GitHub and email links, the full record behind a warning, and Close", () => {
+  copyFileSync(path.join(REPORT_FIXTURES, "traffic.jsonl"), logFile);
+  const found = report.find(logFile, (id) => id.startsWith("aaaa1b2c"))!;
+  const panel = report.model(found, (v) => `/sentrook-${v}`);
+  const { root, window } = drawViewWith({ ...viewModel(), query: { limit: 10, tool: "web" }, report: panel });
+  const box = root.byClass("srk-report")[0]!;
+  assert.equal(root.children.indexOf(box), 1); // right under the header
+  const areas = box.all().filter((n) => n.tag === "textarea");
+  assert.deepStrictEqual(areas.map((a) => a.textContent), [panel.summary]);
+  assert.equal(areas[0]!.attrs.readonly, "readonly");
+  const links = box.all().filter((n) => n.tag === "a");
+  assert.deepStrictEqual(links.map((a) => a.attrs.href), [panel.github, panel.mailto]);
+  assert.equal(links[0]!.attrs.target, "_blank");
+  assert.match(links[0]!.attrs.rel!, /noopener/);
+  // The full record sits in a collapsed section after the warning.
+  const details = box.all().find((n) => n.tag === "details")!;
+  assert.equal(details.attrs.open, undefined);
+  assert.ok(details.textContent.includes(panel.full_warning));
+  const codes = details.all().filter((n) => n.tag === "code").map((n) => n.textContent);
+  assert.deepStrictEqual(codes, ["/sentrook-report aaaa1b2c --save", "/sentrook-report aaaa1b2c --full"]);
+  assert.equal(root.all().filter((n) => n.tag === "form").length, 0);
+  // Copy falls back without a clipboard (the test window has none), and Close keeps the search.
+  box.all().find((n) => n.tag === "button" && n.textContent === "Copy report")!.click();
+  box.all().find((n) => n.tag === "button" && n.textContent === "Close")!.click();
+  const qs = new URLSearchParams(window.location.search.slice(1));
+  assert.equal(qs.get("report"), null);
+  assert.equal(qs.get("tool"), "web");
+});
+
+test("report: a scan no longer in the log says so", () => {
+  const root = drawView({ ...viewModel(), report: { id: "abcdef12", missing: true } });
+  const box = root.byClass("srk-report")[0]!;
+  assert.match(box.textContent, /not in the recent traffic log/);
+  assert.equal(box.all().filter((n) => n.tag === "textarea").length, 0);
 });

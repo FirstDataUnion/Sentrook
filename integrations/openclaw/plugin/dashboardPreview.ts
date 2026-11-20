@@ -7,6 +7,7 @@
  *   /        the page as the OpenClaw Control UI tab shows it (follows the system light or dark setting)
  *   /hermes  the view on Hermes's default dark theme (Hermes Teal), with the theme's colour variables
  * Example pending items (an open review, a held call) are added; PREVIEW_PENDING=0 leaves them out.
+ * `?report=<id>` adds that scan's report panel, as the plugins do.
  * Binds 127.0.0.1 only; PORT overrides the port.
  */
 
@@ -15,6 +16,8 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 
 import { COMMANDS, queryOf, queryScans, renderPage } from "./dashboard.ts";
+import { parseRef } from "./history.ts";
+import * as report from "./report.ts";
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 const LOG = process.env.SENTROOK_PREVIEW_LOG || here("../../fixtures/traffic-log/dashboard/traffic.jsonl");
@@ -62,9 +65,18 @@ async function pending(): Promise<unknown> {
   };
 }
 
+function reportPanel(ref: string | null, hermes: boolean): unknown {
+  if (!ref) return undefined;
+  const match = parseRef(ref);
+  const found = match && ref.toLowerCase() !== "last" ? report.find(LOG, match) : null;
+  const cmd = (verb: string) => (hermes ? HERMES_COMMANDS.prefix : COMMANDS.prefix) + verb;
+  return found ? report.model(found, cmd) : { id: ref, missing: true };
+}
+
 async function model(params: URLSearchParams, hermes: boolean): Promise<unknown> {
   const q = queryOf(params);
   return {
+    report: reportPanel(params.get("report"), hermes),
     version: 1,
     log: "on",
     limit: q.limit,
