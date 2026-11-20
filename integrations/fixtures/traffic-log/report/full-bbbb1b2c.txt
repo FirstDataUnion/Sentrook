@@ -1,0 +1,3 @@
+----- BEGIN SENTROOK FULL RECORD v1 -----
+{"ts": "2026-11-20T10:05:00.000Z", "kind": "scan", "request_id": "bbbb1b2c-0000-4000-8000-00000000000b", "session_ref": "s_1", "step": 4, "tool": "web_fetch", "mode": "observe", "verdict": null, "decision": "allowed_on_error", "latency_ms": 40, "planir": {"request_id": "bbbb1b2c-0000-4000-8000-00000000000b", "host": {"platform": "openclaw", "platform_version": "2026.11.3", "plugin_version": "2.0.0-beta.13", "os": "macos"}, "pending_call": {"tool": "web_fetch", "arguments": {"url": "https://docs.example.org/PLANIR-BODY-MARKER"}}}, "response": null, "failure": {"kind": "http", "status": 503, "detail": "PLANIR-BODY-MARKER-failure"}}
+----- END SENTROOK FULL RECORD v1 -----

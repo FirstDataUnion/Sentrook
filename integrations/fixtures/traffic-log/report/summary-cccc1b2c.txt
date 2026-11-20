@@ -1,0 +1,15 @@
+----- BEGIN SENTROOK REPORT v1 -----
+scan: cccc1b2c-0000-4000-8000-00000000000c
+time: 2026-11-20 10:06:00 UTC
+tool: write_file
+risk: 3
+action: allowed
+review: -
+reasons: none
+entities: none
+host: ? ?, plugin ?, ?
+mode: enforce
+scanner: ?
+expected: (allow, review or block)
+what you were doing: (in your own words)
+----- END SENTROOK REPORT v1 -----

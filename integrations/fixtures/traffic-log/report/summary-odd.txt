@@ -1,0 +1,16 @@
+----- BEGIN SENTROOK REPORT v1 -----
+scan: /../../x9-0000
+time: 2026-11-20 12:00:00 UTC
+tool: write�file
+risk: 61
+action: review
+review: no answer
+reasons: egress.new_host
+entities:
+  E1 host: �evil.example
+host: hermes 0.23.1, plugin 2.0.0-beta.17, linux
+mode: ?
+scanner: ?
+expected: (allow, review or block)
+what you were doing: (in your own words)
+----- END SENTROOK REPORT v1 -----

@@ -192,7 +192,7 @@ test("a missing or disabled log", async () => {
   );
 });
 
-test("history and why are owner commands that require the admin scope", async () => {
+test("history, why and report are owner commands that require the admin scope", async () => {
   const { commands } = await registered();
   assert.deepEqual(Object.keys(commands).sort(), [
     "sentrook",
@@ -202,11 +202,12 @@ test("history and why are owner commands that require the admin scope", async ()
     "sentrook-grants",
     "sentrook-history",
     "sentrook-notify",
+    "sentrook-report",
     "sentrook-revoke",
     "sentrook-snooze",
     "sentrook-why",
   ]);
-  for (const name of ["sentrook-history", "sentrook-why"]) {
+  for (const name of ["sentrook-history", "sentrook-why", "sentrook-report"]) {
     assert.deepEqual(commands[name].requiredScopes, ["operator.admin"]);
     assert.equal(commands[name].acceptsArgs, true);
     assert.equal(commands[name].agentPromptGuidance, undefined);

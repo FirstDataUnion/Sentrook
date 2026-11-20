@@ -4,7 +4,7 @@ Hermes runs plugin slash commands on gateway chats and in interactive `hermes ch
 request. Over the API server and `hermes chat --oneshot` the text goes to the model instead, so the
 CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are built from it.
 
-`history` and `why` show past traffic, `grants`, `grant`, `revoke` and `bind` list and change the
+`history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
 grants and channel bindings set by command, `snooze` relaxes review prompts, and `approve` answers a
 call held on an unattended run (see `hold`), so only the owner may run them: both forms go through the owner check (`owner_command`), which audits every attempt.
 `status` and `help` stay open.
@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, hold, skill_review, snooze
+from . import grants, history, hold, report, skill_review, snooze
 from .auth import missing_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
@@ -121,6 +121,30 @@ def run_why(
     if rest.lower() in ("", "last"):
         return history.NO_SCANS
     return f"No scan {rest} in the recent traffic log."
+
+
+REPORT_USAGE = (
+    "usage: /sentrook report [request_id|last] [--full|--github|--save], with an id (or its start) "
+    "from /sentrook history"
+)
+
+
+def run_report(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env)
+    if not cfg.traffic_log_enabled:
+        return history.LOG_OFF
+    args = report.parse_args(rest)
+    match = history.parse_ref(args[0]) if args is not None else None
+    if args is None or match is None:
+        return REPORT_USAGE
+    found = report.find(cfg.traffic_log_path, match)
+    if found is None:
+        if args[0].lower() in ("", "last"):
+            return history.NO_SCANS
+        return f"No scan {args[0]} in the recent traffic log."
+    return report.reply(found, args[1], CMD, cfg.state_dir)
 
 
 def _changed(
@@ -245,6 +269,15 @@ COMMANDS: dict[str, Subcommand] = {
         run_why,
         args="[request_id|last]",
         owner_only=True,
+    ),
+    "report": Subcommand(
+        "a report of a scan that looks wrong, to send to Sentrook: --full adds the exact request (send "
+        "it privately), --github links a public issue with the summary filled in, --save writes "
+        "the report and full record to a file to email",
+        run_report,
+        args="[request_id|last] [--full|--github|--save]",
+        owner_only=True,
+        cli_rest=True,
     ),
     "grants": Subcommand(
         "grants in force: from config (read-only) and set by command",

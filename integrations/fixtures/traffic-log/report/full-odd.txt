@@ -1,0 +1,3 @@
+----- BEGIN SENTROOK FULL RECORD v1 -----
+{"ts": "2026-11-20T12:00:00.000Z", "kind": "scan", "request_id": "/../../x9-0000", "tool": "write\ud800file", "mode": true, "verdict": "review", "decision": "review", "planir": {"host": {"platform": "hermes", "platform_version": "0.23.1", "plugin_version": "2.0.0-beta.17", "os": "linux"}}, "response": {"risk": 61, "reasons": [{"code": "egress.new_host"}], "entities": {"E1": {"kind": "host", "display": "\udc00evil.example"}}}}
+----- END SENTROOK FULL RECORD v1 -----

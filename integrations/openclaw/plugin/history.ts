@@ -41,7 +41,7 @@ const REVIEW: Record<string, string> = {
 const REVIEW_LOOP = "review_loop";
 const ID = /^[0-9a-fA-F-]{4,36}$/;
 
-function* linesBackward(file: string, budget: { left: number }): Generator<Buffer> {
+export function* linesBackward(file: string, budget: { left: number }): Generator<Buffer> {
   let fd: number;
   try {
     fd = openSync(file, "r");

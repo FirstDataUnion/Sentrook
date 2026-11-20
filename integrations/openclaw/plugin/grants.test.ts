@@ -487,6 +487,7 @@ test("the CLI forms match the chat forms and are audited as the local terminal",
     "sentrook bind [args...]",
     "sentrook grant [args...]",
     "sentrook notify [args...]",
+    "sentrook report [args...]",
     "sentrook revoke [args...]",
     "sentrook snooze [args...]",
   ]);
