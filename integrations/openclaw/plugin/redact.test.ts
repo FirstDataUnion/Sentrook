@@ -187,6 +187,42 @@ test("a value restated in a second clause is redacted", () => {
   }
 });
 
+test("code that reads a secret is not a secret", () => {
+  // It names where the secret is kept, so a saved script is not reported as holding a secret it only loads.
+  for (const text of [
+    "access_token = token_data['access_token']",
+    'api_key = os.environ["OPENAI_API_KEY"]',
+    "token = creds.get('token')",
+    'password = getpass("Password: ")',
+    "access_token = resp.json()['access_token']",
+    "refresh_token = json.load(f)['refresh_token']",
+    "secret_key = settings.SECRETS[0]['key']",
+    'const apiKey = process.env["API_KEY"];',
+    "accessToken = getSecretValue('prod/db')",
+    "token: token_data['access_token']",
+    "the token: token_data['access_token']",
+  ]) {
+    assert.equal(r.string(text), text);
+    assert.equal(r.string(asResult(text)), asResult(text));
+  }
+  // A value written under the same keys is still replaced, however the line goes on.
+  for (const [text, value] of [
+    [`access_token = ${pw}  # from the console`, pw],
+    [`access_token = '${pw}'['x']`, pw],
+    [`token = ${pw}[`, pw],
+    [`token = ${pw}('x')`, pw],
+    [`token = ${pw.toLowerCase()}('x')`, pw.toLowerCase()],
+    // A quoted value is whole, so a code-shaped one is still a value.
+    ['DB_PASSWORD="Summer2024["', "Summer2024"],
+    ['"password": "Summer2024("', "Summer2024"],
+  ]) {
+    for (const out of [r.string(text), r.string(asResult(text))]) {
+      assert.ok(!out.includes(value) && tags(out).length === 1, out);
+    }
+  }
+  assert.ok(!JSON.stringify(r.value({ password: "Summer2024(" })).includes("Summer2024"));
+});
+
 test("trailing punctuation is not part of a value", () => {
   const tag = r.string(`password: ${pw} (give it`).slice("password: ".length).split(" ")[0];
   assert.match(tag, /^⟦secret:credential:[0-9a-f]{4}⟧$/);
@@ -337,6 +373,10 @@ test("long inputs stay fast", () => {
     `SECRET_X=${"a".repeat(12)}${")".repeat(1_000_000)}`,
     "the password changed, it's now ".repeat(30_000),
     "the token was rotated and".repeat(40_000),
+    "token = " + "get.".repeat(250_000),
+    "token = " + "getSecret".repeat(100_000) + "x",
+    "token = " + "a_".repeat(400_000) + ".",
+    "token: " + "x()".repeat(300_000),
   ]) {
     const t0 = performance.now();
     r.string(long);

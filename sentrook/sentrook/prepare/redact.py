@@ -1,4 +1,5 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v6`; `redact-v5` kept a key's trailing
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v7`; `redact-v6` replaced code that reads a
+secret under a credential key, `access_token = token_data['access_token']`, as if it were one, `redact-v5` kept a key's trailing
 punctuation in its value and missed a value restated in a second clause, `redact-v4` took the plugins'
 command-line flag rule but not their object-key rule, `redact-v3` took the plugins' text rules but their
 command-line flag rule, `redact-v2` moved the vendor shapes to data,
@@ -29,7 +30,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v6"
+REDACTION_VERSION = "redact-v7"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -88,6 +89,18 @@ _NAMED_THING = re.compile(
     r"|^(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$"
 )
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
+#: Code that reads a secret from where it is kept, cut where its quoted argument starts: `token_data[` in
+#: `access_token = token_data['access_token']`, `os.environ[`, `creds.get(`, `getpass(`, `resp.json()[`. A
+#: name, maybe dotted, called or subscripted, that ends in an open bracket or parenthesis. Each part of the
+#: name reads as a word (`token_data`, `getSecret`, `JSON`, `oauth2`): a random value that happens to end
+#: in a bracket is still a value.
+_CODE_READ = re.compile(
+    r"(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
+    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))"
+    r"(?:\.(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
+    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))"
+    r"|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*[\[(]"
+)
 
 #: Object keys whose whole value is a credential: any key that ends in a credential word (`password`,
 #: `secretAccessKey`, `logintoken`). `pass`, `tok` and `credentials` count only as a whole word, so
@@ -110,18 +123,32 @@ def _key_value(v: str) -> bool:
     return "://" not in v and not _ENV_NAME.fullmatch(v)
 
 
+def is_code_read(v: str) -> bool:
+    """Whether `v` is code that reads a secret from somewhere, cut where its quoted argument starts (`_CODE_READ`)."""
+    return _CODE_READ.fullmatch(v) is not None
+
+
+def _unquoted_key_value(v: str) -> bool:
+    """An unquoted value after a key: also not code that reads the secret from somewhere
+    (`token = creds.get('token')`, cut where its quoted argument starts). A quoted value or one under an
+    object key is whole, so it is never code cut short."""
+    return _key_value(v) and not _CODE_READ.fullmatch(v)
+
+
 def _inner_key_value(v: str) -> bool:
     """An upper-case name with a credential word inside it names many things; only a long value counts."""
     return len(v) >= 12 and _key_value(v)
 
 
 def _stated_value(v: str) -> bool:
-    """After "password is" or "token:": six or more characters that are not words or a number."""
+    """After "password is" or "token:": six or more characters that are not words, a number or code
+    that reads the secret from somewhere."""
     return (
         len(v) >= 6
         and not _is_ordinary(v)
         and not re.fullmatch(r"[0-9]+", v)
         and not _NAMED_THING.search(v)
+        and not _CODE_READ.fullmatch(v)
     )
 
 
@@ -242,7 +269,7 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
             + _VALUE_END
             + r"(?=[.:!?)\]])))"
         ),
-        _key_value,
+        _unquoted_key_value,
     ),
     # `PASSWORD="x!"`: a quoted value is all of it up to its closing quote, trailing punctuation included.
     (

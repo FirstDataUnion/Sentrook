@@ -311,6 +311,41 @@ def test_a_value_restated_in_a_second_clause_is_redacted():
         assert r.string(_as_result(text)) == _as_result(text)
 
 
+def test_code_that_reads_a_secret_is_not_a_secret():
+    """Code that reads a secret from where it is kept names the place, not the secret: it stays, so a saved
+    script is not reported as holding a secret it only loads. A value written under the same keys is still
+    replaced, however the line goes on."""
+    r = Redactor("standard", "test-salt")
+    for text in (
+        "access_token = token_data['access_token']",
+        'api_key = os.environ["OPENAI_API_KEY"]',
+        "token = creds.get('token')",
+        'password = getpass("Password: ")',
+        "access_token = resp.json()['access_token']",
+        "refresh_token = json.load(f)['refresh_token']",
+        "secret_key = settings.SECRETS[0]['key']",
+        'const apiKey = process.env["API_KEY"];',
+        "accessToken = getSecretValue('prod/db')",
+        "token: token_data['access_token']",
+        "the token: token_data['access_token']",
+    ):
+        assert r.string(text) == text
+        assert r.string(_as_result(text)) == _as_result(text)
+    for text, value in (
+        (f"access_token = {PW}  # from the console", PW),
+        (f"access_token = '{PW}'['x']", PW),
+        (f"token = {PW}[", PW),
+        (f"token = {PW}('x')", PW),
+        (f"token = {PW.lower()}('x')", PW.lower()),
+        # A quoted value is whole, so a code-shaped one is still a value.
+        ('DB_PASSWORD="Summer2024["', "Summer2024"),
+        ('"password": "Summer2024("', "Summer2024"),
+    ):
+        for out in (r.string(text), r.string(_as_result(text))):
+            assert value not in out and len(_tags(out)) == 1, out
+    assert "Summer2024" not in json.dumps(r.value({"password": "Summer2024("}))
+
+
 def test_trailing_punctuation_is_not_part_of_a_value():
     r = Redactor("standard", "test-salt")
     tag = r.string(f"password: {PW} (give it")[len("password: ") :].split(" ")[0]
@@ -489,6 +524,10 @@ def test_camel_case_credential_keys_in_objects_are_replaced_whole():
         "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
         "the password changed, it's now " * 30_000,
         "the token was rotated and" * 40_000,
+        "token = " + "get." * 250_000,
+        "token = " + "getSecret" * 100_000 + "x",
+        "token = " + "a_" * 400_000 + ".",
+        "token: " + "x()" * 300_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
