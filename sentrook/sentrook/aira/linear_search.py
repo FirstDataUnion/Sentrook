@@ -193,6 +193,45 @@ class RemoteCopyTail:
         return self.URL.match(text, p) is not None
 
 
+class SudoTail:
+    """A fetch-to-program tail `\\|\\s*(?:sudo\\s+(?:-\\S+\\s+)*)?<program>\\b` tried at ascending
+    positions. After `sudo`, the option words (`-\\S+\\s+`, each a whole word and the whitespace after
+    it) lead from one to the next: the program is looked for along that chain once per position, the
+    answer kept for every position on it. Tried as a regex, each `|` in a long word of options
+    (`-curl|sudo -curl|sudo …`) re-read the options to the end of the text."""
+
+    PIPE = re.compile(r"\|\s*")
+    SUDO = re.compile(r"sudo\s+", re.IGNORECASE)
+    OPTION = re.compile(r"-\S+\s+", re.IGNORECASE)
+
+    def __init__(self, program: str) -> None:
+        self.program = _rx(program)
+        self.memo: dict[int, bool] = {}
+
+    def __call__(self, text: str, p: int) -> bool:
+        m = self.PIPE.match(text, p)
+        if m is None:
+            return False
+        q = m.end()
+        if self.program.match(text, q):
+            return True
+        sudo = self.SUDO.match(text, q)
+        return sudo is not None and self._chain(text, sudo.end())
+
+    def _chain(self, text: str, c: int) -> bool:
+        walked: list[int] = []
+        at: int | None = c
+        while at is not None and at not in self.memo:
+            walked.append(at)
+            o = self.OPTION.match(text, at)
+            at = o.end() if o is not None else None
+        found = self.memo[at] if at is not None else False
+        for q in reversed(walked):
+            found = found or self.program.match(text, q) is not None
+            self.memo[q] = found
+        return self.memo[c]
+
+
 _RX: dict[str, re.Pattern[str]] = {}
 
 
@@ -216,11 +255,13 @@ def _command(
     lead: str = "",
     gap: str = r"[^;&|\n]*",
     prefix: tuple[str, str, Callable[[str, re.Match[str], int], int]] | None = None,
+    tail_at: Callable[[], Callable[[str, int], bool]] | None = None,
 ) -> tuple[str, Search]:
     """`<head><lead><gap><tail>`: the pattern's text and its linear search. `lead` (`\\s+`, `\\S+`) is a
     run the head ends with; `gap` a class run, `*` (or `+`, needing one character). `prefix`: the
     pattern's text before the head (an optional part, and the head's own start), and where a match
-    whose head is found starts."""
+    whose head is found starts. `tail_at`: a new test of the tail per search, for a tail the regex
+    cannot try in constant time."""
     least = 1 if gap.endswith("+") else 0
     gap_rx = _rx(gap[:-1].rstrip("*+?") + "*" if gap.endswith(("+", "?")) else gap)
     lead_rx = _rx(lead) if lead else None
@@ -228,13 +269,55 @@ def _command(
     return before + head + lead + gap + tail, lambda text, pos: gap_tail_first(
         text,
         _rx(head_start + head),
-        regex_tail(tail),
+        tail_at() if tail_at is not None else regex_tail(tail),
         gap=gap_rx,
         least=least,
         lead=lead_rx,
         pos=pos,
         start_of=start_of,
     )
+
+
+class _GapTails:
+    """For one text and tail: from each position, the last place in the gap (`[^;&|\\n]*`) read from
+    there where the tail matches (-1 for none). Kept for the last text read, so the matches of one
+    text are built from one pass."""
+
+    def __init__(self) -> None:
+        self.key: tuple[str, str] | None = None
+        self.last: list[int] = []
+
+    def __call__(self, text: str, tail: re.Pattern[str]) -> list[int]:
+        if self.key is None or self.key[1] != tail.pattern or self.key[0] is not text:
+            n = len(text)
+            last = [-1] * (n + 2)
+            for q in range(n, -1, -1):
+                later = last[q + 1] if q < n and text[q] not in ";&|\n" else -1
+                last[q] = later if later >= 0 else (q if tail.match(text, q) else -1)
+            self.key, self.last = (text, tail.pattern), last
+        return self.last
+
+
+_GAP_TAILS = _GapTails()
+
+
+def _lead_gap_tail_end(text: str, start: int, head: re.Pattern[str], tail: re.Pattern[str]) -> int:
+    """Where the match of `<head>\\S+[^;&|\\n]*<tail>` that starts at `start` ends (-1 for none), as
+    the regex makes it: the word (`\\S+`) as long as a tail can follow it in the gap, then the gap as
+    long as it can be. Asked of the regex, a long word whose tail is only found inside it (`-H
+    x.rm.aaaa… b b …`) re-read the gap after each shorter word."""
+    h = head.match(text, start)
+    if h is None:
+        return -1
+    lead = h.end()
+    word = lead
+    while word < len(text) and not text[word].isspace():
+        word += 1
+    last = _GAP_TAILS(text, tail)
+    for e in range(word, lead, -1):
+        if last[e] >= 0:
+            return tail.match(text, last[e]).end()  # type: ignore[union-attr]
+    return -1
 
 
 _HOST_PREFIX = re.compile(r"\bDOCKER_HOST=\S", re.IGNORECASE)
@@ -268,6 +351,13 @@ def _chain(*pieces: str | tuple[str, int]) -> tuple[str, Search]:
     return text, lambda t, pos: chain_first(t, [(_rx(p), k) for p, k in parts], pos)
 
 
+_DOCKER_REMOVE = r"\b(?:rm|rmi|system\s+prune|volume\s+rm)\b"
+_DOCKER_REMOTE, _DOCKER_REMOTE_SEARCH = _command(
+    r"docker\s+(?:-H|--host)[\s=]",
+    _DOCKER_REMOVE,
+    lead=r"\S+",
+    prefix=(r"\b(?:DOCKER_HOST=\S+\s+)?", r"\b", _docker_host_start),
+)
 _REMOTE_COPY = (
     r"\b(?:scp|rsync|sftp)\b[^;&|\n]*(?:\S+@\S+:|\b[\w.-]+\.[a-z]{2,}:|\brsync://|\bsftp://)"
 )
@@ -300,16 +390,23 @@ LINEAR: dict[str, Search] = dict(
         _chain(r"\bsystemctl\b", r"\b(?:stop|disable|mask|kill)\b", _GATEWAY),
         _chain(r"\blaunchctl\b", r"\b(?:unload|bootout|stop|kill|disable)\b", _GATEWAY),
         _command(r"\bdocker\s+(?:stop|kill|rm)\b", _GATEWAY),
+        # guardrail.yaml content_write_marker_patterns: a file opened for writing in inline code
+        _command(r"open\s*\(", r"""["'][wax]\+?["']""", gap=r"[^)]*"),
         # privilege.yaml setuid_patterns
         _command(r"\bchmod\b", r"\s(?:[ugoa]*\+[rwxX]*s[rwxX]*|[2467][0-7]{3})\b"),
         _chain(r"\bchown\b", r"\broot\b", r"\bchmod\b", r"\+s"),
         # installers.yaml
         _command(r"base64\s+(?:-d|--decode|-D)\b", _TO_SHELL),
         _command(r"\bxxd\s+-r\b", _TO_SHELL),
-        _command(r"\b(?:curl|wget)\b", r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|z|da|k|a|fi)?sh\b"),
+        _command(
+            r"\b(?:curl|wget)\b",
+            r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:ba|z|da|k|a|fi)?sh\b",
+            tail_at=lambda: SudoTail(r"(?:ba|z|da|k|a|fi)?sh\b"),
+        ),
         _command(
             r"\b(?:curl|wget)\b",
             r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:python[23]?|node|perl|ruby|deno|bun)\b",
+            tail_at=lambda: SudoTail(r"(?:python[23]?|node|perl|ruby|deno|bun)\b"),
         ),
         _command(r"\bpip3?\s+install\b", _FROM_URL),
         _command(
@@ -350,12 +447,7 @@ LINEAR: dict[str, Search] = dict(
             r"(?:\s--force\b|\s-f\b|\s--force-with-lease\b|\s--delete\b|\s-d\b|\s:[^\s:]+)",
         ),
         _command(r"\bgit\s+push\b", r"\s--mirror\b"),
-        _command(
-            r"docker\s+(?:-H|--host)[\s=]",
-            r"\b(?:rm|rmi|system\s+prune|volume\s+rm)\b",
-            lead=r"\S+",
-            prefix=(r"\b(?:DOCKER_HOST=\S+\s+)?", r"\b", _docker_host_start),
-        ),
+        (_DOCKER_REMOTE, _DOCKER_REMOTE_SEARCH),
         _command(
             r"\bDOCKER_HOST=",
             r"\s+docker\s+(?:rm|rmi|system\s+prune|volume\s+rm)\b",
@@ -367,6 +459,17 @@ LINEAR: dict[str, Search] = dict(
         ),
     ]
 )
+
+#: Of `LINEAR`, patterns whose match is built here from the start found, as the regex builds it (they
+#: have no groups): pattern -> where the match from a start ends.
+MATCH_END: dict[str, Callable[[str, int], int]] = {
+    _DOCKER_REMOTE: lambda text, start: _lead_gap_tail_end(
+        text,
+        start,
+        _rx(r"\b(?:DOCKER_HOST=\S+\s+)?docker\s+(?:-H|--host)[\s=]"),
+        _rx(_DOCKER_REMOVE),
+    )
+}
 
 #: Of `LINEAR`, the patterns whose match is not built from the start found (`search` asks the regex):
 #: the remote-copy marker, whose callers only ask whether it is there.
@@ -405,6 +508,10 @@ def search(rx: re.Pattern[str], text: str, pos: int = 0) -> re.Match[str] | None
     start = linear(text, pos)
     if start < 0:
         return None
+    if rx.pattern in MATCH_END:
+        end = MATCH_END[rx.pattern](text, start)
+        if end >= 0:
+            return _SPAN.match(text, start, end)
     return rx.match(text, start) or rx.search(text, pos)
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 
 import pytest
 from test_aira_detectors import ex, planir
@@ -76,6 +77,15 @@ SHAPES = {
     "an echo of much text into the file": lambda size: ex(
         _repeat("echo ", "a ", " >> ~/.bashrc", size)
     ),
+    # a docker remote removal whose only removal word is inside the host word
+    "docker -H with the removal inside a long host word": lambda size: ex(
+        "docker -H x.rm." + "a" * (size // 2) + " " + "b " * (size // 4 - 10)
+    ),
+    # a fetch piped to sudo with a long run of option words, each holding a pipe
+    "a fetch piped to sudo with many options": lambda size: ex(
+        _repeat("curl |sudo ", "-curl|sudo ", "", size)
+    ),
+    "execute_code with many opens": lambda size: _code(_repeat("", "open(", "", size)),
     "mail to many addresses": lambda size: _write(
         AGENTS, "".join(f"send to u{i}@a.io " for i in range(size // 19))
     ),
@@ -270,3 +280,24 @@ def test_unquoted_echoes_agree_with_the_regex():
         assert written_selfmod._unquoted_echoes(text) == want, text
         matched += bool(want)
     assert matched > 300
+
+
+# --------------------------------------------------------------------------- context probe
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_a_long_kubectl_run_is_read_fast_for_unnamed_roles(attack_case, size):
+    """The arm that looks for a privileged role the owner did not name, switched on, reads the grant
+    patterns over a long run of `kubectl apply` in linear time."""
+    from test_context_oracle_probes import _lineage_run
+
+    command = _repeat("", "kubectl apply ", "", size)
+    start = time.perf_counter()
+    _lineage_run(
+        attack_case,
+        [],
+        {"command": command},
+        "Apply the manifests.",
+        params={"lineage_unnamed_role_overreach": 0.6},
+    )
+    assert time.perf_counter() - start < FAST

@@ -452,6 +452,8 @@ _PHRASES = [
     *"-fdx -f dd of=/dev/sda of=~/x gcloud delete az push --force --mirror :branch -H --host=".split(),
     *"DOCKER_HOST=tcp://h system prune volume kubectl create apply clusterrolebinding rbac".split(),
     *"x a.b @ : = ( ) ' / . - -x".split(),
+    *"|sudo -u -curl|sudo |sudo\t-E -sh |sh SUDO python3 node| -|bash -a\nb".split(),
+    *"open( open\n( OPEN( ) 'w' \"a+\" 'x' 'r' 'w+\" \"wb\" f,".split(),
 ]
 _NOISE = [" ", " ", "  ", "\t", "\n", ";", "&", "|", " | ", " > ", "-x "]
 
@@ -527,7 +529,7 @@ _CHAINS = {
         ["", "DOCKER_HOST=a ", "DOCKER_HOST=DOCKER_HOST=b ", "xDOCKER_HOST=c ", "DOCKER_HOST= "],
         ["docker", "Docker", "xdocker"],
         [" -H ", " --host=", " -H\n", "-H "],
-        ["tcp://h", "a;b", "a|b", ""],
+        ["tcp://h", "a;b", "a|b", "", "x.rm.a", "rm", "x.rmi;rm.", "a.system\nprune", "rm.rm"],
         [" x ", " ", ";", "\n", ""],
         ["rm", "rmi", "system prune", "volume rm", "rmx"],
     ],
@@ -580,7 +582,7 @@ _SLOW_UNITS = {
     "chown": ["chown root ", "chown.root.chmod."],
     "base64": ["base64 -d "],
     "xxd": ["xxd -r "],
-    "curl|wget": ["curl ", "curl.wget.", "wget/"],
+    "curl|wget": ["curl ", "curl.wget.", "wget/", "-curl|sudo ", "|sudo -x "],
     "pip3": ["pip3 install "],
     "npm": ["npm install "],
     "pnpm": ["bun add "],
@@ -600,6 +602,7 @@ _SLOW_UNITS = {
     "git\\s+push": ["git push "],
     "DOCKER_HOST": ["DOCKER_HOST=", "docker -H x "],
     "kubectl": ["kubectl create "],
+    "open\\s": ["open(", "open (", "open('", "open(x, 'r'"],
 }
 
 

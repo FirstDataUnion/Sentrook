@@ -953,7 +953,7 @@ class ContextProbe:
             for rule in lists.rules("remote_destructive", "cli"):
                 if rule.get("reason") != "remote.grant":
                     continue
-                for m in rule.regex.finditer(command):
+                for m in linear_search.finditer(rule.regex, command):
                     role = m.groupdict().get("role")
                     if role and not _request_names_role(words, role) and role not in unnamed:
                         unnamed.append(role)
