@@ -90,6 +90,9 @@ class Entity:
     hash: str | None = None
     #: True when the session's untrusted-entity set (from the token) already holds this entity.
     in_session_untrusted: bool = False
+    #: A host whose only untrusted origin, in this request and (through the token's skill-named set) earlier, is a
+    #: read of the agent's own installed skills. Only the credential-home check reads it.
+    skill_named: bool = False
     #: Earliest history step whose arguments mention the entity (the agent's own earlier use).
     first_history_step: int | None = None
     #: Earliest history step whose *result* (an untrusted input in this request) mentions it.
