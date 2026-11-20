@@ -56,4 +56,4 @@ For running the scan service yourself; plugin users don't need this. The scanner
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The licence does not cover the Sentrook name or logo: see [TRADEMARKS.md](TRADEMARKS.md).

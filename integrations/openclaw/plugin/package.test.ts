@@ -31,6 +31,16 @@ test("one version: package.json and the version the plugin reports", () => {
   assert.equal(PLUGIN_VERSION, pkg.version);
 });
 
+test("the ClawHub icon ships: assets/icon.png is the 512 px store PNG from brand/, within ClawHub's 512 KiB", () => {
+  assert.ok((pkg.files as string[]).includes("assets/icon.png"), "files ships assets/icon.png");
+  const icon = readFileSync(new URL("./assets/icon.png", import.meta.url));
+  assert.deepEqual([...icon.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "PNG signature");
+  assert.equal(icon.toString("latin1", 12, 16), "IHDR");
+  assert.deepEqual([icon.readUInt32BE(16), icon.readUInt32BE(20)], [512, 512], "512 x 512");
+  assert.ok(icon.length <= 512 * 1024, `at most 512 KiB (${icon.length} bytes)`);
+  assert.ok(icon.equals(readFileSync(new URL("../../../brand/sentrook-icon-512.png", import.meta.url))), "same bytes as brand/sentrook-icon-512.png");
+});
+
 test("the CHANGELOG is shipped in the package", () => {
   assert.ok((pkg.files as string[]).includes("CHANGELOG.md"), "files ships CHANGELOG.md");
 });
