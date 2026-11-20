@@ -527,6 +527,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 - the request you gave the agent in this turn (with `allowConversationAccess`), and whether it came from you, a
   scheduled job, a subagent or another sender;
 - the pending tool call, its arguments and the agent's narration before it, plus any other calls in the same batch;
+  for a Code Mode `exec` (JavaScript that runs other tools), OpenClaw's mark that it is one, so the code is not read
+  as a shell command;
 - the tool results and other new inputs since the last scan, capped at 256 KB (head and tail are kept);
 - a short history of the session's earlier calls (the last 20, arguments capped at 4 KB each);
 - host facts: platform and plugin version, operating system, home and workspace paths, and how OpenClaw is
@@ -544,9 +546,10 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   change the setting) and keeps nothing.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
-similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are
-kept, because the scanner needs them to judge where data is going. Your files, messages and tool output can still
-contain personal information, and that is sent as it is.
+similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are kept,
+because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
+kept, such as `os.environ["API_KEY"]`: it names the place, not the secret. Your files, messages and tool output can
+still contain personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with

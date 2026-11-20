@@ -226,7 +226,10 @@ def _written_paths(a: CallAnalysis, ctx: Context) -> list[tuple[PathRef, str]]:
         if p.is_destination:
             add(p, "exec_destination")
     shape = a.shape
-    if shape is None:
+    if shape is None or a.call.code_cell:
+        # A Code Mode cell is JavaScript: read as shell, an arrow function or a comparison (`f => f.name`,
+        # `n > 0`) is a "redirect" into the working directory. The cell writes through nested tool calls, which
+        # are scanned on their own; a write its command strings spell out is still a destination above.
         return out
     writing = {h.lower() for h in ctx.lists.strings("guardrail", "writing_heads")}
     destination_only = {h.lower() for h in ctx.lists.strings("guardrail", "destination_heads")}
@@ -240,10 +243,30 @@ def _written_paths(a: CallAnalysis, ctx: Context) -> list[tuple[PathRef, str]]:
         positionals = [t for t in seg.positional if t != "-"]
         if seg.head in destination_only:
             positionals = positionals[-1:]
+        if seg.head in _PRINTING_HEADS:
+            positionals = _printed_paths(positionals)
         for tok in positionals:
             add(_path_ref(a, ctx, tok), f"head:{seg.head}")
         for tok in seg.redirects:
             add(_path_ref(a, ctx, tok), "redirect")
+    return out
+
+
+#: Writing heads that print their arguments rather than write them.
+_PRINTING_HEADS = frozenset({"echo", "printf"})
+
+
+def _printed_paths(tokens: list[str]) -> list[str]:
+    """The paths among what `echo` or `printf` prints. What they print can feed a writer (`| xargs rm -rf`,
+    `$(echo ...)`, `| sh`), so a path they print counts as written, also inside a command string they print
+    (`echo 'rm -rf ~/x'`). A word with no `/` that does not start with `~` or `$` (`...`, `done`, `'%s\n'`) is
+    not a path, and once resolved against the working directory it would name a file nothing writes."""
+    out: list[str] = []
+    for tok in tokens:
+        for word in tok.split():
+            word = word.strip("'\"")
+            if "/" in word or word.startswith(("~", "$")):
+                out.append(word)
     return out
 
 
