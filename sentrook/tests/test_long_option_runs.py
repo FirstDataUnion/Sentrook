@@ -6,21 +6,28 @@ verb, because which options take a value is not known. Done naively that is cubi
 16,000 characters of `curl -H x -H x …` took about 40 s. The words that can follow are worked out once
 per command now, so the work is linear in the words, with no cap on the run.
 
-A probe that stalls anyway does not hold the response: the scan answers at the probe timeout, degraded.
+Listed patterns of the form `<command>[^;&|\n]*<…>` (and chains of them) were quadratic or cubic in a
+long simple command with many heads (`systemctl stop systemctl stop …`); they are searched in linear time
+with the same answer (`sentrook.aira.linear_search`).
+
+A probe that stalls between calls does not hold the response: the scan answers at the probe timeout,
+degraded. The timeout cannot cut one long regex search short (the search holds the interpreter until it
+returns), which is why each search has to stay linear.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import threading
 import time
 
 import pytest
-from test_aira_detectors import ex, floor_reasons, hist_step, run
+from test_aira_detectors import ex, floor_reasons, hist_step, planir, run
 from test_large_calls import FAST, scan
 
 from sentrook import scan as scan_module
-from sentrook.aira import detectors
+from sentrook.aira import detectors, linear_search
 from sentrook.aira.exec_shape import MAX_PARSE_CHARS
 from sentrook.aira.lists import load_lists
 from sentrook.enums import ProbeStatus, ProbeStep, ScanStatus
@@ -70,6 +77,30 @@ LONG = [
         lambda: ex(_repeat("openclaw approvals -x allowlist ", "-x allowlist add '*' ", "a")),
     ),
     ("npx launcher with many launchable values", lambda: ex(_repeat("npx ", "-p openclaw "))),
+    # A long dotted word before or after the verb: the approval patterns are only searched in the
+    # words after a verb, and in linear time.
+    (
+        "openclaw config, a long dotted option value before the verb",
+        lambda: ex(_repeat("openclaw config -x ", "approvals.", " set y z")),
+    ),
+    (
+        "hermes config, a long dotted option value before the verb",
+        lambda: hx(_repeat("hermes config -x ", "approval.", " set y z")),
+    ),
+    (
+        "openclaw config set of a long dotted key",
+        lambda: ex(_repeat("openclaw config set ", "approvals.", " y")),
+    ),
+    (
+        "openclaw config, many verbs then a long dotted option value",
+        lambda: ex(
+            "openclaw config "
+            + "-x set " * 3000
+            + "-x "
+            + "approvals." * ((SIZE - 21_022) // 10)
+            + " set y"
+        ),
+    ),
     # The approval-loosening routes read a parsed command, and a command is parsed up to
     # `MAX_PARSE_CHARS`: the same shapes at that length.
     *(
@@ -104,6 +135,30 @@ LONG = [
             ),
         ]
     ),
+    # Listed command patterns with many heads in one simple command, and chains of them.
+    *(
+        (f"{unit.strip()} chain", lambda unit=unit: ex(_repeat("", unit)))
+        for unit in [
+            "systemctl stop ",
+            "launchctl unload ",
+            "chown root ",
+            "chown.root.chmod.",
+            "pkill ",
+            "uvx ",
+            "az ",
+            "DOCKER_HOST=",
+            "echo registry=https://r > ",
+        ]
+    ),
+    (
+        "inline code with a long run of path characters",
+        lambda: planir(
+            "execute_code",
+            "exec",
+            {"code": "open('x', 'w')\n" + "a/" * ((SIZE - 20) // 2)},
+            platform="hermes",
+        ),
+    ),
     ("rsync chain", lambda: ex(_repeat("", "rsync "))),
     ("scp chain", lambda: ex(_repeat("", "scp a b "))),
     ("rsync chain with hosts", lambda: ex(_repeat("", "rsync a b@ "))),
@@ -115,10 +170,7 @@ LONG = [
 @pytest.mark.parametrize("name, make", LONG, ids=[n for n, _ in LONG])
 def test_a_long_option_run_or_command_chain_scans_fast(name, make):
     raw = make()
-    start = time.perf_counter()
-    run(raw)
-    spent = time.perf_counter() - start
-    assert spent < FAST, f"rule probe, {name}: {spent:.2f}s"
+    assert len(json.dumps(raw["pending_call"]["arguments"])) < MAX_CALL_CHARS
     res, spent = scan(raw)
     assert spent < FAST, f"whole scan, {name}: {spent:.2f}s"
     aira = next(e for e in res.envelopes if e.step is ProbeStep.AIRA)
@@ -298,6 +350,13 @@ _WORDS = [
     "-x=1",
     "SENTROOK",
     "Sentrook-openclaw",
+    "approvals.approvals.approvals",
+    "approval.x.y.z",
+    "approvals.",
+    "approvals.mode",
+    "always",
+    "'auto'",
+    "plugins.plugins.disabled",
 ]
 
 
@@ -379,58 +438,210 @@ def test_history_with_a_long_option_run_scans_fast():
     assert spent < FAST, f"{spent:.2f}s"
 
 
-# --------------------------------------------------------------------------- exec markers, piece for piece
+# --------------------------------------------------------------------------- list patterns, piece for piece
 
-_MARKER_PIECES = [
-    "scp",
-    "rsync",
-    "SFTP",
-    "aws",
-    "s3",
-    "cp",
-    "sync",
-    "gsutil",
-    "rclone",
-    "copy",
-    "s3://",
-    "gs://",
-    "rsync://",
-    "sftp://",
-    "remote",
-    "a",
-    "x.io",
-    "example.COM",
-    "ſt",
-    "@",
-    ":",
-    ".",
-    "-",
-    "_",
-    "/",
-    " ",
-    " ",
-    "\t",
-    "\n",
-    ";",
-    "&",
-    "|",
+#: Words and forms the listed patterns are built from, so random texts match them often.
+_PHRASES = [
+    *"scp rsync sftp a@b: x.io: rsync://h sftp://h aws s3 cp sync gsutil rclone copy r: s3://b".split(),
+    *"gs://b approvals.mode approval.x.y approvals. auto 'allow' \"always\" pkill killall".split(),
+    *"systemctl stop mask launchctl unload bootout docker kill rm rmi openclaw hermes chmod u+s".split(),
+    *"4755 +s chown root base64 -d --decode xxd -r sh sudo bash python3 node curl wget pip pip3".split(),
+    *"install npm i add pnpm yarn bun pipx run uv tool uvx npx https://x git+ssh github:a/b cargo".split(),
+    *"--git =command= &command= command= python echo printf registry=https://r index-url".split(),
+    *"= http://r > >> .npmrc pip.conf .pypirc find -exec -delete -execdir xargs shred git clean".split(),
+    *"-fdx -f dd of=/dev/sda of=~/x gcloud delete az push --force --mirror :branch -H --host=".split(),
+    *"DOCKER_HOST=tcp://h system prune volume kubectl create apply clusterrolebinding rbac".split(),
+    *"x a.b @ : = ( ) ' / . - -x".split(),
 ]
+_NOISE = [" ", " ", "  ", "\t", "\n", ";", "&", "|", " | ", " > ", "-x "]
 
 
-def test_every_linear_marker_is_a_shipped_pattern():
-    shipped = {r.regex.pattern for r in load_lists().rules("egress", "exec_markers")}
-    assert set(detectors._LINEAR_MARKERS) <= shipped
+def _text(rng: random.Random, words: list[str]) -> str:
+    return "".join(rng.choice(words) for _ in range(rng.randint(0, 16)))
 
 
-def test_the_linear_markers_agree_with_their_patterns():
+def test_every_linear_search_is_a_listed_pattern():
+    lists = load_lists()
+    listed = {rx.pattern for rxs in lists._patterns.values() for rx in rxs} | {
+        r.regex.pattern for rules in lists._rules.values() for r in rules
+    }
+    assert set(linear_search.LINEAR) <= listed
+
+
+def test_the_linear_searches_agree_with_their_patterns():
+    """Whether there is a match, the match itself (span and groups), and every match in turn."""
     import re
 
     rng = random.Random(20261121)
-    for pattern in detectors._LINEAR_MARKERS:
+    for pattern in linear_search.LINEAR:
         rx = re.compile(pattern, re.IGNORECASE)
-        for _ in range(4000):
-            text = "".join(rng.choice(_MARKER_PIECES) for _ in range(rng.randint(0, 14)))
-            assert detectors._marker_found(rx, text) == (rx.search(text) is not None), (
-                pattern,
-                text,
-            )
+        mine = [w for w in _PHRASES if w.lower().strip("-.:=/") in pattern.lower()]
+        words = _NOISE * 2 + mine * 4 + _PHRASES
+        for _ in range(1500):
+            text = _text(rng, words)
+            want = rx.search(text)
+            got = linear_search.search(rx, text)
+            assert linear_search.found(rx, text) == (want is not None), (pattern, text)
+            assert (got is None) == (want is None), (pattern, text)
+            if want is not None:
+                assert (got.span(), got.groups()) == (want.span(), want.groups()), (pattern, text)
+            assert [m.span() for m in linear_search.finditer(rx, text)] == [
+                m.span() for m in rx.finditer(text)
+            ], (pattern, text)
+
+
+_CHAINS = {
+    r"\bchown\b[^;&|\n]*\broot\b[^;&|\n]*\bchmod\b[^;&|\n]*\+s": [
+        ["chown", "Chown", "xchown"],
+        ["root", "ROOT", "roots"],
+        ["chmod", "chmodx"],
+        ["+s", "u+s", "+x"],
+    ],
+    r"\bsystemctl\b[^;&|\n]*\b(?:stop|disable|mask|kill)\b[^;&|\n]*\b(?:openclaw|hermes)": [
+        ["systemctl"],
+        ["stop", "mask", "stopx"],
+        ["openclaw", "hermes", "xhermes"],
+    ],
+    r"\b(?:echo|printf)\b[^;&|\n]*(?:registry|index-url)\s*=\s*https?://[^;&|\n]*>>?\s*"
+    r"[^;&|\n]*(?:\.npmrc|pip\.conf|\.pypirc)": [
+        ["echo", "printf"],
+        ["registry=https://r", "index-url = http://r", "registry =\nhttps://r", "registry=http:/"],
+        [">", ">>", "> \n", ">\n", ">>\n\n"],
+        [".npmrc", "pip.conf", ".pypirc", "npmrc"],
+    ],
+    r"\bDOCKER_HOST=\S+\s+docker\s+(?:rm|rmi|system\s+prune|volume\s+rm)\b": [
+        ["DOCKER_HOST=", "docker_host=", "xDOCKER_HOST="],
+        ["tcp://h", "a;b", "", "DOCKER_HOST=x"],
+        [" ", "\n", "  "],
+        ["docker"],
+        [" rm", " rmi", " system prune", " volume\nrm", " rmx"],
+    ],
+    r"\b(?:DOCKER_HOST=\S+\s+)?docker\s+(?:-H|--host)[\s=]\S+[^;&|\n]*"
+    r"\b(?:rm|rmi|system\s+prune|volume\s+rm)\b": [
+        ["", "DOCKER_HOST=a ", "DOCKER_HOST=DOCKER_HOST=b ", "xDOCKER_HOST=c ", "DOCKER_HOST= "],
+        ["docker", "Docker", "xdocker"],
+        [" -H ", " --host=", " -H\n", "-H "],
+        ["tcp://h", "a;b", "a|b", ""],
+        [" x ", " ", ";", "\n", ""],
+        ["rm", "rmi", "system prune", "volume rm", "rmx"],
+    ],
+}
+
+
+@pytest.mark.parametrize("pattern", list(_CHAINS), ids=range(len(_CHAINS)))
+def test_chains_agree_with_their_patterns_piece_by_piece(pattern):
+    """The pieces in order with separators, newlines and decoys between them: a piece may end past a
+    newline (`registry =\\nhttps://`), or match more than one length (`>>?\\s*`)."""
+    import re
+
+    assert pattern in linear_search.LINEAR
+    rx = re.compile(pattern, re.IGNORECASE)
+    rng = random.Random(7)
+    matched = 0
+    for _ in range(3000):
+        parts: list[str] = []
+        for _rep in range(rng.randint(1, 3)):
+            for slot in _CHAINS[pattern]:
+                if rng.random() < 0.85:
+                    parts.append(rng.choice(slot))
+                parts.extend(rng.choice(_NOISE) for _ in range(rng.choice([0, 0, 1, 1, 2, 3])))
+        text = "".join(parts)
+        want = rx.search(text)
+        assert linear_search.found(rx, text) == (want is not None), text
+        got = linear_search.search(rx, text)
+        assert (got is None) == (want is None) and (want is None or got.span() == want.span()), text
+        matched += want is not None
+    assert matched > 5
+
+
+#: Per listed pattern with a linear search, the repeated texts its regex was slowest on.
+_SLOW_UNITS = {
+    "scp": ["rsync ", "a@", "a.", "scp a b "],
+    "aws": ["aws s3 cp "],
+    "gsutil": ["gsutil cp "],
+    "rclone": ["rclone copy "],
+    "approvals": ["approvals.", "approval."],
+    "pkill": ["pkill "],
+    "systemctl": ["systemctl stop ", "systemctl.stop."],
+    "launchctl": ["launchctl unload "],
+    "docker\\s+(?:stop": ["docker stop "],
+    "bchmod": ["chmod "],
+    "chown": ["chown root ", "chown.root.chmod."],
+    "base64": ["base64 -d "],
+    "xxd": ["xxd -r "],
+    "curl|wget": ["curl ", "curl.wget.", "wget/"],
+    "pip3": ["pip3 install "],
+    "npm": ["npm install "],
+    "pnpm": ["bun add "],
+    "pipx": ["pipx run "],
+    "\\buv\\s": ["uv run "],
+    "uvx": ["uvx "],
+    "npx": ["npx "],
+    "cargo": ["cargo install "],
+    "command=": ["=command=", "command="],
+    "echo|printf": ["echo ", "echo registry=https://r ", "echo@"],
+    "bfind": ["find ", "find.", "find="],
+    "xargs": ["xargs "],
+    "git\\s+clean": ["git clean "],
+    "bdd": ["dd ", "dd:"],
+    "gcloud": ["gcloud "],
+    "baz": ["az "],
+    "git\\s+push": ["git push "],
+    "DOCKER_HOST": ["DOCKER_HOST=", "docker -H x "],
+    "kubectl": ["kubectl create "],
+}
+
+
+def test_every_linear_search_is_fast_on_long_texts():
+    """Each listed pattern with a linear search, on 95,000 characters of the texts its regex was slowest
+    on (seconds to minutes each), and on chains whose pieces all occur but never in order."""
+    import re
+
+    texts = {
+        "systemctl": "openclaw; " + "systemctl stop " * 6300,
+        "chown": "+s; " + "chown root chmod " * 5500,
+        "echo|printf": ".npmrc; " + "echo registry=https://r > " * 3600,
+    }
+    for pattern in linear_search.LINEAR:
+        rx = re.compile(pattern, re.IGNORECASE)
+        units = [u for key, us in _SLOW_UNITS.items() if key in pattern for u in us]
+        assert units, pattern
+        for text in [u * (SIZE // len(u)) for u in units] + [
+            t for key, t in texts.items() if key in pattern
+        ]:
+            start = time.perf_counter()
+            linear_search.found(rx, text)
+            linear_search.search(rx, text)
+            list(linear_search.finditer(rx, text))
+            spent = time.perf_counter() - start
+            assert spent < FAST / 4, f"{pattern[:40]} on {text[:20]!r}: {spent:.2f}s"
+
+
+def test_inline_code_paths_are_found_as_the_regex_finds_them():
+    words = [
+        "a",
+        "/",
+        "sentrook",
+        "/sentrook",
+        "Sentrook",
+        "x.y",
+        "~",
+        "$",
+        "-",
+        " ",
+        "\n",
+        "(",
+        ".",
+    ]
+    words += ["sentrookx", "/sentrook/", "_"]
+    rng = random.Random(1)
+    for _ in range(20000):
+        text = "".join(rng.choice(words) for _ in range(rng.randint(0, 12)))
+        want = [m.span() for m in detectors._SENTROOK_PATH.finditer(text)]
+        assert [m.span() for m in detectors._sentrook_paths(text)] == want, text
+
+
+def test_inline_code_that_writes_into_sentrook_state_still_takes_the_floor():
+    code = "open('/home/me/.openclaw/sentrook/grants.json', 'w')\n" + "a/" * 20000
+    _, env = run(planir("execute_code", "exec", {"code": code}, platform="hermes"))
+    assert "guardrail.state_dir_write" in floor_reasons(env)

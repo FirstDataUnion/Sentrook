@@ -328,9 +328,11 @@ class Scanner:
                     prepared.credential_home,
                     prepared.credential_home_check,
                 ) = credential_home_check(prepared)
-        # The probes share one deadline, and the scan answers at it: a probe still running then is
-        # recorded as timed out and left behind (a thread cannot be stopped; what it returns later
-        # is never read), so the pool is shut down without waiting for it.
+        # The probes share one deadline: a probe still running then is recorded as timed out and left
+        # behind (a thread cannot be stopped; what it returns later is never read), and the pool is
+        # shut down without waiting for it. The deadline bounds the waits, not one long call: a probe
+        # inside a single regex search holds the interpreter until the search returns, and the scan
+        # answers only then. Keeping each search linear is what keeps the answer near the deadline.
         pool = ThreadPoolExecutor(max_workers=len(ALL_PROBES))
         try:
             futures = {}

@@ -22,6 +22,7 @@ from functools import lru_cache
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
+from ..aira import linear_search
 from ..aira.exec_shape import derive_exec_shape
 from ..aira.lists import load_lists
 from ..aira.stage_programs import stage_runs_stdin
@@ -1761,7 +1762,7 @@ def registry_hosts(call: CanonicalCall) -> list[str]:
         spans = [
             text[m.start() : _command_end(text, m.end())]
             for rx in lists.patterns("installers", "registry_cli_patterns")
-            for m in rx.finditer(text)
+            for m in linear_search.finditer(rx, text)
         ]
     elif kind is ToolKind.FILE_READ or not call.path:
         return []
@@ -2069,7 +2070,8 @@ def _repo_code_sources(command: str, found: list[Found]) -> list[Found]:
         if f.kind is EntityKind.HOST and f.role is Role.CODE_SOURCE and tenant_rule(f.value)
     }
     if any(tenant_rule(h) for h in hosts - tenant) and any(
-        p.search(command) for p in load_lists().patterns("installers", "fetch_to_shell_patterns")
+        linear_search.found(p, command)
+        for p in load_lists().patterns("installers", "fetch_to_shell_patterns")
     ):
         tenant |= {h for h in hosts if tenant_rule(h)}
     if not tenant:

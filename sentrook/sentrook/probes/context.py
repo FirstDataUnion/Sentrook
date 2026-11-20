@@ -89,6 +89,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..aira import linear_search
 from ..enums import ProbeStatus, ProbeStep, SessionFlag
 from ..oracle.near_miss import fold
 from ..planir.canonical import CanonicalCall
@@ -1059,7 +1060,7 @@ class ContextProbe:
                 head = rule.get("head")
                 if head and not re.search(r"\b" + re.escape(str(head)) + r"\b", cmd):
                     continue
-                if rule.regex.search(cmd):
+                if linear_search.found(rule.regex, cmd):
                     return True
         return False
 

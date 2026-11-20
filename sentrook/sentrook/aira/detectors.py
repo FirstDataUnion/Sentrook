@@ -20,7 +20,7 @@ import json
 import os
 import re
 import shlex
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,6 +47,9 @@ from ..prepare.sibling_join import sibling_writes
 from ..probes.base import Contribution, Floor, SessionMark
 from .analysis import CallAnalysis, EntityRef, PathRef
 from .exec_shape import ExecSegment, ExecShape, derive_exec_shape
+from .linear_search import finditer as _finditer
+from .linear_search import found as _found
+from .linear_search import search as _search
 from .lists import Lists, Rule
 from .path_classes import _URL_RE, locations_of
 from .sensitive_paths import basename_pattern
@@ -166,11 +169,17 @@ def _clamp(value: float) -> float:
 
 
 def _match_any(rules: Iterable[re.Pattern[str]], subject: str) -> re.Match[str] | None:
+    """The first of `rules` that matches, as `rx.search` (linear for the patterns `linear_search` lists)."""
     for rx in rules:
-        m = rx.search(subject)
+        m = _search(rx, subject)
         if m:
             return m
     return None
+
+
+def _found_any(rules: Iterable[re.Pattern[str]], subject: str) -> bool:
+    """Whether any of `rules` matches (linear for the patterns `linear_search` lists)."""
+    return any(_found(rx, subject) for rx in rules)
 
 
 def _tool_matches(a: CallAnalysis, lists: Lists, list_name: str, key: str) -> Rule | None:
@@ -402,114 +411,6 @@ def _in_pipeline_tail(shape: ExecShape, index: int) -> bool:
     return any(index in p[1:] for p in shape.pipelines)
 
 
-# ------------------------------------------------------------------ exec markers in linear time
-#
-# A marker `<head>[^;&|\n]*<tail>` (a command, any words to the end of its simple command, then a tail),
-# searched as a regex, retries the gap from every head and the tail at every position after it: a long
-# simple command with many heads (`rsync rsync …`) is quadratic, and the remote-copy tail `\S+@\S+:` is
-# cubic in a long word (`a@a@…`). For the markers listed here the search finds the same answer in linear
-# time: the gap ranges of all the heads are read once, left to right, and the tail is tried once at each
-# position in them. The list keeps the pattern (the mechanism shown, and searched as it is if changed).
-
-_GAP_END = re.compile(r"[;&|\n]")
-
-
-def _gap_tail_search(text: str, head: re.Pattern[str], tail_at: Callable[[str, int], bool]) -> bool:
-    """Whether `<head>[^;&|\\n]*<tail>` occurs in `text`, for a head whose matches never overlap and
-    end where they end (one end per start). `tail_at(text, p)`: whether the tail matches at `p`; it is
-    called once per position, in ascending order."""
-    tried = -1  # every position up to here has been tried
-    end = -1  # where the last head's simple command ends (a separator, or the end of the text)
-    for m in head.finditer(text):
-        e = m.end()
-        if e > end:
-            sep = _GAP_END.search(text, e)
-            end = sep.start() if sep else len(text)
-        for p in range(max(e, tried + 1), end + 1):
-            if tail_at(text, p):
-                return True
-        tried = max(tried, end)
-    return False
-
-
-def _regex_tail(pattern: str) -> Callable[[str, int], bool]:
-    rx = re.compile(pattern, re.IGNORECASE)
-    return lambda text, p: rx.match(text, p) is not None
-
-
-class _RemoteCopyTail:
-    """The remote-copy tail `\\S+@\\S+:|\\b[\\w.-]+\\.[a-z]{2,}:|\\brsync://|\\bsftp://` tried at
-    ascending positions. `user@host:` holds, within one run of non-space characters, for a prefix of the
-    run's positions (an `@` after the position, a `:` two after that, both in the run), and `host.tld:`
-    likewise within a run of `[\\w.-]` among the positions at a word boundary (the run must end at the
-    `:`): after it fails at a position, the rest of that run is not tried again."""
-
-    #: `\S+@\S+:` at a position, without its backtracking: the first `@` after the first character,
-    #: then the first `:` after the character after it.
-    USER_HOST = re.compile(r"\S[^\s@]*@\S[^\s:]*:")
-    HOST = re.compile(r"\b[\w.-]+\.[a-z]{2,}:", re.IGNORECASE)
-    URL = re.compile(r"\b(?:rsync|sftp)://", re.IGNORECASE)
-    WORD = re.compile(r"\S+")
-    HOST_RUN = re.compile(r"\b[\w.-]+")
-
-    def __init__(self) -> None:
-        self.user_host_failed_until = -1
-        self.host_failed_until = -1
-
-    def __call__(self, text: str, p: int) -> bool:
-        if p >= self.user_host_failed_until:
-            if self.USER_HOST.match(text, p):
-                return True
-            word = self.WORD.match(text, p)
-            if word:
-                self.user_host_failed_until = word.end()
-        if p >= self.host_failed_until:
-            if self.HOST.match(text, p):
-                return True
-            run = self.HOST_RUN.match(text, p)
-            if run:
-                self.host_failed_until = run.end()
-        return self.URL.match(text, p) is not None
-
-
-_HEAD_RX: dict[str, re.Pattern[str]] = {}
-
-
-def _head(pattern: str) -> re.Pattern[str]:
-    if pattern not in _HEAD_RX:
-        _HEAD_RX[pattern] = re.compile(pattern, re.IGNORECASE)
-    return _HEAD_RX[pattern]
-
-
-#: Marker pattern (as in `egress.yaml`) -> its linear search.
-_LINEAR_MARKERS: dict[str, Callable[[str], bool]] = {
-    r"\b(?:scp|rsync|sftp)\b[^;&|\n]*(?:\S+@\S+:|\b[\w.-]+\.[a-z]{2,}:|\brsync://|\bsftp://)": (
-        lambda text: _gap_tail_search(text, _head(r"\b(?:scp|rsync|sftp)\b"), _RemoteCopyTail())
-    ),
-    r"\baws\s+s3\s+(?:cp|sync|mv)\b[^;&|\n]*\ss3://": (
-        lambda text: _gap_tail_search(
-            text, _head(r"\baws\s+s3\s+(?:cp|sync|mv)\b"), _regex_tail(r"\ss3://")
-        )
-    ),
-    r"\bgsutil\s+(?:cp|rsync|mv)\b[^;&|\n]*\sgs://": (
-        lambda text: _gap_tail_search(
-            text, _head(r"\bgsutil\s+(?:cp|rsync|mv)\b"), _regex_tail(r"\sgs://")
-        )
-    ),
-    r"\brclone\s+(?:copy|sync|move)\b[^;&|\n]*\s\w+:": (
-        lambda text: _gap_tail_search(
-            text, _head(r"\brclone\s+(?:copy|sync|move)\b"), _regex_tail(r"\s\w+:")
-        )
-    ),
-}
-
-
-def _marker_found(rx: re.Pattern[str], text: str) -> bool:
-    """`rx.search(text)`, in linear time for the markers that have a linear search."""
-    linear = _LINEAR_MARKERS.get(rx.pattern) if rx.flags & re.IGNORECASE else None
-    return linear(text) if linear is not None else rx.search(text) is not None
-
-
 def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     sinks: list[Sink] = []
     shape = a.shape
@@ -532,7 +433,7 @@ def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
             if rule.get("requires_pipe"):
                 if shape is None or index is None or not _in_pipeline_tail(shape, index):
                     continue
-            if not _marker_found(rule.regex, seg_text):
+            if not _found(rule.regex, seg_text):
                 continue
             reason = str(rule.get("reason", "exfil.exec_egress"))
             if reason in seen:
@@ -830,7 +731,7 @@ def _text_fetch_to_shell(text: str, ctx: Context) -> re.Match[str] | None:
     the same stage check as the command, so a stage that brings its own program is silent here too;
     one that does not parse still counts."""
     for rx in ctx.lists.patterns("installers", "fetch_to_shell_patterns"):
-        for m in rx.finditer(text):
+        for m in _finditer(rx, text):
             end = text.find("\n", m.start())
             shape = derive_exec_shape(
                 text[m.start() : end if end >= 0 else None], ctx.lists.path_groups
@@ -1553,10 +1454,11 @@ def _grows_with_rest(rx: re.Pattern[str]) -> bool:
 
 
 class _Rests:
-    """The words after each position of one command, joined (`" ".join(tokens[v + 1 :])`), and the
-    last position whose rest passes a test that, passing on a rest, passes on every longer one (a
-    substring, or a search for patterns that `_grows_with_rest`). The rests then pass for exactly
-    the positions up to that one, found in a logarithmic number of tests."""
+    """The words after each position of one command, joined (`" ".join(tokens[v + 1 :])`), and, of
+    some positions, the last whose rest passes a test that, passing on a rest, passes on every longer
+    one (a substring, or a search for patterns that `_grows_with_rest`). Of those positions, the rests
+    then pass for exactly the ones up to that one, found in a logarithmic number of tests, each on the
+    rest of one of the positions given (never on words no verb is followed by)."""
 
     __slots__ = ("_joined", "_last", "_offsets")
 
@@ -1569,21 +1471,24 @@ class _Rests:
             at += len(t) + 1
         offsets.append(max(at, len(self._joined)))
         self._offsets = offsets
-        self._last: dict[str, int] = {}
+        self._last: dict[Hashable, int] = {}
 
     def after(self, v: int) -> str:
         return self._joined[self._offsets[v + 1] :]
 
-    def last_passing(self, name: str, test: Callable[[str], bool]) -> int:
+    def last_passing(
+        self, name: Hashable, test: Callable[[str], bool], among: Sequence[int]
+    ) -> int:
+        """The last of `among` (ascending positions) whose rest passes `test`; -1 when none does."""
         if name not in self._last:
-            lo, hi = 0, len(self._offsets) - 1  # the first position whose rest fails is in [lo, hi]
+            lo, hi = 0, len(among)  # the first of `among` whose rest fails is in [lo, hi]
             while lo < hi:
                 mid = (lo + hi) // 2
-                if test(self.after(mid)):
+                if test(self.after(among[mid])):
                     lo = mid + 1
                 else:
                     hi = mid
-            self._last[name] = lo - 1
+            self._last[name] = among[lo - 1] if lo else -1
         return self._last[name]
 
 
@@ -3841,16 +3746,34 @@ def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
         return any(pid in low_rest for pid in plugin_ids)
 
     def sets_approval(rest: str) -> bool:
-        return _match_any(set_rx, rest) is not None
+        return any(_found(rx, rest) for rx in set_rx)
 
     def names_key(rest: str) -> bool:
-        return _match_any(key_rx, rest) is not None
+        return any(_found(rx, rest) for rx in key_rx)
 
     found: list[str] = []
 
     def hit(reason: str) -> None:
         if reason not in found:
             found.append(reason)
+
+    # The config verbs whose rests are read, per entry: the mutating words in some verb span. The
+    # patterns are only searched in these rests (a long word before every verb is never read), and a
+    # key pattern only in the rests no approval pattern matches.
+    config_verbs: dict[int, list[int]] = {}
+    key_verbs: dict[int, list[int]] = {}
+    if entries["config_cli"]:
+        read_upto: dict[int, int] = {}
+        for at in range(1, runs.end(1) + 1):
+            lo, hi = at + 1, runs.end(at + 1)
+            for k, entry in enumerate(entries["config_cli"]):
+                if low[at] == entry.get("subcommand"):
+                    mutating = {v.lower() for v in entry.get("mutating_verbs", [])}
+                    done = read_upto.get(k, -1)
+                    config_verbs.setdefault(k, []).extend(
+                        v for v in range(max(lo, done + 1), hi + 1) if low[v] in mutating
+                    )
+                    read_upto[k] = max(done, hi)
 
     for at in range(1, runs.end(1) + 1):
         sub = low[at]
@@ -3864,7 +3787,9 @@ def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
             if sub == entry.get("subcommand"):
                 blocked = {v.lower() for v in entry.get("blocked_verbs", [])}
                 v = first("plugin_cli", k, blocked.__contains__, lo)
-                if v <= hi and v <= rests.last_passing("names_plugin", names_plugin):
+                if v <= hi and v <= rests.last_passing(
+                    "names_plugin", names_plugin, range(len(tokens))
+                ):
                     hit("guardrail.plugin_disable")
         for k, entry in enumerate(entries["plugin_command_cli"]):
             if sub == entry.get("subcommand"):
@@ -3888,13 +3813,17 @@ def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
                 if by_suffix:
                     # The rests that set an approval are those of the verbs up to `approvals`;
                     # after those, the ones that name a config key, up to `keys`.
-                    approvals = rests.last_passing("sets_approval", sets_approval)
-                    keys = rests.last_passing("names_key", names_key)
+                    verbs = config_verbs[k]
+                    approvals = rests.last_passing(("sets_approval", k), sets_approval, verbs)
                     if v <= approvals:
                         hit("guardrail.host_approvals")
                     after = first("config_cli", k, mutating.__contains__, max(lo, approvals + 1))
-                    if after <= min(hi, keys):
-                        hit("guardrail.config_entry")
+                    if after <= hi:
+                        if k not in key_verbs:
+                            key_verbs[k] = [w for w in verbs if w > approvals]
+                        keys = rests.last_passing(("names_key", k), names_key, key_verbs[k])
+                        if after <= keys:
+                            hit("guardrail.config_entry")
                     continue
                 for w in range(v, hi + 1):  # a pattern the shortcut does not hold for
                     if low[w] in mutating:
@@ -3909,6 +3838,34 @@ def _cli_guardrail_reasons(tokens: list[str], lists: Lists) -> list[str]:
                 if first("gateway_cli", k, blocked.__contains__, lo) <= hi:
                     hit("guardrail.gateway_stop")
     return found
+
+
+_SENTROOK_PATH = re.compile(r"[\w~$./-]*(?:/|\A)sentrook(?:/[\w./-]*)?")
+_PATH_CHAR = re.compile(r"[\w~$./-]")
+
+
+def _sentrook_paths(text: str) -> Iterator[re.Match[str]]:
+    """`_SENTROOK_PATH.finditer(text)` in linear time. The regex, tried from every start, reads each
+    run of path characters to its end again (quadratic in a long `a/a/…`); a match from a position
+    exists exactly when the run from there holds `/sentrook` (or the text starts with `sentrook`),
+    so the leftmost one starts where the run holding the first such word begins, and the regex
+    matches from there."""
+    pos = 0
+    while pos <= len(text):
+        if pos == 0 and text.startswith("sentrook"):
+            start = 0
+        else:
+            o = text.find("/sentrook", pos)
+            if o < 0:
+                return
+            start = o
+            while start > pos and _PATH_CHAR.match(text, start - 1):
+                start -= 1
+        m = _SENTROOK_PATH.match(text, start)
+        if m is None:
+            return
+        yield m
+        pos = m.end() if m.end() > m.start() else m.end() + 1
 
 
 def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
@@ -4015,7 +3972,7 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
     if a.inline_code or (a.shape is not None and a.shape.inline_eval):
         markers = lists.patterns("guardrail", "content_write_marker_patterns")
         if _match_any(markers, a.scan_text):
-            for m in re.finditer(r"[\w~$./-]*(?:/|\A)sentrook(?:/[\w./-]*)?", a.scan_text):
+            for m in _sentrook_paths(a.scan_text):
                 reason = _guardrail_path_reason(m.group(0), None, ctx)
                 if reason:
                     emit(reason, None, {"path": m.group(0), "mechanism": "content_match"})
@@ -4039,9 +3996,9 @@ def detect_guardrail(a: CallAnalysis, ctx: Context) -> list[Finding]:
         if tokens[0] in cli_heads:
             for reason in _cli_guardrail_reasons(tokens, lists):
                 emit(reason, None, {"match": line[:120]})
-        if _match_any(lists.patterns("guardrail", "process_kill_patterns"), line):
+        if _found_any(lists.patterns("guardrail", "process_kill_patterns"), line):
             emit("guardrail.gateway_stop", None, {"match": line[:120], "mechanism": "process_kill"})
-    if _match_any(lists.patterns("guardrail", "process_kill_patterns"), a.scan_text):
+    if _found_any(lists.patterns("guardrail", "process_kill_patterns"), a.scan_text):
         emit(
             "guardrail.gateway_stop",
             None,
@@ -4106,7 +4063,7 @@ def detect_destruction(a: CallAnalysis, ctx: Context) -> list[Finding]:
                         p, wild = _resolve_target(tok, cwd, ctx)
                         targets.append((p, wild, seg.head))
                 for rule in verbs:
-                    m = rule.regex.search(seg_text)
+                    m = _search(rule.regex, seg_text)
                     if not m:
                         continue
                     mode = rule.get("paths", "argv")
@@ -4242,7 +4199,7 @@ def detect_privilege(a: CallAnalysis, ctx: Context) -> list[Finding]:
         )
         f.add(REACH, reach)
         out.append(f)
-    if _match_any(lists.patterns("privilege", "setuid_patterns"), a.scan_text):
+    if _found_any(lists.patterns("privilege", "setuid_patterns"), a.scan_text):
         f = Finding(rule="C8.setuid", cls="C8", reason="priv.setuid")
         f.add(REACH, reach)
         out.append(f)
@@ -4302,7 +4259,7 @@ def detect_remote(a: CallAnalysis, ctx: Context) -> list[Finding]:
     if a.kind is ToolKind.EXEC:
         for line in a.segment_texts():
             for rule in lists.rules("remote_destructive", "cli"):
-                m = rule.regex.search(line)
+                m = _search(rule.regex, line)
                 if not m:
                     continue
                 reason = str(rule.get("reason"))
