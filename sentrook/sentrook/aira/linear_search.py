@@ -314,8 +314,13 @@ LINEAR: dict[str, Search] = dict(
 FOUND_ONLY: frozenset[str] = frozenset({_REMOTE_COPY, *_CHAINS})
 
 
+_FLAGS = re.compile("", re.IGNORECASE).flags
+
+
 def _linear(rx: re.Pattern[str]) -> Search | None:
-    return LINEAR.get(rx.pattern) if rx.flags & re.IGNORECASE else None
+    # The linear pieces are compiled case-insensitive and nothing else, so any other flag set
+    # (multiline, ASCII, verbose) is searched as the plain regex.
+    return LINEAR.get(rx.pattern) if rx.flags == _FLAGS else None
 
 
 def found(rx: re.Pattern[str], text: str) -> bool:
