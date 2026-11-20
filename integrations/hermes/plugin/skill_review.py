@@ -27,19 +27,23 @@ loop save is decided as an unattended run's call is, and the owner is told:
   gets a notice that it was let through (`let_through_text`). `lenient` counts only on an ok scan of a save sent
   with its `self_edit` block. The same when a snooze covers the session and that session is one the owner attends
   (a chat or the terminal): unattended runs are never snoozed;
-- any other review: it is held, so not saved, with a notice (`stopped_text`). It is not an approvable hold in
-  `holds.json`: the hold keeps no arguments and suggests no grant for a background save, so approving could not
-  make the save, and a curator pass must not crowd out other runs' holds. History and status record it;
+- any other review: it is held, so not saved. It is not an approvable hold in `holds.json`: the hold keeps no
+  arguments and suggests no grant for a background save, so approving could not make the save, and a curator pass
+  must not crowd out other runs' holds. When Hermes can replay it, the held save is staged in Hermes's own pending
+  store (`staging`) and the notice gives its id and Hermes's commands to look at it and approve or reject it
+  (`staged_text`); otherwise the notice says it was not saved (`stopped_text`). A destructive memory change Hermes's
+  own gate stages is let through to that gate, and the notice says what Hermes did (`staged_text`, or
+  `unstaged_text` when Hermes did not stage it). History and status record it;
 - scan failure: as on any unattended run (`scan_error_policy`), with the scan-failure notice when it blocks.
-These notices (blocked, held, let through as lenient, let through by a snooze) are sent at most once per kind per
-session every 6 hours (`scan_failure_notice` keeps the times).
+These notices (blocked, held, staged, not staged by Hermes, let through as lenient, let through by a snooze) are sent
+at most once per kind per session every 6 hours (`scan_failure_notice` keeps the times).
 
 Every call the fork or the curator makes (a loop save or not) carries the session's last owner request
 and that turn's number, and is not counted as a new turn: the fork fires no `pre_llm_call`, and the
 curator's carries its own prompt, not a request. With no owner request stored it carries `REQUEST_TEXT`.
 
 Every loop save's traffic record says `skill_review: true`, history marks it "self-edit", and
-`/sentrook status` counts allowed, blocked, held and let-through loop saves.
+`/sentrook status` counts allowed, blocked, held, staged and let-through loop saves.
 
 The fork's other calls, and an owner's `/refine`, can still ask. On the local terminal Hermes's callback
 denies those prompts unseen (see `auto_denied`). That denial is recorded as `blocked` (a review nobody could
@@ -206,6 +210,80 @@ def stopped_text(
     )
 
 
+def _commands(store: str, pending_id: str, own_text: bool) -> list[str]:
+    """Hermes's commands for a staged record: look first, then approve or reject. `/memory pending` lists a memory
+    record by its summary, so for a record whose summary the plugin wrote it also says where the text is."""
+    if store == "memory":
+        look = "Look first: /memory pending" + (
+            f" (it lists the change, not the text; the text is in pending/memory/{pending_id}.json in the "
+            "Hermes home folder)"
+            if own_text
+            else ""
+        )
+    else:
+        look = f"Look first: /skills diff {pending_id}"
+    return [
+        f"Pending id: {pending_id}",
+        look,
+        f"Then approve it: /{store} approve {pending_id}",
+        f"Or reject it: /{store} reject {pending_id}",
+    ]
+
+
+def staged_text(
+    tool: str,
+    shown: str,
+    where: str,
+    category: str,
+    rule: bool,
+    store: str,
+    pending_id: str,
+    details: str | None,
+    by_hermes: bool = False,
+) -> str:
+    """The owner's notice that a loop save was held and staged in Hermes's pending store (`staging`), by the plugin or
+    by Hermes's own gate (`by_hermes`). Like the other notices it carries only the plugin's own words, the run, the
+    tool and its description as a review prompt shows it, the pending id and the commands: never what the save
+    writes. `rule`: a Sentrook rule asked for the review."""
+    because = f"Held because {category}" + (
+        " (a Sentrook rule asks for a review of this)." if rule else "."
+    )
+    return "\n".join(
+        (
+            f"Sentrook held a background {what(tool)} save and "
+            + ("Hermes staged it" if by_hermes else "staged it in Hermes")
+            + " for you to approve, so it is not saved yet.",
+            f"Run: {where}",
+            _save_line(tool, shown),
+            because,
+            *_commands(store, pending_id, own_text=not by_hermes),
+            *_details(details),
+            f"More staged background saves in this session are not announced for {_quiet_hours()} hours; "
+            "/skills pending and /memory pending list them all.",
+        )
+    )
+
+
+def unstaged_text(tool: str, shown: str, where: str, details: str | None, saved: bool) -> str:
+    """The owner's notice that a destructive memory change Sentrook left to Hermes's own gate was not staged by it:
+    Hermes saved it (`saved`), or its result did not say."""
+    what_happened = (
+        "but Hermes saved it without staging it."
+        if saved
+        else "but Hermes did not report it as staged, so it may have been saved without your approval."
+    )
+    return "\n".join(
+        (
+            f"Sentrook let a background {what(tool)} change through for Hermes to stage for your approval, "
+            + what_happened,
+            f"Run: {where}",
+            _save_line(tool, shown),
+            *_details(details),
+            f"More such changes in this session are not announced for {_quiet_hours()} hours.",
+        )
+    )
+
+
 def _quiet_hours() -> int:
     from .scan_failure_notice import QUIET
 
@@ -230,10 +308,11 @@ def notice_line(owner_channel: str, homes: list[str]) -> str:
 
 def counts(path: Path) -> dict[str, int]:
     """Loop saves in the recent traffic log, by what was done: allowed, blocked, asked (before loop saves stopped
-    asking), held, let through (a review allowed without asking: lenient or snoozed)."""
+    asking), held, staged (held and kept in Hermes's pending store for the owner, or sent to Hermes's own gate to
+    stage), let through (a review allowed without asking: lenient, snoozed, or not staged by Hermes)."""
     from .history import action_of, recent_scans
 
-    out = {"allowed": 0, "blocked": 0, "asked": 0, "held": 0, "let_through": 0}
+    out = {"allowed": 0, "blocked": 0, "asked": 0, "held": 0, "staged": 0, "let_through": 0}
     for scan, resolution in recent_scans(path, 10_000, None):
         if scan.get("skill_review") is not True:
             continue
@@ -245,8 +324,11 @@ def counts(path: Path) -> dict[str, int]:
             if action.startswith("review")
             else "held"
             if action.startswith("held")
+            else "staged"
+            if action.startswith(("staged", "sent to Hermes to stage"))
             else "let_through"
-            if scan.get("decision") == "allowed"
+            if action.startswith(("saved", "sent to Hermes (outcome"))
+            or scan.get("decision") == "allowed"
             and (scan.get("lenient") is True or scan.get("snoozed") is True)
             else "allowed"
         )
@@ -270,8 +352,9 @@ def status_line(setting: str, path: Path | None) -> str:
     c = counts(path)
     asked = f", {c['asked']} asked" if c["asked"] else ""
     held = f", {c['held']} held" if c["held"] else ""
+    staged = f", {c['staged']} staged" if c["staged"] else ""
     let = f", {c['let_through']} let through" if c["let_through"] else ""
     return (
         f"{setting}; loop saves in the traffic log: {c['allowed']} allowed, {c['blocked']} blocked"
-        f"{asked}{held}{let}"
+        f"{asked}{held}{staged}{let}"
     )

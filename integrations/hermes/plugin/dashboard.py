@@ -126,7 +126,7 @@ def bucket_of(scan: dict[str, Any], action: str) -> str:
         return "scan_error"
     if action.startswith("blocked"):
         return "blocked"
-    if action.startswith(("review", "held")):
+    if action.startswith(("review", "held", "staged", "sent to Hermes to stage")):
         return "review"
     if action.startswith("observed"):
         return "observed"

@@ -852,6 +852,56 @@ After a turn, Hermes's background review saves skills and memory, and its curato
   - The rule-based probe's findings on the save itself are reused instead of running the rules again, and the remaining unbounded patterns are bounded.
   - Tests: `test_self_edit_save` (must not be lenient: each of the above; must be lenient: a push to `origin`, `chmod +x`, a prose list, an edit that keeps every word it replaces, a rewording with `weakens_oversight` below 0.5 (and not at 0.5 or above, or without the answer), a link that only points to reading; the one-pass fence reading against the skill reading; the reading of four large crafted saves within 5 s; the response otherwise identical with and without the field for thirteen self-edit requests; and the round's new cases).
 
+### Hermes plugin 2.0.0-beta.16: a held background save is staged in Hermes for the owner (2026-11-19)
+A background skill or memory save Sentrook reviews and does not let through is held, and nothing kept its content, so
+the owner could only ask the agent for it again. Now, where Hermes can replay it, the plugin puts it in Hermes's own
+pending store (`tools.write_approval.stage_write`, the store `skills.write_approval` / `memory.write_approval` use;
+those settings are not needed or changed), and the owner looks at it and approves or rejects it with Hermes's own
+`/skills diff|approve|reject <id>` and `/memory pending|approve|reject <id>`.
+- Staged: `skill_manage` create, edit, patch, write_file, remove_file and batches of only those; `memory` add and
+  batches of only adds; from the review fork and the curator alike, with the origin Hermes reports. A review a rule
+  floor enforces is staged, and its summary says a rule asked for it. The staged payload is the call's own arguments.
+- Never staged, held as before: a block; a block-level score a retry rule capped at review; a save whose scan reports
+  `secret` in `self_edit.adds`, or that the plugin's own redaction changed (the scanned copy may have been cut before
+  the secret); a save larger than `input_cap_bytes`, which the scan did not see whole; a skill delete (Hermes hard-deletes an approved staged delete); a save sent without the `self_edit` block
+  (`skill_review: review`).
+- Memory patch and remove (alone or in a batch): never staged by the plugin, which would have to pin the entry
+  itself. Hermes's own gate stages these when its unattended background review makes them; the plugin lets such a
+  change through to that gate only on a Hermes build it has verified: the sha256 over the source text of
+  `tools.memory_tool`'s `_background_delete_gate`, `_memory_tool`, `memory_tool` and `destructive_ops` (as
+  `inspect.getsource` reads it, checked against the running code's names and constants so an upgrade in place does
+  not count) must be on `VERIFIED_GATES` (one entry today: Hermes 0.23.0 to 0.23.2, which share the text), the call
+  must be an unattended review and `stage_write` must exist. Any other build, any failure to read, and the rest of
+  the process after one such change was saved without the owner: held. The host compatibility check computes the
+  digest on the floor and latest images and fails when it is not on the list. `post_tool_call` reads Hermes's result: staged (with
+  its pending id) is recorded and announced as staged and, like any call that did not run, sends the scanner no
+  result; a result that says the change was saved is recorded and announced as saved without approval; one that does
+  not say (or a cancelled call) as an unknown outcome that may have been saved; a refusal as not saved. Without that
+  gate the change is held as before.
+- The plugin writes each record's summary: "Held by Sentrook ...", the kind of change, at most 200 characters, with
+  control and bidi characters removed, a skill name shown only when it cannot render as a link or mention, never the
+  saved text. The staged file is made 0600. At most 20 records the plugin staged wait in each store; past that, saves
+  are held as before. Any failure to import or stage holds the save as before, with the held notice.
+- The agent is told the save was not saved, is staged for the owner and must not be retried in this run. The owner's
+  notice (same channel and quiet-window rules, its own kind) gives the pending id and the commands to look first and
+  then approve or reject, never the saved text.
+- History shows "staged (self-edit)" with review "pending in Hermes"; a change left to Hermes's gate shows "sent to
+  Hermes to stage", then "staged (by Hermes, ...)", "saved (not staged by Hermes, ...)", "sent to Hermes (outcome
+  unknown, ...)" or "held". `status` counts
+  staged saves; the dashboard puts them with reviews. The scanner is told a staged save did not run
+  (`review_timed_out`). Observe mode, attended calls and lenient let-throughs are unchanged.
+- Tests: `test_staged_saves` (each stageable action staged with its exact payload, origin, summary and 0600 file; every
+  background run; summary and notice texts carry the id and commands and never the save; each never-stage case held;
+  import failure, a raising or silent `stage_write`, a file that cannot be made private, a bad id; the cap per store;
+  observe, lenient and attended unchanged; Hermes's gate: patch, remove and a mixed batch let through and the result
+  read as staged, saved, refused, blocked, cancelled or unreadable; a staged one sends the scanner no result; the gate
+  held when it cannot be established; builds not on the list held, among them an off-switch in the gate, a gate that
+  stages only with `memory.write_approval` on, a curator exemption, a gate call left only in a comment and a write
+  before the gate; a source changed on disk under the running code held; held for the rest of the process after a
+  saved or unknown outcome; the listed digest checked against real Hermes sources when `HERMES_SOURCES` names them;
+  redacted and over-cap saves held; memory text read as Hermes reads it; the pending file found through Hermes's own
+  path helper or the Hermes home). Compat: a `memory gate` step and its self-test case.
+
 ### OpenClaw plugin: a held background change to a skill is kept as a draft of the changed skill (2026-11-19)
 - A background `skill_workshop` `patch` of a skill's `SKILL.md` that the plugin would hold (a review below the block line, not lenient, not a block-level score capped at review) was lost. On OpenClaw 2026.11.5 or newer it now goes to the Skill Workshop drafts as the whole skill with the patch applied: the plugin resolves the agent's directory through `runtime.agent.resolveAgentDir` with the live config and the hook's `agentId`, reads `<agent dir>/workshop-skills/<name>/SKILL.md`, applies the patch as OpenClaw's own `patch` does, except that OpenClaw also refuses a background patch of a skill the run has not viewed and the draft route does not check that (`old_text` must occur exactly once, overlapping occurrences counted, `new_text` inserted as written, no trimming or line-ending changes, `file_path` absent, blank or `SKILL.md`, the action exactly `patch` once trimmed, the name OpenClaw's pattern for an existing skill), and rewrites the call's parameters to `action: "draft"` with that content and a fixed reason naming the scan's short id (what `/sentrook-why` takes) and the UTC minute the skill was read. The scan judged the patch, not the rest of the file; the rest is already the live skill.
 - The file is read only when everything else allows a draft. `readLiveSkill` confines on its own (the name is checked against OpenClaw's pattern inside it): every decision is made on the open file, with no check of the path gating the open. It is opened with `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY` (a FIFO with no writer opens at once on Linux and macOS, so it cannot block the gateway); `fstat` must show a regular file with one link of at most 1 MiB (OpenClaw's own read bound); it is read from the handle; only then is its place confirmed: the path must resolve, with every link followed, to `<name>/SKILL.md` under the real Workshop folder, and the file there must have the open file's device and inode, so a link on the way or a folder swapped for one is refused. Content that is not valid UTF-8 is held (the draft would change more than the one change). A missing agent API, a throwing or relative resolver, no `agentId`, a read error, no match, several matches, or an oversized file holds the save as before, never throws and never allows it. The scan record says why (`patch_draft`).

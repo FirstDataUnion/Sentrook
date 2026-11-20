@@ -9,7 +9,9 @@
 # Steps: the catalog validator, install from a git URL with --enable, the scan credentials set through
 # Hermes, `hermes sentrook verify` and `status` against the mock identity service and scanner, then one
 # real agent turn (`hermes chat`, model served by the mock) in which Sentrook must block one terminal
-# call and allow the next. Every step runs even after a failure; the exit code is 1 when any failed.
+# call and allow the next; and the digest of this Hermes's background-review memory gate, which must be on the
+# plugin's list of verified builds (`gate_build.py`). Every step runs even after a failure; the exit code is 1 when
+# any failed.
 #
 # Synthetic credentials only. COMPAT_CLIENT_SECRET overrides the secret given to Hermes (the mock
 # accepts only compat-secret), which is how the self-test makes the token mint fail.
@@ -168,5 +170,18 @@ print(("FAIL\t" + "; ".join(problems)) if problems else f"ok\t{len(scans)} scans
 PY
 )
 record turn "${turn_detail%%$'\t'*}" "${turn_detail#*$'\t'}"
+
+# 7. The plugin leaves a background review's memory patch or remove to Hermes's own gate only on a Hermes build it
+# has verified; a Hermes bump that changes the gate must add its digest to staging.VERIFIED_GATES on purpose.
+mkdir -p /tmp/sentrook-gate
+ln -sfn "$src" /tmp/sentrook-gate/sentrook
+gate_out=$(cd "${HERMES_SRC:-/opt/hermes}" && timeout "$STEP_TIMEOUT" python /compat/gate_build.py /tmp/sentrook-gate 2>&1)
+gate_rc=$?
+printf '%s\n' "$gate_out" >"$OUT/memory-gate.log"
+if [ "$gate_rc" = 0 ]; then
+  record "memory gate" ok "$(tail -1 <<<"$gate_out")"
+else
+  record "memory gate" FAIL "$(tail -1 <<<"$gate_out")"
+fi
 
 exit "$failed"

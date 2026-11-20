@@ -4,6 +4,23 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
+## 2.0.0-beta.16
+
+- A background skill or memory save that Sentrook holds is no longer lost where Hermes can replay it: it is staged in
+  Hermes's own pending list, and the owner's notice gives its id and the commands to look at it and approve or reject
+  it (`/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>`; `/memory pending`, `/memory approve <id>`,
+  `/memory reject <id>`). Hermes's `write_approval` settings do not need to be on. Staged: new skills, skill edits
+  and patches, writing or removing a skill's file, and memory additions (alone or in a batch). Still held and lost:
+  skill deletes, saves Sentrook finds a secret in, saves too large to scan whole, blocked saves, and every save with
+  `skill_review: review`.
+- Changing or removing memory entries in Hermes's unattended background review is left to Hermes's own gate, which
+  stages it, only on Hermes builds the plugin has verified (0.23.0 to 0.23.2); the notice says what Hermes did. On any
+  other build, and for the rest of the process once Hermes saved such a change without the owner, it is held as
+  before.
+- The plugin writes each pending entry's summary itself (never the saved text), makes the staged file readable by the
+  owner only, and keeps at most 20 of its own entries waiting in each list. History shows a staged save as
+  "staged ... pending in Hermes", and `status` counts staged saves.
+
 ## 2.0.0-beta.15
 
 - Hermes's background skill and memory saves (the self-improvement review after a turn, and the curator) never ask

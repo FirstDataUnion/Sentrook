@@ -60,6 +60,18 @@ open(p, "w").write(text.replace(old, "  scan_url:\n    type: colour\n", 1))
 PY
 expect_fail unknown-config-type validate "config schema" "$work/unknown-config-type"
 
+# A Hermes whose background-review memory gate is not on the plugin's list of verified builds.
+copy_plugin "$work/unverified-gate"
+python3 - "$work/unverified-gate/staging.py" <<'PY'
+import re, sys
+p = sys.argv[1]
+text = open(p).read()
+new = re.sub(r'\n    "[0-9a-f]{64}": "[^"]*",', "", text)
+assert new != text
+open(p, "w").write(new)
+PY
+expect_fail unverified-gate "memory gate" "not verified" "$work/unverified-gate"
+
 # verify must fail when the identity service refuses the token mint.
 expect_fail token-mint verify "token mint" "$root/integrations/hermes/plugin" COMPAT_CLIENT_SECRET=wrong-secret
 
