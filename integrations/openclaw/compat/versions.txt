@@ -3,4 +3,4 @@
 # plugin/package.json); move all three together.
 # latest: the newest stable OpenClaw release; the host-compat-nightly workflow's bump job opens a PR to move it.
 floor 2026.9.5
-latest 2026.11.5
+latest 2026.11.6
