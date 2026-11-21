@@ -12,7 +12,7 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 ## Requirements
 
 - Hermes Agent **v0.23.0 or newer** (`hermes --version`), the oldest version the plugin declares.
-  Tested on v0.23.0 and v0.23.2.
+  Tested on v0.23.0 and v0.23.3.
   On an older Hermes, update Hermes first (`hermes update`).
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
