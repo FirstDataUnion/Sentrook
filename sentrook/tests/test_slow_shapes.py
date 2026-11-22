@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import random
 import re
+import sys
+import threading
 import time
 
 import pytest
@@ -254,6 +256,73 @@ def test_grant_matches_agree_with_the_regex():
             )
             matched += len(want)
     assert matched > 2000
+
+
+# --------------------------------------------------------------------------- threads
+
+#: Texts for each family of linear searches that reads a text once for all its matches: the scan
+#: server runs scans, and a scan its probes, on several threads at once.
+_THREADED = {
+    "grant": (
+        r"""\baz\s+role\s+assignment\s+create\b[^;&|\n]*--role[=\s]+["']?[\w\s-]*?"""
+        r"(?P<role>owner|contributor|administrator|admin)\b",
+        [
+            "x " * 40
+            + "az role assignment create --role owner ; az role assignment create --role admin",
+            "az role assignment create --assignee u --role contributor && ls ; " * 3 + "y" * 30,
+            "echo hi",
+            "az role assignment create --role reader ; " * 5
+            + "az role assignment create --role Owner",
+        ],
+    ),
+    "docker remote removal": (
+        r"\b(?:DOCKER_HOST=\S+\s+)?docker\s+(?:-H|--host)[\s=]\S+[^;&|\n]*"
+        r"\b(?:rm|rmi|system\s+prune|volume\s+rm)\b",
+        [
+            "docker -H x.rm.a b c rm d ; docker -H y rm",
+            "x " * 30 + "docker -H tcp://h rmi z && docker --host=h volume rm v",
+            "DOCKER_HOST=a docker -H h.rm.rm.rm " + "b " * 20,
+            "docker -H q system prune ; " * 4 + "docker -H r rm",
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("family", list(_THREADED))
+def test_searches_on_several_threads_give_each_text_its_own_matches(family):
+    from sentrook.aira import linear_search
+
+    pattern, texts = _THREADED[family]
+    rx = re.compile(pattern, re.IGNORECASE)
+    assert linear_search._linear(rx) is not None
+
+    def matches(text: str) -> list:
+        return [(m.span(), m.groupdict()) for m in linear_search.finditer(rx, text)]
+
+    want = {t: [(m.span(), m.groupdict()) for m in rx.finditer(t)] for t in texts}
+    wrong: list = []
+
+    def work(i: int) -> None:
+        for k in range(1500):
+            text = "".join(list(texts[(i + k) % len(texts)]))  # a new object, as a new segment is
+            try:
+                got = matches(text)
+            except Exception as e:  # noqa: BLE001 - a failure on one thread is a wrong answer
+                got = repr(e)
+            if got != want[text]:
+                wrong.append((text[:40], got))
+
+    switch = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(switch)
+    assert not wrong, (len(wrong), wrong[:3])
 
 
 # --------------------------------------------------------------------------- parent domains
