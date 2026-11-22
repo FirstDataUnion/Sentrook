@@ -164,6 +164,23 @@ class SeedOracle:
         for (kind, norm), v in self._by_key.items():
             if v.verdict is VerdictKind.KNOWN_GOOD:
                 self._known_good.setdefault(kind, {})[norm] = v
+        #: The longest seeded host: a parent domain longer than it is not looked up.
+        self._longest_host = max((len(n) for k, n in self._by_key if k == "host"), default=0)
+
+    def _parent_hit(self, host: str) -> Verdict | None:
+        """The verdict of the nearest seeded parent domain of `host` (`a.b.c` -> `b.c`, never the
+        last label alone). Only parents no longer than the longest seeded host are looked up, each a
+        slice from the label it starts at: a host of many labels is read in linear time."""
+        dot = host.find(".", max(len(host) - self._longest_host - 1, 0))
+        while dot >= 0:
+            after = host.find(".", dot + 1)
+            if after < 0:
+                return None
+            hit = self._by_key.get(("host", host[dot + 1 :]))
+            if hit is not None:
+                return hit
+            dot = after
+        return None
 
     def _near_miss(self, kind: str, norm: str) -> dict[str, Any] | None:
         listed = self._known_good.get(kind) or {}
@@ -184,11 +201,7 @@ class SeedOracle:
             key = (q.kind, _normalise(q.kind, q.value))
             hit = self._by_key.get(key)
             if hit is None and q.kind == "host":
-                parts = key[1].split(".")
-                for i in range(1, len(parts) - 1):
-                    hit = self._by_key.get(("host", ".".join(parts[i:])))
-                    if hit is not None:
-                        break
+                hit = self._parent_hit(key[1])
             if hit is None and q.kind == "recipient" and "@" in q.value:
                 hit = self._by_key.get(("host", q.value.split("@", 1)[1].lower()))
                 if hit is not None and hit.verdict is not VerdictKind.KNOWN_BAD:
