@@ -158,7 +158,8 @@ def _reference_prose_roles(text: str, *, home: str | None, workspace_root: str |
             if at < 0:
                 continue
             before = re.sub(r"\S*$", "", sentence[:at])
-            after = sentence[at:].split(None, 1)[1] if " " in sentence[at:] else ""
+            rest = sentence[at:].split(None, 1)
+            after = rest[1] if " " in sentence[at:] and len(rest) > 1 else ""
             if w._DONT.search(w._CLAUSE_BREAK.split(before)[-1]):
                 continue
             fetch_before = re.search(rf"\b{w._FETCH_VERB}\b", before, re.I)
@@ -242,10 +243,7 @@ def _phrased(rng: random.Random) -> str:
 
 
 def _roles(fn, text: str):
-    try:
-        return fn(text, home=HOME, workspace_root=None)
-    except IndexError as e:
-        return ("IndexError", str(e))
+    return fn(text, home=HOME, workspace_root=None)
 
 
 def test_prose_roles_agree_with_the_per_host_reading():
@@ -255,7 +253,7 @@ def test_prose_roles_agree_with_the_per_host_reading():
         text = _prose(rng) if i % 2 else _phrased(rng)
         want = _roles(_reference_prose_roles, text)
         assert _roles(written_selfmod._prose_roles, text) == want, text
-        found += bool(want) and not isinstance(want, tuple)
+        found += bool(want)
     assert found > 300
 
 
