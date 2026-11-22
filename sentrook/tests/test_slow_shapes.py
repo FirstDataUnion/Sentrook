@@ -89,6 +89,48 @@ SHAPES = {
     "mail to many addresses": lambda size: _write(
         AGENTS, "".join(f"send to u{i}@a.io " for i in range(size // 19))
     ),
+    # a host of many labels, looked up with each of its parent domains
+    "a fetch from a host of many labels": lambda size: ex(
+        _repeat("curl https://", "a.", "io", size)
+    ),
+    "a ping of a host of many labels": lambda size: ex(_repeat("ping ", "a.", "io", size)),
+    "docker -H with a host of many labels": lambda size: ex(
+        _repeat("docker -H ", "x.rm.", "", size)
+    ),
+}
+
+#: Cloud IAM grants, whose patterns the regex read back from the end of the command after every head.
+#: The context probe reads them too when its unnamed-role arm is on (`conv-v7`).
+GRANT_SHAPES = {
+    "az role assignments repeated": lambda size: _repeat(
+        "", "az role assignment create --role a ", "", size
+    ),
+    "an az role assignment with many roles": lambda size: _repeat(
+        "az role assignment create ", "--role a ", "", size
+    ),
+    "aws policy attachments repeated": lambda size: _repeat(
+        "", "aws iam attach-user-policy ", "", size
+    ),
+    "iam grants with a role repeated": lambda size: _repeat("", "iam grant --role x ", "", size),
+    "iam grants repeated": lambda size: _repeat("", "iam grant ", "", size),
+    "policy bindings repeated": lambda size: _repeat("", "add-iam-policy-binding ", "", size),
+    "mixed grant verbs": lambda size: _repeat(
+        "",
+        "iam grant x; iam bind-role --role a ; add-iam-policy-binding --role b ; "
+        "aws iam attach-role-policy x\n",
+        "",
+        size,
+    ),
+}
+SHAPES.update({name: lambda size, f=f: ex(f(size)) for name, f in GRANT_SHAPES.items()})
+#: Grants with a privileged role, read with the unnamed-role arm on.
+GRANT_SHAPES_MATCHED = {
+    "an az role assignment, the role after many words": lambda size: _repeat(
+        "az role assignment create --role ", "a ", "admin", size
+    ),
+    "privileged iam grants repeated": lambda size: _repeat(
+        "", "iam grant --role roles/x.admin ", "", size
+    ),
 }
 
 
@@ -101,6 +143,176 @@ def test_a_long_call_of_this_shape_scans_fast(name, size):
     assert spent < FAST, f"whole scan, {name} at {size}: {spent:.2f}s"
     aira = next(e for e in res.envelopes if e.step is ProbeStep.AIRA)
     assert aira.status is ProbeStatus.OK, aira.evidence
+
+
+@pytest.mark.parametrize("size", SIZES)
+@pytest.mark.parametrize("name", [*GRANT_SHAPES, *GRANT_SHAPES_MATCHED])
+def test_a_long_grant_call_scans_fast_with_the_unnamed_role_arm_on(name, size):
+    from test_aira_detectors import CLOCK, KEY
+    from test_converge_scan import BENIGN_ANSWERS
+    from test_jev_probes import FakeDecider
+
+    from sentrook.converge.params import load_params
+    from sentrook.scan import Scanner, ScannerConfig, ScanOptions
+
+    params = load_params("conv-v7")
+    assert params.context.lineage_unnamed_role_overreach > 0
+    sc = Scanner(ScannerConfig(token_key=KEY, decider=FakeDecider(BENIGN_ANSWERS), params=params))
+    raw = ex({**GRANT_SHAPES, **GRANT_SHAPES_MATCHED}[name](size))
+    start = time.perf_counter()
+    res = sc.scan(raw, ScanOptions(deterministic=True, clock=CLOCK, salt="testnest"))
+    spent = time.perf_counter() - start
+    assert spent < FAST, f"whole scan, {name} at {size}: {spent:.2f}s"
+    context = next(e for e in res.envelopes if e.step is ProbeStep.CONTEXT)
+    assert context.status is ProbeStatus.OK, context.evidence
+    if name in GRANT_SHAPES_MATCHED:
+        assert context.evidence["lineage"].get("unnamed_roles") == ["admin"], context.evidence
+
+
+# --------------------------------------------------------------------------- grant patterns
+
+_GRANT_HEADS = [
+    *["iam grant", "iam grant-role", "iam add-roles", "IAM  bind-Role", "iam set-role", "iam bind"],
+    *["xiam grant", "iam granted", "add-iam-policy-binding", "add-iam-policy-bindingx"],
+    *["aws iam attach-user-policy", "aws  IAM attach-group-policy", "aws iam put-role-policy"],
+    *["aws iam create-access-keyx", "az role assignment create", "AZ role\tassignment create"],
+    "az role assignment created",
+]
+_GRANT_GAPS = [
+    "",
+    " ",
+    " x ",
+    " a b ",
+    " --role a ",
+    " ; ",
+    " | ",
+    " & ",
+    "\n",
+    " -x ",
+    " --roles a ",
+]
+_GRANT_LEADS = ["--role", "--roles", "--ROLE", "--role\u017f", "--rolex", "-role", "--rol"]
+_GRANT_SEPS = ["=", " ", "  ", "\t", "\u00a0", "\u2003", "= ", " =", "", "==", "\n", ";"]
+_GRANT_QUOTES = ["", "", "'", '"', "''"]
+_GRANT_RUNS = ["", "", "roles/", "a", "x.y", "a/b", "my-", "custom", "a b ", "a  b ", "roles/x."]
+_GRANT_RUNS += ["a=b", "\u00e4", "-"]
+_GRANT_ROLES = [
+    *"owner admin administrator adminx Admin editor root superuser contributor".split(),
+    *"fullaccess PowerUser ownerx _owner x".split(),
+]
+_GRANT_AFTER = ["", " ", "x", "-", ".", ";", "\n", " admin", "|", "&"]
+_GRANT_JOINS = [" ", "", "  ", "\t", "\u00a0", "\u2003", "\n", ";", "|", "&", "'", "-", "/"]
+
+
+def _grant_text(rng: random.Random) -> str:
+    def unit() -> str:
+        return "".join(
+            rng.choice(pieces)
+            for pieces in (
+                _GRANT_HEADS,
+                _GRANT_GAPS,
+                [" ", "", "\t"],
+                _GRANT_LEADS,
+                _GRANT_SEPS,
+                _GRANT_QUOTES,
+                _GRANT_RUNS,
+                _GRANT_ROLES,
+                _GRANT_AFTER,
+            )
+        )
+
+    return "".join(unit() + rng.choice(_GRANT_JOINS) for _ in range(rng.randint(1, 4)))
+
+
+def test_grant_matches_agree_with_the_regex():
+    """Matches, spans and groups, from the start and from any position."""
+    from sentrook.aira import linear_search
+    from sentrook.aira.lists import load_lists
+
+    grants = [
+        r.regex
+        for r in load_lists().rules("remote_destructive", "cli")
+        if r.get("reason") == "remote.grant" and r.regex.groups
+    ]
+    assert len(grants) == 4 and all(rx.pattern in linear_search.BOUNDED_END for rx in grants)
+    rng = random.Random(20261122)
+    matched = 0
+    for _ in range(12000):
+        text = _grant_text(rng)
+        for rx in grants:
+            want = [(m.span(), m.groupdict()) for m in rx.finditer(text)]
+            assert [(m.span(), m.groupdict()) for m in linear_search.finditer(rx, text)] == want, (
+                rx.pattern,
+                text,
+            )
+            pos = rng.randint(0, len(text))
+            a, b = rx.search(text, pos), linear_search.search(rx, text, pos)
+            assert (a and (a.span(), a.groupdict())) == (b and (b.span(), b.groupdict())), (
+                rx.pattern,
+                text,
+                pos,
+            )
+            matched += len(want)
+    assert matched > 2000
+
+
+# --------------------------------------------------------------------------- parent domains
+
+
+def _reference_parent_hit(oracle, host: str):
+    """The parent-domain lookup as it joined the labels of each parent."""
+    parts = host.split(".")
+    for i in range(1, len(parts) - 1):
+        hit = oracle._by_key.get(("host", ".".join(parts[i:])))
+        if hit is not None:
+            return hit
+    return None
+
+
+_LABELS = ["a", "b", "io", "co", "", "x-y", "1", "127", "0", "\u00e9", "com", "github", "A", "IO"]
+
+
+def test_parent_domains_agree_with_joining_the_labels():
+    from sentrook.oracle.client import EntityQuery, SeedOracle
+
+    rng = random.Random(20261122)
+
+    def host(most: int) -> str:
+        return ".".join(rng.choice(_LABELS) for _ in range(rng.randint(1, most)))
+
+    for _ in range(60):
+        seeded = {host(4).lower().strip() for _ in range(rng.randint(0, 6))}
+        seeded |= {"a.io", "b.co", "1.0.0.127", "github.com"} if rng.random() < 0.5 else set()
+        oracle = SeedOracle(
+            {"entities": [{"kind": "host", "value": h, "verdict": "known_bad"} for h in seeded]}
+        )
+        queries = []
+        for _ in range(100):
+            h = host(rng.choice([3, 8, 30]))
+            h = h + "." if rng.random() < 0.2 else h
+            h = "." + h if rng.random() < 0.1 else h
+            assert oracle._parent_hit(h) is _reference_parent_hit(oracle, h), (seeded, h)
+            queries.append(EntityQuery("host", h))
+        verdicts = oracle.lookup(queries).verdicts
+        for q in queries:
+            norm = q.value.strip().lower()
+            want = oracle._by_key.get(("host", norm)) or _reference_parent_hit(oracle, norm)
+            got = verdicts[("host", q.value)]
+            assert (got.verdict, got.value) == (
+                (want.verdict, want.value) if want else (got.verdict, q.value)
+            )
+
+
+def test_a_host_of_many_labels_is_looked_up_fast():
+    from sentrook.oracle.client import EntityQuery, SeedOracle
+
+    oracle = SeedOracle({"entities": [{"kind": "host", "value": "a.io", "verdict": "known_bad"}]})
+    host = "a." * 47_000 + "io"
+    start = time.perf_counter()
+    got = oracle.lookup([EntityQuery("host", host), EntityQuery("host", host + "x")]).verdicts
+    assert time.perf_counter() - start < 0.5
+    assert got[("host", host)].value == "a.io"
+    assert got[("host", host + "x")].value == host + "x"
 
 
 # --------------------------------------------------------------------------- code references
