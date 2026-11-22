@@ -16,15 +16,21 @@ host`, the module of `python -m`, the program of `perl -e`, the file of `sed -i`
 options from every head in it (`-scp -scp …`): `option_run_finditer` reads each position of the run
 once, for the patterns in `OPTION_RUNS`, with the regex's own matches.
 
+The cloud IAM grant patterns (`<head>[^;&|\\n]*--role[=\\s]+…(?P<role>…)`) have a group the callers
+read: their leftmost start and where the match ends are found here (`BOUNDED_END`), and the regex
+builds the match from that start reading no further than that end, which gives its own match.
+
 The lists keep the patterns: an entry here is keyed by the pattern's text, so a pattern changed in a
 list (or an overlay) is searched as the regex it is. Every entry is checked against its regex.
 """
 
 from __future__ import annotations
 
+import bisect
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 #: The gap of a command pattern: any characters but a separator of simple commands.
 COMMAND_GAP = re.compile(r"[^;&|\n]*")
@@ -278,30 +284,30 @@ def _command(
     )
 
 
-class _GapTails:
+#: What one search, or one `finditer`, has read of its text (keyed by what read it), so the matches of
+#: one text are built from one pass. Each call makes its own: nothing read of a text is kept between
+#: calls, so calls on other threads never see it.
+TextMemo = dict[Hashable, Any]
+
+
+def _gap_tails(text: str, tail: re.Pattern[str], memo: TextMemo) -> list[int]:
     """For one text and tail: from each position, the last place in the gap (`[^;&|\\n]*`) read from
-    there where the tail matches (-1 for none). Kept for the last text read, so the matches of one
-    text are built from one pass."""
-
-    def __init__(self) -> None:
-        self.key: tuple[str, str] | None = None
-        self.last: list[int] = []
-
-    def __call__(self, text: str, tail: re.Pattern[str]) -> list[int]:
-        if self.key is None or self.key[1] != tail.pattern or self.key[0] is not text:
-            n = len(text)
-            last = [-1] * (n + 2)
-            for q in range(n, -1, -1):
-                later = last[q + 1] if q < n and text[q] not in ";&|\n" else -1
-                last[q] = later if later >= 0 else (q if tail.match(text, q) else -1)
-            self.key, self.last = (text, tail.pattern), last
-        return self.last
+    there where the tail matches (-1 for none)."""
+    key = ("gap_tails", tail.pattern)
+    last = memo.get(key)
+    if last is None:
+        n = len(text)
+        last = [-1] * (n + 2)
+        for q in range(n, -1, -1):
+            later = last[q + 1] if q < n and text[q] not in ";&|\n" else -1
+            last[q] = later if later >= 0 else (q if tail.match(text, q) else -1)
+        memo[key] = last
+    return last
 
 
-_GAP_TAILS = _GapTails()
-
-
-def _lead_gap_tail_end(text: str, start: int, head: re.Pattern[str], tail: re.Pattern[str]) -> int:
+def _lead_gap_tail_end(
+    text: str, start: int, head: re.Pattern[str], tail: re.Pattern[str], memo: TextMemo
+) -> int:
     """Where the match of `<head>\\S+[^;&|\\n]*<tail>` that starts at `start` ends (-1 for none), as
     the regex makes it: the word (`\\S+`) as long as a tail can follow it in the gap, then the gap as
     long as it can be. Asked of the regex, a long word whose tail is only found inside it (`-H
@@ -313,7 +319,7 @@ def _lead_gap_tail_end(text: str, start: int, head: re.Pattern[str], tail: re.Pa
     word = lead
     while word < len(text) and not text[word].isspace():
         word += 1
-    last = _GAP_TAILS(text, tail)
+    last = _gap_tails(text, tail, memo)
     for e in range(word, lead, -1):
         if last[e] >= 0:
             return tail.match(text, last[e]).end()  # type: ignore[union-attr]
@@ -364,6 +370,203 @@ _REMOTE_COPY = (
 _TO_SHELL = r"\|\s*(?:sudo\s+)?(?:ba|z|da|k|a|fi)?sh\b"
 _FROM_URL = r"\s(?:https?://|git\+)"
 _GATEWAY = r"\b(?:openclaw|hermes)"
+
+
+class _RoleTail:
+    """For one text, the positions where a role tail matches, in order: `<lead>[=\\s]+["']?<run>*?
+    <role>` (a run class `<run>`, `(?:roles/)?` before it read as part of it) or, with no lead, the
+    role alone. Read once per text: the role's starts and the runs of the class are found by the regex
+    engine, and each lead's `[=\\s]` run (no two leads share one) is walked once; the tail holds at a
+    lead when, from a place in that run (or just past a quote there), a role starts no later than
+    where the class run from that place ends."""
+
+    SEP = re.compile(r"[=\s]*", re.IGNORECASE)
+    QUOTE = re.compile(r"""["']""")
+
+    def __init__(self, leads: tuple[str, ...], run: str | None, role: str) -> None:
+        self.leads = [_rx(lead) for lead in leads]
+        self.first_lead = _rx(f"(?=(?:{'|'.join(leads)}))") if leads else None
+        self.run = _rx(f"(?:{run})+") if run is not None else None
+        self.role = _rx(f"(?=(?:{role}))")
+
+    def __call__(self, text: str, memo: TextMemo) -> list[int]:
+        at = memo.get(self)
+        if at is None:
+            at = memo[self] = self._read(text)
+        return at
+
+    def _read(self, text: str) -> list[int]:
+        roles = [m.start() for m in self.role.finditer(text)]
+        if self.first_lead is None or not roles:
+            return roles
+        assert self.run is not None
+        run_starts, run_ends = [], []
+        for m in self.run.finditer(text):
+            run_starts.append(m.start())
+            run_ends.append(m.end())
+
+        def reach(c: int) -> bool:
+            """A role starts in the class run from `c` (at `c` itself when there is none)."""
+            i = bisect.bisect_left(roles, c)
+            if i == len(roles):
+                return False
+            k = bisect.bisect_right(run_starts, c) - 1
+            run_end = run_ends[k] if k >= 0 and run_ends[k] > c else c
+            return roles[i] <= run_end
+
+        n = len(text)
+        out = []
+        for m in self.first_lead.finditer(text):
+            q = m.start()
+            for lead in self.leads:
+                lm = lead.match(text, q)
+                if lm is None:
+                    continue
+                a = lm.end()
+                b = self.SEP.match(text, a).end()  # type: ignore[union-attr]  (a `C*` always matches)
+                if any(
+                    reach(c) or (c < n and self.QUOTE.match(text, c) and reach(c + 1))
+                    for c in range(a + 1, b + 1)
+                ):
+                    out.append(q)
+                    break
+        return out
+
+
+_SEPARATOR = re.compile(r"[;&|\n]")
+
+
+def _separators(text: str, memo: TextMemo) -> list[int]:
+    """The separators of simple commands in the text, in order."""
+    seps = memo.get(_SEPARATOR)
+    if seps is None:
+        seps = memo[_SEPARATOR] = [m.start() for m in _SEPARATOR.finditer(text)]
+    return seps
+
+
+def _gap_tail(text: str, start: int, tails: list[int], memo: TextMemo) -> tuple[int, int]:
+    """For a head ending at `start` followed by `[^;&|\\n]*<tail>`: the first and the last place in
+    the gap where the tail starts (-1, -1 for none)."""
+    seps = _separators(text, memo)
+    s = bisect.bisect_left(seps, start)
+    gap_end = seps[s] if s < len(seps) else len(text)
+    i = bisect.bisect_left(tails, start)
+    if i == len(tails) or tails[i] > gap_end:
+        return -1, -1
+    return tails[i], tails[bisect.bisect_right(tails, gap_end) - 1]
+
+
+@dataclass(frozen=True)
+class _Grant:
+    """A grant pattern `<head>[^;&|\\n]*<tail>` (or, with `bare`, `<common>(?:<bare>|<rest>)` where
+    `<rest>` is that shape: a pattern whose first branch has no gap) and its tail's pieces. The head
+    matches one way at each start, and no head match starts inside another; the tail's first
+    character cannot start inside a head, so a head's gap is read from where `finditer` ends it."""
+
+    head: str
+    tail: str
+    leads: tuple[str, ...]
+    run: str | None
+    role: str
+    bare: tuple[str, str] | None = None
+
+    def pattern(self) -> str:
+        if self.bare is None:
+            return self.head + r"[^;&|\n]*" + self.tail
+        common, bare = self.bare
+        return f"{common}(?:{bare}|{self.head[len(common) :]}" + r"[^;&|\n]*" + f"{self.tail})"
+
+
+class _GrantSearch:
+    """Where the leftmost match of a `_Grant` pattern from a position starts, and where the match from
+    a start ends. The regex reads the gap after each head to the end of the simple command and tries
+    the tail at each place back from there (the tail's lazy run, read to its end, at each): cubic in a
+    long command of heads and leads (`az role assignment create --role a …`). Here the tail's places
+    are found once per text (`_RoleTail`); a head starts a match when one lies in its gap, and the
+    regex, taking the longest gap, starts the tail at the last of them: its match ends where the tail's
+    match from there ends."""
+
+    def __init__(self, g: _Grant) -> None:
+        self.head = _rx(g.head)
+        self.tail = _rx(g.tail)
+        self.bare = _rx(g.bare[0] + g.bare[1]) if g.bare is not None else None
+        self.tails = _RoleTail(g.leads, g.run, g.role)
+
+    def _read(self, text: str, memo: TextMemo) -> tuple[list[tuple[int, int]], list[int]]:
+        """Every head's span (none overlaps another) and where the first branch matches (no two of
+        its matches overlap)."""
+        read = memo.get(self)
+        if read is None:
+            heads = [m.span() for m in self.head.finditer(text)]
+            bares = [m.start() for m in self.bare.finditer(text)] if self.bare else []
+            read = memo[self] = (heads, bares)
+        return read
+
+    def start(self, text: str, pos: int, memo: TextMemo) -> int:
+        heads, bares = self._read(text, memo)
+        tails = self.tails(text, memo)
+        b = bisect.bisect_left(bares, pos)
+        bare = bares[b] if b < len(bares) else len(text) + 1
+        for i in range(bisect.bisect_left(heads, (pos, -1)), len(heads)):
+            h_start, h_end = heads[i]
+            if h_start > bare:
+                break
+            if _gap_tail(text, h_end, tails, memo)[0] >= 0:
+                return h_start
+        return bare if bare <= len(text) else -1
+
+    def end(self, text: str, start: int, memo: TextMemo) -> int:
+        if self.bare is not None and self.bare.match(text, start):
+            return -1  # the first branch: the regex matches it without a gap
+        h = self.head.match(text, start)
+        if h is None:
+            return -1
+        last = _gap_tail(text, h.end(), self.tails(text, memo), memo)[1]
+        t = self.tail.match(text, last) if last >= 0 else None
+        return t.end() if t is not None else -1
+
+
+_GRANTS = [
+    _Grant(
+        r"\biam\s+(?:add-roles?|grant(?:-role)?|bind(?:-role)?|set-role)\b",
+        r"""--roles?[=\s]+["']?(?:roles/)?[\w./-]*?"""
+        r"(?P<role>owner|admin|administrator|editor|root|superuser)\b",
+        ("--role", "--roles"),
+        r"[\w./-]",
+        r"(?:owner|admin|administrator|editor|root|superuser)\b",
+    ),
+    _Grant(
+        r"\badd-iam-policy-binding\b",
+        r"""--role[=\s]+["']?(?:roles/)?[\w./-]*?(?P<role>owner|editor|admin)\b""",
+        ("--role",),
+        r"[\w./-]",
+        r"(?:owner|editor|admin)\b",
+    ),
+    _Grant(
+        r"\baws\s+iam\s+attach-(?:user|role|group)-policy\b",
+        r"(?P<role>administrator|admin|fullaccess|poweruser)",
+        (),
+        None,
+        r"administrator|admin|fullaccess|poweruser",
+        bare=(
+            r"\baws\s+iam\s+",
+            r"(?:put-(?:user|role|group)-policy|create-access-key|create-login-profile"
+            r"|update-assume-role-policy|add-user-to-group|create-policy-version)\b",
+        ),
+    ),
+    _Grant(
+        r"\baz\s+role\s+assignment\s+create\b",
+        r"""--role[=\s]+["']?[\w\s-]*?(?P<role>owner|contributor|administrator|admin)\b""",
+        ("--role",),
+        r"[\w\s-]",
+        r"(?:owner|contributor|administrator|admin)\b",
+    ),
+]
+for (
+    _g
+) in _GRANTS:  # `(?:roles/)?` is read as part of the run: each of its characters is in the class
+    assert "(?:roles/)?" not in _g.tail or all(_rx(_g.run or "").match(c) for c in "roles/"), _g
+_GRANT_SEARCHES = {g.pattern(): _GrantSearch(g) for g in _GRANTS}
 
 #: Listed pattern (as written in its list, compiled ignoring case) -> where its leftmost match from a
 #: position starts.
@@ -457,23 +660,39 @@ LINEAR: dict[str, Search] = dict(
             r"\bkubectl\s+(?:create|apply|replace|patch|edit)\b",
             r"\b(?:clusterrolebindings?|rolebindings?|clusterroles?|rbac)\b",
         ),
+        # remote_destructive.yaml cli: cloud IAM grants of a privileged role
+        *(
+            (pattern, lambda text, pos, g=g: g.start(text, pos, {}))
+            for pattern, g in _GRANT_SEARCHES.items()
+        ),
     ]
 )
 
 #: Of `LINEAR`, patterns whose match is built here from the start found, as the regex builds it (they
 #: have no groups): pattern -> where the match from a start ends.
-MATCH_END: dict[str, Callable[[str, int], int]] = {
-    _DOCKER_REMOTE: lambda text, start: _lead_gap_tail_end(
+MATCH_END: dict[str, Callable[[str, int, TextMemo], int]] = {
+    _DOCKER_REMOTE: lambda text, start, memo: _lead_gap_tail_end(
         text,
         start,
         _rx(r"\b(?:DOCKER_HOST=\S+\s+)?docker\s+(?:-H|--host)[\s=]"),
         _rx(_DOCKER_REMOVE),
+        memo,
     )
 }
 
 #: Of `LINEAR`, the patterns whose match is not built from the start found (`search` asks the regex):
 #: the remote-copy marker, whose callers only ask whether it is there.
 FOUND_ONLY: frozenset[str] = frozenset({_REMOTE_COPY})
+
+#: Of `LINEAR`, patterns with groups whose match from a start is the regex's own, read no further
+#: than where it ends: pattern -> where the match from a start ends (-1: let the regex find it).
+BOUNDED_END: dict[str, Callable[[str, int, TextMemo], int]] = {
+    pattern: g.end for pattern, g in _GRANT_SEARCHES.items()
+}
+#: Of `LINEAR`, patterns whose start is found from what the call has read of the text.
+_MEMO_START: dict[str, Callable[[str, int, TextMemo], int]] = {
+    pattern: g.start for pattern, g in _GRANT_SEARCHES.items()
+}
 
 #: A match with a given span: a chain has no groups, so its match is its span.
 _SPAN = re.compile(r".*", re.S)
@@ -494,9 +713,12 @@ def found(rx: re.Pattern[str], text: str) -> bool:
     return linear(text, 0) >= 0 if linear is not None else rx.search(text) is not None
 
 
-def search(rx: re.Pattern[str], text: str, pos: int = 0) -> re.Match[str] | None:
+def search(
+    rx: re.Pattern[str], text: str, pos: int = 0, memo: TextMemo | None = None
+) -> re.Match[str] | None:
     """`rx.search(text, pos)`: for the patterns in `LINEAR` the leftmost start is found in linear time
-    and the regex matches from there (none found, nothing to match)."""
+    and the regex matches from there (none found, nothing to match). `memo`: what an earlier search
+    of the same text in this call has read of it (`finditer` passes its own)."""
     linear = _linear(rx)
     if linear is not None and rx.pattern in CHAIN_SPANS:
         span = next(CHAIN_SPANS[rx.pattern](text, pos), None)
@@ -505,13 +727,22 @@ def search(rx: re.Pattern[str], text: str, pos: int = 0) -> re.Match[str] | None
         if linear is not None and linear(text, pos) < 0:
             return None
         return rx.search(text, pos)
-    start = linear(text, pos)
+    memo = {} if memo is None else memo
+    memo_start = _MEMO_START.get(rx.pattern)
+    start = memo_start(text, pos, memo) if memo_start is not None else linear(text, pos)
     if start < 0:
         return None
     if rx.pattern in MATCH_END:
-        end = MATCH_END[rx.pattern](text, start)
+        end = MATCH_END[rx.pattern](text, start, memo)
         if end >= 0:
             return _SPAN.match(text, start, end)
+    if rx.pattern in BOUNDED_END:
+        # The regex matched no further than where its match ends: every check it makes then reads
+        # the same characters, so its first match is the same one.
+        end = BOUNDED_END[rx.pattern](text, start, memo)
+        m = rx.match(text, start, end) if end >= 0 else None
+        if m is not None and m.end() == end:
+            return m
     return rx.match(text, start) or rx.search(text, pos)
 
 
@@ -808,8 +1039,9 @@ def finditer(rx: re.Pattern[str], text: str) -> Iterator[re.Match[str]]:
             yield from rx.finditer(text)
         return
     pos = 0
+    memo: TextMemo = {}
     while pos <= len(text):
-        m = search(rx, text, pos)
+        m = search(rx, text, pos, memo)
         if m is None:
             return
         yield m

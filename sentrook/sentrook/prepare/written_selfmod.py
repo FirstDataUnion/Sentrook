@@ -1866,14 +1866,11 @@ class _Sentence:
         return self.word_starts[at]
 
     def after(self, at: int) -> int:
-        """Where `sentence[at:].split(None, 1)[1]` starts (when `sentence[at:]` holds a space; else
-        there are no words after)."""
+        """Where the words after the token at `at` start: the end of the sentence when nothing but
+        whitespace follows it (trailing spaces before a line break, or inline code read as blank)."""
         if self.last_space < at:
             return self.n
-        a = self.next_word[self.next_space[at]]
-        if a == self.n:  # what the split does: there is no second part
-            raise IndexError("list index out of range")
-        return a
+        return self.next_word[self.next_space[at]]
 
     # ---- the words before a position `b`
 
