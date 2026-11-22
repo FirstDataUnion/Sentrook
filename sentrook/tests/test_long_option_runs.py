@@ -454,6 +454,9 @@ _PHRASES = [
     *"x a.b @ : = ( ) ' / . - -x".split(),
     *"|sudo -u -curl|sudo |sudo\t-E -sh |sh SUDO python3 node| -|bash -a\nb".split(),
     *"open( open\n( OPEN( ) 'w' \"a+\" 'x' 'r' 'w+\" \"wb\" f,".split(),
+    *"iam grant grant-role add-roles bind-role --role --roles= roles/ owner admin editor root".split(),
+    *"administrator add-iam-policy-binding attach-user-policy put-role-policy poweruser".split(),
+    *"az role assignment create contributor".split(),
 ]
 _NOISE = [" ", " ", "  ", "\t", "\n", ";", "&", "|", " | ", " > ", "-x "]
 
@@ -602,6 +605,10 @@ _SLOW_UNITS = {
     "git\\s+push": ["git push "],
     "DOCKER_HOST": ["DOCKER_HOST=", "docker -H x "],
     "kubectl": ["kubectl create "],
+    "assignment": ["az role assignment create --role a ", "az role assignment create ", "--role "],
+    "add-roles": ["iam grant ", "iam grant --role x ", "--roles=a ", "iam grant --role a=b "],
+    "add-iam-policy": ["add-iam-policy-binding ", "add-iam-policy-binding --role a "],
+    "attach-": ["aws iam attach-user-policy ", "aws iam put-role-policy x ", "admin "],
     "open\\s": ["open(", "open (", "open('", "open(x, 'r'"],
 }
 
