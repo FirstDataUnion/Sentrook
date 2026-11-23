@@ -16,7 +16,8 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
   On an older Hermes, update Hermes first (`hermes update`).
 - Plugins loaded inside Hermes (`plugins.isolation: in_process`, the default). With `plugins.isolation: host` every
   call is still scanned, but Hermes's background skill and memory saves are not recognised (see
-  [Background skill and memory saves](#background-skill-and-memory-saves)).
+  [Background skill and memory saves](#background-skill-and-memory-saves)), and Hermes offers no `hermes sentrook`
+  commands (`verify`, `history` and the rest): use `/sentrook` in a chat or the terminal session instead.
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
@@ -76,7 +77,8 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
 
 If Hermes answers `'sentrook' is not a hermes command`, the plugin is not enabled: run
-`hermes plugins enable sentrook` and restart. `hermes plugins list` should show `sentrook` as enabled, with a 2.0
+`hermes plugins enable sentrook` and restart. With `plugins.isolation: host` Hermes has no `hermes sentrook`
+commands at all; check with `/sentrook status` in a session instead. `hermes plugins list` should show `sentrook` as enabled, with a 2.0
 version.
 
 ## 5. First scan
@@ -415,9 +417,12 @@ cron job, a webhook, the API server or any other platform. History marks these s
 
 All of this needs the plugin to run inside Hermes, which is Hermes's default (`plugins.isolation: in_process`). With
 `plugins.isolation: host` Hermes runs plugins in a separate process, where the plugin cannot tell a background save
-from your own call: background saves are then scanned like any other call, without the conversation, and none of the
-above applies. The plugin warns about this when it starts, and `status` shows `background saves: not recognised`. To
-have them recognised, set it back:
+from your own call: background saves are then scanned like any other call of your session, without the conversation,
+and none of the above applies. A save Sentrook would ask about becomes an ordinary approval prompt in your session, or
+on the local terminal is refused by Hermes's background review, which cannot ask you (history then shows it as denied,
+not as auto-denied by the review loop). `/sentrook status` shows `background saves: not recognised`, and the plugin
+logs a warning when it starts (in Hermes's `agent.log`, as a line from the plugin host). To have them recognised, set
+it back:
 
 ```bash
 hermes config set plugins.isolation in_process
