@@ -187,6 +187,21 @@
     ".srk-howto-title{font-weight:600}.srk-howto-state{color:var(--srk-muted);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
     ".srk-howto-body{padding:0 0 12px;font-size:13px}.srk-howto-body p{margin:6px 0}",
     ".srk-cmds{display:flex;flex-direction:column;gap:6px;margin:8px 0}",
+    // The call, when the owner turned calls on.
+    ".srk-call{border-top:1px solid var(--srk-border);margin:14px 0 4px;padding-top:6px}",
+    ".srk-call>summary{cursor:pointer;font-weight:600;padding:4px 0;color:var(--srk-accent)}",
+    ".srk-call-head{color:var(--srk-muted);font-size:12px;margin:4px 0 8px}",
+    ".srk-call-tool{font-weight:600;margin:0 0 8px}",
+    ".srk-call-args{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 12px;font-size:13px;margin:0}",
+    ".srk-call-args>dt{color:var(--srk-muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.srk-call-args>dd{margin:0;min-width:0}",
+    ".srk-call-inline{overflow-wrap:anywhere}",
+    ".srk .srk-call-text{margin:0;padding:8px 10px;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;",
+    "font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--srk-soft);border:1px solid var(--srk-border);border-radius:6px}",
+    ".srk-call-list{margin:0;padding-left:22px}.srk-call-list>li{margin:0 0 6px}",
+    ".srk-call-obj{display:flex;flex-direction:column;gap:8px;min-width:0}",
+    ".srk-call-edit{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}",
+    ".srk-call-key{font-size:12px;color:var(--srk-muted);margin:0 0 3px}",
+    ".srk-call-old .srk-call-text{border-left:3px solid var(--srk-high)}.srk-call-new .srk-call-text{border-left:3px solid var(--srk-low)}",
     ".srk-cmd{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;align-items:center}",
     ".srk-cmd code{display:block;font-size:12px;padding:5px 8px;border-radius:6px;background:var(--srk-soft);overflow-x:auto;white-space:pre}",
     ".srk-cmd-note{grid-column:1/-1;color:var(--srk-muted);font-size:12px}",
@@ -497,6 +512,95 @@
     return out.length ? el("div", { class: "srk-bar-row" }, out) : null;
   }
 
+  /** Before/after pairs an edit tool names its text with, drawn as one block. */
+  var EDIT_PAIRS = [
+    ["old_string", "new_string"],
+    ["oldText", "newText"],
+    ["old_text", "new_text"],
+    ["oldString", "newString"],
+    ["old_str", "new_str"],
+    ["old", "new"],
+  ];
+
+  function isObj(v) {
+    return v !== null && typeof v === "object" && !Array.isArray(v);
+  }
+
+  /** One argument value: short text inline, long or multi-line text in a scrolling block, lists and objects nested. */
+  function callValue(v) {
+    if (typeof v === "string") {
+      if (v.length > 80 || v.indexOf("\n") >= 0) return el("pre", { class: "srk-call-text", text: v });
+      return el("code", { class: "srk-call-inline", text: v === "" ? '""' : v });
+    }
+    if (v === null || typeof v !== "object") return el("code", { class: "srk-call-inline", text: String(v) });
+    if (Array.isArray(v)) {
+      if (!v.length) return el("code", { class: "srk-call-inline", text: "[]" });
+      return el("ol", { class: "srk-call-list", start: "0" }, v.map(function (x) {
+        return el("li", null, [callValue(x)]);
+      }));
+    }
+    return callArgs(v);
+  }
+
+  function callArgs(args) {
+    var keys = Object.keys(args);
+    if (!keys.length) return el("code", { class: "srk-call-inline", text: "{}" });
+    var used = {};
+    var kids = [];
+    EDIT_PAIRS.forEach(function (pair) {
+      if (typeof args[pair[0]] !== "string" || typeof args[pair[1]] !== "string") return;
+      used[pair[0]] = used[pair[1]] = true;
+      kids.push(el("div", { class: "srk-call-edit" }, [
+        el("div", { class: "srk-call-side srk-call-old" }, [el("div", { class: "srk-call-key", text: "Before (" + pair[0] + ")" }), el("pre", { class: "srk-call-text", text: args[pair[0]] })]),
+        el("div", { class: "srk-call-side srk-call-new" }, [el("div", { class: "srk-call-key", text: "After (" + pair[1] + ")" }), el("pre", { class: "srk-call-text", text: args[pair[1]] })]),
+      ]));
+    });
+    var rows = keys.filter(function (k) {
+      return !used[k];
+    });
+    if (rows.length) {
+      kids.unshift(el("dl", { class: "srk-call-args" }, rows.reduce(function (acc, k) {
+        acc.push(el("dt", { text: k }), el("dd", null, [callValue(args[k])]));
+        return acc;
+      }, [])));
+    }
+    return el("div", { class: "srk-call-obj" }, kids);
+  }
+
+  /**
+   * The call itself, collapsed under the scan's details. Only when the owner turned calls on (`show_calls`):
+   * otherwise the page holds no call content and says how to see it.
+   */
+  function callSection(scan, model, opts) {
+    var cmd = cmdOf(model);
+    var body = [];
+    if (model.show_calls) {
+      if (!scan.call) {
+        body.push(el("p", { class: "srk-call-head", text: "This scan's record holds no call." }));
+      } else {
+        body.push(el("p", {
+          class: "srk-call-head",
+          text: "As the plugin sent it to the scanner: secrets masked, the rest as the agent wrote it. Very long text is cut.",
+        }));
+        body.push(el("div", { class: "srk-call-tool" }, [el("code", { text: scan.call.tool || "unknown tool" })]));
+        var args = scan.call.arguments;
+        body.push(isObj(args) ? callArgs(args) : callValue(args));
+      }
+    } else {
+      if (opts.noCommands) return null;
+      body.push(el("p", {
+        class: "srk-call-head",
+        text: "This page does not show what a call contained unless you turn that on. Anyone who can open this page can then read it (secrets are masked).",
+      }));
+      var cmds = [];
+      var setting = model.commands && model.commands.call_setting;
+      if (setting) cmds.push(command(setting, "Turns it on; reload this page once the setting is in effect."));
+      cmds.push(command(cmd("report") + " " + scan.id.slice(0, 8) + " --save", "Or, without turning it on: saves this scan's full record to a file only you can read."));
+      body.push(el("div", { class: "srk-cmds" }, cmds));
+    }
+    return el("details", { class: "srk-call" }, [el("summary", { text: "Show the call" })].concat(body));
+  }
+
   function detail(scan, model, open, opts) {
     opts = opts || {};
     var cmd = cmdOf(model);
@@ -548,6 +652,8 @@
       acc.push(hinted("dt", f[0], f[2]), el("dd", { text: f[1] }));
       return acc;
     }, [])));
+    var call = callSection(scan, model, opts);
+    if (call) kids.push(call);
     if (!opts.noCommands && (scan.bucket === "blocked" || scan.bucket === "review" || scan.bucket === "observed")) {
       kids.push(el("div", { class: "srk-cmds" }, [
         command(cmd("why") + " " + scan.id.slice(0, 8), "The same scan as text, with any grant that would allow calls like it next time."),

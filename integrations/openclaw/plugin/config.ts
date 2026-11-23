@@ -69,6 +69,8 @@ export interface PluginConfig {
   historyLimit: number;
   inputCapBytes: number;
   historyArgsCapBytes: number;
+  /** Each dashboard scan shows its call (redacted arguments). Off by default: anyone who can open the tab reads them. */
+  dashboardShowCalls: boolean;
   packs: string[];
   trustedSenders: string[];
   trustedRoles: string[];
@@ -269,6 +271,7 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     historyLimit: num(cfg.historyLimit, DEFAULT_HISTORY_LIMIT, 1, 200),
     inputCapBytes: num(cfg.inputCapBytes, DEFAULT_INPUT_CAP_BYTES, 1024),
     historyArgsCapBytes: num(cfg.historyArgsCapBytes, DEFAULT_HISTORY_ARGS_CAP_BYTES, 256),
+    dashboardShowCalls: bool(cfg.dashboardShowCalls ?? env.SENTROOK_DASHBOARD_SHOW_CALLS, false),
     packs: list(cfg.packs).length ? list(cfg.packs) : ["tier1"],
     trustedSenders: list(cfg.trustedSenders ?? env.SENTROOK_TRUSTED_SENDERS),
     trustedRoles: list(cfg.trustedRoles ?? env.SENTROOK_TRUSTED_ROLES),
