@@ -6,6 +6,13 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- New setting `dashboard_show_calls` (off by default): each scan in the Sentrook dashboard tab gets **Show the call**,
+  the tool and its arguments as the plugin sent them to the scanner (secrets masked, very long text cut), with a
+  patch's old and new text side by side. Off, the tab still shows no call content, and **Show the call** gives the
+  setting and the `/sentrook report <id> --save` command.
+- The Sentrook dashboard tab draws its hover hints itself, on hover, on keyboard focus (hinted labels can be reached
+  with Tab) and on tap. Before, they were the browser's own tooltips, which never show on a touch screen and do not
+  show inside OpenClaw's tab frame in some browsers; the tab shares its page script with OpenClaw.
 - The Hermes TUI and the Hermes desktop app count as attended, whether or not Hermes has a terminal: a review there
   is asked with Hermes's own approval card, and a snooze reaches Hermes's background saves after a session there.
   Before, both were judged by the terminal test the plain command line uses, and neither has a terminal (the TUI

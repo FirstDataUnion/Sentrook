@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from plugin import dashboard
+from plugin import SETTINGS_KEYS, dashboard
 from plugin.config import resolve_config
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -298,3 +298,83 @@ def test_api_serves_the_report_panel(api, tmp_path):
     assert "PLANIR-BODY-MARKER" not in json.dumps(
         m
     )  # the full record stays with the owner's commands
+
+
+# ---- Showing the call (dashboard_show_calls, off by default) ----
+
+CALLS_LOG = DASH / "calls.jsonl"
+#: Strings in the calls fixture that sit outside the pending call's tool and arguments.
+NOT_THE_CALL = (
+    "REQUEST-TEXT-MARKER",
+    "HISTORY-MARKER",
+    "NARRATION-MARKER",
+    "SIBLING-MARKER",
+    "DETAIL-MARKER",
+    "planir",
+)
+
+
+def _typed(v):
+    """A value with each scalar tagged by its JSON type, so True is not 1 and 1 is not "1"."""
+    if isinstance(v, dict):
+        return {k: _typed(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_typed(x) for x in v]
+    if isinstance(v, bool) or v is None:
+        return (type(v).__name__, v)
+    if isinstance(v, (int, float)):
+        return ("number", float(v))
+    return ("str", v)
+
+
+def test_call_of_matches_the_shared_fixture():
+    got = [dashboard.call_of(json.loads(line)) for line in CALLS_LOG.read_text().splitlines()]
+    assert _typed(got) == _typed(json.loads((DASH / "calls.json").read_text()))
+    # Numbers as JavaScript reads them: past 2^53 a double, past the double range None; long keys cut.
+    huge = got[12]["arguments"]
+    assert list(huge.values())[:4] == [None, float(2**60), 2**53, -float(2**60)]
+    assert list(huge)[4] == "k" * 200 + "…"
+    assert got[2]["arguments"]["background"] is False
+    # Integer-like keys first, as JavaScript orders them; the rest as written.
+    assert list(got[8]["arguments"]) == ["2", "10", "b", "a", "01", "-1"]
+    assert got[11] is None
+
+
+def test_show_calls_setting_is_off_by_default(tmp_path):
+    assert resolve_config({}, {}).dashboard_show_calls is False
+    assert resolve_config({"dashboard_show_calls": True}, {}).dashboard_show_calls is True
+    assert resolve_config({}, {"SENTROOK_DASHBOARD_SHOW_CALLS": "1"}).dashboard_show_calls is True
+    assert "dashboard_show_calls" in SETTINGS_KEYS
+
+
+def test_calls_off_the_model_holds_no_part_of_a_call(tmp_path):
+    shutil.copy(CALLS_LOG, tmp_path / "traffic.jsonl")
+    cfg = resolve_config({"state_dir": str(tmp_path)}, {})
+    m = dashboard.build_model(cfg, dashboard.query_of({"n": "50"}))
+    assert m["show_calls"] is False
+    assert len(m["scans"]) == 13
+    assert all("call" not in s for s in m["scans"])
+    text = json.dumps(m, ensure_ascii=False)
+    for marker in (*NOT_THE_CALL, "notes/todo.md", "git status", "#général"):
+        assert marker not in text
+
+
+def test_calls_on_each_scan_carries_its_call_and_nothing_else(tmp_path):
+    shutil.copy(CALLS_LOG, tmp_path / "traffic.jsonl")
+    cfg = resolve_config({"state_dir": str(tmp_path), "dashboard_show_calls": True}, {})
+    m = dashboard.build_model(cfg, dashboard.query_of({"n": "50"}))
+    assert m["show_calls"] is True
+    edits = [s for s in m["scans"] if s["tool"] == "edit"]
+    assert edits[-1]["call"] == {
+        "tool": "edit",
+        "arguments": {
+            "path": "notes/todo.md",
+            "old_string": "- [ ] ship\n",
+            "new_string": "- [x] ship\n- [ ] <script>alert(1)</script>\n",
+        },
+    }
+    assert [s for s in m["scans"] if s["tool"] == "web_fetch"][0]["call"] is None
+    text = json.dumps(m, ensure_ascii=False)
+    for marker in NOT_THE_CALL:
+        assert marker not in text
+    assert m["commands"]["call_setting"].endswith("dashboard_show_calls true")

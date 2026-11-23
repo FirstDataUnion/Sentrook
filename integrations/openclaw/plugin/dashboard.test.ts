@@ -10,6 +10,8 @@ import { resolveConfig } from "./config.ts";
 import {
   budgetFor,
   buildModel,
+  CALL_TOTAL_MAX,
+  callOf,
   COMMANDS,
   handleRequest,
   limitOf,
@@ -36,7 +38,7 @@ const HERMES_VIEW = fileURLToPath(new URL("../../hermes/plugin/dashboard/view.js
 const BRAND_MARK = fileURLToPath(new URL("../../../brand/sentrook-mark.svg", import.meta.url));
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED"];
+const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED", "SENTROOK_DASHBOARD_SHOW_CALLS"];
 const savedEnv: Record<string, string | undefined> = {};
 let stateDir = "";
 let logFile = "";
@@ -399,9 +401,13 @@ class FakeNode {
   className = "";
   id = "";
   namespaceURI: string | null = null;
-  listeners: Record<string, Array<() => void>> = {};
+  listeners: Record<string, Array<(e?: any) => void>> = {};
   private ownText: string | null = null;
   ownerDocument: any;
+  parentNode: FakeNode | null = null;
+  style: Record<string, string> = {};
+  offsetWidth = 120;
+  offsetHeight = 30;
   constructor(tag: string, doc: any) {
     this.tag = tag;
     this.ownerDocument = doc;
@@ -419,14 +425,38 @@ class FakeNode {
   appendChild(n: FakeNode) {
     this.ownText = this.ownText === null ? null : this.ownText;
     this.children.push(n);
+    n.parentNode = this;
     return n;
   }
   removeChild(n: FakeNode) {
     this.children = this.children.filter((c) => c !== n);
+    n.parentNode = null;
     return n;
   }
   setAttribute(k: string, v: string) {
     this.attrs[k] = v;
+  }
+  removeAttribute(k: string) {
+    delete this.attrs[k];
+  }
+  contains(n: FakeNode | null): boolean {
+    for (let c = n; c; c = c.parentNode) if (c === this) return true;
+    return false;
+  }
+  /** Only the selectors the view uses: a tag list, or one `[attr]`. */
+  private matches(sel: string): boolean {
+    const attr = /^\[([\w-]+)\]$/.exec(sel);
+    return attr ? this.attrs[attr[1]!] !== undefined : sel.split(",").includes(this.tag);
+  }
+  closest(sel: string): FakeNode | null {
+    for (let c: FakeNode | null = this; c; c = c.parentNode) if (c.matches(sel)) return c;
+    return null;
+  }
+  querySelectorAll(sel: string): FakeNode[] {
+    return this.all().slice(1).filter((n) => n.matches(sel));
+  }
+  getBoundingClientRect() {
+    return { left: 100, top: 200, right: 160, bottom: 220, width: 60, height: 20 };
   }
   private typed: string | null = null;
   /** As the DOM has it: an input's value starts from its attribute; a select's is its selected option's. */
@@ -443,11 +473,16 @@ class FakeNode {
   getAttribute(k: string) {
     return this.attrs[k] ?? null;
   }
-  addEventListener(type: string, fn: () => void) {
+  addEventListener(type: string, fn: (e?: any) => void) {
     (this.listeners[type] ??= []).push(fn);
   }
   click() {
     for (const fn of this.listeners.click ?? []) fn();
+  }
+  /** Calls this node's listeners for `type`, then each ancestor's, as a bubbling event would. */
+  fire(type: string, extra: Record<string, unknown> = {}) {
+    const e = { type, target: this, ...extra };
+    for (let c: FakeNode | null = this; c; c = c.parentNode) for (const fn of c.listeners[type] ?? []) fn(e);
   }
   all(): FakeNode[] {
     return [this, ...this.children.flatMap((c) => c.all())];
@@ -461,8 +496,12 @@ function drawView(model: unknown): FakeNode {
   return drawViewWith(model).root;
 }
 
-function drawViewWith(model: unknown): { root: FakeNode; window: any } {
-  const doc: any = { documentElement: null, head: null };
+function drawViewWith(model: unknown): { root: FakeNode; window: any; doc: any; tick: () => void; redraw: () => void } {
+  const doc: any = { documentElement: null, head: null, listeners: {} as Record<string, Array<(e: any) => void>> };
+  doc.addEventListener = (type: string, fn: (e: any) => void) => (doc.listeners[type] ??= []).push(fn);
+  doc.removeEventListener = (type: string, fn: (e: any) => void) => {
+    doc.listeners[type] = (doc.listeners[type] ?? []).filter((f: unknown) => f !== fn);
+  };
   const make = (tag: string) => new FakeNode(tag, doc);
   doc.createElement = make;
   doc.createElementNS = (ns: string, tag: string) => {
@@ -476,15 +515,31 @@ function drawViewWith(model: unknown): { root: FakeNode; window: any } {
     return n;
   };
   doc.documentElement = make("html");
+  doc.documentElement.clientWidth = 800;
   doc.head = make("head");
   const root = make("div");
   const data = make("script");
   data.textContent = JSON.stringify(model);
   doc.getElementById = (id: string) =>
     id === "sentrook-root" ? root : id === "sentrook-model" ? data : doc.head.children.find((c: FakeNode) => c.id === id) ?? null;
-  const window: any = { location: { search: "" } };
-  new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout: () => 0, navigator: {}, encodeURIComponent });
-  return { root, window };
+  const window: any = { location: { search: "" }, innerHeight: 600 };
+  doc.defaultView = window;
+  const timers = new Map<number, () => void>();
+  let next = 1;
+  const setTimeout = (fn: () => void) => {
+    timers.set(next, fn);
+    return next++;
+  };
+  const clearTimeout = (id: number) => timers.delete(id);
+  const run = () => new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout, clearTimeout, navigator: {}, encodeURIComponent });
+  run();
+  /** Runs the timers due so far. */
+  const tick = () => {
+    const due = [...timers.values()];
+    timers.clear();
+    due.forEach((fn) => fn());
+  };
+  return { root, window, doc, tick, redraw: run };
 }
 
 function viewModel(): any {
@@ -534,16 +589,104 @@ test("signals start collapsed; every tier, signal and value carries a hover hint
   assert.equal(signals.length, 3);
   for (const d of signals) assert.equal(d.getAttribute("open"), null, "collapsed by default");
   for (const tier of detail.byClass("srk-tier")) {
-    assert.ok(tier.byClass("srk-tier-name")[0]!.getAttribute("title"));
-    assert.ok(tier.byClass("srk-tier-score")[0]!.getAttribute("title"));
+    assert.ok(tier.byClass("srk-tier-name")[0]!.getAttribute("data-srk-hint"));
+    assert.ok(tier.byClass("srk-tier-score")[0]!.getAttribute("data-srk-hint"));
   }
   for (const leaf of detail.byClass("srk-leaf")) {
     const label = leaf.byClass("srk-leaf-top")[0]!.children[0]!;
-    assert.ok((label.getAttribute("title") ?? "").length > 20, `${label.textContent} has a hint`);
-    assert.ok(leaf.byClass("srk-leaf-val")[0]!.getAttribute("title"));
+    assert.ok((label.getAttribute("data-srk-hint") ?? "").length > 20, `${label.textContent} has a hint`);
+    assert.ok(leaf.byClass("srk-leaf-val")[0]!.getAttribute("data-srk-hint"));
   }
-  for (const chip of detail.byClass("srk-chip")) assert.ok(chip.getAttribute("title"), chip.textContent);
-  for (const dt of detail.all().filter((n) => n.tag === "dt")) assert.ok(dt.getAttribute("title"), dt.textContent);
+  for (const chip of detail.byClass("srk-chip")) assert.ok(chip.getAttribute("data-srk-hint"), chip.textContent);
+  for (const dt of detail.all().filter((n) => n.tag === "dt")) assert.ok(dt.getAttribute("data-srk-hint"), dt.textContent);
+});
+
+test("hints are drawn by the page: no title attributes, one hidden tooltip, hinted labels take focus", () => {
+  const { root } = drawViewWith(viewModel());
+  const all = root.all();
+  assert.deepStrictEqual(all.filter((n) => n.getAttribute("title") !== null).map((n) => n.textContent), [], "no browser title tooltips");
+  const tips = root.byClass("srk-tip");
+  assert.equal(tips.length, 1);
+  assert.equal(tips[0]!.getAttribute("role"), "tooltip");
+  assert.notEqual(tips[0]!.getAttribute("hidden"), null, "hidden until asked for");
+  const hinted = all.filter((n) => n.getAttribute("data-srk-hint"));
+  assert.ok(hinted.length > 40, `${hinted.length} hinted elements`);
+  const controls = ["a", "button", "input", "select", "textarea", "summary", "label"];
+  for (const n of hinted) {
+    const inControl = n.closest(controls.join(",")) !== null;
+    assert.equal(n.getAttribute("tabindex") === "0", !inControl, `${n.tag} "${n.textContent.slice(0, 30)}" focusable only outside a control`);
+  }
+});
+
+test("a hint shows on focus, hover and tap, as text, and hides on blur, Escape and a click elsewhere", () => {
+  const { root, doc, tick } = drawViewWith(viewModel());
+  const tip = root.byClass("srk-tip")[0]!;
+  const name = root.byClass("srk-tier-name")[0]!;
+  const hint = name.getAttribute("data-srk-hint")!;
+  assert.ok(hint.length > 20);
+
+  name.fire("focusin");
+  assert.equal(tip.getAttribute("hidden"), null);
+  assert.equal(tip.textContent, hint);
+  assert.equal(name.getAttribute("aria-describedby"), "srk-tip");
+  assert.match(tip.style.top!, /^-?\d+px$/);
+  name.fire("focusout");
+  assert.notEqual(tip.getAttribute("hidden"), null);
+  assert.equal(name.getAttribute("aria-describedby"), null);
+
+  // Hover waits a moment, then shows.
+  const score = root.byClass("srk-tier-score")[0]!;
+  score.fire("mouseover");
+  assert.notEqual(tip.getAttribute("hidden"), null, "not straight away");
+  tick();
+  assert.equal(tip.textContent, score.getAttribute("data-srk-hint"));
+  for (const fn of doc.listeners.keydown) fn({ key: "Escape" });
+  assert.notEqual(tip.getAttribute("hidden"), null);
+
+  // A tap on a label shows it; a tap on a control (the scan row) does not.
+  name.fire("click");
+  assert.equal(tip.getAttribute("hidden"), null);
+  for (const fn of doc.listeners.click) fn({ target: doc.documentElement });
+  assert.notEqual(tip.getAttribute("hidden"), null);
+  const riskInRow = root.byClass("srk-row")[0]!.byClass("srk-risk")[0]!;
+  riskInRow.fire("click");
+  assert.notEqual(tip.getAttribute("hidden"), null);
+});
+
+test("a redraw into the same root: one tooltip, no hover left waiting for an old element, listeners kept once", () => {
+  const { root, doc, tick, redraw } = drawViewWith(viewModel());
+  const clicks = doc.listeners.click.length;
+  const oldScore = root.byClass("srk-tier-score")[0]!;
+  oldScore.fire("mouseover");
+  redraw();
+  tick();
+  const tips = root.byClass("srk-tip");
+  assert.equal(tips.length, 1);
+  assert.notEqual(tips[0]!.getAttribute("hidden"), null, "the old hover never shows");
+  assert.equal(doc.listeners.click.length, clicks, "no second set of page-wide listeners");
+  const name = root.byClass("srk-tier-name")[0]!;
+  name.fire("focusin");
+  assert.equal(tips[0]!.textContent, name.getAttribute("data-srk-hint"));
+});
+
+test("a root that has left the page drops its page-wide listeners", () => {
+  const { root, doc } = drawViewWith(viewModel());
+  (root as any).isConnected = false;
+  for (const fn of [...doc.listeners.keydown]) fn({ key: "Escape" });
+  assert.equal(doc.listeners.keydown.length, 0);
+  assert.equal(doc.listeners.click.length, 0);
+});
+
+test("hint text goes in as text: markup in a hint is not parsed", () => {
+  const model = viewModel();
+  model.scans[0].tool = "<img src=x onerror=alert(1)>";
+  const { root } = drawViewWith(model);
+  // A timeline cell's hint names the scan's tool, which comes from the log.
+  const cell = root.byClass("srk-tl-cell").at(-1)!;
+  cell.fire("focusin");
+  const tip = root.byClass("srk-tip")[0]!;
+  assert.match(tip.textContent, /^<img src=x onerror=alert\(1\)> · risk/);
+  assert.equal(tip.children.length, 0, "set as text, no child nodes");
 });
 
 test("the timeline has one cell per scan, oldest first, and opens a scan on click", () => {
@@ -551,8 +694,8 @@ test("the timeline has one cell per scan, oldest first, and opens a scan on clic
   const root = drawView(model);
   const cells = root.byClass("srk-tl-cell");
   assert.equal(cells.length, model.scans.length);
-  assert.match(cells[0]!.getAttribute("title")!, /web_fetch/);
-  assert.match(cells.at(-1)!.getAttribute("title")!, /terminal · risk 86 · blocked/);
+  assert.match(cells[0]!.getAttribute("data-srk-hint")!, /web_fetch/);
+  assert.match(cells.at(-1)!.getAttribute("data-srk-hint")!, /terminal · risk 86 · blocked/);
   assert.equal(root.byClass("srk-detail").length, 1);
   cells[0]!.click();
   assert.equal(root.byClass("srk-detail").length, 2);
@@ -729,4 +872,98 @@ test("report: a scan no longer in the log says so", () => {
   const box = root.byClass("srk-report")[0]!;
   assert.match(box.textContent, /not in the recent traffic log/);
   assert.equal(box.all().filter((n) => n.tag === "textarea").length, 0);
+});
+
+// ---- Showing the call (dashboardShowCalls, off by default) ----
+
+const CALLS_LOG = path.join(DASH, "calls.jsonl");
+/** Strings in the calls fixture that sit outside the pending call's tool and arguments. */
+const NOT_THE_CALL = ["REQUEST-TEXT-MARKER", "HISTORY-MARKER", "NARRATION-MARKER", "SIBLING-MARKER", "DETAIL-MARKER", "planir"];
+
+function useCallsLog() {
+  copyFileSync(CALLS_LOG, logFile);
+}
+
+test("callOf bounds each call as the shared fixture has it (the Hermes plugin builds the same)", () => {
+  const got = readFileSync(CALLS_LOG, "utf8").trim().split("\n").map((l) => callOf(JSON.parse(l)));
+  assert.deepStrictEqual(got, JSON.parse(readFileSync(path.join(DASH, "calls.json"), "utf8")));
+  // Cuts count code points; the whole call has one budget; nesting, lists and keys are capped; no PlanIR, no call.
+  assert.match(got[3]!.arguments.content, /^x{8000}… \(1000 more characters\)$/);
+  const sizes = Object.values(got[4]!.arguments as Record<string, string>).map((v) => [...v.split("…")[0]!].length);
+  assert.equal(sizes.reduce((a, b) => a + b, 0), CALL_TOTAL_MAX);
+  assert.equal(got[7]!.arguments.deep.a.b.c.d.e.f.g, "… (nested too deep)");
+  assert.equal(got[6]!.arguments.items.length, 101);
+  assert.equal(got[10]!.arguments && Object.keys(got[10]!.arguments).length, 0);
+  assert.equal(got[11], null);
+  // Numbers as JavaScript reads them: past 2^53 a double, past the double range null; long keys cut.
+  assert.deepStrictEqual(Object.values(got[12]!.arguments).slice(0, 4), [null, 2 ** 60, 2 ** 53, -(2 ** 60)]);
+  assert.equal(Object.keys(got[12]!.arguments)[4], "k".repeat(200) + "…");
+  assert.equal(got[2]!.arguments.background, false);
+});
+
+test("the setting is off by default; config or env turns it on", () => {
+  assert.equal(resolveConfig({}, {}).dashboardShowCalls, false);
+  assert.equal(resolveConfig({ dashboardShowCalls: true }, {}).dashboardShowCalls, true);
+  assert.equal(resolveConfig({}, { SENTROOK_DASHBOARD_SHOW_CALLS: "1" }).dashboardShowCalls, true);
+  assert.equal(resolveConfig({ dashboardShowCalls: false }, { SENTROOK_DASHBOARD_SHOW_CALLS: "1" }).dashboardShowCalls, false);
+});
+
+test("must stay silent: with the setting off, neither the model nor the page holds any part of a call", async () => {
+  useCallsLog();
+  const m = await buildModel(cfg(), queryOf(new URLSearchParams("n=50")));
+  assert.equal(m.show_calls, false);
+  assert.equal(m.scans.length, 13);
+  for (const s of m.scans) assert.ok(!("call" in s));
+  const page = (await call("GET", ROUTE + "?n=50")).body!;
+  for (const marker of [...NOT_THE_CALL, "notes/todo.md", "git status", "#général"]) assert.ok(!page.includes(marker), marker);
+});
+
+test("must fire: with the setting on, each scan carries its call and nothing else from the PlanIR", async () => {
+  useCallsLog();
+  const on = () => resolveConfig({ dashboardShowCalls: true }, process.env);
+  const m = await buildModel(on(), queryOf(new URLSearchParams("n=50")));
+  assert.equal(m.show_calls, true);
+  const byTool = (t: string) => m.scans.filter((s: any) => s.tool === t);
+  assert.deepStrictEqual(byTool("edit").at(-1).call, {
+    tool: "edit",
+    arguments: { path: "notes/todo.md", old_string: "- [ ] ship\n", new_string: "- [x] ship\n- [ ] <script>alert(1)</script>\n" },
+  });
+  assert.equal(byTool("web_fetch")[0].call, null, "a record without a PlanIR");
+  const json = JSON.stringify(m);
+  for (const marker of NOT_THE_CALL) assert.ok(!json.includes(marker), marker);
+  const page = (await call("GET", ROUTE + "?n=50", on)).body!;
+  assert.ok(page.includes("notes/todo.md"));
+  assert.ok(!page.includes("<script>alert(1)"), "the call is embedded as JSON, never as markup");
+});
+
+test("the view: with calls off, Show the call says how to turn it on; with calls on, it draws the arguments as text", async () => {
+  useCallsLog();
+  const off = drawView(await buildModel(cfg(), queryOf(new URLSearchParams("n=50"))));
+  const section = off.byClass("srk-call")[0]!;
+  assert.equal(section.tag, "details");
+  assert.equal(section.getAttribute("open"), null, "collapsed");
+  assert.match(section.textContent, /openclaw config set plugins\.entries\.sentrook\.config\.dashboardShowCalls true/);
+  assert.match(section.textContent, /\/sentrook-report ca110013 --save/);
+
+  const model = await buildModel(resolveConfig({ dashboardShowCalls: true }, process.env), queryOf(new URLSearchParams("n=50&tool=edit")));
+  const root = drawView(model);
+  const opened = root.byClass("srk-scan")[0]!;
+  const text = opened.byClass("srk-call")[0]!.textContent;
+  assert.match(text, /^Show the call/);
+  assert.match(text, /edits/);
+  // An edit's before and after text sit side by side; markup in them is text.
+  root.byClass("srk-row").at(-1)!.click();
+  const edit = root.byClass("srk-call-edit").find((e) => e.textContent.includes("<script>"))!;
+  assert.deepStrictEqual(edit.byClass("srk-call-text").map((n) => n.textContent), ["- [ ] ship\n", "- [x] ship\n- [ ] <script>alert(1)</script>\n"]);
+  assert.ok(!edit.all().some((n) => n.tag === "script"));
+  assert.match(edit.textContent, /Before \(old_string\)[\s\S]*After \(new_string\)/);
+});
+
+test("the view: a pending item's breakdown has no Show the call section while calls are off", () => {
+  const model = viewModel();
+  model.pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  const root = drawView(model);
+  const items = root.byClass("srk-pending-item");
+  assert.ok(items.length, "the pending panel draws");
+  for (const item of items) assert.equal(item.byClass("srk-call").length, 0);
 });

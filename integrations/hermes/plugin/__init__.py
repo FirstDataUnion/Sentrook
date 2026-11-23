@@ -89,6 +89,7 @@ SETTINGS_KEYS = (
     "packs",
     "skill_review",
     "owner_channel",
+    "dashboard_show_calls",
 )
 
 _ctx: Any = None

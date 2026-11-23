@@ -87,6 +87,9 @@ class PluginConfig:
     #: The platform whose home channel gets the notice of a held call ("" for the only platform with a
     #: home channel); see `hold`.
     owner_channel: str = ""
+    #: Each dashboard scan shows its call (redacted arguments). Off by default: anyone who can open the
+    #: dashboard reads them.
+    dashboard_show_calls: bool = False
 
 
 def hermes_home(env: dict[str, str]) -> Path:
@@ -321,4 +324,7 @@ def resolve_config(
         owner_channel=(
             _str(cfg.get("owner_channel")) or _str(env.get("SENTROOK_OWNER_CHANNEL")) or ""
         ).lower(),
+        dashboard_show_calls=_bool(
+            cfg.get("dashboard_show_calls", env.get("SENTROOK_DASHBOARD_SHOW_CALLS")), False
+        ),
     )

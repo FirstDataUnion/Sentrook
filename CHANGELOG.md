@@ -1013,3 +1013,49 @@ A `known_good` host was treated as only its credentials' home when its tier was 
 - `oracle.near_miss`: `provider_api_feed` joins `FOLD_ONLY_TIERS`, as in Rookery: hundreds of real API hosts sit one letter from other real services (`replicate`, `replicated`), so only a fold look-alike of one is a near miss. A curated `provider_api` host keeps the edit rule.
 - Suite: unmoved; no suite oracle seed lists credential names.
 - Tests: a host with credential names scores as unlisted under `provider_api`, `provider_api_feed`, `infrastructure` and no tier; the same host without names is an ordinary known-good destination; a `provider_api_feed` home relieves its own key; the seed oracle takes only fold against a `provider_api_feed` host and still an edit against a `provider_api` one.
+ 
+### Dashboard hints drawn by the page (2026-11-23)
+On the OpenClaw Sentrook tab, no hover hint appeared in Opera GX or DuckDuckGo: every hint was a native `title`
+attribute, and the tab is drawn in the Gateway's sandboxed frame. The cursor turned into the help cursor and nothing
+else happened. Native titles also never show on a touch screen or on keyboard focus.
+- `dashboardView.js` (shared byte for byte with the Hermes tab) keeps each hint as `data-srk-hint` and shows it in one
+  `role="tooltip"` element of its own: after 300 ms of hover, at once on keyboard focus, and on a tap on a label (a
+  control keeps its own click). It sits below the element, or above it when there is no room below, inside the
+  viewport. Blur, Escape, moving away and a click elsewhere hide it; the hinted element gets `aria-describedby` while
+  it shows. Hinted labels and numbers outside a control take `tabindex=0`, including those in a scan opened later.
+  The risk number and outcome on a scan row sit inside the row's button, so they keep their hint for the mouse only;
+  the opened scan shows both again with their hints.
+  Hint text goes in as text.
+- Tests: no `title` attribute left in a drawn page and one hidden tooltip; focus, hover (after the delay), tap, blur,
+  Escape and an outside click; a tap on a control does not show its hint; a tool name with markup in a timeline hint
+  stays text; focusable only outside a control; a redraw into the same root keeps one tooltip and one set of
+  page-wide listeners and drops a hover still waiting; a root that has left the page removes its listeners.
+
+### Dashboard: show the call, when the owner turns it on (2026-11-23)
+The dashboard led with the scan's outcome and risk tree and never showed what the call contained: an edit showed its
+tool and files, not the edit. The traffic log holds the call as sent to the scanner, but the page left it out on
+purpose, because the OpenClaw page is served to anyone with gateway access while the full record needs the owner's
+commands. The owner now chooses.
+- Setting: OpenClaw `dashboardShowCalls`, Hermes `dashboard_show_calls`, env `SENTROOK_DASHBOARD_SHOW_CALLS` on
+  both; off by default.
+- On: each scan in the model (the page's scans and the pending items' scans) carries `call: {tool, arguments}` from
+  `planir.pending_call`, nothing else from the PlanIR (no request text, history, narration or siblings). `callOf` /
+  `call_of` bound it: 8,000 code points a string and 24,000 a call, 100 items a list or object, 8 levels deep, keys
+  200 code points, each cut marked. Python walks keys in JavaScript's order (array-index keys first), so both hosts
+  cut the same strings, and reads numbers as JavaScript does (an integer past 2^53 becomes a double, one past the
+  double range null).
+  The model gets `show_calls`, and `commands.call_setting` names the host's command to turn it on.
+- View: **Show the call**, collapsed under the scan's details. The tool, then the arguments: short values inline,
+  long or multi-line text in scrolling blocks, lists and objects nested, and an old/new text pair (`old_string` /
+  `new_string`, `oldText` / `newText`, `old_text` / `new_text`, `oldString` / `newString`, `old_str` / `new_str`,
+  `old` / `new`) as before and after side by side. Off, it says the page holds no call content and gives the
+  setting's command and `report <id> --save`; a pending item's breakdown leaves it out.
+- Local preview: `?calls=1`, and the fixture `dashboard/calls.jsonl`.
+- Tests: shared fixture `dashboard/calls.jsonl` and `calls.json` (an edit with markup, an edits list, a command with
+  every JSON type, an over-long string, a call over the total, emoji and accents past the cut, over-long lists and
+  objects, nesting past the limit, integer-like keys, empty and null arguments, a record without a PlanIR, integers
+  past 2^53 and past the double range, an over-long key) built identically by both plugins, compared with JSON types
+  kept apart. Must stay silent: setting off, no `call` key, no argument text in the model or page.
+  Must fire: setting on, the edit's arguments in the model and page, still no request text, history, narration,
+  sibling, `detail` or `planir`. Config default and env. View: off text and commands, the edit drawn before and after
+  as text, no section in a pending item while off.

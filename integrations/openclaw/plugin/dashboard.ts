@@ -5,7 +5,9 @@
  * returned (risk, the tier and leaf scores, floors, relief, reason codes and texts, entity display strings) plus
  * the plugin's own labels for what it did. The PlanIR as sent, the call's arguments, `reasons[].detail` and
  * failure details are never included, as with `/sentrook-why`; a scan's report panel (`reportOf`) holds only its
- * summary, links and commands. The Hermes plugin builds the same model for the same log
+ * summary, links and commands. One exception, off by default: with `dashboardShowCalls` the owner lets each scan
+ * carry its call (tool and arguments, as sent to the scanner and so redacted, bounded by `callOf`), knowing anyone
+ * who can open the tab can then read it. The Hermes plugin builds the same model for the same log
  * (fixtures/traffic-log/dashboard).
  *
  * The page is served on a Gateway route with `auth: "gateway"`. Inside the Control UI tab the browser holds a
@@ -96,12 +98,63 @@ export function bucketOf(scan: Rec, action: string): string {
   return "allowed";
 }
 
-export function scanModel(scan: Rec, resolution: Rec | null): Rec {
+/** Bounds on the call a scan carries when the owner turned calls on, counted in code points as Python counts. */
+export const CALL_STRING_MAX = 8000;
+export const CALL_TOTAL_MAX = 24000;
+export const CALL_ITEMS_MAX = 100;
+export const CALL_DEPTH_MAX = 8;
+export const CALL_KEY_MAX = 200;
+
+function key(k: string): string {
+  const c = [...k];
+  return c.length <= CALL_KEY_MAX ? k : `${c.slice(0, CALL_KEY_MAX).join("")}…`;
+}
+
+function cut(s: string, budget: { left: number }): string {
+  const c = [...s];
+  const take = Math.min(c.length, CALL_STRING_MAX, budget.left);
+  budget.left -= take;
+  return take === c.length ? s : `${c.slice(0, take).join("")}… (${c.length - take} more characters)`;
+}
+
+function bounded(v: unknown, budget: { left: number }, depth: number): unknown {
+  if (v === null || typeof v === "boolean") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") return cut(v, budget);
+  if (typeof v !== "object") return null;
+  if (depth >= CALL_DEPTH_MAX) return "… (nested too deep)";
+  if (Array.isArray(v)) {
+    const out = v.slice(0, CALL_ITEMS_MAX).map((x) => bounded(x, budget, depth + 1));
+    if (v.length > CALL_ITEMS_MAX) out.push(`… (${v.length - CALL_ITEMS_MAX} more items)`);
+    return out;
+  }
+  const keys = Object.keys(v);
+  const out: Rec = {};
+  for (const k of keys.slice(0, CALL_ITEMS_MAX)) out[key(k)] = bounded((v as Rec)[k], budget, depth + 1);
+  if (keys.length > CALL_ITEMS_MAX) out["…"] = `${keys.length - CALL_ITEMS_MAX} more keys`;
+  return out;
+}
+
+/**
+ * The call as sent to the scanner (`planir.pending_call`, already redacted on the host): its tool and arguments,
+ * each string at most CALL_STRING_MAX code points and CALL_TOTAL_MAX in all, lists and objects at most
+ * CALL_ITEMS_MAX entries, CALL_DEPTH_MAX deep, keys at most CALL_KEY_MAX. Nothing else from the PlanIR. Null for a
+ * record without one.
+ */
+export function callOf(scan: Rec): Rec | null {
+  const call = obj(obj(scan.planir).pending_call);
+  if (!Object.keys(call).length) return null;
+  return { tool: str(call.tool, 80), arguments: bounded(call.arguments ?? {}, { left: CALL_TOTAL_MAX }, 0) };
+}
+
+export function scanModel(scan: Rec, resolution: Rec | null, withCall = false): Rec {
   const resp = responseOf(scan);
   const r: Rec = resp ?? {};
   const action = actionOf(scan, resolution);
   const entities = obj(r.entities);
+  const call = withCall ? { call: callOf(scan) } : {};
   return {
+    ...call,
     id: String(scan.request_id),
     ts: typeof scan.ts === "string" ? scan.ts : null,
     session: str(scan.session_ref, 80),
@@ -294,7 +347,7 @@ function matches(s: Rec, q: Query): boolean {
  * `next` (the last scan's id). `budget_hit`: the read stopped at the budget before the log or window ran out.
  * `cursor_lost`: the `before` scan was not found (rotated away), so nothing older could be listed.
  */
-export async function queryScans(file: string, q: Query, budgetBytes = QUERY_BUDGET_BYTES): Promise<Rec> {
+export async function queryScans(file: string, q: Query, budgetBytes = QUERY_BUDGET_BYTES, withCalls = false): Promise<Rec> {
   const budget = { left: budgetBytes, read: 0 };
   const resolutions = new Map<string, Rec>();
   const seen = new Set<string>();
@@ -335,7 +388,7 @@ export async function queryScans(file: string, q: Query, budgetBytes = QUERY_BUD
     rec ??= parse(line);
     if (!rec || rec.request_id !== head.rid) continue;
     seen.add(head.rid);
-    const model = scanModel(rec, resolutions.get(head.rid) ?? null);
+    const model = scanModel(rec, resolutions.get(head.rid) ?? null, withCalls);
     if (!matches(model, q)) continue;
     scans.push(model);
     if (scans.length >= q.limit) {
@@ -370,7 +423,15 @@ const CMD: grants.Cmd = (sub) => `/sentrook-${sub}`;
  * yet approved or expired, newest first, each with its scan when that is still in the log. Reading stops at the
  * oldest of these.
  */
-export async function pendingOf(file: string, enabled: boolean, stateDir: string, now: Date, windowMs: number, budgetBytes = QUERY_BUDGET_BYTES): Promise<Rec> {
+export async function pendingOf(
+  file: string,
+  enabled: boolean,
+  stateDir: string,
+  now: Date,
+  windowMs: number,
+  budgetBytes = QUERY_BUDGET_BYTES,
+  withCalls = false,
+): Promise<Rec> {
   let holds: Rec[] = [];
   let holdsReadable = true;
   try {
@@ -424,7 +485,7 @@ export async function pendingOf(file: string, enabled: boolean, stateDir: string
       if (!hold && !recent) continue;
       const rec = parse(line);
       if (!rec || rec.request_id !== head.rid) continue;
-      const model = scanModel(rec, resolutions.get(head.rid) ?? null);
+      const model = scanModel(rec, resolutions.get(head.rid) ?? null, withCalls);
       if (hold && hold.scan === null) hold.scan = model;
       if (recent && model.open_review && !reviews.some((r) => r.id === model.id)) reviews.push(model);
     }
@@ -448,7 +509,8 @@ export function reportOf(cfg: PluginConfig, ref: string | null | undefined, budg
 export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Date(), reportRef: string | null = null): Promise<Rec> {
   const enabled = cfg.trafficLog.enabled;
   const budget = budgetFor(cfg.trafficLog.maxBytes);
-  const page = enabled ? await queryScans(cfg.trafficLog.path, q, budget) : { scans: [], totals: totalsOf([]), query: queryEcho(q), page: { more: false, next: null, read_bytes: 0, budget_hit: false, cursor_lost: false, reached_start: true } };
+  const calls = cfg.dashboardShowCalls;
+  const page = enabled ? await queryScans(cfg.trafficLog.path, q, budget, calls) : { scans: [], totals: totalsOf([]), query: queryEcho(q), page: { more: false, next: null, read_bytes: 0, budget_hit: false, cursor_lost: false, reached_start: true } };
   let grantsText: string;
   let snoozeText: string;
   try {
@@ -470,8 +532,9 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
     lines: { review_at: cfg.reviewAt, block_at: cfg.blockAt },
     mode: cfg.mode,
     state: { grants: grantsText, snooze: snoozeText },
-    pending: await pendingOf(cfg.trafficLog.path, enabled, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs, budget),
+    pending: await pendingOf(cfg.trafficLog.path, enabled, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs, budget, calls),
     commands: COMMANDS,
+    show_calls: calls,
   };
   const panel = reportOf(cfg, reportRef, budget);
   if (panel !== null) model.report = panel;
@@ -481,6 +544,8 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
 /** How the page names this host's commands: the plugin's own (prefix + verb) and the host's approval answers. */
 export const COMMANDS = {
   prefix: "/sentrook-",
+  /** The setting that lets each scan show its call, as the owner writes it in this host's config. */
+  call_setting: "openclaw config set plugins.entries.sentrook.config.dashboardShowCalls true",
   review_answer: [
     "Answer on the approval card in the chat where it was asked, or with OpenClaw's own command and the id the prompt shows:",
     "/approve <approval id> allow-once",
