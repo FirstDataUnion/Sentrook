@@ -494,6 +494,15 @@ test("a subagent child and a webhook run keep the sender their requester gives",
   );
 });
 
+test("a webhook run an OpenClaw before 2026.11 starts with trigger cron is a hook run and keeps its sender", async () => {
+  // Must stay: only the host's own task runs lose a non-owner requester, not a hook session's run.
+  const h = setup();
+  const ctx = { ...CTX, sessionKey: "agent:main:hook:orders", runId: "r-hook", requester: { channel: "webhook", senderIsOwner: false } };
+  await h.fire("before_prompt_build", { runId: "r-hook", prompt: "New order received" }, { ...ctx, trigger: "cron" });
+  await h.fire("before_tool_call", { ...call("c1", "ls"), runId: "r-hook" }, ctx);
+  assert.deepEqual([h.scans[0].trigger.kind, h.scans[0].trigger.sender.relation], ["hook", "other"]);
+});
+
 test("an OpenClaw system agent turn, with the host's marker lines, is a system turn without a sender", async () => {
   const h = setup({}, {}, { runtime: { version: "2026.10.3" } });
   const ctx = { ...CTX, runId: "r5", agentId: "openclaw", requester: { channel: "openclaw" } };
