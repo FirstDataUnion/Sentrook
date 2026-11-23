@@ -11,7 +11,7 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 
 ## Requirements
 
-- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5 and 2026.11.5. Older releases refuse
+- OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5 and 2026.11.7. Older releases refuse
   to install the plugin.
 - A shell on the machine that runs the OpenClaw gateway, as the user that runs it.
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
