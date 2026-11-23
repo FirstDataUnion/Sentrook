@@ -211,6 +211,26 @@ test("a grant round-trips through the file and into scans", async () => {
   assert.deepEqual(await r.scan("post to #ops"), []);
 });
 
+test("a credential grant is persistent and reaches scans that use its key or host", async () => {
+  const r = await registered();
+  const out = await run(r, "sentrook-grant", "credential EXAMPLE_API_KEY@API.Example.Invalid");
+  const [g] = stored().grants;
+  // the host is read as Sentrook reads it; a key's home rarely changes, so it lasts until revoked
+  assert.equal(out, `Granted ${g.id}: credential EXAMPLE_API_KEY@api.example.invalid (persistent).`);
+  assert.deepEqual([g.kind, g.pattern, g.scope], ["credential", "EXAMPLE_API_KEY@api.example.invalid", "persistent"]);
+  assert.ok(!("session_ref" in g));
+  const sent = await r.scan("curl -H 'Authorization: Bearer x' https://api.example.invalid/v1/me");
+  assert.deepEqual(
+    sent.map((x: any) => [x.kind, x.pattern]),
+    [["credential", "EXAMPLE_API_KEY@api.example.invalid"]],
+  );
+  // an exec call may run a script that holds both, which Sentrook reads too: the grant goes on every one
+  assert.deepEqual((await r.scan("python3 sync.py")).map((x: any) => x.kind), ["credential"]);
+  // still a session grant when the owner asks for one
+  await run(r, "sentrook-grant", "credential EXAMPLE_TOKEN@api.example.invalid --scope session");
+  assert.equal(stored().grants[1].scope, "session");
+});
+
 test("scans send the expiry and bind session grants", async () => {
   const r = await registered();
   await run(r, "sentrook-grant", "file /srv/reports/* --persistent --allows write --expires 12h");
@@ -247,7 +267,12 @@ for (const [args, reply] of [
   ["destination #ops --scope persistant", 'Unknown scope "persistant": use session or persistent.'],
   ["destination #ops --scope=Persistent", 'Unknown scope "Persistent": use session or persistent.'],
   ["destination #ops --persistant", "Unknown option --persistant."],
-  ["destinaton #ops", 'Unknown grant kind "destinaton": use destination, file, provider or repo.'],
+  ["destinaton #ops", 'Unknown grant kind "destinaton": use destination, file, provider, repo or credential.'],
+  ["credential EXAMPLE_API_KEY", '"EXAMPLE_API_KEY" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],
+  ["credential EX*@api.example.invalid", '"EX*@api.example.invalid" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],
+  ["credential EXAMPLE_API_KEY@*.invalid", '"EXAMPLE_API_KEY@*.invalid" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],
+  ["credential EXAMPLE_API_KEY@https://api.example.invalid/", '"EXAMPLE_API_KEY@https://api.example.invalid/" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com).'],
+  ["credential EXAMPLE_API_KEY@api.example.invalid --allows read", "--allows applies to file grants only."],
   ["file /x --allows read,wrte", 'Unknown allows value "wrte": use read, write, edit, delete or exec.'],
   ["destination #ops --allows write", "--allows applies to file grants only."],
   ["destination #ops --expires 2w", 'Unknown expiry "2w": use a number with m, h or d, from 1m to 365d.'],
@@ -717,10 +742,30 @@ for (const c of RELEVANCE.cases) {
       workspace: c.workspace ?? RELEVANCE.workspace,
       cwd: callCwd(c.arguments),
       platform: callPlatform(c.arguments, c.tool_kind ?? "other"),
+      execCall: c.tool_kind === "exec",
     });
     assert.equal(sent.length > 0, c.sent);
   });
 }
+
+/** Shared with the Hermes plugin's tests and the scanner's: a credential pattern is read as Sentrook reads it. */
+const CREDENTIAL_PATTERNS = JSON.parse(readFileSync(path.join(FIXTURES, "credential-patterns.json"), "utf8"));
+for (const c of CREDENTIAL_PATTERNS.cases) {
+  test(`credential pattern: ${c.typed}`, () => {
+    const parsed = grants.parseGrant(`credential ${c.typed}`, CMD);
+    if (c.pattern === null) {
+      assert.ok(typeof parsed === "string" && parsed.includes("is not a credential pattern"), String(parsed));
+    } else {
+      assert.deepEqual(parsed, { kind: "credential", pattern: c.pattern, scope: "persistent" });
+    }
+  });
+}
+
+test("naming a session makes a credential grant a session grant", () => {
+  const parsed = grants.parseGrant("credential EXAMPLE_API_KEY@api.example.invalid --session s_0123456789ab", CMD);
+  assert.ok(typeof parsed !== "string");
+  assert.deepEqual([parsed.scope, parsed.session_ref], ["session", "s_0123456789ab"]);
+});
 
 /** Shared with the Hermes plugin's tests: both hosts say the same about a binding that can never apply. */
 const BINDING_PROBLEMS = JSON.parse(readFileSync(path.join(FIXTURES, "binding-problems.json"), "utf8"));

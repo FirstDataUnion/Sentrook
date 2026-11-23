@@ -122,15 +122,16 @@ class GrantHint(_Model):
     model sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the
     scanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds
     the risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an
-    `enforced` decision or a call with an independent strong signal."""
+    `enforced` decision or a call with an independent strong signal. A `credential` hint ties the key a call sends
+    to the host it sends it to; its re-score also runs the rule-based probes again with the grant in place."""
 
-    kind: Literal["destination", "file", "provider"] = Field(
+    kind: Literal["destination", "file", "provider", "credential"] = Field(
         description="The grant kind, as `/sentrook grant` takes it"
     )
     pattern: str = Field(
         description=(
             "The grant pattern: the entity's value as the scanner reads it (a path under the home directory written "
-            "with `~/`), never a secret"
+            "with `~/`); for a credential grant `NAME@host`, the key's environment name and the host. Never a secret"
         )
     )
     allows: list[str] | None = Field(
