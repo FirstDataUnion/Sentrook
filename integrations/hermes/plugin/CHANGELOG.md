@@ -36,6 +36,13 @@ since the version the catalog pins.
   rooms count as attended (the room shows Hermes's approvals), and an editor connected over ACP (Zed, for example)
   counts as attended like the TUI: Hermes shows its approval in the editor, and it never has a terminal. The compatibility check now fails on a Hermes that adds a
   platform the plugin has not classified as attended or not.
+- `/sentrook grant credential NAME@host` ties one of your API keys to the service it is for, such as
+  `/sentrook grant credential MY_SERVICE_TOKEN@api.myservice.example`. Sending that key, read from the agent's env
+  file, only to that host is then not treated as sensitive data leaving the machine. The name may end in `*` after
+  three or more characters, and the host may be `*.example.com`. A credential grant is persistent unless you give
+  `--scope session`; a pattern Sentrook would not read is refused when you type it.
+- When a review is caused by such a key going to its own service, the prompt suggests the grant, and **Always** sets
+  it as it does other suggested grants.
 
 ## 2.0.0-beta.17
 

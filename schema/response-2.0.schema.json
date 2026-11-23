@@ -231,7 +231,7 @@
     },
     "GrantHint": {
       "additionalProperties": true,
-      "description": "A grant the owner could set so that a call like this would usually not be reviewed next time (the next scan's\nmodel sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the\nscanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds\nthe risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an\n`enforced` decision or a call with an independent strong signal.",
+      "description": "A grant the owner could set so that a call like this would usually not be reviewed next time (the next scan's\nmodel sees the grant too, so it is not a promise). Offered only on the owner's own turns, and only when the\nscanner, re-scoring this call with the grant applied (the same probe answers, no new model call), finds\nthe risk below the review line. Never for a known-bad entity, a look-alike, content the agent read, an\n`enforced` decision or a call with an independent strong signal. A `credential` hint ties the key a call sends\nto the host it sends it to; its re-score also runs the rule-based probes again with the grant in place.",
       "properties": {
         "allows": {
           "anyOf": [
@@ -261,13 +261,14 @@
           "enum": [
             "destination",
             "file",
-            "provider"
+            "provider",
+            "credential"
           ],
           "title": "Kind",
           "type": "string"
         },
         "pattern": {
-          "description": "The grant pattern: the entity's value as the scanner reads it (a path under the home directory written with `~/`), never a secret",
+          "description": "The grant pattern: the entity's value as the scanner reads it (a path under the home directory written with `~/`); for a credential grant `NAME@host`, the key's environment name and the host. Never a secret",
           "title": "Pattern",
           "type": "string"
         },

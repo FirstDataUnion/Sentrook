@@ -17,7 +17,9 @@ holds, and the call's credential does not count as sensitive data sent, only whe
   or an earlier one, and no other content) does not count as content here: the skill is the agent's standing
   instructions for the service, and the library already ties the key to that host. Memory reads do count, and
   everything else still scores such a host as untrusted;
-- the call sends by no route whose destination need not be written as a host (`scp`, `nc`, `git push`, ...);
+- the call sends by no route whose destination need not be written as a host (`scp`, `nc`, `git push`, ...), in a
+  shell command or named in code (`subprocess.run(['nc', ...])`, a raw socket), and builds no address at run time
+  (`'https://' + h`, `f"https://{h}"`, `https://$HOST`): a host the code does not write out is not an entity;
 - every sensitive file the call touches is a dotenv file (`.env`, `.env.local`, ...) that holds credentials, and
   none is sent whole (`curl -T ~/.env`, `-d @~/.env`, an attachment); no secret value is written in the call;
 - the session's sensitive data that the call takes content from is only those env files; for a call with nothing
@@ -26,6 +28,14 @@ holds, and the call's credential does not count as sensitive data sent, only whe
 - the credential is not also put somewhere else: no file write in a shell command (a redirect, `tee`, `cp`), no
   `echo`/`printf`/`printenv` of a credential name, and in code no write or print of the key, the env file or a
   variable assigned from either (`open(..., "w")`, `.write(`, `json.dump(`, `print(`, `shutil.copy(`, ...).
+
+The owner can tie a key to a service the library does not list with a `credential` grant: `NAME@host`, the name
+exact or a `PREFIX*` (three or more characters before the `*`), the host exact or `*.example.com` (that domain and
+every name under it; at least two labels after the wildcard, and not a shared suffix such as `co.uk` or an address
+written in numbers). A live grant whose host pattern covers a host adds its
+name to the names that host lists, exactly as a library entry would; every other condition above still holds. A
+grant never covers a host the oracle marks known-bad. A malformed or over-broad pattern covers nothing. Where a grant
+supplied a name the call uses, the check records the grant on that host (`CredentialHome.grants`).
 
 What it relieves is the convergence parameters' business (`credential_home`): with the check holding, the env
 file's credential sensitivity and the sensitive-data-sent floor on it are not charged, the send scores as a plain
@@ -90,13 +100,79 @@ class CredentialHome:
     env_files: tuple[str, ...]
     #: Normalised paths of those files.
     env_paths: tuple[str, ...]
+    #: `(host entity id, grant_ref)`: the owner's `credential` grant that supplied a name the call uses for that host.
+    grants: tuple[tuple[str, str], ...] = ()
 
     def evidence(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "names": list(self.names),
             "hosts": list(self.hosts),
             "env_files": list(self.env_files),
         }
+        if self.grants:
+            out["grants"] = [list(g) for g in self.grants]
+        return out
+
+
+#: The grant kind that ties a credential name to its host(s).
+GRANT_KIND = "credential"
+_GRANT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\*?")
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_GRANT_HOST_RE = re.compile(rf"(?:\*\.)?{_LABEL}(?:\.{_LABEL})+")
+#: Characters a name prefix needs before its `*`.
+_MIN_PREFIX = 3
+
+
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`, `com.au`): a
+#: wildcard there covers strangers. The oracle's near-miss check reads registrable domains the same way.
+_SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+
+
+def _wildcard_too_broad(base: str) -> bool:
+    labels = base.split(".")
+    if all(label.isdigit() for label in labels):
+        return True  # part of a numeric address: `*.113.9`
+    return len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2
+
+
+def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
+    """A `credential` grant's pattern as `(name pattern, host pattern)`, or None when it is malformed or over-broad.
+    `NAME@host`: the name exact or `PREFIX*` with at least three characters before the `*`; the host lower-cased,
+    exact or `*.example.com`, with no scheme, port or path and at least two labels after a wildcard."""
+    name, sep, host = str(pattern).strip().partition("@")
+    host = host.strip().lower().rstrip(".")
+    name = name.strip()
+    if not sep or not _GRANT_NAME_RE.fullmatch(name) or not _GRANT_HOST_RE.fullmatch(host):
+        return None
+    if name.endswith("*") and len(name) - 1 < _MIN_PREFIX:
+        return None
+    if host.startswith("*.") and _wildcard_too_broad(host[2:]):
+        return None
+    return name, host
+
+
+def host_covered(host_pattern: str, host: str) -> bool:
+    """An exact host, or `*.example.com` for `example.com` and every name under it."""
+    host = host.lower().rstrip(".")
+    if host_pattern.startswith("*."):
+        return host == host_pattern[2:] or host.endswith(host_pattern[1:])
+    return host == host_pattern
+
+
+def live_credential_grants(prepared: Any) -> list[tuple[str, str, str]]:
+    """`(grant_ref, name pattern, host pattern)` for each `credential` grant live in this request (scope, expiry)
+    whose pattern parses."""
+    from .grants import lapse
+
+    planir = prepared.planir
+    out: list[tuple[str, str, str]] = []
+    for g in planir.grants:
+        if g.kind.lower() != GRANT_KIND or lapse(g, planir) is not None:
+            continue
+        parsed = parse_credential_pattern(g.pattern)
+        if parsed is not None:
+            out.append((g.grant_ref, *parsed))
+    return out
 
 
 def is_dotenv(path: str) -> bool:
@@ -132,6 +208,44 @@ def credential_names_in(text: str, listed: list[str] | tuple[str, ...] = ()) -> 
         elif re.search(r"(?<![A-Za-z0-9_])" + re.escape(n) + r"(?![A-Za-z0-9_])", text):
             found.add(n)
     return found
+
+
+#: A string literal in code (Python, JavaScript), with an optional prefix (`f`, `r`, `b`).
+_CODE_STRING_RE = re.compile(r"""(?<![\w])[rRbBuUfF]{0,2}(['"`])((?:\\.|(?!\1)[^\\\n])*)\1""")
+#: Code that opens a connection itself: its destination need not be written as a host.
+_RAW_SOCKET_RE = re.compile(
+    r"\bsocket\s*\.\s*(?:socket|create_connection)\s*\(|\bnet\s*\.\s*(?:connect|createConnection|Socket)\b"
+    r"|\btls\s*\.\s*connect\s*\(|\bdgram\b"
+)
+#: An address whose host is filled in at run time: a scheme followed by a quote, a placeholder or a variable.
+_BUILT_ADDRESS_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://(?:['\"`]|\{|%[sr(]|\$)", re.IGNORECASE)
+
+
+#: Send heads that are also scheme names, so a one-word literal of them is read as a word.
+_SCHEME_WORDS = frozenset({"http", "https", "ftp", "sftp", "ssh", "telnet"})
+
+
+def _code_sends_by_unwritten_route(code: str) -> bool:
+    """Code that runs a send tool whose destination need not be written as a host (`subprocess.run(['nc', ...])`,
+    `os.system('scp ...')`), or opens a socket itself."""
+    from .grants import _SEND_HEADS, sends_by_unwritten_route
+
+    if _RAW_SOCKET_RE.search(code):
+        return True
+    words: set[str] = set()
+    for m in _CODE_STRING_RE.finditer(code):
+        text = m.group(2).strip()
+        if not text:
+            continue
+        tokens = text.split()
+        head = posixpath.basename(tokens[0]).lower()
+        if len(tokens) == 1 and head in _SCHEME_WORDS:
+            words.add(head)
+            continue  # `scheme == 'https'`: a word, not HTTPie run with no arguments
+        if head in _SEND_HEADS or sends_by_unwritten_route(text):
+            return True
+        words.add(head)
+    return ("git" in words and "push" in words) or ("aws" in words and "s3" in words)
 
 
 def _code_puts_key_elsewhere(code: str, anchors: set[str]) -> bool:
@@ -170,16 +284,22 @@ def _shell_puts_key_elsewhere(a: Any, ctx: Any, names: set[str]) -> bool:
     return False
 
 
-def check(prepared: Any) -> tuple[CredentialHome | None, str]:
+def check(
+    prepared: Any, extra_grants: tuple[tuple[str, str, str], ...] = ()
+) -> tuple[CredentialHome | None, str]:
     """`(home, "ok")` when the check holds, else `(None, why)`. Reads the oracle's answers on `prepared`, so it runs
-    after the oracle probe. Never raises for a malformed call: anything it cannot read fails the check."""
+    after the oracle probe. `extra_grants`: `(grant_ref, name pattern, host pattern)` read as if they were live
+    `credential` grants (unparsed: the grant hint passes `*` to learn which names a host would need). Never raises
+    for a malformed call: anything it cannot read fails the check."""
     try:
-        return _check(prepared)
+        return _check(prepared, extra_grants)
     except Exception as e:  # noqa: BLE001 (a failed check relieves nothing)
         return None, f"error:{type(e).__name__}"
 
 
-def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
+def _check(
+    prepared: Any, extra_grants: tuple[tuple[str, str, str], ...] = ()
+) -> tuple[CredentialHome | None, str]:
     from ..aira.analysis import analyse
     from ..aira.detectors import (
         PACK_TIER1,
@@ -198,8 +318,11 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
     lists = load_lists()
     ctx = Context(prepared=prepared, lists=lists, packs=frozenset({PACK_TIER1}))
 
-    # Every off-machine party the call or its batch touches is a host the library lists with credential names.
+    # Every off-machine party the call or its batch touches is a host the library lists with credential names, or one
+    # the owner's credential grants tie names to.
+    owner_grants = [*live_credential_grants(prepared), *extra_grants]
     hosts: dict[str, list[str]] = {}
+    host_grants: dict[str, list[tuple[str, str]]] = {}
     for ent in prepared.entities:
         if ent.kind not in (EntityKind.HOST, EntityKind.RECIPIENT, EntityKind.CHANNEL):
             continue
@@ -213,7 +336,12 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
         if ent.kind is not EntityKind.HOST:
             return None, "other_party"
         info = prepared.oracle_entities.get(ent.id) or {}
-        listed = info.get("credential_names") or []
+        listed = [str(n) for n in info.get("credential_names") or []]
+        if info.get("verdict") != "known_bad":
+            granted = [(ref, n) for ref, n, h in owner_grants if host_covered(h, ent.value)]
+            if granted:
+                host_grants[ent.id] = granted
+                listed += [n for _, n in granted]
         if not listed:
             return None, "unlisted_host"
         if ent.steered or (
@@ -221,7 +349,7 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
             and not ent.skill_named
         ):
             return None, "host_from_content"
-        hosts[ent.id] = [str(n) for n in listed]
+        hosts[ent.id] = listed
     if not hosts:
         return None, "no_host"
 
@@ -231,7 +359,8 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
         calls.append(written)
     analyses = [analyse(c, prepared, lists) for c in calls]
 
-    every_listed = tuple(n for listed in hosts.values() for n in listed)
+    # a bare `*` (the grant hint's probe for which names a host would need) finds names by their shape only
+    every_listed = tuple(n for listed in hosts.values() for n in listed if n != "*")
     names: set[str] = set()
     for a in analyses:
         names |= credential_names_in(a.call.command or a.text or "", every_listed)
@@ -247,6 +376,12 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
         if a.kind is ToolKind.EXEC and not a.inline_code:
             if sends_by_unwritten_route(a.call.command or ""):
                 return None, "unwritten_route"
+        if (a.inline_code or a.call.code_cell) and _code_sends_by_unwritten_route(
+            a.call.command or ""
+        ):
+            return None, "unwritten_route"
+        if _BUILT_ADDRESS_RE.search(a.call.command or a.text or ""):
+            return None, "address_built_at_run_time"
         attached = {p.value for p in a.attachments}
         for p in a.paths:
             if _top_sensitive_group(p.groups) is None:
@@ -299,12 +434,18 @@ def _check(prepared: Any) -> tuple[CredentialHome | None, str]:
         if prepared.state.sensitive_unbound or not set(prepared.state.sensitive) <= env_hashes:
             return None, "session_sensitive_unplaced"
 
+    used: list[tuple[str, str]] = []
+    for host_id, granted in sorted(host_grants.items()):
+        ref = next((r for r, n in granted if any(accepts((n,), name) for name in names)), None)
+        if ref is not None:
+            used.append((host_id, ref))
     return (
         CredentialHome(
             names=tuple(sorted(names)),
             hosts=tuple(sorted(hosts)),
             env_files=tuple(sorted(env_ids)),
             env_paths=tuple(sorted(set(env_ids.values()))),
+            grants=tuple(used),
         ),
         "ok",
     )

@@ -459,6 +459,12 @@ function repoPath(pattern: string): string {
   return slash < 0 ? rest : rest.slice(slash + 1);
 }
 
+/** A credential grant's key name and host (`NAME@host`): either may be all the call's arguments show. */
+function credentialForms(pattern: string): Array<[string, boolean]> {
+  const at = pattern.indexOf("@");
+  return at < 0 ? [[pattern, false]] : [[pattern.slice(0, at), false], [pattern.slice(at + 1), false]];
+}
+
 /**
  * Only grants that could cover this call. The scanner decides what a grant covers; this only keeps the owner's
  * other grants out of the request, so it errs towards sending. A provider grant is also matched against the
@@ -466,7 +472,9 @@ function repoPath(pattern: string): string {
  * owner and repository alone. Paths are read the way the scanner resolves them: under home in any form (`~/…`,
  * `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace. A destination is read the way the
  * scanner reads a channel: a `#name` as `channel:name`, and a `<platform>:` prefix as met when the send names
- * `platform` (`callPlatform`).
+ * `platform` (`callPlatform`). A credential grant (`NAME@host`) is sent on every exec call (`execCall`: the key and
+ * the host may be only in a script the call runs, which Sentrook reads too), and on any other call that shows either
+ * its name or its host.
  */
 export function relevantGrants(
   grants: GrantConfig[],
@@ -477,6 +485,7 @@ export function relevantGrants(
     workspace?: string | null;
     cwd?: string | null;
     platform?: string | null;
+    execCall?: boolean;
   } = {},
 ): Array<Record<string, unknown>> {
   const text = argsText.toLowerCase();
@@ -498,8 +507,11 @@ export function relevantGrants(
         ? destinationForms(pats[i]!, opts.platform ?? null)
         : g.kind === "repo"
           ? [[repoPath(pats[i]!), false]]
-          : [[pats[i]!, false]];
-    if (!forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
+          : g.kind === "credential"
+            ? credentialForms(pats[i]!)
+            : [[pats[i]!, false]];
+    const always = g.kind === "credential" && opts.execCall === true;
+    if (!always && !forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
     out.push({
       grant_ref: `g_${i + 1}`,
       kind: g.kind,
@@ -693,6 +705,7 @@ export function buildPlanir(b: BuildInput): Built {
       workspace: run.workspaceDir,
       cwd: tk === "exec" ? callCwd(event.params) : null,
       platform: callPlatform(event.params, tk),
+      execCall: tk === "exec",
     }),
     options: { packs: cfg.packs, redaction: redactor.level },
     ...(b.hostProcess && b.selfEdit ? { self_edit: b.selfEdit } : {}),

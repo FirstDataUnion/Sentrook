@@ -130,6 +130,11 @@ const because = (texts: string[]) => `Because ${texts.join(", and ")}.`;
 /** What a suggested grant allows, as `trust x` (or `trusts x` with `third`), its pattern at most `cap` long. */
 function grantPhrase(grant: Entry, third: boolean, cap: number): string {
   const pattern = mid(inert(grant.pattern), cap);
+  if (grant.kind === "credential") {
+    const at = grant.pattern.indexOf("@");
+    const what = at < 0 ? grant.pattern : `${grant.pattern.slice(0, at)} to ${grant.pattern.slice(at + 1)}`;
+    return `${third ? "lets" : "let"} the agent send ${mid(inert(what), cap)}`;
+  }
   if (grant.kind === "file") {
     const allows: string[] = Array.isArray(grant.allows) && grant.allows.length ? grant.allows : ["use"];
     const verbs = allows.length === 1 ? allows[0] : `${allows.slice(0, -1).join(", ")} and ${allows[allows.length - 1]}`;

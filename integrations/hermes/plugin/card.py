@@ -151,6 +151,10 @@ def _because(texts: list[str]) -> str:
 def _grant_phrase(grant: dict[str, Any], third: bool, cap: int) -> str:
     """What a suggested grant allows, as `trust x` (or `trusts x` with `third`), its pattern at most `cap` long."""
     pattern = mid(inert(grant["pattern"]), cap)
+    if grant["kind"] == "credential":
+        name, _, host = str(grant["pattern"]).partition("@")
+        what = mid(inert(f"{name} to {host}"), cap)
+        return f"{'lets' if third else 'let'} the agent send {what}"
     if grant["kind"] == "file":
         allows = list(grant.get("allows") or []) or ["use"]
         verbs = allows[0] if len(allows) == 1 else ", ".join(allows[:-1]) + " and " + allows[-1]
