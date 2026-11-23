@@ -20,25 +20,66 @@ import os
 import sys
 from typing import Any
 
-# Chat surfaces have a human in-band even when stdin is not a TTY. Webhook and home-automation
-# surfaces often have no approval UI, so they stay unattended.
+# Every platform value Hermes uses is in ATTENDED_PLATFORMS, NOT_ATTENDED_PLATFORMS or LOCAL_PLATFORMS. The Hermes
+# compatibility check (integrations/hermes/compat/platforms.py) fails on a value in none of them, so a platform a new
+# Hermes adds is classified on purpose.
+#
+# Chat surfaces have a human in-band even when stdin is not a TTY: Hermes sends its approval prompt into the chat and
+# takes the reply there.
 ATTENDED_PLATFORMS = frozenset(
     {
-        "discord",
-        "telegram",
-        "slack",
-        "whatsapp",
-        "signal",
-        "matrix",
-        "sms",
-        "email",
-        "web",
-        "feishu",
-        "lark",
-        "yuanbao",
+        "bluebubbles",
+        "buzz",
         "dingtalk",
-        "wecom",
+        "discord",
+        "email",
+        "feishu",
+        "google_chat",
+        "irc",
+        "lark",
+        "line",
+        "matrix",
         "mattermost",
+        "ntfy",
+        "photon",
+        "qqbot",
+        "signal",
+        "simplex",
+        "slack",
+        "sms",
+        "teams",
+        "telegram",
+        "web",
+        "wecom",
+        "weixin",
+        "whatsapp",
+        "whatsapp_cloud",
+        "yuanbao",
+    }
+)
+# Surfaces with no human answering in-band: programmatic front ends Hermes itself never asks (the API server and
+# webhooks), callback and relay ingress, other agents (A2A), Raft (its adapter sends nothing; the agent posts through
+# the Raft CLI, so an approval prompt reaches nobody), home automation, and runs Hermes starts itself (cron, sub-agents,
+# the curator, kanban workers, the gateway's resume and shutdown runs). None is attended unless `attended_platforms`
+# names it; ordinary calls there fall back to the terminal test, and background saves never take a snooze.
+NOT_ATTENDED_PLATFORMS = frozenset(
+    {
+        "",
+        "a2a",
+        "api_server",
+        "codex",
+        "cron",
+        "curator",
+        "gateway",
+        "homeassistant",
+        "kanban",
+        "msgraph_webhook",
+        "raft",
+        "relay",
+        "subagent",
+        "tool",
+        "webhook",
+        "wecom_callback",
     }
 )
 UNATTENDED_PLATFORMS = frozenset({"cron", "subagent"})
