@@ -104,7 +104,8 @@ work stops asking for approval:
 - **Channel bindings**: the channels this deployment normally delivers to, such as the chat your daily report goes
   to. A send to a bound channel is not treated as an unfamiliar destination.
 - **Grants**: hosts, email domains or channels the agent may send to (`destination`), files or folders it may
-  read, write or delete (`file`), and the MCP servers or plugins it may use (`provider`).
+  read, write or delete (`file`), the MCP servers or plugins it may use (`provider`), and which API key belongs to
+  which service (`credential`).
 
 Neither ever lowers a scanner floor (reading your SSH keys and sending them somewhere is blocked whatever you grant),
 and a file grant never covers a call that also sends data off the machine. You don't need a grant to send to a destination
@@ -174,6 +175,18 @@ session with `--session <ref>`, taking the ref from the `session` column of `/se
 | Let it clear out a scratch folder | `/sentrook grant file /home/you/scratch/ --allows delete --persistent` |
 | Use your team's MCP servers | `/sentrook grant provider npm:@yourteam/ --persistent` |
 | Run install scripts from a GitHub repository you trust | `/sentrook grant repo github.com/yourteam/tools --persistent` |
+| Use your own API key with the service it is for | `/sentrook grant credential MY_SERVICE_TOKEN@api.myservice.example` |
+
+An agent that reads an API key from its env file and sends it to the service it belongs to is doing the normal
+thing. Sentrook already knows the keys of some common providers and the hosts they go to; for any other
+service, a `credential` grant says the same: `NAME@host`, the key's environment name and the service's API host.
+The name may end in `*` after three or more characters (`MY_SERVICE_*`), and the host may be `*.example.com` (that
+domain and every name under it, but not a shared suffix such as `*.co.uk`). With it, sending that key only to that host is not treated as sensitive data
+leaving the machine, and the host is not treated as unfamiliar on that call. The key sent anywhere else, written to a
+file or printed, sent alongside another secret or file, or sent to a host that content the agent read named, is
+still reviewed. A credential grant lasts until you revoke it unless you give `--scope session` or `--expires`. When a
+review is caused by such a key going to its own service, the prompt suggests this grant (`/sentrook grant credential
+MY_SERVICE_TOKEN@api.myservice.example --persistent --expires 30d`).
 
 A file grant can use the full path or `~` for your home folder (`~/notes/*`). A `*` matches anything, including `/`.
 A pattern ending in `/` covers that folder and everything in it. `--allows` must name everything the call does to

@@ -6,7 +6,10 @@ grants and bindings, in that order, so adding by command never renumbers a confi
 
 A grant set by command has the PlanIR grant fields (kind, pattern, scope, allows, granted_at) plus an
 id, who set it (`set_by`: the owner basis, platform and hashed sender) and an optional `expires_at`.
-Scope is `session` unless the owner asks for `persistent`; any other value is refused.
+Scope is `session` unless the owner asks for `persistent`; any other value is refused. A `credential` grant
+(`NAME@host`: a key's environment name, or `PREFIX*`, and the host it is meant for, or `*.example.com`) is
+`persistent` unless the owner asks for `session`: a key's home rarely changes. Its pattern is checked here as
+Sentrook reads it, so a typo is refused at once rather than relieving nothing.
 
 A session grant is bound to one session: the one the command was sent from, or the one `--session`
 names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan
@@ -37,7 +40,31 @@ from .config import PluginConfig, parse_grants
 from .planir import binding_problem
 from .store import Store, file_lock, read_time
 
-KINDS = ("destination", "file", "provider", "repo")
+KINDS = ("destination", "file", "provider", "repo", "credential")
+#: A credential grant's pattern as Sentrook reads it: a name (or a prefix of three or more characters and `*`), `@`,
+#: and a host (or `*.` and a domain of two or more labels), with no scheme, port or path.
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+CREDENTIAL_PATTERN = re.compile(
+    rf"(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{{2,}}\*)@(?:\*\.)?{_LABEL}(?:\.{_LABEL})+"
+)
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard
+#: there, or on part of a numeric address, covers strangers, and Sentrook refuses it.
+_SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+
+
+def credential_pattern_ok(pattern: str) -> bool:
+    """`NAME@host` as Sentrook reads it (the host already lower-cased)."""
+    if not CREDENTIAL_PATTERN.fullmatch(pattern):
+        return False
+    host = pattern.partition("@")[2]
+    if not host.startswith("*."):
+        return True
+    labels = host[2:].split(".")
+    if all(label.isdigit() for label in labels):
+        return False
+    return not (len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2)
+
+
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
@@ -248,10 +275,11 @@ def grant_usage(cmd: Cmd) -> str:
     return (
         f"usage: {cmd('grant')} <kind> <pattern> [--persistent | --scope session|persistent] "
         "[--session <ref>] [--allows read,write] [--expires 12h]\n"
-        "kind is destination, file, provider or repo (github.com/<owner>/<repo>); --allows is for file "
-        "grants; scope defaults to "
+        "kind is destination, file, provider, repo (github.com/<owner>/<repo>) or credential "
+        "(NAME@host: the key and the host it is meant for); --allows is for file grants; scope defaults to "
         "session: this session only, or the one --session names (a ref from "
-        f"{cmd('history')}); cron jobs, subagents and other chats need --persistent"
+        f"{cmd('history')}); cron jobs, subagents and other chats need --persistent. "
+        "A credential grant is persistent unless --scope session is given"
     )
 
 
@@ -290,12 +318,22 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
         return ""
     kind, pattern = pos[0].lower(), pos[1]
     if kind not in KINDS:
-        return (
-            f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file, provider or repo.'
-        )
+        return f'Unknown grant kind "{_clean(pos[0], 40)}": use destination, file, provider, repo or credential.'
     if len(pattern) > MAX_PATTERN or not pattern.isprintable():
         return f"The pattern must be at most {MAX_PATTERN} printable characters."
-    scope = opts.get("scope", "session")
+    if kind == "credential":
+        pattern = pattern.strip()
+        name, _, host = pattern.partition("@")
+        pattern = f"{name}@{host.lower().rstrip('.')}"
+        if not credential_pattern_ok(pattern):
+            return (
+                f'"{_clean(pos[1], 80)}" is not a credential pattern: use NAME@host, such as '
+                "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
+                "host may be *.example.com)."
+            )
+    # a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
+    default = "persistent" if kind == "credential" and "session" not in opts else "session"
+    scope = opts.get("scope", default)
     if scope not in SCOPES:
         return f'Unknown scope "{_clean(scope, 40)}": use session or persistent.'
     grant: dict[str, Any] = {"kind": kind, "pattern": pattern, "scope": scope}

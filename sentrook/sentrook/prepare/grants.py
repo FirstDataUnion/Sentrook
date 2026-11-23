@@ -34,6 +34,9 @@ Matching, by kind:
   whose paths name no repository (a release-asset host).
 - `tool`: the whole call, when every command in it is covered: a pattern without spaces against the
   command name (directory stripped), one with spaces against the whole command.
+- `credential`: `NAME@host`, a credential's environment name (or `PREFIX*`) and the host it is meant for
+  (or `*.example.com`). Not matched here: the credential-home check (`prepare.credential_home`) reads it as it
+  reads a library entry, and convergence relieves the call when that check holds.
 """
 
 from __future__ import annotations
@@ -129,6 +132,9 @@ GRANT_KINDS: dict[str, GrantKind] = {
             relieves_call=(SELF_MODIFICATION,),
             reason="relief.tool_grant",
         ),
+        # Read by the credential-home check (`prepare.credential_home`); its relief is convergence's
+        # credential-home rule, not the table's.
+        GrantKind("credential", reason="relief.credential_grant"),
         # Read by Jev from the grants block; no deterministic relief yet.
         GrantKind("automation"),
     )
