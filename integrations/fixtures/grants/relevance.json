@@ -445,6 +445,38 @@
       "tool_kind": "message_send",
       "arguments": { "target": "ops@team.invalid", "message": "the nightly sync finished" },
       "sent": false
+    },
+    {
+      "case": "channel:<id> binding on a send that names the channel only in channelId",
+      "grant": { "kind": "destination", "pattern": "channel:1498333845953712258", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "channelId": "1498333845953712258", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "platform-named channel:<id> binding on a channelId send on that platform",
+      "grant": { "kind": "destination", "pattern": "discord:channel:1498333845953712258", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "channelId": "1498333845953712258", "message": "Daily brief" },
+      "sent": true
+    },
+    {
+      "case": "channel:<id> binding on a channelId of another channel",
+      "grant": { "kind": "destination", "pattern": "channel:1498333845953712258", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "channelId": "1498333845953712259", "message": "Daily brief" },
+      "sent": false
+    },
+    {
+      "case": "channel:<name> binding is not sent for its bare name (only an id is written bare)",
+      "grant": { "kind": "destination", "pattern": "channel:ops-yard", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "#general", "message": "ops-yard is quiet today" },
+      "sent": false
     }
   ]
 }

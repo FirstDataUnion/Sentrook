@@ -6,6 +6,9 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- A destination grant or binding written `channel:<id>` (or `group:`, `thread:`) is sent with a scan whose call
+  names that channel by its bare id, as OpenClaw's message tool writes it in `channelId`. Kept the same as the
+  OpenClaw plugin, so both send the same grants for the same call.
 - Held-call, scan-failure and background-save notices reach the `owner_channel` home channel again. The plugin sent
   them through Hermes's `send_message` tool, which Hermes 0.23 does not register in any process (the gateway, the
   desktop app's `hermes serve`, the command line or cron), so on Hermes 0.23 every notice failed with "Unknown tool:

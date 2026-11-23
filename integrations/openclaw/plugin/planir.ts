@@ -392,6 +392,8 @@ function piecesIn(pattern: string, text: string, shortOk = false): boolean {
 const PLATFORM_KEYS = ["channel", "platform", "service"];
 /** The channel targets a `#name` destination names (`user:` and `dm:` are people, never a channel). */
 const CHANNEL_PREFIXES = ["channel:", "group:", "thread:"];
+/** A channel id a send may write bare (`channelId`): with a digit, no glob. A bare name is not one. */
+const BARE_ID = /^(?=.*\d)[a-z0-9_-]{3,}$/;
 
 /**
  * The chat platform a message send names in its own argument (`discord` for `{channel: discord, target: "#x"}`),
@@ -409,13 +411,19 @@ export function callPlatform(args: unknown, kind: string): string | null {
 /**
  * The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner reads them, each
  * with whether it needs no minimum length: as written; without a `<platform>:` prefix when the send names that
- * platform in its own argument; and a `#name` as the channel target `channel:name` (or `group:`, `thread:`).
+ * platform in its own argument; a `#name` as the channel target `channel:name` (or `group:`, `thread:`); and a
+ * `channel:<id>` (or `group:`, `thread:`) as the bare id, as a send writes it in `channelId`.
  */
 function destinationForms(pattern: string, platform: string | null): Array<[string, boolean]> {
   const forms: Array<[string, boolean]> = [[pattern, false]];
   const colon = pattern.indexOf(":");
   if (platform && colon > 0 && colon < pattern.length - 1 && pattern.slice(0, colon) === platform) {
     forms.push([pattern.slice(colon + 1), true]);
+  }
+  for (const [form, shortOk] of [...forms]) {
+    const prefix = CHANNEL_PREFIXES.find((p) => form.startsWith(p));
+    const id = prefix ? form.slice(prefix.length) : "";
+    if (BARE_ID.test(id)) forms.push([id, shortOk]);
   }
   for (const [form, shortOk] of [...forms]) {
     if (form.startsWith("#")) forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + form.slice(1), shortOk]));
