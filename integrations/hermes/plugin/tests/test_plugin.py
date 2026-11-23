@@ -306,7 +306,7 @@ class _Stdin(io.StringIO):
         return self._tty
 
 
-@pytest.mark.parametrize("platform", ["tui", "desktop"])
+@pytest.mark.parametrize("platform", ["tui", "desktop", "acp"])
 def test_the_tui_and_desktop_apps_ask_the_owner_without_a_terminal(harness, monkeypatch, platform):
     """Must fire (attended): the TUI talks to Hermes over a pipe, and the desktop app talks to a gateway that may run
     as a service with no terminal; both show Hermes's own approval card, so a review is asked, not held."""
@@ -321,6 +321,71 @@ def test_the_tui_and_desktop_apps_ask_the_owner_without_a_terminal(harness, monk
 )
 def test_other_platforms_without_a_terminal_still_hold_a_review(harness, monkeypatch, platform):
     """Must stay silent (unchanged): with no terminal, a run on these surfaces cannot answer a review."""
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
+    turn(harness, platform=platform)
+    assert call(harness, "c1", "rm REVIEW") == {"action": "block", "message": HELD}
+
+
+#: Gateway chat platforms Hermes sends its approval prompt into, missing from the attended list before 2.0.0-beta.18.
+ADDED_CHAT_PLATFORMS = [
+    "whatsapp_cloud",
+    "weixin",
+    "bluebubbles",
+    "qqbot",
+    "teams",
+    "google_chat",
+    "irc",
+    "line",
+    "simplex",
+    "buzz",
+    "photon",
+    "ntfy",
+    "bot_room",
+]
+#: Surfaces with no human answering in-band, and values Hermes does not use.
+NOT_ATTENDED = [
+    "api_server",
+    "webhook",
+    "msgraph_webhook",
+    "wecom_callback",
+    "relay",
+    "cron",
+    "subagent",
+    "curator",
+    "kanban",
+    "a2a",
+    "raft",
+    "gateway",
+    "homeassistant",
+    "batch",
+    "",
+    "no_such_platform",
+]
+
+
+@pytest.mark.parametrize("platform", ADDED_CHAT_PLATFORMS)
+def test_every_gateway_chat_platform_asks_the_owner_without_a_terminal(
+    harness, monkeypatch, platform
+):
+    """Must fire (attended): a gateway runs as a service with no terminal; a review in a chat on any of these is asked
+    in the chat, not held."""
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
+    assert not plugin.intent.is_unattended(platform, {})
+    assert plugin.intent.owner_attends(platform, {})
+    turn(harness, platform=platform)
+    assert call(harness, "c1", "rm REVIEW")["action"] == "approve"
+    assert harness.traffic()[-1]["decision"] != "held"
+
+
+@pytest.mark.parametrize("platform", NOT_ATTENDED)
+def test_surfaces_with_nobody_answering_are_not_attended(harness, monkeypatch, platform):
+    """Must stay silent (not attended): with no terminal a review there is held, and a background save after a session
+    there never takes the owner's snooze, whatever stdin is."""
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
+    assert plugin.intent.is_unattended(platform, {})
+    assert not plugin.intent.owner_attends(platform, {})
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=True))
+    assert not plugin.intent.owner_attends(platform, {})
     monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
     turn(harness, platform=platform)
     assert call(harness, "c1", "rm REVIEW") == {"action": "block", "message": HELD}

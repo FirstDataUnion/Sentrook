@@ -303,9 +303,10 @@ When a call is blocked the agent is told it was a security block, given a broad 
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It
 is not told which checks fired or the risk score; you can see those with `hermes sentrook why last`.
 
-Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms, the Hermes TUI, the
-Hermes desktop app (also when it connects to a gateway on another machine) and the local terminal count as attended.
-Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
+Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms (every one Hermes's
+gateway ships except Raft, whose adapter sends nothing into the chat), the Hermes TUI, the Hermes desktop app (also when
+it connects to a gateway on another machine), an editor connected over ACP and the local terminal count as attended. Elsewhere, including the API
+server, cron, subagents, webhooks and A2A peers, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
 prompts, add it with `attended_platforms` (see [Settings](#settings)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
@@ -553,8 +554,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
-kept, such as `os.environ["API_KEY"]`: it names the place, not the secret. Your files, messages and tool output can
-still contain personal information, and that is sent as it is.
+kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. Your
+files, messages and tool output can still contain personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.hermes/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with

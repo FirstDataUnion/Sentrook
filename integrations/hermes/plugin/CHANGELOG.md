@@ -20,6 +20,15 @@ since the version the catalog pins.
   says so: a warning when it starts and a `background saves: not recognised` line in `/sentrook status`, both naming
   the fix (`plugins.isolation: in_process`, Hermes's default). The README also notes that Hermes offers no
   `hermes sentrook` commands in that mode. Nothing changes in-process.
+- The chat platforms Hermes 0.23 ships count as attended: Microsoft Teams, Google Chat, IRC, LINE, SimpleX,
+  BlueBubbles (iMessage), Photon, Buzz, ntfy, QQ Bot, Weixin and the WhatsApp Cloud API join the platforms already
+  listed. Before, a chat on one of them was judged by the terminal test, which a gateway running as a service fails, so
+  a review there was held instead of asked, and a snooze never reached a background save after that chat. Raft stays
+  unattended (Hermes's Raft adapter sends nothing into the chat, so an approval prompt reaches nobody), as do A2A peers,
+  the API server, webhooks, relays, cron, batch runs, sub-agents, the curator and kanban workers. The desktop app's hosted bot
+  rooms count as attended (the room shows Hermes's approvals), and an editor connected over ACP (Zed, for example)
+  counts as attended like the TUI: Hermes shows its approval in the editor, and it never has a terminal. The compatibility check now fails on a Hermes that adds a
+  platform the plugin has not classified as attended or not.
 
 ## 2.0.0-beta.17
 

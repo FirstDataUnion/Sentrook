@@ -58,6 +58,8 @@ test("PEM blocks are replaced, terminated or not", () => {
 
 // Secret-looking values for the forms below, built at run time.
 const pw = "Xk29fQ" + "v7Lm2Pq8";
+// A long digit run, as in a random value (not a name part).
+const digits = "1234567890".repeat(2) + "123456";
 const tok = "pT4" + "z".repeat(30) + "9qR1sK8";
 const hex32 = "9f" + "0a1b2c3d".repeat(3) + "4e5f6a";
 const tags = (s: string) => [...s.matchAll(/⟦secret:[a-z_]+:[0-9a-f]{4}⟧/g)].map((m) => m[0]);
@@ -223,6 +225,54 @@ test("code that reads a secret is not a secret", () => {
   assert.ok(!JSON.stringify(r.value({ password: "Summer2024(" })).includes("Summer2024"));
 });
 
+test("code that reads a secret from an attribute or with arguments is not a secret", () => {
+  // A plain attribute read from a known receiver or of a credential field, and a call or subscript whose arguments
+  // are simple, name where the secret is kept.
+  for (const text of [
+    "token = config.token",
+    "password = args.password",
+    "token = process.env.TOKEN",
+    "token = self._token",
+    "api_key = settings.API_KEY",
+    "token = sys.argv[1]",
+    "password = getpass.getpass(prompt='Password: ')",
+    "token = vault.read(path='kv/app')",
+    "token = base64.b64decode(os.environ['S'])",
+    "const token = process.env.TOKEN;",
+    "access_token = resp.access_token",
+    "this.apiKey = this.config.apiKey;",
+    "secret = base64.b64decode(config.secret)",
+    "the token: config.token",
+  ]) {
+    assert.equal(r.string(text), text);
+    assert.equal(r.string(asResult(text)), asResult(text));
+  }
+  // A dotted value that does not read as such a name is still a value.
+  for (const [text, value] of [
+    ["token = eyJ" + "a".repeat(12) + ".eyJ" + "b".repeat(12) + "." + "c".repeat(12), "c".repeat(12)],
+    [`api_key = sk.${pw}.${pw}`, pw],
+    [`token = config.${pw}`, pw],
+    [`token = ${pw.toLowerCase()}.token`, pw.toLowerCase()],
+    ["token = self." + "abcdefgh".repeat(5), "abcdefgh".repeat(5)],
+    ["password = correct.horse.battery.staple", "horse.battery"],
+    ['PASSWORD="config.token"', "config.token"],
+    ["token = 'process.env.TOKEN'", "process.env.TOKEN"],
+    [`token = ${pw}[1]`, pw],
+    [`token = ${pw}(prompt='x')`, pw],
+    [`token = f(${pw}[`, pw],
+    ["password = Summer[2024]", "Summer"],
+    ["password = qwerty[99]", "qwerty"],
+    ["password = monkey(prompt='x')", "monkey"],
+    ["token = abc123defg45[", "abc123defg45"],
+    [`token = config.x${digits}`, digits],
+    [`token = self.a${digits}`, digits],
+  ]) {
+    for (const out of [r.string(text), r.string(asResult(text))]) {
+      assert.ok(!out.includes(value) && tags(out).length >= 1, out);
+    }
+  }
+});
+
 test("trailing punctuation is not part of a value", () => {
   const tag = r.string(`password: ${pw} (give it`).slice("password: ".length).split(" ")[0];
   assert.match(tag, /^⟦secret:credential:[0-9a-f]{4}⟧$/);
@@ -377,6 +427,13 @@ test("long inputs stay fast", () => {
     "token = " + "getSecret".repeat(100_000) + "x",
     "token = " + "a_".repeat(400_000) + ".",
     "token: " + "x()".repeat(300_000),
+    "token = " + "a(b.".repeat(200_000),
+    "token = self." + "a.".repeat(300_000) + "x",
+    "token = " + "b64decode.".repeat(100_000) + "-",
+    "token = x(" + "a.".repeat(300_000) + "x",
+    "token = " + "a[1]".repeat(200_000) + "x",
+    "token = " + "aaa1".repeat(200_000) + "(",
+    "token: config." + "a".repeat(1_000_000),
   ]) {
     const t0 = performance.now();
     r.string(long);
