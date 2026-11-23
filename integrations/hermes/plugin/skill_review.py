@@ -7,7 +7,8 @@ scan of its save would show a write with nothing to justify it.
 A loop save is recognised only from Hermes's own write origin (`tools.skill_provenance`): the origin
 is `background_review` and the review is unattended (not an owner's `/refine`), and the tool is
 `skill_manage` or `memory`. Any other tool the fork calls is scanned as usual. A host without that
-module has no loop saves.
+module has no loop saves. Nor has the plugin under Hermes's `plugins.isolation: host`: it then runs in a
+separate process where the write origin cannot be read (`host_isolated`), and the startup log and status say so.
 
 With `skill_review: allow` (the default) a loop save is declared as a self-edit: it is sent with trigger
 `system` and a top-level `self_edit` block carrying the conversation the review read (see
@@ -53,6 +54,8 @@ answer), never `denied_by_user`, its resolution says `decided_by: review_loop`, 
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +73,25 @@ REQUEST_TEXT = (
     "No owner request: Hermes's background self-improvement review, "
     "saving or tidying its skills and memory."
 )
+
+
+#: Set to "1" in the environment of Hermes's plugin host, the separate process plugins run in with
+#: `plugins.isolation: host`.
+HOST_PROCESS_ENV = "HERMES_PLUGIN_HOST_PROCESS"
+#: What status and the startup warning say in the plugin host.
+HOST_ISOLATION_TEXT = (
+    "not recognised. Hermes runs this plugin in its plugin host (plugins.isolation: host), where Hermes's write "
+    "origin cannot be read, so Hermes's background skill and memory saves are scanned like any other call: without "
+    "the conversation they follow, and without the background-save handling (no holding, staging or notices). Set "
+    "plugins.isolation: in_process to have them recognised."
+)
+
+
+def host_isolated(env: Mapping[str, str] | None = None) -> bool:
+    """The plugin runs in Hermes's plugin host (`plugins.isolation: host`). Hermes keeps the write origin in a
+    context variable of its own process and the hook arguments carry no marker of it, so there every call reads
+    as the owner's foreground call and no loop save can be recognised."""
+    return (os.environ if env is None else env).get(HOST_PROCESS_ENV) == "1"
 
 
 def in_background_review() -> bool:
