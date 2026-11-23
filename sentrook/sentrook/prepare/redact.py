@@ -1,6 +1,9 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v8`; `redact-v7` replaced code that reads a
-secret from an attribute or with arguments, `config.token`, `sys.argv[1]`, `getpass.getpass(prompt='…')`, as if it
-were one, `redact-v6` replaced code that reads a secret under a credential key, `access_token = token_data['access_token']`, as if it were one, `redact-v5` kept a key's trailing
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v10`; `redact-v9` replaced a call whose
+argument is a bare name, `os.getenv(name)`, as if it were a secret, `redact-v8` replaced code that reads a
+secret after an upper-case name with a credential word inside it, `MY_SECRET_TOKEN = config.token`, as if it were
+one, `redact-v7` replaced code that reads a secret from an attribute or with arguments, `config.token`,
+`sys.argv[1]`, `getpass.getpass(prompt='…')`, `redact-v6` replaced code that reads a secret under a credential key,
+`access_token = token_data['access_token']`, `redact-v5` kept a key's trailing
 punctuation in its value and missed a value restated in a second clause, `redact-v4` took the plugins'
 command-line flag rule but not their object-key rule, `redact-v3` took the plugins' text rules but their
 command-line flag rule, `redact-v2` moved the vendor shapes to data,
@@ -31,7 +34,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v8"
+REDACTION_VERSION = "redact-v10"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -110,6 +113,12 @@ _DOTTED_NAME = _DOTTED_PART + r"(?:\." + _DOTTED_PART + r")+"
 _CODE_READ = re.compile(
     _CODE_CHAIN + r"(?:[\[(]|\((?:" + _CODE_CHAIN + r"[\[(]|" + _DOTTED_NAME + r"\)?))"
 )
+#: A call whose one argument is a bare lower-case name, cut before its closing parenthesis or a comma
+#: (`os.getenv(name`, `load_token(path`, `getattr(settings`). It is code only when the name called reads as code
+#: (`is_code_read`): dotted, with `_` or a capital, or called or subscripted itself, or one of `_CODE_READERS`.
+#: `hunter(abc)` and `mysecret(pw_2024)` are values.
+_CODE_NAME_ARG_READ = re.compile(_CODE_CHAIN + r"\([a-z_][a-z0-9_]{0,29}")
+_CODE_READERS = frozenset("input getattr getenv getpass open read load get".split())
 #: A dotted name called with a keyword before a quoted argument (`getpass.getpass(prompt=`) or subscripted with
 #: a number of one or two digits (`sys.argv[1`, its `]` left out as punctuation). Only a dotted name counts
 #: (`is_code_read`): `qwerty[99]` and `monkey(prompt='x')` are values.
@@ -145,12 +154,17 @@ def _key_value(v: str) -> bool:
 
 def is_code_read(v: str) -> bool:
     """Whether `v` is code that reads a secret from somewhere: called or subscripted and cut where its quoted
-    argument starts (`_CODE_READ`), a dotted name with a simple argument (`_CODE_ARG_READ`), or a plain attribute read from a known receiver or of a credential field
+    argument starts (`_CODE_READ`), a dotted name with a simple argument (`_CODE_ARG_READ`), a call on a
+    bare name (`_CODE_NAME_ARG_READ`), or a plain attribute read from a known receiver or of a credential field
     (`config.token`, `resp.access_token`)."""
     if _CODE_READ.fullmatch(v) is not None:
         return True
     if "." in v and _CODE_ARG_READ.fullmatch(v) is not None:
         return True
+    if _CODE_NAME_ARG_READ.fullmatch(v) is not None:
+        callee = v[: v.rindex("(")]
+        if re.search(r"[._A-Z(\[]", callee) or callee in _CODE_READERS:
+            return True
     if _DOTTED_READ.fullmatch(v) is None:
         return False
     return (
@@ -167,7 +181,14 @@ def _unquoted_key_value(v: str) -> bool:
 
 
 def _inner_key_value(v: str) -> bool:
-    """An upper-case name with a credential word inside it names many things; only a long value counts."""
+    """An upper-case name with a credential word inside it names many things; only a long value counts, and not
+    code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key."""
+    return len(v) >= 12 and _key_value(v) and not is_code_read(v)
+
+
+def _inner_quoted_value(v: str) -> bool:
+    """The same name with a quoted value: a long value that is not a URL or an environment variable name. A quoted
+    value is whole, so code-shaped text in quotes is still a value."""
     return len(v) >= 12 and _key_value(v)
 
 
@@ -320,16 +341,29 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         _key_value,
     ),
     # An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
-    # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+    # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`), and nor is unquoted
+    # code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`).
     (
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
-            r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            r"\\?[\"']?\s*[=:]\s*"
             r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
             + _VALUE_END
             + r")"
         ),
         _inner_key_value,
+    ),
+    # The same name with a quoted value (`GITHUB_TOKEN_VALUE="x"`): a quoted value is whole, so one
+    # shaped like code is still a value.
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
+            r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
+        ),
+        _inner_quoted_value,
     ),
     # "password is X", "the password is now X", "the token for prod: X". The words between cue and value
     # stay inside one clause and one quoted string and never reach into a placeholder; a cue inside a

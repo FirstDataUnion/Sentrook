@@ -19,7 +19,8 @@
  *   draft saved (`after_tool_call`), that the save was lost when it reports a failure, or that it was saved live when
  *   OpenClaw ran the call's own action instead of the draft;
  * - everything else (a patch that cannot be applied to the live file, a support file, a memory note, a file write, a
- *   change that carries no content such as a restore, an older or unknown OpenClaw, or a block-level score the scanner
+ *   save made with exec, which the scanner recognised by where the command writes, a change that carries no content
+ *   such as a restore, an older or unknown OpenClaw, or a block-level score the scanner
  *   capped at review because it retries a review nobody answered) is held: it does not run, the run is told it was not
  *   saved and not to retry it (`HELD_TEXT`), and the owner is told, with where to make an archive or restore
  *   themselves. These holds are not kept in the holds file: `/sentrook-approve` could do nothing for them (it never
