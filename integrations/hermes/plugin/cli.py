@@ -94,7 +94,7 @@ def run_verify(
         )
     )
     # Reported, not failed: without a notice target a held call still waits; the owner is just not told.
-    target, why = hold.notice_target(cfg.owner_channel, hold.home_platforms())
+    target, why = hold.owner_target(cfg.owner_channel)
     checks.append(
         (
             "held-call notices",
@@ -108,7 +108,7 @@ def run_verify(
         (
             "background-save notices",
             True,
-            skill_review.notice_line(cfg.owner_channel, hold.home_platforms()),
+            skill_review.notice_line(cfg.owner_channel),
         )
     )
     return checks

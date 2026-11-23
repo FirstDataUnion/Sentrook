@@ -88,8 +88,7 @@ def run_status(
                 if skill_review.host_isolated(env)
                 else ()
             ),
-            "background-save notices: "
-            + skill_review.notice_line(cfg.owner_channel, hold.home_platforms()),
+            "background-save notices: " + skill_review.notice_line(cfg.owner_channel),
         )
     )
 

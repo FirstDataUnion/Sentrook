@@ -379,6 +379,10 @@ Where nobody can answer a review (the runs above), the call is **held**:
   are not sent. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
   was held, which run (a cron job by its id, and its name in quotes), the tool and its target, a broad category,
   and the commands. Read the risk, the reasons and any grant Sentrook suggests with `/sentrook why <id>`.
+- The notice is sent with Hermes's own `hermes send` command, which works from every Hermes process: the gateway,
+  the desktop app's backend (`hermes serve`), the command line and cron. Where a Hermes process has neither
+  `hermes send` nor a `send_message` tool, the call is still held, its record says the notice is `unsent` and why,
+  and the startup log, `status` and `verify` say that notices cannot be sent from that process.
 - Reply `/sentrook approve <id>` within 24 hours (from a direct message or the local terminal, like the other owner
   commands). When Sentrook suggested a grant for the call, approving sets it as a persistent grant that ends after 30
   days, so the job's next run is scanned with it. When it suggested none, approving sets nothing and the reply says
@@ -601,14 +605,15 @@ In short, for anyone deciding whether to install it:
   them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
   call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review holds the call and
-  sends you one notice on a home channel, through Hermes's own `send_message`, and a call blocked because the scan
+  sends you one notice on a home channel, with Hermes's own `hermes send`, and a call blocked because the scan
   failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
   only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
   the traffic log, grants, snooze state, held calls, when each job last had a scan-failure notice, and the
   conversation logs above), or to the paths you set for them
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
-  secret redaction are on. It runs no shell commands and starts no background processes.
+  secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`, with
+  the same Python that runs Hermes, to send a notice above; the notice text goes to it on standard input.
 - **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
   `auth.json` or any other credential file.
 - **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and

@@ -312,13 +312,16 @@ def _quiet_hours() -> int:
     return int(QUIET.total_seconds() // 3600)
 
 
-def notice_line(owner_channel: str, homes: list[str]) -> str:
-    """Where loop-save notices go, for status and verify (`homes`: the platforms with a home channel)."""
-    from .hold import notice_target
+def notice_line(owner_channel: str) -> str:
+    """Where loop-save notices go, for status and verify."""
+    from .hold import home_platforms, notice_target, owner_target
 
-    target, why = notice_target(owner_channel, homes)
+    target, why = owner_target(owner_channel)
     if target:
         return f"to the {target} home channel"
+    if notice_target(owner_channel, home_platforms())[0] is not None:
+        # a home channel to send to, but no way to send it from this process
+        return f"cannot be delivered ({why})"
     why = why if owner_channel else "owner_channel is not set"
     return (
         f"cannot be delivered ({why}). Set owner_channel to a platform with a home channel: "
