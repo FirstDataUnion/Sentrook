@@ -572,8 +572,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
-kept, such as `os.environ["API_KEY"]`: it names the place, not the secret. Your files, messages and tool output can
-still contain personal information, and that is sent as it is.
+kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. Your
+files, messages and tool output can still contain personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with
