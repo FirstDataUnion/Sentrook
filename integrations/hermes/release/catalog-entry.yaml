@@ -15,9 +15,10 @@ description: >-
   SENTROOK_SCAN_CLIENT_SECRET, read only through get_secret). With skill_review: allow (default) the
   redacted recent conversation goes with Hermes's own background skill and memory saves and is kept
   redacted on disk for that. Writes only its own folder (HERMES_HOME/sentrook: traffic log, grants, snooze
-  state, held calls, conversation logs); runs no shell commands or background processes; no telemetry
-  beyond the scans. Never approves a call itself; where nobody can answer (cron, webhooks, API server) a
-  review holds the call and sends the owner one notice on a home channel through Hermes's send_message.
+  state, held calls, conversation logs); runs no shell commands, and the only process it starts is
+  Hermes's own hermes send, for a notice; no telemetry beyond the scans. Never approves a call itself;
+  where nobody can answer (cron, webhooks, API server) a review holds the call and sends the owner one
+  notice on a home channel with hermes send.
   Observe mode logs without blocking or asking.
 maintainer: FirstDataUnion
 tier: community

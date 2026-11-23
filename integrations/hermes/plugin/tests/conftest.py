@@ -59,6 +59,26 @@ class FakeScanner:
         raise AssertionError(f"unexpected request {url}")
 
 
+@pytest.fixture(autouse=True)
+def notice_route(monkeypatch):
+    """How this Hermes process can send the owner's notices, under test control: by default a send_message tool is
+    registered and there is no `hermes send`, so notices go through `ctx.dispatch_tool` as they always have. A test
+    sets `["hermes_send"]` (then Hermes's launcher is `FAKE_LAUNCHER`) or `["send_tool"]` to try another route (read
+    when a notice is decided and sent); `["real_launcher"]` is the real lookup."""
+    from plugin import hold
+
+    route = {"hermes_send": False, "send_tool": True, "real_launcher": hold._hermes_launcher}
+    monkeypatch.setattr(
+        hold, "_hermes_launcher", lambda: FAKE_LAUNCHER if route["hermes_send"] else None
+    )
+    monkeypatch.setattr(hold, "_send_tool_registered", lambda: route["send_tool"])
+    return route
+
+
+#: Hermes's `hermes` launcher in tests that send with `hermes send` through a stand-in `subprocess.run`.
+FAKE_LAUNCHER = "/opt/hermes-test/bin/hermes"
+
+
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     for k, v in {
@@ -92,6 +112,10 @@ def harness(tmp_path, monkeypatch):
 
         def register_hook(self, name, fn):
             self.hooks[name] = fn
+
+        def dispatch_tool(self, name, args, **_kw):
+            """Hermes's own answer where a tool is not registered; tests that send notices replace it."""
+            return json.dumps({"error": f"Unknown tool: {name}"})
 
         def register_cli_command(self, **kw):
             self.cli = kw

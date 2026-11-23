@@ -804,10 +804,7 @@ def _background_save_attended(
 
 def _notice_target(owner_channel: str) -> tuple[str | None, str]:
     """(platform whose home channel gets the owner's notices, or None; why there is none)."""
-    target, why = hold.notice_target(owner_channel, hold.home_platforms())
-    if target and not callable(getattr(_ctx, "dispatch_tool", None)):
-        target, why = None, "this Hermes cannot dispatch send_message from a plugin"
-    return target, why
+    return hold.owner_target(owner_channel, callable(getattr(_ctx, "dispatch_tool", None)))
 
 
 def _stage_background(
@@ -1311,9 +1308,11 @@ def register(ctx: Any) -> None:
     def show(e: Any) -> str:
         return e.url if e.ok else f"INVALID ({e.reason})"
 
+    route, no_route = hold.send_route(callable(getattr(ctx, "dispatch_tool", None)))
+
     logger.info(
         "sentrook %s registered: scan=%s issuer=%s%s mode=%s review>=%s block>=%s on_scan_error=%s "
-        "skill_review=%s traffic=%s",
+        "skill_review=%s traffic=%s notices=%s",
         PLUGIN_VERSION,
         show(ep.scan),
         show(ep.issuer),
@@ -1324,6 +1323,7 @@ def register(ctx: Any) -> None:
         cfg.on_scan_error,
         cfg.skill_review,
         cfg.traffic_log_path if cfg.traffic_log_enabled else "off",
+        route or "none",
     )
     if not ep.scan.ok or not ep.issuer.ok:
         logger.error(
@@ -1336,6 +1336,13 @@ def register(ctx: Any) -> None:
         )
     if skill_review.host_isolated():
         logger.warning("sentrook background saves are %s", skill_review.HOST_ISOLATION_TEXT)
+    if route is None:
+        logger.warning(
+            "sentrook cannot send the owner's notices from this process: %s. Held calls, scan failures on "
+            "unattended runs and background saves are recorded (/sentrook history), but nobody is told; see "
+            "/sentrook status",
+            no_route,
+        )
     if unsent := grants.unsent_summary(cfg):
         logger.warning(
             "sentrook config grants never sent: %s. A config grant has no session: drop its scope to "

@@ -26,6 +26,7 @@ from plugin import commands, config, grants, history, hold, scan_failure_notice,
 from plugin.scan_error_policy import ScanFailure
 from plugin.store import read_time
 
+from .conftest import FAKE_LAUNCHER
 from .test_plugin import dump_planirs
 
 FIXTURES = json.loads(
@@ -994,3 +995,416 @@ def test_only_a_block_on_an_unattended_run_is_announced_whatever_the_policy(h):
         "Reason: Sentrook's endpoint or credentials are not configured correctly."
         in h.sent[0]["args"]["message"].splitlines()
     )
+
+
+# ---- how the notice is sent ----------------------------------------------------------------------------------
+#
+# Hermes 0.23 registers no send_message tool in any process: `ctx.dispatch_tool("send_message", ...)` answers
+# "Unknown tool". The notice goes out with Hermes's own `hermes send` command instead, run from the notice thread;
+# the send_message tool is used only on a Hermes that registers it, and with neither the notice is unsent.
+
+UNKNOWN_TOOL = json.dumps({"error": "Unknown tool: send_message"})
+HERMES_SEND_ARGV = [
+    FAKE_LAUNCHER,
+    "send",
+    "--to",
+    "discord",
+    "--file",
+    "-",
+    "--json",
+]
+
+
+class FakeRun:
+    """Stands in for `subprocess.run` of `hermes send`: records each run and answers with `reply`."""
+
+    def __init__(self, reply=None, returncode=0, stdout=None, raises=None):
+        self.runs = []
+        self.reply = (
+            {"success": True, "note": "Sent to discord home channel"} if reply is None else reply
+        )
+        self.returncode, self.stdout, self.raises = returncode, stdout, raises
+
+    def __call__(self, argv, **kw):
+        self.runs.append(
+            {
+                "argv": argv,
+                **kw,
+                "run_target": RUN_TARGET.get(),
+                "thread": threading.current_thread().name,
+            }
+        )
+        if self.raises is not None:
+            raise self.raises
+        out = json.dumps(self.reply, indent=2) if self.stdout is None else self.stdout
+        return subprocess.CompletedProcess(argv, self.returncode, out, "")
+
+
+@pytest.fixture
+def hermes_send(h, notice_route, monkeypatch):
+    """The `h` harness on a Hermes like 0.23: `hermes send` is there, no send_message tool is registered, and
+    `ctx.dispatch_tool` answers "Unknown tool" (recorded in `.sent` all the same)."""
+    notice_route["hermes_send"], notice_route["send_tool"] = True, False
+    dispatched = h.ctx.dispatch_tool
+
+    def unknown(name, args, **kw):
+        dispatched(name, args, **kw)
+        return UNKNOWN_TOOL
+
+    h.ctx.dispatch_tool = unknown
+    run = FakeRun()
+    monkeypatch.setattr(hold.subprocess, "run", run)
+    return run
+
+
+def test_a_hold_where_no_notice_can_be_sent_is_recorded_unsent_and_every_report_says_why(
+    h, notice_route, caplog
+):
+    """Must fire: a process whose `dispatch_tool` answers "Unknown tool: send_message" and that has no `hermes send`.
+    The call is held, its record and its hold say unsent with the reason, nothing is tried, and status, verify and
+    the startup log say plainly that notices cannot be sent from this process."""
+    from plugin import cli
+
+    notice_route["hermes_send"], notice_route["send_tool"] = False, False
+    h.ctx.dispatch_tool = lambda *_a, **_k: UNKNOWN_TOOL
+    _route, why = hold.send_route()
+    assert why.startswith(hold.process_name() + " cannot send them")
+    assert "hermes send" in why and "send_message" in why
+    turn(h)
+    out, rec = send(h)
+    assert out["message"] == FIXTURES["held_text"] and rec["decision"] == "held"
+    assert rec["hold"]["notice"] == {"status": "unsent", "target": None, "reason": why}
+    assert holds(h)[0]["notice"] == {"status": "unsent", "target": None, "reason": why}
+    assert h.sent == []
+    status = slash(h, "status")
+    assert f"notices not sent ({why})" in status
+    assert f"background-save notices: cannot be delivered ({why})" in status
+    verify = {n: (ok, d) for n, ok, d in cli.run_verify(dict(h.ctx.settings), timeout=0.01)}
+    assert verify["held-call notices"] == (True, f"not sent: {why}")
+    assert verify["background-save notices"] == (True, f"cannot be delivered ({why})")
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        plugin.register(h.ctx)
+    [warning] = [r.getMessage() for r in caplog.records if "notices" in r.getMessage()]
+    assert warning.startswith(f"sentrook cannot send the owner's notices from this process: {why}")
+
+
+def test_a_scan_failure_where_no_notice_can_be_sent_is_blocked_and_recorded_unsent(h, notice_route):
+    notice_route["hermes_send"], notice_route["send_tool"] = False, False
+    h.unreachable = True
+    out, rec = _cron(h)
+    assert out["action"] == "block"
+    assert rec["notice"] == {"status": "unsent", "target": None, "reason": hold.send_route()[1]}
+    assert h.sent == []
+
+
+def test_without_a_send_message_tool_the_hold_notice_goes_out_with_hermes_send(h, hermes_send):
+    """Must fire: the desktop backend (`hermes serve`) and every other Hermes 0.23 process have no send_message tool;
+    the notice goes to the owner_channel home channel with `hermes send`, its text on stdin."""
+    turn(h)
+    _out, rec = send(h)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    assert h.sent == [], "the send_message tool is not tried where it is not registered"
+    [run] = hermes_send.runs
+    assert run["argv"] == HERMES_SEND_ARGV
+    assert run["input"].startswith("Sentrook held a tool call on an unattended run")
+    assert f"{commands.CMD('approve')} {holds(h)[0]['id']}" in run["input"]
+    assert run["timeout"] == hold.SEND_TIMEOUT
+    assert "notices to the discord home channel" in slash(h, "status")
+
+
+def test_hermes_send_runs_on_the_notice_thread_without_the_cron_runs_delivery_target(
+    h, hermes_send, monkeypatch
+):
+    """Must stay: a cron run's notice still goes from the worker thread, outside the run's context; and `hermes
+    send` does not inherit the run's own delivery target, which would make Hermes skip the send."""
+    monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "123")
+    turn(h)
+    RUN_TARGET.set("discord:home")
+    try:
+        send(h)
+    finally:
+        RUN_TARGET.set("unset")
+    [run] = hermes_send.runs
+    assert run["thread"] == "sentrook-hold-notice"
+    assert run["run_target"] == "unset"
+    assert not any(k.startswith("HERMES_CRON_AUTO_DELIVER_") for k in run["env"])
+    assert run["env"]["HERMES_HOME"] == os.environ["HERMES_HOME"]
+    assert run["env"]["HERMES_GATEWAY_PROFILE_PIN"] == "1", (
+        "never another profile's sticky active_profile"
+    )
+
+
+#: The Hermes home a turn is served for, which a multi-profile Hermes binds to the turn's context.
+TURN_HOME = contextvars.ContextVar("turn_home", default="/srv/hermes")
+
+
+@pytest.fixture
+def profiles(monkeypatch):
+    """Hermes's homes under test control: this process's own is /srv/hermes; a turn's is `TURN_HOME`."""
+    import types
+
+    mod = types.ModuleType("hermes_constants")
+    mod.get_hermes_home = lambda: Path(TURN_HOME.get())
+    mod.get_process_hermes_home = lambda: Path("/srv/hermes")
+    monkeypatch.setitem(sys.modules, "hermes_constants", mod)
+
+
+def test_hermes_send_is_used_for_a_turn_of_this_process_own_profile(h, hermes_send, profiles):
+    turn(h)
+    _out, rec = send(h)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    assert len(hermes_send.runs) == 1
+
+
+def test_a_turn_served_for_another_profile_is_not_sent_with_this_process_credentials(
+    h, hermes_send, profiles
+):
+    """A Hermes serving several profiles scopes each turn to its own home in the turn's context. `hermes send` runs
+    with this process's environment, its own profile's platform tokens, so the notice of another profile's turn is
+    recorded unsent with the reason rather than sent from the wrong account."""
+    turn(h)
+    token = TURN_HOME.set("/srv/hermes/profiles/work")
+    try:
+        _out, rec = send(h)
+    finally:
+        TURN_HOME.reset(token)
+    notice = rec["hold"]["notice"]
+    assert notice["status"] == "unsent" and notice["target"] is None
+    assert "/srv/hermes/profiles/work" in notice["reason"]
+    assert "own profile's credentials" in notice["reason"]
+    assert hermes_send.runs == []
+
+
+def test_the_route_is_chosen_in_the_turns_context_not_on_the_notice_thread(
+    h, hermes_send, profiles, notice_route
+):
+    """Another profile's turn on a Hermes that also registers send_message: the notice goes through the tool. The
+    notice thread has an empty context, where the turn's home reads as this process's own; choosing the route
+    there would run `hermes send` with this process's credentials."""
+    notice_route["send_tool"] = True
+    turn(h)
+    token = TURN_HOME.set("/srv/hermes/profiles/work")
+    try:
+        _out, rec = send(h)
+    finally:
+        TURN_HOME.reset(token)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    assert hermes_send.runs == []
+    assert [x["name"] for x in h.sent] == ["send_message"]
+
+
+@pytest.mark.parametrize(
+    "fake",
+    [
+        FakeRun(reply={"error": "Discord home channel not set"}, returncode=1),
+        FakeRun(reply={"success": True, "skipped": True}),
+        FakeRun(stdout="Traceback (most recent call last):\n", returncode=1),
+        FakeRun(raises=subprocess.TimeoutExpired(HERMES_SEND_ARGV, 60)),
+        FakeRun(raises=FileNotFoundError(2, "No such file")),
+    ],
+    ids=["error", "skipped", "crash", "timeout", "missing"],
+)
+def test_a_scan_failure_notice_hermes_send_did_not_deliver_does_not_quiet_the_job(
+    h, hermes_send, monkeypatch, caplog, fake
+):
+    """Must fire: the scan-failure notice shares the route; a send that fails, is skipped, crashes or hangs is
+    logged and does not start the quiet period, so the next failure in the job is announced."""
+    monkeypatch.setattr(hold.subprocess, "run", fake)
+    h.unreachable = True
+    with caplog.at_level("WARNING", logger=plugin.logger.name):
+        out, rec = _cron(h)
+        _cron(h, sid="cron-2")
+    assert out["action"] == "block"
+    assert rec["notice"] == {"status": "queued", "target": "discord"}
+    assert len(fake.runs) == 2, "the second failure tries again"
+    assert fake.runs[0]["input"].startswith(
+        scan_failure_notice.notice_text(
+            ScanFailure(ok=False, kind="network", detail=""), "send_message", "x", True, VERIFY
+        ).split("\n")[0]
+    )
+    assert any("not delivered with hermes send" in r.getMessage() for r in caplog.records)
+
+
+def test_a_scan_failure_notice_hermes_send_delivered_quiets_the_job(h, hermes_send):
+    h.unreachable = True
+    _cron(h)
+    _out, rec = _cron(h, sid="cron-2")
+    assert rec["notice"] == {"status": "quiet"}
+    assert len(hermes_send.runs) == 1
+
+
+@pytest.mark.parametrize(
+    "after", ["", "\nbye\n", "\n{not json", '\n{"level": "info", "msg": "log"}']
+)
+def test_hermes_send_output_around_its_answer_is_still_read(h, hermes_send, after):
+    hermes_send.stdout = (
+        "⚠ a warning Hermes printed\n" + json.dumps({"success": True}, indent=2) + after
+    )
+    h.unreachable = True
+    _cron(h)
+    _cron(h, sid="cron-2")
+    assert len(hermes_send.runs) == 1, "delivered, so the job is quiet"
+
+
+@pytest.mark.parametrize("route", ["hermes send", "send_message tool"])
+def test_a_media_directive_in_a_notice_is_never_followed(h, notice_route, monkeypatch, route):
+    """Must stay silent: Hermes's send attaches the file a `MEDIA:<path>` names in the text. A call's target is the
+    agent's to choose, so no notice may carry a directive Hermes would follow."""
+    run = FakeRun()
+    monkeypatch.setattr(hold.subprocess, "run", run)
+    notice_route["hermes_send"] = route == "hermes send"
+    h.reply = {
+        "entities": {"E1": {"kind": "channel", "display": "media:/home/hermes/.hermes/.env"}},
+    }
+    turn(h)
+    send(h)
+    [text] = [r["input"] for r in run.runs] + [s["args"]["message"] for s in h.sent]
+    assert not HERMES_MEDIA_TAG.search(text)
+    assert "media :/home/hermes/.hermes/.env" in text
+
+
+#: Hermes's own directive patterns (gateway/platforms/base.py), reduced to what makes a tag: `MEDIA:` in any case.
+HERMES_MEDIA_TAG = re.compile(r"""[`"'*_]{0,3}MEDIA:\s*""", re.IGNORECASE)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ["MEDIA:", "media:", "Media:", "mEdIa:", "MED\u0130A:", "MED\u0131A:", "`MEDIA:", "**media: "],
+)
+def test_defuse_breaks_media_directives_in_any_case(tag):
+    text = f"a {tag}/home/u/notes.pdf b"
+    assert HERMES_MEDIA_TAG.search(text), "Hermes would follow it"
+    assert not HERMES_MEDIA_TAG.search(hold.defuse(text))
+
+
+def test_defuse_strips_delivery_flags_even_nested():
+    out = hold.defuse("a [[as_[[as_document]]document]] [[audio_as_voice]] b MEDIA:/x.png")
+    assert "[[as_document]]" not in out and "[[audio_as_voice]]" not in out
+    assert out == "a   b MEDIA :/x.png"
+
+
+def test_the_send_message_tool_is_used_where_hermes_registers_it_and_hermes_send_is_missing(h):
+    """Must stay: on a Hermes that registers send_message (and has no `hermes send`), the notice goes through
+    `ctx.dispatch_tool` as before."""
+    turn(h)
+    _out, rec = send(h)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    [notice] = h.sent
+    assert notice["name"] == "send_message"
+    assert notice["args"]["target"] == "discord"
+
+
+def test_hermes_send_is_preferred_where_both_routes_exist(h, hermes_send, notice_route):
+    notice_route["send_tool"] = True
+    turn(h)
+    send(h)
+    assert len(hermes_send.runs) == 1
+    assert h.sent == []
+
+
+FAKE_HERMES_SEND = """
+import json, os, sys
+
+body = sys.stdin.read()
+with open(os.environ["FAKE_HERMES_SEND_LOG"], "a", encoding="utf-8") as f:
+    env = {k: v for k, v in os.environ.items() if k.startswith("HERMES_")}
+    f.write(json.dumps({"argv": sys.argv[1:], "body": body, "env": env, "cwd": os.getcwd()}) + "\\n")
+print("Hermes says hello first")
+print(json.dumps({"success": True, "platform": "discord"}, indent=2))
+"""
+
+
+def test_hermes_send_end_to_end_through_hermes_own_launcher(h, notice_route, tmp_path, monkeypatch):
+    """The real `hermes send` contract with a stand-in Hermes laid out like a checkout: the `hermes` launcher in
+    `.hermes/bin` next to `hermes_cli`, as Hermes installs it. Hermes runs with its checkout on `sys.path` and no
+    PYTHONPATH, and the desktop backend runs in the owner's project folder, so the notice is sent with that launcher,
+    whatever the working directory: `hermes send --to <platform> --file - --json`, the text on stdin as UTF-8, a JSON
+    answer on stdout."""
+    root = tmp_path / "hermes-agent"
+    (root / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_cli" / "__init__.py").write_text("")
+    (root / "hermes_cli" / "send_cmd.py").write_text("")
+    (root / "fake_send.py").write_text(FAKE_HERMES_SEND)
+    launcher = root / ".hermes" / "bin" / "hermes"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{root / "fake_send.py"}" "$@"\n')
+    launcher.chmod(0o755)
+    log = tmp_path / "sends.jsonl"
+    monkeypatch.setenv("FAKE_HERMES_SEND_LOG", str(log))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.syspath_prepend(str(root))
+    for name in ("hermes_cli", "hermes_cli.send_cmd"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(hold, "_hermes_launcher", notice_route["real_launcher"])
+    notice_route["send_tool"] = False
+    h.ctx.dispatch_tool = lambda *_a, **_k: UNKNOWN_TOOL
+    assert hold.send_route() == (hold.HERMES_SEND, "")
+    assert hold._hermes_launcher() == str(launcher)
+
+    class Run:
+        job_id = "9f1c2a"
+        job_name = "brief · été"
+
+    h.ctx.current_cron_execution = lambda: Run()
+    turn(h)
+    _out, rec = send(h)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    [sent] = [json.loads(x) for x in log.read_text().splitlines()]
+    assert sent["argv"] == ["send", "--to", "discord", "--file", "-", "--json"]
+    assert sent["body"].startswith("Sentrook held a tool call on an unattended run")
+    assert '"brief · été"' in sent["body"]
+    assert sent["env"]["HERMES_GATEWAY_PROFILE_PIN"] == "1"
+    for name in ("hermes_cli", "hermes_cli.send_cmd"):
+        sys.modules.pop(name, None)
+
+
+def test_no_launcher_means_no_hermes_send(tmp_path, monkeypatch, notice_route):
+    """`hermes_cli` importable but no launcher beside it, beside the interpreter or on PATH: no `hermes send`."""
+    root = tmp_path / "hermes-agent"
+    (root / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_cli" / "__init__.py").write_text("")
+    (root / "hermes_cli" / "send_cmd.py").write_text("")
+    monkeypatch.syspath_prepend(str(root))
+    for name in ("hermes_cli", "hermes_cli.send_cmd"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(hold.sys, "executable", str(tmp_path / "py" / "python3"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert notice_route["real_launcher"]() is None
+    for name in ("hermes_cli", "hermes_cli.send_cmd"):
+        sys.modules.pop(name, None)
+
+
+def test_a_background_save_where_no_notice_can_be_sent_is_recorded_unsent(h, notice_route):
+    notice_route["hermes_send"], notice_route["send_tool"] = False, False
+    cfg, _ = plugin._load()
+    info = {
+        "tool": "memory",
+        "shown": "Saves a memory",
+        "where": "background review, session s_1",
+        "category": "x",
+        "rule": False,
+        "request_id": "r" * 32,
+        "session_ref": "s_1",
+    }
+    out = plugin._send_background_notice(cfg, info, "held")
+    assert out == {"status": "unsent", "target": None, "reason": hold.send_route()[1]}
+    assert h.sent == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "name"),
+    [
+        (["/home/hermes/.local/bin/hermes", "serve"], "hermes serve"),
+        (["-c", "serve", "--port", "1"], "hermes serve"),
+        (["/x/hermes_cli/main.py", "gateway", "run"], "hermes gateway"),
+        ([], None),
+    ],
+)
+def test_the_process_is_named_as_the_owner_starts_it(monkeypatch, argv, name):
+    monkeypatch.setattr(hold.sys, "argv", argv)
+    assert hold.process_name() == (name or f"process {os.getpid()}")
