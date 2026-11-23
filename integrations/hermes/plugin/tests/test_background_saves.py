@@ -507,6 +507,11 @@ TERMINAL_FACTS = [{}, {"platform": "", "source": "cli"}, {"platform": "", "sourc
         *[("cli", f, True, "allowed") for f in TERMINAL_FACTS],
         ("tui", {"platform": "", "source": "tui"}, True, "allowed"),
         ("tui", {}, True, "allowed"),
+        # the TUI and the desktop app show Hermes's own approval card: attended with no terminal too
+        ("tui", {"platform": "", "source": "tui"}, False, "allowed"),
+        ("tui", {}, False, "allowed"),
+        ("desktop", {}, False, "allowed"),
+        ("desktop", {"platform": "desktop"}, False, "allowed"),
         # the local terminal still needs a terminal, as for the owner's own calls there
         ("cli", {}, False, "held"),
         *[

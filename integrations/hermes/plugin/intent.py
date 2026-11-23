@@ -43,6 +43,10 @@ ATTENDED_PLATFORMS = frozenset(
 )
 UNATTENDED_PLATFORMS = frozenset({"cron", "subagent"})
 LOCAL_PLATFORMS = frozenset({"cli", "tui", "local", "desktop"})
+# Local front ends with their own approval card: the TUI talks to Hermes over a pipe, and the desktop app talks to a
+# gateway that may run as a service with no terminal (on this machine or a remote one). Neither has a terminal on
+# stdin, so they are attended by platform, not by the terminal test the plain CLI keeps.
+APP_PLATFORMS = frozenset({"tui", "desktop"})
 NON_CHAT_PLATFORMS = frozenset({"cron", "subagent", "api_server", "webhook", ""})
 TRIGGER_BY_PLATFORM = {
     "cron": "scheduled",
@@ -129,7 +133,11 @@ def is_unattended(
         return True
     if subagent or platform in UNATTENDED_PLATFORMS:
         return True
-    if platform in ATTENDED_PLATFORMS or platform in attended_platforms:
+    if (
+        platform in ATTENDED_PLATFORMS
+        or platform in APP_PLATFORMS
+        or platform in attended_platforms
+    ):
         return False
     try:
         return not sys.stdin.isatty()
@@ -144,8 +152,8 @@ def owner_attends(
     subagent: bool = False,
     attended_platforms: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
-    """The session is one the owner attends, from a positive list only: a chat platform, the local terminal (with a
-    terminal), or a platform in `attended_platforms`, and not a run `is_unattended` names. Any other platform (the
+    """The session is one the owner attends, from a positive list only: a chat platform, the TUI or the desktop app,
+    the local terminal (with a terminal), or a platform in `attended_platforms`, and not a run `is_unattended` names. Any other platform (the
     curator, webhooks, the API server, an empty or unknown one) is not, whatever stdin is: the curator runs inside
     the terminal's process, and a gateway may run in a foreground terminal. Used for Hermes's background saves, whose
     snooze must never reach an unattended run; ordinary calls keep `is_unattended`."""
