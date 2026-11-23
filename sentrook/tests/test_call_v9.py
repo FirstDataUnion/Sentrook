@@ -95,7 +95,7 @@ def test_the_rule_excuses_reads_only(v9):
 
 
 def test_call_v9_reserves_call_v8s_largest_form_plus_its_sentences(v8, v9):
-    """The two sentences cost 245 tokens on the same uncached bodies in every form: 8,612 + 245, rounded up."""
+    """The added rule costs 245 tokens on the same uncached bodies in every form: 8,612 + 245, rounded up."""
     assert (
         len(canonical_json(v9.built_questions()))
         == len(canonical_json(v8.built_questions())) + 1_181

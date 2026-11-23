@@ -241,9 +241,9 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: `built_questions()` gives with no state. call-v8, measured on 2,490 uncached bodies by the state's blocks: neither
 #: conditional block 5,757 (2,125 bodies), reputation only 6,280 (283), batch only 8,105 (79), both 8,612 (3); its
 #: entry is the largest form rounded up. In characters of questions JSON the four forms are 23,769, 25,908, 34,713
-#: and 36,852. call-v9 is call-v8 with two sentences added to the request and scope questions, which every form sends:
-#: on the same uncached bodies call-v9 cost 245 tokens more than call-v8 in every one, so its entry is call-v8's largest
-#: measured form plus 245 (8,857), rounded up.
+#: and 36,852. call-v9 is call-v8 with one rule added to the request question (its instructions and "true" criterion)
+#: and the scope question's within-scope criterion, which every form sends: on the same uncached bodies call-v9 cost 245
+#: tokens more than call-v8 in every one, so its entry is call-v8's largest measured form plus 245 (8,857), rounded up.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
