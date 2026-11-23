@@ -25,10 +25,11 @@ from typing import Any
 # Hermes adds is classified on purpose.
 #
 # Chat surfaces have a human in-band even when stdin is not a TTY: Hermes sends its approval prompt into the chat and
-# takes the reply there.
+# takes the reply there. The desktop app's hosted bot rooms (`bot_room`) count too: the room's controls show approvals.
 ATTENDED_PLATFORMS = frozenset(
     {
         "bluebubbles",
+        "bot_room",
         "buzz",
         "dingtalk",
         "discord",
@@ -59,8 +60,7 @@ ATTENDED_PLATFORMS = frozenset(
 )
 # Surfaces with no human answering in-band: programmatic front ends Hermes itself never asks (the API server and
 # webhooks), callback and relay ingress, other agents (A2A), Raft (its adapter sends nothing; the agent posts through
-# the Raft CLI, so an approval prompt reaches nobody), home automation, the desktop app's hosted bot rooms (a group of
-# members, not the owner's own session), and runs Hermes starts itself (cron, batch runs, sub-agents, the curator, kanban
+# the Raft CLI, so an approval prompt reaches nobody), home automation, and runs Hermes starts itself (cron, batch runs, sub-agents, the curator, kanban
 # workers, the gateway's resume and shutdown runs). None is attended unless `attended_platforms`
 # names it; ordinary calls there fall back to the terminal test, and background saves never take a snooze.
 NOT_ATTENDED_PLATFORMS = frozenset(
@@ -69,7 +69,6 @@ NOT_ATTENDED_PLATFORMS = frozenset(
         "a2a",
         "api_server",
         "batch",
-        "bot_room",
         "codex",
         "cron",
         "curator",

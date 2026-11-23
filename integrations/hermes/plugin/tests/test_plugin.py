@@ -340,6 +340,7 @@ ADDED_CHAT_PLATFORMS = [
     "buzz",
     "photon",
     "ntfy",
+    "bot_room",
 ]
 #: Surfaces with no human answering in-band, and values Hermes does not use.
 NOT_ATTENDED = [
@@ -357,7 +358,6 @@ NOT_ATTENDED = [
     "gateway",
     "homeassistant",
     "batch",
-    "bot_room",
     "",
     "no_such_platform",
 ]
