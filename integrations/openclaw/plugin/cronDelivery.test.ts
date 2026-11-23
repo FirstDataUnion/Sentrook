@@ -36,6 +36,7 @@ const savedEnv: Record<string, string | undefined> = {};
 const realFetch = globalThis.fetch;
 let dir = "";
 let scans: any[] = [];
+let hostConfig: any = {};
 
 beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -50,6 +51,7 @@ beforeEach(() => {
   });
   delete process.env.SENTROOK_MODE;
   scans = [];
+  hostConfig = { tools: { exec: { mode: "full" } } };
   clearScanTokenCache();
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input);
@@ -109,7 +111,7 @@ function registered() {
   plugin.register({
     pluginConfig: {},
     registrationMode: "full",
-    config: { tools: { exec: { mode: "full" } } },
+    config: hostConfig,
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     on: (hook: string, h: any) => (on[hook] ??= []).push(h),
     registerCommand: () => undefined,
@@ -287,9 +289,22 @@ test("another agent's job carries no grant", async () => {
   assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)]))[0], []);
 });
 
-test("a job that names no agent belongs to the default agent", async () => {
+test("a job that names no agent is not another agent's run's: with no agents listed the default is main", async () => {
   storeJob({ delivery: DELIVERY, agentId: undefined }, LONG_AGO);
   assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)]))[0], []);
+});
+
+test("a job that names no agent belongs to the agent the config marks as default", async () => {
+  storeJob({ delivery: DELIVERY, agentId: undefined }, LONG_AGO);
+  // written with capitals in the config, as OpenClaw allows
+  hostConfig = { tools: { exec: { mode: "full" } }, agents: { list: [{ id: "main" }, { id: "Sgt-Johnson", default: true }] } };
+  assert.deepEqual((await cronRun([send("c2", `channel:${CHANNEL}`)]))[0], [EXPECTED]);
+});
+
+test("a job target written as a #name is kept for a send to that channel by name", async () => {
+  storeJob({ delivery: { ...DELIVERY, to: "#workouts" } }, LONG_AGO);
+  const [grants] = await cronRun([send("c1", "channel:workouts")]);
+  assert.deepEqual(grants, [{ ...EXPECTED, pattern: "discord:#workouts" }]);
 });
 
 test("a job the store does not hold carries no grant", async () => {

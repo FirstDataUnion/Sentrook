@@ -141,17 +141,25 @@ export function deliveryPattern(delivery: unknown): string | null {
   return `${platform}:${to}`;
 }
 
-/** The agent OpenClaw runs a job on when the job names none: the config's default agent, else `main`. */
-function defaultAgent(hostConfig: any): string {
+const agentKey = (id: unknown): string | null => (typeof id === "string" && id.trim() ? id.trim().toLowerCase() : null);
+
+/**
+ * The agent OpenClaw runs a job on when the job names none, as OpenClaw picks it: the agent marked `default`, else the
+ * only agent, else `main` when no agents are listed. Null when the config does not say (several, none marked).
+ */
+function defaultAgent(hostConfig: any): string | null {
   const list: any[] = Array.isArray(hostConfig?.agents?.list) ? hostConfig.agents.list : [];
-  const chosen = list.find((a) => a?.default === true) ?? list[0];
-  return typeof chosen?.id === "string" && chosen.id ? chosen.id : "main";
+  if (!list.length) return "main";
+  const chosen = list.find((a) => a?.default === true) ?? (list.length === 1 ? list[0] : null);
+  return agentKey(chosen?.id);
 }
 
 /** The pattern for the job's own target, when the job is this agent's; null otherwise. */
 function patternFor(job: CronJob | null, agentId: string | undefined, hostConfig: any): string | null {
   if (!job) return null;
-  if ((job.agentId ?? defaultAgent(hostConfig)) !== (agentId ?? defaultAgent(hostConfig))) return null;
+  const owner = agentKey(job.agentId) ?? defaultAgent(hostConfig);
+  const running = agentKey(agentId) ?? defaultAgent(hostConfig);
+  if (!owner || owner !== running) return null;
   return deliveryPattern(job.delivery);
 }
 
@@ -202,7 +210,7 @@ export function deliveryGrant(b: {
   const began = num(b.run.seenAtMs);
   if (began === undefined || cronChanged(b.history)) return null;
   // The grant only matters to a call that shows the target; any other call need not read the store.
-  const id = kept.pattern.slice(kept.pattern.indexOf(":") + 1).toLowerCase();
+  const id = kept.pattern.slice(kept.pattern.indexOf(":") + 1).replace(/^#/, "").toLowerCase();
   if (!b.argsText.toLowerCase().includes(id)) return null;
   const job = readCronJob(b.openclawDir, kept.jobId);
   if (!job || job.updatedAtMs === undefined || job.updatedAtMs >= began) return null;
