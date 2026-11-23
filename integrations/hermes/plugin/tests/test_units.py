@@ -371,6 +371,11 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
         "MY_SECRET_TOKEN = settings.SECRETS['key']",
         "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
+        "token = os.getenv(name)",
+        "token = load_token(path)",
+        "password = input(prompt)",
+        "token = getattr(settings, 'TOKEN')",
+        "api_key = os.environ.get(key_name)",
     ):
         assert r.string(text) == text
         assert r.string(_as_result(text)) == _as_result(text)
@@ -399,6 +404,18 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         ('export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"),
         ('SECRET_KEY_BASE: "hunter.password"', "hunter.password"),
         ("TOKEN_X='config.token'", "config.token"),
+        ("password = Summer(2024)", "Summer"),
+        (f"token = f({PW})", PW),
+        ("password = Hello(World)", "Hello"),
+        (f"token = {PW}(name)", PW),
+        ('token = "os.getenv(name)"', "os.getenv(name)"),
+        ("password = hunter(abc)", "hunter(abc"),
+        ("password: iloveyou(forever)", "iloveyou(forever"),
+        ("db_password = mysecret(pw_2024)", "mysecret(pw_2024"),
+        ("password = correct(horse_battery_staple)", "horse_battery"),
+        ("MY_SECRET_TOKEN = abcdef(ghijklmnop)", "ghijklmnop"),
+        ("password = qwerty(asdf, zxcv)", "qwerty(asdf"),
+        ("password = hunter(abc def)", "hunter(abc"),
     ):
         for out in (r.string(text), r.string(_as_result(text))):
             assert value not in out and len(_tags(out)) >= 1, out
@@ -593,6 +610,7 @@ def test_camel_case_credential_keys_in_objects_are_replaced_whole():
         "token = " + "a[1]" * 200_000 + "x",
         "token = " + "aaa1" * 200_000 + "(",
         "token: config." + "a" * 1_000_000,
+        "token = " + "a(b" * 300_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )

@@ -1283,6 +1283,7 @@ LOADER_SKILL = (
         memory("The script reads it (password = args.password) at start."),
         memory("It reads password = args.password!"),
         memory("It reads password = sys.argv[1]) here"),
+        memory("The script asks with password = input(prompt) and never stores it."),
     ],
     ids=[
         "loader skill",
@@ -1296,6 +1297,7 @@ LOADER_SKILL = (
         "in parentheses",
         "before !",
         "argv before )",
+        "bare-name argument",
     ],
 )
 def test_must_not_add_a_secret_for_code_that_reads_one(raw):
@@ -1336,6 +1338,8 @@ def test_must_add_a_secret_saved_beside_code_that_reads_one(content):
         "The router password = qwerty[99]",
         "The router password = monkey(prompt=",
         "The vault password = (correct.horse.battery)",
+        "my password is hunter(abc)",
+        "My password: love(you)",
     ],
     ids=[
         "dotted passphrase",
@@ -1344,6 +1348,8 @@ def test_must_add_a_secret_saved_beside_code_that_reads_one(content):
         "word with a subscript",
         "word with a keyword",
         "passphrase in parentheses",
+        "prose word call",
+        "prose word call after a colon",
     ],
 )
 def test_must_add_a_secret_that_only_looks_like_code(content):

@@ -1,4 +1,5 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v9`; `redact-v8` replaced code that reads a
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v10`; `redact-v9` replaced a call whose
+argument is a bare name, `os.getenv(name)`, as if it were a secret, `redact-v8` replaced code that reads a
 secret after an upper-case name with a credential word inside it, `MY_SECRET_TOKEN = config.token`, as if it were
 one, `redact-v7` replaced code that reads a secret from an attribute or with arguments, `config.token`,
 `sys.argv[1]`, `getpass.getpass(prompt='…')`, `redact-v6` replaced code that reads a secret under a credential key,
@@ -33,7 +34,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v9"
+REDACTION_VERSION = "redact-v10"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -112,6 +113,12 @@ _DOTTED_NAME = _DOTTED_PART + r"(?:\." + _DOTTED_PART + r")+"
 _CODE_READ = re.compile(
     _CODE_CHAIN + r"(?:[\[(]|\((?:" + _CODE_CHAIN + r"[\[(]|" + _DOTTED_NAME + r"\)?))"
 )
+#: A call whose one argument is a bare lower-case name, cut before its closing parenthesis or a comma
+#: (`os.getenv(name`, `load_token(path`, `getattr(settings`). It is code only when the name called reads as code
+#: (`is_code_read`): dotted, with `_` or a capital, or called or subscripted itself, or one of `_CODE_READERS`.
+#: `hunter(abc)` and `mysecret(pw_2024)` are values.
+_CODE_NAME_ARG_READ = re.compile(_CODE_CHAIN + r"\([a-z_][a-z0-9_]{0,29}")
+_CODE_READERS = frozenset("input getattr getenv getpass open read load get".split())
 #: A dotted name called with a keyword before a quoted argument (`getpass.getpass(prompt=`) or subscripted with
 #: a number of one or two digits (`sys.argv[1`, its `]` left out as punctuation). Only a dotted name counts
 #: (`is_code_read`): `qwerty[99]` and `monkey(prompt='x')` are values.
@@ -147,12 +154,17 @@ def _key_value(v: str) -> bool:
 
 def is_code_read(v: str) -> bool:
     """Whether `v` is code that reads a secret from somewhere: called or subscripted and cut where its quoted
-    argument starts (`_CODE_READ`), a dotted name with a simple argument (`_CODE_ARG_READ`), or a plain attribute read from a known receiver or of a credential field
+    argument starts (`_CODE_READ`), a dotted name with a simple argument (`_CODE_ARG_READ`), a call on a
+    bare name (`_CODE_NAME_ARG_READ`), or a plain attribute read from a known receiver or of a credential field
     (`config.token`, `resp.access_token`)."""
     if _CODE_READ.fullmatch(v) is not None:
         return True
     if "." in v and _CODE_ARG_READ.fullmatch(v) is not None:
         return True
+    if _CODE_NAME_ARG_READ.fullmatch(v) is not None:
+        callee = v[: v.rindex("(")]
+        if re.search(r"[._A-Z(\[]", callee) or callee in _CODE_READERS:
+            return True
     if _DOTTED_READ.fullmatch(v) is None:
         return False
     return (

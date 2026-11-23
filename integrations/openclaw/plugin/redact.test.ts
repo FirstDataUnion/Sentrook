@@ -247,6 +247,11 @@ test("code that reads a secret from an attribute or with arguments is not a secr
     "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
     "MY_SECRET_TOKEN = settings.SECRETS['key']",
     "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
+    "token = os.getenv(name)",
+    "token = load_token(path)",
+    "password = input(prompt)",
+    "token = getattr(settings, 'TOKEN')",
+    "api_key = os.environ.get(key_name)",
   ]) {
     assert.equal(r.string(text), text);
     assert.equal(r.string(asResult(text)), asResult(text));
@@ -277,6 +282,18 @@ test("code that reads a secret from an attribute or with arguments is not a secr
     ['export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"],
     ['SECRET_KEY_BASE: "hunter.password"', "hunter.password"],
     ["TOKEN_X='config.token'", "config.token"],
+    ["password = Summer(2024)", "Summer"],
+    [`token = f(${pw})`, pw],
+    ["password = Hello(World)", "Hello"],
+    [`token = ${pw}(name)`, pw],
+    ['token = "os.getenv(name)"', "os.getenv(name)"],
+    ["password = hunter(abc)", "hunter(abc"],
+    ["password: iloveyou(forever)", "iloveyou(forever"],
+    ["db_password = mysecret(pw_2024)", "mysecret(pw_2024"],
+    ["password = correct(horse_battery_staple)", "horse_battery"],
+    ["MY_SECRET_TOKEN = abcdef(ghijklmnop)", "ghijklmnop"],
+    ["password = qwerty(asdf, zxcv)", "qwerty(asdf"],
+    ["password = hunter(abc def)", "hunter(abc"],
   ]) {
     for (const out of [r.string(text), r.string(asResult(text))]) {
       assert.ok(!out.includes(value) && tags(out).length >= 1, out);
@@ -445,6 +462,7 @@ test("long inputs stay fast", () => {
     "token = " + "a[1]".repeat(200_000) + "x",
     "token = " + "aaa1".repeat(200_000) + "(",
     "token: config." + "a".repeat(1_000_000),
+    "token = " + "a(b".repeat(300_000),
   ]) {
     const t0 = performance.now();
     r.string(long);
