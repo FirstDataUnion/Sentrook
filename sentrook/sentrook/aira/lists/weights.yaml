@@ -1,7 +1,7 @@
 # Starting contribution values for the AIRA detectors. Tuned later against the suite; an operator
 # overlay may override any scalar here. Values are 0–1 on the signal's own scale.
 
-version: 8
+version: 9
 
 # C1: credential material reached. Keyed by path group.
 sensitivity:
@@ -25,6 +25,12 @@ exfil:
 send:
   reach: 1.0
   irreversibility: 0.8
+# A plain send that only reads (egress `read_shaped`): a search or query API asked by POST. Reach stays the
+# send's; nothing is created or changed remotely, but the scanner cannot see what the server does with the
+# question (a saved search history, a metered query), so not 0. Under the agreement's `low` (0.3), so a
+# model that reads the call as a read does not split with it.
+send_read:
+  irreversibility: 0.1
 
 # C3: untrusted code executed.
 code:
