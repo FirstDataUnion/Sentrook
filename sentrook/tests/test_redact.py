@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v8): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v9): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
@@ -101,7 +101,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v8"
+    assert REDACTION_VERSION == "redact-v9"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -266,6 +266,15 @@ MUST_REPLACE = [
     ("token = abc123defg45[", "abc123defg45"),
     (f"token = config.x{DIGITS}", DIGITS),
     (f"token = self.a{DIGITS}", DIGITS),
+    # Under an upper-case name with a credential word inside it, a value is still a value; code still is not.
+    ("MY_SECRET_TOKEN = correct.horse.battery.staple", "horse.battery"),
+    (f"MY_SECRET_TOKEN = {PW}[", PW),
+    ('MY_SECRET_TOKEN="config.token"', "config.token"),
+    # A quoted value after such a name is whole, whatever it looks like.
+    ('GITHUB_TOKEN_VALUE="config.token"', "config.token"),
+    ('export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"),
+    ('SECRET_KEY_BASE: "hunter.password"', "hunter.password"),
+    ("TOKEN_X='config.token'", "config.token"),
 ]
 
 MUST_STAY = [
@@ -367,6 +376,11 @@ MUST_STAY = [
     "this.apiKey = this.config.apiKey;",
     "secret = base64.b64decode(config.secret)",
     "the token: config.token",
+    # The same under an upper-case name with a credential word inside it.
+    "MY_SECRET_TOKEN = config.token",
+    "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
+    "MY_SECRET_TOKEN = settings.SECRETS['key']",
+    "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
 ]
 
 
