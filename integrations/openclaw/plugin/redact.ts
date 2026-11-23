@@ -125,8 +125,13 @@ const keyValue = (v: string) => !v.includes("://") && !/^[A-Z][A-Z0-9]*(?:_[A-Z0
  * short.
  */
 const unquotedKeyValue = (v: string) => keyValue(v) && !isCodeRead(v);
-/** An upper-case name with a credential word inside it names many things; only a long value counts. */
-const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v);
+/**
+ * An upper-case name with a credential word inside it names many things; only a long value counts, and not code that
+ * reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key.
+ */
+const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v) && !isCodeRead(v);
+/** The same name with a quoted value: a quoted value is whole, so one shaped like code is still a value. */
+const innerQuotedValue = (v: string) => v.length >= 12 && keyValue(v);
 /** After "password is" or "token:": six or more characters that are not words, a number or code that reads one. */
 const statedValue = (v: string) =>
   v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !isCodeRead(v);
@@ -293,15 +298,28 @@ const SHAPES: Shape[] = [
   },
   {
     // An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
-    // path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+    // path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`), and nor is unquoted
+    // code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`).
     kind: "credential",
     re: new RegExp(
-      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
+      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*` +
         `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
       "g",
     ),
     group: "v",
     check: innerKeyValue,
+  },
+  {
+    // The same name with a quoted value (`GITHUB_TOKEN_VALUE="x"`): a quoted value is whole, so one
+    // shaped like code is still a value.
+    kind: "credential",
+    re: new RegExp(
+      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+      "g",
+    ),
+    group: "v",
+    check: innerQuotedValue,
   },
   { kind: "credential", re: proseStated(PROSE_CUES), group: "v", check: statedValue },
   { kind: "credential", re: proseRestated(PROSE_CUES), group: "v", check: statedValue },

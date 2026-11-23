@@ -125,7 +125,14 @@ def _unquoted_key_value(v: str) -> bool:
 
 
 def _inner_key_value(v: str) -> bool:
-    """An upper-case name with a credential word inside it names many things; only a long value counts."""
+    """An upper-case name with a credential word inside it names many things; only a long value counts, and not
+    code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key."""
+    return len(v) >= 12 and _key_value(v) and not is_code_read(v)
+
+
+def _inner_quoted_value(v: str) -> bool:
+    """The same name with a quoted value: a long value that is not a URL or an environment variable name. A quoted
+    value is whole, so code-shaped text in quotes is still a value."""
     return len(v) >= 12 and _key_value(v)
 
 
@@ -394,17 +401,32 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     ),
     (
         # An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
-        # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+        # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`), and nor is unquoted
+        # code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`).
         "credential",
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
-            r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            r"\\?[\"']?\s*[=:]\s*"
             r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
             + _VALUE_END
             + r")"
         ),
         "v",
         _inner_key_value,
+    ),
+    (
+        # The same name with a quoted value (`GITHUB_TOKEN_VALUE="x"`): a quoted value is whole, so one
+        # shaped like code is still a value.
+        "credential",
+        re.compile(
+            r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
+            r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
+        ),
+        "v",
+        _inner_quoted_value,
     ),
     ("credential", _prose_stated(_PROSE_CUES), "v", _stated_value),
     ("credential", _prose_restated(_PROSE_CUES), "v", _stated_value),

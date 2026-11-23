@@ -367,6 +367,10 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         "this.apiKey = this.config.apiKey;",
         "secret = base64.b64decode(config.secret)",
         "the token: config.token",
+        "MY_SECRET_TOKEN = config.token",
+        "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
+        "MY_SECRET_TOKEN = settings.SECRETS['key']",
+        "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
     ):
         assert r.string(text) == text
         assert r.string(_as_result(text)) == _as_result(text)
@@ -388,6 +392,13 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         ("token = abc123defg45[", "abc123defg45"),
         (f"token = config.x{DIGITS}", DIGITS),
         (f"token = self.a{DIGITS}", DIGITS),
+        ("MY_SECRET_TOKEN = correct.horse.battery.staple", "horse.battery"),
+        (f"MY_SECRET_TOKEN = {PW}[", PW),
+        ('MY_SECRET_TOKEN="config.token"', "config.token"),
+        ('GITHUB_TOKEN_VALUE="config.token"', "config.token"),
+        ('export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"),
+        ('SECRET_KEY_BASE: "hunter.password"', "hunter.password"),
+        ("TOKEN_X='config.token'", "config.token"),
     ):
         for out in (r.string(text), r.string(_as_result(text))):
             assert value not in out and len(_tags(out)) >= 1, out
