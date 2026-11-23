@@ -22,7 +22,11 @@
  * With `skillReview: allow` (the default) every call of a recognised run is sent with trigger `system` (no owner, no
  * snooze) and, as its request, the last message the host flags as the owner's in the conversation the run read (a
  * fixed text when there is none), and its saves are declared as self-edits with the conversation the process
- * read (`conversation.ts`); the scanner judges them against it. Its other calls (exec, reads) are scored as usual.
+ * read (`conversation.ts`); the scanner judges them against it. A run may also save from the shell (a heredoc, `tee`,
+ * `cp` into a skill folder), which the plugin cannot tell from any other command, so every exec of the run is declared
+ * too, with the run's store (`execStoreOf`): the scanner reads it as a self-edit only when a file it writes lies in
+ * that store, and answers with `self_edit` only then (`scannedAsSelfEdit`). Its other calls (reads, an exec that does
+ * not save) are scored as usual.
  * `skillReview: review` changes nothing: every call is sent as before. Any other value reads as allow, and status and
  * the startup log name it. Whatever the setting, a recognised run's saves are never asked about: nobody can answer a
  * prompt there (`backgroundSave.ts` says what happens instead).
@@ -172,6 +176,31 @@ export function saveStoreOf(
   if (!FILE_SAVES.has(tool) || !isWorkshopDir(run.workspaceDir)) return null;
   const targets = targetsOf(tool, params);
   return targets.length && targets.every((t) => insideRoot(t, run.workspaceDir)) ? "skills" : null;
+}
+
+/**
+ * The store a recognised run's exec is declared with, or null for any other call: the run's own store, skills for a
+ * Skill Workshop review or a skill collection review, memory for the flush. The scanner decides whether the command
+ * saves there; `toolKind` is the PlanIR tool kind (`planir.toolKind`).
+ */
+export function execStoreOf(kind: SelfEditKind, toolKind: string): SelfEditStore | null {
+  if (toolKind !== "exec") return null;
+  return kind === "memory_flush" ? "memory" : "skills";
+}
+
+/**
+ * What a declared exec writes, as a save's arguments for picking the conversation it draws on (`conversation.select`):
+ * its command, and a Code Mode cell's code when the host has not mirrored it into the command.
+ */
+export function execSaveArgs(params: any): { content: string } {
+  const texts = [params?.command, params?.code].filter((t): t is string => typeof t === "string" && t !== "");
+  return { content: [...new Set(texts)].join("\n") };
+}
+
+/** Whether the scanner read a declared call as a self-edit: its response carries a `self_edit` object. */
+export function scannedAsSelfEdit(resp: unknown): boolean {
+  const se: unknown = (resp as { self_edit?: unknown } | null)?.self_edit;
+  return typeof se === "object" && se !== null && !Array.isArray(se);
 }
 
 /** The last message the host flags as the owner's in a run's model context, if any. */

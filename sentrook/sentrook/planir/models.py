@@ -463,7 +463,8 @@ class ConversationEntry(_Model):
 class SelfEdit(_Model):
     """A self-edit: the host's own background process (not a person) saving to the agent's memory or skills. The
     plugin declares it, with trigger `system`, and sends the conversation the process reviewed, so the save can be
-    judged against what was actually said and done. Ignored unless the trigger is `system`."""
+    judged against what was actually said and done. Ignored unless the trigger is `system`. On an exec call it is
+    kept only when the command writes into the declared store (`prepare.own_store.exec_store_writes`)."""
 
     kind: SelfEditKind = SelfEditKind.OTHER
     store: SelfEditStore = SelfEditStore.OTHER
@@ -494,7 +495,9 @@ class PlanIR(_Model):
     options: Options = Field(default_factory=Options)
     self_edit: SelfEdit | None = Field(
         default=None,
-        description="Set only on the host's own background saves to memory or skills, with trigger system",
+        description="Set only on the host's own background saves to memory or skills, with trigger system. A "
+        "background run's exec may carry it too: the scanner reads the call as a self-edit only when a file "
+        "it writes lies in the declared store",
     )
 
     @property

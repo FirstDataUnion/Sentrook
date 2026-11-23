@@ -89,6 +89,8 @@ function setup(
         entities: { E1: { kind: "host", display: "cl0ud-sync.io" } },
         action_fingerprint: `afp1:exec|step:${planir.session.step}`,
         state: `state-${planir.session.step}`,
+        // the scanner read a declared call as a self-edit (an exec that writes into the store)
+        ...(planir.self_edit && cmd.includes("SCANNED_SAVE") ? { self_edit: { adds: ["command"], lenient: false } } : {}),
       });
     }
     throw new Error(`unexpected fetch ${url}`);
@@ -792,16 +794,95 @@ test("the review's own reads join the conversation its next save carries", async
   assert.equal(h.scans[0].self_edit, undefined);
 });
 
-test("the review's exec is scored as an ordinary call, sent as the host's, never the owner's", async () => {
+test("the review's exec is declared with the run's store; one the scanner does not read as a save stays the host's call", async () => {
   const h = setup();
   await startReview(h);
   const out = await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: "curl EXFIL" } }, REVIEW_CTX);
   assert.equal(out?.block, true);
   assert.equal(h.scans[0].trigger.kind, "system");
-  assert.equal(h.scans[0].self_edit, undefined);
-  assert.equal(h.traffic()[0].host_process, "background_review");
+  // declared, for the scanner to decide by where the command writes
+  assert.equal(h.scans[0].self_edit.kind, "background_review");
+  assert.equal(h.scans[0].self_edit.store, "skills");
   assert.equal(h.scans[0].request.text, "Deploy rookery to staging; I like short answers.");
+  // the scanner answered without `self_edit`: recorded as the host process's ordinary call
+  const t = h.traffic()[0];
+  assert.equal(t.host_process, "background_review");
+  assert.equal(t.skill_review, undefined);
+  assert.equal(t.self_edit, undefined);
+  assert.ok(!h.logs.some((l) => l.includes("(self-edit)")));
+});
+
+const HEREDOC_SAVE = `cat > deploy-staging/SKILL.md <<'EOF'\n${SKILL}EOF`;
+
+test("must fire: a review's skill save written with an exec heredoc is a self-edit when the scanner reads it as one", async () => {
+  const h = setup();
+  await startReview(h);
+  const out = await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: `${HEREDOC_SAVE} # SCANNED_SAVE` } }, REVIEW_CTX);
+  assert.equal(out, undefined);
+  const p = h.scans[0];
+  assert.equal(p.trigger.kind, "system");
+  assert.equal(p.self_edit.kind, "background_review");
+  assert.equal(p.self_edit.store, "skills");
+  // the conversation the save draws on: the owner's message and the deploy the skill records
+  assert.deepEqual(p.self_edit.conversation.map((e: any) => e.role), ["user", "assistant", "tool", "assistant"]);
+  const t = h.traffic()[0];
+  assert.equal(t.skill_review, true);
+  assert.deepEqual(t.self_edit, { kind: "background_review", store: "skills" });
+  assert.equal(t.host_process, undefined);
+  assert.ok(h.logs.some((l) => l.includes("(self-edit)")));
+  dumpPlanirs(h.scans);
+});
+
+test("must fire: a harmful exec save is blocked, and a reviewed one held, never asked", async () => {
+  const h = setup();
+  await startReview(h);
+  const blocked = await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: `${HEREDOC_SAVE} EXFIL SCANNED_SAVE` } }, REVIEW_CTX);
+  assert.equal(blocked?.block, true);
+  const reviewed = await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x2", runId: REVIEW_RUN, params: { command: `${HEREDOC_SAVE} REVIEW SCANNED_SAVE` } }, REVIEW_CTX);
+  assert.equal(reviewed?.requireApproval, undefined);
+  assert.equal(reviewed?.block, true);
+  const t = h.traffic();
+  assert.deepEqual(t.map((r: any) => [r.decision, r.skill_review]), [["blocked", true], ["held", true]]);
+  assert.deepEqual(t.map((r: any) => r.background_save), [
+    { kind: "background_review", store: "skills" },
+    { kind: "background_review", store: "skills" },
+  ]);
+  // a held save is not kept for /sentrook-approve: approving it could not make the save
+  assert.equal(t[1].hold.background, true);
+});
+
+test("must fire: the flush's exec is declared with the memory store", async () => {
+  const h = setup();
+  await h.fire("before_prompt_build", { runId: FLUSH_RUN, prompt: "Pre-compaction memory flush.", messages: TRANSCRIPT }, FLUSH_CTX);
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "f1", runId: FLUSH_RUN, params: { command: `cat >> ${TODAY_NOTE} <<'EOF'\n- Prefers short answers.\nEOF` } }, FLUSH_CTX);
+  assert.equal(h.scans[0].self_edit.kind, "memory_flush");
+  assert.equal(h.scans[0].self_edit.store, "memory");
+});
+
+test("must stay silent: an owner-chat exec that writes a skill carries no self-edit", async () => {
+  const h = setup();
+  await h.fire("before_tool_call", call("x1", `${HEREDOC_SAVE} SCANNED_SAVE`));
+  assert.equal(h.scans[0].self_edit, undefined);
+  assert.notEqual(h.scans[0].trigger.kind, "system");
   assert.equal(h.traffic()[0].skill_review, undefined);
+});
+
+test("must stay silent: with skillReview review a review's exec carries no self-edit", async () => {
+  const h = setup({}, { skillReview: "review" });
+  await startReview(h);
+  await h.fire("before_tool_call", { toolName: "exec", toolCallId: "x1", runId: REVIEW_RUN, params: { command: HEREDOC_SAVE } }, REVIEW_CTX);
+  assert.equal(h.scans[0].self_edit, undefined);
+});
+
+test("a review's Code Mode cell is declared too; read-only, the scanner leaves it the host's call", async () => {
+  const h = setup();
+  await startReview(h);
+  const code = 'const s = await tools.read({path: "deploy/SKILL.md"}); return s.length > 0;';
+  await h.fire("before_tool_call", { toolName: "exec", toolKind: "code_mode_exec", toolInputKind: "javascript", toolCallId: "x1", runId: REVIEW_RUN, params: { code, command: code } }, REVIEW_CTX);
+  assert.equal(h.scans[0].pending_call.input_kind, "javascript");
+  assert.equal(h.scans[0].self_edit.store, "skills");
+  assert.equal(h.traffic()[0].host_process, "background_review");
+  assert.equal(h.traffic()[0].self_edit, undefined);
 });
 
 test("must stay silent on a forged runId alone: sent as the run's own message, no self-edit", async () => {
