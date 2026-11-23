@@ -371,14 +371,11 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
         "MY_SECRET_TOKEN = settings.SECRETS['key']",
         "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
-<<<<<<< redact-bare-name-call
         "token = os.getenv(name)",
         "token = load_token(path)",
         "password = input(prompt)",
         "token = getattr(settings, 'TOKEN')",
         "api_key = os.environ.get(key_name)",
-=======
->>>>>>> main
     ):
         assert r.string(text) == text
         assert r.string(_as_result(text)) == _as_result(text)
@@ -407,7 +404,6 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         ('export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"),
         ('SECRET_KEY_BASE: "hunter.password"', "hunter.password"),
         ("TOKEN_X='config.token'", "config.token"),
-<<<<<<< redact-bare-name-call
         ("password = Summer(2024)", "Summer"),
         (f"token = f({PW})", PW),
         ("password = Hello(World)", "Hello"),
@@ -420,8 +416,6 @@ def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_s
         ("MY_SECRET_TOKEN = abcdef(ghijklmnop)", "ghijklmnop"),
         ("password = qwerty(asdf, zxcv)", "qwerty(asdf"),
         ("password = hunter(abc def)", "hunter(abc"),
-=======
->>>>>>> main
     ):
         for out in (r.string(text), r.string(_as_result(text))):
             assert value not in out and len(_tags(out)) >= 1, out
