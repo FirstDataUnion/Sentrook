@@ -1,6 +1,8 @@
-"""The scanner's second redaction pass over the v2 Jev views (`redact-v8`; `redact-v7` replaced code that reads a
-secret from an attribute or with arguments, `config.token`, `sys.argv[1]`, `getpass.getpass(prompt='…')`, as if it
-were one, `redact-v6` replaced code that reads a secret under a credential key, `access_token = token_data['access_token']`, as if it were one, `redact-v5` kept a key's trailing
+"""The scanner's second redaction pass over the v2 Jev views (`redact-v9`; `redact-v8` replaced code that reads a
+secret after an upper-case name with a credential word inside it, `MY_SECRET_TOKEN = config.token`, as if it were
+one, `redact-v7` replaced code that reads a secret from an attribute or with arguments, `config.token`,
+`sys.argv[1]`, `getpass.getpass(prompt='…')`, `redact-v6` replaced code that reads a secret under a credential key,
+`access_token = token_data['access_token']`, `redact-v5` kept a key's trailing
 punctuation in its value and missed a value restated in a second clause, `redact-v4` took the plugins'
 command-line flag rule but not their object-key rule, `redact-v3` took the plugins' text rules but their
 command-line flag rule, `redact-v2` moved the vendor shapes to data,
@@ -31,7 +33,7 @@ from typing import Any
 from .redact_shapes import load_shapes
 from .redact_shapes import spans as shape_spans
 
-REDACTION_VERSION = "redact-v8"
+REDACTION_VERSION = "redact-v9"
 PLACEHOLDER = "⟦secret:scanner⟧"
 #: Longest private key body searched for its END line; a 4096-bit RSA key is about 3.3k characters.
 PEM_MAX_CHARS = 8000
@@ -167,7 +169,14 @@ def _unquoted_key_value(v: str) -> bool:
 
 
 def _inner_key_value(v: str) -> bool:
-    """An upper-case name with a credential word inside it names many things; only a long value counts."""
+    """An upper-case name with a credential word inside it names many things; only a long value counts, and not
+    code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key."""
+    return len(v) >= 12 and _key_value(v) and not is_code_read(v)
+
+
+def _inner_quoted_value(v: str) -> bool:
+    """The same name with a quoted value: a long value that is not a URL or an environment variable name. A quoted
+    value is whole, so code-shaped text in quotes is still a value."""
     return len(v) >= 12 and _key_value(v)
 
 
@@ -320,16 +329,29 @@ _CONTEXT: list[tuple[re.Pattern[str], Callable[[str], bool] | None]] = [
         _key_value,
     ),
     # An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
-    # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+    # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`), and nor is unquoted
+    # code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`).
     (
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
-            r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            r"\\?[\"']?\s*[=:]\s*"
             r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
             + _VALUE_END
             + r")"
         ),
         _inner_key_value,
+    ),
+    # The same name with a quoted value (`GITHUB_TOKEN_VALUE="x"`): a quoted value is whole, so one
+    # shaped like code is still a value.
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
+            r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
+        ),
+        _inner_quoted_value,
     ),
     # "password is X", "the password is now X", "the token for prod: X". The words between cue and value
     # stay inside one clause and one quoted string and never reach into a placeholder; a cue inside a

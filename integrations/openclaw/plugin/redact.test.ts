@@ -243,6 +243,10 @@ test("code that reads a secret from an attribute or with arguments is not a secr
     "this.apiKey = this.config.apiKey;",
     "secret = base64.b64decode(config.secret)",
     "the token: config.token",
+    "MY_SECRET_TOKEN = config.token",
+    "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
+    "MY_SECRET_TOKEN = settings.SECRETS['key']",
+    "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
   ]) {
     assert.equal(r.string(text), text);
     assert.equal(r.string(asResult(text)), asResult(text));
@@ -266,6 +270,13 @@ test("code that reads a secret from an attribute or with arguments is not a secr
     ["token = abc123defg45[", "abc123defg45"],
     [`token = config.x${digits}`, digits],
     [`token = self.a${digits}`, digits],
+    ["MY_SECRET_TOKEN = correct.horse.battery.staple", "horse.battery"],
+    [`MY_SECRET_TOKEN = ${pw}[`, pw],
+    ['MY_SECRET_TOKEN="config.token"', "config.token"],
+    ['GITHUB_TOKEN_VALUE="config.token"', "config.token"],
+    ['export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"],
+    ['SECRET_KEY_BASE: "hunter.password"', "hunter.password"],
+    ["TOKEN_X='config.token'", "config.token"],
   ]) {
     for (const out of [r.string(text), r.string(asResult(text))]) {
       assert.ok(!out.includes(value) && tags(out).length >= 1, out);
