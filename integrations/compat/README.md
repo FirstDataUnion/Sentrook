@@ -57,6 +57,10 @@ versions). Inside the image, as the `hermes` user, it runs:
    a background review's memory patch or remove to Hermes's own staging; elsewhere it holds them. A bump to a Hermes
    that changes the gate fails here until someone checks the new gate still stages every such change and adds its
    digest.
+7. `platforms.py`: every session platform value Hermes uses (its gateway `Platform` enum, its bundled platform
+   plugins, and the surfaces it names as not messaging or as unattended for approvals) must be in the plugin's
+   `ATTENDED_PLATFORMS`, `NOT_ATTENDED_PLATFORMS` or `LOCAL_PLATFORMS` (`integrations/hermes/plugin/intent.py`). A
+   bump to a Hermes that adds a platform fails here until someone decides whether a human answers approvals there.
 
 Results land in the output directory (`steps.tsv`, `validate.json`, a log per step, and the mock's request log).
 

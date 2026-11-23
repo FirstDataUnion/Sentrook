@@ -303,9 +303,10 @@ When a call is blocked the agent is told it was a security block, given a broad 
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It
 is not told which checks fired or the risk score; you can see those with `hermes sentrook why last`.
 
-Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms, the Hermes TUI, the
-Hermes desktop app (also when it connects to a gateway on another machine) and the local terminal count as attended.
-Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
+Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms (every one Hermes's
+gateway ships except Raft, whose adapter sends nothing into the chat), the Hermes TUI, the Hermes desktop app (also when
+it connects to a gateway on another machine), an editor connected over ACP and the local terminal count as attended. Elsewhere, including the API
+server, cron, subagents, webhooks and A2A peers, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
 prompts, add it with `attended_platforms` (see [Settings](#settings)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
