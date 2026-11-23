@@ -411,7 +411,7 @@ def test_question_set_env_round_trip_and_health():
     default = ServeConfig.from_env({})
     assert (default.jev_exposure_question_set, default.jev_call_question_set) == (
         "exposure-v2",
-        "call-v8",
+        "call-v9",
     )
     assert default.convergence == "conv-v7"
     # the frozen v1 sets and conv-v1 stay selectable for the Jev-only comparison
@@ -453,7 +453,7 @@ def test_question_set_env_round_trip_and_health():
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
-        ("SENTROOK_JEV_CALL_QUESTIONS", "call-v9", "unknown question set"),
+        ("SENTROOK_JEV_CALL_QUESTIONS", "call-v99", "unknown question set"),
         ("SENTROOK_JEV_EXPOSURE_QUESTIONS", "nope", "unknown question set"),
         ("SENTROOK_JEV_EXPOSURE_QUESTIONS", "call-v2", "not a exposure view"),
         ("SENTROOK_JEV_CALL_QUESTIONS", "exposure-v1", "not a call view"),

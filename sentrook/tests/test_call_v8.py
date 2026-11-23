@@ -385,9 +385,7 @@ def test_call_v8_reserves_its_largest_form(v8):
     assert view_budgets([load_question_set("call-v7")]) == (16_000, None)
 
 
-def test_call_v8_is_the_default_and_the_earlier_sets_stay_selectable():
-    assert ServeConfig().jev_call_question_set == "call-v8"
-    assert ServeConfig.from_env({}).jev_call_question_set == "call-v8"
+def test_call_v8_and_the_earlier_sets_stay_selectable():
     for name in ("call-v1", "call-v5", "call-v6", "call-v7", "call-v8"):
         env = {"SENTROOK_JEV_CALL_QUESTIONS": name}
         assert ServeConfig.from_env(env).jev_call_question_set == name
