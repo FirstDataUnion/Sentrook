@@ -399,9 +399,13 @@ class FakeNode {
   className = "";
   id = "";
   namespaceURI: string | null = null;
-  listeners: Record<string, Array<() => void>> = {};
+  listeners: Record<string, Array<(e?: any) => void>> = {};
   private ownText: string | null = null;
   ownerDocument: any;
+  parentNode: FakeNode | null = null;
+  style: Record<string, string> = {};
+  offsetWidth = 120;
+  offsetHeight = 30;
   constructor(tag: string, doc: any) {
     this.tag = tag;
     this.ownerDocument = doc;
@@ -419,14 +423,38 @@ class FakeNode {
   appendChild(n: FakeNode) {
     this.ownText = this.ownText === null ? null : this.ownText;
     this.children.push(n);
+    n.parentNode = this;
     return n;
   }
   removeChild(n: FakeNode) {
     this.children = this.children.filter((c) => c !== n);
+    n.parentNode = null;
     return n;
   }
   setAttribute(k: string, v: string) {
     this.attrs[k] = v;
+  }
+  removeAttribute(k: string) {
+    delete this.attrs[k];
+  }
+  contains(n: FakeNode | null): boolean {
+    for (let c = n; c; c = c.parentNode) if (c === this) return true;
+    return false;
+  }
+  /** Only the selectors the view uses: a tag list, or one `[attr]`. */
+  private matches(sel: string): boolean {
+    const attr = /^\[([\w-]+)\]$/.exec(sel);
+    return attr ? this.attrs[attr[1]!] !== undefined : sel.split(",").includes(this.tag);
+  }
+  closest(sel: string): FakeNode | null {
+    for (let c: FakeNode | null = this; c; c = c.parentNode) if (c.matches(sel)) return c;
+    return null;
+  }
+  querySelectorAll(sel: string): FakeNode[] {
+    return this.all().slice(1).filter((n) => n.matches(sel));
+  }
+  getBoundingClientRect() {
+    return { left: 100, top: 200, right: 160, bottom: 220, width: 60, height: 20 };
   }
   private typed: string | null = null;
   /** As the DOM has it: an input's value starts from its attribute; a select's is its selected option's. */
@@ -443,11 +471,16 @@ class FakeNode {
   getAttribute(k: string) {
     return this.attrs[k] ?? null;
   }
-  addEventListener(type: string, fn: () => void) {
+  addEventListener(type: string, fn: (e?: any) => void) {
     (this.listeners[type] ??= []).push(fn);
   }
   click() {
     for (const fn of this.listeners.click ?? []) fn();
+  }
+  /** Calls this node's listeners for `type`, then each ancestor's, as a bubbling event would. */
+  fire(type: string, extra: Record<string, unknown> = {}) {
+    const e = { type, target: this, ...extra };
+    for (let c: FakeNode | null = this; c; c = c.parentNode) for (const fn of c.listeners[type] ?? []) fn(e);
   }
   all(): FakeNode[] {
     return [this, ...this.children.flatMap((c) => c.all())];
@@ -461,8 +494,12 @@ function drawView(model: unknown): FakeNode {
   return drawViewWith(model).root;
 }
 
-function drawViewWith(model: unknown): { root: FakeNode; window: any } {
-  const doc: any = { documentElement: null, head: null };
+function drawViewWith(model: unknown): { root: FakeNode; window: any; doc: any; tick: () => void; redraw: () => void } {
+  const doc: any = { documentElement: null, head: null, listeners: {} as Record<string, Array<(e: any) => void>> };
+  doc.addEventListener = (type: string, fn: (e: any) => void) => (doc.listeners[type] ??= []).push(fn);
+  doc.removeEventListener = (type: string, fn: (e: any) => void) => {
+    doc.listeners[type] = (doc.listeners[type] ?? []).filter((f: unknown) => f !== fn);
+  };
   const make = (tag: string) => new FakeNode(tag, doc);
   doc.createElement = make;
   doc.createElementNS = (ns: string, tag: string) => {
@@ -476,15 +513,31 @@ function drawViewWith(model: unknown): { root: FakeNode; window: any } {
     return n;
   };
   doc.documentElement = make("html");
+  doc.documentElement.clientWidth = 800;
   doc.head = make("head");
   const root = make("div");
   const data = make("script");
   data.textContent = JSON.stringify(model);
   doc.getElementById = (id: string) =>
     id === "sentrook-root" ? root : id === "sentrook-model" ? data : doc.head.children.find((c: FakeNode) => c.id === id) ?? null;
-  const window: any = { location: { search: "" } };
-  new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout: () => 0, navigator: {}, encodeURIComponent });
-  return { root, window };
+  const window: any = { location: { search: "" }, innerHeight: 600 };
+  doc.defaultView = window;
+  const timers = new Map<number, () => void>();
+  let next = 1;
+  const setTimeout = (fn: () => void) => {
+    timers.set(next, fn);
+    return next++;
+  };
+  const clearTimeout = (id: number) => timers.delete(id);
+  const run = () => new Script(viewScript()).runInNewContext({ document: doc, window, setTimeout, clearTimeout, navigator: {}, encodeURIComponent });
+  run();
+  /** Runs the timers due so far. */
+  const tick = () => {
+    const due = [...timers.values()];
+    timers.clear();
+    due.forEach((fn) => fn());
+  };
+  return { root, window, doc, tick, redraw: run };
 }
 
 function viewModel(): any {
@@ -534,16 +587,104 @@ test("signals start collapsed; every tier, signal and value carries a hover hint
   assert.equal(signals.length, 3);
   for (const d of signals) assert.equal(d.getAttribute("open"), null, "collapsed by default");
   for (const tier of detail.byClass("srk-tier")) {
-    assert.ok(tier.byClass("srk-tier-name")[0]!.getAttribute("title"));
-    assert.ok(tier.byClass("srk-tier-score")[0]!.getAttribute("title"));
+    assert.ok(tier.byClass("srk-tier-name")[0]!.getAttribute("data-srk-hint"));
+    assert.ok(tier.byClass("srk-tier-score")[0]!.getAttribute("data-srk-hint"));
   }
   for (const leaf of detail.byClass("srk-leaf")) {
     const label = leaf.byClass("srk-leaf-top")[0]!.children[0]!;
-    assert.ok((label.getAttribute("title") ?? "").length > 20, `${label.textContent} has a hint`);
-    assert.ok(leaf.byClass("srk-leaf-val")[0]!.getAttribute("title"));
+    assert.ok((label.getAttribute("data-srk-hint") ?? "").length > 20, `${label.textContent} has a hint`);
+    assert.ok(leaf.byClass("srk-leaf-val")[0]!.getAttribute("data-srk-hint"));
   }
-  for (const chip of detail.byClass("srk-chip")) assert.ok(chip.getAttribute("title"), chip.textContent);
-  for (const dt of detail.all().filter((n) => n.tag === "dt")) assert.ok(dt.getAttribute("title"), dt.textContent);
+  for (const chip of detail.byClass("srk-chip")) assert.ok(chip.getAttribute("data-srk-hint"), chip.textContent);
+  for (const dt of detail.all().filter((n) => n.tag === "dt")) assert.ok(dt.getAttribute("data-srk-hint"), dt.textContent);
+});
+
+test("hints are drawn by the page: no title attributes, one hidden tooltip, hinted labels take focus", () => {
+  const { root } = drawViewWith(viewModel());
+  const all = root.all();
+  assert.deepStrictEqual(all.filter((n) => n.getAttribute("title") !== null).map((n) => n.textContent), [], "no browser title tooltips");
+  const tips = root.byClass("srk-tip");
+  assert.equal(tips.length, 1);
+  assert.equal(tips[0]!.getAttribute("role"), "tooltip");
+  assert.notEqual(tips[0]!.getAttribute("hidden"), null, "hidden until asked for");
+  const hinted = all.filter((n) => n.getAttribute("data-srk-hint"));
+  assert.ok(hinted.length > 40, `${hinted.length} hinted elements`);
+  const controls = ["a", "button", "input", "select", "textarea", "summary", "label"];
+  for (const n of hinted) {
+    const inControl = n.closest(controls.join(",")) !== null;
+    assert.equal(n.getAttribute("tabindex") === "0", !inControl, `${n.tag} "${n.textContent.slice(0, 30)}" focusable only outside a control`);
+  }
+});
+
+test("a hint shows on focus, hover and tap, as text, and hides on blur, Escape and a click elsewhere", () => {
+  const { root, doc, tick } = drawViewWith(viewModel());
+  const tip = root.byClass("srk-tip")[0]!;
+  const name = root.byClass("srk-tier-name")[0]!;
+  const hint = name.getAttribute("data-srk-hint")!;
+  assert.ok(hint.length > 20);
+
+  name.fire("focusin");
+  assert.equal(tip.getAttribute("hidden"), null);
+  assert.equal(tip.textContent, hint);
+  assert.equal(name.getAttribute("aria-describedby"), "srk-tip");
+  assert.match(tip.style.top!, /^-?\d+px$/);
+  name.fire("focusout");
+  assert.notEqual(tip.getAttribute("hidden"), null);
+  assert.equal(name.getAttribute("aria-describedby"), null);
+
+  // Hover waits a moment, then shows.
+  const score = root.byClass("srk-tier-score")[0]!;
+  score.fire("mouseover");
+  assert.notEqual(tip.getAttribute("hidden"), null, "not straight away");
+  tick();
+  assert.equal(tip.textContent, score.getAttribute("data-srk-hint"));
+  for (const fn of doc.listeners.keydown) fn({ key: "Escape" });
+  assert.notEqual(tip.getAttribute("hidden"), null);
+
+  // A tap on a label shows it; a tap on a control (the scan row) does not.
+  name.fire("click");
+  assert.equal(tip.getAttribute("hidden"), null);
+  for (const fn of doc.listeners.click) fn({ target: doc.documentElement });
+  assert.notEqual(tip.getAttribute("hidden"), null);
+  const riskInRow = root.byClass("srk-row")[0]!.byClass("srk-risk")[0]!;
+  riskInRow.fire("click");
+  assert.notEqual(tip.getAttribute("hidden"), null);
+});
+
+test("a redraw into the same root: one tooltip, no hover left waiting for an old element, listeners kept once", () => {
+  const { root, doc, tick, redraw } = drawViewWith(viewModel());
+  const clicks = doc.listeners.click.length;
+  const oldScore = root.byClass("srk-tier-score")[0]!;
+  oldScore.fire("mouseover");
+  redraw();
+  tick();
+  const tips = root.byClass("srk-tip");
+  assert.equal(tips.length, 1);
+  assert.notEqual(tips[0]!.getAttribute("hidden"), null, "the old hover never shows");
+  assert.equal(doc.listeners.click.length, clicks, "no second set of page-wide listeners");
+  const name = root.byClass("srk-tier-name")[0]!;
+  name.fire("focusin");
+  assert.equal(tips[0]!.textContent, name.getAttribute("data-srk-hint"));
+});
+
+test("a root that has left the page drops its page-wide listeners", () => {
+  const { root, doc } = drawViewWith(viewModel());
+  (root as any).isConnected = false;
+  for (const fn of [...doc.listeners.keydown]) fn({ key: "Escape" });
+  assert.equal(doc.listeners.keydown.length, 0);
+  assert.equal(doc.listeners.click.length, 0);
+});
+
+test("hint text goes in as text: markup in a hint is not parsed", () => {
+  const model = viewModel();
+  model.scans[0].tool = "<img src=x onerror=alert(1)>";
+  const { root } = drawViewWith(model);
+  // A timeline cell's hint names the scan's tool, which comes from the log.
+  const cell = root.byClass("srk-tl-cell").at(-1)!;
+  cell.fire("focusin");
+  const tip = root.byClass("srk-tip")[0]!;
+  assert.match(tip.textContent, /^<img src=x onerror=alert\(1\)> · risk/);
+  assert.equal(tip.children.length, 0, "set as text, no child nodes");
 });
 
 test("the timeline has one cell per scan, oldest first, and opens a scan on click", () => {
@@ -551,8 +692,8 @@ test("the timeline has one cell per scan, oldest first, and opens a scan on clic
   const root = drawView(model);
   const cells = root.byClass("srk-tl-cell");
   assert.equal(cells.length, model.scans.length);
-  assert.match(cells[0]!.getAttribute("title")!, /web_fetch/);
-  assert.match(cells.at(-1)!.getAttribute("title")!, /terminal · risk 86 · blocked/);
+  assert.match(cells[0]!.getAttribute("data-srk-hint")!, /web_fetch/);
+  assert.match(cells.at(-1)!.getAttribute("data-srk-hint")!, /terminal · risk 86 · blocked/);
   assert.equal(root.byClass("srk-detail").length, 1);
   cells[0]!.click();
   assert.equal(root.byClass("srk-detail").length, 2);
