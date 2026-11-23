@@ -9,13 +9,14 @@ since the version the catalog pins.
 - Held-call, scan-failure and background-save notices reach the `owner_channel` home channel again. The plugin sent
   them through Hermes's `send_message` tool, which Hermes 0.23 does not register in any process (the gateway, the
   desktop app's `hermes serve`, the command line or cron), so on Hermes 0.23 every notice failed with "Unknown tool:
-  send_message", while the record said it was queued. They now go out with Hermes's own `hermes send` command, run
-  with the Python that runs Hermes, from the same notice thread, so a cron job's own delivery target still cannot
-  swallow them. The `send_message` tool is used only on a Hermes that registers it and has no `hermes send`. A
+  send_message", while the record said it was queued. They now go out with Hermes's own `hermes send` command, from
+  the same notice thread, so a cron job's own delivery target still cannot swallow them. The `send_message` tool is used only on a Hermes that registers it and has no `hermes send`. A
   `MEDIA:` path in a notice (a call's target can name one) is never sent as an attachment.
 - Where a Hermes process has neither, the plugin says so instead of failing quietly: a warning when it starts,
   and `/sentrook status` and `hermes sentrook verify` say that notices cannot be sent from that process and why.
-  A call held there is still held, and its record says the notice is `unsent`, with the reason, not `queued`.
+  A call held there is still held, and its record says the notice is `unsent`, with the reason, not `queued`. The
+  same goes for a turn a Hermes process serves for another profile's home: `hermes send` would use the process's own
+  profile's platform account, so that notice is not sent with it.
 - New setting `dashboard_show_calls` (off by default): each scan in the Sentrook dashboard tab gets **Show the call**,
   the tool and its arguments as the plugin sent them to the scanner (secrets masked, very long text cut), with a
   patch's old and new text side by side. Off, the tab still shows no call content, and **Show the call** gives the

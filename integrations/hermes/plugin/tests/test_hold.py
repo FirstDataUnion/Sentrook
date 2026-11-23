@@ -1136,20 +1136,63 @@ def test_hermes_send_runs_on_the_notice_thread_without_the_cron_runs_delivery_ta
     )
 
 
-def test_hermes_send_sends_from_the_hermes_home_of_the_turn_that_held_the_call(
-    h, hermes_send, monkeypatch
-):
-    """A multi-profile Hermes serves each turn with its own profile's home (a context-local override); the notice
-    thread does not have that context, so the home is taken when the notice is handed over."""
+#: The Hermes home a turn is served for, which a multi-profile Hermes binds to the turn's context.
+TURN_HOME = contextvars.ContextVar("turn_home", default="/srv/hermes")
+
+
+@pytest.fixture
+def profiles(monkeypatch):
+    """Hermes's homes under test control: this process's own is /srv/hermes; a turn's is `TURN_HOME`."""
     import types
 
-    home = types.ModuleType("hermes_constants")
-    home.get_hermes_home = lambda: Path("/srv/hermes/profiles/work")
-    monkeypatch.setitem(sys.modules, "hermes_constants", home)
+    mod = types.ModuleType("hermes_constants")
+    mod.get_hermes_home = lambda: Path(TURN_HOME.get())
+    mod.get_process_hermes_home = lambda: Path("/srv/hermes")
+    monkeypatch.setitem(sys.modules, "hermes_constants", mod)
+
+
+def test_hermes_send_is_used_for_a_turn_of_this_process_own_profile(h, hermes_send, profiles):
     turn(h)
-    send(h)
-    [run] = hermes_send.runs
-    assert run["env"]["HERMES_HOME"] == "/srv/hermes/profiles/work"
+    _out, rec = send(h)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    assert len(hermes_send.runs) == 1
+
+
+def test_a_turn_served_for_another_profile_is_not_sent_with_this_process_credentials(
+    h, hermes_send, profiles
+):
+    """A Hermes serving several profiles scopes each turn to its own home in the turn's context. `hermes send` runs
+    with this process's environment, its own profile's platform tokens, so the notice of another profile's turn is
+    recorded unsent with the reason rather than sent from the wrong account."""
+    turn(h)
+    token = TURN_HOME.set("/srv/hermes/profiles/work")
+    try:
+        _out, rec = send(h)
+    finally:
+        TURN_HOME.reset(token)
+    notice = rec["hold"]["notice"]
+    assert notice["status"] == "unsent" and notice["target"] is None
+    assert "/srv/hermes/profiles/work" in notice["reason"]
+    assert "own profile's credentials" in notice["reason"]
+    assert hermes_send.runs == []
+
+
+def test_the_route_is_chosen_in_the_turns_context_not_on_the_notice_thread(
+    h, hermes_send, profiles, notice_route
+):
+    """Another profile's turn on a Hermes that also registers send_message: the notice goes through the tool. The
+    notice thread has an empty context, where the turn's home reads as this process's own; choosing the route
+    there would run `hermes send` with this process's credentials."""
+    notice_route["send_tool"] = True
+    turn(h)
+    token = TURN_HOME.set("/srv/hermes/profiles/work")
+    try:
+        _out, rec = send(h)
+    finally:
+        TURN_HOME.reset(token)
+    assert rec["hold"]["notice"] == {"status": "queued", "target": "discord"}
+    assert hermes_send.runs == []
+    assert [x["name"] for x in h.sent] == ["send_message"]
 
 
 @pytest.mark.parametrize(
@@ -1192,7 +1235,9 @@ def test_a_scan_failure_notice_hermes_send_delivered_quiets_the_job(h, hermes_se
     assert len(hermes_send.runs) == 1
 
 
-@pytest.mark.parametrize("after", ["", "\nbye\n", "\n{not json"])
+@pytest.mark.parametrize(
+    "after", ["", "\nbye\n", "\n{not json", '\n{"level": "info", "msg": "log"}']
+)
 def test_hermes_send_output_around_its_answer_is_still_read(h, hermes_send, after):
     hermes_send.stdout = (
         "⚠ a warning Hermes printed\n" + json.dumps({"success": True}, indent=2) + after

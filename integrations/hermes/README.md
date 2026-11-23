@@ -612,8 +612,8 @@ In short, for anyone deciding whether to install it:
   the traffic log, grants, snooze state, held calls, when each job last had a scan-failure notice, and the
   conversation logs above), or to the paths you set for them
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
-  secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`, with
-  the same Python that runs Hermes, to send a notice above; the notice text goes to it on standard input.
+  secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`
+  command, to send a notice above; the notice text goes to it on standard input.
 - **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
   `auth.json` or any other credential file.
 - **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
