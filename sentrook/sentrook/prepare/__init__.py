@@ -98,8 +98,8 @@ from .grants import (
     tool_covers,
 )
 from .host_text import owner_words
+from .own_store import NOT_OWN_STORE, exec_store_writes, memory_path_spellings, own_store_read
 from .own_store import SKILL as OWN_STORE_SKILL
-from .own_store import memory_path_spellings, own_store_read
 from .session_sets import (
     SessionBinding,
     acts,
@@ -1357,6 +1357,23 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         for s in (planir.pending_call.batch.siblings if planir.pending_call.batch else [])
     ]
     history = [canonical_history(platform, h) for h in planir.history]
+    # An OpenClaw background run's exec comes with the run's `self_edit` block: a self-edit only when it is a plain
+    # save into the declared store (`own_store.exec_store_writes`). Otherwise the block is dropped here, before
+    # anything reads it, and the command is scored as the ordinary command it is.
+    if planir.is_self_edit and pending.tool_kind is ToolKind.EXEC and platform == "openclaw":
+        try:
+            into_store = exec_store_writes(planir, pending, home=home, workspace_root=ws)
+        except Exception as exc:  # noqa: BLE001 (an odd command is no save; its own scoring still runs)
+            into_store = []
+            coverage.append(CoverageNote("self_edit_exec_failed", f"{type(exc).__name__}: {exc}"))
+        if not into_store:
+            planir.self_edit = None
+            raw = {k: v for k, v in raw.items() if k != "self_edit"}
+            coverage.append(
+                CoverageNote(
+                    NOT_OWN_STORE, "the command is not a plain save into the declared store"
+                )
+            )
     for call in (pending, *siblings, *history):
         where = call.source if call.step is None else f"{call.source} step {call.step}"
         if call.dropped:

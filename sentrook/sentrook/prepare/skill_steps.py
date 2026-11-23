@@ -9,7 +9,9 @@ shell, sending local data off the host, reading credential stores, and so on.
   the agent's skill directory), and to a skill tool (`skill_manage`, `skill_workshop`) with no known store; never to
   a memory save.
 - Only text the save writes is read (`content`, `file_content`, `new_string`, `new_text`, `newText`, also inside
-  `operations` and `edits`, and the lines a patch in `input` adds), never the text it replaces.
+  `operations` and `edits`, and the lines a patch in `input` adds), never the text it replaces. A save made with a
+  shell command (an exec the scanner found writing into the skill store, `own_store.exec_store_writes`) is read by
+  its heredoc bodies.
 - Commands come from fenced blocks (``` or ~~~; a line ending in `\\` continues on the next) and from inline code that
   reads as a command.
 - A command the text warns against ("never run `…`", "don't use `…`", a fence right after "do not run this:") is
@@ -191,8 +193,14 @@ def skill_step_calls(
     another store (memory) is never read, whatever its tool; an unknown store is read only for a skill tool."""
     if store != "skills" and (store not in (None, "other") or pending.tool not in SKILL_TOOLS):
         return []
+    if pending.tool_kind is ToolKind.EXEC:
+        from .save_adds import heredoc_bodies  # save_adds reads skills through this module
+
+        texts = heredoc_bodies(pending.command or "")
+    else:
+        texts = written_texts(pending.raw)
     steps: dict[str, bool] = {}
-    for text in written_texts(pending.raw):
+    for text in texts:
         for cmd, negated in steps_in(text):
             steps[cmd] = steps.get(cmd, True) and negated
     ordered = sorted(steps.items(), key=lambda kv: not _RISKY.search(kv[0]))[:MAX_COMMANDS]
