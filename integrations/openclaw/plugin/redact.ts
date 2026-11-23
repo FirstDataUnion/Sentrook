@@ -88,6 +88,14 @@ const DOTTED_NAME = String.raw`${DOTTED_PART}(?:\.${DOTTED_PART})+`;
  */
 const CODE_READ = new RegExp(String.raw`^(?:${CODE_CHAIN}(?:[\[(]|\((?:${CODE_CHAIN}[\[(]|${DOTTED_NAME}\)?)))$`);
 /**
+ * A call whose one argument is a bare lower-case name, cut before its closing parenthesis or a comma (`os.getenv(name`,
+ * `load_token(path`, `getattr(settings`). It is code only when the name called reads as code (`isCodeRead`): dotted,
+ * with `_` or a capital, or called or subscripted itself, or one of `CODE_READERS`. `hunter(abc)` and
+ * `mysecret(pw_2024)` are values.
+ */
+const CODE_NAME_ARG_READ = new RegExp(String.raw`^(?:${CODE_CHAIN}\([a-z_][a-z0-9_]{0,29})$`);
+const CODE_READERS = new Set("input getattr getenv getpass open read load get".split(" "));
+/**
  * A dotted name called with a keyword before a quoted argument (`getpass.getpass(prompt=`) or subscripted with a
  * number of one or two digits (`sys.argv[1`, its `]` left out as punctuation). Only a dotted name counts
  * (`isCodeRead`): `qwerty[99]` and `monkey(prompt='x')` are values.
@@ -103,12 +111,16 @@ const CODE_RECEIVERS = new Set(
 const DOTTED_READ = new RegExp(`^(?:${DOTTED_NAME})$`);
 /**
  * Whether `v` is code that reads a secret from somewhere: called or subscripted and cut where its quoted argument
- * starts (`CODE_READ`), a dotted name with a simple argument (`CODE_ARG_READ`), or a plain attribute read from a
- * known receiver or of a credential field (`config.token`).
+ * starts (`CODE_READ`), a dotted name with a simple argument (`CODE_ARG_READ`), a call on a bare name
+ * (`CODE_NAME_ARG_READ`), or a plain attribute read from a known receiver or of a credential field (`config.token`).
  */
 const isCodeRead = (v: string): boolean => {
   if (CODE_READ.test(v)) return true;
   if (v.includes(".") && CODE_ARG_READ.test(v)) return true;
+  if (CODE_NAME_ARG_READ.test(v)) {
+    const callee = v.slice(0, v.lastIndexOf("("));
+    if (/[._A-Z(\[]/.test(callee) || CODE_READERS.has(callee)) return true;
+  }
   if (!DOTTED_READ.test(v)) return false;
   const parts = v.split(".");
   return CODE_RECEIVERS.has(parts[0]) || CREDENTIAL_FIELD.test(parts[parts.length - 1]);
