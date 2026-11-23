@@ -703,6 +703,48 @@ def test_must_fire_on_a_secret_value_saved_into_a_skill_as_a_placeholder():
     assert "secret" in res.response.model_dump(mode="json")["self_edit"]["adds"]
 
 
+def _as_sent_by_the_plugin(text: str) -> str:
+    """`text` as a current plugin sends it: the Hermes plugin's redactor, which the OpenClaw plugin's matches."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "integrations" / "hermes" / "plugin" / "redact.py"
+    spec = importlib.util.spec_from_file_location("hermes_plugin_redact", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Redactor("standard", "test-salt").string(text)
+
+
+ENV_LOADER_MD = (
+    "---\nname: deploy-notify\ndescription: Post a deploy note\n---\n```js\n"
+    "const token = process.env.TOKEN;\nconst apiKey = config.apiKey;\n"
+    "await fetch(url, { headers: { Authorization: `Bearer ${token}` } });\n```\n"
+)
+
+
+def test_must_stay_quiet_on_a_skill_that_reads_a_token_from_an_attribute():
+    """`token = process.env.TOKEN` reads the token where it is kept: as a current plugin sends it, the skill holds no
+    secret. The same skill with the token written in still does."""
+    path = "/home/me/.openclaw/agents/main/workshop-skills/deploy-notify/SKILL.md"
+    sent = _as_sent_by_the_plugin(ENV_LOADER_MD)
+    assert sent == ENV_LOADER_MD
+    raw = planir("write", {"path": path, "content": sent}, store="skills", platform="openclaw")
+    raw["pending_call"]["tool_kind"] = "file_write"
+    res, _ = scan(raw)
+    assert "artefact.placeholder_in_write" not in codes(res)
+    assert "secret" not in res.response.model_dump(mode="json")["self_edit"]["adds"]
+
+    literal = ENV_LOADER_MD.replace("process.env.TOKEN", "Xk29fQ" + "v7Lm2Pq8")
+    sent = _as_sent_by_the_plugin(literal)
+    assert "Xk29fQ" not in sent
+    raw = planir("write", {"path": path, "content": sent}, store="skills", platform="openclaw")
+    raw["pending_call"]["tool_kind"] = "file_write"
+    res, _ = scan(raw)
+    assert "artefact.placeholder_in_write" in codes(res)
+    assert "secret" in res.response.model_dump(mode="json")["self_edit"]["adds"]
+
+
 WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills"
 
 
