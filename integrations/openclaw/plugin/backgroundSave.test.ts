@@ -830,13 +830,30 @@ test("must stay as before: an owner's own skill_workshop call in a chat still as
   assert.equal(rec.decision, "review_timed_out");
 });
 
-test("must stay as before: a review run's own exec is not a save and keeps its prompt", async () => {
+test("must stay as before: a review run's own exec the scanner does not read as a save keeps its prompt", async () => {
   const r = registered();
-  setVerdict("strict");
+  // declared with the run's store, and answered as the scanner answers a command that writes nothing there
+  reply = { ...VERDICTS.strict, self_edit: undefined };
   const { out, rec } = await r.save("review", { toolName: "exec", params: { command: "ls" } });
   assert.ok(out?.requireApproval);
+  assert.equal(rec.planir.self_edit.store, "skills");
   assert.equal(rec.background_save, undefined);
   assert.equal(rec.host_process, "background_review");
+});
+
+test("must hold: a review run's exec the scanner reads as a save is one of the run's saves, never asked", async () => {
+  for (const [cell, decision] of [["strict", "held"], ["lenient", "held"], ["block", "blocked"]] as const) {
+    const r = registered();
+    setVerdict(cell);
+    const { out, rec } = await r.save("review", { toolName: "exec", params: { command: "cat > a/SKILL.md <<'EOF'\nx\nEOF" } });
+    assert.equal(out?.requireApproval, undefined, cell);
+    assert.equal(out?.block, true, cell);
+    // an exec carries no content a draft could keep, and the plugin never lets one through as lenient
+    assert.equal(out?.params, undefined, cell);
+    assert.equal(rec.decision, decision, cell);
+    assert.deepEqual(rec.background_save, { kind: "background_review", store: "skills" }, cell);
+    assert.equal(rec.skill_review, true, cell);
+  }
 });
 
 test("notice texts: fixed words, the run, the call as a card shows it, and the why id", () => {

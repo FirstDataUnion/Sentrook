@@ -56,18 +56,43 @@ _NAMED_THING = re.compile(
     r"|^(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$"
 )
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
+# One part of a name in code, read as a word (`token_data`, `getSecret`, `JSON`, `oauth2`, `b64decode`): lower,
+# camel, Pascal or upper case, maybe after `_`, with digits at its end or one short run before more letters.
+_CODE_PART = (
+    r"_?(?:[a-z]+(?:[0-9]{1,3}[a-z]{3,}|[0-9]*)(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
+    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*)"
+)
+# A name, maybe dotted, called with no or one bare argument, or subscripted with a small number.
+_CODE_CHAIN = _CODE_PART + r"(?:\." + _CODE_PART + r"|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*"
+# A dotted name whose every part reads as a word of up to 32 characters with no run of four digits
+# (`config.token`, `process.env.TOKEN`).
+_DOTTED_PART = r"(?=[A-Za-z0-9_]{1,32}(?![A-Za-z0-9_]))(?![A-Za-z0-9_]{0,28}[0-9]{4})" + _CODE_PART
+_DOTTED_NAME = _DOTTED_PART + r"(?:\." + _DOTTED_PART + r")+"
 # Code that reads a secret from where it is kept, cut where its quoted argument starts: `token_data[` in
 # `access_token = token_data['access_token']`, `os.environ[`, `creds.get(`, `getpass(`, `resp.json()[`. A
-# name, maybe dotted, called or subscripted, that ends in an open bracket or parenthesis. Each part of the
-# name reads as a word (`token_data`, `getSecret`, `JSON`, `oauth2`): a random value that happens to end
-# in a bracket is still a value.
+# name, maybe dotted, called or subscripted, that ends in an open bracket or parenthesis, or a call whose one
+# argument is another such read (`base64.b64decode(os.environ[`) or a dotted name (`b64decode(config.secret`).
+# A random value that happens to end in a bracket is still a value.
 _CODE_READ = re.compile(
-    r"(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
-    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))"
-    r"(?:\.(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+"
-    r"|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))"
-    r"|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*[\[(]"
+    _CODE_CHAIN + r"(?:[\[(]|\((?:" + _CODE_CHAIN + r"[\[(]|" + _DOTTED_NAME + r"\)?))"
 )
+# A call whose one argument is a bare lower-case name, cut before its closing parenthesis or a comma
+# (`os.getenv(name`, `load_token(path`, `getattr(settings`). It is code only when the name called reads as code
+# (`is_code_read`): dotted, with `_` or a capital, or called or subscripted itself, or one of `_CODE_READERS`.
+# `hunter(abc)` and `mysecret(pw_2024)` are values.
+_CODE_NAME_ARG_READ = re.compile(_CODE_CHAIN + r"\([a-z_][a-z0-9_]{0,29}")
+_CODE_READERS = frozenset("input getattr getenv getpass open read load get".split())
+# A dotted name called with a keyword before a quoted argument (`getpass.getpass(prompt=`) or subscripted with
+# a number of one or two digits (`sys.argv[1`, its `]` left out as punctuation). Only a dotted name counts
+# (`is_code_read`): `qwerty[99]` and `monkey(prompt='x')` are values.
+_CODE_ARG_READ = re.compile(_CODE_CHAIN + r"(?:\[[0-9]{1,2}\]?|\([a-z_][a-z0-9_]{0,29}=)")
+# A plain attribute read is code only from one of these receivers (`self.token`, `config.token`), or when it
+# reads a credential field (`resp.access_token`); `correct.horse.battery.staple` is a value.
+_CODE_RECEIVERS = frozenset(
+    "self cls this args opts options config cfg conf settings env process os creds credentials secrets params ctx "
+    "app request".split()
+)
+_DOTTED_READ = re.compile(_DOTTED_NAME)
 
 
 def _is_ordinary(v: str) -> bool:
@@ -82,15 +107,43 @@ def _key_value(v: str) -> bool:
     return "://" not in v and not _ENV_NAME.fullmatch(v)
 
 
+def is_code_read(v: str) -> bool:
+    """Whether `v` is code that reads a secret from somewhere: called or subscripted and cut where its quoted
+    argument starts (`_CODE_READ`), a dotted name with a simple argument (`_CODE_ARG_READ`), a call on a
+    bare name (`_CODE_NAME_ARG_READ`), or a plain attribute read from a known receiver or of a credential field
+    (`config.token`, `resp.access_token`)."""
+    if _CODE_READ.fullmatch(v) is not None:
+        return True
+    if "." in v and _CODE_ARG_READ.fullmatch(v) is not None:
+        return True
+    if _CODE_NAME_ARG_READ.fullmatch(v) is not None:
+        callee = v[: v.rindex("(")]
+        if re.search(r"[._A-Z(\[]", callee) or callee in _CODE_READERS:
+            return True
+    if _DOTTED_READ.fullmatch(v) is None:
+        return False
+    return (
+        v.split(".", 1)[0] in _CODE_RECEIVERS
+        or _CREDENTIAL_FIELD.search(v.rsplit(".", 1)[1]) is not None
+    )
+
+
 def _unquoted_key_value(v: str) -> bool:
     """An unquoted value after a key: also not code that reads the secret from somewhere
     (`token = creds.get('token')`, cut where its quoted argument starts). A quoted value or one under an
     object key is whole, so it is never code cut short."""
-    return _key_value(v) and not _CODE_READ.fullmatch(v)
+    return _key_value(v) and not is_code_read(v)
 
 
 def _inner_key_value(v: str) -> bool:
-    """An upper-case name with a credential word inside it names many things; only a long value counts."""
+    """An upper-case name with a credential word inside it names many things; only a long value counts, and not
+    code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key."""
+    return len(v) >= 12 and _key_value(v) and not is_code_read(v)
+
+
+def _inner_quoted_value(v: str) -> bool:
+    """The same name with a quoted value: a long value that is not a URL or an environment variable name. A quoted
+    value is whole, so code-shaped text in quotes is still a value."""
     return len(v) >= 12 and _key_value(v)
 
 
@@ -102,7 +155,7 @@ def _stated_value(v: str) -> bool:
         and not _is_ordinary(v)
         and not re.fullmatch(r"[0-9]+", v)
         and not _NAMED_THING.search(v)
-        and not _CODE_READ.fullmatch(v)
+        and not is_code_read(v)
     )
 
 
@@ -359,17 +412,32 @@ _SHAPES: list[tuple[str, re.Pattern[str], str | None, Callable[[str], bool] | No
     ),
     (
         # An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
-        # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+        # path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`), and nor is unquoted
+        # code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`).
         "credential",
         re.compile(
             r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
-            r"\\?[\"']?\s*[=:]\s*\\?[\"']?"
+            r"\\?[\"']?\s*[=:]\s*"
             r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
             + _VALUE_END
             + r")"
         ),
         "v",
         _inner_key_value,
+    ),
+    (
+        # The same name with a quoted value (`GITHUB_TOKEN_VALUE="x"`): a quoted value is whole, so one
+        # shaped like code is still a value.
+        "credential",
+        re.compile(
+            r"(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}"
+            r"\\?[\"']?\s*[=:]\s*\\?[\"']"
+            r"(?![0-9]+(?![^\s\"'&,;<>`\\]))(?P<v>[^\s\"'⟦$*{<%&,;`\\/~.][^\s\"'&,;<>`\\]{6,}"
+            + _VALUE_END
+            + r")"
+        ),
+        "v",
+        _inner_quoted_value,
     ),
     ("credential", _prose_stated(_PROSE_CUES), "v", _stated_value),
     ("credential", _prose_restated(_PROSE_CUES), "v", _stated_value),

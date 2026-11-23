@@ -137,6 +137,8 @@ def test_redaction_matches_the_openclaw_plugin():
 
 # Secret-looking values for the forms below, built at run time.
 PW = "Xk29fQ" + "v7Lm2Pq8"
+# A long digit run, as in a random value (not a name part).
+DIGITS = "1234567890" * 2 + "123456"
 TOK = "pT4" + "z" * 30 + "9qR1sK8"
 HEX32 = "9f" + "0a1b2c3d" * 3 + "4e5f6a"
 AWS = "wJal" + "R" * 32 + "a/b+"
@@ -346,6 +348,79 @@ def test_code_that_reads_a_secret_is_not_a_secret():
     assert "Summer2024" not in json.dumps(r.value({"password": "Summer2024("}))
 
 
+def test_code_that_reads_a_secret_from_an_attribute_or_with_arguments_is_not_a_secret():
+    """A plain attribute read from a known receiver or of a credential field, and a call or subscript whose arguments
+    are simple, name where the secret is kept. A dotted value that does not read as such a name is still a value."""
+    r = Redactor("standard", "test-salt")
+    for text in (
+        "token = config.token",
+        "password = args.password",
+        "token = process.env.TOKEN",
+        "token = self._token",
+        "api_key = settings.API_KEY",
+        "token = sys.argv[1]",
+        "password = getpass.getpass(prompt='Password: ')",
+        "token = vault.read(path='kv/app')",
+        "token = base64.b64decode(os.environ['S'])",
+        "const token = process.env.TOKEN;",
+        "access_token = resp.access_token",
+        "this.apiKey = this.config.apiKey;",
+        "secret = base64.b64decode(config.secret)",
+        "the token: config.token",
+        "MY_SECRET_TOKEN = config.token",
+        "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
+        "MY_SECRET_TOKEN = settings.SECRETS['key']",
+        "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
+        "token = os.getenv(name)",
+        "token = load_token(path)",
+        "password = input(prompt)",
+        "token = getattr(settings, 'TOKEN')",
+        "api_key = os.environ.get(key_name)",
+    ):
+        assert r.string(text) == text
+        assert r.string(_as_result(text)) == _as_result(text)
+    for text, value in (
+        ("token = eyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12, "c" * 12),
+        (f"api_key = sk.{PW}.{PW}", PW),
+        (f"token = config.{PW}", PW),
+        (f"token = {PW.lower()}.token", PW.lower()),
+        ("token = self." + "abcdefgh" * 5, "abcdefgh" * 5),
+        ("password = correct.horse.battery.staple", "horse.battery"),
+        ('PASSWORD="config.token"', "config.token"),
+        ("token = 'process.env.TOKEN'", "process.env.TOKEN"),
+        (f"token = {PW}[1]", PW),
+        (f"token = {PW}(prompt='x')", PW),
+        (f"token = f({PW}[", PW),
+        ("password = Summer[2024]", "Summer"),
+        ("password = qwerty[99]", "qwerty"),
+        ("password = monkey(prompt='x')", "monkey"),
+        ("token = abc123defg45[", "abc123defg45"),
+        (f"token = config.x{DIGITS}", DIGITS),
+        (f"token = self.a{DIGITS}", DIGITS),
+        ("MY_SECRET_TOKEN = correct.horse.battery.staple", "horse.battery"),
+        (f"MY_SECRET_TOKEN = {PW}[", PW),
+        ('MY_SECRET_TOKEN="config.token"', "config.token"),
+        ('GITHUB_TOKEN_VALUE="config.token"', "config.token"),
+        ('export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"),
+        ('SECRET_KEY_BASE: "hunter.password"', "hunter.password"),
+        ("TOKEN_X='config.token'", "config.token"),
+        ("password = Summer(2024)", "Summer"),
+        (f"token = f({PW})", PW),
+        ("password = Hello(World)", "Hello"),
+        (f"token = {PW}(name)", PW),
+        ('token = "os.getenv(name)"', "os.getenv(name)"),
+        ("password = hunter(abc)", "hunter(abc"),
+        ("password: iloveyou(forever)", "iloveyou(forever"),
+        ("db_password = mysecret(pw_2024)", "mysecret(pw_2024"),
+        ("password = correct(horse_battery_staple)", "horse_battery"),
+        ("MY_SECRET_TOKEN = abcdef(ghijklmnop)", "ghijklmnop"),
+        ("password = qwerty(asdf, zxcv)", "qwerty(asdf"),
+        ("password = hunter(abc def)", "hunter(abc"),
+    ):
+        for out in (r.string(text), r.string(_as_result(text))):
+            assert value not in out and len(_tags(out)) >= 1, out
+
+
 def test_trailing_punctuation_is_not_part_of_a_value():
     r = Redactor("standard", "test-salt")
     tag = r.string(f"password: {PW} (give it")[len("password: ") :].split(" ")[0]
@@ -528,6 +603,14 @@ def test_camel_case_credential_keys_in_objects_are_replaced_whole():
         "token = " + "getSecret" * 100_000 + "x",
         "token = " + "a_" * 400_000 + ".",
         "token: " + "x()" * 300_000,
+        "token = " + "a(b." * 200_000,
+        "token = self." + "a." * 300_000 + "x",
+        "token = " + "b64decode." * 100_000 + "-",
+        "token = x(" + "a." * 300_000 + "x",
+        "token = " + "a[1]" * 200_000 + "x",
+        "token = " + "aaa1" * 200_000 + "(",
+        "token: config." + "a" * 1_000_000,
+        "token = " + "a(b" * 300_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )

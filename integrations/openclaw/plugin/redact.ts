@@ -67,14 +67,64 @@ const NAMED_THING =
   /^[/~.*{\[(]|:\/\/|\(|^[0-9]{4}-[0-9]{2}-[0-9]{2}|^0x[0-9a-fA-F]{40}$|^(?:SHA256|MD5):|^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}$|^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.[a-z]{2,24}(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~%\/-]*)?$|^(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_-]+\.[a-z0-9]{1,8}$/;
 
 /**
- * Code that reads a secret from where it is kept, cut where its quoted argument starts: `token_data[` in
- * `access_token = token_data['access_token']`, `os.environ[`, `creds.get(`, `getpass(`, `resp.json()[`. A name,
- * maybe dotted, called or subscripted, that ends in an open bracket or parenthesis. Each part of the name reads
- * as a word (`token_data`, `getSecret`, `JSON`, `oauth2`): a random value that happens to end in a bracket is
- * still a value.
+ * One part of a name in code, read as a word (`token_data`, `getSecret`, `JSON`, `oauth2`, `b64decode`): lower, camel,
+ * Pascal or upper case, maybe after `_`, with digits at its end or one short run before more letters.
  */
-const CODE_READ =
-  /^(?:(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))(?:\.(?:_?(?:[a-z]+[0-9]*(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*))|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*[\[(])$/;
+const CODE_PART = String.raw`_?(?:[a-z]+(?:[0-9]{1,3}[a-z]{3,}|[0-9]*)(?:_[a-z]+[0-9]*)*|[a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)+|[A-Z][a-z]+[0-9]*(?:[A-Z][a-z]+[0-9]*)*|[A-Z]+[0-9]*(?:_[A-Z]+[0-9]*)*)`;
+/** A name, maybe dotted, called with no or one bare argument, or subscripted with a small number. */
+const CODE_CHAIN = String.raw`${CODE_PART}(?:\.${CODE_PART}|\(\)|\([a-z_]{1,20}\)|\[[0-9]{1,4}\])*`;
+/**
+ * A dotted name whose every part reads as a word of up to 32 characters with no run of four digits (`config.token`,
+ * `process.env.TOKEN`).
+ */
+const DOTTED_PART = String.raw`(?=[A-Za-z0-9_]{1,32}(?![A-Za-z0-9_]))(?![A-Za-z0-9_]{0,28}[0-9]{4})${CODE_PART}`;
+const DOTTED_NAME = String.raw`${DOTTED_PART}(?:\.${DOTTED_PART})+`;
+/**
+ * Code that reads a secret from where it is kept, cut where its quoted argument starts: `token_data[` in
+ * `access_token = token_data['access_token']`, `os.environ[`, `creds.get(`, `getpass(`, `resp.json()[`. A name, maybe
+ * dotted, called or subscripted, that ends in an open bracket or parenthesis, or a call whose one argument is another
+ * such read (`base64.b64decode(os.environ[`) or a dotted name (`b64decode(config.secret`). A random value that happens
+ * to end in a bracket is still a value.
+ */
+const CODE_READ = new RegExp(String.raw`^(?:${CODE_CHAIN}(?:[\[(]|\((?:${CODE_CHAIN}[\[(]|${DOTTED_NAME}\)?)))$`);
+/**
+ * A call whose one argument is a bare lower-case name, cut before its closing parenthesis or a comma (`os.getenv(name`,
+ * `load_token(path`, `getattr(settings`). It is code only when the name called reads as code (`isCodeRead`): dotted,
+ * with `_` or a capital, or called or subscripted itself, or one of `CODE_READERS`. `hunter(abc)` and
+ * `mysecret(pw_2024)` are values.
+ */
+const CODE_NAME_ARG_READ = new RegExp(String.raw`^(?:${CODE_CHAIN}\([a-z_][a-z0-9_]{0,29})$`);
+const CODE_READERS = new Set("input getattr getenv getpass open read load get".split(" "));
+/**
+ * A dotted name called with a keyword before a quoted argument (`getpass.getpass(prompt=`) or subscripted with a
+ * number of one or two digits (`sys.argv[1`, its `]` left out as punctuation). Only a dotted name counts
+ * (`isCodeRead`): `qwerty[99]` and `monkey(prompt='x')` are values.
+ */
+const CODE_ARG_READ = new RegExp(String.raw`^(?:${CODE_CHAIN}(?:\[[0-9]{1,2}\]?|\([a-z_][a-z0-9_]{0,29}=))$`);
+/**
+ * A plain attribute read is code only from one of these receivers (`self.token`, `config.token`), or when it reads a
+ * credential field (`resp.access_token`); `correct.horse.battery.staple` is a value.
+ */
+const CODE_RECEIVERS = new Set(
+  "self cls this args opts options config cfg conf settings env process os creds credentials secrets params ctx app request".split(" "),
+);
+const DOTTED_READ = new RegExp(`^(?:${DOTTED_NAME})$`);
+/**
+ * Whether `v` is code that reads a secret from somewhere: called or subscripted and cut where its quoted argument
+ * starts (`CODE_READ`), a dotted name with a simple argument (`CODE_ARG_READ`), a call on a bare name
+ * (`CODE_NAME_ARG_READ`), or a plain attribute read from a known receiver or of a credential field (`config.token`).
+ */
+const isCodeRead = (v: string): boolean => {
+  if (CODE_READ.test(v)) return true;
+  if (v.includes(".") && CODE_ARG_READ.test(v)) return true;
+  if (CODE_NAME_ARG_READ.test(v)) {
+    const callee = v.slice(0, v.lastIndexOf("("));
+    if (/[._A-Z(\[]/.test(callee) || CODE_READERS.has(callee)) return true;
+  }
+  if (!DOTTED_READ.test(v)) return false;
+  const parts = v.split(".");
+  return CODE_RECEIVERS.has(parts[0]) || CREDENTIAL_FIELD.test(parts[parts.length - 1]);
+};
 
 /**
  * Not a key's value: a URL (the URL rule takes any password inside it and the host stays) or the name of
@@ -86,12 +136,17 @@ const keyValue = (v: string) => !v.includes("://") && !/^[A-Z][A-Z0-9]*(?:_[A-Z0
  * cut where its quoted argument starts). A quoted value or one under an object key is whole, so it is never code cut
  * short.
  */
-const unquotedKeyValue = (v: string) => keyValue(v) && !CODE_READ.test(v);
-/** An upper-case name with a credential word inside it names many things; only a long value counts. */
-const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v);
+const unquotedKeyValue = (v: string) => keyValue(v) && !isCodeRead(v);
+/**
+ * An upper-case name with a credential word inside it names many things; only a long value counts, and not code that
+ * reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`), as after any other key.
+ */
+const innerKeyValue = (v: string) => v.length >= 12 && keyValue(v) && !isCodeRead(v);
+/** The same name with a quoted value: a quoted value is whole, so one shaped like code is still a value. */
+const innerQuotedValue = (v: string) => v.length >= 12 && keyValue(v);
 /** After "password is" or "token:": six or more characters that are not words, a number or code that reads one. */
 const statedValue = (v: string) =>
-  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !CODE_READ.test(v);
+  v.length >= 6 && !isOrdinary(v) && !/^[0-9]+$/.test(v) && !NAMED_THING.test(v) && !isCodeRead(v);
 /** Straight after a cue word ("backup key X"): twelve or more characters with letters and digits. */
 const bareValue = (v: string) =>
   v.length >= 12 && /[A-Za-z]/.test(v) && /[0-9]/.test(v) && !isOrdinary(v) && !NAMED_THING.test(v);
@@ -255,15 +310,28 @@ const SHAPES: Shape[] = [
   },
   {
     // An upper-case name with a credential word inside it: `SENTROOK_SECRET_MARKERS=x`. A number or a
-    // path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`).
+    // path is not a value here (`TOKEN_LIMIT=4096`, `GITHUB_TOKEN_PATH=/home/…`), and nor is unquoted
+    // code that reads the secret from somewhere (`MY_SECRET_TOKEN = config.token`).
     kind: "credential",
     re: new RegExp(
-      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']?` +
+      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*` +
         `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
       "g",
     ),
     group: "v",
     check: innerKeyValue,
+  },
+  {
+    // The same name with a quoted value (`GITHUB_TOKEN_VALUE="x"`): a quoted value is whole, so one
+    // shaped like code is still a value.
+    kind: "credential",
+    re: new RegExp(
+      `(?<![A-Za-z0-9_])[A-Z0-9_]{0,40}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE)_[A-Z0-9_]{1,40}\\\\?["']?\\s*[=:]\\s*\\\\?["']` +
+        `(?![0-9]+(?![^\\s"'&,;<>\`\\\\]))(?<v>[^\\s"'⟦$*{<%&,;\`\\\\/~.][^\\s"'&,;<>\`\\\\]{6,}${VALUE_END})`,
+      "g",
+    ),
+    group: "v",
+    check: innerQuotedValue,
   },
   { kind: "credential", re: proseStated(PROSE_CUES), group: "v", check: statedValue },
   { kind: "credential", re: proseRestated(PROSE_CUES), group: "v", check: statedValue },

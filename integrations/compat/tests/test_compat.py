@@ -465,3 +465,107 @@ def test_seams_cli_reports_ok_with_the_version(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["seams.py", str(path)])
     assert seams.main() == 0
     assert capsys.readouterr().out.startswith("ok\t")
+
+
+# --- Hermes platform classification ----------------------------------------------------------------
+
+sys.path.insert(0, str(compat.REPO_ROOT / "integrations/hermes/compat"))
+
+import importlib.util  # noqa: E402
+import types  # noqa: E402
+
+import platforms  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "hermes_plugin_intent", compat.REPO_ROOT / "integrations/hermes/plugin/intent.py"
+)
+intent = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(intent)
+
+#: The values `platforms.hermes_platforms` read from Hermes v0.23.0 to v0.23.3 (enum, bundled platform plugins,
+#: Hermes's own surface sets and the values it sets where it creates a session).
+HERMES_0_23_PLATFORMS = {
+    "",
+    "a2a",
+    "acp",
+    "api_server",
+    "batch",
+    "bot_room",
+    "bluebubbles",
+    "buzz",
+    "cli",
+    "codex",
+    "curator",
+    "desktop",
+    "dingtalk",
+    "discord",
+    "email",
+    "feishu",
+    "gateway",
+    "google_chat",
+    "irc",
+    "kanban",
+    "line",
+    "local",
+    "matrix",
+    "mattermost",
+    "msgraph_webhook",
+    "ntfy",
+    "photon",
+    "qqbot",
+    "raft",
+    "relay",
+    "signal",
+    "simplex",
+    "slack",
+    "sms",
+    "teams",
+    "telegram",
+    "tool",
+    "tui",
+    "webhook",
+    "wecom",
+    "wecom_callback",
+    "weixin",
+    "whatsapp",
+    "whatsapp_cloud",
+    "yuanbao",
+}
+
+
+def test_every_hermes_0_23_platform_is_classified():
+    assert platforms.unclassified(HERMES_0_23_PLATFORMS, platforms.classified(intent)) == []
+
+
+def test_attended_and_not_attended_do_not_overlap():
+    assert not intent.ATTENDED_PLATFORMS & intent.NOT_ATTENDED_PLATFORMS
+    assert not intent.LOCAL_PLATFORMS & (intent.ATTENDED_PLATFORMS | intent.NOT_ATTENDED_PLATFORMS)
+
+
+def _run_platforms_check(monkeypatch, capsys, values):
+    monkeypatch.setattr(platforms, "hermes_platforms", lambda: set(values))
+    monkeypatch.setitem(sys.modules, "sentrook", types.SimpleNamespace(intent=intent))
+    monkeypatch.setattr(sys, "path", list(sys.path))  # main() puts the plugin directory first
+    rc = platforms.main(["platforms.py", "/nonexistent"])
+    return rc, capsys.readouterr().out
+
+
+def test_platforms_check_fails_on_a_platform_in_neither_list(monkeypatch, capsys):
+    """Must fire: a platform value a new Hermes adds is reported until it is classified."""
+    rc, out = _run_platforms_check(
+        monkeypatch, capsys, HERMES_0_23_PLATFORMS | {"new_chat", "zulip"}
+    )
+    assert rc == 1
+    assert out.startswith("unclassified new_chat, zulip:")
+
+
+def test_platforms_check_passes_when_every_value_is_classified(monkeypatch, capsys):
+    rc, out = _run_platforms_check(monkeypatch, capsys, HERMES_0_23_PLATFORMS)
+    assert rc == 0
+    assert out.strip() == f"all {len(HERMES_0_23_PLATFORMS)} platform values classified"
+
+
+def test_platforms_check_cannot_pass_on_no_values(monkeypatch, capsys):
+    rc, out = _run_platforms_check(monkeypatch, capsys, set())
+    assert rc == 2
+    assert "none found" in out

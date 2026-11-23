@@ -1160,6 +1160,102 @@
         "title": "🪶 Sentrook security check · risk 48/100",
         "description": "Runs x.\nBecause wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww….\nDetails: /sentrook-why 3f9c2a1b"
       }
+    },
+    {
+      "name": "review, a credential grant: approving always ties the key to its host",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 60.0,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Runs code that sends data to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "api.example.invalid"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.hermes/.env"
+          }
+        },
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E2",
+            "text": "it sends {E2}, which this session judged sensitive"
+          },
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          }
+        ]
+      },
+      "tool": "execute_code",
+      "relaxed": false,
+      "hint": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_API_KEY@api.example.invalid"
+      },
+      "remember": true,
+      "why_id": "5c1d2e3f-0a1b-4c2d-8e3f-4a5b6c7d8e9f",
+      "hermes": "🪶 Sentrook security check · risk 60/100\nRuns code that sends data to api.example.invalid.\nBecause it sends ~/.hermes/.env, which this session judged sensitive.\n\"Always\" also lets the agent send EXAMPLE_API_KEY to api.example.invalid for 30 days.\nDetails: /sentrook why 5c1d2e3f",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 60/100",
+        "description": "Runs code that sends data to api.example.invalid.\nBecause it sends ~/.hermes/.env, which this session judged sensitive, and api.example.invalid is new to Sentrook as a place to send data.\n\"Always allow\" also lets the agent send EXAMPLE_API_KEY to api.example.invalid for 30 days.\nDetails: /sentrook-why 5c1d2e3f"
+      }
+    },
+    {
+      "name": "review, a credential grant: the grant command shown only",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 60.0,
+        "enforced": null,
+        "tool_description": {
+          "category": "x",
+          "template": "Runs code that sends data to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "host",
+            "display": "api.example.invalid"
+          },
+          "E2": {
+            "kind": "path",
+            "display": "~/.hermes/.env"
+          }
+        },
+        "reasons": [
+          {
+            "code": "floor.sensitive_data_sent",
+            "subject": "E2",
+            "text": "it sends {E2}, which this session judged sensitive"
+          },
+          {
+            "code": "reputation.unknown_host_as_data_destination",
+            "subject": "E1",
+            "text": "{E1} is new to Sentrook as a place to send data"
+          }
+        ]
+      },
+      "tool": "execute_code",
+      "relaxed": false,
+      "hint": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_API_KEY@api.example.invalid"
+      },
+      "remember": false,
+      "why_id": "5c1d2e3f-0a1b-4c2d-8e3f-4a5b6c7d8e9f",
+      "hermes": "🪶 Sentrook security check · risk 60/100\nRuns code that sends data to api.ex…val…\nBecause it sends ~/.hermes/.env, which this session judged sensitive.\nTo allow this for 30 days: /sentrook grant credential EXAMPLE_API_KEY@api.example.invalid --persistent --expires 30d\nDetails: /sentrook why 5c1d2e3f",
+      "openclaw": {
+        "title": "🪶 Sentrook security check · risk 60/100",
+        "description": "Runs code that sends data to api.example.invalid.\nBecause it sends ~/.hermes/.env, which this session judged sensitive, and api.example.invalid is new to Sentrook as a place to send data.\nTo allow this for 30 days: /sentrook-grant credential EXAMPLE_API_KEY@api.example.invalid --persistent --expires 30d\nDetails: /sentrook-why 5c1d2e3f"
+      }
     }
   ],
   "errors": [

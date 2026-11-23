@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v7): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v10): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
@@ -101,7 +101,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v7"
+    assert REDACTION_VERSION == "redact-v10"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -138,6 +138,14 @@ def test_two_shapes_on_one_value_count_once():
         "token = " + "getSecret" * 100_000 + "x",
         "token = " + "a_" * 400_000 + ".",
         "token: " + "x()" * 300_000,
+        "token = " + "a(b." * 200_000,
+        "token = self." + "a." * 300_000 + "x",
+        "token = " + "b64decode." * 100_000 + "-",
+        "token = x(" + "a." * 300_000 + "x",
+        "token = " + "a[1]" * 200_000 + "x",
+        "token = " + "aaa1" * 200_000 + "(",
+        "token: config." + "a" * 1_000_000,
+        "token = " + "a(b" * 300_000,
     ],
     ids=lambda text: f"{text[:12]!r}x{len(text)}",
 )
@@ -149,6 +157,8 @@ def test_linear_time_on_adversarial_input(text):
 
 # Secret-looking values for the forms below, built at run time.
 PW = "Xk29fQ" + "v7Lm2Pq8"
+#: A long digit run, as in a random value (not a name part).
+DIGITS = "1234567890" * 2 + "123456"
 TOK = "pT4" + "z" * 30 + "9qR1sK8"
 HEX32 = "9f" + "0a1b2c3d" * 3 + "4e5f6a"
 AWS = "wJal" + "R" * 32 + "a/b+"
@@ -235,6 +245,51 @@ MUST_REPLACE = [
     # A quoted value is whole, so a code-shaped one is still a value.
     ('DB_PASSWORD="Summer2024["', "Summer2024"),
     ('"password": "Summer2024("', "Summer2024"),
+    # A dotted value is code only when its parts read as names and it starts at a known receiver or ends in a
+    # credential field: a JWT, a dotted key with random parts, an over-long part and a dotted passphrase stay values.
+    ("token = eyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12, "c" * 12),
+    (f"api_key = sk.{PW}.{PW}", PW),
+    (f"token = config.{PW}", PW),
+    (f"token = {PW.lower()}.token", PW.lower()),
+    ("token = self." + "abcdefgh" * 5, "abcdefgh" * 5),
+    ("password = correct.horse.battery.staple", "horse.battery"),
+    # A quoted value is whole, so a dotted read in quotes is still a value.
+    ('PASSWORD="config.token"', "config.token"),
+    ("token = 'process.env.TOKEN'", "process.env.TOKEN"),
+    # Arguments that are not simple, or a call on a random value, are still values.
+    (f"token = {PW}[1]", PW),
+    (f"token = {PW}(prompt='x')", PW),
+    (f"token = f({PW}[", PW),
+    ("password = Summer[2024]", "Summer"),
+    # A bare word with a small subscript or a keyword is a value; so is a dotted part with a long digit run.
+    ("password = qwerty[99]", "qwerty"),
+    ("password = monkey(prompt='x')", "monkey"),
+    ("token = abc123defg45[", "abc123defg45"),
+    (f"token = config.x{DIGITS}", DIGITS),
+    (f"token = self.a{DIGITS}", DIGITS),
+    # Under an upper-case name with a credential word inside it, a value is still a value; code still is not.
+    ("MY_SECRET_TOKEN = correct.horse.battery.staple", "horse.battery"),
+    (f"MY_SECRET_TOKEN = {PW}[", PW),
+    ('MY_SECRET_TOKEN="config.token"', "config.token"),
+    # A quoted value after such a name is whole, whatever it looks like.
+    ('GITHUB_TOKEN_VALUE="config.token"', "config.token"),
+    ('export DB_PASSWORD_PROD="correct.horse.battery.secret"', "horse.battery"),
+    ('SECRET_KEY_BASE: "hunter.password"', "hunter.password"),
+    ("TOKEN_X='config.token'", "config.token"),
+    # A call with a bare-name argument is code only when the argument is a lower-case name.
+    ("password = Summer(2024)", "Summer"),
+    (f"token = f({PW})", PW),
+    ("password = Hello(World)", "Hello"),
+    (f"token = {PW}(name)", PW),
+    ('token = "os.getenv(name)"', "os.getenv(name)"),
+    # A plain word called on a bare name is a value unless it is a known reader.
+    ("password = hunter(abc)", "hunter(abc"),
+    ("password: iloveyou(forever)", "iloveyou(forever"),
+    ("db_password = mysecret(pw_2024)", "mysecret(pw_2024"),
+    ("password = correct(horse_battery_staple)", "horse_battery"),
+    ("MY_SECRET_TOKEN = abcdef(ghijklmnop)", "ghijklmnop"),
+    ("password = qwerty(asdf, zxcv)", "qwerty(asdf"),
+    ("password = hunter(abc def)", "hunter(abc"),
 ]
 
 MUST_STAY = [
@@ -320,6 +375,33 @@ MUST_STAY = [
     "accessToken = getSecretValue('prod/db')",
     "token: token_data['access_token']",
     "the token: token_data['access_token']",
+    # A plain attribute read from a known receiver, or of a credential field, and a call or subscript with simple
+    # arguments: a quoted string, a small integer, a keyword with a quoted string, or one nested read.
+    "token = config.token",
+    "password = args.password",
+    "token = process.env.TOKEN",
+    "token = self._token",
+    "api_key = settings.API_KEY",
+    "token = sys.argv[1]",
+    "password = getpass.getpass(prompt='Password: ')",
+    "token = vault.read(path='kv/app')",
+    "token = base64.b64decode(os.environ['S'])",
+    "const token = process.env.TOKEN;",
+    "access_token = resp.access_token",
+    "this.apiKey = this.config.apiKey;",
+    "secret = base64.b64decode(config.secret)",
+    "the token: config.token",
+    # The same under an upper-case name with a credential word inside it.
+    "MY_SECRET_TOKEN = config.token",
+    "GITHUB_TOKEN_VALUE = process.env.GITHUB_TOKEN",
+    "MY_SECRET_TOKEN = settings.SECRETS['key']",
+    "DB_PASSWORD_VALUE = getpass.getpass(prompt='x')",
+    # A call whose one argument is a bare name, cut before its closing parenthesis or a comma.
+    "token = os.getenv(name)",
+    "token = load_token(path)",
+    "password = input(prompt)",
+    "token = getattr(settings, 'TOKEN')",
+    "api_key = os.environ.get(key_name)",
 ]
 
 
@@ -426,8 +508,19 @@ def test_rules_are_the_plugins_rules():
     assert [rx.pattern for rx, _ in redact._CONTEXT] == theirs
     shapes = {kind: rx.pattern for kind, rx, _, _ in plugin._SHAPES}
     assert redact._PRIVATE_KEY.pattern == shapes["private_key"]
-    for name in ("_ORDINARY_WORD", "_NAMED_THING", "_ENV_NAME", "_CREDENTIAL_FIELD", "_CODE_READ"):
+    for name in (
+        "_ORDINARY_WORD",
+        "_NAMED_THING",
+        "_ENV_NAME",
+        "_CREDENTIAL_FIELD",
+        "_CODE_READ",
+        "_DOTTED_READ",
+        "_CODE_ARG_READ",
+        "_CODE_NAME_ARG_READ",
+    ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
+    assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
+    assert redact._CODE_READERS == plugin._CODE_READERS
 
 
 def test_parity_with_the_hermes_plugin():

@@ -17,7 +17,7 @@ import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -512,16 +512,22 @@ const plugin = {
       const runKind = selfEdit.kindAtCall(run, ctx);
       const runStore = runKind ? selfEdit.saveStoreOf(runKind, event.toolName, event?.params, run) : null;
       // One of its saves: never asked about, whatever the settings say (backgroundSave.ts).
-      const bgSave = runKind && runStore ? { kind: runKind, store: runStore } : null;
+      let bgSave = runKind && runStore ? { kind: runKind, store: runStore } : null;
       const hostKind = cfg.skillReview === "allow" ? runKind : null;
       const saveStore = hostKind ? runStore : null;
+      // Any exec of the run is declared too, with the run's store: the scanner reads it as a self-edit only when the
+      // command writes into that store, and answers with `self_edit` only then (selfEdit.execStoreOf).
+      const execStore = hostKind && !saveStore ? selfEdit.execStoreOf(hostKind, toolKind(event.toolName)) : null;
+      const declaredStore = saveStore ?? execStore;
       let selfEditBlock: Json | null = null;
-      if (hostKind && saveStore) {
+      if (hostKind && declaredStore) {
+        const params = redactor.value(event?.params ?? {});
         try {
-          selfEditBlock = conversation.block(hostKind, saveStore, store.loadConversation(runId), redactor.value(event?.params ?? {}));
+          const saveArgs = execStore ? selfEdit.execSaveArgs(params) : params;
+          selfEditBlock = conversation.block(hostKind, declaredStore, store.loadConversation(runId), saveArgs);
         } catch (err) {
           api.logger.warn(`${LOG} self-edit conversation failed: ${String(err)}`);
-          selfEditBlock = { kind: hostKind, store: saveStore, conversation: [] };
+          selfEditBlock = { kind: hostKind, store: declaredStore, conversation: [] };
         }
       }
       const built = buildPlanir({
@@ -544,7 +550,7 @@ const plugin = {
       const triggerKind: string = built.planir.trigger.kind;
       const timing = resolveApprovalTiming(cfg.approval, intentKindOf(triggerKind), undefined);
       // Nobody can answer a prompt in a background save's run, on any OpenClaw: the host cancels it or ends the run.
-      const unattended = timing.unattended || bgSave !== null;
+      let unattended = timing.unattended || bgSave !== null;
 
       let result: ScanOk | ScanFailure;
       const { scan, issuer } = cfg.endpoints;
@@ -607,6 +613,12 @@ const plugin = {
       let remember: grants.Entry | null = null;
       if (result.ok) {
         const resp = result.response;
+        // An exec the scanner read as a save into the run's store is one of the run's saves: never asked about, and
+        // held or blocked as a file save is (it carries no content a draft could keep).
+        if (!bgSave && runKind && execStore && selfEdit.scannedAsSelfEdit(resp)) {
+          bgSave = { kind: runKind, store: execStore };
+          unattended = true;
+        }
         // A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
         // retry is held for the owner. The attended-owner ceiling is dropped there (`unattendedView`).
         verdict = decide(unattended ? unattendedView(resp) : resp, cfg);
@@ -738,6 +750,10 @@ const plugin = {
         }
       }
 
+      // A declared exec is a self-edit only when the scanner read it as one (it writes into the run's store).
+      const scannedSelfEdit =
+        selfEditBlock !== null && (execStore === null || (result.ok && selfEdit.scannedAsSelfEdit(result.response)));
+
       sess.history.push(entry);
       store.saveSession(sid, sess, cfg.historyLimit * 2);
 
@@ -755,8 +771,8 @@ const plugin = {
         ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
         ...(notice ? { notice } : {}),
-        ...(selfEditBlock ? { skill_review: true, self_edit: { kind: hostKind, store: saveStore } } : {}),
-        ...(hostKind && !selfEditBlock ? { host_process: hostKind } : {}),
+        ...(scannedSelfEdit ? { skill_review: true, self_edit: { kind: hostKind, store: declaredStore } } : {}),
+        ...(hostKind && !scannedSelfEdit ? { host_process: hostKind } : {}),
         ...(bgSave ? { background_save: bgSave } : {}),
         ...(patchDraft ? { patch_draft: patchDraft } : {}),
         latency_ms: result.ok ? result.latencyMs : null,
@@ -768,7 +784,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${selfEditBlock ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );

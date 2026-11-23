@@ -20,29 +20,77 @@ import os
 import sys
 from typing import Any
 
-# Chat surfaces have a human in-band even when stdin is not a TTY. Webhook and home-automation
-# surfaces often have no approval UI, so they stay unattended.
+# Every platform value Hermes uses is in ATTENDED_PLATFORMS, NOT_ATTENDED_PLATFORMS or LOCAL_PLATFORMS. The Hermes
+# compatibility check (integrations/hermes/compat/platforms.py) fails on a value in none of them, so a platform a new
+# Hermes adds is classified on purpose.
+#
+# Chat surfaces have a human in-band even when stdin is not a TTY: Hermes sends its approval prompt into the chat and
+# takes the reply there. The desktop app's hosted bot rooms (`bot_room`) count too: the room's controls show approvals.
 ATTENDED_PLATFORMS = frozenset(
     {
-        "discord",
-        "telegram",
-        "slack",
-        "whatsapp",
-        "signal",
-        "matrix",
-        "sms",
-        "email",
-        "web",
-        "feishu",
-        "lark",
-        "yuanbao",
+        "bluebubbles",
+        "bot_room",
+        "buzz",
         "dingtalk",
-        "wecom",
+        "discord",
+        "email",
+        "feishu",
+        "google_chat",
+        "irc",
+        "lark",
+        "line",
+        "matrix",
         "mattermost",
+        "ntfy",
+        "photon",
+        "qqbot",
+        "signal",
+        "simplex",
+        "slack",
+        "sms",
+        "teams",
+        "telegram",
+        "web",
+        "wecom",
+        "weixin",
+        "whatsapp",
+        "whatsapp_cloud",
+        "yuanbao",
+    }
+)
+# Surfaces with no human answering in-band: programmatic front ends Hermes itself never asks (the API server and
+# webhooks), callback and relay ingress, other agents (A2A), Raft (its adapter sends nothing; the agent posts through
+# the Raft CLI, so an approval prompt reaches nobody), home automation, and runs Hermes starts itself (cron, batch runs, sub-agents, the curator, kanban
+# workers, the gateway's resume and shutdown runs). None is attended unless `attended_platforms`
+# names it; ordinary calls there fall back to the terminal test, and background saves never take a snooze.
+NOT_ATTENDED_PLATFORMS = frozenset(
+    {
+        "",
+        "a2a",
+        "api_server",
+        "batch",
+        "codex",
+        "cron",
+        "curator",
+        "gateway",
+        "homeassistant",
+        "kanban",
+        "msgraph_webhook",
+        "raft",
+        "relay",
+        "subagent",
+        "tool",
+        "webhook",
+        "wecom_callback",
     }
 )
 UNATTENDED_PLATFORMS = frozenset({"cron", "subagent"})
-LOCAL_PLATFORMS = frozenset({"cli", "tui", "local", "desktop"})
+LOCAL_PLATFORMS = frozenset({"cli", "tui", "local", "desktop", "acp"})
+# Local front ends with their own approval card: the TUI talks to Hermes over a pipe, the desktop app talks to a
+# gateway that may run as a service with no terminal (on this machine or a remote one), and an editor (ACP) talks to
+# Hermes over stdio and shows its permission prompt. None has a terminal on stdin, so they are attended by platform, not
+# by the terminal test the plain CLI keeps.
+APP_PLATFORMS = frozenset({"tui", "desktop", "acp"})
 NON_CHAT_PLATFORMS = frozenset({"cron", "subagent", "api_server", "webhook", ""})
 TRIGGER_BY_PLATFORM = {
     "cron": "scheduled",
@@ -129,7 +177,11 @@ def is_unattended(
         return True
     if subagent or platform in UNATTENDED_PLATFORMS:
         return True
-    if platform in ATTENDED_PLATFORMS or platform in attended_platforms:
+    if (
+        platform in ATTENDED_PLATFORMS
+        or platform in APP_PLATFORMS
+        or platform in attended_platforms
+    ):
         return False
     try:
         return not sys.stdin.isatty()
@@ -144,8 +196,8 @@ def owner_attends(
     subagent: bool = False,
     attended_platforms: frozenset[str] | set[str] = frozenset(),
 ) -> bool:
-    """The session is one the owner attends, from a positive list only: a chat platform, the local terminal (with a
-    terminal), or a platform in `attended_platforms`, and not a run `is_unattended` names. Any other platform (the
+    """The session is one the owner attends, from a positive list only: a chat platform, the TUI or the desktop app,
+    the local terminal (with a terminal), or a platform in `attended_platforms`, and not a run `is_unattended` names. Any other platform (the
     curator, webhooks, the API server, an empty or unknown one) is not, whatever stdin is: the curator runs inside
     the terminal's process, and a gateway may run in a foreground terminal. Used for Hermes's background saves, whose
     snooze must never reach an unattended run; ordinary calls keep `is_unattended`."""

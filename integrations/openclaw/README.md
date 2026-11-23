@@ -126,7 +126,8 @@ work stops asking for approval:
 - **Channel bindings**: the channels this deployment normally delivers to, such as the chat your daily report goes
   to. A send to a bound channel is not treated as an unfamiliar destination.
 - **Grants**: hosts, email domains or channels the agent may send to (`destination`), files or folders it may
-  read, write or delete (`file`), and the MCP servers or plugins it may use (`provider`).
+  read, write or delete (`file`), the MCP servers or plugins it may use (`provider`), and which API key belongs to
+  which service (`credential`).
 
 Neither ever lowers a scanner floor (reading your SSH keys and sending them somewhere is blocked whatever you grant),
 and a file grant never covers a call that also sends data off the machine. You don't need a grant to send to a
@@ -197,6 +198,18 @@ session with `--session <ref>`, taking the ref from the `session` column of `/se
 | Let it clear out a scratch folder | `/sentrook-grant file /home/you/scratch/ --allows delete --persistent` |
 | Use your team's MCP servers | `/sentrook-grant provider npm:@yourteam/ --persistent` |
 | Run install scripts from a GitHub repository you trust | `/sentrook-grant repo github.com/yourteam/tools --persistent` |
+| Use your own API key with the service it is for | `/sentrook-grant credential MY_SERVICE_TOKEN@api.myservice.example` |
+
+An agent that reads an API key from its env file and sends it to the service it belongs to is doing the normal
+thing. Sentrook already knows the keys of some common providers and the hosts they go to; for any other
+service, a `credential` grant says the same: `NAME@host`, the key's environment name and the service's API host.
+The name may end in `*` after three or more characters (`MY_SERVICE_*`), and the host may be `*.example.com` (that
+domain and every name under it, but not a shared suffix such as `*.co.uk`). With it, sending that key only to that host is not treated as sensitive data
+leaving the machine, and the host is not treated as unfamiliar on that call. The key sent anywhere else, written to a
+file or printed, sent alongside another secret or file, or sent to a host that content the agent read named, is
+still reviewed. A credential grant lasts until you revoke it unless you give `--scope session` or `--expires`. When a
+review is caused by such a key going to its own service, the prompt suggests this grant (`/sentrook-grant credential
+MY_SERVICE_TOKEN@api.myservice.example --persistent --expires 30d`).
 
 A file grant can use the full path or `~` for your home folder (`~/notes/*`). A `*` matches anything, including `/`.
 A pattern ending in `/` covers that folder and everything in it. `--allows` must name everything the call does to
@@ -410,10 +423,15 @@ look like a write nobody asked for. By default (`skillReview: allow`) the plugin
 the host's own (never as your message), with your last message in the conversation they read as
 the request, tells Sentrook which calls are their saves (skill files written inside the Workshop folder, or the
 memory flush's write to the day's note; a write anywhere else is scanned like any other call), and sends the
-part of the conversation the run read, so Sentrook can judge the save against it. A save that follows from what you
+part of the conversation the run read, so Sentrook can judge the save against it. A run can also save from the
+shell (a heredoc, `tee` or `cp` into a skill folder), which the plugin cannot tell from any other command, so it sends
+each of these runs' commands with the conversation too, and Sentrook treats a command as a save only when writing
+skill files into the Workshop folder (the day's note for the memory flush) is all it does; a command that also does
+anything else is scanned like any other call. A save that follows from what you
 said and did goes through. A save is reviewed or blocked when it carries instructions that came from content the
 agent read or from other people, weakens one of your rules, claims approvals you never gave, or stores secrets you
-did not ask it to keep. The other calls these runs make (commands, reads) are scanned like any other call. A skill or
+did not ask it to keep. The other calls these runs make (reads, commands that save nothing) are scanned like any
+other call. A skill or
 memory change you ask for in a turn is scanned like any other call, too.
 
 Each message in that conversation is marked as yours, someone else's or unknown from OpenClaw's own sender flag, never
@@ -434,7 +452,7 @@ any OpenClaw version and whatever `skillReview` or `approval.scheduledIntentKind
 | review below the block line, on a complete scan, and Sentrook marks the save as one it can let through (only with `skillReview: allow`, when Sentrook judged it as a background save, and only for a save that carries what it saves: a Skill Workshop create, patch, write_file or draft, or a file write, edit or patch) | It is saved. | A notice that a save Sentrook would normally ask about was let through: a skill or a memory note, and what it saves as a review would show it. |
 | any other review below the block line, of a Skill Workshop draft the agent makes itself, or of a new skill on OpenClaw 2026.11.5 or newer | It goes to the Skill Workshop **drafts** (a new skill is sent there instead), which the agent does not use until you apply it. | Once OpenClaw reports the draft kept, a notice that a skill was saved as a draft for you to review: apply or discard it from the Skill Workshop drafts in the Control UI, or send `/learn drafts` in a chat with the agent. If OpenClaw does not keep it (too many drafts waiting, an invalid skill, the run ended), a notice that the save was not made; if OpenClaw saved the new skill itself instead of the draft, a notice that it was saved live. |
 | any other review below the block line of a change to an existing skill's `SKILL.md` (a Skill Workshop patch), on OpenClaw 2026.11.5 or newer, when Sentrook judged it as a background save (`skillReview: allow`) | The plugin reads the live skill, applies the change the way OpenClaw's own patch does (the old text must appear exactly once), and sends the whole changed skill to the **drafts** instead; the live skill is unchanged. The draft's note says it was held by Sentrook, names the scan (for `/sentrook-why`), and says it is the skill as it stood at that time with one change. | The same notices as for a new skill's draft, and the kept-draft notice adds that applying it replaces the skill with the version from when the change was held, so a later change to that skill would be undone (it can be brought back from the skill's history). Each of these drafts is announced, up to 5 per run in 6 hours; a second draft of the same skill says how many drafts of it the run made, since applying them in turn keeps only the last one's change. |
-| any other review (a change that cannot be applied to the live skill as OpenClaw would apply it, a change to a support file, a restore, archive or file removal, a memory note, a skill file written directly, an older OpenClaw or one whose version the plugin cannot read, or a retry the scanner would block) | It is **held**: it is not saved, and the run is told it was not saved and not to retry it. | A notice that the save was held and not made; for an archive or restore, where to do it yourself (Plugins → Skill workshop in the Control UI). |
+| any other review (a change that cannot be applied to the live skill as OpenClaw would apply it, a change to a support file, a restore, archive or file removal, a memory note, a skill file written directly or by a command, an older OpenClaw or one whose version the plugin cannot read, or a retry the scanner would block) | It is **held**: it is not saved, and the run is told it was not saved and not to retry it. | A notice that the save was held and not made; for an archive or restore, where to do it yourself (Plugins → Skill workshop in the Control UI). |
 | block | It is not saved. | A notice that a background save was blocked, with a broad category. |
 | the scan fails | As for any unattended run ([When the scan service fails](#when-the-scan-service-fails)): with the default `onScanError` the save is blocked and not kept, with `allow` it is saved unscanned. | The scan-failure notice when it is blocked. |
 
@@ -572,8 +590,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
 similar) are replaced with placeholders such as `⟦secret:github:…⟧`. Recipients, hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
-kept, such as `os.environ["API_KEY"]`: it names the place, not the secret. Your files, messages and tool output can
-still contain personal information, and that is sent as it is.
+kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. Your
+files, messages and tool output can still contain personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
 readable only by your user and rotated at 50 MB. The plugin never uploads it. Turn it off with

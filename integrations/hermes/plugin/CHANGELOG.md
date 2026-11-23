@@ -4,6 +4,39 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
+## 2.0.0-beta.18
+
+- The Hermes TUI and the Hermes desktop app count as attended, whether or not Hermes has a terminal: a review there
+  is asked with Hermes's own approval card, and a snooze reaches Hermes's background saves after a session there.
+  Before, both were judged by the terminal test the plain command line uses, and neither has a terminal (the TUI
+  talks to Hermes over a pipe, and the desktop app talks to a gateway that may run as a service, on this machine or
+  another). So every review from them was held, with its notice sent to the `owner_channel` home channel, and no
+  card ever reached the app. The plain command line still needs a terminal, and the API server, cron, sub-agents,
+  webhooks and the curator are unchanged.
+- With Hermes's `plugins.isolation: host`, the plugin runs in Hermes's plugin host, where it cannot tell Hermes's
+  background skill and memory saves from your own calls: they are scanned like any other call, without the
+  conversation they follow, and are never held, staged or announced as background saves (a save Sentrook would ask
+  about becomes an ordinary approval prompt, or on the local terminal is refused by Hermes's review). The plugin now
+  says so: a warning when it starts and a `background saves: not recognised` line in `/sentrook status`, both naming
+  the fix (`plugins.isolation: in_process`, Hermes's default). The README also notes that Hermes offers no
+  `hermes sentrook` commands in that mode. Nothing changes in-process.
+- The chat platforms Hermes 0.23 ships count as attended: Microsoft Teams, Google Chat, IRC, LINE, SimpleX,
+  BlueBubbles (iMessage), Photon, Buzz, ntfy, QQ Bot, Weixin and the WhatsApp Cloud API join the platforms already
+  listed. Before, a chat on one of them was judged by the terminal test, which a gateway running as a service fails, so
+  a review there was held instead of asked, and a snooze never reached a background save after that chat. Raft stays
+  unattended (Hermes's Raft adapter sends nothing into the chat, so an approval prompt reaches nobody), as do A2A peers,
+  the API server, webhooks, relays, cron, batch runs, sub-agents, the curator and kanban workers. The desktop app's hosted bot
+  rooms count as attended (the room shows Hermes's approvals), and an editor connected over ACP (Zed, for example)
+  counts as attended like the TUI: Hermes shows its approval in the editor, and it never has a terminal. The compatibility check now fails on a Hermes that adds a
+  platform the plugin has not classified as attended or not.
+- `/sentrook grant credential NAME@host` ties one of your API keys to the service it is for, such as
+  `/sentrook grant credential MY_SERVICE_TOKEN@api.myservice.example`. Sending that key, read from the agent's env
+  file, only to that host is then not treated as sensitive data leaving the machine. The name may end in `*` after
+  three or more characters, and the host may be `*.example.com`. A credential grant is persistent unless you give
+  `--scope session`; a pattern Sentrook would not read is refused when you type it.
+- When a review is caused by such a key going to its own service, the prompt suggests the grant, and **Always** sets
+  it as it does other suggested grants.
+
 ## 2.0.0-beta.17
 
 - Report a scan that looks wrong. `/sentrook report [id|last]` (owner only; `hermes sentrook report` on the command
