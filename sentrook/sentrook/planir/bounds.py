@@ -15,10 +15,13 @@ owner's review, since nobody read all of it.
 
 from __future__ import annotations
 
+import gc
 import json
 import re
+import threading
 from collections import deque
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 from typing import Any
@@ -274,6 +277,33 @@ def _fit(leaves: list[_Leaf], budget: int) -> None:
             leaf.keep = _DROP
 
 
+#: Walks running now, and whether the cycle collector was on when the first of them started.
+_paused = {"walks": 0, "was_enabled": False}
+_paused_lock = threading.Lock()
+
+
+@contextmanager
+def _cycle_collector_paused() -> Iterator[None]:
+    """The cycle collector paused while arguments are walked, then put back as it was. The walk allocates as it
+    goes (a queue entry per list or dict, a record per value, a copy of arguments that share an object), which sets
+    the collector off, and each run goes over the call's own arguments: a large call can hold millions of lists or
+    dicts, so the collector, not the walk, took most of a large call's time. Reference counting still frees
+    everything; only the search for reference cycles waits. Walks overlapping in other threads keep it paused until
+    the last one ends."""
+    with _paused_lock:
+        if _paused["walks"] == 0:
+            _paused["was_enabled"] = gc.isenabled()
+            gc.disable()
+        _paused["walks"] += 1
+    try:
+        yield
+    finally:
+        with _paused_lock:
+            _paused["walks"] -= 1
+            if _paused["walks"] == 0 and _paused["was_enabled"]:
+                gc.enable()
+
+
 def bound_arguments(
     arguments: dict[str, Any],
     tool_kind: ToolKind,
@@ -286,6 +316,17 @@ def bound_arguments(
     command, cwd, path, URL or content) are fitted first against the whole bound, then those under `own` (the
     other aliases of those keys), then `read` (other keys canonicalisation reads), then the rest in what is
     left: padding a call never pushes its own command out."""
+    with _cycle_collector_paused():
+        return _bound_arguments(arguments, tool_kind, own, read, taken)
+
+
+def _bound_arguments(
+    arguments: dict[str, Any],
+    tool_kind: ToolKind,
+    own: frozenset[str],
+    read: frozenset[str],
+    taken: frozenset[str],
+) -> tuple[dict[str, Any], str | None]:
     w = _walk(arguments, taken, own, read)
     leaves = w.order
     total = sum(leaf.cost for leaf in leaves) + w.branches if w.complete else MAX_CALL_CHARS + 1

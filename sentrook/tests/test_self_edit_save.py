@@ -1276,8 +1276,27 @@ LOADER_SKILL = (
         memory("Load it with `token = creds.get('token')`."),
         memory('The deploy script asks with `password = getpass("Password: ")`.'),
         memory("The script reads it with password = input('Password: ') and never stores it."),
+        memory("The deploy script reads it with `password = args.password`."),
+        memory("It asks with `password = getpass.getpass(prompt='Password: ')`."),
+        memory("The CLI takes it as `password = sys.argv[1]`."),
+        memory("It decodes it with `password = base64.b64decode(os.environ['S'])`."),
+        memory("The script reads it (password = args.password) at start."),
+        memory("It reads password = args.password!"),
+        memory("It reads password = sys.argv[1]) here"),
     ],
-    ids=["loader skill", "get", "getpass", "input"],
+    ids=[
+        "loader skill",
+        "get",
+        "getpass",
+        "input",
+        "attribute",
+        "keyword",
+        "argv",
+        "nested",
+        "in parentheses",
+        "before !",
+        "argv before )",
+    ],
 )
 def test_must_not_add_a_secret_for_code_that_reads_one(raw):
     assert "secret" not in field(raw)["adds"]
@@ -1306,6 +1325,29 @@ def test_must_not_add_a_secret_for_code_that_reads_one(raw):
 )
 def test_must_add_a_secret_saved_beside_code_that_reads_one(content):
     assert "secret" in field(skill(content))["adds"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "The wifi password = correct.horse.battery.staple",
+        "The admin password = Summer[2024]",
+        "The vault password = " + "Xk29fQ" + "v7Lm2Pq8" + "(prompt=",
+        "The router password = qwerty[99]",
+        "The router password = monkey(prompt=",
+        "The vault password = (correct.horse.battery)",
+    ],
+    ids=[
+        "dotted passphrase",
+        "bracketed year",
+        "random value before a call",
+        "word with a subscript",
+        "word with a keyword",
+        "passphrase in parentheses",
+    ],
+)
+def test_must_add_a_secret_that_only_looks_like_code(content):
+    assert "secret" in field(memory(content))["adds"]
 
 
 # ---- removals and rewordings, per edit --------------------------------------------------------------------------
