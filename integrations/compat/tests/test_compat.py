@@ -482,16 +482,20 @@ _spec = importlib.util.spec_from_file_location(
 intent = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(intent)
 
-#: The values `platforms.hermes_platforms` read from Hermes v0.23.0 to v0.23.3 (enum, bundled platform plugins and
-#: Hermes's own non-messaging and unattended-approval surface sets).
+#: The values `platforms.hermes_platforms` read from Hermes v0.23.0 to v0.23.3 (enum, bundled platform plugins,
+#: Hermes's own surface sets and the values it sets where it creates a session).
 HERMES_0_23_PLATFORMS = {
     "",
     "a2a",
+    "acp",
     "api_server",
+    "batch",
+    "bot_room",
     "bluebubbles",
     "buzz",
     "cli",
     "codex",
+    "curator",
     "desktop",
     "dingtalk",
     "discord",

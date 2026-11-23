@@ -59,14 +59,17 @@ ATTENDED_PLATFORMS = frozenset(
 )
 # Surfaces with no human answering in-band: programmatic front ends Hermes itself never asks (the API server and
 # webhooks), callback and relay ingress, other agents (A2A), Raft (its adapter sends nothing; the agent posts through
-# the Raft CLI, so an approval prompt reaches nobody), home automation, and runs Hermes starts itself (cron, sub-agents,
-# the curator, kanban workers, the gateway's resume and shutdown runs). None is attended unless `attended_platforms`
+# the Raft CLI, so an approval prompt reaches nobody), home automation, the desktop app's hosted bot rooms (a group of
+# members, not the owner's own session), and runs Hermes starts itself (cron, batch runs, sub-agents, the curator, kanban
+# workers, the gateway's resume and shutdown runs). None is attended unless `attended_platforms`
 # names it; ordinary calls there fall back to the terminal test, and background saves never take a snooze.
 NOT_ATTENDED_PLATFORMS = frozenset(
     {
         "",
         "a2a",
         "api_server",
+        "batch",
+        "bot_room",
         "codex",
         "cron",
         "curator",
@@ -83,11 +86,12 @@ NOT_ATTENDED_PLATFORMS = frozenset(
     }
 )
 UNATTENDED_PLATFORMS = frozenset({"cron", "subagent"})
-LOCAL_PLATFORMS = frozenset({"cli", "tui", "local", "desktop"})
-# Local front ends with their own approval card: the TUI talks to Hermes over a pipe, and the desktop app talks to a
-# gateway that may run as a service with no terminal (on this machine or a remote one). Neither has a terminal on
-# stdin, so they are attended by platform, not by the terminal test the plain CLI keeps.
-APP_PLATFORMS = frozenset({"tui", "desktop"})
+LOCAL_PLATFORMS = frozenset({"cli", "tui", "local", "desktop", "acp"})
+# Local front ends with their own approval card: the TUI talks to Hermes over a pipe, the desktop app talks to a
+# gateway that may run as a service with no terminal (on this machine or a remote one), and an editor (ACP) talks to
+# Hermes over stdio and shows its permission prompt. None has a terminal on stdin, so they are attended by platform, not
+# by the terminal test the plain CLI keeps.
+APP_PLATFORMS = frozenset({"tui", "desktop", "acp"})
 NON_CHAT_PLATFORMS = frozenset({"cron", "subagent", "api_server", "webhook", ""})
 TRIGGER_BY_PLATFORM = {
     "cron": "scheduled",

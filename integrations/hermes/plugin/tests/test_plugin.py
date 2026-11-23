@@ -306,7 +306,7 @@ class _Stdin(io.StringIO):
         return self._tty
 
 
-@pytest.mark.parametrize("platform", ["tui", "desktop"])
+@pytest.mark.parametrize("platform", ["tui", "desktop", "acp"])
 def test_the_tui_and_desktop_apps_ask_the_owner_without_a_terminal(harness, monkeypatch, platform):
     """Must fire (attended): the TUI talks to Hermes over a pipe, and the desktop app talks to a gateway that may run
     as a service with no terminal; both show Hermes's own approval card, so a review is asked, not held."""
@@ -356,6 +356,8 @@ NOT_ATTENDED = [
     "raft",
     "gateway",
     "homeassistant",
+    "batch",
+    "bot_room",
     "",
     "no_such_platform",
 ]

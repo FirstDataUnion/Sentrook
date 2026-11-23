@@ -25,8 +25,10 @@ since the version the catalog pins.
   listed. Before, a chat on one of them was judged by the terminal test, which a gateway running as a service fails, so
   a review there was held instead of asked, and a snooze never reached a background save after that chat. Raft stays
   unattended (Hermes's Raft adapter sends nothing into the chat, so an approval prompt reaches nobody), as do A2A peers,
-  the API server, webhooks, relays, cron, sub-agents, the curator and kanban workers. The compatibility check now fails
-  on a Hermes that adds a platform the plugin has not classified as attended or not.
+  the API server, webhooks, relays, cron, batch runs, sub-agents, the curator, kanban workers and the desktop app's
+  hosted bot rooms. An editor connected over ACP (Zed, for example) counts as attended like the TUI: Hermes shows its
+  approval in the editor, and it never has a terminal. The compatibility check now fails on a Hermes that adds a
+  platform the plugin has not classified as attended or not.
 
 ## 2.0.0-beta.17
 
