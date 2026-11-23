@@ -72,6 +72,17 @@ open(p, "w").write(new)
 PY
 expect_fail unverified-gate "memory gate" "not verified" "$work/unverified-gate"
 
+# A Hermes platform the plugin classifies neither as attended nor as not attended.
+copy_plugin "$work/unclassified-platform"
+python3 - "$work/unclassified-platform/intent.py" <<'PY2'
+import sys
+p = sys.argv[1]
+text = open(p).read()
+assert '        "teams",\n' in text
+open(p, "w").write(text.replace('        "teams",\n', "", 1))
+PY2
+expect_fail unclassified-platform platforms "unclassified teams" "$work/unclassified-platform"
+
 # verify must fail when the identity service refuses the token mint.
 expect_fail token-mint verify "token mint" "$root/integrations/hermes/plugin" COMPAT_CLIENT_SECRET=wrong-secret
 
