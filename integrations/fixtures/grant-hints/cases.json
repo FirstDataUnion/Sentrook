@@ -37,6 +37,14 @@
         "risk": 20
       },
       "command": "{grant} provider npm:@example/notes-mcp@1.2.0 --persistent --expires 30d"
+    },
+    {
+      "hint": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_API_KEY@api.example.invalid",
+        "risk": 6.17
+      },
+      "command": "{grant} credential EXAMPLE_API_KEY@api.example.invalid --persistent --expires 30d"
     }
   ],
   "selection": [

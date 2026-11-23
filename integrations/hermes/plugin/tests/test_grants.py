@@ -129,6 +129,27 @@ def test_a_grant_round_trips_through_the_file_and_into_scans(term):
     assert scan_grants(term, "post to #ops") == []
 
 
+def test_a_credential_grant_is_persistent_and_reaches_scans_that_use_its_key_or_host(term):
+    out = slash(term, "grant credential EXAMPLE_API_KEY@API.Example.Invalid")
+    [g] = stored(term)["grants"]
+    # the host is read as Sentrook reads it; a key's home rarely changes, so it lasts until revoked
+    assert out == f"Granted {g['id']}: credential EXAMPLE_API_KEY@api.example.invalid (persistent)."
+    assert (g["kind"], g["pattern"], g["scope"]) == (
+        "credential",
+        "EXAMPLE_API_KEY@api.example.invalid",
+        "persistent",
+    )
+    assert "session_ref" not in g
+    sent = scan_grants(term, "curl -H 'Authorization: Bearer x' https://api.example.invalid/v1/me")
+    assert [(x["kind"], x["pattern"]) for x in sent] == [
+        ("credential", "EXAMPLE_API_KEY@api.example.invalid")
+    ]
+    assert scan_grants(term, "curl https://api.othervendor.invalid/v1/me") == []
+    # still a session grant when the owner asks for one
+    slash(term, "grant credential EXAMPLE_TOKEN@api.example.invalid --scope session")
+    assert stored(term)["grants"][1]["scope"] == "session"
+
+
 def test_scans_send_the_expiry_and_bind_session_grants(term):
     slash(term, "grant file /srv/reports/* --persistent --allows write --expires 12h")
     slash(term, "grant destination #ops")
@@ -173,7 +194,35 @@ def test_options_scope_allows_and_expiry(term):
         ("grant destination #ops --persistant", "Unknown option --persistant."),
         (
             "grant destinaton #ops",
-            'Unknown grant kind "destinaton": use destination, file, provider or repo.',
+            'Unknown grant kind "destinaton": use destination, file, provider, repo or credential.',
+        ),
+        (
+            "grant credential EXAMPLE_API_KEY",
+            '"EXAMPLE_API_KEY" is not a credential pattern: use NAME@host, such as '
+            "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
+            "host may be *.example.com).",
+        ),
+        (
+            "grant credential EX*@api.example.invalid",
+            '"EX*@api.example.invalid" is not a credential pattern: use NAME@host, such as '
+            "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
+            "host may be *.example.com).",
+        ),
+        (
+            "grant credential EXAMPLE_API_KEY@*.invalid",
+            '"EXAMPLE_API_KEY@*.invalid" is not a credential pattern: use NAME@host, such as '
+            "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
+            "host may be *.example.com).",
+        ),
+        (
+            "grant credential EXAMPLE_API_KEY@https://api.example.invalid/",
+            '"EXAMPLE_API_KEY@https://api.example.invalid/" is not a credential pattern: use NAME@host, such as '
+            "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
+            "host may be *.example.com).",
+        ),
+        (
+            "grant credential EXAMPLE_API_KEY@api.example.invalid --allows read",
+            "--allows applies to file grants only.",
         ),
         (
             "grant file /x --allows read,wrte",

@@ -13,6 +13,7 @@ of a token and a live oracle, and `deterministic` fixes the clock and salt.
 
 from __future__ import annotations
 
+import copy
 import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,7 @@ from typing import Any
 
 from . import __version__
 from .converge import ConvergenceParams, ConvergeResult, converge, load_params
+from .converge.credential_hint import worth_copying as credential_hint_candidate
 from .enums import ProbeStatus, ProbeStep
 from .jev.client import Decider, JevConfig
 from .jev.questions import QuestionSet, load_question_set
@@ -45,7 +47,7 @@ from .probes.base import Envelope, Probe
 from .probes.context import ContextProbe
 from .probes.jev import JevCallProbe, JevExposureProbe
 from .probes.oracle import EntityOracleProbe, verdicts_for_view
-from .response.models import Response
+from .response.models import EntityDisplay, Response
 
 ALL_PROBES: tuple[ProbeStep, ...] = tuple(ProbeStep)
 PROBE_TIMEOUT_S = 30.0
@@ -259,6 +261,64 @@ class Scanner:
                 latency_ms=(time.perf_counter() - t0) * 1000,
             )
 
+    def _credential_hint(
+        self,
+        prepared: Prepared,
+        envelopes: list[Envelope],
+        result: ConvergeResult,
+        probes: dict[ProbeStep, Probe | None],
+        enabled: tuple[str, ...],
+        options: ScanOptions,
+        views: dict[str, str],
+    ) -> None:
+        """Add the credential grant hint to `result.response` when one is verified (`converge.credential_hint`).
+        `prepared` is a copy taken before convergence; nothing here changes the scan's own score or state."""
+        from .converge import credential_hint as ch
+        from .converge import exposure_unjudged
+
+        params = self.config.params
+        try:
+            if not ch.eligible(
+                prepared,
+                envelopes,
+                result.response,
+                result.flags,
+                params,
+                exposure_unjudged=exposure_unjudged(prepared, envelopes),
+            ):
+                return
+
+            def rerun(hyp: Prepared) -> dict[ProbeStep, Envelope]:
+                out: dict[ProbeStep, Envelope] = {}
+                for step in ch.RESCORED:
+                    probe = probes.get(step)
+                    if probe is not None and step.value in enabled:
+                        out[step] = self._run_probe(step, probe, hyp, options)
+                return out
+
+            def rescore(hyp: Prepared, envs: list[Envelope]) -> ConvergeResult:
+                return converge(
+                    hyp,
+                    envs,
+                    params=params,
+                    scanner_version=self.config.scanner_version,
+                    token_key=self.config.token_key,
+                    probes_enabled=list(enabled),
+                    views=views_label(views),
+                )
+
+            found = ch.hint(prepared, envelopes, result.response, params, rescore, rerun)
+        except Exception:  # noqa: BLE001 (a hint never fails a scan: without it the review stands as it is)
+            return
+        if found is not None:
+            ch.add(result.response, found, params, prepared)
+            if found.subject and found.subject not in result.response.entities:
+                ent = prepared.entities.by_id(found.subject)
+                if ent is not None:
+                    result.response.entities[found.subject] = EntityDisplay(
+                        kind=ent.kind.value, display=ent.display
+                    )
+
     def scan(self, raw: dict[str, Any], options: ScanOptions | None = None) -> ScanResult:
         options = options or ScanOptions()
         started = time.perf_counter()
@@ -369,6 +429,14 @@ class Scanner:
                 )
             except Exception:  # noqa: BLE001 (the reading never fails a scan: unread, the save is not lenient)
                 reading = UNREAD_SAVE
+        # A reviewed send of a key to an unlisted service: the credential grant that would let it through, verified
+        # by scoring a copy again with it (`converge.credential_hint`). Taken before converge mints the session sets
+        # into `prepared`, so the copy starts from the state this scan started from.
+        hint_copy = (
+            copy.deepcopy(prepared)
+            if credential_hint_candidate(prepared, self.config.params)
+            else None
+        )
         result = converge(
             prepared,
             ordered,
@@ -380,6 +448,8 @@ class Scanner:
             views=views_label(views),
             self_edit_reading=reading,
         )
+        if hint_copy is not None:
+            self._credential_hint(hint_copy, ordered, result, probes, enabled, options, views)
         return ScanResult(
             response=result.response,
             envelopes=ordered,

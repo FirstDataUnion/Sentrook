@@ -8,6 +8,10 @@
  * A grant set by command has the PlanIR grant fields (kind, pattern, scope, allows, granted_at) plus
  * an id, who set it (`set_by`: the owner basis, channel and hashed sender) and an optional
  * `expires_at`. Scope is `session` unless the owner asks for `persistent`; any other value is refused.
+ * A `credential` grant (`NAME@host`: a key's environment name, or `PREFIX*`, and the host it is meant
+ * for, or `*.example.com`) is `persistent` unless the owner asks for `session`: a key's home rarely
+ * changes. Its pattern is checked here as Sentrook reads it, so a typo is refused at once rather than
+ * relieving nothing.
  *
  * A session grant is bound to one session: the one the command was sent from, or the one `--session`
  * names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan of
@@ -31,7 +35,15 @@ import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
 import { bindingProblem } from "./planir.ts";
 import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
-export const KINDS = ["destination", "file", "provider", "repo"];
+export const KINDS = ["destination", "file", "provider", "repo", "credential"];
+/**
+ * A credential grant's pattern as Sentrook reads it: a name (or a prefix of three or more characters
+ * and `*`), `@`, and a host (or `*.` and a domain of two or more labels), with no scheme, port or path.
+ */
+const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+export const CREDENTIAL_PATTERN = new RegExp(
+  `^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{2,}\\*)@(?:\\*\\.)?${LABEL}(?:\\.${LABEL})+$`,
+);
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
 const SESSION_REF = /^s_[0-9a-f]{12}$/;
@@ -229,9 +241,11 @@ export function grantUsage(cmd: Cmd): string {
   return (
     `usage: ${cmd("grant")} <kind> <pattern> [--persistent | --scope session|persistent] ` +
     "[--session <ref>] [--allows read,write] [--expires 12h]\n" +
-    "kind is destination, file, provider or repo (github.com/<owner>/<repo>); --allows is for file grants; scope defaults to " +
+    "kind is destination, file, provider, repo (github.com/<owner>/<repo>) or credential " +
+    "(NAME@host: the key and the host it is meant for); --allows is for file grants; scope defaults to " +
     "session: this session only, or the one --session names (a ref from " +
-    `${cmd("history")}); cron jobs, subagents and other chats need --persistent`
+    `${cmd("history")}); cron jobs, subagents and other chats need --persistent. ` +
+    "A credential grant is persistent unless --scope session is given"
   );
 }
 
@@ -278,12 +292,25 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
   }
   if (pos.length !== 2) return "";
   const kind = pos[0]!.toLowerCase();
-  const pattern = pos[1]!;
-  if (!KINDS.includes(kind)) return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file, provider or repo.`;
+  let pattern = pos[1]!;
+  if (!KINDS.includes(kind)) {
+    return `Unknown grant kind "${clean(pos[0], 40)}": use destination, file, provider, repo or credential.`;
+  }
   if (pattern.length > MAX_PATTERN || !printable(pattern)) {
     return `The pattern must be at most ${MAX_PATTERN} printable characters.`;
   }
-  const scope = opts.scope ?? "session";
+  if (kind === "credential") {
+    const at = pattern.indexOf("@");
+    if (at >= 0) pattern = `${pattern.slice(0, at)}@${pattern.slice(at + 1).toLowerCase().replace(/\.$/, "")}`;
+    if (!CREDENTIAL_PATTERN.test(pattern)) {
+      return (
+        `"${clean(pos[1], 80)}" is not a credential pattern: use NAME@host, such as ` +
+        "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, " +
+        "host may be *.example.com)."
+      );
+    }
+  }
+  const scope = opts.scope ?? (kind === "credential" ? "persistent" : "session");
   if (!SCOPES.includes(scope)) return `Unknown scope "${clean(scope, 40)}": use session or persistent.`;
   const grant: ParsedGrant = { kind, pattern, scope };
   if (opts.session !== undefined) {

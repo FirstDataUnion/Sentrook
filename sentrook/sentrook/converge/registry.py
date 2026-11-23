@@ -513,6 +513,7 @@ REASONS: dict[str, ReasonText | None] = {
         "it runs with administrator (root) rights",
         "it runs with administrator (root) rights",
     ),
+    "relief.credential_grant": None,
     "relief.credential_own_service": None,
     "relief.destination_grant": None,
     "relief.file_grant": None,

@@ -275,7 +275,8 @@ def relevant_grants(
     is), and a repo grant by its owner and repository alone. Paths are read the way the scanner resolves them: under
     home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
     A destination is read the way the scanner reads a channel: a `#name` as `channel:name`, and a
-    `<platform>:` prefix as met when the send names `platform` (`call_platform`)."""
+    `<platform>:` prefix as met when the send names `platform` (`call_platform`). A credential grant
+    (`NAME@host`) is sent when the call shows either its name or its host."""
     text = args_text.lower()
     texts = [text]
     if base := cwd or workspace:
@@ -297,6 +298,10 @@ def relevant_grants(
             forms = _destination_forms(pat, platform)
         elif g["kind"] == "repo":
             forms = [(_repo_path(pat), False)]
+        elif g["kind"] == "credential":
+            # the key's name or the host it is meant for: either may be all the arguments show
+            name, _, host = pat.partition("@")
+            forms = [(name, False), (host, False)]
         else:
             forms = [(pat, False)]
         if any(_pieces_in(f, h, short_ok=ok) for f, ok in forms for h in hay):
