@@ -3,8 +3,10 @@
 It holds only what the scanner returned (risk, the tier and leaf scores, floors, relief, reason codes and
 texts, entity display strings) plus the plugin's own labels for what it did. The PlanIR as sent, the call's
 arguments, `reasons[].detail` and failure details are never included, as with `/sentrook why`; a scan's report
-panel (`report_of`) holds only its summary, links and commands. The OpenClaw plugin builds the same model for the
-same log (fixtures/traffic-log/dashboard).
+panel (`report_of`) holds only its summary, links and commands. One exception, off by default: with
+`dashboard_show_calls` the owner lets each scan carry its call (tool and arguments, as sent to the scanner and so
+redacted, bounded by `call_of`), knowing anyone who can open the dashboard can then read it. The OpenClaw plugin
+builds the same model for the same log (fixtures/traffic-log/dashboard).
 
 `dashboard/plugin_api.py` serves it to the Hermes dashboard tab; the page cannot change anything.
 """
@@ -135,14 +137,91 @@ def bucket_of(scan: dict[str, Any], action: str) -> str:
     return "allowed"
 
 
-def scan_model(scan: dict[str, Any], resolution: dict[str, Any] | None) -> dict[str, Any]:
+#: Bounds on the call the page shows, counted in code points as JavaScript's `[...s]` does.
+CALL_STRING_MAX = 8000
+CALL_TOTAL_MAX = 24000
+CALL_ITEMS_MAX = 100
+CALL_DEPTH_MAX = 8
+CALL_KEY_MAX = 200
+#: Integers past this lose precision in JavaScript, which reads every JSON number as a double.
+_SAFE_INT = 2**53
+_INDEX = re.compile(r"(?:0|[1-9][0-9]*)")
+
+
+def _js_keys(d: dict[str, Any]) -> list[str]:
+    """An object's keys in JavaScript's order: array-index keys first, ascending, then the rest as written."""
+    index = [k for k in d if _INDEX.fullmatch(k) and int(k) < 4294967295]
+    rest = [k for k in d if k not in index]
+    return sorted(index, key=int) + rest
+
+
+def _key(k: str) -> str:
+    return k if len(k) <= CALL_KEY_MAX else k[:CALL_KEY_MAX] + "…"
+
+
+def _cut(s: str, budget: list[int]) -> str:
+    take = min(len(s), CALL_STRING_MAX, budget[0])
+    budget[0] -= take
+    return s if take == len(s) else f"{s[:take]}… ({len(s) - take} more characters)"
+
+
+def _bounded(v: Any, budget: list[int], depth: int) -> Any:
+    if v is None or isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        if -_SAFE_INT <= v <= _SAFE_INT:
+            return v
+        try:
+            v = float(v)  # as JavaScript reads it
+        except OverflowError:
+            return None
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, str):
+        return _cut(v, budget)
+    if depth >= CALL_DEPTH_MAX:
+        return "… (nested too deep)"
+    if isinstance(v, list):
+        out = [_bounded(x, budget, depth + 1) for x in v[:CALL_ITEMS_MAX]]
+        if len(v) > CALL_ITEMS_MAX:
+            out.append(f"… ({len(v) - CALL_ITEMS_MAX} more items)")
+        return out
+    if isinstance(v, dict):
+        keys = _js_keys(v)
+        obj = {_key(k): _bounded(v[k], budget, depth + 1) for k in keys[:CALL_ITEMS_MAX]}
+        if len(keys) > CALL_ITEMS_MAX:
+            obj["…"] = f"{len(keys) - CALL_ITEMS_MAX} more keys"
+        return obj
+    return None
+
+
+def call_of(scan: dict[str, Any]) -> dict[str, Any] | None:
+    """The call as sent to the scanner (`planir.pending_call`, already redacted on the host): its tool and
+    arguments, each string at most CALL_STRING_MAX code points and CALL_TOTAL_MAX in all, lists and objects at most
+    CALL_ITEMS_MAX entries, CALL_DEPTH_MAX deep, keys at most CALL_KEY_MAX. Nothing else from the PlanIR. None for a
+    record without one."""
+    call = _obj(_obj(scan.get("planir")).get("pending_call"))
+    if not call:
+        return None
+    args = call.get("arguments")
+    return {
+        "tool": _str(call.get("tool"), 80),
+        "arguments": _bounded({} if args is None else args, [CALL_TOTAL_MAX], 0),
+    }
+
+
+def scan_model(
+    scan: dict[str, Any], resolution: dict[str, Any] | None, with_call: bool = False
+) -> dict[str, Any]:
     resp = _response(scan)
     r = resp or {}
     action = action_of(scan, resolution)
     entities = _obj(r.get("entities"))
     step = scan.get("step")
     enforced = r.get("enforced")
+    call = {"call": call_of(scan)} if with_call else {}
     return {
+        **call,
         "id": str(scan.get("request_id")),
         "ts": scan.get("ts") if isinstance(scan.get("ts"), str) else None,
         "session": _str(scan.get("session_ref"), 80),
@@ -367,7 +446,9 @@ def _matches(s: dict[str, Any], q: Query) -> bool:
     return not (q.session is not None and s["session"] != q.session)
 
 
-def query_scans(path: Path, q: Query, budget_bytes: int = QUERY_BUDGET_BYTES) -> dict[str, Any]:
+def query_scans(
+    path: Path, q: Query, budget_bytes: int = QUERY_BUDGET_BYTES, with_calls: bool = False
+) -> dict[str, Any]:
     """One page of scans matching `q`, newest first. `more`: the page filled up, so older matches may follow
     from `next` (the last scan's id). `budget_hit`: the read stopped at the budget before the log or window
     ran out. `cursor_lost`: the `before` scan was not found (rotated away)."""
@@ -418,7 +499,7 @@ def query_scans(path: Path, q: Query, budget_bytes: int = QUERY_BUDGET_BYTES) ->
         if rec is None or rec.get("request_id") != rid:
             continue
         seen.add(rid)
-        model = scan_model(rec, resolutions.get(rid))
+        model = scan_model(rec, resolutions.get(rid), with_calls)
         if not _matches(model, q):
             continue
         scans.append(model)
@@ -448,6 +529,8 @@ def query_scans(path: Path, q: Query, budget_bytes: int = QUERY_BUDGET_BYTES) ->
 #: How the page names this host's commands: the plugin's own (prefix + verb) and Hermes's approval answers.
 COMMANDS = {
     "prefix": "/sentrook ",
+    #: The setting that lets each scan show its call, as the owner sets it in this host's config.
+    "call_setting": "hermes config set plugins.entries.sentrook.settings.dashboard_show_calls true",
     "review_answer": [
         "Answer in the chat where it was asked, with Hermes's own commands:",
         "/approve",
@@ -478,6 +561,7 @@ def pending_of(
     now: datetime,
     window_s: float,
     budget_bytes: int = QUERY_BUDGET_BYTES,
+    with_calls: bool = False,
 ) -> dict[str, Any]:
     """What waits for the owner, read on its own so it does not depend on the page's search: approval prompts
     still inside their answer window (the host's approval timeout), and held calls (unattended reviews) not yet
@@ -550,7 +634,7 @@ def pending_of(
             rec = _parse(line)
             if rec is None or rec.get("request_id") != rid:
                 continue
-            model = scan_model(rec, resolutions.get(rid))
+            model = scan_model(rec, resolutions.get(rid), with_calls)
             if hold is not None and hold["scan"] is None:
                 hold["scan"] = model
             if recent and model["open_review"] and all(r["id"] != model["id"] for r in reviews):
@@ -590,7 +674,7 @@ def build_model(
     enabled = cfg.traffic_log_enabled
     budget = budget_for(cfg.traffic_log_max_bytes)
     if enabled:
-        page = query_scans(cfg.traffic_log_path, q, budget)
+        page = query_scans(cfg.traffic_log_path, q, budget, cfg.dashboard_show_calls)
     else:
         page = {
             "scans": [],
@@ -623,9 +707,16 @@ def build_model(
         "mode": cfg.mode,
         "state": {"grants": grants_text, "snooze": snooze_text},
         "pending": pending_of(
-            cfg.traffic_log_path, enabled, cfg.state_dir, now, review_window_s, budget
+            cfg.traffic_log_path,
+            enabled,
+            cfg.state_dir,
+            now,
+            review_window_s,
+            budget,
+            cfg.dashboard_show_calls,
         ),
         "commands": COMMANDS,
+        "show_calls": cfg.dashboard_show_calls,
     }
     panel = report_of(cfg, report_ref, budget)
     if panel is not None:

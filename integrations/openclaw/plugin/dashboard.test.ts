@@ -10,6 +10,8 @@ import { resolveConfig } from "./config.ts";
 import {
   budgetFor,
   buildModel,
+  CALL_TOTAL_MAX,
+  callOf,
   COMMANDS,
   handleRequest,
   limitOf,
@@ -36,7 +38,7 @@ const HERMES_VIEW = fileURLToPath(new URL("../../hermes/plugin/dashboard/view.js
 const BRAND_MARK = fileURLToPath(new URL("../../../brand/sentrook-mark.svg", import.meta.url));
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED"];
+const ENV_KEYS = ["OPENCLAW_STATE_DIR", "SENTROOK_TRAFFIC_LOG", "SENTROOK_TRAFFIC_LOG_ENABLED", "SENTROOK_DASHBOARD_SHOW_CALLS"];
 const savedEnv: Record<string, string | undefined> = {};
 let stateDir = "";
 let logFile = "";
@@ -870,4 +872,98 @@ test("report: a scan no longer in the log says so", () => {
   const box = root.byClass("srk-report")[0]!;
   assert.match(box.textContent, /not in the recent traffic log/);
   assert.equal(box.all().filter((n) => n.tag === "textarea").length, 0);
+});
+
+// ---- Showing the call (dashboardShowCalls, off by default) ----
+
+const CALLS_LOG = path.join(DASH, "calls.jsonl");
+/** Strings in the calls fixture that sit outside the pending call's tool and arguments. */
+const NOT_THE_CALL = ["REQUEST-TEXT-MARKER", "HISTORY-MARKER", "NARRATION-MARKER", "SIBLING-MARKER", "DETAIL-MARKER", "planir"];
+
+function useCallsLog() {
+  copyFileSync(CALLS_LOG, logFile);
+}
+
+test("callOf bounds each call as the shared fixture has it (the Hermes plugin builds the same)", () => {
+  const got = readFileSync(CALLS_LOG, "utf8").trim().split("\n").map((l) => callOf(JSON.parse(l)));
+  assert.deepStrictEqual(got, JSON.parse(readFileSync(path.join(DASH, "calls.json"), "utf8")));
+  // Cuts count code points; the whole call has one budget; nesting, lists and keys are capped; no PlanIR, no call.
+  assert.match(got[3]!.arguments.content, /^x{8000}… \(1000 more characters\)$/);
+  const sizes = Object.values(got[4]!.arguments as Record<string, string>).map((v) => [...v.split("…")[0]!].length);
+  assert.equal(sizes.reduce((a, b) => a + b, 0), CALL_TOTAL_MAX);
+  assert.equal(got[7]!.arguments.deep.a.b.c.d.e.f.g, "… (nested too deep)");
+  assert.equal(got[6]!.arguments.items.length, 101);
+  assert.equal(got[10]!.arguments && Object.keys(got[10]!.arguments).length, 0);
+  assert.equal(got[11], null);
+  // Numbers as JavaScript reads them: past 2^53 a double, past the double range null; long keys cut.
+  assert.deepStrictEqual(Object.values(got[12]!.arguments).slice(0, 4), [null, 2 ** 60, 2 ** 53, -(2 ** 60)]);
+  assert.equal(Object.keys(got[12]!.arguments)[4], "k".repeat(200) + "…");
+  assert.equal(got[2]!.arguments.background, false);
+});
+
+test("the setting is off by default; config or env turns it on", () => {
+  assert.equal(resolveConfig({}, {}).dashboardShowCalls, false);
+  assert.equal(resolveConfig({ dashboardShowCalls: true }, {}).dashboardShowCalls, true);
+  assert.equal(resolveConfig({}, { SENTROOK_DASHBOARD_SHOW_CALLS: "1" }).dashboardShowCalls, true);
+  assert.equal(resolveConfig({ dashboardShowCalls: false }, { SENTROOK_DASHBOARD_SHOW_CALLS: "1" }).dashboardShowCalls, false);
+});
+
+test("must stay silent: with the setting off, neither the model nor the page holds any part of a call", async () => {
+  useCallsLog();
+  const m = await buildModel(cfg(), queryOf(new URLSearchParams("n=50")));
+  assert.equal(m.show_calls, false);
+  assert.equal(m.scans.length, 13);
+  for (const s of m.scans) assert.ok(!("call" in s));
+  const page = (await call("GET", ROUTE + "?n=50")).body!;
+  for (const marker of [...NOT_THE_CALL, "notes/todo.md", "git status", "#général"]) assert.ok(!page.includes(marker), marker);
+});
+
+test("must fire: with the setting on, each scan carries its call and nothing else from the PlanIR", async () => {
+  useCallsLog();
+  const on = () => resolveConfig({ dashboardShowCalls: true }, process.env);
+  const m = await buildModel(on(), queryOf(new URLSearchParams("n=50")));
+  assert.equal(m.show_calls, true);
+  const byTool = (t: string) => m.scans.filter((s: any) => s.tool === t);
+  assert.deepStrictEqual(byTool("edit").at(-1).call, {
+    tool: "edit",
+    arguments: { path: "notes/todo.md", old_string: "- [ ] ship\n", new_string: "- [x] ship\n- [ ] <script>alert(1)</script>\n" },
+  });
+  assert.equal(byTool("web_fetch")[0].call, null, "a record without a PlanIR");
+  const json = JSON.stringify(m);
+  for (const marker of NOT_THE_CALL) assert.ok(!json.includes(marker), marker);
+  const page = (await call("GET", ROUTE + "?n=50", on)).body!;
+  assert.ok(page.includes("notes/todo.md"));
+  assert.ok(!page.includes("<script>alert(1)"), "the call is embedded as JSON, never as markup");
+});
+
+test("the view: with calls off, Show the call says how to turn it on; with calls on, it draws the arguments as text", async () => {
+  useCallsLog();
+  const off = drawView(await buildModel(cfg(), queryOf(new URLSearchParams("n=50"))));
+  const section = off.byClass("srk-call")[0]!;
+  assert.equal(section.tag, "details");
+  assert.equal(section.getAttribute("open"), null, "collapsed");
+  assert.match(section.textContent, /openclaw config set plugins\.entries\.sentrook\.config\.dashboardShowCalls true/);
+  assert.match(section.textContent, /\/sentrook-report ca110013 --save/);
+
+  const model = await buildModel(resolveConfig({ dashboardShowCalls: true }, process.env), queryOf(new URLSearchParams("n=50&tool=edit")));
+  const root = drawView(model);
+  const opened = root.byClass("srk-scan")[0]!;
+  const text = opened.byClass("srk-call")[0]!.textContent;
+  assert.match(text, /^Show the call/);
+  assert.match(text, /edits/);
+  // An edit's before and after text sit side by side; markup in them is text.
+  root.byClass("srk-row").at(-1)!.click();
+  const edit = root.byClass("srk-call-edit").find((e) => e.textContent.includes("<script>"))!;
+  assert.deepStrictEqual(edit.byClass("srk-call-text").map((n) => n.textContent), ["- [ ] ship\n", "- [x] ship\n- [ ] <script>alert(1)</script>\n"]);
+  assert.ok(!edit.all().some((n) => n.tag === "script"));
+  assert.match(edit.textContent, /Before \(old_string\)[\s\S]*After \(new_string\)/);
+});
+
+test("the view: a pending item's breakdown has no Show the call section while calls are off", () => {
+  const model = viewModel();
+  model.pending = JSON.parse(readFileSync(path.join(DASH, "pending.json"), "utf8"));
+  const root = drawView(model);
+  const items = root.byClass("srk-pending-item");
+  assert.ok(items.length, "the pending panel draws");
+  for (const item of items) assert.equal(item.byClass("srk-call").length, 0);
 });

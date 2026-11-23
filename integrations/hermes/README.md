@@ -261,8 +261,21 @@ the reasons that raised it, and any floor or grant that changed the result. Gran
 Anything waiting for you comes first: an approval prompt still open, or a call held for your approval, each with the command that answers it. Below, the history shows 10, 25 or 50 scans a page; **Older** pages back. Search by tool name, outcome, time window or minimum risk. The traffic log has no index, so a search reads it backwards from the newest line, skipping lines outside the time window without parsing them; a time window makes searches faster. A search reads at most the whole log at its configured size (twice `traffic_log.max_bytes`, up to 256 MB) and says when it stopped early.
 
 The tab only reads. To change a grant or a snooze, use the commands above. It shows the same records as
-`/sentrook history` and `/sentrook why`, never a call's arguments, and nothing when the traffic log is off. It reads
-the traffic log of the profile the dashboard is showing.
+`/sentrook history` and `/sentrook why`, and nothing when the traffic log is off. It reads the traffic log of the
+profile the dashboard is showing.
+
+By default the tab never shows what a call contained: an edit shows its tool and the files it touched, not the edit.
+To see the call itself, turn on `dashboard_show_calls`:
+
+```bash
+hermes config set plugins.entries.sentrook.settings.dashboard_show_calls true
+```
+
+Each scan then has **Show the call**, collapsed under its details: the tool and its arguments as the plugin sent them
+to the scanner. Secrets are masked; file contents, messages and commands are shown as the agent wrote them (a patch's
+old and new text side by side), and very long text is cut. Anyone who can open the dashboard can read them, so leave
+it off where others can. Without it, `/sentrook report <id> --save` writes a scan's full record to a file only you can
+read.
 
 Every scan has **Report this scan…**, which opens the report described in [Report a wrong scan](#report-a-wrong-scan):
 the summary to copy, a button for a public GitHub issue with it filled in, and the commands and email address for the

@@ -7,7 +7,8 @@
  *   /        the page as the OpenClaw Control UI tab shows it (follows the system light or dark setting)
  *   /hermes  the view on Hermes's default dark theme (Hermes Teal), with the theme's colour variables
  * Example pending items (an open review, a held call) are added; PREVIEW_PENDING=0 leaves them out.
- * `?report=<id>` adds that scan's report panel, as the plugins do.
+ * `?report=<id>` adds that scan's report panel, as the plugins do. `?calls=1` shows each scan's call, as the
+ * dashboardShowCalls setting does (SENTROOK_PREVIEW_LOG=.../dashboard/calls.jsonl has calls worth showing).
  * Binds 127.0.0.1 only; PORT overrides the port.
  */
 
@@ -36,14 +37,15 @@ code{background:#ffe6cb;color:#041c1c}
 /** Hermes's command forms, as dashboard.py's COMMANDS has them. */
 const HERMES_COMMANDS = {
   prefix: "/sentrook ",
+  call_setting: "hermes config set plugins.entries.sentrook.settings.dashboard_show_calls true",
   review_answer: ["Answer in the chat where it was asked, with Hermes's own commands:", "/approve", "/approve session", "/approve always", "/deny"],
 };
 
 /** Example pending items (PREVIEW_PENDING=0 leaves them out): a recent open prompt and one held call, with scans. */
-async function pending(): Promise<unknown> {
+async function pending(calls: boolean): Promise<unknown> {
   const empty = { reviews: [], holds: [], holds_readable: true, review_window_s: 300 };
   if (process.env.PREVIEW_PENDING === "0") return empty;
-  const recent = await queryScans(LOG, { ...queryOf(new URLSearchParams()), limit: 50 });
+  const recent = await queryScans(LOG, { ...queryOf(new URLSearchParams()), limit: 50 }, undefined, calls);
   const review = recent.scans.find((s: Record<string, any>) => s.bucket === "review");
   const held = recent.scans.find((s: Record<string, any>) => s.bucket === "observed") ?? null;
   return {
@@ -80,8 +82,9 @@ async function model(params: URLSearchParams, hermes: boolean): Promise<unknown>
     version: 1,
     log: "on",
     limit: q.limit,
-    ...(await queryScans(LOG, q)),
-    pending: await pending(),
+    ...(await queryScans(LOG, q, undefined, params.get("calls") === "1")),
+    show_calls: params.get("calls") === "1",
+    pending: await pending(params.get("calls") === "1"),
     commands: hermes ? HERMES_COMMANDS : COMMANDS,
     host: "preview",
     lines: { review_at: 45, block_at: 80 },
