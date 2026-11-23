@@ -26,7 +26,8 @@ The traffic log gets the scan with decision `held` and, later, a `resolution` re
 `<hermes home>/sentrook/holds.json`; the OpenClaw plugin keeps the same file and prints the same
 notice text.
 
-The notice goes out with Hermes's own `hermes send` command, run as a child process (`send_route`). Hermes 0.23
+The notice goes out with Hermes's own `hermes send` command, run as a child process through Hermes's `hermes`
+launcher (`send_route`, `_hermes_launcher`). Hermes 0.23
 registers no `send_message` tool in any process, the gateway included, so `ctx.dispatch_tool("send_message", ...)`
 answers "Unknown tool"; `hermes send` calls the same sender directly and works from any process (the gateway, the
 desktop app's `hermes serve`, the command line, cron). On a Hermes that has no `hermes send` but registers a
@@ -38,7 +39,8 @@ and the startup log say so. Hermes attaches a file that `MEDIA:<path>` names in 
 Either way the send runs on a worker thread with an empty context: a cron run's own delivery target is bound to the
 run's context, and Hermes skips a send to that target from inside the run, which would swallow the notice when the
 job delivers to the home channel. The child process gets no `HERMES_CRON_AUTO_DELIVER_*` variables either, the
-other place Hermes looks for that target.
+other place Hermes looks for that target. It sends as the Hermes home of the turn that made the notice, pinned so
+that a profile made sticky with `hermes profile use` cannot change where the notice goes.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -413,12 +416,31 @@ SEND_TIMEOUT = 60.0
 _CRON_DELIVERY_ENV = "HERMES_CRON_AUTO_DELIVER_"
 
 
-def _hermes_send_available() -> bool:
-    """Whether this interpreter can run Hermes's `hermes send` (`python -m hermes_cli.main send`)."""
+def _hermes_launcher() -> str | None:
+    """Hermes's own `hermes` command for this install, which `hermes send` runs with; None without one.
+
+    Hermes starts its own processes with its checkout on `sys.path` (`python -I -c ...`), not with an installed
+    `hermes_cli`, so `python -m hermes_cli.main` fails outside the checkout (the desktop backend runs in the owner's
+    project folder). The launcher sets that up itself: `.hermes/bin/hermes` in the checkout (Hermes's installer), else
+    the `hermes` script beside this interpreter (a pip or Docker install), else `hermes` on PATH."""
     try:
-        return bool(sys.executable) and importlib.util.find_spec("hermes_cli.send_cmd") is not None
-    except Exception:  # noqa: BLE001 - not importable: not available
-        return False
+        if importlib.util.find_spec("hermes_cli.send_cmd") is None:
+            return None
+        spec = importlib.util.find_spec("hermes_cli")
+        root = Path(spec.origin).resolve().parents[1] if spec and spec.origin else None
+    except Exception:  # noqa: BLE001 - not importable: no hermes send
+        return None
+    here = [root / ".hermes" / "bin" / "hermes"] if root else []
+    if sys.executable:
+        here.append(Path(sys.executable).parent / "hermes")
+    for path in here:
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return shutil.which("hermes")
+
+
+def _hermes_send_available() -> bool:
+    return _hermes_launcher() is not None
 
 
 def _send_tool_registered() -> bool:
@@ -436,7 +458,11 @@ def process_name() -> str:
     argv = [a for a in sys.argv[:2] if a]
     if not argv:
         return f"process {os.getpid()}"
-    return _clean(" ".join([Path(argv[0]).name, *argv[1:]]), 60)
+    name = Path(argv[0]).name
+    # Hermes's launcher runs `python -I -c ...` (argv[0] "-c"); `python -m hermes_cli.main` gives main.py
+    if name.startswith("-") or name.endswith(".py"):
+        name = "hermes"
+    return _clean(" ".join([name, *argv[1:]]), 60)
 
 
 def send_route(can_dispatch: bool = True) -> tuple[str | None, str]:
@@ -474,17 +500,19 @@ def status_line(state_dir: Path, owner_channel: str, now: datetime) -> str:
 _threads: list[threading.Thread] = []
 
 
-#: What Hermes's sender would act on in a message: `MEDIA:<path>` attaches that file, and these flags change how.
-_MEDIA = re.compile(r"MEDIA:")
+#: What Hermes's sender would act on in a message: a `MEDIA:` tag (matched in any case, as Hermes matches it) attaches
+#: the file it names, and these flags change how.
+_MEDIA = re.compile(r"MEDIA(?=:)", re.IGNORECASE)
 _DELIVERY_FLAGS = ("[[as_document]]", "[[audio_as_voice]]")
 
 
 def defuse(text: str) -> str:
-    """`text` with nothing Hermes's sender would act on: each `MEDIA:` becomes `MEDIA :`, which Hermes reads as
-    text, and the delivery flags are taken out. A notice names a call's target, which the agent chooses."""
-    for flag in _DELIVERY_FLAGS:
-        text = text.replace(flag, "")
-    return _MEDIA.sub("MEDIA :", text)
+    """`text` with nothing Hermes's sender would act on: each `MEDIA:` (any case) becomes `MEDIA :`, which Hermes reads
+    as text, and the delivery flags are taken out. A notice names a call's target, which the agent chooses."""
+    while any(flag in text for flag in _DELIVERY_FLAGS):
+        for flag in _DELIVERY_FLAGS:
+            text = text.replace(flag, "")
+    return _MEDIA.sub(lambda m: m.group(0) + " ", text)
 
 
 def _delivered(out: Any) -> bool:
@@ -497,31 +525,30 @@ def _delivered(out: Any) -> bool:
 
 
 def _answer(stdout: str) -> Any:
-    """The JSON `hermes send --json` prints last; None when there is none."""
-    stdout = stdout.strip()
-    for start in [0, *(m.start() + 1 for m in re.finditer(r"\n(?=\{)", stdout))][::-1]:
+    """The JSON object `hermes send --json` prints, whatever Hermes prints around it; None when there is none."""
+    found = None
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"(?m)^\{", stdout):
         try:
-            return json.loads(stdout[start:])
+            found = decoder.raw_decode(stdout, m.start())[0]
         except ValueError:
             continue
-    return None
+    return found
 
 
-def _with_hermes_send(platform: str, text: str) -> tuple[bool, str]:
-    """(delivered, what Hermes said) for one `hermes send` of `text` to `platform`'s home channel."""
+def _with_hermes_send(platform: str, text: str, home: str | None) -> tuple[bool, str]:
+    """(delivered, what Hermes said) for one `hermes send` of `text` to `platform`'s home channel, as the Hermes home
+    `home` (the profile of the turn that made the notice)."""
+    launcher = _hermes_launcher()
+    if launcher is None:
+        return False, "Hermes's hermes command is not available"
     env = {k: v for k, v in os.environ.items() if not k.startswith(_CRON_DELIVERY_ENV)}
+    if home:
+        env["HERMES_HOME"] = home
+    # Hermes's own pin for its children: never switch to the profile `hermes profile use` made sticky.
+    env["HERMES_GATEWAY_PROFILE_PIN"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"  # the text goes on stdin as UTF-8 whatever the locale
-    argv = [
-        sys.executable,
-        "-m",
-        "hermes_cli.main",
-        "send",
-        "--to",
-        platform,
-        "--file",
-        "-",
-        "--json",
-    ]
+    argv = [launcher, "send", "--to", platform, "--file", "-", "--json"]
     try:
         proc = subprocess.run(
             argv,
@@ -551,12 +578,28 @@ def _with_send_tool(ctx: Any, platform: str, text: str) -> tuple[bool, str]:
     return (True, "") if _delivered(out) else (False, _clean(raw, 300))
 
 
-def _send(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None = None) -> None:
+def _hermes_home() -> str | None:
+    """The Hermes home of the current turn: a multi-profile Hermes sets it per turn in the turn's context."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return str(get_hermes_home())
+    except Exception:  # noqa: BLE001 - an older or stand-in Hermes: the process's own
+        return os.environ.get("HERMES_HOME") or None
+
+
+def _send(
+    ctx: Any,
+    platform: str,
+    text: str,
+    on_fail: Callable[[], None] | None = None,
+    home: str | None = None,
+) -> None:
     route, why = send_route(callable(getattr(ctx, "dispatch_tool", None)))
     delivered, said = False, why
     try:
         if route == HERMES_SEND:
-            delivered, said = _with_hermes_send(platform, defuse(text))
+            delivered, said = _with_hermes_send(platform, defuse(text), home)
         elif route == SEND_TOOL:
             delivered, said = _with_send_tool(ctx, platform, defuse(text))
         if not delivered:
@@ -577,12 +620,13 @@ def _send(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None
 
 def deliver(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None = None) -> None:
     """Sends `text` to `platform`'s home channel from a worker thread with an empty context, with `hermes send` or
-    the send_message tool (see the module note). The thread is not a daemon, so a `hermes cron run` process waits
+    the send_message tool (see the module note), as the Hermes home of the current turn. The thread is not a daemon, so a `hermes cron run` process waits
     for it. `on_fail` runs on that thread when the notice was not delivered."""
     _threads[:] = [t for t in _threads if t.is_alive()]
     t = threading.Thread(
         target=contextvars.Context().run,
-        args=(_send, ctx, platform, text, on_fail),
+        # the home is read here, in the turn's context, which the thread does not have
+        args=(_send, ctx, platform, text, on_fail, _hermes_home()),
         name="sentrook-hold-notice",
         daemon=False,
     )

@@ -63,18 +63,20 @@ class FakeScanner:
 def notice_route(monkeypatch):
     """How this Hermes process can send the owner's notices, under test control: by default a send_message tool is
     registered and there is no `hermes send`, so notices go through `ctx.dispatch_tool` as they always have. A test
-    sets `["hermes_send"]` or `["send_tool"]` to try another route (read when a notice is decided and sent); `["real_hermes_send"]` is the
-    real check."""
+    sets `["hermes_send"]` (then Hermes's launcher is `FAKE_LAUNCHER`) or `["send_tool"]` to try another route (read
+    when a notice is decided and sent); `["real_launcher"]` is the real lookup."""
     from plugin import hold
 
-    route = {
-        "hermes_send": False,
-        "send_tool": True,
-        "real_hermes_send": hold._hermes_send_available,
-    }
-    monkeypatch.setattr(hold, "_hermes_send_available", lambda: route["hermes_send"])
+    route = {"hermes_send": False, "send_tool": True, "real_launcher": hold._hermes_launcher}
+    monkeypatch.setattr(
+        hold, "_hermes_launcher", lambda: FAKE_LAUNCHER if route["hermes_send"] else None
+    )
     monkeypatch.setattr(hold, "_send_tool_registered", lambda: route["send_tool"])
     return route
+
+
+#: Hermes's `hermes` launcher in tests that send with `hermes send` through a stand-in `subprocess.run`.
+FAKE_LAUNCHER = "/opt/hermes-test/bin/hermes"
 
 
 @pytest.fixture
