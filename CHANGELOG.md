@@ -1006,3 +1006,10 @@ An unquoted value under a credential key stops at `)` and `,`, so code that read
 - The self-edit save reading follows: a note with `password = input(prompt)` adds no secret, and "my password is hunter(abc)" still adds one.
 - Suite: unmoved; every string in TestNest `fixtures/` redacts identically before and after.
 - Tests: the scanner's pass and both plugins (plain and JSON-encoded, with the parity tests) keep `os.getenv(name)`, `load_token(path)`, `input(prompt)`, `getattr(settings, 'TOKEN')` and `os.environ.get(key_name)` under a credential key and still replace the values above, in linear time on a new adversarial input.
+
+### A credential home is marked by its names, not its tier (2026-11-23)
+A `known_good` host was treated as only its credentials' home when its tier was exactly `provider_api`. Any other tier on the same entry, such as one for a generated layer of provider hosts, read as an ordinary known-good data destination, so a new tier name would have trusted every send to those hosts.
+- `probes.oracle`: a `known_good` host that lists `credential_names` vouches only for those credentials, whatever its tier: it scores, reports and shows to the judge as an unlisted host, and the names stay in the evidence for the credential-home check. `PROVIDER_API_TIER` is gone; the tier is a label again (`provider_api` for the hand-curated hosts, `provider_api_feed` for Rookery's generated layer).
+- `oracle.near_miss`: `provider_api_feed` joins `FOLD_ONLY_TIERS`, as in Rookery: hundreds of real API hosts sit one letter from other real services (`replicate`, `replicated`), so only a fold look-alike of one is a near miss. A curated `provider_api` host keeps the edit rule.
+- Suite: unmoved; no suite oracle seed lists credential names.
+- Tests: a host with credential names scores as unlisted under `provider_api`, `provider_api_feed`, `infrastructure` and no tier; the same host without names is an ordinary known-good destination; a `provider_api_feed` home relieves its own key; the seed oracle takes only fold against a `provider_api_feed` host and still an edit against a `provider_api` one.

@@ -457,3 +457,27 @@ def test_seed_oracle_takes_only_fold_against_a_popular_package():
     assert r.get("package", "pypi:willow").match is Match.NONE
     near = r.get("package", "pypi:pil_low")
     assert near.match is Match.NEAR_MISS and near.near_miss["how"] == "fold"
+
+
+def test_seed_oracle_takes_only_fold_against_a_bulk_provider_host():
+    """The generated credential-home layer holds hundreds of real API hosts, some one letter from other real
+    services: only a fold look-alike of one is a near miss. A hand-curated provider host keeps the edit rule."""
+    host = {"kind": "host", "verdict": "known_good", "credential_names": ["EXAMPLE_API_KEY"]}
+    o = SeedOracle(
+        _seed(
+            {**host, "value": "api.replicate.invalid", "tier": "provider_api_feed"},
+            {**host, "value": "api.brindlefen.invalid", "tier": "provider_api"},
+        )
+    )
+    r = o.lookup(
+        [
+            EntityQuery("host", "replicated.invalid"),
+            EntityQuery("host", "rep1icate.invalid"),
+            EntityQuery("host", "brindlfen.invalid"),
+        ]
+    )
+    assert r.get("host", "replicated.invalid").match is Match.NONE
+    fold = r.get("host", "rep1icate.invalid")
+    assert fold.match is Match.NEAR_MISS and fold.near_miss["how"] == "fold"
+    edit = r.get("host", "brindlfen.invalid")
+    assert edit.match is Match.NEAR_MISS and edit.near_miss["how"] == "edit"

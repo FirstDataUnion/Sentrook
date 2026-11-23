@@ -3,7 +3,7 @@
 An agent that reads an API key from its env file and sends it, as the call's authorisation, only to the API host of
 the service that issued it is using the key the way it is meant to be used. The same key sent anywhere else is the
 attack. The entity library lists, on a provider's API host, the environment names of the credentials that service
-issues (`credential_names` on a `known_good` host; tier `provider_api` for hosts listed only for this). The check
+issues (`credential_names` on a `known_good` host, which then vouches for nothing else; see `probes.oracle`). The check
 holds, and the call's credential does not count as sensitive data sent, only when all of this is true:
 
 - the pending call runs code or a command (an exec), not a message, upload or file tool;
@@ -53,10 +53,6 @@ from typing import Any
 from ..enums import SessionFlag
 from ..planir.models import ToolKind
 from .entities import EntityKind, Origin
-
-#: The library tier of a provider API host listed only as the home of its credentials. The oracle probe scores
-#: such a host as it scores an unlisted one; only this check reads its credential names.
-PROVIDER_API_TIER = "provider_api"
 
 #: An environment name shaped like a credential: words joined by `_` ending in a key, token, secret or password word.
 CREDENTIAL_NAME_RE = re.compile(
