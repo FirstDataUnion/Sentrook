@@ -64,7 +64,7 @@
     mode: "enforce: the plugin acts on the result. observe: it only scores and logs.",
     entity: "Something the call touches (a host, file, channel or tool), as the scanner names it in its reasons.",
     floor: "A scanner floor: a rule for a known dangerous pattern that sets a minimum risk whatever the scores say. Grants and snoozes never lower a floor.",
-    relief: "A grant (or a destination you named in your request) that lowered a signal, so the call scored lower.",
+    relief: "A grant (or a destination you named in your request, or a cron job's own delivery target) that lowered a signal, so the call scored lower.",
     enforced: "The scanner requires this outcome: the plugin must at least ask (review) or block, whatever its own lines.",
     ceiling: "You were in the chat and nothing points to an attack, so the plugin asks you at most and never blocks on the score alone.",
     reason: "The scanner's reason code and, where it has one, the reason in plain words.",
@@ -495,13 +495,20 @@
     return el("span", { class: "srk-chip", title: hint }, [colour ? el("span", { class: "srk-dot", style: "background:" + colour }) : null, text]);
   }
 
+  /** What gave the relief: a grant, or (on OpenClaw) a cron job's own delivery target (`cron_delivery:<job id>`). */
+  function reliefSource(ref) {
+    if (!ref) return "";
+    if (ref.indexOf("cron_delivery:") === 0) return " (delivery target of cron job " + ref.slice(14, 22) + ")";
+    return " (grant " + ref + ")";
+  }
+
   function chips(scan) {
     var out = [];
     scan.floors.forEach(function (f) {
       out.push(chip("var(--srk-high)", "Floor: " + (f.floor || "?") + (f.min_risk == null ? "" : " ≥ " + pct(f.min_risk)), HINTS.floor));
     });
     scan.relief.forEach(function (f) {
-      out.push(chip("var(--srk-low)", "Relief: " + (f.effect || "?") + (f.grant_ref ? " (grant " + f.grant_ref + ")" : ""), HINTS.relief));
+      out.push(chip("var(--srk-low)", "Relief: " + (f.effect || "?") + reliefSource(f.grant_ref), HINTS.relief));
     });
     if (scan.enforced) out.push(chip(null, "Scanner requires: " + scan.enforced, HINTS.enforced));
     if (scan.ceiling) out.push(chip(null, "At most: " + scan.ceiling, HINTS.ceiling));

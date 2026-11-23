@@ -10,14 +10,15 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { type PluginConfig, resolveConfig } from "./config.ts";
+import { type GrantConfig, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
+import * as cronDelivery from "./cronDelivery.ts";
 import * as dashboard from "./dashboard.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind, triggerKind } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -25,7 +26,7 @@ import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
-import { type HistoryEntry, Store } from "./store.ts";
+import { type HistoryEntry, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
 type Json = Record<string, unknown>;
@@ -286,6 +287,7 @@ const plugin = {
         senderId: ctx?.senderId,
         workspaceDir: ctx?.workspaceDir,
         inputProvenance: ctx?.inputProvenance,
+        jobId: ctx?.jobId,
         ...patch,
       });
     };
@@ -497,6 +499,25 @@ const plugin = {
       { priority: 10 },
     );
 
+    /** On a cron run, the grant for its job's own delivery target (`cronDelivery.ts`); a failed read gives none. */
+    function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, env: NodeJS.ProcessEnv): GrantConfig[] {
+      try {
+        const g = cronDelivery.deliveryGrant({
+          run,
+          kind: triggerKind(run),
+          sessionKey: ctx?.sessionKey,
+          agentId: ctx?.agentId,
+          history: sess.history,
+          sessionRef: sessionRef(sid),
+          openclawDir: openclawDir(env),
+        });
+        return g ? [g] : [];
+      } catch (err) {
+        api.logger.warn(`${LOG} cron job delivery lookup failed: ${String(err)}`);
+        return [];
+      }
+    }
+
     async function scanOne(
       cfg: PluginConfig,
       env: NodeJS.ProcessEnv,
@@ -541,7 +562,10 @@ const plugin = {
         run,
         assistant: store.loadAssistant(ctx?.sessionKey),
         parents: store.parents(),
-        grants: grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
+        grants: [
+          ...grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
+          ...jobDeliveryGrant(run, ctx, sess, sid, env),
+        ],
         hostVersion,
         hostProcess: hostKind !== null,
         selfEdit: selfEditBlock,

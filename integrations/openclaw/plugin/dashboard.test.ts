@@ -582,6 +582,17 @@ test("the view shows relief and the ceiling, and a failed scan without scores", 
   assert.equal(failed.byClass("srk-tier").length, 0);
 });
 
+test("relief from a cron job's own delivery target names the job, not a grant", () => {
+  const model = viewModel();
+  const scan = model.scans.find((s: any) => s.relief.length);
+  scan.relief[0].grant_ref = "cron_delivery:561a1f55-c5e9-41fb-930b-1ee7b8e31373";
+  const root = drawView(model);
+  root.byClass("srk-row").find((r) => r.textContent.includes("38"))!.click();
+  const relief = root.byClass("srk-detail").find((d) => d.textContent.includes("Relief"))!;
+  assert.match(relief.textContent, /Relief: distrust\+untrusted_origin \(delivery target of cron job 561a1f55\)/);
+  assert.doesNotMatch(relief.textContent, /\(grant /);
+});
+
 test("signals start collapsed; every tier, signal and value carries a hover hint", () => {
   const root = drawView(viewModel());
   const detail = root.byClass("srk-detail")[0]!;

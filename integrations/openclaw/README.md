@@ -173,6 +173,14 @@ check it:
 
 Bindings stay until you remove them (`/sentrook-bind remove channel:1234567890`).
 
+You don't need a binding for the channel a cron job is set up to deliver to (its `delivery.channel` and
+`delivery.to`, from `openclaw cron add --announce --channel discord --to <channel id>`): on that job's run, a send
+to that channel counts as yours for that run. The plugin reads the job's delivery from OpenClaw's job store, so only
+what the job itself is set to counts, never a channel named in its task or in anything the run read. It counts for
+nothing when the job's target is a person (a direct message, a phone number), when the job has no target of its own
+(`--channel last`, or no `--to`), and when the job was created or changed after its run began or the agent changed a
+job with its cron tool during the run. The dashboard shows that relief as the job's delivery target.
+
 A binding can also name a channel the way you know it. `#daily-brief` covers that channel however a send writes it
 (`#daily-brief`, `channel:daily-brief` or `discord:#daily-brief`). `discord:#daily-brief` covers it on Discord only,
 including a send that names Discord in its own argument, as the `message` tool does (`{channel: discord, target:
@@ -592,7 +600,7 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   can be stricter;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
   server it calls (a `#name` also fits `channel:name`, and a `<platform>:` prefix fits a send that names that
-  platform);
+  platform), and on a cron run its job's own delivery target, as a grant for that run only;
 - references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
 - for a skill or memory save that OpenClaw makes on its own (see above): the conversation that run read, as its
   messages, the agent's replies and the tool results (each cut short, the results to the part that overlaps the save
@@ -632,8 +640,10 @@ In short, for anyone deciding whether to install it:
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
   command, snooze state, held calls and their lock files, the notice target, when each job or run last had a notice with a quiet period, and
   the conversations above), or to the paths you set for them (`stateDir`,
-  `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on, and,
-  to turn a reviewed background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
+  `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
+  cron run, that job's definition from OpenClaw's job store (`~/.openclaw/state/openclaw.sqlite`, or
+  `~/.openclaw/cron/jobs.json` on older releases), read-only, for its delivery target; and, to turn a reviewed
+  background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
   starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
   The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it

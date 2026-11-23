@@ -54,6 +54,8 @@ export interface GrantConfig {
   session_ref?: string;
   /** Sent for a grant set by command with an expiry. */
   expires_at?: string;
+  /** The `grant_ref` to send instead of the grant's place in the list (a cron job's delivery target). */
+  ref?: string;
 }
 
 export interface PluginConfig {
@@ -87,13 +89,15 @@ export interface PluginConfig {
 
 type Env = NodeJS.ProcessEnv;
 
+/** OpenClaw's own state directory: `OPENCLAW_STATE_DIR`, else `.openclaw` under `OPENCLAW_HOME` or the home directory. */
+export function openclawDir(env: Env): string {
+  return env.OPENCLAW_STATE_DIR?.trim() || path.join(env.OPENCLAW_HOME?.trim() || env.HOME?.trim() || "/home/node", ".openclaw");
+}
+
 /** `<state>/sentrook`: every plugin-side file lives here (the scanner's guardrail list protects it). */
 export function resolveStateDir(env: Env, override?: unknown): string {
   if (typeof override === "string" && override.trim()) return override.trim();
-  const base =
-    env.OPENCLAW_STATE_DIR?.trim() ||
-    path.join(env.OPENCLAW_HOME?.trim() || env.HOME?.trim() || "/home/node", ".openclaw");
-  return path.join(base, "sentrook");
+  return path.join(openclawDir(env), "sentrook");
 }
 
 function str(raw: unknown): string | undefined {
