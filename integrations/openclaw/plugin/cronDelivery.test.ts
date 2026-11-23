@@ -1,7 +1,8 @@
 /**
  * A cron job's own delivery target: on a run of that job, a send to the channel the owner configured for it carries a
  * destination grant for that channel, scoped to the run's session. Only the job's own configured target counts, read
- * from OpenClaw's job store by the job id the host gives the run; a job changed after the run began counts for nothing.
+ * from OpenClaw's job store by the job id the host gives the run, at its first agent hook; a job changed after the run
+ * began counts for nothing.
  */
 
 import assert from "node:assert/strict";
@@ -12,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
-import { cronJobIdOf, DELIVERY_REF, deliveryPattern, readCronJob } from "./cronDelivery.ts";
+import { deliveryPattern, deliveryRef, readCronJob } from "./cronDelivery.ts";
 import plugin from "./index.ts";
 import { sessionRef } from "./planir.ts";
 
@@ -152,7 +153,7 @@ async function cronRun(calls: any[], opts: { agentCtx?: Record<string, unknown>;
 }
 
 const EXPECTED = {
-  grant_ref: `${DELIVERY_REF}${JOB}`,
+  grant_ref: deliveryRef(JOB),
   kind: "destination",
   pattern: `discord:${CHANNEL}`,
   scope: "session",
@@ -180,10 +181,10 @@ test("the target is matched written with or without the platform prefix, in the 
   }
 });
 
-test("the job id comes from the cron run's session key when the agent hooks do not give it", async () => {
+test("a cron run whose hooks give no job id carries no grant", async () => {
   storeJob({ delivery: DELIVERY }, LONG_AGO);
   const [grants] = await cronRun([send("c1", `channel:${CHANNEL}`)], { agentCtx: { jobId: undefined } });
-  assert.deepEqual(grants, [EXPECTED]);
+  assert.deepEqual(grants, []);
 });
 
 test("an older OpenClaw's jobs.json store is read when there is no job table", async () => {
@@ -213,8 +214,11 @@ test("a direct message to a user is not the job's channel; nor does a job that d
     { ...DELIVERY, channel: "telegram", to: "5150123" },
     { ...DELIVERY, channel: "whatsapp", to: "+15551234567" },
     { ...DELIVERY, channel: "telegram", to: "@someone" },
+    { ...DELIVERY, channel: "slack", to: "U0B0QV5434G" },
+    { ...DELIVERY, channel: "slack", to: "D0B0QV5434G" },
   ]) assert.equal(deliveryPattern(delivery), null, JSON.stringify(delivery));
   assert.equal(deliveryPattern({ ...DELIVERY, channel: "telegram", to: "-1001234567890" }), "telegram:-1001234567890");
+  assert.equal(deliveryPattern({ ...DELIVERY, channel: "slack", to: "C0B0QV5434G" }), "slack:C0B0QV5434G");
 });
 
 test("an attended chat carries no job grant, even with a job id in its context", async () => {
@@ -236,13 +240,31 @@ test("a cron job without a delivery target carries no grant", async () => {
   }
 });
 
-test("a job changed after the run began carries no grant", async () => {
+test("a job saved again after the run began carries no grant", async () => {
   storeJob({ delivery: DELIVERY }, LONG_AGO);
-  // The agent re-points the job at another channel mid-run (by exec or any other route), then posts there.
   const all = await cronRun([send("c1", `channel:${CHANNEL}`)], {
-    between: () => storeJob({ delivery: { ...DELIVERY, to: CHANNEL } }, Date.now() + 5),
+    between: () => storeJob({ delivery: DELIVERY }, Date.now() + 5),
   });
   assert.deepEqual(all[0], []);
+});
+
+test("a job store written during the run cannot move the grant to another channel", async () => {
+  // The agent writes the store directly (an exec of sqlite3), pointing the job at its own channel and backdating it.
+  const OTHER = "1519377377082216449";
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  const all = await cronRun([send("c1", `channel:${OTHER}`), send("c2", `channel:${CHANNEL}`)], {
+    between: () => storeJob({ delivery: { ...DELIVERY, to: OTHER } }, LONG_AGO),
+  });
+  assert.deepEqual(all, [[], []]);
+});
+
+test("with the database store present, a lingering jobs.json is not read", async () => {
+  storeJob({ delivery: DELIVERY }, LONG_AGO, "another-job");
+  mkdirSync(path.join(dir, "cron"), { recursive: true });
+  const job = { id: JOB, agentId: "sgt-johnson", createdAtMs: LONG_AGO - 1000, updatedAtMs: LONG_AGO, delivery: DELIVERY };
+  writeFileSync(path.join(dir, "cron", "jobs.json"), JSON.stringify({ version: 1, jobs: [job] }));
+  assert.equal(readCronJob(dir, JOB), null);
+  assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)]))[0], []);
 });
 
 for (const tool of ["cron", "automations"]) {
@@ -260,21 +282,22 @@ test("reading a job with the cron tool is not changing it", async () => {
   assert.deepEqual((await cronRun([read, send("c1", `channel:${CHANNEL}`)]))[1], [EXPECTED]);
 });
 
-test("another agent's job, or a job the store does not hold, carries no grant", async () => {
+test("another agent's job carries no grant", async () => {
   storeJob({ delivery: DELIVERY, agentId: "clawtana" }, LONG_AGO);
   assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)]))[0], []);
-  scans = [];
-  assert.deepEqual((await cronRun([send("c2", `channel:${CHANNEL}`)], { agentCtx: { jobId: "0000" }, toolCtx: { sessionKey: "agent:sgt-johnson:cron:0000:run:x" } }))[0], []);
+});
+
+test("a job that names no agent belongs to the default agent", async () => {
+  storeJob({ delivery: DELIVERY, agentId: undefined }, LONG_AGO);
+  assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)]))[0], []);
+});
+
+test("a job the store does not hold carries no grant", async () => {
+  storeJob({ delivery: DELIVERY }, LONG_AGO);
+  assert.deepEqual((await cronRun([send("c1", `channel:${CHANNEL}`)], { agentCtx: { jobId: "0000" } }))[0], []);
 });
 
 // ---- pieces ------------------------------------------------------------------------------------------
-
-test("the job id is the host's: the hook's jobId, else the cron session key; never from text", () => {
-  assert.equal(cronJobIdOf({ jobId: JOB }, "agent:x:main"), JOB);
-  assert.equal(cronJobIdOf({}, SESSION_KEY), JOB);
-  assert.equal(cronJobIdOf({}, `agent:sgt-johnson:cron:${JOB}`), JOB);
-  assert.equal(cronJobIdOf({ prompt: `[cron:${JOB} workout]` }, "agent:sgt-johnson:main"), null);
-});
 
 test("an unreadable store reads as no job", () => {
   mkdirSync(path.join(dir, "state"), { recursive: true });

@@ -498,7 +498,7 @@
   /** What gave the relief: a grant, or (on OpenClaw) a cron job's own delivery target (`cron_delivery:<job id>`). */
   function reliefSource(ref) {
     if (!ref) return "";
-    if (ref.indexOf("cron_delivery:") === 0) return " (delivery target of cron job " + ref.slice(14, 22) + ")";
+    if (ref.indexOf("cron_delivery:") === 0) return " (a cron job's delivery target)";
     return " (grant " + ref + ")";
   }
 

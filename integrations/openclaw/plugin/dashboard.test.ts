@@ -585,11 +585,11 @@ test("the view shows relief and the ceiling, and a failed scan without scores", 
 test("relief from a cron job's own delivery target names the job, not a grant", () => {
   const model = viewModel();
   const scan = model.scans.find((s: any) => s.relief.length);
-  scan.relief[0].grant_ref = "cron_delivery:561a1f55-c5e9-41fb-930b-1ee7b8e31373";
+  scan.relief[0].grant_ref = "cron_delivery:j_2ec7326addd8";
   const root = drawView(model);
   root.byClass("srk-row").find((r) => r.textContent.includes("38"))!.click();
   const relief = root.byClass("srk-detail").find((d) => d.textContent.includes("Relief"))!;
-  assert.match(relief.textContent, /Relief: distrust\+untrusted_origin \(delivery target of cron job 561a1f55\)/);
+  assert.match(relief.textContent, /Relief: distrust\+untrusted_origin \(a cron job's delivery target\)/);
   assert.doesNotMatch(relief.textContent, /\(grant /);
 });
 

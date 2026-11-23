@@ -175,11 +175,12 @@ Bindings stay until you remove them (`/sentrook-bind remove channel:1234567890`)
 
 You don't need a binding for the channel a cron job is set up to deliver to (its `delivery.channel` and
 `delivery.to`, from `openclaw cron add --announce --channel discord --to <channel id>`): on that job's run, a send
-to that channel counts as yours for that run. The plugin reads the job's delivery from OpenClaw's job store, so only
-what the job itself is set to counts, never a channel named in its task or in anything the run read. It counts for
-nothing when the job's target is a person (a direct message, a phone number), when the job has no target of its own
-(`--channel last`, or no `--to`), and when the job was created or changed after its run began or the agent changed a
-job with its cron tool during the run. The dashboard shows that relief as the job's delivery target.
+to that channel is not treated as going somewhere unfamiliar on that run. The plugin reads the job's delivery from
+OpenClaw's job store when the run starts, so only what the job itself is set to counts, never a channel named in its
+task or in anything the run read. Only a channel or group target counts: not a direct message, a phone number or
+another person's chat, and not a job with no target of its own (`--channel last`, or no `--to`). It also counts for
+nothing once the job is changed during the run (by the agent's cron tool or in the store). The dashboard shows that
+relief as a cron job's delivery target.
 
 A binding can also name a channel the way you know it. `#daily-brief` covers that channel however a send writes it
 (`#daily-brief`, `channel:daily-brief` or `discord:#daily-brief`). `discord:#daily-brief` covers it on Discord only,
@@ -600,7 +601,8 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   can be stricter;
 - the grants and channel bindings that could apply to the call: those whose pattern fits its arguments or the MCP
   server it calls (a `#name` also fits `channel:name`, and a `<platform>:` prefix fits a send that names that
-  platform), and on a cron run its job's own delivery target, as a grant for that run only;
+  platform), and on a cron run its job's own delivery target, as a grant for that run only (named by a hash of the
+  job id);
 - references to the session and agent. Session ids are sent as hashes, not as the ids themselves;
 - for a skill or memory save that OpenClaw makes on its own (see above): the conversation that run read, as its
   messages, the agent's replies and the tool results (each cut short, the results to the part that overlaps the save
@@ -642,7 +644,7 @@ In short, for anyone deciding whether to install it:
   the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
   cron run, that job's definition from OpenClaw's job store (`~/.openclaw/state/openclaw.sqlite`, or
-  `~/.openclaw/cron/jobs.json` on older releases), read-only, for its delivery target; and, to turn a reviewed
+  `~/.openclaw/cron/jobs.json` on releases without it), read-only, for its delivery target; and, to turn a reviewed
   background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
   starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.

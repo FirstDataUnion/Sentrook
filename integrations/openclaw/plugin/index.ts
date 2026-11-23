@@ -202,6 +202,8 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
+    const ocDir = openclawDir(process.env);
     const hostVersion = runtimeVersion();
     const store = new Store(boot.stateDir);
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
@@ -290,6 +292,22 @@ const plugin = {
         jobId: ctx?.jobId,
         ...patch,
       });
+      // A cron run's job target, kept once, at the first agent hook: before any of the run's tool calls.
+      if (runId && ctx?.trigger === "cron" && !store.loadRun(runId).jobDeliveryRead) {
+        let kept: cronDelivery.DeliverySnapshot | null = null;
+        try {
+          kept = cronDelivery.snapshot({
+            trigger: ctx.trigger,
+            jobId: ctx.jobId,
+            agentId: ctx.agentId,
+            hostConfig: hostConfig(),
+            openclawDir: ocDir,
+          });
+        } catch (err) {
+          api.logger.warn(`${LOG} cron job delivery lookup failed: ${String(err)}`);
+        }
+        store.mergeRun(runId, { jobDeliveryRead: true, jobDelivery: kept ?? undefined });
+      }
     };
 
     const safely = (name: string, fn: () => void) => {
@@ -500,16 +518,17 @@ const plugin = {
     );
 
     /** On a cron run, the grant for its job's own delivery target (`cronDelivery.ts`); a failed read gives none. */
-    function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, env: NodeJS.ProcessEnv): GrantConfig[] {
+    function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, params: unknown): GrantConfig[] {
       try {
         const g = cronDelivery.deliveryGrant({
           run,
           kind: triggerKind(run),
-          sessionKey: ctx?.sessionKey,
+          argsText: JSON.stringify(params ?? {}),
           agentId: ctx?.agentId,
+          hostConfig: hostConfig(),
           history: sess.history,
           sessionRef: sessionRef(sid),
-          openclawDir: openclawDir(env),
+          openclawDir: ocDir,
         });
         return g ? [g] : [];
       } catch (err) {
@@ -564,7 +583,7 @@ const plugin = {
         parents: store.parents(),
         grants: [
           ...grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
-          ...jobDeliveryGrant(run, ctx, sess, sid, env),
+          ...jobDeliveryGrant(run, ctx, sess, sid, event?.params),
         ],
         hostVersion,
         hostProcess: hostKind !== null,

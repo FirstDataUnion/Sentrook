@@ -4,35 +4,33 @@
  * The owner says where a cron job's output goes when setting it up (`delivery.channel` and `delivery.to`). When the
  * run's agent posts there itself with the message tool, that channel is the owner's choice for this run, not one the
  * agent picked. So on a cron run the plugin sends a destination grant for the job's configured target, scoped to the
- * run's session, with a `grant_ref` that names the job.
+ * run's session, with a `grant_ref` that names it as a cron job's delivery target.
  *
- * Only the job's own configured target counts. The job is the one the host says the run belongs to (the hook's
- * `jobId`, else the run's `agent:<id>:cron:<jobId>` session key); its delivery is read from OpenClaw's job store
- * (`<state>/state/openclaw.sqlite`, table `cron_jobs`; `<state>/cron/jobs.json` on older releases), because neither
- * the hook context nor the plugin API's cron job carries it. Nothing in the run's text or content is read. A job
- * created or changed after the run began, or one the agent changed with its cron tool in this session, gives no
- * grant: the agent may have pointed it somewhere else. A target that is a person (a `user:` or `dm:` target, a
- * handle, a phone number, a Telegram private chat) gives none either.
+ * Only the job's own configured target counts:
+ * - The job is the one the host says the run belongs to (the agent hooks' `jobId`). Nothing in the run's text or
+ *   content is read.
+ * - Its delivery is read from OpenClaw's job store (`<state>/state/openclaw.sqlite`, table `cron_jobs`; on a release
+ *   without that store, `<state>/cron/jobs.json`), because neither the hook context nor the plugin API's cron job
+ *   carries it.
+ * - It is read at the run's first agent hook, before any of the run's tool calls, and kept in the run's context in
+ *   the plugin's own folder. At each call the job is read again, and the grant is sent only while the job still gives
+ *   that same target and was last changed before the run began. A job the agent changed during the run (with its cron
+ *   tool, or by writing the store) gives no grant, nor one it pointed somewhere else.
+ * - Only a channel or group counts. A person (a `user:` or `dm:` target, a handle, a phone number, a Telegram private
+ *   chat, a Slack user or direct-message id) gives no grant.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import type { GrantConfig } from "./config.ts";
+import { hash12 } from "./planir.ts";
 import type { HistoryEntry, RunContext } from "./store.ts";
 
-/** The `grant_ref` prefix of a job's delivery grant; the job id follows. */
+/** The `grant_ref` prefix of a job's delivery grant; the hashed job id follows. */
 export const DELIVERY_REF = "cron_delivery:";
 
-/** The run of a cron job, as OpenClaw keys it: `agent:<id>:cron:<jobId>`, optionally `:run:<session id>`. */
-const CRON_SESSION = /^agent:[^:]+:cron:([^:]+)(?::run:[^:]+)?$/i;
-
-/** The job a cron run belongs to, as the host gives it: the hook's `jobId`, else the run's session key. */
-export function cronJobIdOf(run: RunContext, sessionKey: unknown): string | null {
-  if (typeof run.jobId === "string" && run.jobId.trim()) return run.jobId.trim();
-  const m = typeof sessionKey === "string" ? CRON_SESSION.exec(sessionKey.trim()) : null;
-  return m ? m[1]! : null;
-}
+export const deliveryRef = (jobId: string) => `${DELIVERY_REF}j_${hash12(jobId)}`;
 
 export interface CronJob {
   agentId?: string;
@@ -40,6 +38,12 @@ export interface CronJob {
   createdAtMs?: number;
   /** When the job's definition last changed, as the store records it. */
   updatedAtMs?: number;
+}
+
+/** The job's target, as read at the run's first agent hook (kept in the run's context). */
+export interface DeliverySnapshot {
+  jobId: string;
+  pattern: string;
 }
 
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
@@ -56,7 +60,7 @@ function jobOf(raw: unknown, updatedAt?: unknown): CronJob | null {
   };
 }
 
-/** `node:sqlite`, looked up when a store is first read; undefined on a Node without it. */
+/** `node:sqlite`, looked up when a store is first read; null on a Node without it. */
 let sqlite: any;
 function sqliteModule(): any {
   if (sqlite === undefined) {
@@ -71,20 +75,21 @@ function sqliteModule(): any {
 
 /**
  * The job from OpenClaw's job store under its state directory, or null when the store does not hold it or cannot be
- * read. A job id held more than once (by two stores in the table) reads as unknown.
+ * read. Where the database store exists, only it is read (an older `jobs.json` may linger beside it after the move).
+ * A job id held more than once (by two stores in the table) reads as unknown.
  */
 export function readCronJob(openclawDir: string, jobId: string): CronJob | null {
   const db = path.join(openclawDir, "state", "openclaw.sqlite");
-  const DatabaseSync = sqliteModule()?.DatabaseSync;
-  if (DatabaseSync) {
+  if (existsSync(db)) {
+    const DatabaseSync = sqliteModule()?.DatabaseSync;
+    if (!DatabaseSync) return null;
     let conn: any;
     try {
       conn = new DatabaseSync(db, { readOnly: true, timeout: 200 });
       const rows = conn.prepare("SELECT job_json, updated_at FROM cron_jobs WHERE job_id = ?").all(jobId) as any[];
-      if (rows.length === 1) return jobOf(JSON.parse(String(rows[0].job_json)), rows[0].updated_at);
-      if (rows.length > 1) return null;
+      return rows.length === 1 ? jobOf(JSON.parse(String(rows[0].job_json)), rows[0].updated_at) : null;
     } catch {
-      // no table, or a store that is not a database: try the older file
+      return null;
     } finally {
       try {
         conn?.close();
@@ -131,7 +136,40 @@ export function deliveryPattern(delivery: unknown): string | null {
   if (!room && PHONE_PLATFORMS.has(platform)) return null;
   // A Telegram chat with a positive id is a private chat with one person; groups and channels are negative.
   if (!room && platform === "telegram" && /^\d+$/.test(to)) return null;
+  // Slack ids: `U…`/`W…` are people, `D…` a direct message.
+  if (!room && platform === "slack" && /^[UWD][A-Z0-9]{6,}$/.test(to)) return null;
   return `${platform}:${to}`;
+}
+
+/** The agent OpenClaw runs a job on when the job names none: the config's default agent, else `main`. */
+function defaultAgent(hostConfig: any): string {
+  const list: any[] = Array.isArray(hostConfig?.agents?.list) ? hostConfig.agents.list : [];
+  const chosen = list.find((a) => a?.default === true) ?? list[0];
+  return typeof chosen?.id === "string" && chosen.id ? chosen.id : "main";
+}
+
+/** The pattern for the job's own target, when the job is this agent's; null otherwise. */
+function patternFor(job: CronJob | null, agentId: string | undefined, hostConfig: any): string | null {
+  if (!job) return null;
+  if ((job.agentId ?? defaultAgent(hostConfig)) !== (agentId ?? defaultAgent(hostConfig))) return null;
+  return deliveryPattern(job.delivery);
+}
+
+/**
+ * At the run's first agent hook (before any of its tool calls): the job's target, for a cron run whose hook gives the
+ * job id. Null when there is none to keep.
+ */
+export function snapshot(b: {
+  trigger: unknown;
+  jobId: unknown;
+  agentId: string | undefined;
+  hostConfig: any;
+  openclawDir: string;
+}): DeliverySnapshot | null {
+  if (b.trigger !== "cron" || typeof b.jobId !== "string" || !b.jobId.trim()) return null;
+  const jobId = b.jobId.trim();
+  const pattern = patternFor(readCronJob(b.openclawDir, jobId), b.agentId, b.hostConfig);
+  return pattern ? { jobId, pattern } : null;
 }
 
 /** The agent's scheduler tool (`cron` is its permanent alias) and the actions that only read or run a job. */
@@ -144,28 +182,31 @@ function cronChanged(history: HistoryEntry[]): boolean {
 }
 
 /**
- * The run-scoped destination grant for the job's own delivery target, or null. Only on a cron run (`trigger: cron`,
- * not a subagent child) of the agent that owns the job, whose definition is older than the run, in a session where
- * the agent has not changed a job with its cron tool.
+ * The run-scoped destination grant for the job's own delivery target, or null: only on a cron run (`trigger: cron`,
+ * not a subagent child) that kept the job's target at its first agent hook, for a call that names that target, while
+ * the job still gives the same target and was last changed before the run began, in a session where the agent has
+ * not changed a job with its cron tool.
  */
 export function deliveryGrant(b: {
   run: RunContext;
   kind: string;
-  sessionKey: unknown;
+  argsText: string;
   agentId: string | undefined;
+  hostConfig: any;
   history: HistoryEntry[];
   sessionRef: string;
   openclawDir: string;
 }): GrantConfig | null {
-  if (b.kind !== "scheduled" || b.run.trigger !== "cron") return null;
-  const jobId = cronJobIdOf(b.run, b.sessionKey);
+  const kept = b.run.jobDelivery as DeliverySnapshot | undefined;
+  if (b.kind !== "scheduled" || b.run.trigger !== "cron" || !kept?.jobId || !kept.pattern) return null;
   const began = num(b.run.seenAtMs);
-  if (!jobId || began === undefined || cronChanged(b.history)) return null;
-  const job = readCronJob(b.openclawDir, jobId);
+  if (began === undefined || cronChanged(b.history)) return null;
+  // The grant only matters to a call that shows the target; any other call need not read the store.
+  const id = kept.pattern.slice(kept.pattern.indexOf(":") + 1).toLowerCase();
+  if (!b.argsText.toLowerCase().includes(id)) return null;
+  const job = readCronJob(b.openclawDir, kept.jobId);
   if (!job || job.updatedAtMs === undefined || job.updatedAtMs >= began) return null;
   if (job.createdAtMs !== undefined && job.createdAtMs >= began) return null;
-  if ((job.agentId ?? "main") !== (b.agentId ?? "main")) return null;
-  const pattern = deliveryPattern(job.delivery);
-  if (!pattern) return null;
-  return { kind: "destination", pattern, scope: "session", session_ref: b.sessionRef, ref: `${DELIVERY_REF}${jobId}` };
+  if (patternFor(job, b.agentId, b.hostConfig) !== kept.pattern) return null;
+  return { kind: "destination", pattern: kept.pattern, scope: "session", session_ref: b.sessionRef, ref: deliveryRef(kept.jobId) };
 }
