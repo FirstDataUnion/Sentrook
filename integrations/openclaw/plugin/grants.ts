@@ -44,6 +44,21 @@ const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 export const CREDENTIAL_PATTERN = new RegExp(
   `^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{2,}\\*)@(?:\\*\\.)?${LABEL}(?:\\.${LABEL})+$`,
 );
+/**
+ * Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard there,
+ * or on part of a numeric address, covers strangers, and Sentrook refuses it.
+ */
+const SHARED_SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
+
+/** `NAME@host` as Sentrook reads it (the host already lower-cased). */
+export function credentialPatternOk(pattern: string): boolean {
+  if (!CREDENTIAL_PATTERN.test(pattern)) return false;
+  const host = pattern.slice(pattern.indexOf("@") + 1);
+  if (!host.startsWith("*.")) return true;
+  const labels = host.slice(2).split(".");
+  if (labels.every((l) => /^\d+$/.test(l))) return false;
+  return !(labels.length === 2 && SHARED_SECOND_LEVEL.has(labels[0]!) && labels[1]!.length === 2);
+}
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
 const SESSION_REF = /^s_[0-9a-f]{12}$/;
@@ -301,8 +316,8 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
   }
   if (kind === "credential") {
     const at = pattern.indexOf("@");
-    if (at >= 0) pattern = `${pattern.slice(0, at)}@${pattern.slice(at + 1).toLowerCase().replace(/\.$/, "")}`;
-    if (!CREDENTIAL_PATTERN.test(pattern)) {
+    if (at >= 0) pattern = `${pattern.slice(0, at)}@${pattern.slice(at + 1).toLowerCase().replace(/\.+$/, "")}`;
+    if (!credentialPatternOk(pattern)) {
       return (
         `"${clean(pos[1], 80)}" is not a credential pattern: use NAME@host, such as ` +
         "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, " +
@@ -310,7 +325,8 @@ export function parseGrant(rest: string, cmd: Cmd): ParsedGrant | string {
       );
     }
   }
-  const scope = opts.scope ?? (kind === "credential" ? "persistent" : "session");
+  // a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
+  const scope = opts.scope ?? (kind === "credential" && opts.session === undefined ? "persistent" : "session");
   if (!SCOPES.includes(scope)) return `Unknown scope "${clean(scope, 40)}": use session or persistent.`;
   const grant: ParsedGrant = { kind, pattern, scope };
   if (opts.session !== undefined) {

@@ -204,7 +204,7 @@ An agent that reads an API key from its env file and sends it to the service it 
 thing. Sentrook already knows the keys of some common providers and the hosts they go to; for any other
 service, a `credential` grant says the same: `NAME@host`, the key's environment name and the service's API host.
 The name may end in `*` after three or more characters (`MY_SERVICE_*`), and the host may be `*.example.com` (that
-domain and every name under it). With it, sending that key only to that host is not treated as sensitive data
+domain and every name under it, but not a shared suffix such as `*.co.uk`). With it, sending that key only to that host is not treated as sensitive data
 leaving the machine, and the host is not treated as unfamiliar on that call. The key sent anywhere else, written to a
 file or printed, sent alongside another secret or file, or sent to a host that content the agent read named, is
 still reviewed. A credential grant lasts until you revoke it unless you give `--scope session` or `--expires`. When a

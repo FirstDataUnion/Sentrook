@@ -14,8 +14,10 @@ Offered only when all of this holds:
 - the call is at or above the review line, with no `enforced` decision and no floor but the sensitive-data-sent one;
 - the turn is the owner's (`hints.owner_turn`), the scan is fully informed (`attended.withheld` finds nothing), the
   session is not tainted, and no fetch carries text from a local read (`prepare.url_carry`);
-- the host is not known-bad, a near miss or a look-alike by any probe's account, not one content the agent read
-  supplied or steered it to, and not one the call or a later run takes code from.
+- the host is not known-bad, a near miss or a look-alike by any probe's account, nor a look-alike of a host the
+  owner's own `credential` or `destination` grants name (`api.example.com.evil.net` beside a grant for
+  `api.example.com`); not one content the agent read supplied or steered it to, and not one the call or a later run
+  takes code from.
 
 Verification: the call is scored again with the grant in place, on a copy of the preparation (the session state the
 response carries is the real scan's): the credential-home check runs again, the rule-based probes (AIRA and the
@@ -33,7 +35,7 @@ from typing import Any
 from ..enums import ProbeStep, ScanStatus, SessionFlag
 from ..planir.models import Grant, GrantScope
 from ..prepare import Prepared
-from ..prepare.credential_home import check, parse_credential_pattern
+from ..prepare.credential_home import check, live_credential_grants, parse_credential_pattern
 from ..prepare.entities import Entity, EntityKind, Origin, Role
 from ..probes.base import Envelope
 from ..response.models import GrantHint
@@ -87,6 +89,23 @@ def candidate(prepared: Prepared) -> tuple[str, Entity] | None:
     return found[0] if len(found) == 1 else None
 
 
+def _imitates_a_granted_host(prepared: Prepared, host: str) -> bool:
+    """`host` is not a host the owner's credential or destination grants name, nor under one, but imitates one: it
+    spells one inside it (`api.example.com.evil.net`) or is a near miss of it."""
+    from ..oracle.near_miss import how_near
+
+    bases = {h.removeprefix("*.") for _, _, h in live_credential_grants(prepared)}
+    for g in prepared.planir.grants:
+        if g.kind.lower() == "destination" and "@" not in g.pattern and ":" not in g.pattern:
+            bases.add(g.pattern.strip().lower().removeprefix("*."))
+    for base in bases:
+        if not base or host == base or host.endswith("." + base):
+            continue
+        if base in host or how_near("host", host, base) not in (None, "same"):
+            return True
+    return False
+
+
 def eligible(
     prepared: Prepared,
     envelopes: list[Envelope],
@@ -133,6 +152,8 @@ def hint(
     if host.id in _unhintable(prepared, collect(envelopes), envelopes) or _from_content(host):
         return None
     if (host.roles | host.future_roles) & _CODE_ROLES:
+        return None
+    if _imitates_a_granted_host(prepared, host.value.lower()):
         return None
 
     hyp = copy.deepcopy(prepared)

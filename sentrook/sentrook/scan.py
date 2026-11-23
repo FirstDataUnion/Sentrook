@@ -432,11 +432,12 @@ class Scanner:
         # A reviewed send of a key to an unlisted service: the credential grant that would let it through, verified
         # by scoring a copy again with it (`converge.credential_hint`). Taken before converge mints the session sets
         # into `prepared`, so the copy starts from the state this scan started from.
-        hint_copy = (
-            copy.deepcopy(prepared)
-            if credential_hint_candidate(prepared, self.config.params)
-            else None
-        )
+        hint_copy: Prepared | None = None
+        if credential_hint_candidate(prepared, self.config.params):
+            try:
+                hint_copy = copy.deepcopy(prepared)
+            except Exception:  # noqa: BLE001 (no copy, no hint: the review stands as it is)
+                hint_copy = None
         result = converge(
             prepared,
             ordered,

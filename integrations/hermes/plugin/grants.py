@@ -47,6 +47,24 @@ _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 CREDENTIAL_PATTERN = re.compile(
     rf"(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{{2,}}\*)@(?:\*\.)?{_LABEL}(?:\.{_LABEL})+"
 )
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard
+#: there, or on part of a numeric address, covers strangers, and Sentrook refuses it.
+_SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+
+
+def credential_pattern_ok(pattern: str) -> bool:
+    """`NAME@host` as Sentrook reads it (the host already lower-cased)."""
+    if not CREDENTIAL_PATTERN.fullmatch(pattern):
+        return False
+    host = pattern.partition("@")[2]
+    if not host.startswith("*."):
+        return True
+    labels = host[2:].split(".")
+    if all(label.isdigit() for label in labels):
+        return False
+    return not (len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2)
+
+
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
@@ -307,13 +325,15 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
         pattern = pattern.strip()
         name, _, host = pattern.partition("@")
         pattern = f"{name}@{host.lower().rstrip('.')}"
-        if not CREDENTIAL_PATTERN.fullmatch(pattern):
+        if not credential_pattern_ok(pattern):
             return (
                 f'"{_clean(pos[1], 80)}" is not a credential pattern: use NAME@host, such as '
                 "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
                 "host may be *.example.com)."
             )
-    scope = opts.get("scope", "persistent" if kind == "credential" else "session")
+    # a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
+    default = "persistent" if kind == "credential" and "session" not in opts else "session"
+    scope = opts.get("scope", default)
     if scope not in SCOPES:
         return f'Unknown scope "{_clean(scope, 40)}": use session or persistent.'
     grant: dict[str, Any] = {"kind": kind, "pattern": pattern, "scope": scope}

@@ -431,10 +431,19 @@
       "sent": true
     },
     {
-      "case": "credential grant on a call that names neither its key nor its host",
+      "case": "credential grant on an exec call that names neither its key nor its host (a script holds both)",
       "grant": { "kind": "credential", "pattern": "EXAMPLE_API_KEY@api.example.invalid", "scope": "persistent" },
       "identity": null,
-      "arguments": { "command": "curl -s https://api.othervendor.invalid/v1/me" },
+      "tool_kind": "exec",
+      "arguments": { "command": "python3 /home/alex/sync.py" },
+      "sent": true
+    },
+    {
+      "case": "credential grant on a message send that names neither its key nor its host",
+      "grant": { "kind": "credential", "pattern": "EXAMPLE_API_KEY@api.example.invalid", "scope": "persistent" },
+      "identity": null,
+      "tool_kind": "message_send",
+      "arguments": { "target": "ops@team.invalid", "message": "the nightly sync finished" },
       "sent": false
     }
   ]

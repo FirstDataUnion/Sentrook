@@ -224,7 +224,8 @@ test("a credential grant is persistent and reaches scans that use its key or hos
     sent.map((x: any) => [x.kind, x.pattern]),
     [["credential", "EXAMPLE_API_KEY@api.example.invalid"]],
   );
-  assert.deepEqual(await r.scan("curl https://api.othervendor.invalid/v1/me"), []);
+  // an exec call may run a script that holds both, which Sentrook reads too: the grant goes on every one
+  assert.deepEqual((await r.scan("python3 sync.py")).map((x: any) => x.kind), ["credential"]);
   // still a session grant when the owner asks for one
   await run(r, "sentrook-grant", "credential EXAMPLE_TOKEN@api.example.invalid --scope session");
   assert.equal(stored().grants[1].scope, "session");
@@ -741,10 +742,30 @@ for (const c of RELEVANCE.cases) {
       workspace: c.workspace ?? RELEVANCE.workspace,
       cwd: callCwd(c.arguments),
       platform: callPlatform(c.arguments, c.tool_kind ?? "other"),
+      execCall: c.tool_kind === "exec",
     });
     assert.equal(sent.length > 0, c.sent);
   });
 }
+
+/** Shared with the Hermes plugin's tests and the scanner's: a credential pattern is read as Sentrook reads it. */
+const CREDENTIAL_PATTERNS = JSON.parse(readFileSync(path.join(FIXTURES, "credential-patterns.json"), "utf8"));
+for (const c of CREDENTIAL_PATTERNS.cases) {
+  test(`credential pattern: ${c.typed}`, () => {
+    const parsed = grants.parseGrant(`credential ${c.typed}`, CMD);
+    if (c.pattern === null) {
+      assert.ok(typeof parsed === "string" && parsed.includes("is not a credential pattern"), String(parsed));
+    } else {
+      assert.deepEqual(parsed, { kind: "credential", pattern: c.pattern, scope: "persistent" });
+    }
+  });
+}
+
+test("naming a session makes a credential grant a session grant", () => {
+  const parsed = grants.parseGrant("credential EXAMPLE_API_KEY@api.example.invalid --session s_0123456789ab", CMD);
+  assert.ok(typeof parsed !== "string");
+  assert.deepEqual([parsed.scope, parsed.session_ref], ["session", "s_0123456789ab"]);
+});
 
 /** Shared with the Hermes plugin's tests: both hosts say the same about a binding that can never apply. */
 const BINDING_PROBLEMS = JSON.parse(readFileSync(path.join(FIXTURES, "binding-problems.json"), "utf8"));

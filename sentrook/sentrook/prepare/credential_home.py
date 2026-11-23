@@ -17,7 +17,9 @@ holds, and the call's credential does not count as sensitive data sent, only whe
   or an earlier one, and no other content) does not count as content here: the skill is the agent's standing
   instructions for the service, and the library already ties the key to that host. Memory reads do count, and
   everything else still scores such a host as untrusted;
-- the call sends by no route whose destination need not be written as a host (`scp`, `nc`, `git push`, ...);
+- the call sends by no route whose destination need not be written as a host (`scp`, `nc`, `git push`, ...), in a
+  shell command or named in code (`subprocess.run(['nc', ...])`, a raw socket), and builds no address at run time
+  (`'https://' + h`, `f"https://{h}"`, `https://$HOST`): a host the code does not write out is not an entity;
 - every sensitive file the call touches is a dotenv file (`.env`, `.env.local`, ...) that holds credentials, and
   none is sent whole (`curl -T ~/.env`, `-d @~/.env`, an attachment); no secret value is written in the call;
 - the session's sensitive data that the call takes content from is only those env files; for a call with nothing
@@ -29,7 +31,8 @@ holds, and the call's credential does not count as sensitive data sent, only whe
 
 The owner can tie a key to a service the library does not list with a `credential` grant: `NAME@host`, the name
 exact or a `PREFIX*` (three or more characters before the `*`), the host exact or `*.example.com` (that domain and
-every name under it; at least two labels after the wildcard). A live grant whose host pattern covers a host adds its
+every name under it; at least two labels after the wildcard, and not a shared suffix such as `co.uk` or an address
+written in numbers). A live grant whose host pattern covers a host adds its
 name to the names that host lists, exactly as a library entry would; every other condition above still holds. A
 grant never covers a host the oracle marks known-bad. A malformed or over-broad pattern covers nothing. Where a grant
 supplied a name the call uses, the check records the grant on that host (`CredentialHome.grants`).
@@ -120,6 +123,18 @@ _GRANT_HOST_RE = re.compile(rf"(?:\*\.)?{_LABEL}(?:\.{_LABEL})+")
 _MIN_PREFIX = 3
 
 
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`, `com.au`): a
+#: wildcard there covers strangers. The oracle's near-miss check reads registrable domains the same way.
+_SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+
+
+def _wildcard_too_broad(base: str) -> bool:
+    labels = base.split(".")
+    if all(label.isdigit() for label in labels):
+        return True  # part of a numeric address: `*.113.9`
+    return len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2
+
+
 def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
     """A `credential` grant's pattern as `(name pattern, host pattern)`, or None when it is malformed or over-broad.
     `NAME@host`: the name exact or `PREFIX*` with at least three characters before the `*`; the host lower-cased,
@@ -130,6 +145,8 @@ def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
     if not sep or not _GRANT_NAME_RE.fullmatch(name) or not _GRANT_HOST_RE.fullmatch(host):
         return None
     if name.endswith("*") and len(name) - 1 < _MIN_PREFIX:
+        return None
+    if host.startswith("*.") and _wildcard_too_broad(host[2:]):
         return None
     return name, host
 
@@ -191,6 +208,44 @@ def credential_names_in(text: str, listed: list[str] | tuple[str, ...] = ()) -> 
         elif re.search(r"(?<![A-Za-z0-9_])" + re.escape(n) + r"(?![A-Za-z0-9_])", text):
             found.add(n)
     return found
+
+
+#: A string literal in code (Python, JavaScript), with an optional prefix (`f`, `r`, `b`).
+_CODE_STRING_RE = re.compile(r"""(?<![\w])[rRbBuUfF]{0,2}(['"`])((?:\\.|(?!\1)[^\\\n])*)\1""")
+#: Code that opens a connection itself: its destination need not be written as a host.
+_RAW_SOCKET_RE = re.compile(
+    r"\bsocket\s*\.\s*(?:socket|create_connection)\s*\(|\bnet\s*\.\s*(?:connect|createConnection|Socket)\b"
+    r"|\btls\s*\.\s*connect\s*\(|\bdgram\b"
+)
+#: An address whose host is filled in at run time: a scheme followed by a quote, a placeholder or a variable.
+_BUILT_ADDRESS_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://(?:['\"`]|\{|%[sr(]|\$)", re.IGNORECASE)
+
+
+#: Send heads that are also scheme names, so a one-word literal of them is read as a word.
+_SCHEME_WORDS = frozenset({"http", "https", "ftp", "sftp", "ssh", "telnet"})
+
+
+def _code_sends_by_unwritten_route(code: str) -> bool:
+    """Code that runs a send tool whose destination need not be written as a host (`subprocess.run(['nc', ...])`,
+    `os.system('scp ...')`), or opens a socket itself."""
+    from .grants import _SEND_HEADS, sends_by_unwritten_route
+
+    if _RAW_SOCKET_RE.search(code):
+        return True
+    words: set[str] = set()
+    for m in _CODE_STRING_RE.finditer(code):
+        text = m.group(2).strip()
+        if not text:
+            continue
+        tokens = text.split()
+        head = posixpath.basename(tokens[0]).lower()
+        if len(tokens) == 1 and head in _SCHEME_WORDS:
+            words.add(head)
+            continue  # `scheme == 'https'`: a word, not HTTPie run with no arguments
+        if head in _SEND_HEADS or sends_by_unwritten_route(text):
+            return True
+        words.add(head)
+    return ("git" in words and "push" in words) or ("aws" in words and "s3" in words)
 
 
 def _code_puts_key_elsewhere(code: str, anchors: set[str]) -> bool:
@@ -321,6 +376,12 @@ def _check(
         if a.kind is ToolKind.EXEC and not a.inline_code:
             if sends_by_unwritten_route(a.call.command or ""):
                 return None, "unwritten_route"
+        if (a.inline_code or a.call.code_cell) and _code_sends_by_unwritten_route(
+            a.call.command or ""
+        ):
+            return None, "unwritten_route"
+        if _BUILT_ADDRESS_RE.search(a.call.command or a.text or ""):
+            return None, "address_built_at_run_time"
         attached = {p.value for p in a.attachments}
         for p in a.paths:
             if _top_sensitive_group(p.groups) is None:

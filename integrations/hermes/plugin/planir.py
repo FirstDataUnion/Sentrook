@@ -268,6 +268,7 @@ def relevant_grants(
     workspace: str | None = None,
     cwd: str | None = None,
     platform: str | None = None,
+    exec_call: bool = False,
 ) -> list[dict[str, Any]]:
     """Only grants that could cover this call. The scanner decides what a grant covers; this only keeps
     the owner's other grants out of the request, so it errs towards sending. A provider grant is also
@@ -276,7 +277,8 @@ def relevant_grants(
     home in any form (`~/…`, `$HOME/…` or full), and `./…` against the command's `cwd`, else the workspace.
     A destination is read the way the scanner reads a channel: a `#name` as `channel:name`, and a
     `<platform>:` prefix as met when the send names `platform` (`call_platform`). A credential grant
-    (`NAME@host`) is sent when the call shows either its name or its host."""
+    (`NAME@host`) is sent on every exec call (`exec_call`: the key and the host may be only in a script the
+    call runs, which Sentrook reads too), and on any other call that shows either its name or its host."""
     text = args_text.lower()
     texts = [text]
     if base := cwd or workspace:
@@ -299,6 +301,9 @@ def relevant_grants(
         elif g["kind"] == "repo":
             forms = [(_repo_path(pat), False)]
         elif g["kind"] == "credential":
+            if exec_call:
+                out.append({"grant_ref": f"g_{i + 1}", **g})
+                continue
             # the key's name or the host it is meant for: either may be all the arguments show
             name, _, host = pat.partition("@")
             forms = [(name, False), (host, False)]
@@ -532,6 +537,7 @@ def build_planir(
             workspace=os.getcwd(),
             cwd=call_cwd(raw_args) if tk == "exec" else None,
             platform=call_platform(raw_args, tk),
+            exec_call=tk == "exec",
         ),
         **({"self_edit": self_edit} if self_edit is not None else {}),
         "options": {"packs": cfg.packs, "redaction": redactor.level},
