@@ -10,7 +10,9 @@ and noted, without a floor.
 
 from __future__ import annotations
 
+import gc
 import os
+import threading
 import time
 
 import pytest
@@ -619,3 +621,76 @@ def test_nested_lists_count_toward_the_bound():
     res, spent = scan(raw)
     assert spent < FAST, f"{spent:.2f}s"
     held_for_review(res)
+
+
+def _nested(n: int = 60_000) -> dict:
+    value: object = ""
+    for _ in range(30):
+        value = [value]
+    return {"command": "ls", "zz": [value] * n}
+
+
+def test_the_walk_pauses_the_cycle_collector_and_restores_it():
+    """Most of a large walk's time was the cycle collector running over and over while the walk built its
+    queue. It is paused for the walk and put back as it was, cut or not."""
+    assert gc.isenabled()
+    _, detail = bound_arguments(_nested(), ToolKind.EXEC)
+    assert detail is not None and gc.isenabled()
+    assert bound_arguments({"command": "ls"}, ToolKind.EXEC) == ({"command": "ls"}, None)
+    assert gc.isenabled()
+    gc.disable()
+    try:
+        bound_arguments(_nested(), ToolKind.EXEC)
+        assert not gc.isenabled()  # left off when it was off
+    finally:
+        gc.enable()
+
+
+def test_the_cycle_collector_comes_back_when_the_walk_fails(monkeypatch):
+    from sentrook.planir import bounds
+
+    def boom(*_a, **_k):
+        assert not gc.isenabled()
+        raise RuntimeError("walk failed")
+
+    monkeypatch.setattr(bounds, "_walk", boom)
+    with pytest.raises(RuntimeError):
+        bound_arguments({"command": "ls"}, ToolKind.EXEC)
+    assert gc.isenabled()
+
+
+def test_overlapping_walks_leave_the_cycle_collector_on(monkeypatch):
+    """Two scans walking at once (the probe pool, concurrent requests): the collector stays paused until the last
+    walk ends, then comes back."""
+    from sentrook.planir import bounds
+
+    walk = bounds._walk
+    inside = threading.Barrier(2, timeout=10)
+    first_done = threading.Event()
+    states: list[bool] = []
+
+    def slow_walk(*a, **k):
+        inside.wait()
+        if threading.current_thread().name == "second":
+            first_done.wait(timeout=10)
+            states.append(gc.isenabled())  # the first walk ended, this one still runs
+        return walk(*a, **k)
+
+    monkeypatch.setattr(bounds, "_walk", slow_walk)
+
+    def first():
+        bound_arguments({"command": "ls"}, ToolKind.EXEC)
+        first_done.set()
+
+    threads = [
+        threading.Thread(target=first, name="first"),
+        threading.Thread(
+            target=bound_arguments, args=({"command": "ls"}, ToolKind.EXEC), name="second"
+        ),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+    assert states == [False]
+    assert gc.isenabled()
