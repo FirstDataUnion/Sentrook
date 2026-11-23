@@ -13,6 +13,11 @@ since the version the catalog pins.
   another). So every review from them was held, with its notice sent to the `owner_channel` home channel, and no
   card ever reached the app. The plain command line still needs a terminal, and the API server, cron, sub-agents,
   webhooks and the curator are unchanged.
+- With Hermes's `plugins.isolation: host`, the plugin runs in Hermes's plugin host, where it cannot tell Hermes's
+  background skill and memory saves from your own calls: they are scanned like any other call, without the
+  conversation they follow, and are never held, staged or announced as background saves. The plugin now says so: a
+  warning when it starts and a `background saves: not recognised` line in `/sentrook status`, both naming the fix
+  (`plugins.isolation: in_process`, Hermes's default). Nothing changes in-process.
 
 ## 2.0.0-beta.17
 

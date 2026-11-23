@@ -14,6 +14,9 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 - Hermes Agent **v0.23.0 or newer** (`hermes --version`), the oldest version the plugin declares.
   Tested on v0.23.0 and v0.23.2.
   On an older Hermes, update Hermes first (`hermes update`).
+- Plugins loaded inside Hermes (`plugins.isolation: in_process`, the default). With `plugins.isolation: host` every
+  call is still scanned, but Hermes's background skill and memory saves are not recognised (see
+  [Background skill and memory saves](#background-skill-and-memory-saves)).
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
 - A free FIDU account, created at <https://identity.firstdataunion.org>.
@@ -409,6 +412,18 @@ way, but nothing tells you: `status` and `verify` say so, and the saves show onl
 otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal, TUI or desktop app
 session, or a platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
 cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
+
+All of this needs the plugin to run inside Hermes, which is Hermes's default (`plugins.isolation: in_process`). With
+`plugins.isolation: host` Hermes runs plugins in a separate process, where the plugin cannot tell a background save
+from your own call: background saves are then scanned like any other call, without the conversation, and none of the
+above applies. The plugin warns about this when it starts, and `status` shows `background saves: not recognised`. To
+have them recognised, set it back:
+
+```bash
+hermes config set plugins.isolation in_process
+```
+
+then restart Hermes.
 
 #### Approving a held save in Hermes
 
