@@ -17,9 +17,9 @@ What is compared, per kind:
 - an email recipient: its domain, by the host rule, against listed addresses with the same local part;
   any other recipient (a handle) whole.
 Labels and names shorter than five characters never match: too many short names are one edit apart.
-Against an entry in a `FOLD_ONLY_TIERS` tier (the popular-package lists) only `fold` counts: those lists hold
-thousands of real names one letter apart (`pillow`, `willow`), and published typosquats of them are listed
-`known_bad` by name.
+Against an entry in a `FOLD_ONLY_TIERS` tier (the popular-package lists, and the generated layer of provider API
+hosts, `provider_api_feed`) only `fold` counts: those lists hold real names one letter apart (`pillow`, `willow`;
+`replicate.com`, `replicated.com`), and published typosquats of the packages are listed `known_bad` by name.
 Roles are ignored: a value that imitates a vouched-for entity is suspicious in whatever role it appears.
 
 Rookery's oracle implements the same rule; the two share a test table.
@@ -35,7 +35,7 @@ MIN_LENGTH = 5
 #: `how`, nearest first.
 HOWS = ("tld", "fold", "edit")
 NAME_KINDS = ("package", "mcp_server", "plugin")
-FOLD_ONLY_TIERS = frozenset({"popular"})
+FOLD_ONLY_TIERS = frozenset({"popular", "provider_api_feed"})
 
 CONFUSABLES = (
     ("rn", "m"),

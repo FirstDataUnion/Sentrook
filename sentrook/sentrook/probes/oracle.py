@@ -32,10 +32,12 @@ counts as a strong signal; a look-alike keeps that claim beside its near-miss on
 the `lookalike_code_source` floor. Relief decides whether the owner's naming, a grant or configuration sanctions the
 role, as for the call's own roles: sending, never running code.
 
-A provider API host the library lists only as the home of the credentials its service issues (tier
-`provider_api`) vouches for nothing else: it is scored, reported and shown to the judge as an unlisted host,
-and its credential names are kept in the evidence for the credential-home check (`prepare.credential_home`).
-Its look-alikes are still near misses of it.
+A `known_good` host that lists `credential_names` is the home of the credentials its service issues and vouches
+for nothing else, whatever its tier says (`provider_api` for the hand-curated hosts, `provider_api_feed` for the
+generated layer): it is scored, reported and shown to the judge as an unlisted host, and its credential names are
+kept in the evidence for the credential-home check (`prepare.credential_home`). The names, not a tier, decide, so a
+tier the scanner does not know can never turn a credential home into a trusted destination. Its look-alikes are
+still near misses of it.
 """
 
 from __future__ import annotations
@@ -56,7 +58,6 @@ from ..oracle.client import (
 )
 from ..planir.models import ToolKind
 from ..prepare import Prepared
-from ..prepare.credential_home import PROVIDER_API_TIER
 from ..prepare.entities import Entity, EntityKind, Origin, Role
 from .base import Contribution, Envelope, Floor
 
@@ -146,8 +147,9 @@ VIEW_VERDICTS = (VerdictKind.KNOWN_GOOD.value, VerdictKind.KNOWN_BAD.value)
 
 
 def _credential_home_only(v: Verdict) -> Verdict:
-    """A provider API host listed only as its credentials' home answers as an unlisted host, keeping the names."""
-    if v.verdict is VerdictKind.KNOWN_GOOD and v.tier == PROVIDER_API_TIER:
+    """A known-good host listing credential names is only its credentials' home: it answers as an unlisted host,
+    keeping the names."""
+    if v.verdict is VerdictKind.KNOWN_GOOD and v.credential_names:
         return replace(
             v,
             verdict=VerdictKind.UNKNOWN,

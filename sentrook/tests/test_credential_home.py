@@ -510,11 +510,35 @@ def test_a_provider_api_host_scores_as_unlisted_for_everything_else():
         assert "relief.known_good_destination" not in codes(res)
         assert "reputation.unknown_host_as_data_destination" in codes(res)
         assert res.prepared.oracle_verdicts == []
-    # the same entry without the tier is an ordinary known-good host
-    plain = {"entities": [{**HOME, "tier": None}]}
+    # the same entry without credential names is an ordinary known-good host
+    plain = {"entities": [{k: v for k, v in HOME.items() if k != "credential_names"}]}
     assert "relief.known_good_destination" in codes(
         scan(raw, params=V5, state=seed(), oracle=plain)
     )
+
+
+@pytest.mark.parametrize("tier", ["provider_api", "provider_api_feed", "infrastructure", None])
+def test_credential_names_not_the_tier_make_a_host_only_its_credentials_home(tier):
+    """Whatever its tier says, a known-good host listing credential names vouches only for those keys: a tier
+    the scanner does not know can never turn a credential home into a trusted destination."""
+    raw = case(code(extra="x=1\n"))
+    res = scan(raw, params=V5, state=seed(), oracle={"entities": [{**HOME, "tier": tier}]})
+    oracle = next(e for e in res.envelopes if e.step.value == "entity_oracle")
+    info = next(i for i in oracle.evidence["entities"].values() if i["value"] == HOME_HOST)
+    assert info["verdict"] == "unknown"
+    assert info["credential_names"] == ["EXAMPLE_API_KEY", "EXAMPLE_TOKEN"]
+    assert "relief.known_good_destination" not in codes(res)
+    assert "reputation.unknown_host_as_data_destination" in codes(res)
+    assert res.prepared.oracle_verdicts == []
+
+
+def test_a_bulk_tier_credential_home_still_relieves_its_own_key():
+    """The generated library layer's tier relieves exactly as the curated one does."""
+    feed = {"entities": [{**HOME, "tier": "provider_api_feed"}]}
+    res = scan(case(), oracle=feed)
+    assert res.prepared.credential_home_check == "ok"
+    assert res.prepared.credential_home.names == ("EXAMPLE_API_KEY",)
+    assert "relief.credential_own_service" in codes(res)
 
 
 def test_the_seed_oracle_reads_names_only_on_a_known_good_host():
