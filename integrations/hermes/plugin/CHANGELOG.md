@@ -4,6 +4,16 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
+## 2.0.0-beta.18
+
+- The Hermes TUI and the Hermes desktop app count as attended, whether or not Hermes has a terminal: a review there
+  is asked with Hermes's own approval card, and a snooze reaches Hermes's background saves after a session there.
+  Before, both were judged by the terminal test the plain command line uses, and neither has a terminal (the TUI
+  talks to Hermes over a pipe, and the desktop app talks to a gateway that may run as a service, on this machine or
+  another). So every review from them was held, with its notice sent to the `owner_channel` home channel, and no
+  card ever reached the app. The plain command line still needs a terminal, and the API server, cron, sub-agents,
+  webhooks and the curator are unchanged.
+
 ## 2.0.0-beta.17
 
 - Report a scan that looks wrong. `/sentrook report [id|last]` (owner only; `hermes sentrook report` on the command

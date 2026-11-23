@@ -1,6 +1,10 @@
+import io
 import json
 import os
+import sys
 from pathlib import Path
+
+import pytest
 
 import plugin
 
@@ -194,6 +198,9 @@ def test_process_manage_kind_follows_the_action(harness):
     assert [s["tool_kind"] for s in pending["batch"]["siblings"]] == ["other"]
 
 
+HELD = "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run."
+
+
 def test_unattended_review_is_held(harness):
     turn(harness, platform="cron")
     r = call(harness, "c1", "rm REVIEW")
@@ -288,6 +295,66 @@ def test_attended_platforms_setting_turns_api_server_reviews_into_approvals(harn
     assert call(harness, "c1", "rm REVIEW")["action"] == "block"
     monkeypatch.setenv("SENTROOK_ATTENDED_PLATFORMS", "api_server")
     assert call(harness, "c2", "rm REVIEW")["action"] == "approve"
+
+
+class _Stdin(io.StringIO):
+    def __init__(self, tty):
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+@pytest.mark.parametrize("platform", ["tui", "desktop"])
+def test_the_tui_and_desktop_apps_ask_the_owner_without_a_terminal(harness, monkeypatch, platform):
+    """Must fire (attended): the TUI talks to Hermes over a pipe, and the desktop app talks to a gateway that may run
+    as a service with no terminal; both show Hermes's own approval card, so a review is asked, not held."""
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
+    turn(harness, platform=platform)
+    assert call(harness, "c1", "rm REVIEW")["action"] == "approve"
+    assert harness.traffic()[-1]["decision"] != "held"
+
+
+@pytest.mark.parametrize(
+    "platform", ["cron", "subagent", "webhook", "api_server", "curator", "", "cli"]
+)
+def test_other_platforms_without_a_terminal_still_hold_a_review(harness, monkeypatch, platform):
+    """Must stay silent (unchanged): with no terminal, a run on these surfaces cannot answer a review."""
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
+    turn(harness, platform=platform)
+    assert call(harness, "c1", "rm REVIEW") == {"action": "block", "message": HELD}
+
+
+@pytest.mark.parametrize("platform", ["tui", "desktop"])
+@pytest.mark.parametrize("run", ["cron", "yolo", "subagent"])
+def test_a_cron_yolo_or_sub_agent_run_from_the_apps_is_still_unattended(
+    harness, monkeypatch, platform, run
+):
+    """Must stay silent: a cron session, an approval bypass and a sub-agent still win over the app platforms."""
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=False))
+    extra = {}
+    if run == "cron":
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    elif run == "yolo":
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    else:
+        extra = {"parent_session_id": "P0"}
+    harness.ctx.hooks["pre_llm_call"](
+        turn_id="t1",
+        user_message="tidy my workspace",
+        platform=platform,
+        sender_id="u1",
+        **SID,
+        **extra,
+    )
+    assert call(harness, "c1", "rm REVIEW", **extra) == {"action": "block", "message": HELD}
+
+
+def test_the_local_terminal_with_a_terminal_still_asks(harness, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _Stdin(tty=True))
+    turn(harness, platform="cli")
+    assert call(harness, "c1", "rm REVIEW")["action"] == "approve"
 
 
 def test_settings_come_from_config_yaml_and_apply_without_a_restart(harness):

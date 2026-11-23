@@ -298,8 +298,9 @@ When a call is blocked the agent is told it was a security block, given a broad 
 sends sensitive data"), and asked not to retry it or work around it unless you tell it to, and to check with you. It
 is not told which checks fired or the risk score; you can see those with `hermes sentrook why last`.
 
-Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms and the local terminal
-count as attended. Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
+Reviews use Hermes's approval prompt, which needs a person on the other end. Chat platforms, the Hermes TUI, the
+Hermes desktop app (also when it connects to a gateway on another machine) and the local terminal count as attended.
+Elsewhere, including the API server, cron, subagents and webhooks, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
 prompts, add it with `attended_platforms` (see [Settings](#settings)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
@@ -405,8 +406,8 @@ every save, and shows a held one as "not saved" and a staged one as "pending in 
 Without `owner_channel` (for example when you use Hermes only on the local terminal) the saves are handled the same
 way, but nothing tells you: `status` and `verify` say so, and the saves show only in `/sentrook history` and the
 `skill review` counts in `status`. A snooze on the session (or on every session) lets a save through that would
-otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal session or a
-platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
+otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal, TUI or desktop app
+session, or a platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
 cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
 
 #### Approving a held save in Hermes
@@ -453,7 +454,8 @@ A scan gives no usable answer when the scan service returns an error, does not a
 seconds), cannot be reached, or rate-limits the scan. The call is then not scanned, and with the default setting
 (`on_scan_error`: `review`):
 
-- **Where reviews are attended** (chat platforms, the local terminal, and platforms in `attended_platforms`) you are
+- **Where reviews are attended** (chat platforms, the TUI and desktop app, the local terminal, and platforms in
+  `attended_platforms`) you are
   asked, with Hermes's approval prompt, whether to run the call without a scan. It runs only if you approve, except
   in a session where you switched on YOLO, where Hermes approves the prompt itself (see above). Answering
   **Session** or **Always** stops these questions in that chat until Sentrook can scan again; another chat, or a
