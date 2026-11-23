@@ -17,6 +17,9 @@ import {
   settingText,
   statusLine,
   targetsOf,
+  execSaveArgs,
+  execStoreOf,
+  scannedAsSelfEdit,
 } from "./selfEdit.ts";
 
 const REVIEW_ID = "skill-workshop-review:61d38354-3521-487d-8018-82ea16a0fed1";
@@ -192,4 +195,26 @@ test("history labels self-edits; status counts them by outcome, and says when th
   writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
   assert.equal(statusLine("allow", file), "allow; self-edits in the traffic log: 1 allowed, 1 blocked, 1 asked");
   assert.equal(statusLine("review", null), "review (self-edits not counted: the traffic log is off)");
+});
+
+test("a recognised run's exec is declared with the run's own store; no other call is", () => {
+  assert.equal(execStoreOf("background_review", "exec"), "skills");
+  assert.equal(execStoreOf("curator", "exec"), "skills");
+  assert.equal(execStoreOf("memory_flush", "exec"), "memory");
+  for (const kind of ["file_read", "file_write", "other", "mcp"]) assert.equal(execStoreOf("background_review", kind), null);
+});
+
+test("a declared exec's saved text is its command, and a Code Mode cell's code once", () => {
+  assert.deepEqual(execSaveArgs({ command: "cat > a/SKILL.md <<'EOF'\nx\nEOF" }), { content: "cat > a/SKILL.md <<'EOF'\nx\nEOF" });
+  assert.deepEqual(execSaveArgs({ code: "f()", command: "f()" }), { content: "f()" });
+  assert.deepEqual(execSaveArgs({ code: "f()" }), { content: "f()" });
+  assert.deepEqual(execSaveArgs({ command: 7 }), { content: "" });
+  assert.deepEqual(execSaveArgs(undefined), { content: "" });
+});
+
+test("only a response with a self_edit object says the scanner read the call as a self-edit", () => {
+  assert.equal(scannedAsSelfEdit({ self_edit: { adds: [], lenient: false } }), true);
+  for (const resp of [{}, { self_edit: null }, { self_edit: [] }, { self_edit: "yes" }, null, undefined]) {
+    assert.equal(scannedAsSelfEdit(resp), false);
+  }
 });
