@@ -244,10 +244,10 @@ def cap_model_sensitivity(claims: list[Claim], cap: float) -> list[Claim]:
 
 def exposure_unjudged(prepared: Prepared, envelopes: list[Envelope]) -> bool:
     """The request brings new untrusted content the exposure probe would judge (not only reads of the agent's own
-    skills or memory), and no exposure envelope came back OK: the probe failed, timed out or did not run, so nobody
+    skills or memory, or of the owner's own instruction files), and no exposure envelope came back OK: the probe failed, timed out or did not run, so nobody
     looked at that content. A probe skipped because there was nothing new to read is not this."""
     if not any(
-        i.input.content and i.input.input_seq not in prepared.own_store_inputs
+        i.input.content and i.input.input_seq not in prepared.exposure_left_out
         for i in prepared.untrusted_inputs(new_only=True)
     ):
         return False
