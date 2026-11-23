@@ -97,7 +97,7 @@
     "--srk-card:var(--color-card,#ffffff);--srk-soft:var(--color-muted,#f2f3f5);--srk-border:var(--color-border,#dfe2e6);",
     "--srk-low:var(--color-success,#2f9e6b);--srk-mid:var(--color-warning,#d9930d);--srk-high:var(--color-destructive,#d64545);",
     "--srk-accent:var(--color-primary,#3b6fd9);--srk-radius:var(--radius,10px);",
-    "color:inherit;font:14px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;max-width:1100px;margin:0 auto;padding:16px;box-sizing:border-box}",
+    "color:inherit;font:14px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;max-width:1100px;margin:0 auto;padding:16px;box-sizing:border-box;position:relative}",
     ".srk *{box-sizing:border-box}",
     // Hosts style code elements page-wide; start ours from nothing.
     ".srk code{all:unset;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}",
@@ -206,6 +206,12 @@
     ".srk-report-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}",
     "a.srk-btn{text-decoration:none;display:inline-block}",
     ".srk-empty{color:var(--srk-muted);padding:24px;text-align:center;border:1px dashed var(--srk-border);border-radius:var(--srk-radius)}",
+    // Hover hints: drawn by the page, not the browser's title tooltip (which does not show in every host frame).
+    ".srk-tip{position:absolute;z-index:1000;left:0;top:0;max-width:min(340px,calc(100% - 16px));padding:6px 10px;border-radius:6px;",
+    "background:#1f2328;color:#f3f4f6;border:1px solid rgba(255,255,255,.14);box-shadow:0 4px 14px rgba(0,0,0,.25);",
+    "font-size:12px;line-height:1.45;font-weight:400;text-align:left;white-space:pre-line;pointer-events:none}",
+    ".srk-tip[hidden]{display:none}",
+    "[data-srk-hint]:focus-visible{outline:2px solid var(--srk-accent);outline-offset:2px;border-radius:3px}",
     "@media (max-width:560px){.srk-caret{display:none}.srk-row{gap:10px}.srk-action{font-size:11px;padding:2px 8px;max-width:40%;white-space:normal;text-align:center}}",
   ].join("\n");
 
@@ -220,6 +226,7 @@
         if (k === "class") node.className = attrs[k];
         else if (k === "text") node.textContent = String(attrs[k]);
         else if (k === "style") node.setAttribute("style", attrs[k]);
+        else if (k === "title") node.setAttribute("data-srk-hint", String(attrs[k]));
         else if (k.slice(0, 2) === "on") node.addEventListener(k.slice(2), attrs[k]);
         else node.setAttribute(k, String(attrs[k]));
       }
@@ -589,6 +596,7 @@
         open.add(scan.id);
         body = detail(scan, model, open);
         card.appendChild(body);
+        focusable(body);
       } else {
         open.delete(scan.id);
         if (body) card.removeChild(body);
@@ -1056,6 +1064,128 @@
       class: "srk-note",
       text: "This page only reads. Run the commands above in a direct chat with the agent; " + cmd("history") + " and " + cmd("why") + " show the same scans as text.",
     }));
+    hints(root);
+  }
+
+  /*
+   * Hover hints. Each `title` given to `el` is kept as `data-srk-hint` and shown in one tooltip the page draws
+   * itself: on hover, on keyboard focus and on tap. The browser's own title tooltip does not appear inside every
+   * host frame, and never on touch screens. Text only, never HTML.
+   */
+  var CONTROLS = "a,button,input,select,textarea,summary,label";
+
+  /** Hinted labels and numbers take keyboard focus, unless they are, or sit inside, a control already. */
+  function focusable(node) {
+    if (!node.querySelectorAll) return;
+    var hinted = node.querySelectorAll("[data-srk-hint]");
+    for (var i = 0; i < hinted.length; i++) {
+      if (!hinted[i].closest(CONTROLS)) hinted[i].setAttribute("tabindex", "0");
+    }
+  }
+
+  function hints(root) {
+    var doc = root.ownerDocument || document;
+    var tip = el("div", { class: "srk-tip", id: "srk-tip", role: "tooltip", hidden: "" });
+    root.appendChild(tip);
+    focusable(root);
+    if (root.srkHints) {
+      // A redraw: the old tooltip went with the old content, and a hover still waiting is for an old element.
+      root.srkHints.redraw(tip);
+      return;
+    }
+    var state = (root.srkHints = { tip: tip, on: null, timer: null });
+
+    function hintOf(node) {
+      while (node && node !== root) {
+        if (node.getAttribute && node.getAttribute("data-srk-hint")) return node;
+        node = node.parentNode;
+      }
+      return null;
+    }
+    function cancel() {
+      if (state.timer !== null) clearTimeout(state.timer);
+      state.timer = null;
+    }
+    function hide() {
+      cancel();
+      if (state.on) state.on.removeAttribute("aria-describedby");
+      state.on = null;
+      state.tip.setAttribute("hidden", "");
+    }
+    function show(target) {
+      cancel();
+      if (!root.contains(target)) return hide();
+      var t = state.tip;
+      if (state.on && state.on !== target) state.on.removeAttribute("aria-describedby");
+      state.on = target;
+      t.textContent = target.getAttribute("data-srk-hint");
+      t.removeAttribute("hidden");
+      target.setAttribute("aria-describedby", "srk-tip");
+      // Measure from the corner: a box near the right edge would be measured narrower than it draws.
+      t.style.left = "0px";
+      t.style.top = "0px";
+      var view = doc.defaultView || window;
+      var r = target.getBoundingClientRect();
+      var box = root.getBoundingClientRect();
+      var vw = doc.documentElement.clientWidth || view.innerWidth;
+      var vh = view.innerHeight || doc.documentElement.clientHeight;
+      var w = t.offsetWidth;
+      var h = t.offsetHeight;
+      var left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, vw - w - 8));
+      // Below the element; above it when there is no room below but there is above.
+      var top = r.bottom + 6;
+      if (top + h > vh - 8 && r.top - h - 6 >= 8) top = r.top - h - 6;
+      t.style.left = Math.round(left - box.left) + "px";
+      t.style.top = Math.round(top - box.top) + "px";
+    }
+
+    state.redraw = function (newTip) {
+      hide();
+      state.tip = newTip;
+    };
+
+    root.addEventListener("mouseover", function (e) {
+      var target = hintOf(e.target);
+      if (target && target === state.on) return cancel();
+      cancel();
+      if (!target) return hide();
+      state.timer = setTimeout(function () {
+        state.timer = null;
+        show(target);
+      }, 300);
+    });
+    root.addEventListener("mouseleave", hide);
+    root.addEventListener("focusin", function (e) {
+      var target = hintOf(e.target);
+      if (target) show(target);
+      else hide();
+    });
+    root.addEventListener("focusout", hide);
+    // A tap on a hinted label shows its hint; a control keeps its own click.
+    root.addEventListener("click", function (e) {
+      var target = hintOf(e.target);
+      if (target && !(e.target.closest && e.target.closest(CONTROLS))) show(target);
+      else hide();
+    });
+    // Page-wide: a click elsewhere and Escape. Removed once the root has left the page (Hermes mounts a new root
+    // each time the tab is opened).
+    function onDocClick(e) {
+      if (gone()) return;
+      if (!root.contains(e.target)) hide();
+    }
+    function onDocKey(e) {
+      if (gone()) return;
+      if (e.key === "Escape") hide();
+    }
+    function gone() {
+      if (root.isConnected !== false) return false;
+      cancel();
+      doc.removeEventListener("click", onDocClick);
+      doc.removeEventListener("keydown", onDocKey);
+      return true;
+    }
+    doc.addEventListener("click", onDocClick);
+    doc.addEventListener("keydown", onDocKey);
   }
 
   function renderError(root, message) {

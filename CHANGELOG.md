@@ -1006,3 +1006,20 @@ An unquoted value under a credential key stops at `)` and `,`, so code that read
 - The self-edit save reading follows: a note with `password = input(prompt)` adds no secret, and "my password is hunter(abc)" still adds one.
 - Suite: unmoved; every string in TestNest `fixtures/` redacts identically before and after.
 - Tests: the scanner's pass and both plugins (plain and JSON-encoded, with the parity tests) keep `os.getenv(name)`, `load_token(path)`, `input(prompt)`, `getattr(settings, 'TOKEN')` and `os.environ.get(key_name)` under a credential key and still replace the values above, in linear time on a new adversarial input.
+
+### Dashboard hints drawn by the page (2026-11-23)
+On the OpenClaw Sentrook tab, no hover hint appeared in Opera GX or DuckDuckGo: every hint was a native `title`
+attribute, and the tab is drawn in the Gateway's sandboxed frame. The cursor turned into the help cursor and nothing
+else happened. Native titles also never show on a touch screen or on keyboard focus.
+- `dashboardView.js` (shared byte for byte with the Hermes tab) keeps each hint as `data-srk-hint` and shows it in one
+  `role="tooltip"` element of its own: after 300 ms of hover, at once on keyboard focus, and on a tap on a label (a
+  control keeps its own click). It sits below the element, or above it when there is no room below, inside the
+  viewport. Blur, Escape, moving away and a click elsewhere hide it; the hinted element gets `aria-describedby` while
+  it shows. Hinted labels and numbers outside a control take `tabindex=0`, including those in a scan opened later.
+  The risk number and outcome on a scan row sit inside the row's button, so they keep their hint for the mouse only;
+  the opened scan shows both again with their hints.
+  Hint text goes in as text.
+- Tests: no `title` attribute left in a drawn page and one hidden tooltip; focus, hover (after the delay), tap, blur,
+  Escape and an outside click; a tap on a control does not show its hint; a tool name with markup in a timeline hint
+  stays text; focusable only outside a control; a redraw into the same root keeps one tooltip and one set of
+  page-wide listeners and drops a hover still waiting; a root that has left the page removes its listeners.
