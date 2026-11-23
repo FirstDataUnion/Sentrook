@@ -359,21 +359,29 @@ for (const kind of ["cron", "heartbeat"]) {
   });
 }
 
-for (const who of ["other", "hook"]) {
-  test(`a held call on ${who === "other" ? "a scheduled run someone else sent" : "a hook run"} keeps no hint`, async () => {
-    hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
-    extra = { risk: 47 };
-    const r = registered();
-    const rec = who === "other" ? await r.cron(false, "cron", { senderIsOwner: false, channel: "discord" }) : await r.cron(false, "event");
-    assert.notEqual(rec.planir.trigger.sender.relation, "owner");
-    assert.ok(rec.planir.trigger.sender.relation === "other" || !["scheduled", "heartbeat"].includes(rec.planir.trigger.kind));
-    assert.equal(rec.decision, "held");
-    assert.equal(rec.hold.hint, false);
-    const answer = await r.command("sentrook-approve", rec.hold.id);
-    assert.ok(answer.startsWith(`Approved ${rec.hold.id}. Sentrook suggested no grant`), answer);
-    assert.deepEqual(grantsFile(), []);
-  });
-}
+test("a held call on a hook run keeps no hint", async () => {
+  hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
+  extra = { risk: 47 };
+  const r = registered();
+  const rec = await r.cron(false, "event", { senderIsOwner: false, channel: "discord" });
+  assert.deepEqual([rec.planir.trigger.kind, rec.planir.trigger.sender.relation], ["hook", "other"]);
+  assert.equal(rec.decision, "held");
+  assert.equal(rec.hold.hint, false);
+  const answer = await r.command("sentrook-approve", rec.hold.id);
+  assert.ok(answer.startsWith(`Approved ${rec.hold.id}. Sentrook suggested no grant`), answer);
+  assert.deepEqual(grantsFile(), []);
+});
+
+test("a held call on a cron run keeps its hint whatever requester OpenClaw attaches", async () => {
+  // OpenClaw 2026.11+ gives a cron run its delivery channel as the requester, with no owner flag.
+  hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
+  extra = { risk: 47 };
+  const r = registered();
+  const rec = await r.cron(false, "cron", { channel: "discord", accountId: "main" });
+  assert.deepEqual([rec.planir.trigger.kind, rec.planir.trigger.sender.relation], ["scheduled", "unknown"]);
+  assert.equal(rec.decision, "held");
+  assert.equal(rec.hold.hint, true);
+});
 
 test("a held call whose hint does not clear this plugin's line sets nothing", async () => {
   hints = [{ ...HINT, risk: 12 }];

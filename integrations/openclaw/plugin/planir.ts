@@ -246,6 +246,9 @@ export function triggerKind(run: RunContext): string {
   }
 }
 
+/** Runs the host starts itself from a task the owner set up: nobody is writing to the agent in them. */
+export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
+
 const CHANNELS = new Set(["discord", "telegram", "slack", "email", "webhook"]);
 /** OpenClaw's own chat surfaces: the Control UI, webchat and the terminal, which only the operator reaches. */
 const CHAT_SURFACES = new Set(["webchat", "chat", "cli", "control-ui"]);
@@ -300,7 +303,9 @@ export function chatKindOfTurn(sessionKey: unknown, channel: string | null, conf
  * Who sent the turn. An owner's message in a group or channel room stays the owner's, with basis `group_chat`
  * (the room is shared, so nobody there is attending alone); an owner's message from a chat whose kind the
  * session key does not say keeps the owner relation with basis `none`, claiming no direct chat. A system agent
- * turn has no sender.
+ * turn has no sender. Nor has a cron or heartbeat run that is not flagged as the owner's: the host started it from a
+ * task, and the requester OpenClaw 2026.11+ attaches to it is the run's delivery channel and the agent's account, not
+ * someone who wrote to the agent.
  */
 export function senderOf(
   requester: any,
@@ -314,6 +319,7 @@ export function senderOf(
     if (chat === "unknown") return { relation: "owner", basis: ["none"] };
     return { relation: "owner", basis: ["host_owner_flag"] };
   }
+  if (HOST_TASK_KINDS.has(triggerKind(run))) return { relation: "unknown", basis: ["none"] };
   const senderId = requester?.senderId ?? run.senderId;
   if (senderId && cfg.trustedSenders.includes(String(senderId))) {
     return { relation: "trusted", basis: chat === "group" ? ["plugin_allowlist:sender", "group_chat"] : ["plugin_allowlist:sender"] };
