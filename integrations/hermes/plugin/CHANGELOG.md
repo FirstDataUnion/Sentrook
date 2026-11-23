@@ -4,6 +4,23 @@ Each release has an entry here, newest first, under a `## <version>` heading tha
 `plugin.yaml`. The release workflow refuses to run without one, and the catalog pull request quotes the entries
 since the version the catalog pins.
 
+## 2.0.0-beta.18
+
+- The Hermes TUI and the Hermes desktop app count as attended, whether or not Hermes has a terminal: a review there
+  is asked with Hermes's own approval card, and a snooze reaches Hermes's background saves after a session there.
+  Before, both were judged by the terminal test the plain command line uses, and neither has a terminal (the TUI
+  talks to Hermes over a pipe, and the desktop app talks to a gateway that may run as a service, on this machine or
+  another). So every review from them was held, with its notice sent to the `owner_channel` home channel, and no
+  card ever reached the app. The plain command line still needs a terminal, and the API server, cron, sub-agents,
+  webhooks and the curator are unchanged.
+- With Hermes's `plugins.isolation: host`, the plugin runs in Hermes's plugin host, where it cannot tell Hermes's
+  background skill and memory saves from your own calls: they are scanned like any other call, without the
+  conversation they follow, and are never held, staged or announced as background saves (a save Sentrook would ask
+  about becomes an ordinary approval prompt, or on the local terminal is refused by Hermes's review). The plugin now
+  says so: a warning when it starts and a `background saves: not recognised` line in `/sentrook status`, both naming
+  the fix (`plugins.isolation: in_process`, Hermes's default). The README also notes that Hermes offers no
+  `hermes sentrook` commands in that mode. Nothing changes in-process.
+
 ## 2.0.0-beta.17
 
 - Report a scan that looks wrong. `/sentrook report [id|last]` (owner only; `hermes sentrook report` on the command
