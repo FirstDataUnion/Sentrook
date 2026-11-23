@@ -172,6 +172,19 @@ def test_a_subdomain_of_the_listed_host_is_the_same_service():
     assert res.prepared.credential_home_check == "ok"
 
 
+def test_the_key_sent_to_two_listed_hosts_of_its_vendor_in_one_call_is_silent():
+    """The library lists a vendor's further hosts (a reader or search endpoint) as entries of their own with the
+    same names; a call that uses two of them is still the key at home. An unlisted second host still fails."""
+    reader = "r.example.invalid"
+    both = {"entities": [HOME, {**HOME, "value": reader}]}
+    src = code() + SEND.format(host=reader).replace("rows=", "rows2=")
+    res = scan(case(src), oracle=both)
+    assert res.prepared.credential_home_check == "ok"
+    assert "relief.credential_own_service" in codes(res)
+    assert len(res.prepared.credential_home.hosts) == 2  # both hosts, as entity ids
+    assert_fires(case(src), "unlisted_host", oracle={"entities": [HOME]})
+
+
 def test_writing_other_data_to_a_scratch_file_is_not_writing_the_key():
     extra = "json.dump(rows, open(os.environ['TMPDIR'] + '/pages.json', 'w'))\n"
     assert scan(case(code(extra=extra))).prepared.credential_home_check == "ok"
