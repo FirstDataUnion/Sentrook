@@ -10,8 +10,9 @@
 # Hermes, `hermes sentrook verify` and `status` against the mock identity service and scanner, then one
 # real agent turn (`hermes chat`, model served by the mock) in which Sentrook must block one terminal
 # call and allow the next; and the digest of this Hermes's background-review memory gate, which must be on the
-# plugin's list of verified builds (`gate_build.py`). Every step runs even after a failure; the exit code is 1 when
-# any failed.
+# plugin's list of verified builds (`gate_build.py`); and every session platform value this Hermes uses must be classified
+# by the plugin as attended or not (`platforms.py`). Every step runs even after a failure; the exit code is 1 when any
+# failed.
 #
 # Synthetic credentials only. COMPAT_CLIENT_SECRET overrides the secret given to Hermes (the mock
 # accepts only compat-secret), which is how the self-test makes the token mint fail.
@@ -182,6 +183,17 @@ if [ "$gate_rc" = 0 ]; then
   record "memory gate" ok "$(tail -1 <<<"$gate_out")"
 else
   record "memory gate" FAIL "$(tail -1 <<<"$gate_out")"
+fi
+
+# 8. Every session platform this Hermes uses is classified as attended or not, so a chat platform a Hermes bump adds is
+# not silently treated as unattended (or a programmatic one as attended).
+platforms_out=$(cd "${HERMES_SRC:-/opt/hermes}" && timeout "$STEP_TIMEOUT" python /compat/platforms.py /tmp/sentrook-gate 2>&1)
+platforms_rc=$?
+printf '%s\n' "$platforms_out" >"$OUT/platforms.log"
+if [ "$platforms_rc" = 0 ]; then
+  record platforms ok "$(tail -1 <<<"$platforms_out")"
+else
+  record platforms FAIL "$(tail -1 <<<"$platforms_out")"
 fi
 
 exit "$failed"
