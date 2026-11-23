@@ -3,7 +3,7 @@
 # backup of credentials to the owner's host carries the same consequence as an attack, and relief
 # comes from grants in convergence.
 
-version: 2
+version: 3
 
 # Exec egress markers. Regex over one shell segment; `reason` is the sink reason code. `head`
 # narrows the marker to segments with that head (a `-d` on `ls` is not egress). `requires_pipe`
@@ -63,6 +63,117 @@ web_body_methods:
   - POST
   - PUT
   - PATCH
+
+# Requests with a body that only read: a search or query API that takes its question as a POST. A plain
+# send (no sensitive source) whose every target matches keeps its reach, since the body still leaves
+# the machine, but takes `send_read.irreversibility` from weights.yaml: nothing is created or changed on
+# the far side. A sensitive source still makes it exfiltration at full weight.
+read_shaped:
+  # A regex over the URL path (no query string or fragment). `graphql: true` also needs the body to
+  # ask a query (`query_patterns`). The Notion entries are covered by the generic suffixes too; they
+  # are named so that narrowing a suffix cannot drop them.
+  paths:
+    - {name: notion.query, pattern: '\A/v1/(?:databases|data_sources)/[^/]+/query/?\Z'}
+    - {name: notion.search, pattern: '\A/v1/search/?\Z'}
+    - {name: query, pattern: '/query/?\Z'}
+    - {name: search, pattern: '/(?:search|_search|_msearch)/?\Z'}
+    - {name: graphql, pattern: '/graphql/?\Z', graphql: true}
+  # A GraphQL body asks a query: a query document under the JSON `query` key (`{"query": "query Q {…"}`,
+  # the shorthand `{"query": "{ viewer … }"}`), or a raw document that starts `query`. A persisted query
+  # sent by its hash carries no document and is no read.
+  query_patterns:
+    - '["'']?\bquery["'']?\s*:\s*["'']\s*(?:query\b|\{)'
+    - '(?:\A|[\s''"])query(?:\s+\w+)?\s*(?:\([^)]{0,500}\)\s*)?\{'
+  # A body that writes, on any read-shaped path: a GraphQL mutation; SQL or InfluxQL that changes data
+  # or schema, sent to a `/query` endpoint; a Hasura metadata or data operation; a method override.
+  # Matched on the body as written and with JSON and URL escapes undone.
+  write_body_patterns:
+    - '\bmutation\b'
+    - '\b(?:insert|replace|merge|upsert)\s+(?:ignore\s+)?(?:into|overwrite)\b'
+    - '\binsert\s+[\w."\x60]+\s*(?:\(|values\b|select\b)'
+    - '\bdelete\s+(?:from|where)\b'
+    - '\btruncate\s+(?:table\s+)?[\w."\x60]+'
+    - '\b(?:drop|alter|create(?:\s+or\s+replace)?)\s+(?:(?:temp|temporary|unique|materialized)\s+)?(?:table|database|schema|index|view|user|role|function|procedure|trigger|measurement|series|retention|continuous|shard|sequence)\b'
+    - '\bupdate\s+[\w."\x60]+\s+(?:(?:as\s+)?\w+\s+)?set\b'
+    - '\b(?:grant|revoke)\s+(?:all|select|insert|update|delete|usage|execute|create|connect|\w+\s+on)\b'
+    - '\bdelete\s+[\w."\x60]+\s+(?:using|where)\b'
+    - '\bcopy\s+[\w."\x60]+\s+(?:to|from)\b'
+    - '\bcall\s+[\w."\x60]+\s*\('
+    - '\binto\s+[\w."\x60]+\s+from\b'
+    - '\bdetach\s+delete\b'
+    - '["'']?\b(?:sql|q|query|statement|stmt|command)["'']?\s*[:=]\s*(?:["'']\s*)?(?:insert|update|delete|drop|alter|create|replace|merge|upsert|truncate|grant|revoke|rename)\b'
+    - '["'']type["'']\s*:\s*["''](?:insert|update|delete|run_sql|bulk|(?:create|drop|track|untrack|set|add|replace|reload|clear)_\w+)'
+    - '\bx-(?:http-)?method(?:-override)?["'']?\s*:'
+    - '\b_method\b'
+  # A body that carries a database statement (SQL, InfluxQL, Cypher) under a statement key. Such a body
+  # reads only when the statement starts with a read verb and no verb in `statement_write_patterns`
+  # appears anywhere in it.
+  statement_key_patterns:
+    - '["'']?\b(?:sql|statement|stmt|cypher|command)["'']?\s*[:=]'
+    - '["'']?\bq["'']?\s*[:=]\s*(?:["'']\s*)?(?:select|show|with|explain|describe|delete|drop|alter|create|grant|revoke|insert|update|kill|match)\b'
+  statement_write_patterns:
+    - '["'']?\b(?:sql|statement|stmt|cypher|command)["'']?\s*[:=]\s*(?:["'']\s*)?(?!(?:select|show|explain|describe|desc|match|with)\b)\w'
+    - '\b(?:insert|update|upsert|delete|detach|remove|merge|replace|truncate|drop|alter|create|grant|revoke|rename|copy|call|into|set|load|attach|kill|vacuum|reindex|cluster|program)\b'
+  # Code that sends with a method other than POST or GET.
+  write_method_patterns:
+    - '\.(?:put|patch|delete)\s*\('
+    - '["''](?:PUT|PATCH|DELETE)["'']'
+  # Code that reads local data the body could carry: a file, stdin, the whole environment, a listing or a
+  # command's output. One variable read from the environment (an API key) is not one.
+  file_read_patterns:
+    - '\bopen\s*\('
+    - '\.read_(?:text|bytes)\s*\('
+    - '\bread(?:Text)?File(?:Sync)?\s*\('
+    - '\b(?:sys|process|Deno)\.stdin\b'
+    - '\benviron\b(?!\s*(?:\[|\.get\s*\())'
+    - '\bprocess\.env\b(?!\s*(?:\.\w|\[))|\bDeno\.env\.toObject\b'
+    - '\bread_\w+\s*\(|\b(?:loadtxt|genfromtxt|fromfile)\b|\bFileIO\b|\bfileinput\b|\bsqlite3\b|\bshelve\b|\bpickle\.load|\bpyperclip\b|\bclipboard\b'
+    - '\bos\.(?:listdir|scandir|walk|popen|system)\s*\('
+    - '\bsubprocess\b|\bchild_process\b|\bexecSync\b'
+  # Code calls that make a request: each one's target must be a read-shaped URL written in the code (or
+  # a name the code sets to one, or a `Request` it built). A target the code computes is not seen.
+  # A `.get(` whose argument is a plain string that is no URL (`os.environ.get("KEY")`, `data.get("k")`) is
+  # not a request: with no base URL (`unseen_request_patterns`) a relative path reaches no other host.
+  code_request_patterns:
+    - '\.\s*(?:get|post|head|options|request|stream|send|ws_connect)\s*\('
+    - '\bfetch\s*\('
+    - '\bRequest\s*\('
+    - '\burlopen\s*\('
+  # Code reads only with the modules below: another library (`axios`, `got`, `urllib3`, `http.client`,
+  # a socket) makes requests this check does not follow. `import_patterns` give the module (group 1) of a
+  # Python `import` or `from … import`, a `require`, or a JS `from '…'`; any JS package is outside the list.
+  import_patterns:
+    - '(?m)^\s*from\s+([\w.]+)\s+import\b'
+    - '(?m)^\s*import\s+([\w.]+(?:\s*,\s*[\w.]+)*)'
+    - '\brequire\s*\(\s*["''\x60]([^"''\x60]+)'
+    - '\bfrom\s+["''\x60]([^"''\x60]+)'
+    - '\bimport\s*\(\s*["''\x60]([^"''\x60]+)'
+  code_modules: [json, os, sys, requests, httpx, aiohttp, asyncio, urllib, urllib.request, urllib.parse, urllib.error, time, datetime, pprint, typing, re, textwrap, collections, dataclasses, math, base64, uuid]
+  # Request APIs that need no import, and imports by other means: their target is not followed.
+  unseen_request_patterns:
+    - '\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b|\bEventSource\b|\bBun\.\w|\bDeno\.(?!env\.get\b)\w'
+    - '\b__import__\s*\(|\bimportlib\b|\bexec\s*\(|\beval\s*\('
+    - '\bbase_?url\b|\bbaseURL\b|\bprefixUrl\b'
+    - '\b(?:axios|got|ky|superagent|needle|undici)\b'
+  # Request methods a read may use, and the shell heads whose argv is read for URL, method and body.
+  methods: [POST, GET]
+  shell_heads: [curl, wget, http, https, xh]
+  # Heads that only work on text locally and may sit beside the read (`curl … | jq .`). Any other command
+  # in the call (an interpreter, `git push`, `aws s3 rm`) makes it no read.
+  local_heads: [jq, head, tail, grep, egrep, sort, uniq, wc, cut, tr, column, less, more, cat, tee, echo, printf, true, sleep, date, base64, json_pp, cd, pwd, ls, mkdir, export, test, '[']
+  # Shell options that send a file or a form (an upload) or read more options from a file or stdin
+  # (`-K`), name the method, carry the body, or take a value of their own; and the short options of
+  # `curl` and `wget` that take a value. `--url` is a target.
+  upload_options: ['-T', '--upload-file', '-F', '--form', '--form-string', '--post-file', '--body-file', '-K', '--config', '--input-file']
+  method_options: ['-X', '--request', '--method']
+  data_options: ['-d', '--data', '--data-raw', '--data-binary', '--data-urlencode', '--data-ascii', '--json', '--post-data', '--body-data']
+  value_options: ['--header', '--output', '--user', '--user-agent', '--referer', '--cookie', '--cookie-jar', '--max-time', '--connect-timeout', '--retry', '--retry-delay', '--retry-max-time', '--write-out', '--proxy', '--cacert', '--cert', '--key', '--config', '--resolve', '--range', '--limit-rate', '--oauth2-bearer', '--aws-sigv4', '--output-document', '--output-file', '--tries', '--timeout', '--wait', '--url']
+  short_value_options:
+    curl: AbcCdDeEFHKmoPQrTtuUwxXyYz
+    wget: aABDeiIlOoPQRtTUwX
+  # Library tiers of a destination that records what it is sent (request capture, paste, file drop):
+  # a "query" there is a send. A `known_bad` or look-alike host is never a read either.
+  watched_tiers: [exfil_sink]
 
 # MCP / other tool names that send. Regex over the tool name; a namespace prefix or a verb prefix
 # (`drive_upload`, `gmail__send_message`) is allowed before the match.

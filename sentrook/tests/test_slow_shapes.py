@@ -37,6 +37,14 @@ def _write(path: str, content: str) -> dict:
     return planir("write", "file_write", {"path": path, "content": content})
 
 
+def _post(path: str, body: str) -> dict:
+    return planir(
+        "web_fetch",
+        "web_fetch",
+        {"url": f"https://api.example.invalid{path}", "method": "POST", "body": body},
+    )
+
+
 def _code(code: str) -> dict:
     return planir("execute_code", "exec", {"code": code}, platform="hermes")
 
@@ -98,6 +106,30 @@ SHAPES = {
     "a ping of a host of many labels": lambda size: ex(_repeat("ping ", "a.", "io", size)),
     "docker -H with a host of many labels": lambda size: ex(
         _repeat("docker -H ", "x.rm.", "", size)
+    ),
+    # a body sent to a read-shaped path, read for a query document and for writes
+    "a graphql body of many open query brackets": lambda size: _post(
+        "/graphql", _repeat("", "query (", "", size)
+    ),
+    "a graphql body of query and many spaces": lambda size: _post(
+        "/graphql", _repeat("query", " ", "x", size)
+    ),
+    "a query body of many update words": lambda size: _post(
+        "/v1/query", _repeat("", "update a ", "", size)
+    ),
+    "a query body of a statement key and many spaces": lambda size: _post(
+        "/v1/query", _repeat('"q":', " ", "x", size)
+    ),
+    "a query body of many escapes": lambda size: _post(
+        "/v1/query", _repeat("", "\\u0041%41", "", size * 4 // 5)
+    ),
+    "code with many request calls": lambda size: _code(_repeat("", "requests.post(u, ", "", size)),
+    "code with many import lines": lambda size: _code(
+        _repeat("", "import json, os\n", "", size * 9 // 10)
+    ),
+    "code with many from words": lambda size: _code(_repeat("", "from  ", "'x'", size)),
+    "code with many request calls to a name set at the end": lambda size: _code(
+        _repeat("", "fetch(u, {}); ", "const u = 'https://api.example.invalid/v1/search';", size)
     ),
 }
 

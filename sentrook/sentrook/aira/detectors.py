@@ -23,6 +23,7 @@ import shlex
 from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote_plus
 
 from ..enums import Enforce, SessionFlag
 from ..oracle.client import is_local_host
@@ -397,6 +398,9 @@ class Sink:
     reason: str
     destinations: list[EntityRef]
     mechanism: str
+    #: The read every request of this sink asks (a search or query sent by POST, not a write), or None.
+    #: Whether it scores as a read is `_read_send`'s call.
+    read: Read | None = None
 
 
 @dataclass
@@ -418,8 +422,13 @@ def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     recipients = list(a.recipients)
     rules = ctx.lists.rules("egress", "exec_markers")
     seen: set[str] = set()
+    #: Every segment (or text) each sink reason matched in, as (head, words, text): the sink reads only
+    #: when each of them does.
+    hits: dict[str, list[tuple[str | None, list[str] | None, str]]] = {}
 
-    def consider(seg_text: str, head: str | None, index: int | None) -> None:
+    def consider(
+        seg_text: str, head: str | None, index: int | None, words: list[str] | None = None
+    ) -> None:
         for rule in rules:
             want_head = rule.get("head")
             if want_head and head is not None and head != want_head:
@@ -436,6 +445,8 @@ def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
             if not _found(rule.regex, seg_text):
                 continue
             reason = str(rule.get("reason", "exfil.exec_egress"))
+            fed = shape is not None and index is not None and _in_pipeline_tail(shape, index)
+            hits.setdefault(reason, []).append((head, None if fed else words, seg_text))
             if reason in seen:
                 continue
             seen.add(reason)
@@ -444,16 +455,320 @@ def _exec_sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
 
     if shape is not None and shape.parse_ok and shape.segments:
         for i, seg in enumerate(shape.segments):
-            consider(" ".join([seg.head, *seg.argv]), seg.head, i)
+            consider(" ".join([seg.head, *seg.argv]), seg.head, i, [seg.head, *seg.argv])
         if a.decoded_shape is not None and a.decoded_shape.segments:
             for i, seg in enumerate(a.decoded_shape.segments):
-                consider(" ".join([seg.head, *seg.argv]), seg.head, i)
+                consider(" ".join([seg.head, *seg.argv]), seg.head, i, [seg.head, *seg.argv])
     else:
         for line in a.segment_texts():
             consider(line, None, None)
     if a.inline_code:
         consider(a.scan_text, None, None)
+    # Every command in the call must ask a read too, not only the ones a marker matched (a `curl -X DELETE`
+    # beside a search is no egress marker).
+    # Any other command but a local text tool is checked too (an interpreter, `git push`, `aws s3 rm`).
+    clients: list[tuple[str | None, list[str] | None, str]] = []
+    local = set(_read_list(ctx, "local_heads"))
+    for s in (shape, a.decoded_shape):
+        if s is None or not s.segments:
+            continue
+        for i, seg in enumerate(s.segments):
+            if seg.head in local:
+                continue
+            words = [seg.head, *seg.argv]
+            fed = _in_pipeline_tail(s, i)
+            clients.append((seg.head, None if fed else words, " ".join(words)))
+    for sink in sinks:
+        sink.read = _exec_read(sink.reason, [*hits.get(sink.reason, []), *clients], ctx)
     return sinks
+
+
+# ------------------------------------------------------------------ read-shaped sends
+
+#: A URL as code or a command writes it; a `{name}` placeholder in its path (an f-string) is kept.
+_READ_URL = re.compile(r"\bhttps?://[^\s\"'`<>|;)\]]+", re.IGNORECASE)
+#: A URL written as a string literal, at the start of a call's arguments.
+_LITERAL_URL = re.compile(r"""[fFrRbBuU]{0,2}["'`]\s*(https?://[^\s"'`<>|;)\]]+)""")
+#: A first argument that is one plain string literal, no URL, computing nothing (no f-string, `{…}`, `$`,
+#: and nothing joined to it).
+_PLAIN_STRING = re.compile(r"""[rRbBuU]{0,2}(["'])(?!\s*https?://)[^"'{}$\n]*\1\s*[,)]""")
+#: A name passed as a call's first argument.
+_NAME_ARG = re.compile(r"([A-Za-z_$][\w$]*)\s*[,)]")
+_HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY"})
+_JSON_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+#: A host name as written, nothing computed in it.
+_PLAIN_HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
+#: An assignment in code, or a loop or `with` binding: the name, then what it is set to.
+_ASSIGNED = re.compile(
+    r"(?:\b(?:for|as)\s+([A-Za-z_$][\w$]*)\b|\b([A-Za-z_$][\w$]*)\s*(?:[-+*/%|&^:]|\*\*|//)?=(?![=>]))"
+)
+#: What a name set to a request target is set to: a URL written as a literal, or a `Request`.
+_SET_TO_TARGET = re.compile(
+    r"""\s*(?:[fFrRbBuU]{0,2}["'`]\s*https?://|(?:urllib\.request\.|new\s+)?Request\s*\()"""
+)
+
+
+@dataclass(frozen=True)
+class Read:
+    """A request that asks a read: the `read_shaped` path entry it matches and the URLs it is sent to."""
+
+    name: str
+    urls: tuple[str, ...]
+
+
+def _read_list(ctx: Context, key: str) -> tuple[str, ...]:
+    return ctx.lists.strings("egress", "read_shaped", key)
+
+
+def _read_patterns(ctx: Context, key: str) -> tuple[re.Pattern[str], ...]:
+    return ctx.lists.patterns("egress", "read_shaped", key)
+
+
+def _url_path(url: str) -> str:
+    rest = url.split("://", 1)[-1]
+    slash = rest.find("/")
+    path = rest[slash:] if slash >= 0 else "/"
+    return re.split(r"[?#]", path, maxsplit=1)[0].rstrip(".,:'\"")
+
+
+def _url_host(url: str) -> str:
+    rest = url.split("://", 1)[-1]
+    host = re.split(r"[/?#]", rest, maxsplit=1)[0].rsplit("@", 1)[-1]
+    return host.split(":", 1)[0].lower().rstrip(".")
+
+
+def _unescaped(body: str) -> str:
+    """`body` with JSON and URL escapes undone (`a`, `\"`, `%61`), so a keyword cannot hide in them."""
+    text = _JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), body).replace('\\"', '"')
+    return unquote_plus(unquote_plus(text))
+
+
+def _read_target(urls: list[str], body: str, ctx: Context) -> Read | None:
+    """The read every one of `urls` asks, when each matches a `read_shaped` path entry and `body` (the text
+    the request carries, read as written and unescaped) writes nothing and, to a GraphQL path, holds a
+    query document. None otherwise, and for no URL at all."""
+    if not urls:
+        return None
+    texts = (body, _unescaped(body))
+    names: list[str] = []
+    for url in urls:
+        path = _url_path(url)
+        rule = next(
+            (r for r in ctx.lists.rules("egress", "read_shaped", "paths") if _found(r.regex, path)),
+            None,
+        )
+        if rule is None:
+            return None
+        if rule.get("graphql") and not any(
+            _found_any(_read_patterns(ctx, "query_patterns"), t) for t in texts
+        ):
+            return None
+        if not _PLAIN_HOST.fullmatch(_url_host(url)):
+            return None  # a host the call computes (`$HOOK`, `{host}`): not seen
+        names.append(str(rule.get("name") or rule.regex.pattern))
+    if any(_found_any(_read_patterns(ctx, "write_body_patterns"), t) for t in texts):
+        return None
+    if any(
+        _found_any(_read_patterns(ctx, "statement_key_patterns"), t)
+        and _found_any(_read_patterns(ctx, "statement_write_patterns"), t)
+        for t in texts
+    ):
+        return None  # a database statement that is not a pure read
+    return Read(names[0], tuple(urls))
+
+
+def _carries_local_data(value: str) -> bool:
+    """A body value that takes local data: a file (`@file`, `name@file`, `@-` from stdin) or a shell
+    expansion (`$VAR`, `$(…)`)."""
+    return "@" in value or "$" in value or "`" in value
+
+
+def _shell_read(words: list[str], ctx: Context) -> Read | None:
+    """A `curl`, `wget` or HTTPie command that asks a read: every URL it names is read-shaped, it names no
+    other target, its method (if named) is a read method, it uploads no file or form, and no body value
+    takes local data. Command substitution anywhere in it is no read."""
+    head, args = words[0], words[1:]
+    if any("$(" in w or "`" in w for w in args):
+        return None
+    uploads = set(_read_list(ctx, "upload_options"))
+    method_opts = set(_read_list(ctx, "method_options"))
+    data_opts = set(_read_list(ctx, "data_options"))
+    value_opts = set(_read_list(ctx, "value_options"))
+    short_values = str(ctx.lists.get("egress", "read_shaped", "short_value_options", head) or "")
+    httpie = head not in ("curl", "wget")
+    methods: list[str] = []
+    data: list[str] = []
+    values: list[str] = []
+    urls: list[str] = []
+    i = 0
+    while i < len(args):
+        w = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else ""
+        if w.startswith("--"):
+            opt, eq, value = w.partition("=")
+            if opt in uploads:
+                return None
+            took = value if eq else nxt
+            if opt == "--url":
+                urls.append(took)
+            elif opt in method_opts:
+                methods.append(took)
+            elif opt in data_opts:
+                data.append(took)
+            elif opt in value_opts:
+                values.append(took)
+            else:
+                i += 1
+                continue
+            i += 1 if eq else 2
+            continue
+        if w.startswith("-") and len(w) > 1:
+            if w in uploads:
+                return None
+            if httpie:
+                i += 1
+                continue
+            letters, step = w[1:], 1
+            for j, ch in enumerate(letters):
+                if (head == "curl" and ch in ("T", "F", "K")) or (head == "wget" and ch == "i"):
+                    return None  # an upload, or options or targets from a file (`-sT file`, `-K -`)
+                if ch in short_values:
+                    attached = letters[j + 1 :]
+                    took = attached or nxt
+                    step = 1 if attached else 2
+                    if ch == "X" and head == "curl":
+                        methods.append(took)
+                    elif ch == "d" and head == "curl":
+                        data.append(took)
+                    else:
+                        values.append(took)
+                    break
+            i += step
+            continue
+        if w.lower().startswith(("http://", "https://")):
+            urls.append(w)
+        elif httpie and w.upper() in _HTTP_METHODS and not methods and not urls:
+            methods.append(w)  # HTTPie: `http POST url`, `http put url`
+        elif httpie and ("=" in w or ":" in w or "@" in w):
+            if "@" in w:
+                return None  # a file field (`doc@notes.md`, `a=@b`, `a:=@b`)
+            if "==" not in w and ("=" in w.split(":", 1)[0] or ":=" in w):
+                data.append(w)  # a body field
+        else:
+            return None  # a target with no scheme (`host/path`) or a word not understood
+        i += 1
+    if any(_carries_local_data(d) for d in data) or any("@" in v for v in values):
+        return None  # a body, or a header (`-H @file`), taken from local data
+    allowed = {m.upper() for m in _read_list(ctx, "methods")}
+    if any(m.upper() not in allowed for m in methods):
+        return None
+    return _read_target(urls, " ".join(words), ctx)
+
+
+def _code_read(text: str, ctx: Context) -> Read | None:
+    """Code that asks a read: no write method, no read of local data, no module outside `code_modules` and
+    no request API that needs none, every request call aimed at a URL written in the code (or a name set
+    once, to one or to a `Request` it built), and every URL it writes read-shaped. A target the code
+    computes is not seen, so the send stays a send."""
+    if _found_any(_read_patterns(ctx, "write_method_patterns"), text):
+        return None
+    if _found_any(_read_patterns(ctx, "file_read_patterns"), text):
+        return None
+    if _found_any(_read_patterns(ctx, "unseen_request_patterns"), text):
+        return None
+    modules = set(_read_list(ctx, "code_modules"))
+    for rx in _read_patterns(ctx, "import_patterns"):
+        for m in rx.finditer(text):
+            if any(n.strip() not in modules for n in m.group(1).split(",")):
+                return None  # a library whose requests are not followed
+    calls = [m for rx in _read_patterns(ctx, "code_request_patterns") for m in rx.finditer(text)]
+    if not calls:
+        return None
+    assigned: dict[str, list[int]] = {}
+    for m in _ASSIGNED.finditer(text):
+        assigned.setdefault(m.group(1) or m.group(2), []).append(-1 if m.group(1) else m.end())
+    for m in calls:
+        arg = text[m.end() : m.end() + 2048].lstrip()
+        if _LITERAL_URL.match(arg):
+            continue
+        if m.group(0).lstrip(". \t").lower().startswith("get") and _PLAIN_STRING.match(arg):
+            continue  # `os.environ.get("KEY")`: a lookup, not a request
+        name = _NAME_ARG.match(arg)
+        ends = assigned.get(name.group(1), []) if name is not None else []
+        # set once, to a URL written in the code or a `Request`: a name set again may be aimed elsewhere
+        if len(ends) != 1 or ends[0] < 0 or not _SET_TO_TARGET.match(text, ends[0]):
+            return None
+    return _read_target([m.group(0) for m in _READ_URL.finditer(text)], text, ctx)
+
+
+def _exec_read(
+    reason: str, segments: list[tuple[str | None, list[str] | None, str]], ctx: Context
+) -> Read | None:
+    """The read an exec sink asks, when every segment it matched in, and every HTTP client's command in the
+    call, asks one: an HTTP client's command not fed by a pipe, or code that posts. Any other egress (a
+    copy, a socket, a mailer) or an unparsed command is no read."""
+    if not segments:
+        return None
+    heads = set(_read_list(ctx, "shell_heads"))
+    found: list[Read] = []
+    for head, words, text in segments:
+        if head in heads:
+            read = _shell_read(words, ctx) if words is not None else None
+        elif reason == "exfil.web_post" and (words is not None or head is None):
+            read = _code_read(text, ctx)
+        else:
+            read = None
+        if read is None:
+            return None
+        found.append(read)
+    return Read(found[0].name, tuple(u for r in found for u in r.urls))
+
+
+def _web_read(a: CallAnalysis, method: str, ctx: Context) -> Read | None:
+    """A web-request tool call that asks a read: a read method, a read-shaped URL and a body (and headers)
+    that write nothing."""
+    if method not in {m.upper() for m in _read_list(ctx, "methods")}:
+        return None
+    url = a.call.get("url")
+    if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        return None
+    parts = [a.call.get("body"), a.call.get("headers")]
+    text = "\n".join(
+        p if isinstance(p, str) else json.dumps(p, ensure_ascii=False, default=str)
+        for p in parts
+        if p
+    )
+    return _read_target([url], text, ctx)
+
+
+def _watched(dest: EntityRef, ctx: Context) -> bool:
+    """A destination a read-shaped request to is still a send: one the library watches as a request
+    capture or drop (`watched_tiers`), `known_bad`, or a look-alike of a host it knows. Without the
+    library's answer (the oracle off or failing) a capture host cannot be told from any other: fail
+    closed."""
+    info = ctx.prepared.oracle_entities.get(dest.entity_id or "")
+    if not isinstance(info, dict):
+        return True
+    if info.get("verdict") == "known_bad" or info.get("near_miss"):
+        return True
+    return info.get("tier") in _read_list(ctx, "watched_tiers")
+
+
+def _read_send(a: CallAnalysis, sink: Sink, ctx: Context, home_files: list[str]) -> str | None:
+    """The read-shaped entry a plain send scores as a read by: the sink asks a read, the call reads no local
+    file it could carry, and every destination is the host of a URL the read is sent to, one the library
+    answered for and does not watch."""
+    if sink.read is None or home_files or a.attachments:
+        return None
+    if any(Role.DATA_SOURCE in p.roles for p in a.paths):
+        return None
+    hosts = {_url_host(u) for u in sink.read.urls}
+    if not sink.destinations or any(
+        d.kind is not EntityKind.HOST or d.value.lower() not in hosts or _watched(d, ctx)
+        for d in sink.destinations
+    ):
+        return None
+    return sink.read.name
 
 
 def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
@@ -466,7 +781,9 @@ def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     if a.kind.value in lists.strings("egress", "web_body_kinds"):
         method = str(a.call.get("method") or "GET").upper()
         if method in lists.strings("egress", "web_body_methods") or a.call.get("body"):
-            return [Sink("exfil.web_post", a.destination_hosts(), "body")]
+            sink = Sink("exfil.web_post", a.destination_hosts(), "body")
+            sink.read = _web_read(a, method if a.call.get("method") else "POST", ctx)
+            return [sink]
         if a.call is ctx.prepared.pending and ctx.prepared.url_carries:
             # No body, but the URL reproduces a local read: the query and path reach the server too.
             return [Sink("exfil.web_query", a.destination_hosts(), "url")]
@@ -666,10 +983,16 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 "destinations": [d.value for d in sink.destinations],
             },
         )
+        # A search or query asked by POST: the body still leaves the machine, but nothing is written there.
+        read = _read_send(a, sink, ctx, home_files)
+        irreversibility = ctx.weight("send", "irreversibility")
+        if read is not None:
+            f.detail["read"] = read
+            irreversibility = ctx.weight("send_read", "irreversibility", default=irreversibility)
         for dest in sink.destinations or [None]:
             subject = dest.entity_id if dest is not None else None
             f.add(REACH, ctx.weight("send", "reach"), subject)
-            f.add(IRREVERSIBILITY, ctx.weight("send", "irreversibility"), subject)
+            f.add(IRREVERSIBILITY, irreversibility, subject)
         for subject in home_files:
             f.holds_sensitive(subject)
         out.append(f)
