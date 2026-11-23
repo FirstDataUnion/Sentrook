@@ -463,6 +463,14 @@
       "sent": true
     },
     {
+      "case": "#<id> binding on a send that names the channel only in channelId",
+      "grant": { "kind": "destination", "pattern": "#1498333845953712258", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "channelId": "1498333845953712258", "message": "Daily brief" },
+      "sent": true
+    },
+    {
       "case": "channel:<id> binding on a channelId of another channel",
       "grant": { "kind": "destination", "pattern": "channel:1498333845953712258", "scope": "persistent" },
       "tool_kind": "message_send",

@@ -217,8 +217,8 @@ def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bo
     """The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner
     reads them, each with whether it needs no minimum length: as written; without a `<platform>:` prefix
     when the send names that platform in its own argument; a `#name` as the channel target
-    `channel:name` (or `group:`, `thread:`); and a `channel:<id>` (or `group:`, `thread:`) as the bare
-    id, as a send writes it in `channelId`."""
+    `channel:name` (or `group:`, `thread:`); and a `channel:<id>` (or `group:`, `thread:`) or `#<id>` as
+    the bare id, as a send writes it in `channelId`."""
     forms = [(pattern, False)]
     head, sep, rest = pattern.partition(":")
     if platform and sep and rest and head == platform:
@@ -230,6 +230,8 @@ def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bo
     for form, short_ok in list(forms):
         if form.startswith("#"):
             forms += [(prefix + form[1:], short_ok) for prefix in _CHANNEL_PREFIXES]
+            if _BARE_ID.fullmatch(form[1:]):
+                forms.append((form[1:], short_ok))
     return forms
 
 

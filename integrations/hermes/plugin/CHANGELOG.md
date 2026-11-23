@@ -6,7 +6,7 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
-- A destination grant or binding written `channel:<id>` (or `group:`, `thread:`) is sent with a scan whose call
+- A destination grant or binding written `channel:<id>` (or `group:`, `thread:`, or `#<id>`) is sent with a scan whose call
   names that channel by its bare id, as OpenClaw's message tool writes it in `channelId`. Kept the same as the
   OpenClaw plugin, so both send the same grants for the same call.
 - Held-call, scan-failure and background-save notices reach the `owner_channel` home channel again. The plugin sent

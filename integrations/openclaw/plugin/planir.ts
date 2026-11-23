@@ -412,7 +412,7 @@ export function callPlatform(args: unknown, kind: string): string | null {
  * The forms a destination pattern (lower-cased) may take in the call's arguments, as the scanner reads them, each
  * with whether it needs no minimum length: as written; without a `<platform>:` prefix when the send names that
  * platform in its own argument; a `#name` as the channel target `channel:name` (or `group:`, `thread:`); and a
- * `channel:<id>` (or `group:`, `thread:`) as the bare id, as a send writes it in `channelId`.
+ * `channel:<id>` (or `group:`, `thread:`) or `#<id>` as the bare id, as a send writes it in `channelId`.
  */
 function destinationForms(pattern: string, platform: string | null): Array<[string, boolean]> {
   const forms: Array<[string, boolean]> = [[pattern, false]];
@@ -426,7 +426,9 @@ function destinationForms(pattern: string, platform: string | null): Array<[stri
     if (BARE_ID.test(id)) forms.push([id, shortOk]);
   }
   for (const [form, shortOk] of [...forms]) {
-    if (form.startsWith("#")) forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + form.slice(1), shortOk]));
+    if (!form.startsWith("#")) continue;
+    forms.push(...CHANNEL_PREFIXES.map((p): [string, boolean] => [p + form.slice(1), shortOk]));
+    if (BARE_ID.test(form.slice(1))) forms.push([form.slice(1), shortOk]);
   }
   return forms;
 }
