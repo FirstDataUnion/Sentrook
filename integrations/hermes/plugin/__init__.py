@@ -1333,6 +1333,8 @@ def register(ctx: Any) -> None:
             "sentrook skill_review %r is not allow or review; reading it as allow",
             cfg.skill_review_unknown,
         )
+    if skill_review.host_isolated():
+        logger.warning("sentrook background saves are %s", skill_review.HOST_ISOLATION_TEXT)
     if unsent := grants.unsent_summary(cfg):
         logger.warning(
             "sentrook config grants never sent: %s. A config grant has no session: drop its scope to "
