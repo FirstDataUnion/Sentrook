@@ -1195,8 +1195,15 @@ def _secret(texts: list[str]) -> bool:
             if m.group("cue").lower().startswith("pin"):
                 if re.fullmatch(r"\d{4,12}", v):  # a version pin is not a PIN
                     return True
-            elif len(v) >= 3 and v.lower() not in _NOT_VALUES and not is_code_read(v):
-                return True  # `password = getpass("Password: ")` reads one, it holds none
+            elif (
+                len(v) >= 3
+                and v.lower() not in _NOT_VALUES
+                and not is_code_read(v)
+                and not is_code_read(v.rstrip(":!?)]"))
+            ):
+                # `password = getpass("Password: ")` reads one, it holds none; as in the redactors, punctuation after
+                # the code is not part of it (`(password = args.password)`, `sys.argv[1]`)
+                return True
         if any(_luhn(m.group(0)) for m in _CARD.finditer(t)):
             return True
         for m in _OTP_SEED.finditer(t):
