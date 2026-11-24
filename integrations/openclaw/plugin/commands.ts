@@ -7,7 +7,8 @@
  * `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
  * grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`,
  * the same as `allow`) answer a call held on an unattended run, `passes` lists and revokes what those answers set
- * (passes.ts), and `notify` says where the notice of a held call goes (see `hold.ts`), so only the owner may run
+ * (passes.ts), `notify` says where the notice of a held call goes (see `hold.ts`) and `setup` shows what would stop
+ * Sentrook asking about routine work and sets it with the screen's code (see `setup.ts`), so only the owner may run
  * them. `snooze` and a session `grant` cover the session the command was sent from; the
  * command line has none, so there a snooze needs `--all` and a session grant `--session`. OpenClaw tells a
  * command handler who the owner is only when the whole command requires a gateway scope, so they are
@@ -16,7 +17,7 @@
  */
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
-import { configProblemsSummary, type PluginConfig, resolveConfig } from "./config.ts";
+import { configProblemsSummary, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
@@ -32,10 +33,11 @@ import {
   parseRef,
   recentScans,
 } from "./history.ts";
-import { OWNER_SCOPES, refusal } from "./owner.ts";
+import { OWNER_ROUTES, refusal } from "./owner.ts";
 import * as report from "./report.ts";
-import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
+import { channelOf, chatKindOfTurn, PLUGIN_VERSION, sessionRef } from "./planir.ts";
 import * as selfEdit from "./selfEdit.ts";
+import * as setup from "./setup.ts";
 import * as snooze from "./snooze.ts";
 import { Store } from "./store.ts";
 
@@ -59,6 +61,10 @@ export interface CommandContext {
   session?: string;
   /** The chat the command came from (channel, sender, account, thread); unset on the command line. */
   chat?: hold.NotifyContext;
+  /** OpenClaw's config as it is now (its MCP servers), for `setup`. */
+  hostConfig?: unknown;
+  /** OpenClaw's state directory as the gateway started with it (its job store), for `setup`. */
+  openclawDir?: string;
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
@@ -228,7 +234,51 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
         "notify",
       ),
   },
+  setup: {
+    command: "sentrook-setup",
+    args: "[apply <code> [1,3] | discard <id>]",
+    description:
+      "What would stop Sentrook asking about routine work: channels your cron jobs deliver to, your MCP servers, " +
+      "grants Sentrook suggested on reviews you approved, and the agent's proposals, each described by Sentrook; " +
+      "apply <code> [1,3] [--expires 90d | --until-revoked] sets them with the code the list shows; discard <id> " +
+      "drops an agent proposal",
+    cliRest: true,
+    run: (ctx, rest) => {
+      if (!ctx.owner) return refusal("setup");
+      const o = ctx.owner;
+      // OpenClaw treats the owner's message in a group or channel room as the owner's too, but the list (and its
+      // code) would be shown to everyone in the room, and kept in the room's transcript: refuse it there.
+      const room = setupRoom(ctx);
+      if (room) {
+        o.record({ kind: "command", verb: "setup", outcome: "refused", basis: o.by.basis, sender_ref: o.by.sender_ref, channel: o.by.channel, reason: room });
+        return SETUP_IN_GROUP;
+      }
+      return setup.run(configOf(ctx), rest, o.by, new Date(), CMD, o.record, o.beforeWrite, {
+        openclawDir: ctx.openclawDir ?? openclawDir(ctx.env),
+        hostConfig: ctx.hostConfig,
+      });
+    },
+  },
 };
+
+export const SETUP_IN_GROUP =
+  "Open /sentrook-setup in your own direct message to the agent, in the Control UI or on the machine: this chat is a " +
+  "group or channel, or one Sentrook cannot tell from one, and everyone there would see the list.";
+
+/**
+ * Why `/sentrook-setup` may not run in the chat it was sent from: `group_chat` for a group or channel room (by its
+ * session key or reply address, as scans read a turn's chat), `unknown_chat` for a chat channel whose kind nothing
+ * says (no session key, or the main session while OpenClaw routes rooms into it); null for a direct chat, OpenClaw's
+ * own surfaces (the Control UI, webchat, the terminal), a gateway client with the admin scope, and the command line.
+ */
+function setupRoom(ctx: CommandContext): "group_chat" | "unknown_chat" | null {
+  if (!ctx.chat) return null;
+  const channel = channelOf(ctx.chat.channel);
+  const kind = chatKindOfTurn(ctx.chat.sessionKey, channel, ctx.hostConfig);
+  if (kind === "group" || hold.chatKindOf(ctx.chat) === "group") return "group_chat";
+  if (kind === "direct" || channel === "chat" || ctx.owner?.by.basis.includes("operator.admin")) return null;
+  return "unknown_chat";
+}
 
 /** The `session_ref` of the session the command was sent from; null when there is none. */
 function refOf(ctx: CommandContext): string | null {
@@ -260,7 +310,7 @@ export function helpText(): string {
   return [
     "Sentrook commands:",
     ...names.map((n) => `  /sentrook ${n.padEnd(width)}  ${SUBCOMMANDS[n]!.description}`),
-    `Owner only (gateway scope ${OWNER_SCOPES.join(", ")}):`,
+    `Owner only, ${OWNER_ROUTES}:`,
     ...owner.map(([usage, description]) => `  ${usage.padEnd(ownerWidth)}  ${description}`),
   ].join("\n");
 }

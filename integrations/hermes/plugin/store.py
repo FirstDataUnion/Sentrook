@@ -438,3 +438,29 @@ class Store:
     def save_settings(self, value: dict[str, Any]) -> None:
         with self.lock:
             self._write(self.dir / "settings.json", value)
+
+    def load_proposals(self) -> dict[str, Any] | None:
+        """`proposals.json` (the agent's setup proposals), empty when absent; None when it cannot be read."""
+        path = self.dir / "proposals.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "proposals": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("proposals", [])
+        return data if isinstance(data["proposals"], list) else None
+
+    def save_proposals(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "proposals.json", value)
+
+    def load_setup(self) -> dict[str, Any]:
+        """`setup.json`: the setup screen last shown, its code and items; empty when absent or unreadable."""
+        with self.lock:
+            data = self._read(self.dir / "setup.json", None)
+        return data if isinstance(data, dict) else {}
+
+    def save_setup(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "setup.json", value)

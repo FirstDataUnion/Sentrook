@@ -1,0 +1,9 @@
+{
+  "jobs": [
+    {"id": "brief-01", "name": "Daily brief", "prompt": "Write the daily brief", "deliver": "discord:#daily-brief"},
+    {"id": "ops-02", "name": "Ops summary", "deliver": "slack:#ops-alerts"},
+    {"id": "dm-03", "name": "Reminder", "deliver": "telegram:123456789"},
+    {"id": "home-04", "name": "Home", "deliver": "origin"},
+    {"id": "off-05", "name": "Old reports", "enabled": false, "deliver": "discord:#old-reports"}
+  ]
+}

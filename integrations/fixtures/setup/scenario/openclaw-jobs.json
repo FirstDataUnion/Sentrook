@@ -1,0 +1,9 @@
+{
+  "jobs": [
+    {"id": "brief-01", "name": "Daily brief", "delivery": {"mode": "announce", "channel": "discord", "to": "#daily-brief"}},
+    {"id": "ops-02", "name": "Ops summary", "delivery": {"mode": "announce", "channel": "slack", "to": "channel:#ops-alerts"}},
+    {"id": "dm-03", "name": "Reminder", "delivery": {"mode": "announce", "channel": "telegram", "to": "123456789"}},
+    {"id": "home-04", "name": "Home", "delivery": {"mode": "announce", "channel": "last"}},
+    {"id": "off-05", "name": "Old reports", "enabled": false, "delivery": {"mode": "announce", "channel": "discord", "to": "#old-reports"}}
+  ]
+}

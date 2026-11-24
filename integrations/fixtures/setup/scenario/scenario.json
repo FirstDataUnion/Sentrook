@@ -1,0 +1,6 @@
+{
+  "_comment": "One setup screen, shown at `now` with code `code`, from the files beside this one: the grants file, the agent's proposals, the traffic log, the cron jobs (Hermes `<home>/cron/jobs.json` as hermes-jobs.json, OpenClaw `<state>/cron/jobs.json` as openclaw-jobs.json) and the MCP servers (Hermes `mcp_servers`, OpenClaw `mcp.servers`). The plugin settings set review_at and nothing else. Three MCP servers carry what an agent could write to break out of the list (a newline, a backtick, a space in a host): they are left out and counted, never printed. Both plugins must print screen.txt (screen-log-off.txt with the traffic log off), with {setup} replaced by /sentrook setup on Hermes and /sentrook-setup on OpenClaw. apply.json: what applying and discarding then reply and change.",
+  "now": "2026-11-24T12:00:00Z",
+  "review_at": 45,
+  "code": "4821"
+}

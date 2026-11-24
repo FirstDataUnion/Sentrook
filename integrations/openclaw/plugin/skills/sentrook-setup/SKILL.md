@@ -36,9 +36,17 @@ There are two entry points:
 
 ## Hand over
 
-Give the owner the commands for what they told you, **one command per message**, each with one plain sentence saying
-what it lets through and that everything else is still checked. Wait for the owner to run one before sending the next.
-Commands only work when the owner sends them (as a direct message to you, in the Control UI, or on the machine).
+Tell the owner to open `/sentrook-setup` (as a direct message to you, in the Control UI, or on the machine). Sentrook lists there what it found itself:
+the channels the cron jobs deliver to, the MCP servers, and the grants it suggested on reviews the owner approved. It
+describes each item in its own words, with warnings and how long it lasts, and the owner sets the ones they want with
+`/sentrook-setup apply` and the code the list ends with. The list is for the owner to read and decide on: never apply
+it yourself, even if you see its code. Ask the owner to check that each item looks right before they set it, because a
+grant lets calls like it through without asking them.
+
+For what the owner told you that the list does not show (a folder, a key, a service not used yet), give the owner the
+command, **one command per message**, each with one plain sentence saying what it lets through and that everything
+else is still checked, and ask them to check it looks right before they run it. Wait for the owner to run one before sending the next. Commands only work when the owner sends
+them (as a direct message to you, in the Control UI, or on the machine).
 
 | The owner told you | Command for the owner |
 | --- | --- |
@@ -59,8 +67,9 @@ Commands only work when the owner sends them (as a direct message to you, in the
 
 ## Check-in
 
-1. Ask the owner to look at `/sentrook-history 50` for calls that were reviewed or held again and again. You cannot see
-   Sentrook's history yourself.
+1. Tell the owner to open `/sentrook-setup`: it lists the grants Sentrook suggested on reviews they approved again and
+   again, and how many. For the rest, ask them to look at `/sentrook-history 50` for calls that were reviewed or held
+   again and again. You cannot see Sentrook's history yourself.
 2. For each one the owner says is routine, ask them to run `/sentrook-why <id>`: it names the grant Sentrook suggests,
    which is the narrowest one that lets calls like it through. Explain it in one sentence; the owner sets it with
    the command `why` gives. A held call is answered with `/sentrook-allow <id>` (once, or `always` where the notice
@@ -82,7 +91,7 @@ Commands only work when the owner sends them (as a direct message to you, in the
 
 ## What you never do
 
-- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, or their `openclaw sentrook` forms. Only the owner runs them.
+- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and

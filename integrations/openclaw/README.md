@@ -159,10 +159,46 @@ the grant on the next scan too. When you asked for the work yourself (your own m
 **Allow always**, which allows the call and sets that grant, persistent for 30 days. `/sentrook-why` lists every
 grant Sentrook suggested for a scan.
 
-Run these commands in the owner's Control UI chat or on the machine (see [who may run them](#commands)). In chat
+Run these commands from your own direct message to the agent, the Control UI or the machine (see [who may run
+them](#commands)). In chat
 the commands are `/sentrook-bind`, `/sentrook-grant` and so on. On the command line they are `openclaw sentrook bind`,
 `openclaw sentrook grant` and so on, with patterns in quotes so the shell leaves the `*` alone:
 `openclaw sentrook grant file '/home/you/notes/*' --allows read,write --persistent`.
+
+### Set up with /sentrook-setup
+
+`/sentrook-setup` lists what Sentrook would need to stop asking about routine work, worked out from what it can see
+itself, and sets it with one command:
+
+- **From your config**: a channel binding for each cron job that announces to a chat room not bound yet (a
+  `delivery` with `mode: announce`, a `channel` and a room in `to`), and a provider grant for each MCP server in
+  `mcp.servers` that no grant covers. Cron jobs can be changed by the agent, so these items say so: check the channel
+  is one you chose.
+- **From reviews you approved**: the grant Sentrook suggested on at least two reviews you approved in the last 30
+  days, from your own message, in a chat where the scanner saw no content trying to steer the agent. Only that exact
+  grant counts: a broader pattern never inherits the count. With the traffic log off, there is no evidence to count.
+- **From the agent**: items the agent proposed, with its reason shown last as a quoted note.
+
+Sentrook describes each item in its own words, with how long it lasts and warnings to check (a name with characters
+that are not plain ASCII, shown with its registrable domain; deleting files; your whole home folder; a whole package
+registry; something a grant already covers; an agent proposal from a chat that had read content trying to steer it):
+
+```
+3. Send data to `api.example.com`, from any chat or job, until you revoke it.
+   Sentrook suggested this in 3 reviews you approved, the last one 2 days ago.
+
+To set them all, send: /sentrook-setup apply 4821
+To set some, list their numbers: /sentrook-setup apply 4821 1,3
+```
+
+The code is new each time you open the list and works once, for 15 minutes, so nothing is set unless you have just
+seen the list. OpenClaw keeps a command and its reply in the chat's transcript, so the agent can read the list
+afterwards: everything on it is Sentrook's own text, and the code only proves the list was shown in your chat. Grants
+backed by reviews you approved last until you revoke them, the others 30 days, and channel bindings until you remove
+them; add `--expires 90d` or `--until-revoked` to `apply` to change how long the grants last. Applied grants are
+persistent, list in `/sentrook-grants` and record where they came from; applying an item twice sets nothing new.
+`/sentrook-setup discard <id>` drops an agent proposal. Sentrook still decides whether a pattern is too broad to
+relieve anything.
 
 ### Bind the channel a scheduled job reports to
 
@@ -292,17 +328,28 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
 | `/sentrook-approve <id>` | The same as `/sentrook-allow <id>`, kept for one release |
 | `/sentrook-passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
+| `/sentrook-setup [apply <code> [1,3] \| discard <id>]` | What would stop Sentrook asking about routine work, each item described by Sentrook; `apply` with the code the list ends with sets them, `--expires 90d` or `--until-revoked` changes how long the grants last (see [Set up with /sentrook-setup](#set-up-with-sentrook-setup)) |
 
 `openclaw sentrook login` and `openclaw sentrook verify` exist only on the command line. There is no session on the command line, so
 `openclaw sentrook snooze` needs `--all` and `openclaw sentrook grant` needs `--persistent` or `--session <ref>`.
 
 **Owner only.** `/sentrook status` and `/sentrook help` are open to anyone who can message the agent. The dashed
-commands need the gateway scope `operator.admin`: the owner's default Control UI connection has it, and so does
-anyone holding the shared gateway token. Limited Control UI sessions are refused. In a chat channel, OpenClaw lets the
-owner (a sender in `commands.ownerAllowFrom`) run them from a direct message, which is how `/sentrook-notify here`,
-`/sentrook-allow` and `/sentrook-deny` are meant to be used. On the command line, whoever can
-run `openclaw` on the machine counts as the owner. Every attempt, allowed or refused, is recorded in the traffic log
-(unless you turned it off).
+commands run only for the owner, from any of three places:
+
+- **Your own direct message to the agent** on a chat channel: OpenClaw lets the owner (a sender in
+  `commands.ownerAllowFrom`, which OpenClaw fills with you when you approve the first pairing, or one linked to an
+  admin operator profile) run them there. This is how `/sentrook-notify here`, `/sentrook-allow` and `/sentrook-deny` are meant
+  to be used.
+- **The Control UI**: the owner's default connection holds the gateway scope `operator.admin` they require, and so
+  does anyone holding the shared gateway token. Limited Control UI sessions are refused.
+- **The machine**: whoever can run `openclaw` there counts as the owner.
+
+OpenClaw decides who the owner is by the sender, not the room, so in a group or channel room your own message runs
+them too, and the reply is shown to everyone there. `/sentrook-setup` refuses in a room (show and apply alike), since
+its list would be shown to the room, and in a chat it cannot tell from one (a chat channel with no session key, or
+the agent's main session when `session.groupScope` routes rooms into it); run it in your direct message, the Control
+UI or on the machine instead. Every attempt, allowed or refused, is
+recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
@@ -339,10 +386,12 @@ starts, so start a new session after installing.
   and point you to `/sentrook-why` and `/sentrook-report`.
 - `sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the setup with
   `openclaw sentrook verify`, asks what work is routine (the services, folders, channels and API key names it uses),
-  explains where notices go (`/sentrook-notify here`), and gives you the grant and binding commands to type, one at a
-  time. Later, when Sentrook keeps asking about the same thing, it helps you find the grant with `/sentrook-why`.
+  explains where notices go (`/sentrook-notify here`), sends you to `/sentrook-setup` for what Sentrook found itself,
+  and gives you the grant and binding commands for the rest, one at a time. Later, when Sentrook keeps asking about
+  the same thing, it sends you back to `/sentrook-setup` or helps you find the grant with `/sentrook-why`.
 
-The agent never runs those commands itself, and Sentrook refuses them if it tries. The agent's system prompt also gets
+The agent never runs those commands itself, `/sentrook-setup apply` included, and Sentrook refuses them if it tries.
+The agent's system prompt also gets
 a few short rules, added with the `/sentrook` command, that it follows whether or not it opens a skill: never run the
 commands that change Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked
 or held call reworded.

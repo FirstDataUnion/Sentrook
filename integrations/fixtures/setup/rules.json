@@ -1,0 +1,865 @@
+{
+  "_comment": "The setup screen's rules, shared by both plugins. `delivery`: a cron job's delivery target as a channel binding pattern (Hermes `deliver: \"<platform>:<to>\"`, OpenClaw an announce delivery with that channel and to), null for a person, a phone number, a thread or anything not a room. `covers`: whether a grant in force (existing) already covers an item (candidate): the same kind, the same pattern (case ignored except for files) or `*.` over the domain and every name under it, or a file folder's `/*` over a file directly in it, and allows no narrower. `warnings`: the warnings an item carries from its own kind, pattern and allows. `registrable`: the registrable domain of a host, in ASCII. `describe`: the item's first line, in the plugin's words (lifetime in minutes, null for until revoked or removed). `last`: how long ago the last approved review was, by UTC calendar day. `exposure`: whether a scan response flags exposure (an `exposure.*` reason, or exposure or session_exposure above 0). `notes`: the agent's reason as the screen shows it, inside a code span so links, mentions and emphasis do nothing (null: no note line). `mcp_order`: MCP servers are listed by name in code point order. `grant_labels`: how the id of a grant in force that covers an item is shown (a plugin-made id as it is; any other string neutralised in a code span; anything not a string as `?`). Every code span's text has no backtick and no backslash (a chat format may read one as an escape).",
+  "delivery": [
+    [
+      "discord",
+      "#daily-brief",
+      "discord:#daily-brief"
+    ],
+    [
+      "Discord",
+      "channel:#daily-brief",
+      "discord:#daily-brief"
+    ],
+    [
+      "slack",
+      "C0123ABCD",
+      "slack:C0123ABCD"
+    ],
+    [
+      "slack",
+      "U0123ABCD",
+      null
+    ],
+    [
+      "slack",
+      "D0123ABCD",
+      null
+    ],
+    [
+      "telegram",
+      "-1001234567890",
+      "telegram:-1001234567890"
+    ],
+    [
+      "telegram",
+      "123456789",
+      null
+    ],
+    [
+      "telegram",
+      "group:123456789",
+      "telegram:123456789"
+    ],
+    [
+      "whatsapp",
+      "15551234567",
+      null
+    ],
+    [
+      "mattermost",
+      "user:alice",
+      null
+    ],
+    [
+      "mattermost",
+      "dm:abc123",
+      null
+    ],
+    [
+      "mattermost",
+      "town-square",
+      "mattermost:town-square"
+    ],
+    [
+      "discord",
+      "#a",
+      null
+    ],
+    [
+      "discord",
+      "#daily brief",
+      null
+    ],
+    [
+      "telegram",
+      "-100123:5",
+      null
+    ],
+    [
+      "last",
+      "#general",
+      null
+    ],
+    [
+      "x",
+      "#general",
+      null
+    ]
+  ],
+  "covers": [
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "api.example.com"
+      },
+      "candidate": {
+        "kind": "destination",
+        "pattern": "API.example.com"
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "*.example.com"
+      },
+      "candidate": {
+        "kind": "destination",
+        "pattern": "example.com"
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "*.example.com"
+      },
+      "candidate": {
+        "kind": "destination",
+        "pattern": "a.b.example.com"
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "*.example.com"
+      },
+      "candidate": {
+        "kind": "destination",
+        "pattern": "*.b.example.com"
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "*.example.com"
+      },
+      "candidate": {
+        "kind": "destination",
+        "pattern": "notexample.com"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "api.example.com"
+      },
+      "candidate": {
+        "kind": "destination",
+        "pattern": "*.example.com"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "destination",
+        "pattern": "api.example.com"
+      },
+      "candidate": {
+        "kind": "provider",
+        "pattern": "api.example.com"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_KEY@*.example.com"
+      },
+      "candidate": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_KEY@api.example.com"
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_KEY@*.example.com"
+      },
+      "candidate": {
+        "kind": "credential",
+        "pattern": "OTHER_KEY@api.example.com"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "file",
+        "pattern": "~/notes/*"
+      },
+      "candidate": {
+        "kind": "file",
+        "pattern": "~/notes/today.md",
+        "allows": [
+          "read"
+        ]
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "candidate": {
+        "kind": "file",
+        "pattern": "~/notes/today.md",
+        "allows": [
+          "read",
+          "write"
+        ]
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read",
+          "write"
+        ]
+      },
+      "candidate": {
+        "kind": "file",
+        "pattern": "~/notes/today.md",
+        "allows": [
+          "write"
+        ]
+      },
+      "covers": true
+    },
+    {
+      "existing": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "candidate": {
+        "kind": "file",
+        "pattern": "~/notes/today.md"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "file",
+        "pattern": "~/notes/*"
+      },
+      "candidate": {
+        "kind": "file",
+        "pattern": "~/notes/2026/today.md"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "file",
+        "pattern": "~/Notes/*"
+      },
+      "candidate": {
+        "kind": "file",
+        "pattern": "~/notes/today.md"
+      },
+      "covers": false
+    },
+    {
+      "existing": {
+        "kind": "provider",
+        "pattern": "npm:@example/notes-mcp"
+      },
+      "candidate": {
+        "kind": "provider",
+        "pattern": "npm:@example/notes-mcp"
+      },
+      "covers": true
+    }
+  ],
+  "warnings": [
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com"
+      },
+      "warnings": []
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "аpple.com"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "https://login.аpple.co.uk/path"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.co.uk`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_KEY@*.pаy.example"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--py-7kc.example`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--pple-43d.com"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "remote:login.XN--pple-43d.com"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "KEY@*.xn--py-7kc.example"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--py-7kc.example`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "notxn--a.example.com"
+      },
+      "warnings": []
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "npm:@еxample/notes"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read",
+          "write"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "delete"
+        ]
+      },
+      "warnings": [
+        "this lets the agent delete files"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*"
+      },
+      "warnings": [
+        "this lets the agent delete files"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": [
+        "this covers your whole home folder or more"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/**",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": [
+        "this covers your whole home folder or more"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "/Users/alice/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": [
+        "this covers your whole home folder or more"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "/home/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": [
+        "this covers your whole home folder or more"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": [
+        "this covers your whole home folder or more"
+      ]
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "/home/alice/notes/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "/etc/*",
+        "allows": [
+          "read"
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "npm:*"
+      },
+      "warnings": [
+        "this covers a whole package registry or every server"
+      ]
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "remote:*"
+      },
+      "warnings": [
+        "this covers a whole package registry or every server"
+      ]
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "npm:@*/*"
+      },
+      "warnings": [
+        "this covers a whole package registry or every server"
+      ]
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "npm:@example/*"
+      },
+      "warnings": []
+    },
+    {
+      "binding": true,
+      "item": {
+        "kind": "destination",
+        "pattern": "discord:#daily-brief"
+      },
+      "warnings": []
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.[Approve](evil.com)"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `approveevil.com`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.**APPROVE**"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--a.**approve**`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.||spoiler||"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--a.spoiler`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.~~gone~~"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--a.~~gone~~`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.xn--e1afmkfd.*evil*.com"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `*evil*.com`)"
+      ]
+    }
+  ],
+  "registrable": [
+    [
+      "api.example.com",
+      "example.com"
+    ],
+    [
+      "example.com",
+      "example.com"
+    ],
+    [
+      "a.b.example.co.uk",
+      "example.co.uk"
+    ],
+    [
+      "example.co.uk",
+      "example.co.uk"
+    ],
+    [
+      "localhost",
+      null
+    ],
+    [
+      "аpple.com",
+      "xn--pple-43d.com"
+    ]
+  ],
+  "describe": [
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com"
+      },
+      "minutes": null,
+      "text": "Send data to `api.example.com`, from any chat or job, until you revoke it."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.example.com"
+      },
+      "minutes": 43200,
+      "text": "Send data to `example.com` and every name under it, from any chat or job, for 30 days."
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "write",
+          "read"
+        ]
+      },
+      "minutes": 240,
+      "text": "Read and write files matching `~/notes/*`, from any chat or job, for 4 hours."
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/bin/*",
+        "allows": [
+          "exec"
+        ]
+      },
+      "minutes": 1,
+      "text": "Run files matching `~/bin/*`, from any chat or job, for 1 minute."
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/x/*"
+      },
+      "minutes": 90,
+      "text": "Read, write, edit, delete and run files matching `~/x/*`, from any chat or job, for 90 minutes."
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "npm:@example/notes-mcp"
+      },
+      "minutes": 1440,
+      "text": "Use tools from the provider `npm:@example/notes-mcp`, from any chat or job, for 1 day."
+    },
+    {
+      "item": {
+        "kind": "repo",
+        "pattern": "github.com/example/tools"
+      },
+      "minutes": null,
+      "text": "Run install scripts from the repository `github.com/example/tools`, from any chat or job, until you revoke it."
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_API_KEY@api.example.com"
+      },
+      "minutes": 60,
+      "text": "Send the key `EXAMPLE_API_KEY` to `api.example.com`, from any chat or job, for 1 hour."
+    },
+    {
+      "binding": true,
+      "item": {
+        "kind": "destination",
+        "pattern": "discord:#daily-brief"
+      },
+      "minutes": null,
+      "text": "Send messages to the channel `discord:#daily-brief`, from any chat or job, until you remove it."
+    }
+  ],
+  "last": [
+    [
+      "2026-11-24T12:00:00Z",
+      "2026-11-24T00:30:00Z",
+      "today"
+    ],
+    [
+      "2026-11-24T12:00:00Z",
+      "2026-11-23T23:59:00Z",
+      "yesterday"
+    ],
+    [
+      "2026-11-24T12:00:00Z",
+      "2026-11-22T09:00:00Z",
+      "2 days ago"
+    ]
+  ],
+  "exposure": [
+    {
+      "response": {
+        "reasons": [
+          {
+            "code": "exposure.instructions"
+          }
+        ]
+      },
+      "flagged": true
+    },
+    {
+      "response": {
+        "reasons": [
+          {
+            "code": "exposure.session_tainted"
+          }
+        ]
+      },
+      "flagged": true
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "session_exposure": 0.4
+          }
+        }
+      },
+      "flagged": true
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "exposure": 0.2
+          }
+        }
+      },
+      "flagged": true
+    },
+    {
+      "response": {
+        "tree": {
+          "suspicion": {
+            "exposure": 0,
+            "session_exposure": null
+          }
+        },
+        "reasons": [
+          {
+            "code": "egress.new_host"
+          }
+        ]
+      },
+      "flagged": false
+    },
+    {
+      "response": null,
+      "flagged": false
+    }
+  ],
+  "notes": [
+    [
+      "You send the daily report there",
+      "Agent's note: `You send the daily report there`"
+    ],
+    [
+      "See https://evil.example/x, www.evil.example or evil.example and **act now** _please_",
+      "Agent's note: `See https://evil.example/x, www.evil.example or evil.example and **act now** _please_`"
+    ],
+    [
+      "Run `rm -rf ~` [now](https://evil.example) @everyone <@123> a|b\nnext line",
+      "Agent's note: `Run rm -rf ~ nowhttps://evil.example everyone 123 ab?next line`"
+    ],
+    [
+      "[]()`",
+      null
+    ],
+    [
+      "   ",
+      null
+    ],
+    [
+      "a\\",
+      "Agent's note: `a`"
+    ],
+    [
+      "\\\\",
+      null
+    ],
+    [
+      "C:\\temp\\ is mine",
+      "Agent's note: `C:temp is mine`"
+    ]
+  ],
+  "mcp_order": {
+    "servers": {
+      "😀-astral": {
+        "command": "npx",
+        "args": [
+          "@example/astral"
+        ]
+      },
+      "ｚ-fullwidth": {
+        "command": "npx",
+        "args": [
+          "@example/fullwidth"
+        ]
+      },
+      "b-plain": {
+        "command": "npx",
+        "args": [
+          "@example/plain"
+        ]
+      },
+      "A-upper": {
+        "command": "npx",
+        "args": [
+          "@example/upper"
+        ]
+      }
+    },
+    "names": [
+      "A-upper",
+      "b-plain",
+      "ｚ-fullwidth",
+      "😀-astral"
+    ]
+  },
+  "grant_labels": [
+    [
+      "gr-0a0b0c",
+      "gr-0a0b0c"
+    ],
+    [
+      "[gr](https://evil.example) @here",
+      "`grhttps://evil.examp`"
+    ],
+    [
+      "gr-0a0b0c\\",
+      "`gr-0a0b0c`"
+    ],
+    [
+      "",
+      "`?`"
+    ],
+    [
+      1.0,
+      "`?`"
+    ],
+    [
+      7,
+      "`?`"
+    ],
+    [
+      true,
+      "`?`"
+    ],
+    [
+      null,
+      "`?`"
+    ],
+    [
+      [
+        "gr-0a0b0c"
+      ],
+      "`?`"
+    ],
+    [
+      "gr-\\0a0b0c",
+      "`gr-0a0b0c`"
+    ]
+  ]
+}

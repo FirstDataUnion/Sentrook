@@ -65,6 +65,7 @@ owner type it.
 - `/sentrook passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
 - `/sentrook notify here|off|status|<platform>`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat (with a test notice); `<platform>` (on the machine) to that platform's home channel; `off` goes back to the `owner_channel` setting.
 - `/sentrook attended add|remove|list [platform] [--confirm]`: the platforms with a person answering Hermes's approval prompts; adding one loosens Sentrook (a review there asks instead of holding the call), so it needs `--confirm`.
+- `/sentrook setup [apply <code> [1,3] | discard <id>]`: lists what would stop Sentrook asking about routine work (channels the cron jobs deliver to, MCP servers, grants Sentrook suggested on reviews the owner approved), each described by Sentrook; the owner sets them with `apply` and the code the list ends with.
 - `hermes sentrook verify` (on the machine): checks the endpoints, the credentials, the scan service and the token.
 
 ## A scan that looks wrong
@@ -76,7 +77,7 @@ filled in, and `--save` writes the full record to a private file to email (the c
 
 ## What you never do
 
-- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, or their `hermes sentrook` forms. Only the owner runs them.
+- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, `/sentrook setup apply`, or their `hermes sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and
