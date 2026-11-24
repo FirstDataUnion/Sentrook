@@ -16,6 +16,7 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from . import (
@@ -30,11 +31,12 @@ from . import (
     owner,
     scan_failure_notice,
     skill_review,
+    skill_turn,
     snooze,
     staging,
 )
 from .auth import resolve_oidc_credentials
-from .config import PluginConfig, resolve_config
+from .config import PluginConfig, hermes_home, resolve_config
 from .decision import (
     BLOCK_CATEGORIES,
     block_category,
@@ -291,7 +293,16 @@ def on_pre_llm_call(**kw: Any) -> None:
         # event notice is not a request either, and its text goes as an untrusted input.
         host = None if background else host_turns.classify(kw.get("user_message"))
         own, content = host_turns.parts(host, kw.get("user_message")) if host else (None, None)
-        if host is None:
+        # A message Hermes built around skills (a skill's slash command, a cron job with skills): the request
+        # is the owner's words; what is neither theirs nor an installed skill's own text is untrusted content.
+        skill = (
+            None
+            if background or host is not None
+            else _skill_turn(host_turns.strip_notes(kw.get("user_message")), kw, env)
+        )
+        if skill is not None:
+            own, content = skill.request, skill.content
+        elif host is None:
             # An ordinary message behind host notes: the request is the message without them.
             rest = host_turns.strip_notes(kw.get("user_message"))
             if rest != host_turns.message_text(kw.get("user_message")):
@@ -329,6 +340,8 @@ def on_pre_llm_call(**kw: Any) -> None:
                     s["turns"].append(turn_id)
                 if host is not None and content is not None:
                     _buffer_host_text(cfg, store, s, content, host.input_kind or "other")
+                elif skill is not None and content is not None:
+                    _buffer_host_text(cfg, store, s, content, "other")
                 store.save_session(sid, s, cfg.history_limit * 2)
             if _capturing(cfg, store) and not background:
                 facts = session_facts()
@@ -349,6 +362,53 @@ def on_pre_llm_call(**kw: Any) -> None:
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("pre_llm_call failed: %s", exc)
+
+
+def _cron_job_prompt(home: Path) -> str | None:
+    """The running cron job's own prompt, from Hermes's job file (`<home>/cron/jobs.json`, read directly: the
+    plugin uses no private Hermes module); None outside a cron run, or when the job or the file cannot be read.
+    "" for a job with no prompt (it only runs its skills), told apart from no record at all."""
+    try:
+        read = getattr(_ctx, "current_cron_execution", None)
+        run = read() if callable(read) else None
+        job_id = getattr(run, "job_id", None)
+        if not isinstance(job_id, str) or not job_id.strip():
+            return None
+        data = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no job record: the split falls back to the whole instruction
+        return None
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    job = next(
+        (j for j in jobs or [] if isinstance(j, dict) and j.get("id") == job_id.strip()), None
+    )
+    if job is None:
+        return None
+    prompt = job.get("prompt")
+    return prompt if isinstance(prompt, str) else ""
+
+
+def _skill_turn(text: str, kw: dict[str, Any], env: dict[str, str]) -> skill_turn.SkillTurn | None:
+    """`skill_turn.split` of a user message, with the running cron job's prompt; None for any other message,
+    and when the split itself fails (the message is then the request, as before)."""
+    try:
+        if not text.startswith(
+            ("[IMPORTANT: The user has invoked", "[IMPORTANT: The following skill")
+        ):
+            return None
+        # The values Hermes may have given a skill's `${HERMES_SESSION_ID}`: the turn's own ids.
+        ids = tuple(
+            str(kw[k]) for k in ("task_id", "session_id") if isinstance(kw.get(k), str) and kw[k]
+        )
+        home = hermes_home(env)
+        return skill_turn.split(
+            text,
+            job_prompt=_cron_job_prompt(home),
+            installed=functools.partial(skill_turn.installed_skills, home),
+            session_ids=ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("skill turn not split: %s", exc)
+        return None
 
 
 def _buffer_host_text(

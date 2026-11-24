@@ -8,6 +8,16 @@ since the version the catalog pins.
 
 - The plugin's manifest declares its licence as MIT, as the code always was. It said Apache-2.0, which Hermes showed
   as the plugin's licence.
+- A turn Hermes builds around skills (a skill's slash command, or a cron job that lists skills) sends the owner's
+  words as the request, not the skills' whole text. Hermes puts each invoked skill's text into the message ahead of
+  the owner's instruction; sent whole, every host and command a skill names counted as the owner's own words, and on
+  a cron job with large skills the scanner's judge could see the skills but not the job's prompt. The request is now
+  the instruction after the skills, and for a cron job the cron hint, the run time and the job's prompt, taken from
+  the job's own record. Text that is exactly an installed skill's own text is left out, as the agent's standing
+  instructions. Anything else that is not the owner's words goes to the scanner as untrusted content, once per turn:
+  a cron job's context blocks (its previous output, another job's output, a pre-run script's output), a runtime
+  note, text around a skill, and a block that does not match an installed skill (a typed wrapper hides nothing).
+  Without the job record, everything after the skills is the request, as before.
 - A destination grant or binding written `channel:<id>` (or `group:`, `thread:`, or `#<id>`) is sent with a scan whose call
   names that channel by its bare id, as OpenClaw's message tool writes it in `channelId`. Kept the same as the
   OpenClaw plugin, so both send the same grants for the same call.
