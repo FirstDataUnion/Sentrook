@@ -661,6 +661,13 @@ def test_a_host_from_the_owners_config_scores_as_owner_supplied():
     assert ent.hash in p.state.trusted and ent.hash not in p.state.untrusted
 
 
+@pytest.mark.parametrize("tail", ["", " 2>/dev/null", " 2>&1", " | head -n 5"])
+def test_a_cat_of_the_config_with_its_output_kept_counts(tail):
+    raw = _after("exec", "exec", {"command": f"cat {CONFIG}{tail}"}, CONFIG_TEXT, POST)
+    p, env = context(raw)
+    assert _origin(env, p) == "origin.owner_config"
+
+
 def test_a_cat_of_the_config_counts_too():
     raw = _after("exec", "exec", {"command": f"cat {CONFIG}"}, CONFIG_TEXT, POST)
     p, env = context(raw)
@@ -748,9 +755,42 @@ OC_WS = f"{HOME}/.openclaw/workspace"
         (OC_WS, f"{HOME}/.openclaw/agents/main/agent/models.json", True),
         (OC_WS, f"{HOME}/.hermes/profiles/ops/config.yaml", True),
         (OC_WS, "/etc/hermes/conf.d/policy.yaml", True),
-        # A workspace set to a directory inside the host's (a nested agent workspace, Hermes's own
-        # source checkout) is still a directory someone else's files can fill.
-        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/HEARTBEAT.md", False),
+        # An OpenClaw agent whose workspace is nested in the host's directory: the instruction files at
+        # the top of the run's own workspace are the ones the host loads for it.
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/HEARTBEAT.md", True),
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/AGENTS.md", True),
+        (
+            f"{HOME}/.openclaw/workspace-team/ops",
+            f"{HOME}/.openclaw/workspace-team/ops/SOUL.md",
+            True,
+        ),
+        (f"{OC_WS}/sgt-harrow/", f"{OC_WS}/sgt-harrow/AGENTS.md", True),
+        ("~/.openclaw/workspace/sgt-harrow", f"{OC_WS}/sgt-harrow/AGENTS.md", True),
+        # ... but not another agent's workspace, a deeper file in the run's own, a config-named file
+        # there, or a workspace that only spells its way into the host's directory.
+        (f"{OC_WS}/sgt-tamsin", f"{OC_WS}/sgt-harrow/AGENTS.md", False),
+        (OC_WS, f"{OC_WS}/sgt-harrow/AGENTS.md", False),
+        (f"{HOME}/.openclaw/workspace-ops", f"{OC_WS}/sgt-harrow/AGENTS.md", False),
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/repo/AGENTS.md", False),
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/sgt-tamsin/SOUL.md", False),
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/openclaw.json", False),
+        (f"{OC_WS}/sgt-harrow", f"{OC_WS}/sgt-harrow/config/intake.json", False),
+        (f"{HOME}/.openclaw/../projects/x", f"{HOME}/projects/x/AGENTS.md", False),
+        (f"{HOME}/.openclaw-old/ws", f"{HOME}/.openclaw-old/ws/AGENTS.md", False),
+        ("/srv/.openclaw/workspace/x", "/srv/.openclaw/workspace/x/AGENTS.md", False),
+        # Only an agent workspace one level inside a workspace directory: not a repository deeper in
+        # one, nor another of the host's directories (inbound media, plugins, agent state).
+        (f"{OC_WS}/sgt-harrow/repo", f"{OC_WS}/sgt-harrow/repo/AGENTS.md", False),
+        (f"{HOME}/.openclaw/media/inbound", f"{HOME}/.openclaw/media/inbound/AGENTS.md", False),
+        (f"{HOME}/.openclaw/extensions/x", f"{HOME}/.openclaw/extensions/x/AGENTS.md", False),
+        (f"{HOME}/.openclaw/agents/main", f"{HOME}/.openclaw/agents/main/AGENTS.md", False),
+        # A relative read resolves against the workspace, as the host resolves it.
+        (f"{OC_WS}/sgt-harrow", "AGENTS.md", True),
+        (f"{OC_WS}/sgt-harrow", "./SOUL.md", True),
+        (OC_WS, "AGENTS.md", True),
+        (f"{OC_WS}/sgt-harrow", "repo/AGENTS.md", False),
+        (f"{HOME}/projects/x", "AGENTS.md", False),
+        # Hermes's own source checkout inside its directory is a repository like any other.
         (f"{HOME}/.hermes/hermes-agent", f"{HOME}/.hermes/hermes-agent/AGENTS.md", False),
         # A config-named file anywhere but where the host keeps its config: in a cloned repository,
         # a skill or a downloaded attachment; and an agent's session transcripts.
@@ -781,6 +821,30 @@ def test_only_the_hosts_own_config_and_instruction_files_are_the_owners(workspac
     assert (_origin(env, p) == "origin.owner_config") is owners
     ent = p.entities.get(EntityKind.HOST, INTAKE)
     assert (ent.hash in p.state.trusted) is owners
+
+
+@pytest.mark.parametrize(
+    "cwd, owners",
+    [(None, False), (f"{OC_WS}/sgt-harrow", False), (f"{OC_WS}/sgt-harrow/repo", False)],
+)
+def test_a_bare_relative_cat_is_not_resolved(cwd, owners):
+    """A shell command's bare file name is not read as a path, so it keeps today's rule."""
+    raw = _after("exec", "exec", {"command": "cat AGENTS.md"}, CONFIG_TEXT, POST)
+    raw["host"]["workspace_root"] = f"{OC_WS}/sgt-harrow"
+    if cwd:
+        raw["history"][0]["arguments"]["cwd"] = cwd
+    p, env = context(raw)
+    assert (_origin(env, p) == "origin.owner_config") is owners
+
+
+@pytest.mark.parametrize(
+    "command",
+    [f"sed -i 's/a/b/' {CONFIG}", f"cat {CONFIG} > /tmp/x", f"jq . {CONFIG} >> /tmp/x"],
+)
+def test_a_command_that_writes_is_not_a_read_of_the_config(command):
+    raw = _after("exec", "exec", {"command": command}, CONFIG_TEXT, POST)
+    p, env = context(raw)
+    assert _origin(env, p) != "origin.owner_config" and p.state.trusted == []
 
 
 def test_a_cat_of_a_repositorys_agents_file_is_not_the_owners():

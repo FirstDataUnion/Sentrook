@@ -42,7 +42,8 @@ In short, for anyone deciding whether to install it:
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (a local traffic log of the redacted scans,
   rotated at 50 MB; grants and channel bindings set by command; snooze state; held calls and where their notices go; when each job or run last had a notice with a quiet period; the conversations
   above), or to the paths
-  you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on, and, to
+  you set for them. It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
+  cron run, that job's definition from OpenClaw's job store (read-only), for the channel the job delivers to; and, to
   turn a reviewed background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
   starts no background processes.
 - **Credentials:** the scan credentials (`SENTROOK_SCAN_CLIENT_ID`, `SENTROOK_SCAN_CLIENT_SECRET`) belong in

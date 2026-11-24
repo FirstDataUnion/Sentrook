@@ -223,7 +223,16 @@ export function hostLabels(run: RunContext, ctx: any): Record<string, unknown> {
   };
 }
 
-export function triggerKind(run: RunContext): string {
+/**
+ * A session OpenClaw keeps for webhook and mail hook runs (`hook:<…>`, after `agent:<id>:` when written in full): the
+ * host wraps their prompt as outside content.
+ */
+export function isHookSession(sessionKey: unknown): boolean {
+  const key = typeof sessionKey === "string" ? sessionKey.trim().toLowerCase() : "";
+  return /^(?:agent:[^:]+:)?hook:/.test(key);
+}
+
+export function triggerKind(run: RunContext, sessionKey?: unknown): string {
   if (run.inputProvenance?.sourceRole === "subagent") return "subagent";
   // The host writes its own lines into these turns ([proposal-resolved], [ui-context]): not an owner's chat message.
   if (isSystemAgentTurn(run)) return "system";
@@ -231,7 +240,8 @@ export function triggerKind(run: RunContext): string {
     case "user":
       return "message";
     case "cron":
-      return "scheduled";
+      // Before OpenClaw 2026.11 a webhook or mapped-hook run also came with trigger "cron", in a hook session.
+      return isHookSession(sessionKey) ? "hook" : "scheduled";
     case "heartbeat":
       return "heartbeat";
     // OpenClaw 2026.11+ starts webhook, mapped-hook and channel-join runs with trigger "event" (earlier releases
@@ -245,6 +255,9 @@ export function triggerKind(run: RunContext): string {
       return "system";
   }
 }
+
+/** Runs the host starts itself from a task the owner set up: nobody is writing to the agent in them. */
+export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
 
 const CHANNELS = new Set(["discord", "telegram", "slack", "email", "webhook"]);
 /** OpenClaw's own chat surfaces: the Control UI, webchat and the terminal, which only the operator reaches. */
@@ -300,13 +313,16 @@ export function chatKindOfTurn(sessionKey: unknown, channel: string | null, conf
  * Who sent the turn. An owner's message in a group or channel room stays the owner's, with basis `group_chat`
  * (the room is shared, so nobody there is attending alone); an owner's message from a chat whose kind the
  * session key does not say keeps the owner relation with basis `none`, claiming no direct chat. A system agent
- * turn has no sender.
+ * turn has no sender. Nor has a cron or heartbeat run that is not flagged as the owner's: the host started it from a
+ * task, and the requester OpenClaw 2026.11+ attaches to it is the run's delivery channel and the agent's account, not
+ * someone who wrote to the agent.
  */
 export function senderOf(
   requester: any,
   run: RunContext,
   cfg: Pick<PluginConfig, "trustedSenders" | "trustedRoles">,
   chat: ChatKind = "direct",
+  kind: string = triggerKind(run),
 ): { relation: string; basis: string[] } {
   if (isSystemAgentTurn(run)) return { relation: "unknown", basis: ["none"] };
   if (requester?.senderIsOwner === true || (!requester && run.senderIsOwner === true)) {
@@ -314,6 +330,7 @@ export function senderOf(
     if (chat === "unknown") return { relation: "owner", basis: ["none"] };
     return { relation: "owner", basis: ["host_owner_flag"] };
   }
+  if (HOST_TASK_KINDS.has(kind)) return { relation: "unknown", basis: ["none"] };
   const senderId = requester?.senderId ?? run.senderId;
   if (senderId && cfg.trustedSenders.includes(String(senderId))) {
     return { relation: "trusted", basis: chat === "group" ? ["plugin_allowlist:sender", "group_chat"] : ["plugin_allowlist:sender"] };
@@ -523,7 +540,7 @@ export function relevantGrants(
     const always = g.kind === "credential" && opts.execCall === true;
     if (!always && !forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
     out.push({
-      grant_ref: `g_${i + 1}`,
+      grant_ref: g.ref ?? `g_${i + 1}`,
       kind: g.kind,
       pattern: g.pattern,
       ...(g.allows ? { allows: g.allows } : {}),
@@ -654,9 +671,9 @@ export function buildPlanir(b: BuildInput): Built {
   const channel = isSystemAgentTurn(run)
     ? "chat"
     : (channelOf(ctx.requester?.channel) ?? channelOf(run.channel) ?? channelOf(run.messageProvider));
-  const kind = triggerKind(run);
+  const kind = triggerKind(run, sessionKey);
   const chatKind = isSystemAgentTurn(run) ? "direct" : chatKindOfTurn(sessionKey, channel, b.hostConfig);
-  const sender = senderOf(ctx.requester, run, cfg, chatKind);
+  const sender = senderOf(ctx.requester, run, cfg, chatKind, kind);
   const { exec_mode, approval_gating } = execPolicy(b.hostConfig);
   const os = osPlatform() === "darwin" ? "macos" : osPlatform() === "win32" ? "windows" : "linux";
 
