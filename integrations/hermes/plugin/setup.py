@@ -161,12 +161,21 @@ def _grant_key(item: dict[str, Any]) -> str:
 class Evidence:
     """What the traffic log says: the grants Sentrook suggested on reviews the owner approved (`approved`, by
     `key_of`, each with its count and the time of the last), and the sessions where the scanner flagged exposure.
-    `available` is False when the traffic log is off."""
+    `available` is False when the traffic log is off.
+
+    Also, under the same rule (the owner's own message, no exposure flagged in the session): the approved reviews
+    with no grant to suggest, by tool (`unsuggested`), and the keys the scanner saw sent only to their own service, by
+    name and host (`own_service`, see `own_service_keys`); each with its count and last time. `scans` counts the scan
+    records read and `oldest` is the time of the oldest record read, so a reader can tell how far back the log went."""
 
     def __init__(self, available: bool) -> None:
         self.available = available
         self.approved: dict[str, dict[str, Any]] = {}
         self.exposed: set[str] = set()
+        self.unsuggested: dict[str, dict[str, Any]] = {}
+        self.own_service: dict[str, dict[str, Any]] = {}
+        self.scans = 0
+        self.oldest: datetime | None = None
 
     def backing(self, item: dict[str, Any]) -> dict[str, Any] | None:
         """The approved reviews that back `item`, when there are enough of them."""
@@ -174,17 +183,25 @@ class Evidence:
         return found if found and found["count"] >= EVIDENCE_MIN else None
 
 
-def read_evidence(log: Path | None, review_at: float, now: datetime) -> Evidence:
-    """The evidence in the traffic log at `log` (None when the log is off), as of `now`. The suggested grant of a
-    review is the one its prompt named: the first the grant command accepts that brings the call below `review_at`."""
+def read_evidence(
+    log: Path | None, review_at: float, now: datetime, window: timedelta = EVIDENCE_WINDOW
+) -> Evidence:
+    """The evidence in the traffic log at `log` (None when the log is off), as of `now`, over `window`. The suggested
+    grant of a review is the one its prompt named: the first the grant command accepts that brings the call below
+    `review_at`."""
     if log is None:
         return Evidence(False)
     ev = Evidence(True)
-    since = now - EVIDENCE_WINDOW
+    since = now - window
     resolutions: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
     found: list[tuple[str, dict[str, Any], datetime]] = []
+    bare: list[tuple[str, str, datetime]] = []
+    sent: list[tuple[str, str, str, datetime]] = []
     for rec in history.records_backward(log):
+        stamp = read_time(rec.get("ts"))
+        if stamp is not None and (ev.oldest is None or stamp < ev.oldest):
+            ev.oldest = stamp
         rid = rec.get("request_id")
         if not isinstance(rid, str):
             continue
@@ -194,10 +211,11 @@ def read_evidence(log: Path | None, review_at: float, now: datetime) -> Evidence
         if rec.get("kind") != "scan" or rid in seen:
             continue
         seen.add(rid)
+        ev.scans += 1
         resp, sref = rec.get("response"), rec.get("session_ref")
         if exposure_flagged(resp) and isinstance(sref, str):
             ev.exposed.add(sref)
-        at = read_time(rec.get("ts"))
+        at = stamp
         planir = rec.get("planir")
         if (
             at is None
@@ -207,21 +225,83 @@ def read_evidence(log: Path | None, review_at: float, now: datetime) -> Evidence
             or not isinstance(planir, dict)
         ):
             continue
+        if not grants.may_remember(planir):
+            continue
+        for name, host in own_service_keys(planir, resp):
+            sent.append((sref, name, host, at))
         resolution = resolutions.get(rid)
         if history.review_of(history.action_of(rec, resolution), resolution) != "approved":
-            continue
-        if not grants.may_remember(planir):
             continue
         grant = hold.grant_hint(resp, review_at)
         if grant is not None:
             found.append((sref, grant, at))
-    for sref, grant, at in found:
-        if sref in ev.exposed:
-            continue
-        entry = ev.approved.setdefault(key_of(grant), {"grant": grant, "count": 0, "last": at})
+        elif isinstance(rec.get("tool"), str):
+            bare.append((sref, rec["tool"], at))
+
+    def count(into: dict[str, dict[str, Any]], key: str, row: dict[str, Any], at: datetime) -> None:
+        entry = into.setdefault(key, {**row, "count": 0, "last": at})
         entry["count"] += 1
         entry["last"] = max(entry["last"], at)
+
+    for sref, grant, at in found:
+        if sref not in ev.exposed:
+            count(ev.approved, key_of(grant), {"grant": grant}, at)
+    for sref, tool, at in bare:
+        if sref not in ev.exposed:
+            count(ev.unsuggested, tool, {"tool": tool}, at)
+    for sref, name, host, at in sent:
+        if sref not in ev.exposed:
+            count(ev.own_service, json.dumps([name, host]), {"name": name, "host": host}, at)
     return ev
+
+
+#: An environment name shaped like a credential, as the scanner reads one (words joined by `_` ending in a key,
+#: token, secret or password word).
+CREDENTIAL_NAME = re.compile(
+    r"(?<![A-Za-z0-9_])("
+    r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:API_?KEY|KEY|KEY_ID|TOKEN|SECRET|SECRET_KEY|PASSWORD|PASSWD|PASS|PAT"
+    r"|AUTH|AUTH_TOKEN|CREDENTIALS?|ACCESS_KEY|ACCESS_KEY_ID|PRIVATE_KEY)"
+    r")(?![A-Za-z0-9_])"
+)
+#: What the scanner's relief for a key sent only to its own service removes; it names no grant.
+OWN_SERVICE_EFFECTS = frozenset({"sensitivity", "sensitivity+distrust+untrusted_origin"})
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def own_service_keys(planir: dict[str, Any], resp: dict[str, Any]) -> list[tuple[str, str]]:
+    """(key name, host) for a scan the scanner relieved because the call sent its keys only to their own service: a
+    relief that names no grant and takes sensitivity off a host. The scanner holds that only when every
+    credential-shaped name the call uses is one that host's service issues, so the names are those in the call's
+    arguments as logged; nothing else of the arguments is kept."""
+    entities = resp.get("entities") if isinstance(resp.get("entities"), dict) else {}
+    hosts: list[str] = []
+    for r in resp.get("relief_applied") or []:
+        if not isinstance(r, dict) or r.get("grant_ref") is not None:
+            continue
+        if r.get("effect") not in OWN_SERVICE_EFFECTS:
+            continue
+        ent = entities.get(r.get("subject")) if isinstance(r.get("subject"), str) else None
+        if (
+            isinstance(ent, dict)
+            and ent.get("kind") == "host"
+            and isinstance(ent.get("display"), str)
+        ):
+            if ent["display"] not in hosts:
+                hosts.append(ent["display"])
+    if not hosts:
+        return []
+    call = planir.get("pending_call") if isinstance(planir.get("pending_call"), dict) else {}
+    names = sorted({m for s in _strings(call.get("arguments")) for m in CREDENTIAL_NAME.findall(s)})
+    return [(n, h) for n in names for h in hosts]
 
 
 def approved_suggestions(ev: Evidence) -> list[dict[str, Any]]:
