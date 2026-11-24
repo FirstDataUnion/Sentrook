@@ -779,6 +779,34 @@ def services_block(candidates: list[tuple[str, list[str]]]) -> list[dict[str, An
     return out
 
 
+#: The `secrets_sent` block (call-v11): the secret placeholders in the pending call's own arguments, as the view shows
+#: them (a plugin's `⟦secret:credential:ab12⟧`, or the second pass's), each once, in order, at most
+#: `SECRETS_SENT_MAX`. The judge reads each as the value it hides, in its place.
+SECRETS_SENT = "secrets_sent"
+SECRETS_SENT_MAX = 8
+_PLACEHOLDER_MARK = re.compile(r"⟦secret[^⟧\s]{0,64}⟧")
+
+
+def secrets_sent(state: dict[str, Any]) -> list[str]:
+    """The secret placeholders in the state's `pending_call.arguments`, each once, in order, at most `SECRETS_SENT_MAX`."""
+    pending = state.get("pending_call")
+    args = pending.get("arguments") if isinstance(pending, dict) else None
+    if not args:
+        return []
+    text = args if isinstance(args, str) else canonical_json(args)
+    return list(dict.fromkeys(_PLACEHOLDER_MARK.findall(text)))[:SECRETS_SENT_MAX]
+
+
+def with_secrets_sent(state: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a call state with the `secrets_sent` block (absent when the pending call carries no placeholder)."""
+    out = dict(state)
+    out.pop(SECRETS_SENT, None)
+    found = secrets_sent(state)
+    if found:
+        out[SECRETS_SENT] = found
+    return out
+
+
 def with_services(state: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any]:
     """A copy of a call state with the `services` block (absent when there are no entries)."""
     out = dict(state)
