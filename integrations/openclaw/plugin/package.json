@@ -33,6 +33,7 @@
     "owner.ts",
     "passes.ts",
     "planir.ts",
+    "proposals.ts",
     "redact.ts",
     "report.ts",
     "scanClient.ts",

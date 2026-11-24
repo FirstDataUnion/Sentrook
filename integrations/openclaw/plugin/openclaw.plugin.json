@@ -18,7 +18,8 @@
       "openclaw"
     ],
     "tools": [
-      "sentrook_setup_report"
+      "sentrook_setup_report",
+      "sentrook_propose_setup"
     ]
   },
   "configSchema": {

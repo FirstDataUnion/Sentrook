@@ -405,7 +405,7 @@ export function proposalItem(raw: unknown): Entry | null {
 }
 
 /** The stored proposals that have not expired, as stored. */
-function liveProposals(raw: ProposalsFile | null, now: Date): Entry[] {
+export function liveProposals(raw: ProposalsFile | null, now: Date): Entry[] {
   const out: Entry[] = [];
   for (const p of raw?.proposals ?? []) {
     if (!p || typeof p !== "object" || typeof (p as Entry).id !== "string") continue;
