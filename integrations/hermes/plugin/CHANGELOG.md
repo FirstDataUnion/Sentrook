@@ -20,6 +20,18 @@ since the version the catalog pins.
   credentials in Hermes by hand. Credentials the identity service refuses (`invalid_client`: revoked or wrong) say to
   sign in again.
 
+- `/sentrook setup` (owner only; also `hermes sentrook setup`) lists what would stop Sentrook asking about routine
+  work, each item described by Sentrook in its own words with how long it lasts and what to check: a channel binding
+  for each cron job's delivery to a room that is not bound yet, a provider grant for each MCP server no grant covers,
+  the grant Sentrook suggested on at least two reviews you approved in the last 30 days (from your own message, in a
+  chat where the scanner flagged no steering content, and only for exactly that grant: a broader pattern never counts),
+  and items the agent proposed, with its reason shown as a quoted note. The screen ends with a four-digit code, new
+  each time and valid for 15 minutes: `/sentrook setup apply <code>` sets every item, `apply <code> 1,3` some of them.
+  Grants backed by reviews you approved last until revoked, the others 30 days, and channel bindings until removed;
+  `--expires 90d` or `--until-revoked` changes the grants' lifetime. Applied grants are persistent and say where they
+  came from; applying an item twice sets nothing new. `/sentrook setup discard <id>` drops an agent proposal. The
+  setup skill now sends the owner to this screen, and the agent's rules add `/sentrook setup apply` to the commands it
+  never runs.
 - The plugin gives the agent two skills, listed while the plugin is enabled: `sentrook:sentrook-guide` (how Sentrook
   works, so the agent can explain an approval prompt, a block, a held call or a notice, and point the owner to
   `/sentrook why` and `/sentrook report`) and `sentrook:sentrook-setup` (the agent asks the owner what is routine and
