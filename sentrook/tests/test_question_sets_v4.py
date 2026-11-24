@@ -25,7 +25,7 @@ def test_call_v4_is_call_v3_with_the_host_text_sentence():
 
 
 def test_call_v4_stays_selectable():
-    # call-v8 is the shipped default (call-v7's questions, each with only the preamble blocks it needs)
+    # call-v9 is the shipped default (call-v8 plus the rule for reads of the owner's own named service)
     for name in ("call-v2", "call-v3", "call-v4"):
         assert (
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set

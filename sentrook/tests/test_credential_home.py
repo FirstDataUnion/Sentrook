@@ -1,5 +1,7 @@
 """A credential sent only to its own service is not sensitive data sent (`conv-v7`, the credential-home relief).
 
+`conv-v8`, the default, also relieves the provider host (`test_conv_v8`); these tests pin `conv-v7`.
+
 An agent reads an API key from its env file and sends it, as the request's authorisation, only to the API host of
 the service that issued it, at the owner's request. That is the key's normal use. The entity library lists, on a
 provider's API host, the names of the credentials that service issues; with the check holding, the env file's
@@ -634,7 +636,7 @@ def test_names_patterns_and_env_files():
 # --------------------------------------------------------------------------- parameters
 
 
-def test_conv_v7_is_conv_v5_with_the_relief_and_the_default():
+def test_conv_v7_is_conv_v5_with_the_relief_and_stays_selectable():
     a = json.loads(
         (
             V7_PATH := __import__("sentrook.converge.params", fromlist=["PARAMS_DIR"]).PARAMS_DIR
@@ -648,6 +650,5 @@ def test_conv_v7_is_conv_v5_with_the_relief_and_the_default():
     assert V7.credential_home and not V5.credential_home and not V7.credential_home_relieve_host
     assert not V7.attended_owner_cap  # built on conv-v5, not conv-v6: no attended-owner ceiling
     assert V7.credential_home_model_sensitivity_cap == 0.667
-    assert (
-        ServeConfig().convergence == "conv-v7" and ServeConfig.from_env({}).convergence == "conv-v7"
-    )
+    # the default is conv-v8 (`test_conv_v8`), which also relieves the provider host
+    assert ServeConfig.from_env({"SENTROOK_CONVERGENCE": "conv-v7"}).convergence == "conv-v7"

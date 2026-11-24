@@ -38,11 +38,12 @@ expiry) that cover what the call does (`allows`):
   file's credential sensitivity and the sensitive-data-sent floor out themselves (a floor is never lowered here);
   convergence holds the model's call-level sensitivity to `credential_home_model_sensitivity_cap`, the level below
   credentials, and reports the relief on the provider host. Nothing on the suspicion side changes, unless
-  `credential_home.relieve_host` (off by default) also relieves the provider host of its distrust and untrusted
-  origin, as a matched destination grant would. A host where the owner's `credential` grant supplied the name the
-  call uses (`CredentialHome.grants`) is relieved of its distrust and untrusted origin too, whatever that
-  parameter says, under that grant (`relief.credential_grant`): the owner tied the key to that host. Not for a host
-  the call or a later run takes code from.
+  `credential_home.relieve_host` (off by default, on in `conv-v8`) also relieves the provider host of its distrust
+  and untrusted origin, as a matched destination grant would, unless the call or a later run takes code from it.
+  A host where the owner's `credential` grant supplied the name the call uses (`CredentialHome.grants`) is relieved
+  of its distrust and untrusted origin too, whatever that parameter says, under that grant
+  (`relief.credential_grant`): the owner tied the key to that host. Not for a host the call or a later run takes
+  code from.
 - **Later roles**: the roles a later run, set up by self-modification content the call writes, gives an entity
   (`Entity.future_roles`) count with its own roles in every rule above: naming, configuration and reputation
   sanction sending to the host in that run, never running code from it, and a grant of a kind that does not cover
@@ -261,8 +262,13 @@ def compute_relief(
         relieved |= set(granted)
         hosts = [h for h in home.hosts if h not in relieved]
         if params.credential_home_relieve_host and hosts:
-            # the host is where the key belongs: it loses its unknown-party distrust and agent-chosen origin too
+            # the host is where the key belongs: it loses its unknown-party distrust and agent-chosen origin too, for
+            # sending the key there, never for running code from it (such a host keeps the sensitivity relief only)
             for h in hosts:
+                ent = prepared.entities.by_id(h)
+                if ent is not None and (ent.roles | ent.future_roles) & _CODE_ROLES:
+                    out.append(Relief(None, h, "sensitivity", "relief.credential_own_service", ()))
+                    continue
                 out.append(
                     Relief(
                         None,
