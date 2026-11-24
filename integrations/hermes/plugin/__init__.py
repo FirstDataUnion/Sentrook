@@ -297,7 +297,7 @@ def on_pre_llm_call(**kw: Any) -> None:
         skill = (
             None
             if background or host is not None
-            else _skill_turn(host_turns.strip_notes(kw.get("user_message")))
+            else _skill_turn(host_turns.strip_notes(kw.get("user_message")), kw)
         )
         if skill is not None:
             own, content = skill.request, skill.content
@@ -384,7 +384,7 @@ def _cron_job_prompt() -> str | None:
     return prompt if isinstance(prompt, str) else ""
 
 
-def _skill_turn(text: str) -> skill_turn.SkillTurn | None:
+def _skill_turn(text: str, kw: dict[str, Any]) -> skill_turn.SkillTurn | None:
     """`skill_turn.split` of a user message, with the running cron job's prompt; None for any other message,
     and when the split itself fails (the message is then the request, as before)."""
     try:
@@ -392,7 +392,11 @@ def _skill_turn(text: str) -> skill_turn.SkillTurn | None:
             ("[IMPORTANT: The user has invoked", "[IMPORTANT: The following skill")
         ):
             return None
-        return skill_turn.split(text, job_prompt=_cron_job_prompt())
+        # The values Hermes may have given a skill's `${HERMES_SESSION_ID}`: the turn's own ids.
+        ids = tuple(
+            str(kw[k]) for k in ("task_id", "session_id") if isinstance(kw.get(k), str) and kw[k]
+        )
+        return skill_turn.split(text, job_prompt=_cron_job_prompt(), session_ids=ids)
     except Exception as exc:  # noqa: BLE001
         logger.warning("skill turn not split: %s", exc)
         return None

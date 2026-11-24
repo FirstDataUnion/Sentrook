@@ -19,7 +19,7 @@ judge sees. So the request is the owner's words only:
 - a cron job with no prompt (it only runs its skills): the cron hint and the run time; what follows is context.
 
 What is dropped is only an installed skill's own text, as Hermes loads it (`installed_text`, with the
-`${HERMES_SKILL_DIR}` and `${HERMES_SESSION_ID}` tokens Hermes fills in matched as one line each), and the header
+`${HERMES_SKILL_DIR}` and `${HERMES_SESSION_ID}` tokens filled in with the values Hermes had, exactly), and the header
 Hermes put in front of it: the agent's own standing instructions, which the scanner treats like the agent's other
 own store. Anything else in the message that is not the owner's words goes to the scanner as untrusted content
 (`SkillTurn.content`), never dropped: a context block, text after or around a skill, a runtime note, a
@@ -69,13 +69,23 @@ class SkillTurn:
 
 
 #: The template tokens Hermes fills in when it loads a skill into the message (`skills.template_vars`, on by
-#: default). Each matches one line of any text; a token Hermes could not fill stays as written, and matches too.
-_TEMPLATE_TOKEN = re.compile(r"\\\$\\\{(?:HERMES_SKILL_DIR|HERMES_SESSION_ID)\\\}")
+#: default); a token Hermes has no value for stays as written.
+_SKILL_DIR = "${HERMES_SKILL_DIR}"
+_SESSION_ID = "${HERMES_SESSION_ID}"
 
 
-def installed_text(name: str) -> str | None:
+@dataclass(frozen=True)
+class InstalledSkill:
+    #: The skill's text before Hermes fills in its template tokens.
+    text: str
+    #: The skill's directory, the value Hermes gives `${HERMES_SKILL_DIR}`; None when Hermes did not say.
+    skill_dir: str | None = None
+
+
+def installed_text(name: str) -> InstalledSkill | None:
     """The installed skill's text before Hermes fills in its template tokens (`skill_view` without
-    preprocessing), or None when Hermes cannot say (not installed, no such module in this Hermes)."""
+    preprocessing) and its directory, or None when Hermes cannot say (not installed, no such module in this
+    Hermes)."""
     try:
         from tools.skills_tool import skill_view
 
@@ -89,21 +99,47 @@ def installed_text(name: str) -> str | None:
     except Exception:  # noqa: BLE001 - no skill text to compare: the block is content
         return None
     content = out.get("content") if isinstance(out, dict) and out.get("success") else None
-    return content.strip() if isinstance(content, str) and content.strip() else None
-
-
-def _installed_end(text: str, start: int, own: str | None) -> int | None:
-    """Where an installed skill's text ends when `text` holds it at `start`, its template tokens filled in or not;
-    None when the text there is not that skill's. Inline shell output (off by default in Hermes, and never for a
-    hub skill) is not matched: such a block stays content."""
-    if not isinstance(own, str) or not own.strip():
+    if not isinstance(content, str) or not content.strip():
         return None
-    own = own.strip()
-    if "${HERMES_" not in own:
-        return start + len(own) if text.startswith(own, start) else None
-    pattern = _TEMPLATE_TOKEN.sub(lambda _m: r"[^\n]*?", re.escape(own))
-    m = re.compile(pattern).match(text, start)
-    return m.end() if m else None
+    skill_dir = out.get("skill_dir")
+    return InstalledSkill(
+        content.strip(), skill_dir if isinstance(skill_dir, str) and skill_dir else None
+    )
+
+
+def _forms(own: InstalledSkill, session_ids: tuple[str, ...]) -> list[str]:
+    """The installed skill's text as Hermes can have put it into the message: each template token filled in
+    with the value Hermes had, or left as written when it had none. Exact text only: nothing else on a token's
+    line can match (a cron job loads its skills with no session id; a slash command with the session's)."""
+    base = own.text.strip()
+    if "${HERMES_" not in base:
+        return [base]
+    dirs = [own.skill_dir, None] if own.skill_dir else [None]
+    sessions = [None, *(s for s in session_ids if s)]
+    out: list[str] = []
+    for d in dirs:
+        for sid in sessions:
+            form = base.replace(_SKILL_DIR, d) if d else base
+            form = form.replace(_SESSION_ID, sid) if sid else form
+            if form not in out:
+                out.append(form)
+    return out
+
+
+def _installed_end(
+    text: str, start: int, own: InstalledSkill | str | None, session_ids: tuple[str, ...] = ()
+) -> int | None:
+    """Where an installed skill's text ends when `text` holds it, exactly, at `start`; None when the text there
+    is not that skill's. Inline shell output (off by default in Hermes, and never for a hub skill) is not
+    matched: such a block stays content."""
+    if isinstance(own, str):
+        own = InstalledSkill(own)
+    if not isinstance(own, InstalledSkill) or not own.text.strip():
+        return None
+    for form in _forms(own, session_ids):
+        if text.startswith(form, start):
+            return start + len(form)
+    return None
 
 
 def _marker_at(text: str, start: int) -> int | None:
@@ -115,13 +151,15 @@ def split(
     text: str,
     *,
     job_prompt: str | None = None,
-    installed: Callable[[str], str | None] | None = None,
+    installed: Callable[[str], InstalledSkill | str | None] | None = None,
+    session_ids: tuple[str, ...] = (),
 ) -> SkillTurn | None:
     """The request and the untrusted content of a message Hermes built around skills; None for any other
     message. The message must start with a complete skill header (after a missing-skills notice, if any).
 
     `job_prompt` is the running cron job's prompt from its record: None when there is no record, "" when the
-    job has none (a job that only runs its skills)."""
+    job has none (a job that only runs its skills). `session_ids` are the values Hermes may have given
+    `${HERMES_SESSION_ID}` (the turn's session and task ids)."""
     lookup = installed or installed_text
     if not isinstance(text, str):
         return None
@@ -147,7 +185,7 @@ def split(
             break
         name, start = m.group(1), m.end()
         skills.append(name)
-        own_end = _installed_end(text, start, lookup(name))
+        own_end = _installed_end(text, start, lookup(name), session_ids)
         if own_end is not None:
             # An installed skill's own text is skipped whole, so nothing inside it can end the block early.
             named.append(name)
