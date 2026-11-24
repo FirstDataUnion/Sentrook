@@ -6,11 +6,20 @@
  * blocks. Every request and response is redacted on the host and appended to a local traffic log.
  */
 
+import { createHash } from "node:crypto";
+
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { type GrantConfig, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
+import {
+  configProblemsNotice,
+  configProblemsSummary,
+  type GrantConfig,
+  openclawDir,
+  type PluginConfig,
+  resolveConfig,
+} from "./config.ts";
 import * as cronDelivery from "./cronDelivery.ts";
 import * as dashboard from "./dashboard.ts";
 import * as conversation from "./conversation.ts";
@@ -506,6 +515,7 @@ const plugin = {
         if (UNSCANNED_TOOLS.has(event?.toolName)) return undefined;
         try {
           const { cfg, env } = loadConfig();
+          if (cfg.configProblems.length) settingsNotice(cfg);
           const sid = sessionIdOf(ctx);
           return await store.withSession(sid, () => scanOne(cfg, env, sid, event, ctx));
         } catch (err) {
@@ -921,6 +931,27 @@ const plugin = {
       }
     }
 
+    /** When this process last sent or found quiet each settings notice. */
+    const settingsNoticeAt = new Map<string, number>();
+
+    /**
+     * Tells the owner about settings Sentrook cannot read, at a scanned call: once per set of problems, then not
+     * again for the quiet period while they stand. The call's outcome never depends on it.
+     */
+    function settingsNotice(cfg: PluginConfig): void {
+      try {
+        const key = `settings:${createHash("sha256").update(cfg.configProblems.join("\n")).digest("hex").slice(0, 16)}`;
+        // Checked here first, so a call in the quiet period does not wait on the notice file's lock.
+        const last = settingsNoticeAt.get(key);
+        if (last !== undefined && Date.now() - last < scanFailure.QUIET_MS) return;
+        // Unsent (no notify target) is not logged per call: the start-up warning, verify and status already say it.
+        const out = quietNotice(cfg, key, () => configProblemsNotice(cfg.configProblems, scanFailure.QUIET_MS / 3600_000), "settings");
+        if (out.status === "queued" || out.status === "quiet") settingsNoticeAt.set(key, Date.now());
+      } catch (err) {
+        api.logger.warn(`${LOG} settings notice failed: ${String(err)}`);
+      }
+    }
+
     /**
      * Sends a notice that has a quiet period: none for `key` while it is in one. Returns what the scan record says about
      * it. Never throws: the call's outcome stands whatever happens here.
@@ -1117,7 +1148,15 @@ const plugin = {
         `onScanError=${boot.onScanError} skillReview=${boot.skillReview} ` +
         `traffic=${boot.trafficLog.enabled ? boot.trafficLog.path : "off"}`,
     );
-    if (boot.skillReviewUnknown !== null) {
+    if (boot.configProblems.length) {
+      api.logger.warn(
+        `${LOG} settings not read as written (${boot.configProblems.length}): ${configProblemsSummary(boot.configProblems)}. ` +
+          "Scanning is on, with each of them ignored or replaced as shown; fix plugins.entries.sentrook.config in " +
+          "openclaw.json, then run openclaw sentrook verify",
+      );
+    }
+    // From the environment (a config value is in the list above).
+    if (boot.skillReviewUnknown !== null && api.pluginConfig?.skillReview == null) {
       api.logger.warn(`${LOG} skillReview ${JSON.stringify(boot.skillReviewUnknown)} is not allow or review; reading it as allow`);
     }
     if (!ep.scan.ok || !ep.issuer.ok) {
