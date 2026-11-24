@@ -310,7 +310,10 @@ def test_a_held_calls_hint_is_shown_by_why_and_never_set_by_an_answer(h, monkeyp
     assert rec["hold"]["hint"] is True
     assert "grant" not in h.sent[0]["args"]["message"]  # the notice stays minimal
     why = h.ctx.commands["sentrook"]["handler"](f"why {hid}", session_id="")
-    assert "suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant destination discord:#ops-reports --persistent --expires 30d" in why
+    assert (
+        "suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant destination discord:#ops-reports --persistent --expires 30d"
+        in why
+    )
     assert "  /sentrook grant destination discord:#ops-reports --persistent --expires 30d" in why
     reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")
     assert "may go through once" in reply
@@ -339,7 +342,9 @@ def test_a_cron_jobs_held_call_keeps_its_hint_and_why_says_where_it_came_from(h)
     hid = rec["hold"]["id"]
     why = h.ctx.commands["sentrook"]["handler"](f"why {hid}", session_id="")
     lines = why.splitlines()
-    i = lines.index("suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant destination discord:#ops-reports --persistent --expires 30d")
+    i = lines.index(
+        "suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant destination discord:#ops-reports --persistent --expires 30d"
+    )
     context = CASES["hold_context"].format(kind="scheduled", where=holds(h)[0]["where"])
     assert lines[i + 1] == context
     reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")

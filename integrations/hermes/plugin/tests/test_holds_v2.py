@@ -16,7 +16,7 @@ import pytest
 import plugin
 from plugin import hold, passes, session_allow
 
-from .test_hold import FIXTURES, h, holds, resolutions, slash, turn  # noqa: F401 - the held-call harness
+from .test_hold import FIXTURES, held_call_harness, holds, resolutions, slash, turn
 
 FP = "afp1:message_send|ch:discord:#ops-reports"
 #: A scan the scanner lets the owner pass for good: a send that names its channel.
@@ -66,9 +66,14 @@ def notices(h):
 HELD = {"action": "block", "message": FIXTURES["held_text"]}
 
 
-@pytest.fixture(autouse=True)
-def _named_send(h):
-    h.reply = dict(NAMED)
+@pytest.fixture
+def h(harness, monkeypatch):
+    """The held-call harness (`test_hold`), its scanner answering with a send that names its channel."""
+    fake = held_call_harness(harness, monkeypatch)
+    fake.reply = dict(NAMED)
+    return fake
+
+
 DECLINED = {"action": "block", "message": FIXTURES["declined_text"]}
 
 
@@ -79,7 +84,10 @@ def test_allow_lets_the_jobs_next_run_make_the_same_send_once(h):
     out, rec = run(h, 1)
     assert out == HELD
     hid = rec["hold"]["id"]
-    assert rec["hold"]["offers"] == ["allow", "deny"]  # this scanner sends no owner_pass: never always
+    assert rec["hold"]["offers"] == [
+        "allow",
+        "deny",
+    ]  # this scanner sends no owner_pass: never always
     reply = slash(h, f"allow {hid}")
     assert reply.startswith("Job job-j's next run may make this call once.")
     [p] = stored_passes(h)
@@ -216,7 +224,10 @@ def test_a_call_that_names_nothing_is_offered_allow_once_bound_to_its_arguments(
 def test_deny_declines_the_jobs_call_with_no_notice_and_another_job_is_still_held(h):
     _out, rec = run(h, 1)
     reply = slash(h, f"deny {rec['hold']['id']}")
-    assert reply.startswith("Job job-j will not make this call until ") and "you won't be told again" in reply
+    assert (
+        reply.startswith("Job job-j will not make this call until ")
+        and "you won't be told again" in reply
+    )
     before = len(notices(h))
     out, rec = run(h, 2)
     assert out == DECLINED and rec["decision"] == "denied_by_owner" and "hold" not in rec
@@ -266,9 +277,15 @@ def test_a_non_owner_is_refused(h, monkeypatch, verb):
         ("allow h-1a2b3c sometimes", "usage: /sentrook allow <id> [later|always]"),
         ("deny h-1a2b3c always", "usage: /sentrook deny <id>"),
         ("deny p-1a2b3c", "usage: /sentrook deny <id>"),
-        ("allow h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."),
+        (
+            "allow h-abcdef",
+            "No held call h-abcdef: the id is unknown, already answered or expired.",
+        ),
         ("deny h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."),
-        ("passes revoke p-abcdef", "No pass or denial p-abcdef: the id is unknown, used up or expired."),
+        (
+            "passes revoke p-abcdef",
+            "No pass or denial p-abcdef: the id is unknown, used up or expired.",
+        ),
         ("passes revoke h-abcdef", "usage: passes revoke <id>"),
         ("passes frobnicate", "usage: /sentrook passes [revoke <id>]"),
     ],
@@ -284,7 +301,9 @@ def test_an_expired_hold_says_so(h):
     data = json.loads(path.read_text())
     data["holds"][0]["expires_at"] = "2020-01-01T00:00:00Z"
     path.write_text(json.dumps(data))
-    assert slash(h, f"deny {hid}").startswith(f"Held call {hid} expired: a hold can be answered for 7 days.")
+    assert slash(h, f"deny {hid}").startswith(
+        f"Held call {hid} expired: a hold can be answered for 7 days."
+    )
 
 
 def test_deny_on_a_run_that_is_not_a_cron_job_is_refused(h):
@@ -384,7 +403,11 @@ def test_an_attended_review_is_still_a_prompt_whatever_the_passes(h, monkeypatch
     on_job(h, None)
     monkeypatch.setattr(plugin, "is_unattended", lambda *_a, **_kw: False)
     h.ctx.hooks["pre_llm_call"](
-        turn_id="t-owner", user_message="Post the brief.", platform="telegram", sender_id="u1", session_id="owner-1"
+        turn_id="t-owner",
+        user_message="Post the brief.",
+        platform="telegram",
+        sender_id="u1",
+        session_id="owner-1",
     )
     out = h.ctx.hooks["pre_tool_call"](
         tool_name="send_message",
@@ -407,7 +430,9 @@ def test_holds_json_is_version_2(h):
 @pytest.mark.parametrize("case", FIXTURES["passes"], ids=lambda c: c["name"])
 def test_pass_matching(case):
     held = passes.match_of(case["tool"], case["held"], case["args"], "salt")
-    later = passes.match_of(case.get("later_tool", case["tool"]), case["later"], case["later_args"], "salt")
+    later = passes.match_of(
+        case.get("later_tool", case["tool"]), case["later"], case["later_args"], "salt"
+    )
     got = (
         session_allow.eligible(case["later"])
         and passes.covers(held, later)
@@ -423,10 +448,22 @@ def test_passes_expire_after_30_days(tmp_path):
         kind="deny",
         uses="standing",
         level=None,
-        hold={"id": "h-000000", "job_id": "j", "job_ref": passes.job_ref("j"), "match": {"key": "k"}},
+        hold={
+            "id": "h-000000",
+            "job_id": "j",
+            "job_ref": passes.job_ref("j"),
+            "match": {"key": "k"},
+        },
         who={},
         now=t0,
     )
-    assert passes.check(tmp_path, passes.job_ref("j"), {"key": "k"}, {"risk": 1}, t0 + timedelta(days=29))
-    assert passes.check(tmp_path, passes.job_ref("j"), {"key": "k"}, {"risk": 1}, t0 + timedelta(days=30)) is None
+    assert passes.check(
+        tmp_path, passes.job_ref("j"), {"key": "k"}, {"risk": 1}, t0 + timedelta(days=29)
+    )
+    assert (
+        passes.check(
+            tmp_path, passes.job_ref("j"), {"key": "k"}, {"risk": 1}, t0 + timedelta(days=30)
+        )
+        is None
+    )
     assert entry["id"].startswith("p-")

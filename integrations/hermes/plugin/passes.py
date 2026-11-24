@@ -120,7 +120,9 @@ def covers(held: dict[str, Any], later: dict[str, Any]) -> bool:
     risk, held_risk = later.get("risk"), held.get("risk")
     if not isinstance(risk, (int, float)) or not isinstance(held_risk, (int, float)):
         return False
-    return risk <= held_risk and not set(later.get("warnings") or []) - set(held.get("warnings") or [])
+    return risk <= held_risk and not set(later.get("warnings") or []) - set(
+        held.get("warnings") or []
+    )
 
 
 def offers(
@@ -274,16 +276,25 @@ def revoke(state_dir: Path, rest: str, now: datetime) -> tuple[str, dict[str, An
     """`passes revoke <id>`: removes a pass or denial; returns the reply and the change to record."""
     pid = rest.strip()
     if not _ID.fullmatch(pid):
-        return "usage: passes revoke <id>, with an id from the passes list (p- and 6 hex digits)", None
+        return (
+            "usage: passes revoke <id>, with an id from the passes list (p- and 6 hex digits)",
+            None,
+        )
     store = Store(state_dir)
     with _LOCK, file_lock(_path(state_dir)):
         data = store.load_passes()
         if data is None:
-            return f"The passes file {_path(state_dir)} could not be read; fix or remove it first.", None
+            return (
+                f"The passes file {_path(state_dir)} could not be read; fix or remove it first.",
+                None,
+            )
         kept = live(data, now)
         found = next((p for p in kept if p.get("id") == pid), None)
         if found is None:
-            return f"No pass or denial {_clean(pid, 40)}: the id is unknown, used up or expired.", None
+            return (
+                f"No pass or denial {_clean(pid, 40)}: the id is unknown, used up or expired.",
+                None,
+            )
         data["passes"] = [p for p in kept if p is not found]
         store.save_passes(data)
     what = "denial" if found["kind"] == "deny" else "pass"

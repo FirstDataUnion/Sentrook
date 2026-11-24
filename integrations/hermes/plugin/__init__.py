@@ -589,7 +589,9 @@ def _scan_one(
     session_allowed: dict[str, Any] | None = None
     allow_key: str | None = None
     held: dict[str, Any] | None = None
-    by_pass: dict[str, Any] | None = None  # the owner's pass or denial that settled an unattended review
+    by_pass: dict[str, Any] | None = (
+        None  # the owner's pass or denial that settled an unattended review
+    )
     stage: dict[str, Any] | None = (
         None  # what became of a held background save (`_stage_background`)
     )

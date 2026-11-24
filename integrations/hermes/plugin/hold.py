@@ -244,7 +244,9 @@ def sweep(state_dir: Path, now: datetime, record: Record) -> None:
             store.save_holds(data)
 
 
-def _repeat_of(data: dict[str, Any], job_ref: str | None, match: dict[str, Any]) -> dict[str, Any] | None:
+def _repeat_of(
+    data: dict[str, Any], job_ref: str | None, match: dict[str, Any]
+) -> dict[str, Any] | None:
     """The waiting hold a new hold of the same job and action repeats: same job, same match key, at no higher
     risk and with no new warning (`passes.covers`). Only holds on a cron job repeat."""
     if job_ref is None:
@@ -518,7 +520,9 @@ def answer(
                     f"Held call {hid} expired: a hold can be answered for {days}. Nothing was set; the "
                     "next run is scanned as before."
                 )
-            return f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
+            return (
+                f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
+            )
         if found.get("v") != 2:
             if want != passes.ALLOW:
                 if gone:
@@ -590,7 +594,9 @@ def answer(
                     "by": who,
                 }
             )
-    _settle_history(state_dir, held, "denied_by_user" if want == passes.DENY else "approved_by_user")
+    _settle_history(
+        state_dir, held, "denied_by_user" if want == passes.DENY else "approved_by_user"
+    )
     until = read_time(entry["expires_at"])
     shown = passes.show(until) if until else "?"
     job = f"Job {_clean(found.get('job_id'), 40)}"

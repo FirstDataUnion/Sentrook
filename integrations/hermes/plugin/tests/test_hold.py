@@ -42,6 +42,10 @@ RUN_TARGET = contextvars.ContextVar("run_delivery_target", default="unset")
 
 @pytest.fixture
 def h(harness, monkeypatch):
+    return held_call_harness(harness, monkeypatch)
+
+
+def held_call_harness(harness, monkeypatch):
     """The harness with a scanner whose reply each test sets (`.reply`), Discord as the only platform
     with a home channel and `owner_channel`, a `dispatch_tool` that records each send (`.sent`), and
     commands run from the local terminal."""
