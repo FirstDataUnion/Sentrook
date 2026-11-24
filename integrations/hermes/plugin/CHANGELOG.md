@@ -11,9 +11,10 @@ since the version the catalog pins.
   at every step, and Session did no more than Once. When the owner asked for the work in their own chat, a Session
   answer now also lets a later review in the same chat through without asking, for 12 hours, when it is a call of
   the same tool about the same parties (the entities the review's reasons and its description of the call name),
-  scoring no higher, with no attack-type warning the answered review lacked (content steering the agent, a target
-  only content named or a look-alike, data leaving, a known-bad or look-alike party, a retry after a refusal, a
-  floor, a guardrail, concealment), nothing the scanner enforced and no floor. Another party, a higher score, another
+  scoring no higher, with no warning the answered review lacked, nothing the scanner enforced and no floor. Every
+  reason code is a warning except the scanner's scoring and wording notes (the judge's own reasons, relief, a plain
+  send to a party new to the library) and the background of what the session has been reading, so a code the
+  scanner adds later asks; each answer is matched on its own. Another party, a higher score, another
   tool, another chat, a block, a block the scanner capped to a review, or an answer from another chat asks as before;
   so does any review that names no party. History records such a call as allowed (the owner was not shown it) and the
   scan record says `session_allowed`. **Always** is unchanged.

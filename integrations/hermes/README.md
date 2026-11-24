@@ -360,9 +360,11 @@ Details: /sentrook why 3f9c2a1b
 - When you asked for the work in your own chat, **Session** also covers the rest of the job in that chat for 12
   hours: a later call of the same tool about the same parties (the hosts and files the review's reasons and its
   description of the call name), scoring no higher, goes through without asking, even when it writes a different
-  output file. It still asks when the later call adds a warning of an attack kind the answered one did not have
-  (content trying to steer the agent, a target only such content named, data leaving, a known-bad or look-alike
-  party, a retry after a refusal), and for another party, a higher score, another tool, another chat or a block.
+  output file. It still asks when the later call adds a warning the answered one did not have (for example content
+  that tried to change the agent's task or that the call uses, a target only such content named, a secret carried
+  into the request, a look-alike or known-bad party, a remote delete, a retry after a refusal), and for another
+  party, a higher score, another tool, another chat or a block. What the session has been reading (documents with
+  instructions in them) does not count as new on its own; it still raises the score.
   The prompt says which applies: "also covers the same parties at no higher risk", or "covers only this exact
   action" when the review named no party or the answer is not known to be yours (a group chat, someone else's
   message, a subagent). **Always** covers only the same action, as above.

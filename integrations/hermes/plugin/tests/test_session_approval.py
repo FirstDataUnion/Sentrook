@@ -211,10 +211,50 @@ def test_a_new_judge_wording_alone_does_not_ask(owner):
 
 
 def test_a_warning_the_answered_review_already_had_does_not_ask(owner):
-    first = {"extra": ["exposure.session_tainted"]}
-    assert (
-        _session_then(owner, first, {"risk": 50.0, "extra": ["exposure.session_tainted"]}) is None
-    )
+    first = {"extra": ["exposure.task_change"]}
+    assert _session_then(owner, first, {"risk": 50.0, "extra": ["exposure.task_change"]}) is None
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        "call.not_supported_by_request",
+        "jev.concealment",
+        "coverage.unknown_entities",
+        "agreement.consequence_split",
+        "relief.credential_own_service",
+        "origin.agent_generated",
+    ],
+)
+def test_the_scanners_scoring_notes_do_not_ask(owner, note):
+    assert _session_then(owner, then={"risk": 50.0, "extra": [note]}) is None
+
+
+@pytest.mark.parametrize(
+    "background", ["exposure.instructions", "exposure.authority", "exposure.session_tainted"]
+)
+def test_what_the_session_has_been_reading_does_not_ask_while_the_score_stays_no_higher(
+    owner, background
+):
+    """A job that reads documents picks up a different one of these at every step."""
+    h = owner
+    assert _session_then(h, then={"risk": 50.0, "extra": [background]}) is None
+    h.next = {"risk": 60.0, "extra": [background]}
+    assert _asked(_code(h, "c3"))
+
+
+def test_warnings_from_two_answers_are_not_combined(owner):
+    """Session on a review with one warning and on another with a second: a call with both still asks."""
+    h = owner
+    h.next = {"extra": ["exfil.web_post"]}
+    _turn(h)
+    _answer(h, _code(h, "c1"), "session")
+    h.next = {"extra": ["exposure.task_change"]}
+    second = _code(h, "c2")
+    assert _asked(second)
+    _answer(h, second, "session")
+    h.next = {"risk": 50.0, "extra": ["exfil.web_post", "exposure.task_change"]}
+    assert _asked(_code(h, "c3"))
 
 
 def test_a_session_answer_sets_the_suggested_grant_for_this_session_only(owner):
@@ -269,14 +309,26 @@ def test_a_higher_risk_asks(owner):
 @pytest.mark.parametrize(
     "warning",
     [
-        "exposure.session_tainted",
-        "exposure.authority",
+        "exposure.task_change",
+        "exposure.session_injected_content",
         "origin.only_in_untrusted",
         "exfil.web_post",
         "reputation.near_miss_host",
         "reputation.known_bad_host",
         "retry.same_action",
         "conceal.encoded_payload",
+        "lineage.secret_carried_to_send",
+        "lineage.lookalike_of_named_host",
+        "code.steered_source",
+        "remote.delete",
+        "remote.account_change",
+        "priv.sudo",
+        "selfmod.startup",
+        "destroy.workspace_wide",
+        "sensitivity.session_holds_sensitive",
+        "escalation.consequence_rising",
+        "reputation.unknown_host_as_code_source",
+        "a.code_the_scanner_adds_later",
     ],
 )
 def test_a_new_attack_type_warning_asks_even_at_a_lower_score(owner, warning):

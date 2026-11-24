@@ -4,11 +4,11 @@ Hermes remembers a Session answer under the rule key the prompt carried (`_rule_
 of the call: a job whose steps differ only in an incidental file (each writes its own output) would ask at every step.
 So, on the owner's own turn, the answer is also kept in the session's state as an allowance: the tool, the parties the
 review was about (the entities its reasons name and the ones the card's description of the call names), the risk it
-was answered at and the attack-type warnings it carried. A later review in the same session is let through without
-asking when it is a call of the same tool about exactly the same parties, scores no higher, carries no attack-type
-warning the answered review did not (`WARNING_PREFIXES`), and the scanner neither enforced it nor applied a floor.
-Anything else asks: another party (or one more), a higher risk, a new warning of that kind, another tool, another chat,
-a block. A review whose reasons and description name no party keeps Hermes's exact key only: an allowance about
+was answered at and the warnings it carried (every reason code but the scanner's scoring and wording notes). A later
+review in the same session is let through without asking when it is a call of the same tool about exactly the same
+parties, scores no higher, carries no warning the answered review did not (`warnings`), and the scanner neither
+enforced it nor applied a floor. Anything else asks: another party (or one more), a higher risk, a new warning,
+another tool, another chat, a block. A review whose reasons and description name no party keeps Hermes's exact key only: an allowance about
 nothing would cover every call of that tool. An allowance lasts `MAX_AGE`.
 
 Where the Session answer also sets the review's suggested grant, no allowance is kept: the grant goes to the scanner,
@@ -31,28 +31,39 @@ from .store import read_time
 MAX_PER_SESSION = 50
 #: How long an allowance lets later reviews through.
 MAX_AGE = timedelta(hours=12)
-#: Reason codes of an attack kind: a later review carrying one the answered review did not always asks, whatever its
-#: score. Content steering the agent, a target only content named or a look-alike, data leaving, a known-bad or
-#: look-alike party, a retry after a refusal, a floor, a guardrail, hiding what it does. The judge's wording
-#: (`jev.*`, `call.*`) and the plain scoring notes do not count.
-WARNING_PREFIXES = (
-    "exposure.",
-    "exfil.",
-    "floor.",
-    "guardrail.",
-    "conceal.",
-    "reputation.known_bad_",
-    "reputation.near_miss_",
-    "reputation.switched_provider",
-    "origin.only_in_untrusted",
-    "origin.lookalike_",
-    "origin.sibling_value_untrusted",
-    "origin.written_content_untrusted",
-    "origin.switched_provider",
-    "retry.",
+#: Reason codes that are the scanner's scoring and wording notes, not warnings: the judge's own reasons (`jev.*`,
+#: `call.*`), relief and caps, coverage and probe agreement, the trigger, a plain send, a party new to the library as
+#: a place to send to or a recipient, an origin that names nobody hostile, and the background of what the session has
+#: been reading (content that had instructions or claimed authority, or steered earlier: these change at every step
+#: of a job that reads documents, and still raise the score, which must stay no higher). Content that tried to change
+#: the task, and a call that uses content that tried to steer the agent, are warnings. Every other code is a warning: a later
+#: review carrying one the answered review did not always asks, whatever its score, so a code the scanner adds later
+#: asks too.
+NOTE_PREFIXES = ("jev.", "call.", "relief.", "cap.", "coverage.", "agreement.", "trigger.")
+NOTES = frozenset(
+    {
+        "send.off_host",
+        "retry.none",
+        "reputation.unknown_host_as_data_destination",
+        "reputation.unknown_channel_as_recipient",
+        "reputation.unknown_recipient_as_recipient",
+        "reputation.unknown_mcp_server_as_data_destination",
+        "reputation.unknown_mcp_server_as_tool_provider",
+        "reputation.unknown_plugin_as_data_destination",
+        "origin.agent_generated",
+        "origin.request_named",
+        "origin.owner_config",
+        "origin.granted",
+        "origin.self_recipient",
+        "origin.host_configured_provider",
+        "origin.recipient_mail_domain",
+        "origin.agent_created_visible",
+        "origin.sibling_only",
+        "exposure.instructions",
+        "exposure.authority",
+        "exposure.session_tainted",
+    }
 )
-#: Codes under those prefixes that say nothing happened.
-NOT_WARNINGS = frozenset({"retry.none"})
 _PLACEHOLDER = re.compile(r"\{(E\d+)\}")
 
 
@@ -77,11 +88,11 @@ def parties(resp: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def warnings(resp: dict[str, Any]) -> list[str]:
-    """The response's attack-type reason codes (`WARNING_PREFIXES`), sorted and once each."""
+    """The response's reason codes that are warnings (any but `NOTES` and `NOTE_PREFIXES`), sorted and once each."""
     out = set()
     for r in resp.get("reasons") or []:
         code = r.get("code") if isinstance(r, dict) else None
-        if isinstance(code, str) and code.startswith(WARNING_PREFIXES) and code not in NOT_WARNINGS:
+        if isinstance(code, str) and code not in NOTES and not code.startswith(NOTE_PREFIXES):
             out.add(code)
     return sorted(out)
 
@@ -132,15 +143,13 @@ def add(
     request_id: str,
     now: datetime,
 ) -> None:
-    """Keep the allowance an answer gave. Answered again for the same parties, the higher risk and every warning
-    answered stand, and the allowance runs from the latest answer."""
-    kept = [a for a in sess.get("session_allows") or [] if isinstance(a, dict)]
-    old = next((a for a in kept if a.get("key") == k), None)
-    if old is not None:
-        if isinstance(old.get("risk"), (int, float)):
-            risk = max(risk, float(old["risk"]))
-        seen = sorted(set(seen) | set(old.get("warnings") or []))
-    kept = [a for a in kept if a.get("key") != k]
+    """Keep the allowance an answer gave. Each answer is kept on its own: a later review is covered by one answer's
+    risk and warnings, never by a mix of several."""
+    kept = [
+        a
+        for a in sess.get("session_allows") or []
+        if isinstance(a, dict) and a.get("request_id") != request_id
+    ]
     kept.append(
         {
             "key": k,
