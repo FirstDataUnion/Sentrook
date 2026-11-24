@@ -305,6 +305,8 @@ export class Store {
     if (!runId) return;
     const file = path.join(this.dir, "runs", `${fileKey(runId)}.json`);
     const cur = this.readJson<RunContext>(file, { runId });
+    // When the plugin first heard of the run: its first hook, before any of its tool calls.
+    if (typeof cur.seenAtMs !== "number") cur.seenAtMs = Date.now();
     for (const [k, v] of Object.entries(patch)) if (v !== undefined && v !== null && v !== "") cur[k] = v;
     this.writeJson(file, cur);
   }
