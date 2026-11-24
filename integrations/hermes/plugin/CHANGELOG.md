@@ -6,6 +6,21 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- **Session** on a review now covers the rest of the same job in that chat. Hermes remembers a Session answer under a
+  key made of every file and address the call touches, so a job whose steps each wrote a different output file asked
+  at every step, and Session did no more than Once. When the owner asked for the work in their own chat, a Session
+  answer now also lets a later review in the same chat through without asking, for 12 hours, when it is a call of
+  the same tool about the same parties (the entities the review's reasons and its description of the call name),
+  scoring no higher, with no attack-type warning the answered review lacked (content steering the agent, a target
+  only content named or a look-alike, data leaving, a known-bad or look-alike party, a retry after a refusal, a
+  floor, a guardrail, concealment), nothing the scanner enforced and no floor. Another party, a higher score, another
+  tool, another chat, a block, a block the scanner capped to a review, or an answer from another chat asks as before;
+  so does any review that names no party. History records such a call as allowed (the owner was not shown it) and the
+  scan record says `session_allowed`. **Always** is unchanged.
+- **Session** also sets the review's suggested grant for that session only (bound to its `session_ref`), as
+  **Always** sets it for 30 days, so the scanner scores later calls with it; with that grant set, Session skips no
+  further questions. The prompt says what Session covers: "also covers the same parties at no higher risk", "covers
+  only this exact action", or, with a suggested grant, one line for Session and Always.
 - The plugin's manifest declares its licence as MIT, as the code always was. It said Apache-2.0, which Hermes showed
   as the plugin's licence.
 - A call Hermes's own background review or curator makes that is not a skill or memory save, such as a file read or a

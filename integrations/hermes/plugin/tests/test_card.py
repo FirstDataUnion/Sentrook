@@ -26,6 +26,7 @@ def _hermes(c):
         hint=c["hint"],
         remember=c["remember"],
         why_id=c["why_id"],
+        session=c.get("session"),
     )
 
 
@@ -116,7 +117,9 @@ def test_the_card_never_runs_over_the_hosts_budgets():
             "remember": rng.random() < 0.5,
             "why_id": rng.choice([None, "3f9c2a1b-77aa"]),
         }
-        text = card.hermes_message(resp, word(300) or "t", **kw)
+        text = card.hermes_message(
+            resp, word(300) or "t", session=rng.choice([None, "parties", "exact"]), **kw
+        )
         assert _budget(text) <= FIXTURE["budgets"]["hermes"], text
         assert text.startswith(card.MARK)
         oc = card.openclaw_card(resp, word(300) or "t", **kw)

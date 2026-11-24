@@ -123,8 +123,8 @@ a grant only for a call that came from your own message or from a cron job Herme
 someone else's message, a subagent or a webhook gets none. A cron job's suggestion reaches you only through its held
 call: `/sentrook why <id>` names the grant and the job it came from, and `/sentrook approve <id>` sets it. A suggestion is a good guess, not a promise: Sentrook's judge sees the
 grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), answering
-**Always** also sets that grant, persistent for 30 days. `/sentrook why` lists every grant Sentrook suggested for a
-scan.
+**Always** also sets that grant, persistent for 30 days, and answering **Session** sets it for this session only.
+`/sentrook why` lists every grant Sentrook suggested for a scan.
 
 Run these commands in a direct message to the agent or on the machine (see [who may run them](#commands)). In chat
 type `/sentrook …`. On the command line it is `hermes sentrook …`, with patterns in quotes so the shell leaves the `*`
@@ -345,7 +345,7 @@ Hermes frames the prompt with its own heading and buttons; Sentrook's part start
 🪶 Sentrook security check · risk 62/100
 Sends ~/notes/q3-plan.md to paste.example.net.
 Because paste.example.net is new to Sentrook as a place to send data.
-"Always" also trusts paste.example.net for 30 days.
+"Session" also trusts paste.example.net in this chat, "Always" for 30 days.
 Details: /sentrook why 3f9c2a1b
 ```
 
@@ -354,10 +354,21 @@ Details: /sentrook why 3f9c2a1b
 - The next lines say what the call does and, in plain words, the main reasons. Long files and addresses are
   shortened in the middle; on small screens (a Discord message holds 300 characters) the reasons and your options
   are kept and the description of the call is shortened first.
-- **Once** runs this call. **Session** and **Always** also run the same action (same tool, source and destination)
-  without asking again: for this session, or from now on, in every later session too. A call that names no file, address or other target is
-  covered only when it is repeated exactly. Where a grant would cover calls like this, the prompt says what
-  **Always** also sets, or gives the command.
+- **Once** runs this call. **Session** and **Always** also run the same action (same tool, files and addresses)
+  without asking again: for this session, or from now on, in every later session too. A call that names no file,
+  address or other target is covered only when it is repeated exactly.
+- When you asked for the work in your own chat, **Session** also covers the rest of the job in that chat for 12
+  hours: a later call of the same tool about the same parties (the hosts and files the review's reasons and its
+  description of the call name), scoring no higher, goes through without asking, even when it writes a different
+  output file. It still asks when the later call adds a warning of an attack kind the answered one did not have
+  (content trying to steer the agent, a target only such content named, data leaving, a known-bad or look-alike
+  party, a retry after a refusal), and for another party, a higher score, another tool, another chat or a block.
+  The prompt says which applies: "also covers the same parties at no higher risk", or "covers only this exact
+  action" when the review named no party or the answer is not known to be yours (a group chat, someone else's
+  message, a subagent). **Always** covers only the same action, as above.
+- Where a grant would cover calls like this, the prompt says what **Session** (for this chat) and **Always** (for 30
+  days) also set, or gives the command. A grant goes to the scanner, which scores later calls with it; with a grant
+  set, Session skips no further questions.
 - `/sentrook why <id>` shows everything behind the decision: the scores, the checks that fired, the files and
   addresses in full, and every grant that would allow it next time.
 
