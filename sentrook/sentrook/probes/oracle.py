@@ -35,7 +35,9 @@ role, as for the call's own roles: sending, never running code.
 A `known_good` host that lists `credential_names` is the home of the credentials its service issues and vouches
 for nothing else, whatever its tier says (`provider_api` for the hand-curated hosts, `provider_api_feed` for the
 generated layer): it is scored, reported and shown to the judge as an unlisted host, and its credential names are
-kept in the evidence for the credential-home check (`prepare.credential_home`). The names, not a tier, decide, so a
+kept in the evidence for the credential-home check (`prepare.credential_home`). The names an exact `known_good` answer
+gives the host's service (`service_names`) are kept in the evidence too, for the service-name check
+(`prepare.service_names`); they vouch for nothing here. The names, not a tier, decide, so a
 tier the scanner does not know can never turn a credential home into a trusted destination. Its look-alikes are
 still near misses of it.
 """
@@ -274,6 +276,8 @@ class EntityOracleProbe:
             info["mail_domain_of"] = list(ent.recipient_domain_of)
         if v.credential_names:
             info["credential_names"] = list(v.credential_names)
+        if v.service_names:
+            info["service_names"] = list(v.service_names)
         return info
 
     def run(self, prepared: Prepared) -> Envelope:

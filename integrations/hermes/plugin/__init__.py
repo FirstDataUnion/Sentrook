@@ -29,7 +29,9 @@ from . import (
     hold,
     host_turns,
     owner,
+    passes,
     scan_failure_notice,
+    session_allow,
     skill_review,
     skill_turn,
     snooze,
@@ -584,7 +586,12 @@ def _scan_one(
     snoozed = False
     relaxed = False
     let_through = False
+    session_allowed: dict[str, Any] | None = None
+    allow_key: str | None = None
     held: dict[str, Any] | None = None
+    by_pass: dict[str, Any] | None = (
+        None  # the owner's pass or denial that settled an unattended review
+    )
     stage: dict[str, Any] | None = (
         None  # what became of a held background save (`_stage_background`)
     )
@@ -672,10 +679,35 @@ def _scan_one(
             directive = {"action": "block", "message": skill_review.HELD_CALL_TEXT}
             notice = _background_notice(cfg, built, resp, "held-call")
         elif unattended:
-            # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
-            entry["decision"] = "held"
-            directive = {"action": "block", "message": hold.HELD_TEXT}
-            held = _hold(cfg, traffic, built, resp)
+            # A review nobody can answer (or Hermes would auto-approve): the owner's denial or pass for this job and
+            # action settles it (`passes`); otherwise it waits for the owner (`hold`).
+            job_id = _run_of(built)[1]
+            match = passes.match_of(
+                str(built.get("tool") or ""), resp, kw.get("args"), store.salt(), job_id is None
+            )
+            try:
+                settled = passes.check(
+                    cfg.state_dir, passes.job_ref(job_id), match, resp, datetime.now(UTC)
+                )
+            except Exception as exc:  # noqa: BLE001 - nothing settled: held as before
+                logger.warning("sentrook could not read the passes: %s", exc)
+                settled = None
+            if settled is not None and settled["kind"] == "deny":
+                entry["decision"] = "denied_by_owner"
+                directive = {"action": "block", "message": passes.DECLINED_TEXT}
+                by_pass = {"id": settled["id"], "kind": "deny"}
+            elif settled is not None:
+                entry["decision"] = "allowed_by_pass"
+                by_pass = {
+                    "id": settled["id"],
+                    "kind": "allow",
+                    "uses": settled.get("uses"),
+                    "use_count": settled.get("use_count"),
+                }
+            else:
+                entry["decision"] = "held"
+                directive = {"action": "block", "message": hold.HELD_TEXT}
+                held = _hold(cfg, traffic, built, resp, sid=sid, job_id=job_id, match=match)
         elif (
             not relaxed
             and snooze.applies(resp, cfg.block_at)
@@ -686,6 +718,19 @@ def _scan_one(
             # The owner snoozed reviews for this session: scanned and logged, not asked.
             entry["decision"] = "allowed"
             snoozed = True
+        elif (
+            covered := session_allow.covering(
+                sess,
+                allow_key := _allow_key(cfg, resp, planir, built, relaxed, store),
+                resp,
+                datetime.now(UTC),
+            )
+        ) is not None:
+            # The owner answered Session for a call of this tool about the same parties, at this risk or higher, with
+            # every attack-type warning this one carries, in this chat (`session_allow`). History says allowed: the
+            # owner was not shown this call.
+            entry["decision"] = "allowed"
+            session_allowed = {"by": covered.get("request_id")}
         else:
             entry["decision"] = "review_timed_out"  # provisional until the user answers
             snoozes = (
@@ -707,6 +752,10 @@ def _scan_one(
             # the owner is the one answering (never for a block a snooze turned into a review).
             hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
             remember = hint is not None and not relaxed and grants.may_remember(planir)
+            # A Session answer that sets the suggested grant leaves later calls to the scanner, which scores them
+            # with it: no allowance besides (`session_allow`).
+            if remember:
+                allow_key = None
             directive = {
                 "action": "approve",
                 "message": card.hermes_message(
@@ -716,6 +765,7 @@ def _scan_one(
                     hint=hint,
                     remember=remember,
                     why_id=planir["request_id"] if cfg.traffic_log_enabled else None,
+                    session=None if relaxed else "parties" if allow_key is not None else "exact",
                 ),
                 "rule_key": key,
             }
@@ -726,14 +776,22 @@ def _scan_one(
                     "request_id": planir["request_id"],
                     "on_error": False,
                     # The same action can wait in several chats under one key (`Store.put_review` keeps one entry
-                    # per session): the answer sets the grant only from the chat it was asked in.
+                    # per session): the answer sets the grant, or the allowance, only from the chat it was asked in.
+                    **(
+                        {"session_key": _approval_session_key()}
+                        if remember or allow_key is not None
+                        else {}
+                    ),
+                    **({"hint": hint, "platform": built["platform"]} if remember else {}),
                     **(
                         {
-                            "hint": hint,
-                            "platform": built["platform"],
-                            "session_key": _approval_session_key(),
+                            "allow": {
+                                "key": allow_key,
+                                "risk": float(resp["risk"]),
+                                "warnings": session_allow.warnings(resp),
+                            }
                         }
-                        if remember
+                        if allow_key is not None and session_allow.risk_of(resp) is not None
                         else {}
                     ),
                 },
@@ -777,7 +835,9 @@ def _scan_one(
             **({"snoozed": True} if snoozed else {}),
             **({"lenient": True} if let_through else {}),
             **({"relaxed": True} if relaxed else {}),
+            **({"session_allowed": session_allowed} if session_allowed is not None else {}),
             **({"hold": held} if held is not None else {}),
+            **({"pass": by_pass} if by_pass is not None else {}),
             **({"notice": notice} if notice is not None else {}),
             **({"staging": stage} if stage is not None else {}),
             **({"skill_review": True} if loop_save else {}),
@@ -802,6 +862,10 @@ def _scan_one(
             entry["decision"],
             " (snoozed)"
             if snoozed
+            else " (covered by an earlier Session answer)"
+            if session_allowed is not None
+            else f" ({'refused by' if by_pass['kind'] == 'deny' else 'let through by'} {by_pass['id']})"
+            if by_pass is not None
             else " (block relaxed to review by snooze)"
             if relaxed
             else " (let through)"
@@ -811,6 +875,26 @@ def _scan_one(
             result.latency_ms,
         )
     return directive
+
+
+def _allow_key(
+    cfg: PluginConfig,
+    resp: dict[str, Any],
+    planir: dict[str, Any],
+    built: dict[str, Any],
+    relaxed: bool,
+    store: Store,
+) -> str | None:
+    """The allowance key a Session answer to this review would keep, and a later review is matched by
+    (`session_allow`): only on the owner's own turn (whoever answers elsewhere is not known to be the owner), never
+    for a block a snooze turned into a review or a score at the block line (a block the scanner capped to a review),
+    and None when the review names no party."""
+    risk = session_allow.risk_of(resp)
+    if relaxed or not grants.may_remember(planir) or risk is None or risk >= cfg.block_at:
+        return None
+    return session_allow.key(
+        str(built.get("tool") or ""), session_allow.parties(resp), store.salt()
+    )
 
 
 def _where(built: dict[str, Any]) -> str:
@@ -1065,10 +1149,18 @@ def _scan_failure_notice(
 
 
 def _hold(
-    cfg: PluginConfig, traffic: TrafficLog, built: dict[str, Any], resp: dict[str, Any]
+    cfg: PluginConfig,
+    traffic: TrafficLog,
+    built: dict[str, Any],
+    resp: dict[str, Any],
+    *,
+    sid: str = "",
+    job_id: str | None = None,
+    match: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
-    call is held whatever happens here: a hold that cannot be stored only cannot be approved."""
+    call is held whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of
+    a waiting hold of the same job and action is counted on it, and no notice is sent."""
     now = datetime.now(UTC)
     planir = built["planir"]
     target, why = _notice_target(cfg.owner_channel)
@@ -1079,8 +1171,18 @@ def _hold(
     )
     hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
     where = _where(built)
+    match = match or {}
+    level = passes.offered_level(resp)
+    offers = passes.offers(
+        job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at
+    )
+    repeat = False
     try:
-        hid = hold.create(
+        description = hold.inert(describe(resp, built["tool"]), 160)
+    except Exception:  # noqa: BLE001 - a malformed response: no description
+        description = ""
+    try:
+        hid, repeat = hold.create(
             cfg.state_dir,
             request_id=planir["request_id"],
             session_ref=planir["session"]["session_ref"],
@@ -1090,18 +1192,26 @@ def _hold(
             notice=notice,
             now=now,
             record=traffic.write,
+            sid=sid,
+            job_id=job_id,
+            match=match,
+            level=level,
+            offers=offers,
+            description=description,
         )
         if hid is None:
             notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
     except LockTimeout:
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file locked"}
-    except Exception as exc:  # noqa: BLE001 - still held, just not approvable
+    except Exception as exc:  # noqa: BLE001 - still held, just not answerable
         logger.warning("sentrook could not store a hold: %s", exc)
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
-    if hid is not None and target:
+    if repeat:
+        notice = {"status": "not_sent", "target": None, "reason": "repeat of a waiting hold"}
+    elif hid is not None and target:
         try:
             text = hold.notice_text(
-                resp, built["tool"], where, hid, commands.CMD("approve"), commands.CMD("why")
+                resp, built["tool"], where, hid, offers, commands.CMD, on_job=job_id is not None
             )
             hold.deliver(_ctx, target, text)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
@@ -1111,8 +1221,12 @@ def _hold(
         logger.warning("sentrook held a call but sent no notice: %s", notice.get("reason"))
     return {
         "id": hid,
-        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ") if hid else None,
+        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if hid and not repeat
+        else None,
         "hint": hint is not None,
+        "offers": offers if hid else [],
+        **({"repeat": True} if repeat else {}),
         "notice": notice,
     }
 
@@ -1131,6 +1245,8 @@ _APPROVED = {
 }
 #: Answers that approve for good: they also set a review's suggested grant.
 _ALWAYS = {"always", "allow-always", "allow_always"}
+#: Hermes's answer that approves for the rest of the session: it sets the suggested grant for this session.
+_SESSION = {"session"}
 
 
 def _approval_session_key() -> str:
@@ -1139,16 +1255,24 @@ def _approval_session_key() -> str:
 
 
 def _remember(
-    cfg: PluginConfig, traffic: TrafficLog, review: dict[str, Any], session_key: str
+    cfg: PluginConfig,
+    traffic: TrafficLog,
+    review: dict[str, Any],
+    session_key: str,
+    session: str | None = None,
 ) -> dict[str, Any] | None:
-    """Sets the suggested grant of a review approved always, as a persistent grant ending in 30 days, once per
-    review, when the answer came from the chat the review was asked in (`session_key`, as the approval hook
-    reports it). Returns the grants change, or None when there was nothing to set or it could not be written
-    (logged: the answer itself stands)."""
+    """Sets the suggested grant of a review approved always, as a persistent grant ending in 30 days, or approved
+    for the session, as a grant bound to that session (`session`, its `session_ref`), once per review, when the
+    answer came from the chat the review was asked in (`session_key`, as the approval hook reports it). Returns the
+    grants change, or None when there was nothing to set or it could not be written (logged: the answer itself
+    stands)."""
     grant = grants.hint_grant(review.get("hint"))
     if grant is None or review.get("session_key") != session_key:
         return None
-    by = {"basis": ["review_always"], "platform": str(review.get("platform") or "")}
+    by = {
+        "basis": ["review_session" if session else "review_always"],
+        "platform": str(review.get("platform") or ""),
+    }
     try:
         _reply, change = grants.add_suggested(
             cfg.state_dir,
@@ -1158,6 +1282,7 @@ def _remember(
             hold.GRANT_TTL,
             str(review["request_id"]),
             source="from_review",
+            session_ref=session,
         )
     except Exception as exc:  # noqa: BLE001 - the approval stands without the grant
         logger.warning("sentrook could not set the suggested grant: %s", exc)
@@ -1200,14 +1325,37 @@ def on_post_approval_response(**kw: Any) -> None:
                 if choice == "timeout"
                 else "blocked"
             )
+        answer_key = str(kw.get("session_key") or "default")
+        sid = review["sid"]
         remembered = (
-            _remember(cfg, traffic, review, str(kw.get("session_key") or "default"))
+            _remember(cfg, traffic, review, answer_key)
             if approved and choice in _ALWAYS and not review.get("on_error")
+            else _remember(cfg, traffic, review, answer_key, session=session_ref(sid))
+            if approved and choice in _SESSION and not review.get("on_error")
             else None
         )
-        sid = review["sid"]
+        # Session also lets the rest of this job through in the chat it was asked in (`session_allow`).
+        allow = review.get("allow") if isinstance(review.get("allow"), dict) else None
+        allowed_on = (
+            allow
+            if allow is not None
+            and approved
+            and choice in _SESSION
+            and not review.get("on_error")
+            and review.get("session_key") == answer_key
+            else None
+        )
         with store.session_lock(sid):
             s = store.load_session(sid)
+            if allowed_on is not None:
+                session_allow.add(
+                    s,
+                    str(allowed_on["key"]),
+                    float(allowed_on["risk"]),
+                    [str(w) for w in allowed_on.get("warnings") or []],
+                    str(review["request_id"]),
+                    datetime.now(UTC),
+                )
             for h in s["history"]:
                 if h.get("request_id") == review["request_id"]:
                     h["decision"] = final
@@ -1225,6 +1373,7 @@ def on_post_approval_response(**kw: Any) -> None:
                 "decision": final,
                 **({"decided_by": history.REVIEW_LOOP} if auto else {}),
                 **({"grant_id": remembered["entry"]["id"]} if remembered else {}),
+                **({"session_allow": True} if allowed_on is not None else {}),
             }
         )
     except Exception as exc:  # noqa: BLE001

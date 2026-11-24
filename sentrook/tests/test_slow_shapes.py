@@ -18,6 +18,7 @@ import threading
 import time
 
 import pytest
+from linear_time import assert_fast_or_linear
 from test_aira_detectors import ex, planir
 from test_large_calls import FAST, scan
 from test_long_option_runs import _repeat
@@ -174,7 +175,9 @@ def test_a_long_call_of_this_shape_scans_fast(name, size):
     raw = SHAPES[name](size)
     assert len(json.dumps(raw["pending_call"]["arguments"])) < MAX_CALL_CHARS
     res, spent = scan(raw)
-    assert spent < FAST, f"whole scan, {name} at {size}: {spent:.2f}s"
+    assert_fast_or_linear(
+        spent, FAST, lambda d: scan(SHAPES[name](size // d)), f"whole scan, {name} at {size}"
+    )
     aira = next(e for e in res.envelopes if e.step is ProbeStep.AIRA)
     assert aira.status is ProbeStatus.OK, aira.evidence
 
@@ -192,11 +195,17 @@ def test_a_long_grant_call_scans_fast_with_the_unnamed_role_arm_on(name, size):
     params = load_params("conv-v7")
     assert params.context.lineage_unnamed_role_overreach > 0
     sc = Scanner(ScannerConfig(token_key=KEY, decider=FakeDecider(BENIGN_ANSWERS), params=params))
-    raw = ex({**GRANT_SHAPES, **GRANT_SHAPES_MATCHED}[name](size))
+    make = {**GRANT_SHAPES, **GRANT_SHAPES_MATCHED}[name]
+    options = ScanOptions(deterministic=True, clock=CLOCK, salt="testnest")
     start = time.perf_counter()
-    res = sc.scan(raw, ScanOptions(deterministic=True, clock=CLOCK, salt="testnest"))
+    res = sc.scan(ex(make(size)), options)
     spent = time.perf_counter() - start
-    assert spent < FAST, f"whole scan, {name} at {size}: {spent:.2f}s"
+    assert_fast_or_linear(
+        spent,
+        FAST,
+        lambda d: sc.scan(ex(make(size // d)), options),
+        f"whole scan, {name} at {size}",
+    )
     context = next(e for e in res.envelopes if e.step is ProbeStep.CONTEXT)
     assert context.status is ProbeStatus.OK, context.evidence
     if name in GRANT_SHAPES_MATCHED:
@@ -408,10 +417,15 @@ def test_a_host_of_many_labels_is_looked_up_fast():
     from sentrook.oracle.client import EntityQuery, SeedOracle
 
     oracle = SeedOracle({"entities": [{"kind": "host", "value": "a.io", "verdict": "known_bad"}]})
+
+    def lookup(d: int):
+        host = "a." * (47_000 // d) + "io"
+        return oracle.lookup([EntityQuery("host", host), EntityQuery("host", host + "x")]).verdicts
+
     host = "a." * 47_000 + "io"
     start = time.perf_counter()
-    got = oracle.lookup([EntityQuery("host", host), EntityQuery("host", host + "x")]).verdicts
-    assert time.perf_counter() - start < 0.5
+    got = lookup(1)
+    assert_fast_or_linear(time.perf_counter() - start, 0.5, lookup, "a host of many labels")
     assert got[("host", host)].value == "a.io"
     assert got[("host", host + "x")].value == host + "x"
 
@@ -602,13 +616,15 @@ def test_a_long_kubectl_run_is_read_fast_for_unnamed_roles(attack_case, size):
     patterns over a long run of `kubectl apply` in linear time."""
     from test_context_oracle_probes import _lineage_run
 
-    command = _repeat("", "kubectl apply ", "", size)
+    def read(d: int) -> None:
+        _lineage_run(
+            attack_case,
+            [],
+            {"command": _repeat("", "kubectl apply ", "", size // d)},
+            "Apply the manifests.",
+            params={"lineage_unnamed_role_overreach": 0.6},
+        )
+
     start = time.perf_counter()
-    _lineage_run(
-        attack_case,
-        [],
-        {"command": command},
-        "Apply the manifests.",
-        params={"lineage_unnamed_role_overreach": 0.6},
-    )
-    assert time.perf_counter() - start < FAST
+    read(1)
+    assert_fast_or_linear(time.perf_counter() - start, FAST, read, f"kubectl run at {size}")

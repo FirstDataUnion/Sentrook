@@ -319,7 +319,7 @@ test("why lists every hint", async () => {
 
 // ---- the held call ------------------------------------------------------------------------------------
 
-test("a held call approved sets the hinted grant", async () => {
+test("a held call's hint is shown by why and never set by an answer", async () => {
   hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
   extra = { risk: 47 };
   const r = registered();
@@ -328,16 +328,15 @@ test("a held call approved sets the hinted grant", async () => {
   const id = rec.hold.id;
   assert.equal(rec.hold.hint, true);
   const why = await r.command("sentrook-why", id);
-  assert.ok(why.includes("suggested grant: destination discord:#ops-reports (persistent, 30 days)"), why);
+  assert.ok(why.includes("suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook-grant destination discord:#ops-reports --persistent --expires 30d"), why);
   assert.ok(why.includes("  /sentrook-grant destination discord:#ops-reports --persistent --expires 30d"), why);
   const answer = await r.command("sentrook-approve", id);
-  assert.ok(answer.startsWith(`Approved ${id}. Granted gr-`), answer);
-  const [g] = grantsFile();
-  assert.deepEqual([g.kind, g.pattern, g.from_hold], ["destination", "discord:#ops-reports", id]);
+  assert.ok(answer.includes("may go through once"), answer);
+  assert.deepEqual(grantsFile(), []);
 });
 
 for (const kind of ["cron", "heartbeat"]) {
-  test(`a ${kind} run with no sender keeps its hint on the hold, why says where it came from, approve sets it`, async () => {
+  test(`a ${kind} run with no sender keeps its hint on the hold, why says where it came from, no answer sets it`, async () => {
     hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
     extra = { risk: 47 };
     const r = registered();
@@ -348,14 +347,13 @@ for (const kind of ["cron", "heartbeat"]) {
     assert.equal(rec.hold.hint, true);
     const id = rec.hold.id;
     const lines = (await r.command("sentrook-why", id)).split("\n");
-    const i = lines.indexOf("suggested grant: destination discord:#ops-reports (persistent, 30 days)");
+    const i = lines.indexOf("suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook-grant destination discord:#ops-reports --persistent --expires 30d");
     assert.ok(i > 0, lines.join("\n"));
     const where = JSON.parse(readFileSync(path.join(stateDir, "holds.json"), "utf8")).holds[0].where;
     assert.equal(lines[i + 1], CASES.hold_context.replace("{kind}", trig.kind).replace("{where}", where));
     const answer = await r.command("sentrook-approve", id);
-    assert.ok(answer.startsWith(`Approved ${id}. Granted gr-`), answer);
-    const [g] = grantsFile();
-    assert.deepEqual([g.pattern, g.from_hold], ["discord:#ops-reports", id]);
+    assert.ok(answer.includes("may go through once"), answer);
+    assert.deepEqual(grantsFile(), []);
   });
 }
 
@@ -369,7 +367,7 @@ for (const requester of [undefined, { senderIsOwner: false, channel: "discord" }
     assert.equal(rec.decision, "held");
     assert.equal(rec.hold.hint, false);
     const answer = await r.command("sentrook-approve", rec.hold.id);
-    assert.ok(answer.startsWith(`Approved ${rec.hold.id}. Sentrook suggested no grant`), answer);
+    assert.ok(answer.includes("may go through once"), answer);
     assert.deepEqual(grantsFile(), []);
   });
 }

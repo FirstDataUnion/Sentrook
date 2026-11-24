@@ -1,7 +1,8 @@
 """Grant hints: a review names the grant that would let the call through next time.
 
 The review prompt ends with the command that sets the first suggested grant. Approving always sets it (persistent,
-30 days) when the owner's own message asked for the work; elsewhere the prompt only shows the command. A held call
+30 days) when the owner's own message asked for the work, and approving for the session sets it for that session
+only (`test_session_approval`); elsewhere the prompt only shows the command. A held call
 approved with `/sentrook approve` sets it too, and `why` lists every suggestion. The texts are shared with the
 OpenClaw plugin's tests (`integrations/fixtures/grant-hints`).
 """
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import card, commands, grants, hold
+from plugin import commands, grants, hold
 
 from .test_hold import h as h  # noqa: F401 - the held-call harness, used by name
 from .test_hold import holds, send
@@ -141,7 +142,10 @@ def test_the_review_prompt_names_the_grant_and_always_sets_it(owner):
     _turn(h)
     out = _call(h, "c1")
     assert out["action"] == "approve"
-    assert f'"Always" also trusts {HOST} for 30 days.' in out["message"].splitlines()
+    assert (
+        f'"Session" also trusts {HOST} in this chat, "Always" for 30 days.'
+        in out["message"].splitlines()
+    )
     _answer(h, out, "always")
     [g] = _file_grants(h)
     assert (g["kind"], g["pattern"], g["scope"]) == ("destination", HOST, "persistent")
@@ -157,7 +161,7 @@ def test_the_review_prompt_names_the_grant_and_always_sets_it(owner):
     assert any(x["pattern"] == HOST for x in h.scans[-1]["grants"])
 
 
-@pytest.mark.parametrize("choice", ["once", "session", "deny", "timeout"])
+@pytest.mark.parametrize("choice", ["once", "deny", "timeout"])
 def test_any_other_answer_sets_nothing(owner, choice):
     h = owner
     _turn(h)
@@ -270,7 +274,8 @@ def test_a_long_pattern_keeps_the_card_within_its_budget(owner):
     _turn(h)
     out = _call(h, "c1")
     assert len(html.escape(out["message"]).encode("utf-16-le")) // 2 <= 300
-    assert f'"Always" also trusts {card.mid(long, 60)} for 30 days.' in out["message"]
+    [line] = [x for x in out["message"].splitlines() if x.startswith('"Session" also trusts ')]
+    assert line.endswith('.example.invalid in this chat, "Always" for 30 days.') and "…" in line
 
 
 def test_why_lists_every_hint(owner):
@@ -290,8 +295,9 @@ def test_why_lists_every_hint(owner):
 # ---- the held call ------------------------------------------------------------------------------------------
 
 
-def test_a_held_call_approved_sets_the_hinted_grant(h, monkeypatch):  # noqa: F811 - the held-call harness
-    """The owner's own run nobody can answer (a cron session on the local machine): the hint is kept on the hold."""
+def test_a_held_calls_hint_is_shown_by_why_and_never_set_by_an_answer(h, monkeypatch):  # noqa: F811 - the held-call harness
+    """The owner's own run nobody can answer (a cron session on the local machine): the hint is kept on the hold, and
+    `why` shows its command for the owner to set by hand. Answering the hold sets a pass, never the grant."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     h.reply = {
         "risk": 47,
@@ -304,16 +310,14 @@ def test_a_held_call_approved_sets_the_hinted_grant(h, monkeypatch):  # noqa: F8
     assert rec["hold"]["hint"] is True
     assert "grant" not in h.sent[0]["args"]["message"]  # the notice stays minimal
     why = h.ctx.commands["sentrook"]["handler"](f"why {hid}", session_id="")
-    assert "suggested grant: destination discord:#ops-reports (persistent, 30 days)" in why
+    assert (
+        "suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant destination discord:#ops-reports --persistent --expires 30d"
+        in why
+    )
     assert "  /sentrook grant destination discord:#ops-reports --persistent --expires 30d" in why
     reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")
-    assert reply.startswith(f"Approved {hid}. Granted gr-")
-    [g] = grants.load(h.dir / "sentrook")["grants"]
-    assert (g["kind"], g["pattern"], g["from_hold"]) == (
-        "destination",
-        "discord:#ops-reports",
-        hid,
-    )
+    assert "may go through once" in reply
+    assert grants.load(h.dir / "sentrook")["grants"] == []
     assert holds(h) == []
 
 
@@ -328,7 +332,7 @@ def test_a_held_call_whose_hint_does_not_clear_this_line_sets_nothing(h, monkeyp
 
 def test_a_cron_jobs_held_call_keeps_its_hint_and_why_says_where_it_came_from(h):  # noqa: F811
     """A scheduled run Hermes started with no sender behind it: the hint is kept on the hold, `why` says which run
-    it comes from, and approving the hold sets it. There is no approve-always prompt on such a run."""
+    it comes from, and its command is there for the owner to set by hand; answering the hold never sets it."""
     h.reply = {"risk": 47, "grant_hints": [{**HINT, "pattern": "discord:#ops-reports", "risk": 12}]}
     cron_turn(h)
     _out, rec = send(h)
@@ -338,19 +342,20 @@ def test_a_cron_jobs_held_call_keeps_its_hint_and_why_says_where_it_came_from(h)
     hid = rec["hold"]["id"]
     why = h.ctx.commands["sentrook"]["handler"](f"why {hid}", session_id="")
     lines = why.splitlines()
-    i = lines.index("suggested grant: destination discord:#ops-reports (persistent, 30 days)")
+    i = lines.index(
+        "suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant destination discord:#ops-reports --persistent --expires 30d"
+    )
     context = CASES["hold_context"].format(kind="scheduled", where=holds(h)[0]["where"])
     assert lines[i + 1] == context
     reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")
-    assert reply.startswith(f"Approved {hid}. Granted gr-")
-    [g] = grants.load(h.dir / "sentrook")["grants"]
-    assert (g["pattern"], g["from_hold"]) == ("discord:#ops-reports", hid)
+    assert "may go through once" in reply
+    assert grants.load(h.dir / "sentrook")["grants"] == []
 
 
 @pytest.mark.parametrize("platform", ["subagent", "telegram"])
 def test_a_held_call_on_someone_elses_turn_keeps_no_hint(h, platform, monkeypatch):  # noqa: F811
     """A sub-agent's run, or a stranger's message, chose the destination: the hold keeps no hint, and approving it
-    sets nothing."""
+    sets no grant (only the one-use pass)."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     h.reply = {"risk": 47, "grant_hints": [{**HINT, "pattern": "discord:#ops-reports", "risk": 12}]}
     cron_turn(h, platform=platform)
@@ -362,5 +367,5 @@ def test_a_held_call_on_someone_elses_turn_keeps_no_hint(h, platform, monkeypatc
     assert rec["decision"] == "held" and rec["hold"]["hint"] is False
     hid = rec["hold"]["id"]
     reply = h.ctx.commands["sentrook"]["handler"](f"approve {hid}", session_id="")
-    assert reply.startswith(f"Approved {hid}. Sentrook suggested no grant")
+    assert "may go through once" in reply
     assert (grants.load(h.dir / "sentrook") or {}).get("grants") in (None, [])

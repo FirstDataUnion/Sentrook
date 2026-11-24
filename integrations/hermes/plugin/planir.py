@@ -334,8 +334,12 @@ def _text(v: Any) -> str:
 #: History decisions the plugin keeps that PlanIR has no word for, and the word it sends instead. A held
 #: call is a review nobody has answered yet: it did not run, and a retry of it is a retry after a review. So is a
 #: background save staged for the owner in Hermes's pending store (by the plugin, or by Hermes's own gate before
-#: the plugin hears what it did): it is not saved until the owner approves it.
+#: the plugin hears what it did): it is not saved until the owner approves it. A call the owner's pass for the job let
+#: through ran (`allowed`); one their denial refused is a denial by the owner (`denied_by_user`).
 _SENT_DECISION = {
+    # the owner's pass for this job let it through; their denial refused it
+    "allowed_by_pass": "allowed",
+    "denied_by_owner": "denied_by_user",
     "held": "review_timed_out",
     "staged": "review_timed_out",
     "host_staging": "review_timed_out",

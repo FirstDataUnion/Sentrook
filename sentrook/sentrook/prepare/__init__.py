@@ -338,6 +338,10 @@ class Prepared:
     #: parameters turn the relief on. None: the check did not run or did not hold (`credential_home_check` says why).
     credential_home: Any = None
     credential_home_check: str | None = None
+    #: Hosts the owner's request names by their service (`service_names.candidates`): set by the scan after the oracle
+    #: runs when the convergence parameters turn service-name relief on. The call judge decides whether the request
+    #: means the service; empty when the check did not run or found none.
+    service_candidates: tuple[Any, ...] = ()
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
     #: What the pending call does to each path a file grant pattern matched: entity id → actions.
@@ -998,8 +1002,8 @@ def _mark_skill_named(
 ) -> None:
     """A host that only reads of the agent's installed skills named, in this request and on every earlier step the
     token remembers, is marked `skill_named` and kept in the token's skill-named set; a host any other content names
-    leaves the set for good. Runs after `in_session_untrusted` is set from the token. Only the credential-home check
-    reads the mark: everything else still scores the host as untrusted."""
+    leaves the set for good. Runs after `in_session_untrusted` is set from the token. Only the credential-home and
+    service-name checks read the mark: everything else still scores the host as untrusted."""
     skill_refs = {f"input:{seq}" for seq in skill_inputs}
     prior = frozenset(state.skill_named)
     added: list[str] = []
