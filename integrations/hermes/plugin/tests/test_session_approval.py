@@ -45,6 +45,7 @@ def _resp(
     subjects=None,
     extra=(),
     source=None,
+    status="ok",
 ):
     """A review of a send to `hosts`, each the subject of a reason, plus an output file nothing names (its path
     differs per step, so the approval fingerprint does too). `source`: a file the description says is sent. `extra`:
@@ -71,7 +72,7 @@ def _resp(
     return {
         "response_version": "2.0",
         "request_id": p["request_id"],
-        "status": "ok",
+        "status": status,
         "risk": risk,
         "enforced": enforced,
         "ceiling": ceiling,
@@ -364,6 +365,11 @@ def test_an_enforced_review_or_a_floor_asks(owner, change):
 @pytest.mark.parametrize("tool", ["terminal", "web_extract"])
 def test_another_tool_asks_even_of_the_same_kind(owner, tool):
     assert _asked(_session_then(owner, then={"risk": 50.0}, tool=tool))
+
+
+def test_a_scan_where_a_check_failed_asks(owner):
+    """A degraded scan was scored without the check that failed: an answer to a complete scan does not cover it."""
+    assert _asked(_session_then(owner, then={"risk": 48.0, "status": "degraded"}))
 
 
 def test_a_block_still_blocks(owner):

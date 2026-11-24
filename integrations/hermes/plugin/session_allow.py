@@ -119,6 +119,9 @@ def covering(
     risk = risk_of(resp)
     if k is None or risk is None or resp.get("enforced") is not None or resp.get("floors_applied"):
         return None
+    # A scan where a check failed (`degraded`) was scored without it: nothing it would have said is known.
+    if resp.get("status", "ok") != "ok":
+        return None
     new = set(warnings(resp))
     for a in sess.get("session_allows") or []:
         if (
