@@ -14,6 +14,8 @@ since the version the catalog pins.
   (`value: …`, `-H "X-Desk: …"`, a `headers` object), never in prose, and never under a key that names an id, a
   hash, a version, a trace or data; hex values, UUIDs and camelCase words stay. Traffic logs written by earlier
   versions may hold these values.
+- The plugin's manifest declares its licence as MIT, as the code always was. It said Apache-2.0, which Hermes showed
+  as the plugin's licence.
 - A call Hermes's own background review or curator makes that is not a skill or memory save, such as a file read or a
   terminal command, is no longer sent to an approval prompt when it needs review. Nobody can answer a prompt there:
   on the terminal Hermes denied it unseen, and on a gateway it reached nobody, so the call was lost without a word and
