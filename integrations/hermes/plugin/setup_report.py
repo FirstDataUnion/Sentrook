@@ -34,7 +34,7 @@ import math
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -78,9 +78,15 @@ SCHEMA: dict[str, Any] = {
 
 
 def days_of(args: Any) -> int:
-    """The `days` argument: a whole number from 1 to `MAX_DAYS` (larger ones read as `MAX_DAYS`); anything else reads
-    as `DEFAULT_DAYS`."""
+    """The `days` argument: a whole number from 1 to `MAX_DAYS` (larger ones read as `MAX_DAYS`), or a string Hermes
+    would coerce to one (`"7"`, `"7.0"`: Hermes coerces arguments to the schema's types before the handler, and may
+    fire `pre_tool_call` before that); anything else reads as `DEFAULT_DAYS`."""
     raw = args.get("days") if isinstance(args, dict) else None
+    if isinstance(raw, str):
+        try:
+            raw = float(raw)
+        except (ValueError, OverflowError):
+            return DEFAULT_DAYS
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw != raw or raw < 1:
         return DEFAULT_DAYS
     if isinstance(raw, float) and not raw.is_integer():
@@ -139,29 +145,43 @@ def allowed(
     )
 
 
-def _args_key(sid: str, args: Any) -> str:
-    return sid + "\n" + json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+def _canonical(args: Any) -> Any:
+    return args
 
 
 class Markers:
-    """The calls `pre_tool_call` allowed, by session and arguments, each taken once by the handler within
-    `MARKER_TTL_S`. Hermes runs both in the same process, the plugin host included."""
+    """The calls `pre_tool_call` allowed, each taken once by the handler within `MARKER_TTL_S`. Hermes runs both in the
+    same process, the plugin host included.
 
-    def __init__(self) -> None:
+    A mark is keyed by the session and the call's inputs as the tool reads them (`inputs(args)`, the arguments as they
+    are by default), not the raw arguments: Hermes coerces arguments to the schema's types before the handler (and in
+    the agent loop fires `pre_tool_call` before that), and another plugin's hook may rewrite them. A tool that reads
+    only some arguments passes the function that reads them (the setup report: `days_of`), so the same call matches
+    however Hermes spelled them; a tool that reads them all keeps the default and is refused when they change."""
+
+    def __init__(self, inputs: Callable[[Any], Any] = _canonical) -> None:
+        self._inputs = inputs
         self._lock = threading.Lock()
         self._marks: dict[str, list[float]] = {}
+
+    def _key(self, sid: str, args: Any) -> str:
+        return (
+            sid
+            + "\n"
+            + json.dumps(self._inputs(args), sort_keys=True, ensure_ascii=False, default=str)
+        )
 
     def put(self, sid: str, args: Any, now: float | None = None) -> None:
         at = time.monotonic() if now is None else now
         with self._lock:
             self._sweep(at)
-            self._marks.setdefault(_args_key(sid, args), []).append(at)
+            self._marks.setdefault(self._key(sid, args), []).append(at)
 
     def take(self, sid: str, args: Any, now: float | None = None) -> bool:
         at = time.monotonic() if now is None else now
         with self._lock:
             self._sweep(at)
-            marks = self._marks.get(_args_key(sid, args))
+            marks = self._marks.get(self._key(sid, args))
             if not marks:
                 return False
             marks.pop(0)
@@ -212,7 +232,7 @@ def window_text(ev: setup.Evidence, now: datetime, days: int, capped: bool) -> s
     only up to `history.READ_BUDGET_BYTES`; `capped` when the log is larger than that)."""
     if ev.oldest is None or ev.oldest <= now - timedelta(days=days):
         return f"Read: the last {_n(days, 'day')}."
-    got = max(1, math.ceil((now - ev.oldest).total_seconds() / 86400))
+    got = max(1, math.floor((now - ev.oldest).total_seconds() / 86400))
     why = (
         f"Sentrook reads at most the last {history.READ_BUDGET_BYTES // (1024 * 1024)} MB of its log"
         if capped

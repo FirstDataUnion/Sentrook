@@ -1,5 +1,5 @@
 {
-  "_comment": "Rules both plugins' setup reports follow. days: the tool's arguments and the days read. window: the line saying how far back the log was read, from the time of the oldest record read; capped means the log is larger than a history read takes. own_service: the keys a scan shows sent only to their own service (a relief naming no grant that takes sensitivity off a host; the credential-shaped names in the call's logged arguments). gaps: the gaps for settings that differ from state.json.",
+  "_comment": "Rules both plugins' setup reports follow. days: the tool's arguments and the days read (a string Hermes would coerce to a whole number reads as that number). window: the line saying how far back the log was read, in whole days (rounded down, at least 1) from the time of the oldest record read; capped means the log is larger than a history read takes. own_service: the keys a scan shows sent only to their own service (a relief naming no grant that takes sensitivity off a host; the credential-shaped names in the call's logged arguments). gaps: the gaps for settings that differ from state.json.",
   "days": [
     [{}, 14],
     [null, 14],
@@ -10,14 +10,20 @@
     [{"days": 0}, 14],
     [{"days": -3}, 14],
     [{"days": 2.5}, 14],
-    [{"days": "7"}, 14],
+    [{"days": "7"}, 7],
+    [{"days": "7.0"}, 7],
+    [{"days": "45"}, 30],
+    [{"days": "2.5"}, 14],
+    [{"days": "seven"}, 14],
+    [{"days": ""}, 14],
     [{"days": true}, 14],
     [{"days": null}, 14]
   ],
   "window": [
     {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-01T00:00:00Z", "days": 14, "capped": false, "text": "Read: the last 14 days."},
     {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-10T12:00:00Z", "days": 14, "capped": false, "text": "Read: the last 14 days."},
-    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-18T23:00:00Z", "days": 14, "capped": false, "text": "Read: covers 6 days, not the 14 asked for: the log holds nothing older."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-18T23:00:00Z", "days": 14, "capped": false, "text": "Read: covers 5 days, not the 14 asked for: the log holds nothing older."},
+    {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-11T00:00:00Z", "days": 14, "capped": false, "text": "Read: covers 13 days, not the 14 asked for: the log holds nothing older."},
     {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-24T10:00:00Z", "days": 7, "capped": true, "text": "Read: covers 1 day, not the 7 asked for: Sentrook reads at most the last 16 MB of its log."},
     {"now": "2026-11-24T12:00:00Z", "oldest": "2026-11-23T12:00:00Z", "days": 1, "capped": false, "text": "Read: the last 1 day."}
   ],

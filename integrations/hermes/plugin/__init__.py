@@ -108,7 +108,7 @@ _traffic: TrafficLog | None = None
 #: `ctx.register_tool` took the setup report tool (`setup_report`).
 _report_registered = False
 #: The setup report calls `pre_tool_call` allowed, for the handler to take.
-_report_markers = setup_report.Markers()
+_report_markers = setup_report.Markers(setup_report.days_of)
 
 
 def _settings() -> dict[str, Any]:
@@ -903,15 +903,15 @@ def _scan_one(
 
 
 def _own_report_tool(tool_name: str) -> bool:
-    """`tool_name` is the setup report this plugin registered: the name, a registration Hermes took, and, where
-    Hermes's tool registry can be read, the handler Hermes would run is this plugin's. Any other tool of that name is
-    scanned like every call."""
+    """`tool_name` is the setup report this plugin registered: the name, a registration Hermes took, and the handler
+    Hermes's tool registry would run is this plugin's. Any other tool of that name, and any call where the registry
+    cannot be read, is scanned like every call."""
     if tool_name != setup_report.TOOL or not _report_registered:
         return False
     try:
         from tools.registry import registry
-    except Exception:  # noqa: BLE001 - the plugin host, where Hermes's registry is in the parent process
-        return True
+    except Exception:  # noqa: BLE001 - the plugin host, where Hermes's registry is in the parent process: scanned,
+        return False  # and the handler refuses it without a marker
     try:
         entry = registry.get_entry(tool_name)
     except Exception:  # noqa: BLE001 - unreadable: not known to be ours

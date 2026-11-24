@@ -4,6 +4,7 @@ plugin's tests check too (`integrations/fixtures/setup-report`), and who may get
 import io
 import json
 import sys
+import types
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -192,6 +193,14 @@ def h(harness, provenance, monkeypatch):
     harness.facts = {"platform": "telegram", "chat_type": "dm", "user_id": "u1"}
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(harness.facts))
     harness.prov = provenance
+    # Hermes's tool registry, which names the handler it would run for the tool (this plugin's)
+    registry = types.ModuleType("tools.registry")
+    registry.registry = types.SimpleNamespace(
+        get_entry=lambda name: types.SimpleNamespace(handler=plugin.report_handler)
+    )
+    monkeypatch.setitem(sys.modules, "tools.registry", registry)
+    harness.registry = registry
+    monkeypatch.setattr(plugin, "_report_markers", setup_report.Markers(setup_report.days_of))
     return harness
 
 
@@ -268,6 +277,44 @@ def test_the_days_argument_reaches_the_report(h):
     assert ask(h, args={"days": 3}) is None
     assert run(h, {"days": 3}).startswith("Sentrook setup report")
     assert records(h)[-1]["days"] == 3
+
+
+def coerce(args):
+    """Hermes's `coerce_tool_args` for this tool's schema (`tools/arg_coercion.py`): a string for an integer property
+    becomes the whole number it spells; anything else stays as it was."""
+    out = dict(args)
+    for key, prop in setup_report.SCHEMA["parameters"]["properties"].items():
+        value = out.get(key)
+        if prop["type"] == "integer" and isinstance(value, str):
+            try:
+                f = float(value)
+            except ValueError:
+                continue
+            if f == f and f not in (float("inf"), float("-inf")) and f == int(f):
+                out[key] = int(f)
+    return out
+
+
+@pytest.mark.parametrize(("sent", "days"), [("7", 7), ("7.0", 7), ("45", 30), ("2.5", 14)])
+def test_the_owners_call_matches_after_hermes_coerces_its_arguments(h, sent, days):
+    """Hermes's agent loop fires `pre_tool_call` with the model's arguments, then coerces them to the schema's types
+    before the handler runs (`agent/tool_executor.py`, `model_tools.handle_function_call`)."""
+    assert ask(h, args={"days": sent}) is None
+    assert run(h, coerce({"days": sent})).startswith("Sentrook setup report")
+    assert records(h)[-1]["days"] == days
+
+
+def test_a_marker_is_for_the_inputs_the_report_reads():
+    markers = setup_report.Markers(setup_report.days_of)
+    markers.put("S1", {"days": "7"}, now=0)
+    assert not markers.take("S1", {"days": 8}, now=1)
+    assert not markers.take("S2", {"days": 7}, now=1)
+    assert markers.take("S1", {"days": 7, "extra": "ignored"}, now=1)
+    assert not markers.take("S1", {"days": 7}, now=1)
+    plain = setup_report.Markers()  # every argument counts
+    plain.put("S1", {"a": 1}, now=0)
+    assert not plain.take("S1", {"a": "1"}, now=1)
+    assert plain.take("S1", {"a": 1}, now=1)
 
 
 @pytest.mark.parametrize(
@@ -373,15 +420,10 @@ def test_a_refused_call_leaves_no_step_behind(h):
     assert h.scans[-1]["history"] == []
 
 
-def test_a_tool_of_the_same_name_not_registered_by_the_plugin_is_scanned(h, monkeypatch):
-    import types
-
-    registry = types.SimpleNamespace(
+def test_a_tool_of_the_same_name_not_registered_by_the_plugin_is_scanned(h):
+    h.registry.registry = types.SimpleNamespace(
         get_entry=lambda name: types.SimpleNamespace(handler=lambda *a, **k: "x")
     )
-    mod = types.ModuleType("tools.registry")
-    mod.registry = registry
-    monkeypatch.setitem(sys.modules, "tools.registry", mod)
     h.ctx.hooks["pre_llm_call"](
         turn_id="t1", user_message="hi", platform="telegram", sender_id="u1", **SID
     )
@@ -390,10 +432,24 @@ def test_a_tool_of_the_same_name_not_registered_by_the_plugin_is_scanned(h, monk
     )
     assert out is None and [s["pending_call"]["tool"] for s in h.scans] == [setup_report.TOOL]
     # the registry names this plugin's handler: recognised
-    mod.registry = types.SimpleNamespace(
+    h.registry.registry = types.SimpleNamespace(
         get_entry=lambda name: types.SimpleNamespace(handler=plugin.report_handler)
     )
     assert ask(h, cid="c2") is None and len(h.scans) == 1
+
+
+def test_where_hermes_registry_cannot_be_read_the_call_is_scanned_and_the_handler_refuses(
+    h, monkeypatch
+):
+    monkeypatch.setitem(sys.modules, "tools.registry", None)  # import fails
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1", user_message="hi", platform="telegram", sender_id="u1", **SID
+    )
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name=setup_report.TOOL, args={}, tool_call_id="c1", turn_id="t1", **SID
+    )
+    assert out is None and [s["pending_call"]["tool"] for s in h.scans] == [setup_report.TOOL]
+    assert run(h) == META["refusal"]
 
 
 def test_without_a_registration_the_name_alone_is_scanned(h, monkeypatch):
