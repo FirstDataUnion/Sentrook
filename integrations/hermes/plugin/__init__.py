@@ -16,6 +16,7 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from . import (
@@ -35,7 +36,7 @@ from . import (
     staging,
 )
 from .auth import resolve_oidc_credentials
-from .config import PluginConfig, resolve_config
+from .config import PluginConfig, hermes_home, resolve_config
 from .decision import (
     BLOCK_CATEGORIES,
     block_category,
@@ -297,7 +298,7 @@ def on_pre_llm_call(**kw: Any) -> None:
         skill = (
             None
             if background or host is not None
-            else _skill_turn(host_turns.strip_notes(kw.get("user_message")), kw)
+            else _skill_turn(host_turns.strip_notes(kw.get("user_message")), kw, env)
         )
         if skill is not None:
             own, content = skill.request, skill.content
@@ -363,28 +364,30 @@ def on_pre_llm_call(**kw: Any) -> None:
         logger.warning("pre_llm_call failed: %s", exc)
 
 
-def _cron_job_prompt() -> str | None:
-    """The running cron job's own prompt, from Hermes's job record; None outside a cron run or when Hermes
-    cannot say."""
+def _cron_job_prompt(home: Path) -> str | None:
+    """The running cron job's own prompt, from Hermes's job file (`<home>/cron/jobs.json`, read directly: the
+    plugin uses no private Hermes module); None outside a cron run, or when the job or the file cannot be read.
+    "" for a job with no prompt (it only runs its skills), told apart from no record at all."""
     try:
         read = getattr(_ctx, "current_cron_execution", None)
         run = read() if callable(read) else None
         job_id = getattr(run, "job_id", None)
         if not isinstance(job_id, str) or not job_id.strip():
             return None
-        from cron.jobs import get_job
-
-        job = get_job(job_id.strip())
+        data = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - no job record: the split falls back to the whole instruction
         return None
-    if not isinstance(job, dict):
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    job = next(
+        (j for j in jobs or [] if isinstance(j, dict) and j.get("id") == job_id.strip()), None
+    )
+    if job is None:
         return None
     prompt = job.get("prompt")
-    # "" for a job with no prompt (it only runs its skills), told apart from no record at all.
     return prompt if isinstance(prompt, str) else ""
 
 
-def _skill_turn(text: str, kw: dict[str, Any]) -> skill_turn.SkillTurn | None:
+def _skill_turn(text: str, kw: dict[str, Any], env: dict[str, str]) -> skill_turn.SkillTurn | None:
     """`skill_turn.split` of a user message, with the running cron job's prompt; None for any other message,
     and when the split itself fails (the message is then the request, as before)."""
     try:
@@ -396,7 +399,13 @@ def _skill_turn(text: str, kw: dict[str, Any]) -> skill_turn.SkillTurn | None:
         ids = tuple(
             str(kw[k]) for k in ("task_id", "session_id") if isinstance(kw.get(k), str) and kw[k]
         )
-        return skill_turn.split(text, job_prompt=_cron_job_prompt(), session_ids=ids)
+        home = hermes_home(env)
+        return skill_turn.split(
+            text,
+            job_prompt=_cron_job_prompt(home),
+            installed=functools.partial(skill_turn.installed_skills, home),
+            session_ids=ids,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("skill turn not split: %s", exc)
         return None

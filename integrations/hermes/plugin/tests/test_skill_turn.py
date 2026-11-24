@@ -289,7 +289,7 @@ def h(loop_h, monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u-owner")
     loop_h.prov["origin"] = "assistant_tool"
     loop_h.facts = {"platform": "telegram", "chat_type": "dm", "user_id": "u-owner"}
-    monkeypatch.setattr(skill_turn, "installed_text", INSTALLED.get)
+    monkeypatch.setattr(skill_turn, "installed_skills", lambda _home, name: INSTALLED.get(name))
     return loop_h
 
 
@@ -321,7 +321,7 @@ def cron_run(h, monkeypatch, job_prompt=PROMPT):
     import plugin
 
     h.facts = {"platform": "cron"}
-    monkeypatch.setattr(plugin, "_cron_job_prompt", lambda: job_prompt)
+    monkeypatch.setattr(plugin, "_cron_job_prompt", lambda _home: job_prompt)
 
 
 def test_a_cron_runs_calls_carry_the_hint_and_prompt_and_stay_scheduled(h, monkeypatch):
@@ -393,3 +393,45 @@ def test_skill_turn_requests_pass_the_scanners_validation(h, monkeypatch):
     turn(h, "t1", cron_message(), platform="cron", sender="")
     sent = call(h, "t1", "c1")
     validate.check(models.PlanIR.model_validate(sent), sent.get("scan_kind"))
+
+
+# ---- reading Hermes's own files ------------------------------------------------------------------------------------
+
+
+def test_an_installed_skill_is_read_from_the_skills_directory(tmp_path):
+    skill = tmp_path / "skills" / "productivity" / "tracker" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("\ufeff" + SKILL_A, encoding="utf-8")
+    found = skill_turn.installed_skills(tmp_path, "tracker")
+    assert [s.text for s in found] == [SKILL_A.strip()]
+    assert found[0].skill_dir == str(skill.parent)
+    assert skill_turn.installed_skills(tmp_path, "/productivity/tracker")[0].text == SKILL_A.strip()
+    msg = skill_block("tracker", SKILL_A) + "\n\n" + INSTR + "summarise my tasks"
+    got = skill_turn.split(msg, installed=lambda n: skill_turn.installed_skills(tmp_path, n))
+    assert got.request == "summarise my tasks" and got.content is None
+
+
+@pytest.mark.parametrize("name", ["../tracker", "tr*", "a//b", "", "x/../../etc"])
+def test_a_name_that_is_not_a_plain_skill_path_finds_nothing(tmp_path, name):
+    (tmp_path / "skills" / "tracker").mkdir(parents=True)
+    (tmp_path / "skills" / "tracker" / "SKILL.md").write_text(SKILL_A)
+    assert skill_turn.installed_skills(tmp_path, name) == []
+
+
+def test_the_cron_jobs_prompt_is_read_from_its_job_file(tmp_path, monkeypatch):
+    import types
+
+    import plugin
+
+    (tmp_path / "cron").mkdir()
+    jobs = {"jobs": [{"id": "j1", "prompt": PROMPT}, {"id": "j2", "skills": ["tracker"]}]}
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps(jobs))
+    run = types.SimpleNamespace(job_id="j1")
+    monkeypatch.setattr(plugin, "_ctx", types.SimpleNamespace(current_cron_execution=lambda: run))
+    assert plugin._cron_job_prompt(tmp_path) == PROMPT
+    run.job_id = "j2"
+    assert plugin._cron_job_prompt(tmp_path) == ""
+    run.job_id = "gone"
+    assert plugin._cron_job_prompt(tmp_path) is None
+    monkeypatch.setattr(plugin, "_ctx", types.SimpleNamespace(current_cron_execution=lambda: None))
+    assert plugin._cron_job_prompt(tmp_path) is None

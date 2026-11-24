@@ -18,7 +18,7 @@ judge sees. So the request is the owner's words only:
 
 - a cron job with no prompt (it only runs its skills): the cron hint and the run time; what follows is context.
 
-What is dropped is only an installed skill's own text, as Hermes loads it (`installed_text`, with the
+What is dropped is only an installed skill's own text, as Hermes loads it (`installed_skills`, with the
 `${HERMES_SKILL_DIR}` and `${HERMES_SESSION_ID}` tokens filled in with the values Hermes had, exactly), and the header
 Hermes put in front of it: the agent's own standing instructions, which the scanner treats like the agent's other
 own store. Anything else in the message that is not the owner's words goes to the scanner as untrusted content
@@ -35,10 +35,10 @@ is not found, and the split falls back to everything after the marker.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 #: Hermes's marker before the owner's words, after the last skill.
 INSTRUCTION_MARKER = (
@@ -82,29 +82,36 @@ class InstalledSkill:
     skill_dir: str | None = None
 
 
-def installed_text(name: str) -> InstalledSkill | None:
-    """The installed skill's text before Hermes fills in its template tokens (`skill_view` without
-    preprocessing) and its directory, or None when Hermes cannot say (not installed, no such module in this
-    Hermes)."""
+#: A skill name as a slash command or a cron job writes it: one or more path segments, no glob or traversal.
+_SKILL_NAME = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
+
+
+def installed_skills(home: Path, name: str) -> list[InstalledSkill]:
+    """The installed skills a header name can mean, read from Hermes's skills directory as Hermes reads them
+    (`<home>/skills/[<category>/[<sub>/]]<name>/SKILL.md`, UTF-8 with an optional BOM): the text before Hermes
+    fills in its template tokens, and the skill's directory. Read from disk, not through Hermes's skill tool,
+    which counts every view as use. A name Hermes resolves elsewhere (an external or plugin skill directory)
+    is not found here, and its block stays content."""
+    clean = name.strip().lstrip("/")
+    if not _SKILL_NAME.fullmatch(clean) or any(
+        part in ("", ".", "..") for part in clean.split("/")
+    ):
+        return []
+    root = home / "skills"
+    out: list[InstalledSkill] = []
     try:
-        from tools.skills_tool import skill_view
-
-        try:
-            from agent.skill_utils import normalize_skill_lookup_name
-
-            lookup = normalize_skill_lookup_name(name)
-        except Exception:  # noqa: BLE001 - an older Hermes: its plain form
-            lookup = name.strip().lstrip("/")
-        out = json.loads(skill_view(lookup, preprocess=False))
-    except Exception:  # noqa: BLE001 - no skill text to compare: the block is content
-        return None
-    content = out.get("content") if isinstance(out, dict) and out.get("success") else None
-    if not isinstance(content, str) or not content.strip():
-        return None
-    skill_dir = out.get("skill_dir")
-    return InstalledSkill(
-        content.strip(), skill_dir if isinstance(skill_dir, str) and skill_dir else None
-    )
+        found = {root / clean / "SKILL.md"}
+        found.update(root.glob(f"*/{clean}/SKILL.md"))
+        found.update(root.glob(f"*/*/{clean}/SKILL.md"))
+        for path in sorted(found):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
+            if text:
+                out.append(InstalledSkill(text, str(path.parent)))
+    except OSError:
+        return out
+    return out
 
 
 def _forms(own: InstalledSkill, session_ids: tuple[str, ...]) -> list[str]:
@@ -127,18 +134,23 @@ def _forms(own: InstalledSkill, session_ids: tuple[str, ...]) -> list[str]:
 
 
 def _installed_end(
-    text: str, start: int, own: InstalledSkill | str | None, session_ids: tuple[str, ...] = ()
+    text: str,
+    start: int,
+    own: InstalledSkill | str | list[InstalledSkill | str] | None,
+    session_ids: tuple[str, ...] = (),
 ) -> int | None:
     """Where an installed skill's text ends when `text` holds it, exactly, at `start`; None when the text there
     is not that skill's. Inline shell output (off by default in Hermes, and never for a hub skill) is not
     matched: such a block stays content."""
-    if isinstance(own, str):
-        own = InstalledSkill(own)
-    if not isinstance(own, InstalledSkill) or not own.text.strip():
-        return None
-    for form in _forms(own, session_ids):
-        if text.startswith(form, start):
-            return start + len(form)
+    candidates = own if isinstance(own, list) else [own]
+    for one in candidates:
+        if isinstance(one, str):
+            one = InstalledSkill(one)
+        if not isinstance(one, InstalledSkill) or not one.text.strip():
+            continue
+        for form in _forms(one, session_ids):
+            if text.startswith(form, start):
+                return start + len(form)
     return None
 
 
@@ -151,7 +163,7 @@ def split(
     text: str,
     *,
     job_prompt: str | None = None,
-    installed: Callable[[str], InstalledSkill | str | None] | None = None,
+    installed: Callable[[str], InstalledSkill | str | list[InstalledSkill] | None],
     session_ids: tuple[str, ...] = (),
 ) -> SkillTurn | None:
     """The request and the untrusted content of a message Hermes built around skills; None for any other
@@ -160,7 +172,7 @@ def split(
     `job_prompt` is the running cron job's prompt from its record: None when there is no record, "" when the
     job has none (a job that only runs its skills). `session_ids` are the values Hermes may have given
     `${HERMES_SESSION_ID}` (the turn's session and task ids)."""
-    lookup = installed or installed_text
+    lookup = installed
     if not isinstance(text, str):
         return None
     pos = 0
