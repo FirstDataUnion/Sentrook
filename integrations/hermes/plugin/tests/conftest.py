@@ -143,6 +143,26 @@ def harness(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def own_registry(harness, monkeypatch):
+    """Hermes's tool registry (`tools.registry`), naming the handler each tool was registered with in the harness, so
+    the plugin can tell its own tools from another plugin's tool of the same name."""
+    import types
+
+    def get_entry(name):
+        tool = getattr(harness.ctx, "tools", {}).get(name)
+        return types.SimpleNamespace(handler=tool["handler"]) if tool else None
+
+    mod = types.ModuleType("tools.registry")
+    mod.registry = types.SimpleNamespace(get_entry=get_entry)
+    if "tools" not in sys.modules:
+        pkg = types.ModuleType("tools")
+        pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, "tools", pkg)
+    monkeypatch.setitem(sys.modules, "tools.registry", mod)
+    return mod
+
+
+@pytest.fixture
 def provenance(monkeypatch):
     """Hermes's write origin (`tools.skill_provenance`) under test control; an owner's turn by default."""
     import types

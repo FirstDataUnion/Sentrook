@@ -153,7 +153,7 @@ def test_the_catalog_entry_pins_a_full_sha_and_the_manifest_version(tmp_path, mi
     assert (
         entry["capabilities"]["provides_tools"]
         == manifest["provides_tools"]
-        == ["sentrook_setup_report"]
+        == ["sentrook_setup_report", "sentrook_propose_setup"]
     )
     # No install prompt for the credentials (`hermes sentrook login` stores them), so none are listed.
     assert entry["capabilities"]["requires_env"] == [
