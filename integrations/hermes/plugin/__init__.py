@@ -377,8 +377,11 @@ def _cron_job_prompt() -> str | None:
         job = get_job(job_id.strip())
     except Exception:  # noqa: BLE001 - no job record: the split falls back to the whole instruction
         return None
-    prompt = job.get("prompt") if isinstance(job, dict) else None
-    return prompt if isinstance(prompt, str) and prompt.strip() else None
+    if not isinstance(job, dict):
+        return None
+    prompt = job.get("prompt")
+    # "" for a job with no prompt (it only runs its skills), told apart from no record at all.
+    return prompt if isinstance(prompt, str) else ""
 
 
 def _skill_turn(text: str) -> skill_turn.SkillTurn | None:
