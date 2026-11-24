@@ -553,7 +553,7 @@ export function answer(
     reply = `The next identical call from an unattended run may go through once, until ${shown}. The held call itself is not run again. ${undo}`;
   } else {
     runNow(found); // the seam for starting the job now; until then the pass waits for the next run
-    reply = `${job}'s next run may make this call once. The held call itself is not run again. ${undo}`;
+    reply = `${job} may make this call once: on its next run, or if the held run retries it. Sentrook does not run the held call itself. ${undo}`;
   }
   return { reply, held: held.filter((h) => !!h.sid), decision };
 }
@@ -562,15 +562,18 @@ export function answer(
  * Sets the held calls' entries in their sessions' history to `decision`, so a retry in the same session is scored as
  * one after the owner's answer, not after a review nobody answered. Never throws: the answer stands.
  */
-export function settle(stateDir: string, held: HeldCall[], decision: string): void {
+export async function settle(stateDir: string, held: HeldCall[], decision: string): Promise<void> {
   const store = new Store(stateDir);
   for (const h of held) {
     try {
-      const sess = store.loadSession(h.sid);
-      const hit = sess.history.filter((e) => e.request_id === h.request_id);
-      if (!hit.length) continue;
-      for (const e of hit) e.decision = decision as typeof e.decision;
-      store.saveSession(h.sid, sess, Math.max(sess.history.length, 1));
+      // under the session's lock, which a scan of the same session holds for the whole scan
+      await store.withSession(h.sid, () => {
+        const sess = store.loadSession(h.sid);
+        const hit = sess.history.filter((e) => e.request_id === h.request_id);
+        if (!hit.length) return;
+        for (const e of hit) e.decision = decision as typeof e.decision;
+        store.saveSession(h.sid, sess, Math.max(sess.history.length, 1));
+      });
     } catch {
       // the answer stands
     }

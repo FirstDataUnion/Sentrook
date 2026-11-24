@@ -1172,7 +1172,7 @@ def _hold(
     hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
     where = _where(built)
     match = match or {}
-    level = passes.level_of(resp)
+    level = passes.offered_level(resp)
     offers = passes.offers(
         job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at
     )

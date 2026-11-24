@@ -179,7 +179,7 @@ test("allow lets the job's next run make the same send once; the run after is he
   assert.deepEqual(rec.hold.offers, ["allow", "deny"], "this scanner sends no owner_pass: never always");
   assert.match(rec.hold.notice.status, /queued/);
   const answer = await r.command("sentrook-allow", id);
-  assert.ok(answer.startsWith("Job job-j's next run may make this call once."), answer);
+  assert.ok(answer.startsWith("Job job-j may make this call once: on its next run, or if the held run retries it."), answer);
   const [p] = stored();
   assert.deepEqual([p.kind, p.uses, p.level, p.job_id], ["allow", "once", "once", "job-j"]);
   assert.deepEqual(holds(), []);
@@ -202,7 +202,7 @@ test("the job id may come as the hook's jobId too", async () => {
 test("allow later is the same until the plugin can start the run", async () => {
   const r = registered();
   const { rec } = await r.run(1);
-  assert.ok((await r.command("sentrook-allow", `${rec.hold.id} later`)).startsWith("Job job-j's next run may make this call once."));
+  assert.ok((await r.command("sentrook-allow", `${rec.hold.id} later`)).startsWith("Job job-j may make this call once: on its next run, or if the held run retries it."));
   assert.equal((await r.run(2)).out, undefined);
 });
 
@@ -306,6 +306,45 @@ for (const [name, scan, why] of [
     assert.deepEqual(stored(), []);
   });
 }
+
+for (const [name, later] of [
+  ["enforced", { enforced: "review" }],
+  ["floor", { floors_applied: ["send.secret_off_host"] }],
+  ["degraded", { status: "degraded" }],
+] as const) {
+  test(`a hold no pass could let through offers only deny: ${name}`, async () => {
+    reply = { ...ALWAYS, ...later };
+    const r = await withNotify();
+    const { rec } = await r.run(1);
+    assert.deepEqual(rec.hold.offers, ["deny"]);
+    assert.ok(!r.sent.at(-1).text.includes("allow"));
+    assert.match(await r.command("sentrook-allow", rec.hold.id), /does not offer to let this call through/);
+  });
+}
+
+test("a denied call counts as blocked on the dashboard", async () => {
+  const { actionOf } = await import("./history.ts");
+  const { bucketOf } = await import("./dashboard.ts");
+  const r = registered();
+  const { rec } = await r.run(1);
+  await r.command("sentrook-deny", rec.hold.id);
+  const { rec: denied } = await r.run(2);
+  const action = actionOf(denied, null);
+  assert.deepEqual([action, bucketOf(denied, action)], ["declined (denied by owner)", "blocked"]);
+});
+
+test("the answer's history update waits for a scan of the same session, across stores", async () => {
+  const { Store } = await import("./store.ts");
+  const dir = mkdtempSync(path.join(tmpdir(), "sentrook-lock-"));
+  const order: string[] = [];
+  let release!: () => void;
+  const scan = new Store(dir).withSession("s1", () => new Promise<void>((r) => (release = () => (order.push("scan"), r()))));
+  const update = new Store(dir).withSession("s1", () => void order.push("update"));
+  await new Promise((r) => setTimeout(r, 20));
+  release();
+  await Promise.all([scan, update]);
+  assert.deepEqual(order, ["scan", "update"]);
+});
 
 test("a call that names nothing is offered allow once, bound to its arguments", async () => {
   reply = { ...ALWAYS, approval_fingerprint: "afp1:message_send" };

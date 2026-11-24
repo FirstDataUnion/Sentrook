@@ -923,6 +923,7 @@ const plugin = {
       triggerKind: string,
       run: any,
       kind: selfEdit.SelfEditKind | null = null,
+      boundJob?: string | null,
     ): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
@@ -932,8 +933,9 @@ const plugin = {
       };
       // The job OpenClaw's run metadata names comes first; the prompt's tag only names a run the metadata does not.
       const tagged = triggerKind === "scheduled" || kind === "curator" ? hold.cronJobOf(run?.prompt) : null;
-      const hostJob = hold.cronJobId(null, run);
-      const job = hostJob ? { id: hostJob, name: tagged?.id === hostJob ? tagged.name : null } : tagged;
+      // A hold names the job its answers are bound to (`boundJob`, from the run metadata), never the tag alone.
+      const hostJob = boundJob !== undefined ? boundJob : hold.cronJobId(null, run);
+      const job = hostJob ? { id: hostJob, name: tagged?.id === hostJob ? tagged.name : null } : boundJob !== undefined ? null : tagged;
       const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
       return { where: hold.whereText(name, sref, job?.id, job?.name), jobId: job?.id ?? null };
     }
@@ -1093,7 +1095,7 @@ const plugin = {
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const { where } = unattendedRun(sref, triggerKind, run);
+      const { where } = unattendedRun(sref, triggerKind, run, null, bound.jobId);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
@@ -1104,7 +1106,7 @@ const plugin = {
       }
       const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
       const record = (r: Record<string, unknown>) => traffic.write(r);
-      const level = passes.levelOf(resp);
+      const level = passes.offeredLevel(resp);
       const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt);
       let description = "";
       try {

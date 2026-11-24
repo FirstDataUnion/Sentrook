@@ -153,6 +153,15 @@ export function levelOf(resp: ScanResponse | Entry): Level | null {
   return (LEVELS as readonly unknown[]).includes(v) ? (v as Level) : null;
 }
 
+/**
+ * The level a hold of this scan offers (`levelOf`), or null when no pass could ever let it through: a scan the
+ * scanner enforced, applied a floor to, or did not finish (`eligible`). Such a hold offers only deny (or nothing,
+ * off a cron job).
+ */
+export function offeredLevel(resp: ScanResponse | Entry): Level | null {
+  return eligible(resp) ? levelOf(resp) : null;
+}
+
 /** Whether a scan at level `have` may use a pass set at level `need`. */
 export function levelCovers(have: unknown, need: unknown): boolean {
   const h = (LEVELS as readonly unknown[]).indexOf(have);

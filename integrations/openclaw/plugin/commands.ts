@@ -278,12 +278,12 @@ export async function runSentrookCommand(args: string | undefined, ctx: CommandC
 }
 
 /** An answer to a held call (hold.answer), then the held calls' history set to the owner's answer. */
-function answerText(ctx: CommandContext, verb: "allow" | "deny" | "approve", rest: string): string {
+async function answerText(ctx: CommandContext, verb: "allow" | "deny" | "approve", rest: string): Promise<string> {
   if (!ctx.owner) return refusal(verb);
   const o = ctx.owner;
   const cfg = configOf(ctx);
   const done = hold.answer(cfg.stateDir, verb, rest, o.by, new Date(), CMD, o.record, o.beforeWrite);
-  if (done.decision) hold.settle(cfg.stateDir, done.held, done.decision);
+  if (done.decision) await hold.settle(cfg.stateDir, done.held, done.decision);
   return done.reply;
 }
 

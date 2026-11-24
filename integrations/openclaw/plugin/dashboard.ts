@@ -95,7 +95,7 @@ function entityOrder(a: string, b: string): number {
  */
 export function bucketOf(scan: Rec, action: string): string {
   if (responseOf(scan) === null) return "scan_error";
-  if (action.startsWith("blocked") || action.startsWith("not saved")) return "blocked";
+  if (action.startsWith("blocked") || action.startsWith("declined") || action.startsWith("not saved")) return "blocked";
   if (["review", "held", "drafted", "sent to drafts"].some((p) => action.startsWith(p))) return "review";
   if (action.startsWith("observed")) return "observed";
   return "allowed";

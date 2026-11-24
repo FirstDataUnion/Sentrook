@@ -68,6 +68,13 @@ def level_of(resp: dict[str, Any]) -> str | None:
     return value if value in LEVELS else None
 
 
+def offered_level(resp: dict[str, Any]) -> str | None:
+    """The level a hold of this scan offers (`level_of`), or None when no pass could ever let it through: a scan the
+    scanner enforced, applied a floor to, or did not finish (`session_allow.eligible`). Such a hold offers only
+    `deny` (or nothing, off a cron job)."""
+    return level_of(resp) if session_allow.eligible(resp) else None
+
+
 def level_covers(have: str | None, need: str | None) -> bool:
     """Whether a scan at level `have` may use a pass set at level `need`."""
     return have in LEVELS and need in LEVELS and LEVELS.index(have) >= LEVELS.index(need)

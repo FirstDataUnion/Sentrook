@@ -506,7 +506,7 @@ def test_notice_text(case):
     assert where == case["where_text"]
     job = w["job_id"]
     match = hold.passes.match_of(case["tool"], case["response"], {}, "salt", exact=job is None)
-    level = hold.passes.level_of(case["response"])
+    level = hold.passes.offered_level(case["response"])
     offers = hold.passes.offers(
         job, level, match["named"], case["response"].get("risk"), FIXTURES["block_at"]
     )

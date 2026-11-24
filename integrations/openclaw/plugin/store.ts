@@ -195,9 +195,15 @@ export const SELF_EDIT_KEEP_RUNS = 100;
 
 const fileKey = (s: string) => s.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
 
+/**
+ * One queue per session in this process, shared by every `Store` of the same directory: a scan holds it for the whole
+ * scan, and an answer to a held call takes it to set the held call's history (hold.ts), so neither overwrites the
+ * other's copy of the session.
+ */
+const SESSION_LOCKS = new Map<string, Promise<unknown>>();
+
 export class Store {
   readonly dir: string;
-  private locks = new Map<string, Promise<unknown>>();
   private saltCache: string | null = null;
 
   constructor(dir: string) {
@@ -293,17 +299,18 @@ export class Store {
 
   /** Run `fn` with exclusive access to the session (per process); the callback saves explicitly. */
   async withSession<T>(sid: string, fn: () => Promise<T> | T): Promise<T> {
-    const prev = this.locks.get(sid) ?? Promise.resolve();
+    const key = `${this.dir}\u0000${sid}`;
+    const prev = SESSION_LOCKS.get(key) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const chained = prev.then(() => gate);
-    this.locks.set(sid, chained);
+    SESSION_LOCKS.set(key, chained);
     await prev.catch(() => undefined);
     try {
       return await fn();
     } finally {
       release();
-      if (this.locks.get(sid) === chained) this.locks.delete(sid);
+      if (SESSION_LOCKS.get(key) === chained) SESSION_LOCKS.delete(key);
     }
   }
 

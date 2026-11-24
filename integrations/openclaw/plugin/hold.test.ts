@@ -255,7 +255,8 @@ test("a scheduled send at risk 47 is held, the agent told not to retry, and the 
   assert.equal(entry.request_id, rec.request_id);
   assert.equal(entry.v, 2);
   assert.ok(!JSON.stringify(entry).includes("Daily brief"), "the store keeps no raw arguments");
-  const where = `cron job abc, job name "daily-brief", session ${rec.session_ref}`;
+  // OpenClaw names no job for this run: the prompt's tag alone never names the job a hold's answers are bound to
+  const where = `scheduled run, session ${rec.session_ref}`;
   assert.equal(entry.where, where);
   assert.equal(r.sent.length, 1);
   const [notice] = r.sent;
@@ -461,7 +462,7 @@ test("notice text: the shared text for each case", () => {
     assert.equal(where, c.where_text, c.name);
     const jobId = c.where.job_id;
     const match = passes.matchOf(c.tool, c.response, {}, "salt", jobId === null);
-    const offers = passes.offers(jobId, passes.levelOf(c.response), match.named, passes.riskOf(c.response), FIXTURES.block_at);
+    const offers = passes.offers(jobId, passes.offeredLevel(c.response), match.named, passes.riskOf(c.response), FIXTURES.block_at);
     assert.deepEqual(offers, c.offers, c.name);
     assert.equal(hold.noticeText(c.response, c.tool, where, c.id, offers, noticeCmd, jobId !== null), c.text, c.name);
   }
@@ -665,7 +666,7 @@ test("the notice carries only the minimal fields: no risk, reasons, scores, enti
   assert.equal(
     r.sent[0].text,
     "Sentrook held a tool call on an unattended run; it did not run.\n" +
-      `Run: cron job abc, job name "daily-brief", session ${rec.session_ref}\n` +
+      `Run: scheduled run, session ${rec.session_ref}\n` +
       "Tool: message: Sends a message to discord:#ops-reports\n" +
       "Held because it sends data to a destination outside this machine.\n" +
       "Reply within 7 days:\n" +

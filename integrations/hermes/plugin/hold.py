@@ -612,7 +612,8 @@ def answer(
         )
     _run_now(found)  # the seam for starting the job now; until then the pass waits for the next run
     return (
-        f"{job}'s next run may make this call once. The held call itself is not run again. {undo}"
+        f"{job} may make this call once: on its next run, or if the held run retries it. Sentrook does not "
+        f"run the held call itself. {undo}"
     )
 
 

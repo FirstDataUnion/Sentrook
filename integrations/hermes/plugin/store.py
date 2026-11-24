@@ -175,11 +175,17 @@ def _review_entries(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+#: One lock per session in this process, shared by every `Store` of the same directory: a scan holds it for the
+#: whole scan, and an answer to a held call takes it to set the held call's history (`hold`), so neither overwrites
+#: the other's copy of the session.
+_SESSION_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+
 class Store:
     def __init__(self, directory: Path) -> None:
         self.dir = Path(directory)
         self.lock = threading.RLock()
-        self._session_locks: dict[str, threading.Lock] = {}
         self._salt: str | None = None
 
     def _read(self, path: Path, default: Any) -> Any:
@@ -216,8 +222,8 @@ class Store:
 
     @contextmanager
     def session_lock(self, sid: str) -> Iterator[None]:
-        with self.lock:
-            lock = self._session_locks.setdefault(sid, threading.Lock())
+        with _SESSION_LOCKS_GUARD:
+            lock = _SESSION_LOCKS.setdefault((str(self.dir), sid), threading.Lock())
         with lock:
             yield
 

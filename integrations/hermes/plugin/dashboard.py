@@ -130,7 +130,7 @@ def bucket_of(scan: dict[str, Any], action: str) -> str:
     """Which total a scan counts towards."""
     if _response(scan) is None:
         return "scan_error"
-    if action.startswith("blocked"):
+    if action.startswith(("blocked", "declined")):
         return "blocked"
     if action.startswith(("review", "held", "staged", "sent to Hermes to stage")):
         return "review"

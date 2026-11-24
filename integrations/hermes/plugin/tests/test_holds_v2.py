@@ -89,7 +89,9 @@ def test_allow_lets_the_jobs_next_run_make_the_same_send_once(h):
         "deny",
     ]  # this scanner sends no owner_pass: never always
     reply = slash(h, f"allow {hid}")
-    assert reply.startswith("Job job-j's next run may make this call once.")
+    assert reply.startswith(
+        "Job job-j may make this call once: on its next run, or if the held run retries it."
+    )
     [p] = stored_passes(h)
     assert (p["kind"], p["uses"], p["level"], p["job_id"]) == ("allow", "once", "once", "job-j")
     assert holds(h) == []
@@ -104,7 +106,9 @@ def test_allow_lets_the_jobs_next_run_make_the_same_send_once(h):
 def test_allow_later_is_the_same_until_the_plugin_can_start_the_run(h):
     _out, rec = run(h, 1)
     reply = slash(h, f"allow {rec['hold']['id']} later")
-    assert reply.startswith("Job job-j's next run may make this call once.")
+    assert reply.startswith(
+        "Job job-j may make this call once: on its next run, or if the held run retries it."
+    )
     assert run(h, 2)[0] is None
 
 
@@ -208,6 +212,47 @@ def test_allow_always_is_refused_with_a_reason_unless_the_scanner_offers_it(h, r
     answer = slash(h, f"allow {hid} always")
     assert answer.startswith("Not ") and why in answer
     assert [x["id"] for x in holds(h)] == [hid] and stored_passes(h) == []
+
+
+@pytest.mark.parametrize(
+    "later",
+    [{"enforced": "review"}, {"floors_applied": ["send.secret_off_host"]}, {"status": "degraded"}],
+    ids=["enforced", "floor", "degraded"],
+)
+def test_a_hold_no_pass_could_let_through_offers_only_deny(h, later):
+    """A scan the scanner enforces, floors or did not finish is never passed, so allow is not offered for it."""
+    h.reply = {**ALWAYS, **later}
+    _out, rec = run(h, 1)
+    assert rec["hold"]["offers"] == ["deny"]
+    assert "allow" not in notices(h)[-1]["args"]["message"]
+    assert "does not offer to let this call through" in slash(h, f"allow {rec['hold']['id']}")
+
+
+def test_a_denied_call_counts_as_blocked_on_the_dashboard(h):
+    from plugin import dashboard, history
+
+    _out, rec = run(h, 1)
+    slash(h, f"deny {rec['hold']['id']}")
+    _out, rec = run(h, 2)
+    action = history.action_of(rec, None)
+    assert action == "declined (denied by owner)" and dashboard.bucket_of(rec, action) == "blocked"
+
+
+def test_two_stores_of_one_directory_share_a_sessions_lock(tmp_path):
+    """An answer's history update and a scan of the same session never interleave within a process."""
+    from plugin.store import Store
+
+    a, b = Store(tmp_path), Store(tmp_path)
+    with a.session_lock("s1"):
+        got = []
+        t = __import__("threading").Thread(
+            target=lambda: got.append(b.session_lock("s1").__enter__())
+        )
+        t.start()
+        t.join(0.2)
+        assert t.is_alive()  # waits for the first
+    t.join(1)
+    assert not t.is_alive()
 
 
 def test_a_call_that_names_nothing_is_offered_allow_once_bound_to_its_arguments(h):
