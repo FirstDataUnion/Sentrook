@@ -15,6 +15,11 @@ sets bind the session judgements to what they are about:
   skill, `prepare.own_store`), and no other content. A host other content names leaves it for good. Only the
   credential-home check reads it (`prepare.credential_home`); everything else still scores these hosts as untrusted.
 
+What the scanned call itself would add (`holds_sensitive` and the sensitive set from a sensitive read it makes, and
+the files it writes from a sensitive or tainted file) is not applied when it is scanned: the plugin has not yet
+decided whether the call runs. It is kept in `pending`, keyed to the call, and the next scan settles it from the
+call's decision in its history (`settle_pending`): applied once the call ran, dropped when it never did.
+
 A token without one of these sets (issued before it existed) reads as an empty one. The token is an HS256
 JWT bound to its `session_ref` and the step it was issued at; it is accepted only when presented with
 the same `session_ref` at `session.step − 1`, so an older token cannot be replayed to shed a flag.
@@ -44,6 +49,8 @@ SENSITIVE_CAP = 32
 TAINTED_CAP = 32
 TRUSTED_CAP = 64
 SKILL_NAMED_CAP = 32
+#: Calls whose own marks wait for their outcome; past it the oldest are dropped (they never showed as run).
+PENDING_CAP = 8
 HASH_HEX = 12
 #: Seed prefix for a database table (`table:job_records`); everything else is guessed from its shape.
 TABLE_PREFIX = "table:"
@@ -57,6 +64,30 @@ class TokenStatus(StrEnum):
     STALE = "stale"  # issued at a different step
     MISMATCH = "mismatch"  # a different session_ref
     SEEDED = "seeded"  # minted from a test-mode state_seed
+
+
+#: History decisions after which the call ran, and after which it never did. A review nobody has answered yet
+#: (`review_timed_out`, which is also how a held call is sent) is neither: it may still be approved.
+RAN = frozenset({"allowed", "approved_by_user", "allowed_on_error"})
+NOT_RUN = frozenset({"blocked", "denied_by_user", "blocked_on_error"})
+WAITING = frozenset({"review_timed_out"})
+
+
+@dataclass
+class PendingMarks:
+    """What one scanned call adds to the session once it has run."""
+
+    #: The call, as `call_hash` keys it.
+    call: str
+    flags: set[SessionFlag] = field(default_factory=set)
+    sensitive: list[str] = field(default_factory=list)
+    sensitive_unbound: bool = False
+    tainted: list[str] = field(default_factory=list)
+    #: A later scan saw the call waiting for the owner: once it leaves the history it is dropped, not applied.
+    waiting: bool = False
+
+    def empty(self) -> bool:
+        return not (self.flags or self.sensitive or self.sensitive_unbound or self.tainted)
 
 
 @dataclass
@@ -76,6 +107,8 @@ class SessionState:
     trusted: list[str] = field(default_factory=list)
     #: Untrusted hosts only the agent's installed skills named.
     skill_named: list[str] = field(default_factory=list)
+    #: Scanned calls whose own marks wait for their outcome, oldest first.
+    pending: list[PendingMarks] = field(default_factory=list)
     max_input_seq: int | None = None
     deployment: str | None = None
     issued_step: int | None = None
@@ -123,6 +156,52 @@ class SessionState:
     def drop_skill_named(self, hashes: list[str]) -> None:
         drop = set(hashes)
         self.skill_named[:] = [h for h in self.skill_named if h not in drop]
+
+    def add_pending(self, marks: PendingMarks) -> None:
+        if marks.empty():
+            return
+        self.pending = [p for p in self.pending if p.call != marks.call] + [marks]
+        if len(self.pending) > PENDING_CAP:
+            del self.pending[: len(self.pending) - PENDING_CAP]
+
+    def apply(self, marks: PendingMarks) -> None:
+        """The call ran: what it read and wrote joins the session."""
+        self.flags |= marks.flags
+        self.add_sensitive(marks.sensitive)
+        self.sensitive_unbound = self.sensitive_unbound or marks.sensitive_unbound
+        self.add_tainted(marks.tainted)
+
+
+def call_hash(salt: str, call_id: str) -> str:
+    return entity_hash(salt, "call", call_id)
+
+
+def settle_pending(
+    state: SessionState,
+    decisions: list[tuple[str, str]],
+    ran: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """Settle the pending marks from the history this request sends (`(call_id, decision)`, oldest first) and the
+    calls it shows ran whatever their decision (`ran`: an `ok` result, or a tool result in the request; a host can
+    run a call a remembered answer approved without telling the plugin, so its decision stays a review): a call that
+    ran is applied, one that never ran is dropped, one waiting for the owner stays pending. A call the history does
+    not name, or with a decision the scanner does not know, is applied: nothing says it was stopped. A call that was
+    seen waiting and has since left the history is dropped."""
+    latest = {call_hash(state.salt, cid): d for cid, d in decisions}
+    shown_run = {call_hash(state.salt, cid) for cid in ran}
+    keep: list[PendingMarks] = []
+    for marks in state.pending:
+        decision = latest.get(marks.call)
+        if marks.call in shown_run:
+            state.apply(marks)
+        elif decision in NOT_RUN or (decision is None and marks.waiting):
+            continue
+        elif decision in WAITING:
+            marks.waiting = True
+            keep.append(marks)
+        else:
+            state.apply(marks)
+    state.pending = keep
 
 
 def _add_capped(into: list[str], hashes: list[str], cap: int) -> None:
@@ -191,6 +270,7 @@ def decode_state(
         tainted=[str(h) for h in claims.get("tnt", [])][-TAINTED_CAP:],
         trusted=[str(h) for h in claims.get("tru", [])][-TRUSTED_CAP:],
         skill_named=[str(h) for h in claims.get("skn", [])][-SKILL_NAMED_CAP:],
+        pending=_decode_pending(claims.get("pnd")),
         max_input_seq=claims.get("seq"),
         deployment=claims.get("dep") or deployment,
         issued_step=claims["step"],
@@ -220,8 +300,50 @@ def encode_state(
         "tnt": list(state.tainted[-TAINTED_CAP:]),
         "tru": list(state.trusted[-TRUSTED_CAP:]),
         "skn": list(state.skill_named[-SKILL_NAMED_CAP:]),
+        "pnd": [_encode_pending(p) for p in state.pending[-PENDING_CAP:]],
     }
     return jwt.encode(claims, key, algorithm=ALGORITHM)
+
+
+def _encode_pending(marks: PendingMarks) -> dict:
+    out: dict = {"c": marks.call}
+    if marks.flags:
+        out["f"] = sorted(f.value for f in marks.flags)
+    if marks.sensitive:
+        out["sen"] = list(marks.sensitive[-SENSITIVE_CAP:])
+    if marks.sensitive_unbound:
+        out["snu"] = True
+    if marks.tainted:
+        out["tnt"] = list(marks.tainted[-TAINTED_CAP:])
+    if marks.waiting:
+        out["w"] = True
+    return out
+
+
+def _decode_pending(raw: object) -> list[PendingMarks]:
+    """The token's pending marks; an entry that does not parse is skipped."""
+    if not isinstance(raw, list):
+        return []
+    known = {m.value for m in SessionFlag}
+    out: list[PendingMarks] = []
+    for entry in raw[-PENDING_CAP:]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("c"), str):
+            continue
+        out.append(
+            PendingMarks(
+                call=entry["c"],
+                flags={SessionFlag(f) for f in _strings(entry.get("f")) if f in known},
+                sensitive=_strings(entry.get("sen"))[-SENSITIVE_CAP:],
+                sensitive_unbound=entry.get("snu") is True,
+                tainted=_strings(entry.get("tnt"))[-TAINTED_CAP:],
+                waiting=entry.get("w") is True,
+            )
+        )
+    return out
+
+
+def _strings(raw: object) -> list[str]:
+    return [str(v) for v in raw] if isinstance(raw, list) else []
 
 
 def seed_state(seed: dict, *, salt: str, deployment: str | None = None) -> SessionState:
