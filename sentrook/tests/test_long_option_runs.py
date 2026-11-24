@@ -23,6 +23,7 @@ import threading
 import time
 
 import pytest
+from linear_time import assert_fast_or_linear
 from test_aira_detectors import ex, floor_reasons, hist_step, planir, run
 from test_large_calls import FAST, scan
 
@@ -50,61 +51,84 @@ def hx(command: str):
 
 # --------------------------------------------------------------------------- timing
 
+#: name -> make(d): the call at 1/d of its full size (d = 1 when timed against the bound, 4 for the
+#: growth check, which stays on the same side of `MAX_PARSE_CHARS`).
 LONG = [
-    ("curl -H x", lambda: ex(_repeat("curl ", "-H x ", "https://example.com"))),
-    ("git -c a=b", lambda: ex(_repeat("git ", "-c a=b ", "status"))),
-    ("ls -l (a head in no guardrail entry)", lambda: ex(_repeat("ls ", "-l "))),
-    ("openclaw -v (a guardrail head)", lambda: ex(_repeat("openclaw ", "-v ", "status"))),
-    ("hermes -p x (a guardrail head)", lambda: hx(_repeat("hermes ", "-p x ", "status"))),
+    ("curl -H x", lambda d=1: ex(_repeat("curl ", "-H x ", "https://example.com", size=SIZE // d))),
+    ("git -c a=b", lambda d=1: ex(_repeat("git ", "-c a=b ", "status", size=SIZE // d))),
+    ("ls -l (a head in no guardrail entry)", lambda d=1: ex(_repeat("ls ", "-l ", size=SIZE // d))),
+    (
+        "openclaw -v (a guardrail head)",
+        lambda d=1: ex(_repeat("openclaw ", "-v ", "status", size=SIZE // d)),
+    ),
+    (
+        "hermes -p x (a guardrail head)",
+        lambda d=1: hx(_repeat("hermes ", "-p x ", "status", size=SIZE // d)),
+    ),
     (
         "openclaw config with every word a possible verb",
-        lambda: ex(_repeat("openclaw ", "-x config -x set ", "a b")),
+        lambda d=1: ex(_repeat("openclaw ", "-x config -x set ", "a b", size=SIZE // d)),
     ),
     (
         "openclaw config set with many read-from flags",
-        lambda: ex(_repeat("openclaw config ", "-x patch --batch-file f --file g ", "a b")),
+        lambda d=1: ex(
+            _repeat("openclaw config ", "-x patch --batch-file f --file g ", "a b", size=SIZE // d)
+        ),
     ),
     (
         "openclaw approvals with many file flags",
-        lambda: ex(_repeat("openclaw approvals ", "-x set --file /tmp/a ", "a")),
+        lambda d=1: ex(
+            _repeat("openclaw approvals ", "-x set --file /tmp/a ", "a", size=SIZE // d)
+        ),
     ),
     (
         "openclaw exec-policy with many presets and flags",
-        lambda: ex(_repeat("openclaw exec-policy ", "-x preset -x set --ask off yolo ", "a")),
+        lambda d=1: ex(
+            _repeat(
+                "openclaw exec-policy ", "-x preset -x set --ask off yolo ", "a", size=SIZE // d
+            )
+        ),
     ),
     (
         "openclaw approvals allowlist add with many entries",
-        lambda: ex(_repeat("openclaw approvals -x allowlist ", "-x allowlist add '*' ", "a")),
+        lambda d=1: ex(
+            _repeat(
+                "openclaw approvals -x allowlist ", "-x allowlist add '*' ", "a", size=SIZE // d
+            )
+        ),
     ),
-    ("npx launcher with many launchable values", lambda: ex(_repeat("npx ", "-p openclaw "))),
+    (
+        "npx launcher with many launchable values",
+        lambda d=1: ex(_repeat("npx ", "-p openclaw ", size=SIZE // d)),
+    ),
     # A long dotted word before or after the verb: the approval patterns are only searched in the
     # words after a verb, and in linear time.
     (
         "openclaw config, a long dotted option value before the verb",
-        lambda: ex(_repeat("openclaw config -x ", "approvals.", " set y z")),
+        lambda d=1: ex(_repeat("openclaw config -x ", "approvals.", " set y z", size=SIZE // d)),
     ),
     (
         "hermes config, a long dotted option value before the verb",
-        lambda: hx(_repeat("hermes config -x ", "approval.", " set y z")),
+        lambda d=1: hx(_repeat("hermes config -x ", "approval.", " set y z", size=SIZE // d)),
     ),
     (
         "openclaw config set of a long dotted key",
-        lambda: ex(_repeat("openclaw config set ", "approvals.", " y")),
+        lambda d=1: ex(_repeat("openclaw config set ", "approvals.", " y", size=SIZE // d)),
     ),
     (
         "openclaw config, many verbs then a long dotted option value",
-        lambda: ex(
+        lambda d=1: ex(
             "openclaw config "
-            + "-x set " * 3000
+            + "-x set " * (3000 // d)
             + "-x "
-            + "approvals." * ((SIZE - 21_022) // 10)
+            + "approvals." * ((SIZE - 21_022) // 10 // d)
             + " set y"
         ),
     ),
     # The approval-loosening routes read a parsed command, and a command is parsed up to
     # `MAX_PARSE_CHARS`: the same shapes at that length.
     *(
-        (f"{name}, parsed", lambda make=make: ex(make(MAX_PARSE_CHARS)))
+        (f"{name}, parsed", lambda d=1, make=make: ex(make(MAX_PARSE_CHARS // d)))
         for name, make in [
             ("openclaw -v", lambda size: _repeat("openclaw ", "-v ", "status", size)),
             (
@@ -137,7 +161,7 @@ LONG = [
     ),
     # Listed command patterns with many heads in one simple command, and chains of them.
     *(
-        (f"{unit.strip()} chain", lambda unit=unit: ex(_repeat("", unit)))
+        (f"{unit.strip()} chain", lambda d=1, unit=unit: ex(_repeat("", unit, size=SIZE // d)))
         for unit in [
             "systemctl stop ",
             "launchctl unload ",
@@ -152,18 +176,18 @@ LONG = [
     ),
     (
         "inline code with a long run of path characters",
-        lambda: planir(
+        lambda d=1: planir(
             "execute_code",
             "exec",
-            {"code": "open('x', 'w')\n" + "a/" * ((SIZE - 20) // 2)},
+            {"code": "open('x', 'w')\n" + "a/" * ((SIZE - 20) // 2 // d)},
             platform="hermes",
         ),
     ),
-    ("rsync chain", lambda: ex(_repeat("", "rsync "))),
-    ("scp chain", lambda: ex(_repeat("", "scp a b "))),
-    ("rsync chain with hosts", lambda: ex(_repeat("", "rsync a b@ "))),
-    ("scp of a long dotted word", lambda: ex(_repeat("scp ", "a."))),
-    ("sftp of a long word with @", lambda: ex(_repeat("sftp ", "a@"))),
+    ("rsync chain", lambda d=1: ex(_repeat("", "rsync ", size=SIZE // d))),
+    ("scp chain", lambda d=1: ex(_repeat("", "scp a b ", size=SIZE // d))),
+    ("rsync chain with hosts", lambda d=1: ex(_repeat("", "rsync a b@ ", size=SIZE // d))),
+    ("scp of a long dotted word", lambda d=1: ex(_repeat("scp ", "a.", size=SIZE // d))),
+    ("sftp of a long word with @", lambda d=1: ex(_repeat("sftp ", "a@", size=SIZE // d))),
 ]
 
 
@@ -172,16 +196,19 @@ def test_a_long_option_run_or_command_chain_scans_fast(name, make):
     raw = make()
     assert len(json.dumps(raw["pending_call"]["arguments"])) < MAX_CALL_CHARS
     res, spent = scan(raw)
-    assert spent < FAST, f"whole scan, {name}: {spent:.2f}s"
+    assert_fast_or_linear(spent, FAST, lambda d: scan(make(d)), f"whole scan, {name}")
     aira = next(e for e in res.envelopes if e.step is ProbeStep.AIRA)
     assert aira.status is ProbeStatus.OK, aira.evidence
 
 
 def test_a_long_chain_inside_a_shell_script_scans_fast():
-    raw = ex("bash -c '" + _repeat("", "-x config -x set ", size=SIZE - 30) + "'")
+    def make(d: int) -> dict:
+        return ex("bash -c '" + _repeat("", "-x config -x set ", size=(SIZE - 30) // d) + "'")
+
     start = time.perf_counter()
-    run(raw)
-    assert time.perf_counter() - start < FAST
+    run(make(1))
+    spent = time.perf_counter() - start
+    assert_fast_or_linear(spent, FAST, lambda d: run(make(d)), "a chain inside a shell script")
 
 
 # --------------------------------------------------------------------------- fail closed
@@ -433,9 +460,13 @@ def test_a_fast_scan_is_unchanged():
 
 
 def test_history_with_a_long_option_run_scans_fast():
-    command = _repeat("curl ", "-H x ", "https://example.com", size=60_000)
-    res, spent = scan(ex("ls", history=[hist_step(1, "exec", "exec", {"command": command})]))
-    assert spent < FAST, f"{spent:.2f}s"
+    # At 1/4 size (15,000) the command is under MAX_PARSE_CHARS, but a history command is never parsed.
+    def make(d: int) -> dict:
+        command = _repeat("curl ", "-H x ", "https://example.com", size=60_000 // d)
+        return ex("ls", history=[hist_step(1, "exec", "exec", {"command": command})])
+
+    _, spent = scan(make(1))
+    assert_fast_or_linear(spent, FAST, lambda d: scan(make(d)), "history with a long option run")
 
 
 # --------------------------------------------------------------------------- list patterns, piece for piece
@@ -618,31 +649,49 @@ def test_every_linear_search_is_fast_on_long_texts():
     on (seconds to minutes each), and on chains whose pieces all occur but never in order."""
     import re
 
+    # key -> (head, unit, count, tail): head + unit * count + tail, built at 1/d of the count
     texts = {
-        "systemctl": "openclaw; " + "systemctl stop " * 6300,
-        "chown": "+s; " + "chown root chmod " * 5500,
-        "echo|printf": ".npmrc; " + "echo registry=https://r > " * 3600,
+        "systemctl": ("openclaw; ", "systemctl stop ", 6300, ""),
+        "chown": ("+s; ", "chown root chmod ", 5500, ""),
+        "echo|printf": (".npmrc; ", "echo registry=https://r > ", 3600, ""),
         # matching chains: the regex builds each match from many ways to make it
-        "echo|printf ": "echo registry=https://r > x " * 3300
-        + "; echo registry=https://r > .npmrc",
-        "echo|printf  ": "echo registry=https://r > .npmrc " * 2700,
-        "echo|printf   ": "echo registry=https://r >> pip.conf; " * 2600,
-        "systemctl ": "systemctl stop openclaw " * 3900,
-        "chown ": "chown root chmod +s " * 4700,
+        "echo|printf ": (
+            "",
+            "echo registry=https://r > x ",
+            3300,
+            "; echo registry=https://r > .npmrc",
+        ),
+        "echo|printf  ": ("", "echo registry=https://r > .npmrc ", 2700, ""),
+        "echo|printf   ": ("", "echo registry=https://r >> pip.conf; ", 2600, ""),
+        "systemctl ": ("", "systemctl stop openclaw ", 3900, ""),
+        "chown ": ("", "chown root chmod +s ", 4700, ""),
     }
+
+    def searches(rx: re.Pattern[str], text: str) -> None:
+        linear_search.found(rx, text)
+        linear_search.search(rx, text)
+        list(linear_search.finditer(rx, text))
+
     for pattern in linear_search.LINEAR:
         rx = re.compile(pattern, re.IGNORECASE)
         units = [u for key, us in _SLOW_UNITS.items() if key in pattern for u in us]
         assert units, pattern
-        for text in [u * (SIZE // len(u)) for u in units] + [
+        for head, unit, count, tail in [("", u, SIZE // len(u), "") for u in units] + [
             t for key, t in texts.items() if key.strip() in pattern
         ]:
+
+            def build(d: int, head=head, unit=unit, count=count, tail=tail) -> str:
+                return head + unit * (count // d) + tail
+
             start = time.perf_counter()
-            linear_search.found(rx, text)
-            linear_search.search(rx, text)
-            list(linear_search.finditer(rx, text))
+            searches(rx, build(1))
             spent = time.perf_counter() - start
-            assert spent < FAST / 4, f"{pattern[:40]} on {text[:20]!r}: {spent:.2f}s"
+            assert_fast_or_linear(
+                spent,
+                FAST / 4,
+                lambda d, rx=rx, build=build: searches(rx, build(d)),
+                f"{pattern[:40]} on {build(1)[:20]!r}",
+            )
 
 
 def test_inline_code_paths_are_found_as_the_regex_finds_them():
