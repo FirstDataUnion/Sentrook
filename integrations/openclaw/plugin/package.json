@@ -9,6 +9,9 @@
   "files": [
     "dist/",
     "index.ts",
+    "agentSkills.ts",
+    "agent-rules.txt",
+    "skills/",
     "dashboard.ts",
     "dashboardView.js",
     "assets/icon.png",

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
+import { agentRules } from "./agentSkills.ts";
 import { helpText, runSentrookCommand, SUBCOMMANDS } from "./commands.ts";
 import plugin from "./index.ts";
 import { PLUGIN_VERSION } from "./planir.ts";
@@ -183,7 +184,7 @@ async function captureLog(fn: () => Promise<void> | void): Promise<string> {
   return lines.join("\n");
 }
 
-test("the plugin registers /sentrook as an argument-taking command with no scopes or prompt guidance", async () => {
+test("the plugin registers /sentrook as an argument-taking command with no scopes, carrying the agent rules as prompt guidance", async () => {
   const { commands } = await registered({});
   // The others are the owner-only history, grants and snooze commands.
   assert.deepEqual(
@@ -209,7 +210,10 @@ test("the plugin registers /sentrook as an argument-taking command with no scope
   assert.equal(def.acceptsArgs, true);
   assert.equal(typeof def.description, "string");
   assert.equal(def.requiredScopes, undefined);
-  assert.equal(def.agentPromptGuidance, undefined);
+  // The agent's always-loaded rules, one guidance line each; the owner commands carry none.
+  assert.deepEqual(def.agentPromptGuidance, agentRules());
+  assert.ok(def.agentPromptGuidance.some((line: string) => line.includes("`/sentrook-grant`")));
+  assert.ok(commands.slice(1).every((c) => c.agentPromptGuidance === undefined));
   assert.deepEqual(await def.handler({ args: "nonsense" }), { text: helpText() });
   assert.deepEqual(await def.handler({}), { text: helpText() });
 });

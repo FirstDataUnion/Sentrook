@@ -320,6 +320,34 @@ bot first: `@yourbot /sentrook status`.
 > plugin commands, including `/sentrook status`, with "requires authorization". The plugin cannot see the sender
 > list, so it cannot warn you.
 
+## Agent skills
+
+The plugin ships two skills, which OpenClaw loads while the plugin is enabled. OpenClaw reads skills when a session
+starts, so start a new session after installing.
+
+- `sentrook-guide`: how Sentrook works, so the agent can explain an approval prompt, a block, a held call or a notice,
+  and point you to `/sentrook-why` and `/sentrook-report`.
+- `sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the setup with
+  `openclaw sentrook verify`, asks what work is routine (the services, folders, channels and API key names it uses),
+  explains where notices go (`/sentrook-notify here`), and gives you the grant and binding commands to type, one at a
+  time. Later, when Sentrook keeps asking about the same thing, it helps you find the grant with `/sentrook-why`.
+
+The agent never runs those commands itself, and Sentrook refuses them if it tries. The agent's system prompt also gets
+a few short rules, added with the `/sentrook` command, that it follows whether or not it opens a skill: never run the
+commands that change Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked
+or held call reworded.
+
+A skill is instructions by design, so the plugin tells the scanner when the agent reads its own skill file: a read of
+an absolute or `~/` path whose real path is one of the `SKILL.md` files in the plugin's install folder, and which
+returned (part of) the text the plugin loaded from there, is sent as `plugin_skill:read`, and the scanner does not
+count its text as content trying to steer the agent. A copy of the text anywhere else, a link that leads out of the
+plugin's folder, a relative path or a file changed since the plugin loaded is an ordinary read.
+
+OpenClaw loads a workspace, project (`.agents/skills`), personal (`~/.agents/skills`, with OpenClaw's state in its
+default place), managed (`~/.openclaw/skills`) or Skill Workshop skill in place of a plugin skill with the same name. `openclaw sentrook verify` warns on its
+`agent skills` line when one named `sentrook-guide` or `sentrook-setup` exists; remove or rename it unless you wrote
+it yourself.
+
 ## Dashboard
 
 The plugin adds a **Sentrook** tab to the Control UI with the recent scans, newest first. Open a scan to see its
@@ -678,7 +706,9 @@ In short, for anyone deciding whether to install it:
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
   cron run, that job's definition from OpenClaw's job store (`~/.openclaw/state/openclaw.sqlite`, or
   `~/.openclaw/cron/jobs.json` on releases without it), read-only, for its delivery target; and, to turn a reviewed
-  background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
+  background change to a skill into a draft, that skill's `SKILL.md`. To tell a read of its own skill files from any
+  other read, it resolves the path a `read` call named; `verify` also lists the skill folders OpenClaw loads for a
+  skill with the name of one of its own (see [Agent skills](#agent-skills)). It runs no shell commands and
   starts no background processes.
 - **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
   The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it

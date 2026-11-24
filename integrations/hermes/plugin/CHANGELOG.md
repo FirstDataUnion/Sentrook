@@ -6,6 +6,15 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The plugin gives the agent two skills, listed while the plugin is enabled: `sentrook:sentrook-guide` (how Sentrook
+  works, so the agent can explain an approval prompt, a block, a held call or a notice, and point the owner to
+  `/sentrook why` and `/sentrook report`) and `sentrook:sentrook-setup` (the agent asks the owner what is routine and
+  gives the grant and binding commands to type, one at a time). Hermes's system prompt also gets a short section of
+  rules: never run the commands that change Sentrook, never edit its settings or folder, never disable the plugin,
+  and never retry a blocked call reworded. A Hermes without plugin skills or prompt sections skips them. Viewing one
+  of these skills does not count as content steering the agent (the scanner already leaves the agent's installed
+  skills out of that check).
+  
 - **Held calls: every answer now does something.** Before, `/sentrook approve <id>` only set the grant Sentrook
   suggested, and on scheduled runs it never suggests one, so approving set nothing and the job was held again the next
   day. A hold on a cron job now offers, in its notice, only the answers that apply:
