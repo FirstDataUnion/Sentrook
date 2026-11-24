@@ -541,9 +541,12 @@ def _scan_one(
     )
     planir = built["planir"]
     built["loop_save"] = loop_save
+    # Any other call of the unattended review or curator: nobody can answer it either (see `skill_review`).
+    background_run = not loop_save and skill_review.in_unattended_review()
+    built["background_run"] = background_run
     attendance = {"subagent": built["subagent"], "attended_platforms": cfg.attended_platforms}
     # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
-    unattended = loop_save or is_unattended(built["platform"], env, **attendance)
+    unattended = loop_save or background_run or is_unattended(built["platform"], env, **attendance)
 
     ep = cfg.endpoints
     result: ScanOk | ScanFailure
@@ -662,6 +665,12 @@ def _scan_one(
                 entry["decision"] = "held"
                 directive = {"action": "block", "message": hold.HELD_TEXT}
                 notice = _background_notice(cfg, built, resp, "held")
+        elif background_run:
+            # Another call of the unattended review: nobody can answer it, and approving it later could not bring the
+            # review back. Not run, the agent told so, the owner told once per session (`skill_review`).
+            entry["decision"] = "held"
+            directive = {"action": "block", "message": skill_review.HELD_CALL_TEXT}
+            notice = _background_notice(cfg, built, resp, "held-call")
         elif unattended:
             # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
             entry["decision"] = "held"
@@ -772,6 +781,7 @@ def _scan_one(
             **({"notice": notice} if notice is not None else {}),
             **({"staging": stage} if stage is not None else {}),
             **({"skill_review": True} if loop_save else {}),
+            **({"background_run": True} if background_run else {}),
             "latency_ms": result.latency_ms if isinstance(result, ScanOk) else None,
             "planir": planir,
             "response": result.response if isinstance(result, ScanOk) else None,
@@ -814,6 +824,8 @@ def _run_of(built: dict[str, Any]) -> tuple[str, str | None]:
     sref = built["planir"]["session"]["session_ref"]
     if built.get("loop_save"):
         return hold.where_text(skill_review.RUN, sref), None
+    if built.get("background_run"):
+        return hold.where_text(skill_review.RUN_CALLS, sref), None
     run = None
     try:
         read = getattr(_ctx, "current_cron_execution", None)
@@ -934,7 +946,8 @@ def _background_notice(
     stage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Tells the owner a background save was blocked, held, staged, or let through without asking (`outcome`:
-    blocked, held, staged, allowed-lenient or allowed-snoozed; `stage` as `_stage_background` returns it): once per
+    blocked, held, staged, allowed-lenient or allowed-snoozed; `stage` as `_stage_background` returns it), or that
+    another call of the background review was held (`held-call`): once per
     kind and session per quiet period. Returns what the scan record says about the notice. Never raises: the save's
     outcome stands whatever happens here."""
     return _send_background_notice(cfg, _background_info(built, resp), outcome, stage)
@@ -950,7 +963,12 @@ def _send_background_notice(
     with a change its own gate stages (outcomes staged, unstaged-saved, unstaged-unknown, held)."""
     target, why = _notice_target(cfg.owner_channel)
     if not target:
-        logger.warning("sentrook %s a background save but sent no notice: %s", outcome, why)
+        what = (
+            "held a background review call"
+            if outcome == "held-call"
+            else f"{outcome} a background save"
+        )
+        logger.warning("sentrook %s but sent no notice: %s", what, why)
         return {"status": "unsent", "target": None, "reason": why}
     if info is None:
         return {"status": "unsent", "target": None, "reason": "notice could not be built"}
@@ -971,13 +989,16 @@ def _send_background_notice(
 
     try:
         tool, shown, where = info["tool"], info["shown"], info["where"]
+        listed = "the review's calls are" if outcome == "held-call" else "every background save is"
         details = (
-            f"Details: {commands.CMD('why')} {info['request_id'][:8]}; every background save is in "
+            f"Details: {commands.CMD('why')} {info['request_id'][:8]}; {listed} in "
             f"{commands.CMD('history')}."
             if cfg.traffic_log_enabled
             else None
         )
-        if outcome in ("blocked", "held"):
+        if outcome == "held-call":
+            text = skill_review.held_call_text(tool, shown, where, info["category"], details)
+        elif outcome in ("blocked", "held"):
             text = skill_review.stopped_text(outcome, tool, shown, where, info["category"], details)
         elif outcome == "staged":
             stage = stage or {}  # a staged notice without its record is not built

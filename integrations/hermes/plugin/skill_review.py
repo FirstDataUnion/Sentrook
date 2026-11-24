@@ -6,7 +6,7 @@ scan of its save would show a write with nothing to justify it.
 
 A loop save is recognised only from Hermes's own write origin (`tools.skill_provenance`): the origin
 is `background_review` and the review is unattended (not an owner's `/refine`), and the tool is
-`skill_manage` or `memory`. Any other tool the fork calls is scanned as usual. A host without that
+`skill_manage` or `memory`. Any other tool the fork calls is scanned as usual, but never asks (see below). A host without that
 module has no loop saves. Nor has the plugin under Hermes's `plugins.isolation: host`: it then runs in a
 separate process where the write origin cannot be read (`host_isolated`), and the startup log and status say so.
 
@@ -46,10 +46,16 @@ curator's carries its own prompt, not a request. With no owner request stored it
 Every loop save's traffic record says `skill_review: true`, history marks it "self-edit", and
 `/sentrook status` counts allowed, blocked, held, staged and let-through loop saves.
 
-The fork's other calls, and an owner's `/refine`, can still ask. On the local terminal Hermes's callback
-denies those prompts unseen (see `auto_denied`). That denial is recorded as `blocked` (a review nobody could
-answer), never `denied_by_user`, its resolution says `decided_by: review_loop`, and history shows
-"auto-denied by the review loop".
+The unattended review's and the curator's other calls (a read, a terminal command) never ask either (`in_unattended_review`):
+a prompt there is lost the same way, and the run may stop before its save. Allowed calls run and blocked ones are
+blocked as anywhere; a review is held: the call does not run, the run is told nobody can approve it and not to retry
+it (`HELD_CALL_TEXT`), and the owner gets one notice per session in the quiet period (`held_call_text`). Not an
+approvable hold either: the review comes after every turn, and its calls must not crowd out other runs' holds. A scan
+failure follows the unattended policy. Their traffic records say `background_run: true`.
+
+An owner's `/refine` can still ask. On the local terminal Hermes's callback denies those prompts unseen (see
+`auto_denied`). That denial is recorded as `blocked` (a review nobody could answer), never `denied_by_user`, its
+resolution says `decided_by: review_loop`, and history shows "auto-denied by the review loop".
 """
 
 from __future__ import annotations
@@ -113,7 +119,7 @@ def auto_denied(kw: dict[str, Any], choice: str) -> bool:
     the thread's callback is Hermes's review auto-deny, and no gateway notifier is registered for the
     session. A gateway route (Hermes's managed local runtime) also reports `cli` but takes the prompt
     to a person, so the denial stays theirs; so does a deny from any other callback. Loop saves never ask
-    (see the module note), so this covers the fork's other calls and a `/refine`'s. Any failure to read
+    (see the module note), and nor do the unattended review's other calls, so this covers a `/refine`'s calls. Any failure to read
     Hermes means no."""
     if choice != "deny" or kw.get("surface") != "cli" or not in_background_review():
         return False
@@ -132,17 +138,21 @@ def auto_denied(kw: dict[str, Any], choice: str) -> bool:
         return False
 
 
-def is_loop_save(tool: str) -> bool:
-    """`tool` is being called by Hermes's own unattended review or curator to save a skill or memory.
+def in_unattended_review() -> bool:
+    """The call is made by Hermes's own unattended review or curator (not an owner's `/refine`), whatever the tool.
     Any failure to read the write origin means no."""
-    if tool not in LOOP_TOOLS:
-        return False
     try:
         from tools.skill_provenance import get_current_write_origin, is_unattended_review
 
         return get_current_write_origin() == BACKGROUND_REVIEW and is_unattended_review() is True
-    except Exception:  # noqa: BLE001 - an older or different host: no loop saves
+    except Exception:  # noqa: BLE001 - an older or different host: no unattended review
         return False
+
+
+def is_loop_save(tool: str) -> bool:
+    """`tool` is being called by Hermes's own unattended review or curator to save a skill or memory.
+    Any failure to read the write origin means no."""
+    return tool in LOOP_TOOLS and in_unattended_review()
 
 
 def store_of(tool: str) -> str:
@@ -171,6 +181,14 @@ def what(tool: str) -> str:
 
 #: How the owner's notices name the run of a loop save.
 RUN = "background save"
+#: How the owner's notices name the run of the unattended review's other calls.
+RUN_CALLS = "background review"
+
+#: What the agent is told when another call of the unattended review is held: nobody can approve it there.
+HELD_CALL_TEXT = (
+    "Sentrook held this tool call, so it did not run: nobody can approve it in this background run. The owner has "
+    "been told. Do not retry it in this run."
+)
 
 
 def quiet_key(outcome: str, session_ref: str) -> str:
@@ -228,6 +246,26 @@ def stopped_text(
             f"{'Blocked' if outcome == 'blocked' else 'Held'} because {category}.",
             *_details(details),
             f"{more} in this session are not announced for {_quiet_hours()} hours.",
+        )
+    )
+
+
+def held_call_text(tool: str, shown: str, where: str, category: str, details: str | None) -> str:
+    """The owner's notice that a call of the unattended review, not a save, was held. Built as the save notices
+    are: the plugin's own words, the run, the tool and its description as a review prompt shows it."""
+    from .hold import inert
+
+    return "\n".join(
+        (
+            "Sentrook held a tool call in Hermes's background review, so it did not run, and the review was told "
+            "not to retry it. Nobody can answer a prompt there, so it was not asked about.",
+            f"Run: {where}",
+            f"Tool: {inert(tool, 80)}: {inert(shown, 160)}",
+            f"Held because {category}.",
+            "The review may have ended without saving what it learned; to keep something, ask the agent for it in "
+            "a chat.",
+            *_details(details),
+            f"More held calls of the background review in this session are not announced for {_quiet_hours()} hours.",
         )
     )
 

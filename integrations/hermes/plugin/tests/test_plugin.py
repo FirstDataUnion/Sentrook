@@ -551,8 +551,8 @@ def test_every_manifest_setting_is_read():
 
 def test_episode_review_loop_auto_deny_on_the_terminal(loop_h, review_fork, monkeypatch):
     """The review loop's own deny on the local terminal goes out as `blocked` in the next scan's history,
-    and that request is valid PlanIR (`make plugin-planir-check`). The fork's saves never ask, so the prompt is
-    for another call the fork makes."""
+    and that request is valid PlanIR (`make plugin-planir-check`). The automatic review never asks, so the prompt is
+    for a call an owner's `/refine` makes in the fork."""
     import io
     import sys
 
@@ -561,6 +561,7 @@ def test_episode_review_loop_auto_deny_on_the_terminal(loop_h, review_fork, monk
             return True
 
     h = loop_h
+    h.prov["attended"] = True
     monkeypatch.setattr(sys, "stdin", Tty())
     h.ctx.hooks["pre_llm_call"](
         turn_id="t1", user_message="keep replies short", platform="cli", sender_id="u1", **SID

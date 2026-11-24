@@ -592,8 +592,9 @@ const plugin = {
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
       const timing = resolveApprovalTiming(cfg.approval, intentKindOf(triggerKind), undefined);
-      // Nobody can answer a prompt in a background save's run, on any OpenClaw: the host cancels it or ends the run.
-      let unattended = timing.unattended || bgSave !== null;
+      // Nobody can answer a prompt in one of OpenClaw's background runs, on any OpenClaw: the host cancels it or ends
+      // the run. That holds for every call of the run, not only its saves (backgroundSave.ts).
+      const unattended = timing.unattended || runKind !== null;
 
       let result: ScanOk | ScanFailure;
       const { scan, issuer } = cfg.endpoints;
@@ -660,7 +661,6 @@ const plugin = {
         // held or blocked as a file save is (it carries no content a draft could keep).
         if (!bgSave && runKind && execStore && selfEdit.scannedAsSelfEdit(resp)) {
           bgSave = { kind: runKind, store: execStore };
-          unattended = true;
         }
         // A run nobody can answer lowers a block to a review only for a retry of a review nobody answered: that
         // retry is held for the owner. The attended-owner ceiling is dropped there (`unattendedView`).
@@ -746,6 +746,12 @@ const plugin = {
               workshopAction,
             ),
           };
+        } else if (runKind) {
+          // Another call of one of OpenClaw's background runs: nobody can answer it, and approving it later could
+          // not bring the run back. Not run, the agent told so, and the owner told once per run (backgroundSave.ts).
+          entry.decision = "held";
+          hook = { block: true, blockReason: bg.HELD_CALL_TEXT };
+          held = { id: null, background: true, run: runKind, notice: heldCallNotice(cfg, built, resp, event.toolName, triggerKind, run, runKind) };
         } else if (unattended) {
           // Nobody can answer a review here: the call waits for the owner (hold.ts).
           entry.decision = "held";
@@ -789,7 +795,7 @@ const plugin = {
         entry.decision = hook?.block || hook?.requireApproval ? "blocked_on_error" : "allowed_on_error";
         api.logger.warn(`${LOG} scan failed (${result.kind}): ${result.detail}`);
         if (hook?.block && unattended) {
-          notice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run, bgSave?.kind ?? null);
+          notice = scanFailureCall(cfg, built, result, event.toolName, triggerKind, run, runKind);
         }
       }
 
@@ -1017,6 +1023,32 @@ const plugin = {
         "background-save",
       );
       if (out.status === "unsent") api.logger.warn(`${LOG} background save ${outcome} but sent no notice: ${String(out.reason)}`);
+      return out;
+    }
+
+    /**
+     * Tells the owner a call of one of OpenClaw's background runs, not a save, was held: once per run (cron job for the
+     * collection review) per quiet period. Never throws.
+     */
+    function heldCallNotice(
+      cfg: PluginConfig,
+      built: { planir: any },
+      resp: any,
+      tool: string,
+      triggerKind: string,
+      run: any,
+      kind: selfEdit.SelfEditKind,
+    ): Json {
+      const sref: string = built.planir.session.session_ref;
+      const { where, jobId } = unattendedRun(sref, triggerKind, run, kind);
+      const rid = cfg.trafficLog.enabled ? built.planir.request_id : null;
+      const out = quietNotice(
+        cfg,
+        bg.quietKey("held_call", jobId, sref),
+        () => bg.heldCallText(resp, tool, where, rid, jobId !== null),
+        "background-call",
+      );
+      if (out.status === "unsent") api.logger.warn(`${LOG} background run call held but sent no notice: ${String(out.reason)}`);
       return out;
     }
 
