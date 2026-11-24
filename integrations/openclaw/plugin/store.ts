@@ -131,6 +131,12 @@ export interface SnoozeFile {
   [key: string]: unknown;
 }
 
+export interface ProposalsFile {
+  version: number;
+  proposals: unknown[];
+  [k: string]: unknown;
+}
+
 export interface HoldsFile {
   version?: number;
   holds: unknown[];
@@ -399,6 +405,31 @@ export class Store {
 
   savePasses(value: PassesFile): void {
     this.writeJson(path.join(this.dir, "passes.json"), value);
+  }
+
+  /** `proposals.json` (the agent's setup proposals), empty when absent; null when it cannot be read. */
+  loadProposals(): ProposalsFile | null {
+    const file = path.join(this.dir, "proposals.json");
+    if (!existsSync(file)) return { version: 1, proposals: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const p = data as Record<string, unknown>;
+    if (!Object.hasOwn(p, "proposals")) p.proposals = [];
+    return Array.isArray(p.proposals) ? (p as ProposalsFile) : null;
+  }
+
+  saveProposals(value: ProposalsFile): void {
+    this.writeJson(path.join(this.dir, "proposals.json"), value);
+  }
+
+  /** `setup.json`: the setup screen last shown, its code and items; empty when absent or unreadable. */
+  loadSetup(): Record<string, any> {
+    const data = this.readJson<unknown>(path.join(this.dir, "setup.json"), null);
+    return data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, any>) : {};
+  }
+
+  saveSetup(value: unknown): void {
+    this.writeJson(path.join(this.dir, "setup.json"), value);
   }
 
   /** When each job or session last had a scan-failure notice (`scan-failure-notices.json`); empty when unreadable. */

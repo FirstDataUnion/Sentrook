@@ -279,6 +279,8 @@ const plugin = {
                       record: (record) => traffic.write(record),
                     },
                     session: commandSessionOf(ctx),
+                    hostConfig: hostConfig(),
+                    openclawDir: ocDir,
                     chat: {
                       channel: ctx.channel,
                       senderId: ctx.senderId,

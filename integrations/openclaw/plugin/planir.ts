@@ -157,18 +157,26 @@ export function providerFor(config: any, name: string): Provider {
   const server = name.split("__")[0]!;
   const cfg = config?.mcp?.servers?.[server];
   if (!cfg) return { kind: "mcp", name: server, identity: null, transport: null };
+  return { kind: "mcp", name: server, ...serverIdentity(cfg) };
+}
+
+/**
+ * An MCP server's identity and transport from its config entry, as a scan names its provider: a remote one by host,
+ * a package an installer runs by its package, anything else as a local command (hashed).
+ */
+export function serverIdentity(cfg: any): { identity: string | null; transport: string | null } {
   let identity: string | null = null;
-  const transport = normaliseTransport(cfg.transport) ?? (cfg.url ? "http" : cfg.command ? "stdio" : null);
-  if (typeof cfg.url === "string") {
+  const transport = normaliseTransport(cfg?.transport) ?? (cfg?.url ? "http" : cfg?.command ? "stdio" : null);
+  if (typeof cfg?.url === "string") {
     identity = remoteIdentity(cfg.url);
-  } else if (typeof cfg.command === "string") {
+  } else if (typeof cfg?.command === "string") {
     const args: string[] = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
     const pkg = args.find((a) => !a.startsWith("-"));
     if (["npx", "pnpm", "bunx"].includes(cfg.command) && pkg) identity = `npm:${pkg}`;
     else if (["uvx", "pipx"].includes(cfg.command) && pkg) identity = `pypi:${pkg}`;
     else identity = `local:${hash12([cfg.command, ...args].join(" "))}`;
   }
-  return { kind: "mcp", name: server, identity, transport };
+  return { identity, transport };
 }
 
 /**

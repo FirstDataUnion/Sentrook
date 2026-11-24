@@ -9,7 +9,7 @@
 
 import { envWithOpenclawDotenv } from "./auth.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand, SUBCOMMANDS } from "./commands.ts";
-import { resolveConfig } from "./config.ts";
+import { openclawDir, resolveConfig } from "./config.ts";
 import { auditCommand } from "./owner.ts";
 import { TrafficLog } from "./traffic.ts";
 import { formatVerifyReport, runVerify } from "./verify.ts";
@@ -64,6 +64,8 @@ export function registerSentrookCli(
       const ctx = {
         pluginConfig: pluginConfig(),
         env: process.env,
+        hostConfig: hostConfig(),
+        openclawDir: openclawDir(process.env),
         owner: {
           by: { basis: ["local_terminal"], channel: null, sender_ref: null },
           beforeWrite: () => undefined,

@@ -39,6 +39,7 @@
     "scanErrorPolicy.ts",
     "scanFailureNotice.ts",
     "selfEdit.ts",
+    "setup.ts",
     "snooze.ts",
     "store.ts",
     "traffic.ts",
