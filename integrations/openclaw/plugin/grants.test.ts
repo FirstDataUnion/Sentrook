@@ -632,8 +632,12 @@ test("listing, status and verify flag config grants never sent", async () => {
 });
 
 test("startup warns about config grants never sent", async () => {
-  const [warning, ...more] = (await registered({ grants: UNSENT_CONFIG })).warnings;
+  const warnings = (await registered({ grants: UNSENT_CONFIG })).warnings;
+  // The misspelt scope is also a setting not read as written; the entry without a pattern is one too.
+  const [settings, warning, ...more] = warnings;
   assert.deepEqual(more, []);
+  assert.ok(settings.includes('grants[2].scope: "persistant" is not session or persistent'), settings);
+  assert.ok(settings.includes("grants[0]: needs kind and pattern; ignored"), settings);
   assert.ok(warning.includes(UNSENT_SUMMARY) && warning.includes("/sentrook-grants"), warning);
   assert.deepEqual((await registered({ grants: UNSENT_CONFIG.slice(3) })).warnings, []);
 });
