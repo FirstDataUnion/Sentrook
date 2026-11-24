@@ -10,11 +10,13 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
+import { runSentrookCommand } from "./commands.ts";
 import { resolveConfig } from "./config.ts";
 import plugin from "./index.ts";
 import { sessionRef } from "./planir.ts";
 import * as setup from "./setup.ts";
 import * as report from "./setupReport.ts";
+import { runVerify } from "./verify.ts";
 
 const FIXTURES = path.join(import.meta.dirname, "..", "..", "fixtures", "setup-report");
 const fixture = (name: string) => readFileSync(path.join(FIXTURES, name), "utf8");
@@ -270,6 +272,9 @@ test("the days argument reaches the report", async () => {
   const { tool } = await h.ask(OWNER, "user", "c1", { days: 3 });
   assert.ok((await h.run(tool, "c1", { days: 3 })).startsWith("Sentrook setup report"));
   assert.equal(h.records().at(-1).days, 3);
+  const again = await h.ask(OWNER, "user", "c2", { days: "7" });
+  assert.ok((await h.run(again.tool, "c2", { days: "7" })).startsWith("Sentrook setup report"));
+  assert.equal(h.records().at(-1).days, 7);
 });
 
 const ELSEWHERE: Array<[string, any, string]> = [
@@ -321,12 +326,65 @@ test("a call without the hook's marker is refused; a marker is for that call, on
   assert.equal(await h.run(tool, "c2"), META.refusal);
 });
 
-test("a marker expires", async () => {
+test("a marker expires, and is for that session and call", async () => {
   const markers = new report.Markers();
-  markers.put("c1", 1000);
-  assert.equal(markers.take("c1", 1000 + report.MARKER_TTL_MS + 1), false);
-  markers.put("c2", 1000);
-  assert.equal(markers.take("c2", 1001), true);
+  markers.put("S1", "c1", 1000);
+  assert.equal(markers.take("S1", "c1", 1000 + report.MARKER_TTL_MS + 1), false);
+  markers.put("S1", "c2", 1000);
+  assert.equal(markers.take("S2", "c2", 1001), false);
+  assert.equal(markers.take("S1", "c2", 1001), true);
+  assert.equal(markers.drop("S1", "c2", 1001), false);
+});
+
+test("a call allowed in one session cannot be answered in another", async () => {
+  const h = harness();
+  await h.ask(OWNER, "user", "c1");
+  const elsewhere = h.offer({ senderIsOwner: true, sessionKey: "agent:main:other", sessionId: "S9" });
+  assert.equal(await h.run(elsewhere, "c1"), META.refusal);
+});
+
+test("another plugin's tool of the same name is found out and scanned from then on", async () => {
+  // OpenClaw runs this plugin's factory, then drops its tool when another plugin already took the name: the call is
+  // allowed as the report, but this plugin's execute never runs.
+  const h = harness();
+  const { hook } = await h.ask(OWNER, "user", "c1");
+  assert.equal(hook, undefined);
+  await h.fire("after_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: "c1", result: "theirs" }, OWNER);
+  assert.deepEqual(
+    h.records().map((r) => r.outcome),
+    ["foreign_tool"],
+  );
+  await h.fire("before_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: "c2" }, OWNER);
+  assert.deepEqual(
+    h.scans.map((s) => s.pending_call.tool),
+    [report.TOOL],
+  );
+  const status = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+  assert.ok(status.includes(`setup report tool: ${report.FOREIGN_TEXT}`));
+  const checks = await runVerify({}, { fetchImpl: (async () => new Response("{}", { status: 503 })) as any, home: "/nowhere" });
+  assert.ok(checks.some((c) => c.name === "setup report tool" && c.detail.includes(report.FOREIGN_TEXT)));
+});
+
+test("a call another hook blocked after this one allowed it is not taken for another plugin's", async () => {
+  const h = harness();
+  await h.ask(OWNER, "user", "c1");
+  await h.fire("after_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: "c1", error: "blocked by a hook" }, OWNER);
+  assert.deepEqual(h.records(), []);
+  const { tool, hook } = await h.ask(OWNER, "user", "c2");
+  assert.equal(hook, undefined);
+  assert.ok((await h.run(tool, "c2")).startsWith("Sentrook setup report"));
+});
+
+test("the plugin's own answered call is not taken for another plugin's", async () => {
+  const h = harness();
+  const { tool } = await h.ask(OWNER, "user", "c1");
+  const t = await h.run(tool, "c1");
+  await h.fire("after_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: "c1", result: t }, OWNER);
+  assert.deepEqual(
+    h.records().map((r) => r.outcome),
+    ["answered"],
+  );
+  assert.equal((await h.ask(OWNER, "user", "c2")).hook, undefined);
 });
 
 test("its result goes to the next scan like any tool result", async () => {

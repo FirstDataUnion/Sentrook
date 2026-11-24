@@ -25,9 +25,12 @@
  * offers the tool only when OpenClaw says the sender is the owner (`senderIsOwner`; a detached cron run never
  * carries it), and `before_tool_call` refuses it unless the run's trigger, as the plugin recorded it from the run's
  * own hooks, is the owner's message on the main agent in a direct chat (`reportAllowed`; never a cron, heartbeat or
- * event run, a sub-agent, one of OpenClaw's background runs or a room). An allowed call gets a marker for its call
- * id (`Markers`), which the tool's own `execute` needs. Everywhere else the answer is `REFUSAL` and nothing more. The
- * Hermes plugin gives the same report, text for text.
+ * event run, a sub-agent, one of OpenClaw's background runs or a room). An allowed call gets a marker for its session
+ * and call id (`Markers`), which the tool's own `execute` needs. Everywhere else the answer is `REFUSAL` and nothing
+ * more. OpenClaw runs the factory before it drops a tool whose name another plugin already took, so a call can be
+ * allowed and then reach the other plugin's tool: `after_tool_call` sees the mark still there, records it
+ * (`FOREIGN_TEXT`) and every later call of that name is scanned like any other. The Hermes plugin gives the same
+ * report, text for text.
  */
 
 import { statSync } from "node:fs";
@@ -48,6 +51,9 @@ export const DEFAULT_DAYS = 14;
 export const MAX_DAYS = 30;
 /** Rows in each list; the rest are counted. */
 export const MAX_ROWS = 10;
+/** What status says once another plugin's tool of this name ran in place of the plugin's own. */
+export const FOREIGN_TEXT =
+  "another plugin's tool of the same name ran in place of Sentrook's; every call of that name is scanned";
 /** How long `before_tool_call`'s marker waits for the tool to run. */
 export const MARKER_TTL_MS = 120_000;
 
@@ -70,12 +76,16 @@ export const PARAMETERS = {
   additionalProperties: false,
 } as const;
 
+/** A number written as text, as Hermes coerces one to a schema's number type. */
+const NUMBER_TEXT = /^\s*[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\s*$/;
+
 /**
- * The `days` argument: a whole number from 1 to `MAX_DAYS` (larger ones read as `MAX_DAYS`); anything else reads as
- * `DEFAULT_DAYS`.
+ * The `days` argument: a whole number from 1 to `MAX_DAYS` (larger ones read as `MAX_DAYS`), or a string that spells
+ * one (`"7"`, `"7.0"`, as Hermes coerces it); anything else reads as `DEFAULT_DAYS`.
  */
 export function daysOf(args: unknown): number {
-  const raw = args && typeof args === "object" && !Array.isArray(args) ? (args as Entry).days : undefined;
+  let raw = args && typeof args === "object" && !Array.isArray(args) ? (args as Entry).days : undefined;
+  if (typeof raw === "string") raw = NUMBER_TEXT.test(raw) ? Number(raw) : undefined;
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) return DEFAULT_DAYS;
   return Math.min(raw, MAX_DAYS);
 }
@@ -102,20 +112,34 @@ export function reportAllowed(run: RunContext, ctx: any, cfg: Parameters<typeof 
   return grants.mayRemember({ trigger: { kind, sender }, session: { agent_role: sub ? "subagent" : "main" }, self_edit: null });
 }
 
-/** The calls `before_tool_call` allowed, by call id, each taken once by the tool within `MARKER_TTL_MS`. */
+/**
+ * The calls `before_tool_call` allowed, by session and call id, each taken once by the tool's own `execute` within
+ * `MARKER_TTL_MS`. A mark still there when `after_tool_call` reports the call (`drop`) means the call ran without
+ * reaching this plugin's `execute`: another plugin's tool of the same name.
+ */
 export class Markers {
   private marks = new Map<string, number>();
 
-  put(callId: string, now = Date.now()): void {
-    this.sweep(now);
-    this.marks.set(callId, now);
+  private static key(sid: string, callId: string): string {
+    return `${sid}\n${callId}`;
   }
 
-  take(callId: unknown, now = Date.now()): boolean {
+  put(sid: string, callId: string, now = Date.now()): void {
     this.sweep(now);
-    if (typeof callId !== "string" || !this.marks.has(callId)) return false;
-    this.marks.delete(callId);
+    this.marks.set(Markers.key(sid, callId), now);
+  }
+
+  /** Takes the mark for this call; false when there is none. */
+  take(sid: string, callId: unknown, now = Date.now()): boolean {
+    this.sweep(now);
+    if (typeof callId !== "string" || !this.marks.has(Markers.key(sid, callId))) return false;
+    this.marks.delete(Markers.key(sid, callId));
     return true;
+  }
+
+  /** Removes the mark for this call if `execute` never took it; true when it was still there. */
+  drop(sid: string, callId: unknown, now = Date.now()): boolean {
+    return this.take(sid, callId, now);
   }
 
   private sweep(now: number): void {
@@ -179,7 +203,7 @@ function order<T extends { count: number; last: Date }>(list: T[], ...keys: Arra
  */
 export function windowText(ev: setup.Evidence, now: Date, days: number, capped: boolean): string {
   if (ev.oldest === null || ev.oldest.getTime() <= now.getTime() - days * 86_400_000) return `Read: the last ${n(days, "day")}.`;
-  const got = Math.max(1, Math.ceil((now.getTime() - ev.oldest.getTime()) / 86_400_000));
+  const got = Math.max(1, Math.floor((now.getTime() - ev.oldest.getTime()) / 86_400_000));
   const why = capped
     ? `Sentrook reads at most the last ${Math.floor(READ_BUDGET_BYTES / (1024 * 1024))} MB of its log`
     : "the log holds nothing older";

@@ -318,7 +318,9 @@ const plugin = {
     /** Sessions the factory offered the tool in (OpenClaw said the sender is the owner), most recent last. */
     const reportOffered = new Map<string, number>();
     let reportRegistered = false;
-    const reportRecord = (sid: string, outcome: "answered" | "refused", extra: Json) =>
+    /** Another plugin's tool ran under the report's name in this process: every call of that name is scanned. */
+    let reportForeign = false;
+    const reportRecord = (sid: string, outcome: "answered" | "refused" | "foreign_tool", extra: Json) =>
       traffic.write({ kind: "setup_report", session_ref: sessionRef(sid), outcome, ...extra });
     const reportText = (days: number, now: Date): string => {
       const { cfg, env } = loadConfig();
@@ -362,7 +364,7 @@ const plugin = {
         const sid = sessionIdOf(toolCtx);
         let text: string = setupReport.REFUSAL;
         try {
-          if (!reportMarkers.take(toolCallId)) {
+          if (!reportMarkers.take(sid, toolCallId)) {
             reportRecord(sid, "refused", { reason: "no_marker" });
           } else {
             const days = setupReport.daysOf(params);
@@ -402,6 +404,7 @@ const plugin = {
     const ownReportCall = (event: any, ctx: any): boolean =>
       event?.toolName === setupReport.TOOL &&
       reportRegistered &&
+      !reportForeign &&
       [ctx?.sessionKey, ctx?.sessionId].some((k) => typeof k === "string" && reportOffered.has(k));
 
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
@@ -555,6 +558,13 @@ const plugin = {
     api.on("after_tool_call", async (event: any, ctx: any) => {
       try {
         const hostId: string | undefined = event?.toolCallId ?? ctx?.toolCallId;
+        if (hostId && event?.toolName === setupReport.TOOL && reportMarkers.drop(sessionIdOf(ctx), hostId) && !event?.error) {
+          // Allowed as the report, yet this plugin's execute never ran: another plugin's tool of the same name won.
+          reportForeign = true;
+          api.logger.warn(`${LOG} setup report: ${setupReport.FOREIGN_TEXT}`);
+          safely("setup report record", () => reportRecord(sessionIdOf(ctx), "foreign_tool", {}));
+          safely("setup report flag", () => store.saveReportForeign(new Date()));
+        }
         if (!hostId || UNSCANNED_TOOLS.has(event?.toolName)) return;
         const { cfg } = loadConfig();
         const sid = sessionIdOf(ctx);
@@ -713,7 +723,7 @@ const plugin = {
             ...(built.hostCallId ? { _host_call_id: built.hostCallId } : {}),
           });
           store.saveSession(sid, sess, cfg.historyLimit * 2);
-          reportMarkers.put(callId);
+          reportMarkers.put(sid, callId);
           return undefined;
         });
       } catch (err) {

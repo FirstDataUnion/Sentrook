@@ -411,7 +411,9 @@ with the traffic log off it shows only the settings. OpenClaw offers the tool on
 Sentrook answers only a run started by your own message in a direct chat: in a cron job, a heartbeat, a webhook or
 event run, a subagent, a group room or one of OpenClaw's own background runs, the whole answer is "Setup needs the
 owner in a direct chat." Each call is recorded in the traffic log as a `setup_report` record, and the report itself
-goes to the next scan like any tool result.
+goes to the next scan like any tool result. If another plugin registers a tool of the same name and OpenClaw runs
+theirs instead, Sentrook notices, scans every later call of that name like any other, and `/sentrook status` and
+`openclaw sentrook verify` say so.
 
 A skill is instructions by design, so the plugin tells the scanner when the agent reads its own skill file: a read of
 an absolute or `~/` path whose real path is one of the `SKILL.md` files in the plugin's install folder, and which

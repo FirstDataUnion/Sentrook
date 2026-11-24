@@ -11,4 +11,6 @@ the log actually went. It shows no call's arguments or request text, and every n
 OpenClaw offers it only when the sender is the owner, and Sentrook answers only a run started by your own message in a
 direct chat; everywhere else (cron, heartbeat, webhook and event runs, subagents, group rooms, OpenClaw's background
 runs) the whole answer is "Setup needs the owner in a direct chat." The call itself is not scanned, its result goes to
-the next scan, and each call is logged as a `setup_report` record.
+the next scan, and each call is logged as a `setup_report` record. If another plugin's tool of the same name runs in
+place of Sentrook's, Sentrook records it, scans every later call of that name, and `/sentrook status` and `openclaw
+sentrook verify` say so.
