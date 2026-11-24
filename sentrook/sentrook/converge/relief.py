@@ -38,8 +38,9 @@ expiry) that cover what the call does (`allows`):
   file's credential sensitivity and the sensitive-data-sent floor out themselves (a floor is never lowered here);
   convergence holds the model's call-level sensitivity to `credential_home_model_sensitivity_cap`, the level below
   credentials, and reports the relief on the provider host. Nothing on the suspicion side changes, unless
-  `credential_home.relieve_host` (off by default) also relieves the provider host of its distrust and untrusted
-  origin, as a matched destination grant would. A host where the owner's `credential` grant supplied the name the
+  `credential_home.relieve_host` (off by default, on in `conv-v8`) also relieves the provider host of its distrust
+  and untrusted origin, as a matched destination grant would, unless the call or a later run takes code from it. A
+  host where the owner's `credential` grant supplied the name the
   call uses (`CredentialHome.grants`) is relieved of its distrust and untrusted origin too, whatever that
   parameter says, under that grant (`relief.credential_grant`): the owner tied the key to that host. Not for a host
   the call or a later run takes code from.
@@ -260,8 +261,15 @@ def compute_relief(
             )
         relieved |= set(granted)
         hosts = [h for h in home.hosts if h not in relieved]
-        if params.credential_home_relieve_host and hosts:
-            # the host is where the key belongs: it loses its unknown-party distrust and agent-chosen origin too
+        if params.credential_home_relieve_host:
+            # the host is where the key belongs: it loses its unknown-party distrust and agent-chosen origin too, for
+            # sending the key there, never for running code from it
+            hosts = [
+                h
+                for h in hosts
+                if (ent := prepared.entities.by_id(h)) is not None
+                and not (ent.roles | ent.future_roles) & _CODE_ROLES
+            ]
             for h in hosts:
                 out.append(
                     Relief(
@@ -272,7 +280,7 @@ def compute_relief(
                         (("suspicion.distrust", h), ("suspicion.untrusted_origin", h)),
                     )
                 )
-        elif not granted:
+        if not granted and not (params.credential_home_relieve_host and hosts):
             out.append(
                 Relief(
                     None,
