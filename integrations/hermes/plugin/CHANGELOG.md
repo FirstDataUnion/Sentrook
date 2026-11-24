@@ -36,7 +36,8 @@ since the version the catalog pins.
   a pass let through as `allowed_by_pass` and calls a denial refused as `denied_by_owner`, with the pass's id.
 - **`/sentrook notify here`** sets where Sentrook's notices go (calls held on scheduled jobs and other runs nobody
   watches, scan failures there, Hermes's background saves) without editing the config: the chat you send it in,
-  which gets a test notice straight away. A chat Hermes cannot address yet is not stored, and the reply says why. On
+  which gets a test notice straight away. When the test notice is not delivered, `notify status`, `status` and
+  `verify` say so until a later notice gets through or the target changes. On
   the command line, which has no chat, `hermes sentrook notify <platform>` names a platform with a home channel. When
   Hermes does not say which chat a command came from, `here` uses the platform's home channel and the reply names
   it. A target set this way wins over `owner_channel`, which still works; `notify off` goes back to it, and

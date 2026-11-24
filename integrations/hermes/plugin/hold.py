@@ -977,6 +977,7 @@ def _send(
     platform: str,
     text: str,
     on_fail: Callable[[], None] | None = None,
+    on_ok: Callable[[], None] | None = None,
 ) -> None:
     delivered, said = False, "no way to send it from this process"
     try:
@@ -1003,12 +1004,23 @@ def _send(
             on_fail()
         except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
             logger.warning("sentrook could not undo an undelivered notice: %s", exc)
+    if delivered and on_ok is not None:
+        try:
+            on_ok()
+        except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
+            logger.warning("sentrook could not record a delivered notice: %s", exc)
 
 
-def deliver(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None = None) -> None:
+def deliver(
+    ctx: Any,
+    platform: str,
+    text: str,
+    on_fail: Callable[[], None] | None = None,
+    on_ok: Callable[[], None] | None = None,
+) -> None:
     """Sends `text` to `platform` (a home channel, or one chat as `notice_target` gives it) from a worker thread with an empty context, with `hermes send` or
     the send_message tool as `send_route` chooses for the current turn (see the module note). The thread is not a daemon, so a `hermes cron run` process waits
-    for it. `on_fail` runs on that thread when the notice was not delivered."""
+    for it. `on_fail` runs on that thread when the notice was not delivered, `on_ok` when it was."""
     _threads[:] = [t for t in _threads if t.is_alive()]
     t = threading.Thread(
         target=contextvars.Context().run,
@@ -1020,6 +1032,7 @@ def deliver(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | No
             platform,
             text,
             on_fail,
+            on_ok,
         ),
         name="sentrook-hold-notice",
         daemon=False,

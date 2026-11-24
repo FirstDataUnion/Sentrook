@@ -3,8 +3,10 @@
 `notify here|off|status|<platform>`: where Sentrook's notices go (held calls on unattended runs, scan failures there,
 background saves). `here` stores the chat the command was sent in (its platform, chat id and thread), and notices
 are sent there with `hermes send --to <platform>:<chat id>[:<thread>]`. The chat must be the one the owner check
-judged (same platform, same chat id when the check had one, a direct message), Hermes must be able to address it
-(`addressable`; a chat it cannot address yet is not stored), and it gets a test notice. When Hermes does not say which chat it was,
+judged (same platform, same chat id when the check had one, a direct message). Each new target gets a test notice,
+sent like any other notice; when it is not delivered (on some platforms Hermes reaches a new chat only once it has
+listed it), `notify status`, `status` and `verify` say so (`failed_line`) until a later notice gets through or the
+target changes. When Hermes does not say which chat it was,
 `here` stores the platform and notices go to its home channel (`/sethome`), and the reply says so and names that
 channel. `notify <platform>` (the form for the terminal, which has no chat) stores a platform with a home channel.
 A target set by command wins over `owner_channel` in the config; `off` removes it, so `owner_channel` applies again.
@@ -71,6 +73,18 @@ SELF_STARTED = UNATTENDED_PLATFORMS | frozenset(
 TERMINAL = LOCAL_PLATFORMS - APP_PLATFORMS
 #: Front ends that can put a person in front of Hermes's approval prompts: the only platforms `attended add` takes.
 CONFIRMABLE = KNOWN_PLATFORMS - ATTENDED_BY_DEFAULT - SELF_STARTED - TERMINAL
+
+#: Where a test notice that was not delivered is remembered: {"to": the target, "at": when}.
+FAILED_KEY = "test_notice_failed"
+#: The reply's line about the test notice; `where` is "this chat" or "the <platform> home channel".
+TEST_SENT = (
+    "A test notice was sent to {where}. If it does not arrive within a minute, see /sentrook notify status, "
+    "which says whether it was delivered."
+)
+FAILED_TEXT = (
+    "The last test notice to the {where} was not delivered: check the Hermes log for why, then send "
+    "/sentrook notify here again (on some platforms Hermes reaches a new chat only after a few minutes)."
+)
 
 #: Sent once where notices now go, so the owner sees they arrive.
 TEST_NOTICE = (
@@ -248,6 +262,8 @@ def _status(cfg: PluginConfig, cmd: Cmd) -> str:
         lines.append(
             f"Delivery: to the {target_text(to)}." if to else f"Delivery: not sent ({why})."
         )
+    if failed := failed_line(cfg):
+        lines.append(failed)
     return "\n".join(lines)
 
 
@@ -284,27 +300,15 @@ def run_notify(
         return entry, None
     stored, said = entry
     target = Notify(stored["platform"], stored.get("chat_id", ""), stored.get("thread_id", ""))
-    reached = ""
-    if target.chat_id:
-        ok, why = addressable(target.platform, target.to.partition(":")[2])
-        if ok is False:
-            return (
-                f"Hermes could not address this chat yet ({_clean(why, 200)}), so nothing was changed. Try again "
-                f"in a few minutes, once Hermes has listed this chat, or use {cmd('notify <platform>')} for "
-                "that platform's home channel."
-            ), None
-        reached = (
-            "Notices will come to this chat; a test notice was sent."
-            if ok
-            else "Sentrook could not check that Hermes can address this chat; a test notice was sent. If it "
-            "does not arrive, see the Hermes log."
-        )
-    elif send is not None:
-        reached = "A test notice was sent there."
+    where = (
+        "this chat" if target.chat_id and op == "here" else f"the {target.platform} home channel"
+    )
+    reached = TEST_SENT.format(where=where)
     stored.update(set_at=_show(now), set_by=by)
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         data["notify"] = stored
+        data[FAILED_KEY] = None
         n = Notify(
             stored["platform"],
             stored.get("chat_id", ""),
@@ -331,28 +335,55 @@ def run_notify(
 
     reply, record = _change(cfg.state_dir, fn)
     if record is not None and send is not None:
-        send(target.to, TEST_NOTICE)
+        to, state_dir = target.to, cfg.state_dir
+        send(
+            to,
+            TEST_NOTICE,
+            on_fail=lambda: test_notice_failed(state_dir, to),
+            on_ok=lambda: notice_delivered(state_dir, to),
+        )
     return reply, record
 
 
-def addressable(platform: str, ref: str) -> tuple[bool | None, str]:
-    """Whether Hermes's sender can address chat `ref` on `platform` now, as `hermes send` would resolve it: (True,
-    ""), (False, Hermes's reason), or (None, "") when this Hermes cannot say. A platform with no target syntax of its
-    own finds a chat id only in Hermes's channel directory, which Hermes refreshes from time to time, so a new chat
-    may not be addressable yet."""
-    try:
-        from tools.send_message_targets import resolve_send_target
-        from tools.send_message_tool import prepare_send_message_platforms
-    except Exception:  # noqa: BLE001 - not Hermes, or a Hermes without them: cannot say
-        return None, ""
-    try:
-        prepare_send_message_platforms()
-        chat_id, _thread, error = resolve_send_target(platform, ref)
-    except Exception as exc:  # noqa: BLE001 - cannot say, and the test notice will show
-        return None, _clean(exc, 200)
-    if error or not chat_id:
-        return False, str(error or "no chat id")
-    return True, ""
+def test_notice_failed(state_dir: Path, to: str) -> None:
+    """Remembers that the test notice to `to` was not delivered, while `to` is still the target set by command."""
+
+    def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        current = _stored_notify(data)
+        if current is None or Notify(**current).to != to:
+            return "", None
+        data[FAILED_KEY] = {"to": to, "at": _show(datetime.now(UTC))}
+        return "", {}
+
+    _change(state_dir, fn)
+
+
+def notice_delivered(state_dir: Path, to: str) -> None:
+    """A notice to `to` got through: forgets a test notice to it that was not. Reads before it locks, so a notice
+    with nothing to forget costs one read."""
+    failed = (load(state_dir) or {}).get(FAILED_KEY)
+    if not isinstance(failed, dict) or failed.get("to") != to:
+        return
+
+    def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        known = data.get(FAILED_KEY)
+        if not isinstance(known, dict) or known.get("to") != to:
+            return "", None
+        data[FAILED_KEY] = None
+        return "", {}
+
+    _change(state_dir, fn)
+
+
+def failed_line(cfg: PluginConfig) -> str:
+    """The warning that the last test notice to the target in force was not delivered; "" when there is none. It
+    names the platform, never the chat id."""
+    failed = (load(cfg.state_dir) or {}).get(FAILED_KEY)
+    n = notify_of(cfg)
+    if not isinstance(failed, dict) or n.source != "command" or failed.get("to") != n.to:
+        return ""
+    where = f"{n.platform} chat" if n.chat_id else f"{n.platform} home channel"
+    return FAILED_TEXT.format(where=where)
 
 
 def _no_chat(cmd: Cmd) -> str:
@@ -431,6 +462,7 @@ def _off(cfg: PluginConfig, data: dict[str, Any], cmd: Cmd) -> tuple[str, dict[s
     if current is None and data.get("notify") is None:
         return f"No notice target was set by command. {notify_line(notify_of(cfg), cmd)}", None
     data["notify"] = None
+    data[FAILED_KEY] = None
     if cfg.owner_channel:
         then = f"owner_channel {cfg.owner_channel} in config applies again. " + notify_line(
             Notify(cfg.owner_channel, source="config", config=cfg.owner_channel), cmd

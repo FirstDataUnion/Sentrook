@@ -97,7 +97,14 @@ def run_verify(
     )
     # Reported, not failed: without a notice target a held call still waits; the owner is just not told.
     notify = owner_settings.notify_of(cfg)
-    checks.append(("notice target", True, owner_settings.notify_line(notify)))
+    failed = owner_settings.failed_line(cfg)
+    checks.append(
+        (
+            "notice target",
+            True,
+            " ".join(x for x in (owner_settings.notify_line(notify), failed) if x),
+        )
+    )
     checks.append(("approval prompts", True, owner_settings.attended_line(cfg)))
     target, why = hold.owner_target(notify)
     checks.append(

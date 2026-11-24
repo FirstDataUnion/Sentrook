@@ -104,7 +104,7 @@ def test_notify_here_in_a_telegram_dm_sends_the_next_held_call_notice_to_that_dm
     reply = from_chat(h, monkeypatch, "notify here")
     hold.wait_for_notices()
     assert sent_test_notices(h) == ["telegram:4242"]
-    assert "a test notice was sent" in reply
+    assert "A test notice was sent to this chat." in reply
     line = owner_settings.notify_line(owner_settings.notify_of(plugin._load()[0]))
     assert line.startswith(
         "Notices: the telegram chat where you sent /sentrook notify here (set by command)."
@@ -342,7 +342,7 @@ def test_notify_here_takes_the_chat_type_from_the_owner_check_when_the_chat_has_
 ):
     facts = {"platform": "telegram", "chat_type": "dm", "user_id": DM_USER, "chat_id": "4242"}
     reply = from_chat(h, monkeypatch, "notify here", facts=facts, src=source(chat_type=""))
-    assert "a test notice was sent" in reply
+    assert "A test notice was sent to this chat." in reply
     assert settings_file(h)["notify"]["chat_id"] == "4242"
 
 
@@ -355,30 +355,58 @@ def test_notify_here_from_the_local_terminal_naming_a_chat_is_refused(h):
     assert not (h.dir / "sentrook" / "settings.json").exists()
 
 
-def test_notify_here_a_chat_hermes_cannot_address_yet_is_not_stored(h, monkeypatch):
-    monkeypatch.setattr(
-        owner_settings,
-        "addressable",
-        lambda platform, ref: (False, f"Could not resolve '{ref}' on {platform}."),
+def failing_sends(h):
+    """Every send answers as Hermes does for a chat it cannot address."""
+    h.ctx.dispatch_tool = lambda *_a, **_k: json.dumps(
+        {"error": "Could not resolve '4242' on telegram."}
     )
+
+
+def test_notify_here_says_a_test_notice_was_sent_and_what_to_do_if_it_does_not_arrive(
+    h, monkeypatch
+):
     reply = from_chat(h, monkeypatch, "notify here")
-    assert reply.startswith("Hermes could not address this chat yet")
-    assert "Could not resolve" in reply
-    assert not (h.dir / "sentrook" / "settings.json").exists()
     hold.wait_for_notices()
-    assert h.sent == []
+    assert sent_test_notices(h) == ["telegram:4242"]
+    assert owner_settings.TEST_SENT.format(where="this chat") in reply
+    assert "/sentrook notify status" in reply
+    assert owner_settings.FAILED_TEXT[:20] not in slash(h, "notify status")
 
 
-def test_notify_here_a_chat_hermes_can_address_says_so(h, monkeypatch):
-    seen = []
-    monkeypatch.setattr(
-        owner_settings,
-        "addressable",
-        lambda platform, ref: seen.append((platform, ref)) or (True, ""),
+def test_a_test_notice_that_was_not_delivered_is_reported_until_a_notice_gets_through(
+    h, monkeypatch
+):
+    """Must fire: Hermes could not send the test notice (on some platforms it reaches a new chat only once it
+    has listed it), so notify status, status and verify say so; the next notice that gets through clears it."""
+    failing_sends(h)
+    from_chat(h, monkeypatch, "notify here")
+    hold.wait_for_notices()
+    warning = owner_settings.failed_line(plugin._load()[0])
+    assert warning.startswith("The last test notice to the telegram chat was not delivered:")
+    assert warning in slash(h, "notify status")
+    assert warning in status_lines(h)
+    assert warning in verify(h)["notice target"][1]
+    assert "4242" not in slash(h, "status")
+
+    h.sent.clear()
+    h.ctx.dispatch_tool = lambda name, args, **_k: (
+        h.sent.append({"name": name, "args": args}) or json.dumps({"success": True})
     )
-    reply = from_chat(h, monkeypatch, "notify here", src=source(chat_id="-1009", thread_id="17"))
-    assert seen == [("telegram", "-1009:17")]
-    assert "Notices will come to this chat; a test notice was sent." in reply
+    turn(h)
+    send(h)
+    assert [t for t, _ in held(h)] == ["telegram:4242"]
+    assert owner_settings.failed_line(plugin._load()[0]) == ""
+    assert warning not in slash(h, "status")
+
+
+def test_a_failed_test_notice_is_forgotten_when_the_target_changes(h, monkeypatch):
+    failing_sends(h)
+    from_chat(h, monkeypatch, "notify here")
+    hold.wait_for_notices()
+    assert owner_settings.failed_line(plugin._load()[0])
+    slash(h, "notify off")
+    assert owner_settings.failed_line(plugin._load()[0]) == ""
+    assert settings_file(h).get(owner_settings.FAILED_KEY) is None
 
 
 def test_notify_here_from_the_terminal_is_refused_with_the_platform_form(h):

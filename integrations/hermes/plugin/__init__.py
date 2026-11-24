@@ -970,6 +970,21 @@ def _background_save_attended(
     return owner_attends(platform, env, **{**attendance, "subagent": subagent})
 
 
+def _deliver(
+    cfg: PluginConfig, target: str, text: str, on_fail: Callable[[], None] | None = None
+) -> None:
+    """Sends one of the owner's notices (`hold.deliver`); one that gets through clears a failed test notice to the
+    same target (`owner_settings.notice_delivered`)."""
+    state_dir = cfg.state_dir
+    hold.deliver(
+        _ctx,
+        target,
+        text,
+        on_fail=on_fail,
+        on_ok=lambda: owner_settings.notice_delivered(state_dir, target),
+    )
+
+
 def _notice_target(cfg: PluginConfig) -> tuple[str | None, str]:
     """(where the owner's notices go, as `hermes send --to` takes it, or None; why there is none): the chat or
     platform set by `/sentrook notify`, else `owner_channel` (see `owner_settings`)."""
@@ -1125,7 +1140,7 @@ def _send_background_notice(
         release()
         return {"status": "unsent", "target": None, "reason": "notice could not be built"}
     # Not delivered: the next one of this kind in this session is announced instead.
-    hold.deliver(_ctx, target, text, on_fail=release)
+    _deliver(cfg, target, text, on_fail=release)
     return {"status": "queued", "target": hold.target_label(target)}
 
 
@@ -1154,8 +1169,8 @@ def _scan_failure_notice(
         failure, built["tool"], where, job_id is not None, "hermes sentrook verify"
     )
     # Not delivered: the next failure in this job is announced instead.
-    hold.deliver(
-        _ctx,
+    _deliver(
+        cfg,
         target,
         text,
         on_fail=lambda: scan_failure_notice.release(cfg.state_dir, key, stamp),
@@ -1228,7 +1243,7 @@ def _hold(
             text = hold.notice_text(
                 resp, built["tool"], where, hid, offers, commands.CMD, on_job=job_id is not None
             )
-            hold.deliver(_ctx, target, text)
+            _deliver(cfg, target, text)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
             logger.warning("sentrook held a call but could not build its notice: %s", exc)
             notice = {"status": "unsent", "target": None, "reason": "notice could not be built"}

@@ -45,8 +45,8 @@ CMD = "/sentrook {}".format
 #: The key under which the owner check hands over the chat it judged (chat id and type); `dispatch` takes it off
 #: `who` before a subcommand sees `who`, so it is never recorded.
 OWNER_CHAT = "_owner_chat"
-#: (target, text) -> sends one notice the way held-call notices go.
-SendNotice = Callable[[str, str], None]
+#: (target, text, on_fail=, on_ok=) -> sends one notice the way held-call notices go (`hold.deliver`).
+SendNotice = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -94,6 +94,7 @@ def run_status(
             f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
             # Plain sentences, the same wherever shown: "Notices: ..." and "Attended platforms: ...".
             owner_settings.notify_line(notify, CMD),
+            *((failed,) if (failed := owner_settings.failed_line(cfg)) else ()),
             owner_settings.attended_line(cfg),
             f"held calls: {hold.status_line(cfg.state_dir, notify, datetime.now(UTC))}",
             f"passes: {passes.counts(cfg.state_dir, datetime.now(UTC))}",

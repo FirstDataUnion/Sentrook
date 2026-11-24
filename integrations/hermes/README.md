@@ -442,9 +442,10 @@ In the chat where you want Sentrook's notices (a direct message with the agent),
 ```
 
 From then on the notices of held calls, of scan failures on unattended runs and of Hermes's background saves go to
-that chat, and Sentrook sends a test notice there straight away. If Hermes cannot address the chat yet (on some
-platforms Hermes lists a new chat only after a while), nothing is changed and the reply says so: try again a few
-minutes later. On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
+that chat, and Sentrook sends a test notice there straight away. If it does not arrive, `/sentrook notify status`
+(and `status` and `verify`) says the last test notice was not delivered until a later notice gets through: check the
+Hermes log, and send `/sentrook notify here` again a few minutes later (on some platforms Hermes can reach a new chat
+only once it has listed it). On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
 them to that platform's home channel (set with `/sethome` in the chat you want). If Hermes does not say which chat a
 command came from, `notify here` uses the platform's home channel and the reply names it, so you can tell when that
 is not the chat you are in. A platform with no home channel is refused, with what to set.
