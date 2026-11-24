@@ -80,6 +80,7 @@ MUST_REDACT = [
     (f"curl --header 'X-Desk: {R20}' https://desk.example/api", R20, "credential"),
     (f'{{"headers": {{"X-Desk": "{R20}"}}}}', R20, "credential"),
     (f"Set-Cookie: sid={R20}; Path=/", R20, "credential"),
+    (f"Your backup codes are {GATE} and more", GATE, "credential"),
 ]
 
 MUST_STAY = [
@@ -120,6 +121,14 @@ MUST_STAY = [
     "Decode this for me and tell me what it says: "
     + base64.b64encode(b"Hello, little world!").decode(),
     f"The note says: {R20}",
+    # Destinations and ordinary codes under a key stay, so the scanner sees where data goes.
+    f"host: {R14}.ngrok.app",
+    f"bucket: {R20}",
+    f'{{"to": "{R20}"}}',
+    f"spreadsheet: {R32}",
+    "error code=447100",
+    "hsn_code: 847130",
+    "ref_code=447100",
 ]
 
 MUST_REDACT_OBJECTS = [
@@ -129,6 +138,7 @@ MUST_REDACT_OBJECTS = [
     ({"form": {"yard_code": YARD}}, YARD, "credential"),
     ({"passport_number": PASS1}, PASS1, "identifier"),
     ({"value": R32}, R32, "credential"),
+    ({"pin": float(CURLPIN)}, CURLPIN, "credential"),
 ]
 
 MUST_STAY_OBJECTS = [
@@ -142,6 +152,7 @@ MUST_STAY_OBJECTS = [
     {"version": "2.0.0a1"},
     {"userId": "aB3dE5fG7hJ9kL"},
     {"pin": True},
+    {"to": R20, "bucket": R14},
 ]
 
 
@@ -232,6 +243,10 @@ def test_linear_time_on_adversarial_input():
         "k_" * 50_000 + "code=",
         ("value: " + "aB3" * 100) * 1_000,
         "\\n" * 100_000,
+        "PIN is" + " " * 20_000 + "x",
+        "gate code is" + " " * 20_000 + "x",
+        "the gate code, it is" + " " * 20_000 + "x",
+        "PIN is " * 20_000,
     ):
         start = time.perf_counter()
         r.string(text)

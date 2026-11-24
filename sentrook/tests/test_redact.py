@@ -575,6 +575,10 @@ CUE_MUST_STAY = [
     # A word before a colon in a sentence is prose, not a key.
     "Decode this for me and tell me what it says: " + "SGVsbG8sIGxpdHRsZSB3b3JsZCE=",
     "The note says: " + _R20,
+    "host: " + _R20 + ".ngrok.app",
+    "bucket: " + _R20,
+    "error code=447100",
+    "hsn_code: 847130",
 ]
 
 

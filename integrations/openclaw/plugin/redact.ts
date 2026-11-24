@@ -383,7 +383,7 @@ const PASSPORT_CUE = String.raw`${CUE_START}passport(?:[ \t]+(?:numbers?|no\.?|#
  * N" states it in a second clause.
  */
 const CUE_CONNECTOR = String.raw`[ \t]+(?:for|on|of|to|from)[ \t]+[^\n.:;=]{1,40}?(?:[ \t]+(?:is|was)\b|[ \t]*:)[ \t]*`;
-const CUE_SEPARATOR = String.raw`[ \t]*(?:(?:is|was)[ \t]*:?[ \t]*|[:=#-][ \t]*|,[ \t]*it(?:['’]s|[ \t]+(?:is|was))(?:[ \t]+now)?[ \t]*:?[ \t]*|)`;
+const CUE_SEPARATOR = String.raw`[ \t]*(?:(?:is|was|are|were)[ \t]*(?::[ \t]*)?|[:=#-][ \t]*|,[ \t]*it(?:['’]s|[ \t]+(?:is|was))(?:[ \t]+now)?[ \t]*(?::[ \t]*)?|)`;
 /** A value ends at a character that does not continue it or a number ("6815." ends a sentence; "10:30" is not a code). */
 const CUE_END = String.raw`(?![A-Za-z0-9_-]|[.:,/][0-9])`;
 const cueRule = (flags: string, cue: string, value: string) =>
@@ -418,7 +418,7 @@ const CODE_KEY = new RegExp(
 );
 /** `value: <random>`, `"X-Desk": "<random>"`, `sig=<random>`: any key or header, a long value. */
 const RANDOM_KEY = new RegExp(
-  String.raw`${KEY_START}(?<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})\\{0,8}["']?[ \t]*(?<sep>[:=])[ \t]*\\{0,8}["']?(?<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-])`,
+  String.raw`${KEY_START}(?<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})\\{0,8}["']?[ \t]*(?<sep>[:=])[ \t]*\\{0,8}["']?(?<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-]|\.[A-Za-z0-9])`,
   "gd",
 );
 const RANDOM_VALUE = /^[A-Za-z0-9+/_-]{12,256}={0,2}$/;
@@ -435,12 +435,12 @@ const ORDINARY_CODE_PREFIX = new Set(
     "source src fiscal unit state county city branch store site plan tier mode format result customer " +
     "client vendor supplier merchant mcc lot batch location loc ticket run job tariff part model serial " +
     "invoice order shipment carrier service category group cpt icd diagnosis procedure exchange " +
-    "market ticker isin cusip unspsc"
+    "market ticker isin cusip unspsc ref reference hsn sac dialing calling"
   ).split(" "),
 );
 /** Keys and headers whose values are identifiers, digests, names, state, data or patterns, not secrets. */
 const NOT_SECRET_KEY =
-  /(?:^|[_.-])(?:id|ids|uuid|guid|hash|sha\d*|md5|digest|checksum|crc|commit|rev|revision|etag|cid|ref|trace\w*|span\w*|request\w*|version|ver|build|sku|order|path|file|filename|url|uri|href|src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce|state|data|content|body|payload|blob|image|attachment|b64|base64|raw|integrity|list|si|in-reply-to|references|message-id|thread\w*|customer|payment_intent|charge|invoice|subscription|price|product|regex|pattern|glob)$/i;
+  /(?:^|[_.-])(?:id|ids|uuid|guid|hash|sha\d*|md5|digest|checksum|crc|commit|rev|revision|etag|cid|ref|trace\w*|span\w*|request\w*|version|ver|build|sku|order|path|file|filename|url|uri|href|src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce|state|data|content|body|payload|blob|image|attachment|b64|base64|raw|integrity|list|si|in-reply-to|references|message-id|thread\w*|customer|payment_intent|charge|invoice|subscription|price|product|regex|pattern|glob|to|cc|bcc|from|recipients?|host|hostname|domain|bucket|folder|spreadsheet|sheet|doc|document|base|table|channel|repo|repository|project|workspace|account|user|username|email|room|chat)$/i;
 /**
  * camelCase keys ending in an id or name word (`userId`, `fileHash`); case-sensitive, so `sid` and `PHPSESSID`
  * (session cookies) still count.
@@ -461,7 +461,7 @@ const keyWords = (key: string) =>
  * field with six or more digits (`-d 'code=006960'`): a JSON or YAML `code:` is far more often a status or error
  * code, and a link's `?code=` an exchange the scanner needs to see.
  */
-const keyKind = (key: string, value: string, sep: string, afterQuery: boolean): CueKind | null => {
+const keyKind = (key: string, value: string, sep: string, afterQuery: boolean, prevWord = ""): CueKind | null => {
   const words = keyWords(key);
   if (!words.length) return null;
   const last = words[words.length - 1];
@@ -473,7 +473,8 @@ const keyKind = (key: string, value: string, sep: string, afterQuery: boolean): 
   if (["pin", "passcode", "otp"].includes(last)) return "pin";
   if (last !== "code") return null;
   if (words.length > 1) return ORDINARY_CODE_PREFIX.has(words[words.length - 2]) ? null : "code";
-  return sep === "=" && value.length >= 6 && !afterQuery ? "code" : null;
+  const ordinary = ORDINARY_CODE_PREFIX.has(prevWord.toLowerCase()); // "error code=447100"
+  return sep === "=" && value.length >= 6 && !afterQuery && !ordinary ? "code" : null;
 };
 
 const charClass = (ch: string) => (/[0-9]/.test(ch) ? 0 : /[A-Z]/.test(ch) ? 1 : /[a-z]/.test(ch) ? 2 : 3);
@@ -504,6 +505,10 @@ const looksRandom = (v: string): boolean => {
  */
 const randomKey = (key: string, value: string, afterQuery: boolean) =>
   !NOT_SECRET_KEY.test(key) && !NOT_SECRET_CAMEL_KEY.test(key) && !afterQuery && looksRandom(value);
+
+/** The word just before `start`, across spaces and tabs (`error` in `error code=`). */
+const wordBefore = (text: string, start: number) =>
+  /(?:(?<![A-Za-z\\])|(?<=\\[nrt]))([A-Za-z]{1,30})[ \t]{1,8}$/.exec(text.slice(Math.max(0, start - 40), start))?.[1] ?? "";
 
 const afterQuery = (text: string, start: number) => start > 0 && "?&".includes(text[start - 1]);
 
@@ -546,7 +551,7 @@ function cueSpans(text: string): Array<[number, number, CueKind]> {
   }
   each(CODE_KEY, (m) => {
     const g = m.groups as Record<string, string>;
-    const kind = keyKind(g.k, g.v, g.sep, afterQuery(text, m.index));
+    const kind = keyKind(g.k, g.v, g.sep, afterQuery(text, m.index), wordBefore(text, m.index));
     const idx = m.indices?.groups?.v;
     if (kind && idx) out.push([idx[0], idx[1], kind]);
   });

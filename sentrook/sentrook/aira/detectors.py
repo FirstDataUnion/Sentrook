@@ -927,9 +927,12 @@ def _secret_in_call(a: CallAnalysis, ctx: Context) -> str | None:
     arguments are read as their joined text and as JSON, so a value under a key (`{"pin": "3253"}`)
     is seen with its key."""
     open_ = _placeholder(ctx)
-    if a.placeholder or (a.content and open_ in a.content):
-        return PLACEHOLDER
     asked = _owner_asked_for_secret(ctx)
+    # A placeholder counts first, unless it stands for a code, PIN, passport number or random value the owner's
+    # request names (`secret_carried`).
+    for text in (a.text, a.content):
+        if text and open_ in text and secret_carried(text, open_, owner_asked=asked) == PLACEHOLDER:
+            return PLACEHOLDER
     why = secret_carried(a.text, open_, owner_asked=asked)
     if why is None and isinstance(a.call.raw, dict) and a.call.raw:
         why = secret_carried(json.dumps(a.call.raw, ensure_ascii=False), open_, owner_asked=asked)

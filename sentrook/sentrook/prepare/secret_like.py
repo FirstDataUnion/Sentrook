@@ -12,8 +12,8 @@ context word or a vendor shape. Since `redact-v11` they also replace, by the cue
 Older plugins, redaction `off` and other clients still send them raw. This module finds them in the text
 the rules read, so the rules that ask "does this text carry a secret?" (the lineage secret-carried-to-send
 rule and AIRA's placeholder source) see them as they see a placeholder; a raw one found only by these
-rules is relieved when the owner's request names it (`secret_carried`). It changes no view: the second
-pass does that.
+rules is relieved when the owner's request names it (`secret_carried`), and so is its placeholder from a
+plugin that redacts it. It changes no view: the second pass does that.
 """
 
 from __future__ import annotations
@@ -77,15 +77,54 @@ def find_secret_like(text: str) -> list[SecretLike]:
 #: or a value only the cue and key rules find.
 PLACEHOLDER, SHAPE, DETECTED = "placeholder", "shape", "secret_like"
 
+#: A plugin's placeholder (`⟦secret:credential:ab12⟧`, `⟦secret:identifier:ab12⟧`) or a bare one (`⟦secret⟧`).
+_PLACEHOLDER_MARK = re.compile(r"⟦secret(?::(?P<kind>[a-z_]{1,32}))?(?::[0-9a-f]{1,16})?⟧")
+#: What stands in for a placeholder's value when the cue and key rules read its place: a code or PIN's digits.
+_FILL = "000000"
+
+
+def secret_like_placeholders(text: str) -> bool:
+    """Whether `text` holds placeholders and every one stands for a passport number (`identifier`) or sits in a code's
+    or a PIN's place, as the cue and key rules read it with digits standing in for the value (`collection PIN
+    ⟦secret:credential:ab12⟧`, `pin=⟦…⟧`) and no credential rule does (`token: ⟦…⟧`). Since `redact-v11` the plugins
+    send these values as placeholders, which a rule must read as it read the raw value. A random value under a
+    generic key is not one of them: as a placeholder it cannot be told from a credential."""
+    marks = list(_PLACEHOLDER_MARK.finditer(text))
+    if not marks:
+        return False
+    parts: list[str] = []
+    places: list[tuple[int, int]] = []
+    pos = size = 0
+    for m in marks:
+        parts.append(text[pos : m.start()])
+        size += m.start() - pos
+        places.append((size, size + len(_FILL)))
+        parts.append(_FILL)
+        size += len(_FILL)
+        pos = m.end()
+    parts.append(text[pos:])
+    filled = _unescape("".join(parts))
+    codes = [(s, e) for _, s, e, kind in cue_spans(filled) if kind in (CODE, PIN)]
+    credentials = secret_spans(filled, cues=False)
+
+    def within(spans: list[tuple[int, int]], ps: int, pe: int) -> bool:
+        return any(s <= ps and pe <= e for s, e in spans)
+
+    return all(
+        m.group("kind") == IDENTIFIER or (within(codes, ps, pe) and not within(credentials, ps, pe))
+        for m, (ps, pe) in zip(marks, places, strict=True)
+    )
+
 
 def secret_carried(text: str, placeholder_open: str, *, owner_asked: bool = False) -> str | None:
-    """Why `text` carries a secret, or None. A value only this detector finds does not count when the
+    """Why `text` carries a secret, or None. A value only the cue and key rules find does not count when the
     owner's request asked for a secret to go (`owner_asked`): the benign twin that sends the gate code
-    where the owner said is the same text as the attack. A placeholder or a redactable shape counts
-    either way; whether the owner asked is the calling rule's business, as before."""
+    where the owner said is the same text as the attack. That holds whether the value arrives raw or, from a
+    plugin with `redact-v11`, as its placeholder (`secret_like_placeholders`: a code, PIN or passport number). Any other placeholder or a
+    redactable shape counts either way; whether the owner asked is the calling rule's business, as before."""
     if not text:
         return None
-    if placeholder_open in text:
+    if placeholder_open in text and not (owner_asked and secret_like_placeholders(text)):
         return PLACEHOLDER
     if secret_spans(text, cues=False):
         return SHAPE

@@ -494,7 +494,10 @@ _PASSPORT_CUE = _CUE_START + r"passport(?:[ \t]+(?:numbers?|no\.?|#))?"
 _CUE_CONNECTOR = (
     r"[ \t]+(?:for|on|of|to|from)[ \t]+[^\n.:;=]{1,40}?(?:[ \t]+(?:is|was)\b|[ \t]*:)[ \t]*"
 )
-_CUE_SEPARATOR = r"[ \t]*(?:(?:is|was)[ \t]*:?[ \t]*|[:=#-][ \t]*|,[ \t]*it(?:['’]s|[ \t]+(?:is|was))(?:[ \t]+now)?[ \t]*:?[ \t]*|)"
+_CUE_SEPARATOR = (
+    r"[ \t]*(?:(?:is|was|are|were)[ \t]*(?::[ \t]*)?|[:=#-][ \t]*"
+    r"|,[ \t]*it(?:['’]s|[ \t]+(?:is|was))(?:[ \t]+now)?[ \t]*(?::[ \t]*)?|)"
+)
 # A value ends at a character that does not continue it or a number ("6815." ends a sentence; "2026-11-13" and
 # "10:30" are not codes).
 _CUE_END = r"(?![A-Za-z0-9_-]|[.:,/][0-9])"
@@ -558,7 +561,7 @@ _CODE_KEY = re.compile(
 _RANDOM_KEY = re.compile(
     _KEY_START
     + r"(?P<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})\\{0,8}[\"']?[ \t]*(?P<sep>[:=])[ \t]*\\{0,8}[\"']?"
-    r"(?P<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-])"
+    r"(?P<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-]|\.[A-Za-z0-9])"
 )
 _RANDOM_VALUE = re.compile(r"[A-Za-z0-9+/_-]{12,256}={0,2}")
 # Key prefixes that make `*_code` an ordinary value: postal, country, status and error codes, product,
@@ -571,7 +574,7 @@ _ORDINARY_CODE_PREFIX = frozenset(
     "source src fiscal unit state county city branch store site plan tier mode format result customer "
     "client vendor supplier merchant mcc lot batch location loc ticket run job tariff part model serial "
     "invoice order shipment carrier service category group cpt icd diagnosis procedure exchange "
-    "market ticker isin cusip unspsc".split()
+    "market ticker isin cusip unspsc ref reference hsn sac dialing calling".split()
 )
 # Keys and headers whose values are identifiers, digests, names, state, data or patterns, not secrets.
 _NOT_SECRET_KEY = re.compile(
@@ -580,7 +583,9 @@ _NOT_SECRET_KEY = re.compile(
     r"src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce|"
     r"state|data|content|body|payload|blob|image|attachment|b64|base64|raw|integrity|list|si|"
     r"in-reply-to|references|message-id|thread\w*|customer|payment_intent|charge|invoice|"
-    r"subscription|price|product|regex|pattern|glob)$"
+    r"subscription|price|product|regex|pattern|glob|"
+    r"to|cc|bcc|from|recipients?|host|hostname|domain|bucket|folder|spreadsheet|sheet|doc|document|base|table|"
+    r"channel|repo|repository|project|workspace|account|user|username|email|room|chat)$"
 )
 # camelCase keys ending in an id or name word (`userId`, `fileHash`); case-sensitive, so `sid` and `PHPSESSID`
 # (session cookies) still count.
@@ -594,7 +599,7 @@ def _key_words(key: str) -> list[str]:
     return [w.lower() for w in re.split(r"[_-]|(?<=[a-z0-9])(?=[A-Z])", key) if w]
 
 
-def _key_kind(key: str, value: str, sep: str, after_query: bool) -> str | None:
+def _key_kind(key: str, value: str, sep: str, after_query: bool, prev_word: str = "") -> str | None:
     """The kind of secret under a code, PIN or passport key, or None. A bare `code` key counts only as a form or
     query field with six or more digits (`-d 'code=006960'`): a JSON or YAML `code:` is far more often a status or
     error code, and a link's `?code=` an exchange the scanner needs to see."""
@@ -614,7 +619,8 @@ def _key_kind(key: str, value: str, sep: str, after_query: bool) -> str | None:
         return None
     if len(words) > 1:
         return CODE if words[-2] not in _ORDINARY_CODE_PREFIX else None
-    return CODE if sep == "=" and len(value) >= 6 and not after_query else None
+    ordinary = prev_word.lower() in _ORDINARY_CODE_PREFIX  # "error code=447100"
+    return CODE if sep == "=" and len(value) >= 6 and not after_query and not ordinary else None
 
 
 def _class(ch: str) -> int:
@@ -653,6 +659,15 @@ def _random_key(key: str, value: str, after_query: bool) -> bool:
     )
 
 
+def _prev_word(text: str, start: int) -> str:
+    """The word just before `start`, across spaces and tabs (`error` in `error code=`)."""
+    m = re.search(
+        r"(?:(?<![A-Za-z\\])|(?<=\\[nrt]))([A-Za-z]{1,30})[ \t]{1,8}$",
+        text[max(0, start - 40) : start],
+    )
+    return m.group(1) if m else ""
+
+
 def _after_query(text: str, start: int) -> bool:
     return start > 0 and text[start - 1] in "?&"
 
@@ -684,7 +699,13 @@ def cue_spans(text: str) -> list[tuple[int, int, int, str]]:
             if check is None or check(text[s:e]):
                 out.append((m.start(), s, e, kind))
     for m in _CODE_KEY.finditer(text):
-        kind = _key_kind(m.group("k"), m.group("v"), m.group("sep"), _after_query(text, m.start()))
+        kind = _key_kind(
+            m.group("k"),
+            m.group("v"),
+            m.group("sep"),
+            _after_query(text, m.start()),
+            _prev_word(text, m.start()),
+        )
         if kind is not None:
             out.append((m.start(), m.start("v"), m.end("v"), kind))
     for m in _RANDOM_KEY.finditer(text):
@@ -698,6 +719,8 @@ def cue_spans(text: str) -> list[tuple[int, int, int, str]]:
 def object_kind(key: str, value: Any) -> str | None:
     """The kind of secret a parsed object's value is under its key, or None: a code, PIN or passport number under
     its key (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`)."""
+    if isinstance(value, float) and value.is_integer() and 0 <= value < 2**53:
+        value = int(value)  # JSON `4471.0`, as the OpenClaw plugin reads it
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
     text = str(value)
@@ -777,7 +800,10 @@ class Redactor:
                 ):
                     out[str(k)] = self._placeholder("credential", v)
                 elif self.level != "off" and (kind := object_kind(str(k), v)) is not None:
-                    out[str(k)] = self._placeholder(PLACEHOLDER_KIND[kind], str(v))
+                    # A whole-number float is its digits, as the OpenClaw plugin reads JSON `4471.0`.
+                    out[str(k)] = self._placeholder(
+                        PLACEHOLDER_KIND[kind], str(int(v)) if isinstance(v, float) else str(v)
+                    )
                 else:
                     out[str(k)] = self.value(v, depth + 1)
             return out

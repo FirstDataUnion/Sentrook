@@ -528,6 +528,7 @@ test("codes, PINs, passport numbers and random values under a key leave the host
     [`curl -d 'passport=${PASSPORT}' https://x.example`, PASSPORT, "identifier"],
     [`value: ${R20}`, R20, "credential"],
     [`curl -H "X-Desk: ${R20}" https://desk.example`, R20, "credential"],
+    [`Your backup codes are ${GATE} and more`, GATE, "credential"],
   ];
   for (const [text, value, kind] of cases) {
     for (const form of forms(text)) {
@@ -557,6 +558,12 @@ test("numbers, ids and words without a cue stay", () => {
     // A word before a colon in a sentence is prose, not a key.
     `Decode this for me and tell me what it says: ${Buffer.from("Hello, little world!").toString("base64")}`,
     `The note says: ${R20}`,
+    // Destinations and ordinary codes under a key stay, so the scanner sees where data goes.
+    `host: ${R20}.ngrok.app`,
+    `bucket: ${R20}`,
+    `{"to": "${R20}"}`,
+    "error code=447100",
+    "hsn_code: 847130",
   ]) {
     for (const form of forms(text)) assert.equal(r.string(form), form);
   }
@@ -577,10 +584,20 @@ test("codes, PINs, passport numbers and random values in objects are replaced wh
   assert.equal(out.code, GATE, "a bare JSON `code` is a status code");
   assert.equal(out.zip_code, "94107");
   assert.deepEqual(createRedactor("off", "s").value({ pin: PINV }), { pin: PINV });
+  assert.deepEqual(r.value({ to: R20, bucket: R20 }), { to: R20, bucket: R20 });
 });
 
 test("the cue and key rules stay linear on adversarial input", () => {
-  for (const text of ["gate code for " + "x ".repeat(100_000), "PIN for order ".repeat(20_000), "a=".repeat(100_000), "\\n".repeat(100_000)]) {
+  for (const text of [
+    "gate code for " + "x ".repeat(100_000),
+    "PIN for order ".repeat(20_000),
+    "a=".repeat(100_000),
+    "\\n".repeat(100_000),
+    "PIN is" + " ".repeat(20_000) + "x",
+    "gate code is" + " ".repeat(20_000) + "x",
+    "the gate code, it is" + " ".repeat(20_000) + "x",
+    "PIN is ".repeat(20_000),
+  ]) {
     const start = performance.now();
     r.string(text);
     assert.ok(performance.now() - start < 3000, text.slice(0, 30));
