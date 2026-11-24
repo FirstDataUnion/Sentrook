@@ -1225,3 +1225,17 @@ test("a clean config sends no settings notice", async () => {
   await settle();
   assert.equal(h.sent.filter((m) => String(m.text).includes("cannot read some of its settings")).length, 0);
 });
+
+test("not signed in: a warning at start-up, and the call is stopped with the login command named", async () => {
+  const h = setup({ SENTROOK_SCAN_CLIENT_ID: "", SENTROOK_SCAN_CLIENT_SECRET: "" });
+  assert.ok(
+    h.logs.some((m) => m.includes("not signed in") && m.includes("openclaw sentrook login")),
+    h.logs.join("\n"),
+  );
+  const r = await h.fire("before_tool_call", call("c1", "ls"));
+  assert.equal(h.scans.length, 0);
+  const told = String(r?.blockReason ?? r?.requireApproval?.description ?? "");
+  assert.match(told, /openclaw sentrook login/, JSON.stringify(r));
+  const signedIn = setup();
+  assert.ok(!signedIn.logs.some((m) => m.includes("not signed in")));
+});

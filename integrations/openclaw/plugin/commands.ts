@@ -341,7 +341,7 @@ function statusText(ctx: CommandContext): string {
     `review at: ${cfg.reviewAt}, block at: ${cfg.blockAt}`,
     `on scan error: ${cfg.onScanError}`,
     `scan host: ${scanHost}`,
-    `credentials: ${missing.length ? `no (${missing.join(", ")} not set)` : "yes"}`,
+    `credentials: ${missing.length ? `no (${missing.join(", ")} not set; run openclaw sentrook login on the gateway machine)` : "yes"}`,
     `traffic log: ${cfg.trafficLog.enabled ? "enabled" : "disabled"}, ${cfg.trafficLog.path}`,
     `grants: ${grantCount}`,
     `channel bindings: ${bindingCount}`,

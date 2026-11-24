@@ -14,50 +14,12 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
 - OpenClaw **2026.9.5 or newer** (`openclaw --version`). Tested on 2026.9.5 and 2026.11.5. Older releases refuse
   to install the plugin.
 - A shell on the machine that runs the OpenClaw gateway, as the user that runs it.
-- A free FIDU account, created at <https://identity.firstdataunion.org>.
+- A FIDU account. It is free, and you can create one while signing in (step 3).
 
 OpenClaw keeps its files in `~/.openclaw` unless `OPENCLAW_STATE_DIR` or `OPENCLAW_HOME` says otherwise. The
 paths below assume the default; substitute yours if it differs.
 
-## 1. Get scan credentials
-
-1. Sign in at <https://identity.firstdataunion.org>.
-2. Open the **Sentrook** tab and click **Create Credentials**. Any name will do (for example `openclaw-laptop`).
-3. Copy the **Client ID** and **Client Secret** somewhere private. The secret will not be shown again.
-
-The secret is a password: never paste it into a chat with your agent.
-
-## 2. Add the credentials to OpenClaw
-
-Add them before installing: in enforce mode, a plugin without credentials stops every tool call.
-
-Open `~/.openclaw/.env` in a text editor (create it if it doesn't exist) and add these two lines at the end, with
-your own values:
-
-```
-SENTROOK_SCAN_CLIENT_ID=your-client-id
-SENTROOK_SCAN_CLIENT_SECRET=your-client-secret
-```
-
-Save the file, and make sure only your user can read it:
-
-```bash
-chmod 600 ~/.openclaw/.env
-```
-
-Then point the plugin at them. These two commands store references to the two variables in `openclaw.json`, not the
-values: OpenClaw loads `.env` into its environment, and the plugin reads the variables the references name.
-
-```bash
-openclaw config set plugins.entries.sentrook.config.clientId --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_ID
-openclaw config set plugins.entries.sentrook.config.clientSecret --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_SECRET
-```
-
-Keep the values in `.env`, not in `openclaw.json`, which the agent can read. Without the references the plugin still
-finds the two lines, because it reads `.env` itself too; that works in this release. To replace the credentials later, edit the same
-two lines and restart the gateway.
-
-## 3. Let Sentrook see your requests
+## 1. Let Sentrook see your requests
 
 ```bash
 openclaw config set plugins.entries.sentrook.hooks.allowConversationAccess true
@@ -69,7 +31,7 @@ request: scores are less accurate and more routine work asks for approval.
 Until the plugin is installed, OpenClaw warns `plugin not found: sentrook (stale config entry ignored …)`. That is
 expected; the setting is kept and applies once the plugin is installed.
 
-## 4. Install
+## 2. Install
 
 ```bash
 openclaw plugins install npm:@firstdataunion/sentrook-openclaw --force --accept-capabilities
@@ -86,7 +48,55 @@ comes back disabled) and restart the gateway:
 openclaw plugins enable sentrook && openclaw gateway restart
 ```
 
-## 5. Check the setup
+From now until you sign in (next step), Sentrook stops every tool call: it never lets a call through unchecked. Each
+block tells the agent, and you, to run `openclaw sentrook login`.
+
+## 3. Sign in
+
+```bash
+openclaw sentrook login
+```
+
+It prints a link and a code. Open the link on any device (your phone is fine), sign in to your FIDU account or
+create a free one, check that the code on the page matches the one in your terminal, and click **Approve**. The
+command then saves this machine's scan credentials to `~/.openclaw/.env` (readable only by you) and runs the checks
+from step 4. There is nothing to copy.
+
+- If OpenClaw runs in Docker, run it inside the container: `docker compose exec <service> openclaw sentrook login`.
+- The machine is listed in your account as `OpenClaw on <hostname>`; `--name <label>` picks another name.
+- If the credentials are already set somewhere that wins over `.env` (plain values in the plugin config, or the
+  gateway's own environment, such as `docker run -e`), the command says where and stops: remove them there first.
+- Signing in again from the same machine replaces its credentials rather than adding new ones. Restart the gateway
+  afterwards (`openclaw gateway restart`) so it uses them; the command says so when it is needed.
+- Your account can have 5 Sentrook connections. To remove one, use the **Sentrook** tab at
+  <https://identity.firstdataunion.org/dashboard>.
+
+### Set the credentials by hand instead
+
+If you prefer not to sign in from the command line:
+
+1. Sign in at <https://identity.firstdataunion.org>, open the **Sentrook** tab and click **Create Credentials**.
+   Copy the **Client ID** and **Client Secret** somewhere private; the secret will not be shown again, and it is a
+   password: never paste it into a chat with your agent.
+2. Add them as two lines at the end of `~/.openclaw/.env` (create it if it doesn't exist), then
+   `chmod 600 ~/.openclaw/.env`:
+
+   ```
+   SENTROOK_SCAN_CLIENT_ID=your-client-id
+   SENTROOK_SCAN_CLIENT_SECRET=your-client-secret
+   ```
+
+3. Optionally point the plugin at them with references in `openclaw.json` (the values stay in `.env`, which the
+   agent cannot read through config; the plugin also finds the two lines without them):
+
+   ```bash
+   openclaw config set plugins.entries.sentrook.config.clientId --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_ID
+   openclaw config set plugins.entries.sentrook.config.clientSecret --ref-provider default --ref-source env --ref-id SENTROOK_SCAN_CLIENT_SECRET
+   ```
+
+4. Restart the gateway.
+
+## 4. Check the setup
 
 ```bash
 openclaw sentrook verify
@@ -96,15 +106,15 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 | Failing line | Fix |
 | --- | --- |
-| `credentials` | Check the two lines in `.env` and the two references (step 2), then restart the gateway. |
-| `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and replace them in `.env`. |
+| `credentials` | Not signed in: run `openclaw sentrook login` (step 3), then restart the gateway. |
+| `token mint` | The credentials were revoked or are wrong: run `openclaw sentrook login` again, then restart the gateway. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
 | `settings` | A setting in `plugins.entries.sentrook.config` that Sentrook cannot read as written: a misspelt key, a value of the wrong type or out of range. The line names each one and what is used instead; fix them (see [Settings](#settings)). |
 
 `openclaw plugins list` should show `sentrook` as enabled, with a 2.0 version.
 
-## 6. First scan
+## 5. First scan
 
 Ask the agent for something small that uses a tool, such as "list the files in your workspace". Then look at what
 Sentrook recorded:
@@ -119,7 +129,7 @@ it found (hosts, files, recipients, channels).
 
 If the history is empty, the agent has not made a tool call since the restart.
 
-## 7. Tell Sentrook what is normal for you
+## 6. Tell Sentrook what is normal for you
 
 Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
 work stops asking for approval:
@@ -283,7 +293,7 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-approve <id>` | The same as `/sentrook-allow <id>`, kept for one release |
 | `/sentrook-passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
 
-`openclaw sentrook verify` exists only on the command line. There is no session on the command line, so
+`openclaw sentrook login` and `openclaw sentrook verify` exist only on the command line. There is no session on the command line, so
 `openclaw sentrook snooze` needs `--all` and `openclaw sentrook grant` needs `--persistent` or `--session <ref>`.
 
 **Owner only.** `/sentrook status` and `/sentrook help` are open to anyone who can message the agent. The dashed
@@ -611,7 +621,7 @@ keep working. History and why keep working.
 | Switch back to enforce | `openclaw config set plugins.entries.sentrook.config.mode enforce` |
 | Stop scanning entirely (no calls are sent to Sentrook) | `openclaw plugins disable sentrook` |
 
-To start in observe mode from the beginning, set the mode alongside step 3, before installing. In observe mode the
+To start in observe mode from the beginning, set the mode alongside step 1, before installing. In observe mode the
 history's `action` column shows what Sentrook would have done, such as `observed (would review)`.
 
 ## What is sent
@@ -660,7 +670,7 @@ In short, for anyone deciding whether to install it:
 
 - **Network:** it calls two services run by First Data Union: the scan service (`sentrook.firstdataunion.org`), once
   per tool call, with the redacted request described in [What is sent](#what-is-sent), and the identity service
-  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token. Nothing else, and no
+  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token (and, when you run `openclaw sentrook login`, to sign in). Nothing else, and no
   telemetry beyond the scans themselves.
 - **OpenClaw's own saves:** with `skillReview: allow` (the default), the redacted part of the conversation goes with
   each skill and memory save OpenClaw makes on its own, and a redacted copy is kept on disk for up to 7 days to send
@@ -680,8 +690,10 @@ In short, for anyone deciding whether to install it:
   `~/.openclaw/cron/jobs.json` on releases without it), read-only, for its delivery target; and, to turn a reviewed
   background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
   starts no background processes.
-- **Credentials:** OpenClaw keeps them in `.env` and the plugin reads them through the references set in step 2.
-  The plugin also reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it
+- **Credentials:** `openclaw sentrook login` (step 3), which you run yourself, contacts the identity service and
+  writes the two `SENTROOK_SCAN_CLIENT_*` lines to `~/.openclaw/.env` (mode 600), replacing earlier ones and leaving
+  every other line as it was. It also keeps a random id for this machine in `~/.openclaw/sentrook/device-id`, so
+  signing in again replaces this machine's credentials instead of adding new ones. The plugin reads `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it
   uses only its own `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already
   set them (the credentials, and settings such as `SENTROOK_MODE`). It reads no other credential file.
 - **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
@@ -727,5 +739,5 @@ openclaw plugins uninstall sentrook --force && openclaw gateway restart
 This removes the plugin and its settings, including grants and bindings kept in `openclaw.json`. It leaves the
 traffic log, the grants and bindings set by command, the snooze state and any kept conversations in `~/.openclaw/sentrook/`, and the
 credentials in `~/.openclaw/.env`. To remove those too, delete the folder, delete the two `SENTROOK_SCAN_CLIENT_*`
-lines from `.env`, and delete the credentials on the identity service's **Sentrook** tab. To install again later,
-start from step 3.
+lines from `.env`, and remove this machine on the identity service's **Sentrook** tab. To install again later,
+start from step 1.

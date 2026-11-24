@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from . import skill_review
 from .card import error_cause, hermes_error_message
 
 OnScanError = Literal["allow", "deny", "review"]
@@ -24,6 +25,9 @@ class ScanFailure:
     detail: str
     status: int | None = None
     retry_after_sec: float | None = None
+    #: Why the credentials did not work, when that is known: `not_signed_in` (none stored) or
+    #: `sign_in_rejected` (the identity service refused them: revoked or wrong). The fix is `hermes sentrook login`.
+    setup: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,12 +63,13 @@ def scan_auth_error_to_failure(err: object) -> ScanFailure:
     lower = detail.lower()
     status_match = re.search(r"\bHTTP (\d{3})\b", detail, flags=re.IGNORECASE)
     status = int(status_match.group(1)) if status_match else None
-    if (status in AUTH_STATUSES) or "unauthorized" in lower:
+    if (status in AUTH_STATUSES) or "unauthorized" in lower or "invalid_client" in lower:
         return ScanFailure(
             ok=False,
             kind="http",
             status=status if status in AUTH_STATUSES else 401,
             detail=detail or "scan auth failed",
+            setup="sign_in_rejected" if "invalid_client" in lower else None,
         )
     if "timed out" in lower or "timeout" in lower or "abort" in lower:
         return ScanFailure(ok=False, kind="timeout", detail=detail or "scan auth timed out")
@@ -80,14 +85,50 @@ def _detail_snippet(failure: ScanFailure, limit: int = 100) -> str:
     return f"{raw[: max(0, limit - 3)]}..."
 
 
+def failure_cause(failure: ScanFailure) -> str:
+    """The card's cause (`card.error_cause`). Under `plugins.isolation: host` Hermes has no `hermes sentrook`
+    command line, so the sign-in causes name the manual route instead."""
+    return error_cause(
+        failure.kind,
+        is_auth_failure(failure),
+        setup=failure.setup,
+        by_hand=skill_review.host_isolated(),
+    )
+
+
 def scan_error_copy(failure: ScanFailure) -> str:
     """The review card for a call that could not be scanned (`card.hermes_error_message`)."""
-    return hermes_error_message(error_cause(failure.kind, is_auth_failure(failure)))
+    return hermes_error_message(failure_cause(failure))
+
+
+#: What the agent is told when the scan could not run for want of a working sign-in, by `ScanFailure.setup`.
+_SETUP = "This is a setup problem, not a security finding."
+_LOGIN_ON_HERMES = "in a terminal on the machine Hermes runs on."
+SIGN_IN_FIXES = {
+    "not_signed_in": {
+        "login": "Sentrook is not signed in on this machine, so this tool call was not scanned or run. "
+        f"{_SETUP} Tell the owner to run `hermes sentrook login` {_LOGIN_ON_HERMES} "
+        "Do not try to run it yourself or work around this.",
+        "by_hand": "Sentrook is not signed in on this machine, so this tool call was not scanned or run. "
+        f"{_SETUP} Tell the owner to set Sentrook's credentials in Hermes (see the Sentrook install guide) and "
+        "restart Hermes. Do not try to set them yourself or work around this.",
+    },
+    "sign_in_rejected": {
+        "login": "Sentrook's sign-in was revoked or is wrong, so this tool call was not scanned or run. "
+        f"{_SETUP} Tell the owner to run `hermes sentrook login` again {_LOGIN_ON_HERMES} "
+        "Do not try to run it yourself or work around this.",
+        "by_hand": "Sentrook's sign-in was revoked or is wrong, so this tool call was not scanned or run. "
+        f"{_SETUP} Tell the owner to set new Sentrook credentials in Hermes (see the Sentrook install guide) "
+        "and restart Hermes. Do not try to set them yourself or work around this.",
+    },
+}
 
 
 def _block_reason_for(failure: ScanFailure) -> str:
     """Agent-facing block message when the tool must not run."""
     snippet = _detail_snippet(failure)
+    if failure.setup in SIGN_IN_FIXES:
+        return SIGN_IN_FIXES[failure.setup]["by_hand" if skill_review.host_isolated() else "login"]
     if is_auth_failure(failure):
         base = (
             (

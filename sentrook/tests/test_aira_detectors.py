@@ -1057,6 +1057,12 @@ def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
         # An option before the verb might take the next word as its value, so every word that
         # could be the verb is checked.
         hx("hermes sentrook -p status grant host example.test"),
+        # Signing in is the owner's: an agent that started it would show the owner a link it chose.
+        ex("openclaw sentrook login"),
+        ex("openclaw sentrook login --name my-box"),
+        hx("hermes sentrook login"),
+        hx("hermes sentrook login --name my-box"),
+        hx("uv run hermes sentrook login"),
     ],
 )
 def test_c4star_plugin_commands_take_the_floor(raw):

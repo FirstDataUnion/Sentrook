@@ -55,6 +55,14 @@ class Subcommand:
     session: bool = False
 
 
+def _sign_in_route(env: dict[str, str]) -> str:
+    """How to sign in: the login command, or under `plugins.isolation: host` (no `hermes sentrook` command line)
+    the manual route."""
+    if skill_review.host_isolated(env):
+        return "set them in Hermes by hand, see the install guide"
+    return "run hermes sentrook login on the Hermes machine"
+
+
 def run_status(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
@@ -73,7 +81,9 @@ def run_status(
             f"on scan error: {cfg.on_scan_error}",
             f"scan host: {scan or f'invalid ({ep.scan.reason})'}",
             "credentials: "
-            + (f"missing {' and '.join(missing)} (set in Hermes)" if missing else "present"),
+            + (
+                f"missing {' and '.join(missing)} ({_sign_in_route(env)})" if missing else "present"
+            ),
             "traffic log: " + (f"on, {cfg.traffic_log_path}" if cfg.traffic_log_enabled else "off"),
             f"grants: {grant_count}",
             f"channel bindings: {binding_count}",

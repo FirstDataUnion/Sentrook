@@ -40,8 +40,19 @@ GRANT_DAYS = 30
 
 #: Per host: the budget, how commands are typed, and the host's word for the approve-always button.
 HOSTS: dict[str, dict[str, Any]] = {
-    "hermes": {"budget": 300, "cmd": "/sentrook {}", "always": '"Always"'},
-    "openclaw": {"budget": 500, "title_max": 80, "cmd": "/sentrook-{}", "always": '"Always allow"'},
+    "hermes": {
+        "budget": 300,
+        "cmd": "/sentrook {}",
+        "always": '"Always"',
+        "login": "Run on the Hermes machine: hermes sentrook login",
+    },
+    "openclaw": {
+        "budget": 500,
+        "title_max": 80,
+        "cmd": "/sentrook-{}",
+        "always": '"Always allow"',
+        "login": "Run on the gateway machine: openclaw sentrook login",
+    },
 }
 
 #: What Hermes's Session answer covers on a review (`session` in `review_lines`): later calls in this chat of the
@@ -353,6 +364,13 @@ ERROR_CAUSES = {
     "config": "Sentrook's settings are missing or wrong. This is a setup problem, not a security finding.",
     "auth": "Sentrook could not sign in to its scan service. This is a setup problem, not a security finding.",
     "unreachable": "Its scan service did not answer.",
+    # {login} is the host's sign-in command (`HOSTS[host]["login"]`).
+    "not_signed_in": "Sentrook isn't signed in yet. {login}",
+    "sign_in_rejected": "Sentrook's sign-in was revoked or is wrong. {login}",
+    # Hermes under `plugins.isolation: host` has no `hermes sentrook` command line.
+    "not_signed_in_by_hand": "Sentrook isn't signed in yet. Set its credentials in Hermes (see the install guide).",
+    "sign_in_rejected_by_hand": "Sentrook's sign-in was revoked or is wrong. Set new credentials in Hermes "
+    "(see the install guide).",
 }
 ERROR_RUNS_UNCHECKED = "If you allow it, it runs without a security check."
 #: On Hermes, Session and Always answer every scan error in the chat (`error_rule_key` in the plugin).
@@ -361,7 +379,9 @@ ERROR_SESSION_NOTE = (
 )
 
 
-def error_cause(kind: str, auth: bool) -> str:
+def error_cause(kind: str, auth: bool, setup: str | None = None, by_hand: bool = False) -> str:
+    if setup in ("not_signed_in", "sign_in_rejected"):
+        return f"{setup}_by_hand" if by_hand else setup
     if kind == "rate_limited":
         return "rate_limited"
     if kind == "config":
@@ -370,7 +390,7 @@ def error_cause(kind: str, auth: bool) -> str:
 
 
 def error_lines(cause: str, host: str) -> list[str]:
-    lines = [ERROR_CAUSES[cause], ERROR_RUNS_UNCHECKED]
+    lines = [ERROR_CAUSES[cause].format(login=HOSTS[host]["login"]), ERROR_RUNS_UNCHECKED]
     if host == "hermes":
         lines.append(ERROR_SESSION_NOTE)
     lines.append(f"Status: {HOSTS[host]['cmd'].format('status')}")

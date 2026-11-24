@@ -20,48 +20,63 @@ The plugin is a beta (2.0.0-beta). Report problems at <https://github.com/FirstD
   commands (`verify`, `history` and the rest): use `/sentrook` in a chat or the terminal session instead.
 - A shell on the machine that runs Hermes, as the user that runs it. If Hermes runs in Docker, run the commands
   inside the container (`docker exec -it <container> sh`).
-- A free FIDU account, created at <https://identity.firstdataunion.org>.
+- A FIDU account. It is free, and you can create one while signing in (step 2).
 
 Hermes keeps its files in `~/.hermes` (`/opt/data` in the Docker image, or wherever `HERMES_HOME` points).
 `hermes config path` prints the settings file inside it.
 
-## 1. Get scan credentials
-
-1. Sign in at <https://identity.firstdataunion.org>.
-2. Open the **Sentrook** tab and click **Create Credentials**. Any name will do (for example `hermes-laptop`).
-3. Copy the **Client ID** and **Client Secret** somewhere private. The secret will not be shown again.
-
-The secret is a password: never paste it into a chat with your agent.
-
-## 2. Add the credentials to Hermes
-
-Add them before installing: in enforce mode, a plugin without credentials stops every tool call.
-
-Hermes keeps the credentials, not the plugin: it stores them in its own `.env` file and hands them to the plugin when
-asked. Paste this into the shell; it asks for the Client ID and then the Client Secret (the secret is not shown as you
-paste it) and keeps both out of your shell history:
+## 1. Install
 
 ```bash
-{ printf 'Client ID: '; read -r id; printf 'Client secret: '; stty -echo; read -r secret; stty echo; echo
-  hermes config set SENTROOK_SCAN_CLIENT_ID "$id" && hermes config set SENTROOK_SCAN_CLIENT_SECRET "$secret"
-  unset id secret; }
+hermes plugins install FirstDataUnion/Sentrook-hermes --enable
 ```
 
-Both lines should end `Set ... in .../.hermes/.env`. Never put the credentials in `config.yaml`: the plugin does not
-read them from there. If you install without setting them first, `hermes plugins install` asks for them itself.
+From now until you sign in (next step), Sentrook stops every tool call: it never lets a call through unchecked. Each
+block tells the agent, and you, to run `hermes sentrook login`.
 
-To replace them later, run the same block again and restart Hermes: the plugin sees new credentials after Hermes
-restarts, not before.
-
-## 3. Install
+## 2. Sign in
 
 ```bash
-hermes plugins install FirstDataUnion/Sentrook-hermes --enable && hermes gateway restart
+hermes sentrook login
+```
+
+It prints a link and a code. Open the link on any device (your phone is fine), sign in to your FIDU account or
+create a free one, check that the code on the page matches the one in your terminal, and click **Approve**. The
+command then has Hermes store this machine's scan credentials (in Hermes's own `.env`, never `config.yaml`) and runs
+the checks from step 3. There is nothing to copy. Then restart Hermes so the gateway uses them:
+
+```bash
+hermes gateway restart
 ```
 
 If you don't run the gateway as a service, restart Hermes the way you normally start it.
 
-## 4. Check the setup
+- If Hermes runs in Docker, run the command inside the container (`docker exec -it <container> hermes sentrook login`).
+- The machine is listed in your account as `Hermes on <hostname>`; `--name <label>` picks another name.
+- Signing in again from the same machine replaces its credentials rather than adding new ones.
+- Your account can have 5 Sentrook connections. To remove one, use the **Sentrook** tab at
+  <https://identity.firstdataunion.org/dashboard>.
+
+### Set the credentials by hand instead
+
+With `plugins.isolation: host` there is no `hermes sentrook` command, so set them by hand (or if you prefer to):
+
+1. Sign in at <https://identity.firstdataunion.org>, open the **Sentrook** tab and click **Create Credentials**.
+   Copy the **Client ID** and **Client Secret** somewhere private; the secret will not be shown again, and it is a
+   password: never paste it into a chat with your agent.
+2. Paste this into the shell. It asks for the Client ID and then the Client Secret (the secret is not shown as you
+   paste it), hands them to Hermes, and keeps both out of your shell history:
+
+   ```bash
+   { printf 'Client ID: '; read -r id; printf 'Client secret: '; stty -echo; read -r secret; stty echo; echo
+     hermes config set SENTROOK_SCAN_CLIENT_ID "$id" && hermes config set SENTROOK_SCAN_CLIENT_SECRET "$secret"
+     unset id secret; }
+   ```
+
+   Both lines should end `Set ... in .../.hermes/.env`.
+3. Restart Hermes: the plugin sees new credentials after Hermes restarts, not before.
+
+## 3. Check the setup
 
 ```bash
 hermes sentrook verify
@@ -71,8 +86,8 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 
 | Failing line | Fix |
 | --- | --- |
-| `credentials` | It names the missing one. Set it (step 2), then restart. |
-| `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and set them again (step 2). |
+| `credentials` | Not signed in: run `hermes sentrook login` (step 2), then restart Hermes. |
+| `token mint` | The credentials were revoked or are wrong: run `hermes sentrook login` again, then restart Hermes. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
 
@@ -81,7 +96,7 @@ If Hermes answers `'sentrook' is not a hermes command`, the plugin is not enable
 commands at all; check with `/sentrook status` in a session instead. `hermes plugins list` should show `sentrook` as enabled, with a 2.0
 version.
 
-## 5. First scan
+## 4. First scan
 
 Ask the agent for something small that uses a tool, such as "list the files in your home folder". Then look at what
 Sentrook recorded:
@@ -96,7 +111,7 @@ found (hosts, files, recipients, channels).
 
 If the history is empty, the agent has not made a tool call since the restart.
 
-## 6. Tell Sentrook what is normal for you
+## 5. Tell Sentrook what is normal for you
 
 Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
 work stops asking for approval:
@@ -582,7 +597,7 @@ keep working. History and why keep working.
 | Switch back to enforce | `hermes config set plugins.entries.sentrook.settings.mode enforce` |
 | Stop scanning entirely (no calls are sent to Sentrook) | `hermes plugins disable sentrook` |
 
-To start in observe mode from the beginning, install with `--no-enable` in step 3, set the mode, then run
+To start in observe mode from the beginning, install with `--no-enable` in step 1, set the mode, then run
 `hermes plugins enable sentrook` and restart. In observe mode the history's `action` column shows what Sentrook
 would have done, such as `observed (would review)`.
 
@@ -643,7 +658,7 @@ In short, for anyone deciding whether to install it:
 
 - **Network:** it calls two services run by First Data Union: the scan service (`sentrook.firstdataunion.org`), once
   per tool call, with the redacted request described in [What is sent](#what-is-sent), and the identity service
-  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token. Nothing else, and no
+  (`identity.firstdataunion.org`) to exchange the scan credentials for a short-lived token (and, when you run `hermes sentrook login`, to sign in). Nothing else, and no
   telemetry beyond the scans themselves.
 - **Hermes's own saves:** with `skill_review: allow` (the default), the redacted recent conversation goes with each of
   Hermes's background skill and memory saves, and a redacted copy of recent messages is kept on disk to send with
@@ -659,8 +674,11 @@ In short, for anyone deciding whether to install it:
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
   secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`
   command, to send a notice above; the notice text goes to it on standard input.
-- **Credentials:** the scan credentials are stored and handed over by Hermes. The plugin never reads `.env`,
-  `auth.json` or any other credential file.
+- **Credentials:** the scan credentials are stored and handed over by Hermes. `hermes sentrook login` (step 2), which
+  you run yourself, contacts the identity service and has Hermes store the two `SENTROOK_SCAN_CLIENT_*` values with
+  its own writer. It also keeps a random id for this machine in `~/.hermes/sentrook/device-id`, so signing in again
+  replaces this machine's credentials instead of adding new ones. The plugin never reads `.env`, `auth.json` or any
+  other credential file.
 - **Turning it down or off:** [observe mode](#observe-mode) scores and logs without ever blocking or asking, and
   `hermes plugins disable sentrook` stops it sending anything.
 
@@ -668,7 +686,7 @@ In short, for anyone deciding whether to install it:
 
 Set with `hermes config set plugins.entries.sentrook.settings.<key> <value>` and restart. Most keys can also come
 from a `SENTROOK_*` variable in the environment Hermes starts with; the setting wins. The scan credentials are not
-settings (see [step 2](#2-add-the-credentials-to-hermes)).
+settings (see [step 2](#2-sign-in)).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -702,9 +720,9 @@ hermes plugins remove sentrook && hermes gateway restart
 This removes the plugin and its settings, including grants and bindings kept in `config.yaml`. It leaves the
 traffic log, the grants and bindings set by command, and the snooze state in `~/.hermes/sentrook/`, and the
 credentials Hermes keeps in its `.env`. To remove those too, delete the folder, delete the two
-`SENTROOK_SCAN_CLIENT_*` lines from the file `hermes config env-path` prints, and delete the credentials on the identity
+`SENTROOK_SCAN_CLIENT_*` lines from the file `hermes config env-path` prints, and remove this machine on the identity
 service's **Sentrook** tab. To install again later, start from
-step 3.
+step 1.
 
 ## License
 

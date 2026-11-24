@@ -48,7 +48,9 @@ In short, for anyone deciding whether to install it:
   turn a reviewed background change to a skill into a draft, that skill's `SKILL.md`. It runs no shell commands and
   starts no background processes.
 - **Credentials:** the scan credentials (`SENTROOK_SCAN_CLIENT_ID`, `SENTROOK_SCAN_CLIENT_SECRET`) belong in
-  OpenClaw's `~/.openclaw/.env`, referenced from the plugin's config as env SecretRefs. The plugin also reads
+  OpenClaw's `~/.openclaw/.env`. `openclaw sentrook login`, which you run yourself, signs in through the identity
+  service and writes those two lines there (mode 600), keeping every other line, and keeps a random id for the
+  machine in `~/.openclaw/sentrook/device-id` so a later sign-in replaces them. The plugin also reads
   `~/.openclaw/.env` itself, at each scan and command, whether or not the references are set: it uses only its own
   `SENTROOK_*` entries from it, and only where its config and OpenClaw's environment do not already set them (the
   credentials, and settings such as `SENTROOK_MODE`). It reads no other credential file.
@@ -58,21 +60,21 @@ In short, for anyone deciding whether to install it:
 
 ## Quick start
 
-1. Create scan credentials on the **Sentrook** tab at <https://identity.firstdataunion.org>.
-2. Add them to `~/.openclaw/.env` and point the plugin at them (guide, step 2).
-3. Let it read what you asked the agent for (without this, more routine work asks for approval):
+1. Let it read what you asked the agent for (without this, more routine work asks for approval):
 
    ```bash
    openclaw config set plugins.entries.sentrook.hooks.allowConversationAccess true
    ```
 
-4. Install it with the command in the guide (step 4), then enable it and restart the gateway:
+2. Install it with the command in the guide (step 2), then enable it and restart the gateway:
 
    ```bash
    openclaw plugins enable sentrook && openclaw gateway restart
    ```
 
-5. Check: `openclaw sentrook verify`. Every line should start with `ok`.
+3. Sign in: `openclaw sentrook login`. Open the link it prints on any device, sign in or create a free FIDU account,
+   and approve. Until you do, Sentrook stops every tool call.
+4. Check: `openclaw sentrook verify`. Every line should start with `ok`.
 
 License: MIT. The Sentrook name and logo, including the package icon, are trademarks of First International Data
 Union Ltd and are not covered by the licence: see [TRADEMARKS.md](https://github.com/FirstDataUnion/Sentrook/blob/main/TRADEMARKS.md).

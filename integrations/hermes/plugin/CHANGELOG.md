@@ -6,6 +6,20 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- **`hermes sentrook login`: sign in instead of copying credentials.** It prints a link and a code; open the link on
+  any device, sign in or create a free FIDU account, and approve. Hermes then stores this machine's scan credentials
+  with its own writer, and the command runs the same checks as `verify`. Restart Hermes afterwards. Signing in again
+  from the same machine replaces its credentials (a random id for the machine is kept in the state folder);
+  `--name` sets how the machine is listed in the account. If Hermes does not store the values (managed settings),
+  it says so instead of reporting success. Nothing the identity service writes is printed, and never the secret.
+- **Install no longer asks for the credentials** (`requires_env` is gone; the two values stay declared as secrets).
+  After install, Hermes shows the next step: `hermes sentrook login`.
+- **Not signed in, said plainly.** Sentrook still stops every tool call without credentials. The block the agent
+  reads, the approval card, `/sentrook status`, `verify` and a warning at startup now say the fix is
+  `hermes sentrook login`, or, under `plugins.isolation: host` (no `hermes sentrook` command line), to set the
+  credentials in Hermes by hand. Credentials the identity service refuses (`invalid_client`: revoked or wrong) say to
+  sign in again.
+
 - **Held calls: every answer now does something.** Before, `/sentrook approve <id>` only set the grant Sentrook
   suggested, and on scheduled runs it never suggests one, so approving set nothing and the job was held again the next
   day. A hold on a cron job now offers, in its notice, only the answers that apply:

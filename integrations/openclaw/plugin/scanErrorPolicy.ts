@@ -6,7 +6,7 @@
  * attended, block when unattended). Auth and configuration failures never fail open.
  */
 
-import { errorCard, errorCause } from "./card.ts";
+import { errorCard, errorCause, type SignInProblem } from "./card.ts";
 
 export type OnScanError = "allow" | "deny" | "review";
 export type ScanFailureKind = "rate_limited" | "http" | "timeout" | "network" | "config" | "scan_error";
@@ -19,6 +19,8 @@ export interface ScanFailure {
   status?: number;
   retryAfterSec?: number;
   detail: string;
+  /** Why the credentials did not work, when that is known; the fix is `openclaw sentrook login`. */
+  setup?: SignInProblem;
 }
 
 export interface ScanErrorHookResult {
@@ -83,13 +85,15 @@ export function scanAuthErrorToFailure(err: unknown): ScanFailure {
   const status = statusMatch ? Number(statusMatch[1]) : undefined;
   if (
     (status != null && AUTH_STATUSES.has(status)) ||
-    lower.includes("unauthorized")
+    lower.includes("unauthorized") ||
+    lower.includes("invalid_client")
   ) {
     return {
       ok: false,
       kind: "http",
       status: status && AUTH_STATUSES.has(status) ? status : 401,
       detail: detail || "scan auth failed",
+      ...(lower.includes("invalid_client") ? { setup: "sign_in_rejected" as const } : {}),
     };
   }
   if (lower.includes("timed out") || lower.includes("abort")) {
@@ -107,10 +111,23 @@ function detailSnippet(failure: ScanFailure, limit = 100): string {
 
 /** The review card for a call that could not be scanned (`card.errorCard`). */
 export function scanErrorCopy(failure: ScanFailure): { title: string; description: string } {
-  return errorCard(errorCause(failure.kind, isAuthFailure(failure)));
+  return errorCard(errorCause(failure.kind, isAuthFailure(failure), failure.setup));
 }
 
+/** What the agent is told when the scan could not run for want of a working sign-in, by `ScanFailure.setup`. */
+export const SIGN_IN_FIXES: Record<SignInProblem, string> = {
+  not_signed_in:
+    "Sentrook is not signed in on this machine, so this tool call was not scanned or run. This is a setup problem, " +
+    "not a security finding. Tell the owner to run `openclaw sentrook login` in a terminal on the gateway machine. " +
+    "Do not try to run it yourself or work around this.",
+  sign_in_rejected:
+    "Sentrook's sign-in was revoked or is wrong, so this tool call was not scanned or run. This is a setup problem, " +
+    "not a security finding. Tell the owner to run `openclaw sentrook login` again in a terminal on the gateway " +
+    "machine. Do not try to run it yourself or work around this.",
+};
+
 function blockReasonFor(failure: ScanFailure): string {
+  if (failure.setup) return SIGN_IN_FIXES[failure.setup];
   const snippet = detailSnippet(failure);
   if (isAuthFailure(failure)) {
     const base =

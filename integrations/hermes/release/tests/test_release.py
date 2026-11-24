@@ -150,7 +150,10 @@ def test_the_catalog_entry_pins_a_full_sha_and_the_manifest_version(tmp_path, mi
     assert entry["requires_hermes"] == manifest["requires_hermes"]
     assert entry["repo"] == "https://github.com/FirstDataUnion/Sentrook-hermes"
     assert entry["capabilities"]["provides_hooks"] == manifest["provides_hooks"]
-    assert entry["capabilities"]["requires_env"] == [e["name"] for e in manifest["requires_env"]]
+    # No install prompt for the credentials (`hermes sentrook login` stores them), so none are listed.
+    assert entry["capabilities"]["requires_env"] == [
+        e["name"] for e in manifest.get("requires_env", [])
+    ]
     # Quoted, as the catalog asks: a bare 2.0 would read as a number.
     text = (out / "plugin-catalog/sentrook.yaml").read_text()
     assert f'version: "{manifest["version"]}"' in text
