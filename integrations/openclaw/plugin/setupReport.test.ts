@@ -343,6 +343,17 @@ test("its result goes to the next scan like any tool result", async () => {
   const input = p.new_inputs.find((i: any) => i.kind === "tool_result");
   assert.equal(input.tool, report.TOOL);
   assert.ok(input.content.startsWith("Sentrook setup report"));
+  // the scanner's own validator checks this request (the plugin-planir-check Makefile target)
+  const file = process.env.SENTROOK_PLANIR_DUMP;
+  if (file) {
+    let prior: any[] = [];
+    try {
+      prior = JSON.parse(readFileSync(file, "utf8"));
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err;
+    }
+    writeFileSync(file, JSON.stringify([...prior, ...h.scans]));
+  }
 });
 
 test("a refused call leaves no step behind", async () => {

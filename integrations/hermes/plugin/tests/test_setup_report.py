@@ -341,7 +341,7 @@ def test_a_marker_expires(h, monkeypatch):
     assert run(h) == META["refusal"]
 
 
-def test_its_result_goes_to_the_next_scan_like_any_tool_result(h):
+def test_episode_its_result_goes_to_the_next_scan_like_any_tool_result(h):
     assert ask(h) is None
     text = run(h)
     h.ctx.hooks["post_tool_call"](
