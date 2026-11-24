@@ -12,10 +12,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
-import time
 from pathlib import Path
 
 import pytest
+from linear_time import assert_linear
 
 from sentrook.prepare.redact import PLACEHOLDER, REDACTION_VERSION, redact_text, second_pass
 
@@ -110,50 +110,68 @@ def test_two_shapes_on_one_value_count_once():
     assert n == 1 and out == f"OPENAI_API_KEY={P}"
 
 
+# Each input is head + unit * count + tail, so it can be built at 1/4 size: the check is how the time
+# grows with the input (see linear_time.py), not a wall-clock bound that a slow runner misses.
+ADVERSARIAL = [
+    ("", "eyJ", 300_000, "!"),
+    ("", "sk-", 300_000, ""),
+    ("", "token=", 150_000, ""),
+    ("", "authorization: bearer ", 40_000, ""),
+    ("", "-----BEGIN PRIVATE KEY-----", 30_000, ""),
+    ("", "a", 1_000_000, ""),
+    ("", "-----BEGIN " + " ".join(["OPENSSH", "PRIVATE", "KEY"]) + "-----\\n", 25_000, ""),
+    ("", "a_", 500_000, ""),
+    ("", "the database password is now set to ", 25_000, ""),
+    ("", "token ", 160_000, ""),
+    ("", '\\"password\\": \\"', 70_000, ""),
+    ("postgres://" + "u" * 300, ":", 100_000, ""),
+    ("", "SECRET_", 140_000, ""),
+    ("mysql " * 30 + '-p"', "a", 1_000_000, ""),
+    ("", 'mysql -p\\"' + "a" * 100, 10_000, ""),
+    ("", "sshpass -e ", 100_000, ""),
+    ("", "--password ", 100_000, ""),
+    ("token=" + "a" * 8, ".", 1_000_000, ""),
+    ('token="', "-token=", 140_000, ""),
+    ("SECRET_X=" + "a" * 12, ")", 1_000_000, ""),
+    ("", "the password changed, it's now ", 30_000, ""),
+    ("", "the token was rotated and", 40_000, ""),
+    ("token = ", "get.", 250_000, ""),
+    ("token = ", "getSecret", 100_000, "x"),
+    ("token = ", "a_", 400_000, "."),
+    ("token: ", "x()", 300_000, ""),
+    ("token = ", "a(b.", 200_000, ""),
+    ("token = self.", "a.", 300_000, "x"),
+    ("token = ", "b64decode.", 100_000, "-"),
+    ("token = x(", "a.", 300_000, "x"),
+    ("token = ", "a[1]", 200_000, "x"),
+    ("token = ", "aaa1", 200_000, "("),
+    ("token: config.", "a", 1_000_000, ""),
+    ("token = ", "a(b", 300_000, ""),
+]
+
+
+def _build(case: tuple[str, str, int, str], divisor: int = 1) -> str:
+    head, unit, count, tail = case
+    return head + unit * (count // divisor) + tail
+
+
 @pytest.mark.parametrize(
-    "text",
-    [
-        "eyJ" * 300_000 + "!",
-        "sk-" * 300_000,
-        "token=" * 150_000,
-        "authorization: bearer " * 40_000,
-        "-----BEGIN PRIVATE KEY-----" * 30_000,
-        "a" * 1_000_000,
-        ("-----BEGIN " + " ".join(["OPENSSH", "PRIVATE", "KEY"]) + "-----\\n") * 25_000,
-        "a_" * 500_000,
-        "the database password is now set to " * 25_000,
-        "token " * 160_000,
-        '\\"password\\": \\"' * 70_000,
-        "postgres://" + "u" * 300 + ":" * 100_000,
-        "SECRET_" * 140_000,
-        "mysql " * 30 + '-p"' + "a" * 1_000_000,
-        ('mysql -p\\"' + "a" * 100) * 10_000,
-        "sshpass -e " * 100_000,
-        "--password " * 100_000,
-        "token=" + "a" * 8 + "." * 1_000_000,
-        'token="' + "-token=" * 140_000,
-        "SECRET_X=" + "a" * 12 + ")" * 1_000_000,
-        "the password changed, it's now " * 30_000,
-        "the token was rotated and" * 40_000,
-        "token = " + "get." * 250_000,
-        "token = " + "getSecret" * 100_000 + "x",
-        "token = " + "a_" * 400_000 + ".",
-        "token: " + "x()" * 300_000,
-        "token = " + "a(b." * 200_000,
-        "token = self." + "a." * 300_000 + "x",
-        "token = " + "b64decode." * 100_000 + "-",
-        "token = x(" + "a." * 300_000 + "x",
-        "token = " + "a[1]" * 200_000 + "x",
-        "token = " + "aaa1" * 200_000 + "(",
-        "token: config." + "a" * 1_000_000,
-        "token = " + "a(b" * 300_000,
-    ],
-    ids=lambda text: f"{text[:12]!r}x{len(text)}",
+    "case", ADVERSARIAL, ids=lambda case: f"{(case[0] + case[1])[:12]!r}x{len(_build(case))}"
 )
-def test_linear_time_on_adversarial_input(text):
-    t0 = time.perf_counter()
-    redact_text(text)
-    assert time.perf_counter() - t0 < 2.0
+def test_linear_time_on_adversarial_input(case):
+    assert_linear(lambda d: redact_text(_build(case, d)), what=repr(_build(case)[:40]))
+
+
+def test_linear_time_check_passes_on_a_slower_runner():
+    """A runner 3x slower (every call made three times over) grows the same way, so it still passes,
+    where it would miss the old 2-second bound."""
+    case = ("", "token ", 160_000, "")
+
+    def slow(d: int) -> None:
+        for _ in range(3):
+            redact_text(_build(case, d))
+
+    assert_linear(slow, what="3x slower")
 
 
 # Secret-looking values for the forms below, built at run time.
