@@ -607,8 +607,8 @@ def answer(
         return f"{job} may make this call until {shown}. {undo}"
     if not found.get("job_ref"):
         return (
-            f"The next identical call from an unattended run may go through once, until {shown}. The held "
-            f"call itself is not run again. {undo}"
+            f"The next identical call from an unattended run may go through once, until {shown}. Sentrook "
+            f"does not run the held call itself. {undo}"
         )
     _run_now(found)  # the seam for starting the job now; until then the pass waits for the next run
     return (

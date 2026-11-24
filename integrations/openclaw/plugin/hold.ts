@@ -550,7 +550,7 @@ export function answer(
   if (want === passes.DENY) reply = `${job} will not make this call until ${shown}; you won't be told again. ${undo}`;
   else if (want === passes.ALLOW_ALWAYS) reply = `${job} may make this call until ${shown}. ${undo}`;
   else if (!found.job_ref) {
-    reply = `The next identical call from an unattended run may go through once, until ${shown}. The held call itself is not run again. ${undo}`;
+    reply = `The next identical call from an unattended run may go through once, until ${shown}. Sentrook does not run the held call itself. ${undo}`;
   } else {
     runNow(found); // the seam for starting the job now; until then the pass waits for the next run
     reply = `${job} may make this call once: on its next run, or if the held run retries it. Sentrook does not run the held call itself. ${undo}`;
