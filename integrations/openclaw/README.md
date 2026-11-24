@@ -504,6 +504,13 @@ not told: `status` and `verify` then say that background-save notices cannot be 
 from the Control UI or the terminal, there is no direct message to send notices to; check `/sentrook-history` instead.
 In observe mode nothing is drafted, held or announced.
 
+The same runs' other calls (a command, a file read) are never asked about either: a prompt there would be lost the
+same way, and the run could stop before its save. An allowed call runs and a blocked one is blocked, as anywhere. A
+call that needs review is **held**: it does not run, and the run is told nobody can approve it and not to retry it.
+You get one notice per run (per cron job for the skill collection review) in 6 hours, naming the run and the call as
+a review card would describe it; it is not kept with the held calls you can approve, and `/sentrook-history` shows it
+as `held`. A scan failure follows the policy for unattended runs, as for a save.
+
 ### Memory Sentrook does not see
 
 Some of OpenClaw's memory writers work inside OpenClaw itself and never make a tool call, so no plugin, Sentrook

@@ -3,8 +3,8 @@
  *
  * A review in a chat waits `interactiveTimeoutMs` for an answer and is denied when nobody
  * answers (always fail-closed; not configurable). `scheduledIntentKinds` says which runs are
- * unattended: a review there is held for the owner (hold.ts) instead of asked. OpenClaw's own background saves are
- * unattended whatever it says (backgroundSave.ts).
+ * unattended: a review there is held for the owner (hold.ts) instead of asked. OpenClaw's own background runs, their
+ * saves and every other call, are unattended whatever it says (backgroundSave.ts).
  */
 
 export type IntentKind = "user" | "cron" | "subagent" | "system";

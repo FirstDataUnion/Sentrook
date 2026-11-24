@@ -28,6 +28,13 @@
  * - a scan that gives no answer: the scan-error policy for unattended runs, with its failure notice
  *   (`scanErrorPolicy.ts`, `scanFailureNotice.ts`).
  *
+ * The run's other calls (an exec, a read) are never asked about either: a prompt there is lost the same way, and the
+ * run may then stop before its save. Allowed calls run and blocked ones are blocked as anywhere; a review is held: the
+ * call does not run, the run is told nobody can approve it and not to retry it (`HELD_CALL_TEXT`), and the owner gets
+ * one notice per run (`heldCallText`). Like held saves, these holds are not kept in the holds file: background runs
+ * come after every turn, and their calls must not push out holds of the owner's own jobs. A scan that gives no answer
+ * follows the unattended policy, as for a save.
+ *
  * The notices go where held-call notices go (`/sentrook-notify here`). They are built only from fixed text, the run
  * label, the tool name and the call's description as a review card shows it (entity display strings, made inert), so
  * nothing the saving model wrote reaches the owner beyond what a card shows. A notice of each kind goes once per run
@@ -55,6 +62,11 @@ export type Announced = "lenient" | "drafted" | "draft_failed" | "draft_ignored"
 /** What the agent is told when a background save is held: nobody can approve it, so retrying never helps. */
 export const HELD_TEXT =
   "Sentrook did not allow this save, so it was not saved. The owner has been told. Do not retry it in this run.";
+
+/** What the agent is told when another call of a background run is held: nobody can approve it there. */
+export const HELD_CALL_TEXT =
+  "Sentrook held this tool call, so it did not run: nobody can approve it in this background run. The owner has " +
+  "been told. Do not retry it in this run.";
 
 /** The first OpenClaw that takes a Skill Workshop draft from a plugin's rewritten parameters in a background review. */
 export const DRAFT_FLOOR: readonly [number, number, number] = [2026, 11, 5];
@@ -350,11 +362,12 @@ export function patchDraft(
 
 /**
  * The quiet-period key of a notice: one per outcome and run (cron job, else session). `held_retry`: a hold of a
- * block-level score, kept apart from other holds so the first one in a run is always announced. `patch`: a patch sent
+ * block-level score, kept apart from other holds so the first one in a run is always announced. `held_call`: a held
+ * call of the run that is not a save (`heldCallText`). `patch`: a patch sent
  * to the drafts has quiet periods of its own, so its note about applying it is not silenced by a new skill's notice.
  */
 export function quietKey(
-  outcome: Announced | "held_retry",
+  outcome: Announced | "held_retry" | "held_call",
   jobId: string | null | undefined,
   sessionRef: string,
   patch = false,
@@ -483,6 +496,26 @@ export function noticeText(
     ],
   };
   return lines[outcome].join("\n");
+}
+
+/**
+ * The notice for a call of a background run, not a save, held because it scored in the review band; `where` is
+ * `hold.whereText`'s, already made inert. Built as the save notices are: fixed words, the run, and the call as a review
+ * card shows it.
+ */
+export function heldCallText(resp: ScanResponse, tool: string, where: string, requestId: string | null, isJob: boolean): string {
+  const id = requestId === null ? null : inert(requestId, 36).slice(0, 8);
+  const scope = isJob ? "job" : "run";
+  return [
+    "Sentrook held a tool call in one of OpenClaw's background runs: it did not run, and the run was told not to " +
+      "retry it. Nobody can answer a prompt there, so it was not asked about.",
+    `Run: ${where}`,
+    `Tool: ${inert(tool, 80)}: ${inert(describe(resp, tool), 160)}`,
+    `Held because ${BLOCK_CATEGORIES[blockCategory(resp)]}.`,
+    "The run may have ended without saving what it learned; to keep something, ask the agent for it in a chat.",
+    id ? `To look at it: /sentrook-why ${id}; /sentrook-history lists the run's calls.` : "/sentrook-history lists the run's calls.",
+    `More held calls in this ${scope} are not announced for ${QUIET_HOURS} hours.`,
+  ].join("\n");
 }
 
 /** The notice for a change to an existing skill sent to the drafts: kept, run live instead, or not kept. */

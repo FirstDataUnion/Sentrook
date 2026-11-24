@@ -830,15 +830,132 @@ test("must stay as before: an owner's own skill_workshop call in a chat still as
   assert.equal(rec.decision, "review_timed_out");
 });
 
-test("must stay as before: a review run's own exec the scanner does not read as a save keeps its prompt", async () => {
-  const r = registered();
-  // declared with the run's store, and answered as the scanner answers a command that writes nothing there
+// ---- a background run's other calls -------------------------------------------------------------------------------
+
+/** A call of a background run that is not a save, and a review-band answer for it (the scanner reads no save in it). */
+const OTHER = { toolName: "exec", params: { command: "ls skills" } };
+const otherReview = () => {
   reply = { ...VERDICTS.strict, self_edit: undefined };
-  const { out, rec } = await r.save("review", { toolName: "exec", params: { command: "ls" } });
-  assert.ok(out?.requireApproval);
-  assert.equal(rec.planir.self_edit.store, "skills");
-  assert.equal(rec.background_save, undefined);
-  assert.equal(rec.host_process, "background_review");
+};
+const KINDS = { review: "background_review", flush: "memory_flush", curator: "curator" } as const;
+const HELD_CALL = /^Sentrook held a tool call in one of OpenClaw's background runs: it did not run/;
+
+test("must hold: a background run's other call in the review band is never asked about, with one notice per run", async () => {
+  for (const run of Object.keys(RUNS) as (keyof typeof RUNS)[]) {
+    for (const pluginConfig of [{}, { skillReview: "review" }, { approval: { scheduledIntentKinds: ["subagent"] } }]) {
+      const label = `${run} ${JSON.stringify(pluginConfig)}`;
+      rmSync(path.join(stateDir, "scan-failure-notices.json"), { force: true });
+      const r = registered({ pluginConfig });
+      await r.command("sentrook-notify", "here");
+      otherReview();
+      for (const nth of [1, 2]) {
+        const { out, rec } = await r.save(run, OTHER);
+        assert.equal(out?.requireApproval, undefined, label);
+        assert.deepEqual(out, { block: true, blockReason: bg.HELD_CALL_TEXT }, label);
+        assert.equal(rec.decision, "held", label);
+        assert.equal(rec.background_save, undefined, label);
+        assert.equal(rec.hold.id, null, label);
+        assert.equal(rec.hold.run, KINDS[run], label);
+        assert.equal(rec.hold.notice.status, nth === 1 ? "queued" : "quiet", label);
+        assert.equal(actionOf(rec, null), "held", label);
+      }
+      assert.equal(r.sent.length, 1, `one notice per run: ${label}`);
+      const text: string = r.sent[0].text;
+      assert.match(text, HELD_CALL, label);
+      assert.match(text, WHERE[run], label);
+      assert.match(text, /^Tool: exec: /m, label);
+      assert.match(text, /^Held because /m, label);
+      assert.match(text, /^To look at it: \/sentrook-why [0-9a-f]{8}; /m, label);
+      assert.match(text, /^More held calls in this (run|job) are not announced for 6 hours\.$/m, label);
+      // not an approvable hold: approving could not bring the run back
+      assert.deepEqual(r.holds(), [], label);
+    }
+  }
+});
+
+test("must hold: a held call and a held save of one run each send their own notice", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  otherReview();
+  await r.save("flush", OTHER);
+  setVerdict("strict");
+  await r.save("flush");
+  assert.equal(r.sent.length, 2);
+  assert.match(r.sent[0].text, HELD_CALL);
+  assert.match(r.sent[1].text, /^Sentrook held one of OpenClaw's background saves/);
+});
+
+test("must hold: a held call's notice carries nothing the model wrote", async () => {
+  const r = registered();
+  await r.command("sentrook-notify", "here");
+  otherReview();
+  await r.save("review", { toolName: "exec", params: { command: `echo ${BODY_MARKER}` } });
+  assert.equal(r.sent.length, 1);
+  assert.ok(!r.sent[0].text.includes(BODY_MARKER));
+});
+
+test("must hold: without a notice target the call is still held, and the record says why nothing was sent", async () => {
+  const r = registered();
+  otherReview();
+  const { out, rec } = await r.save("review", OTHER);
+  assert.deepEqual(out, { block: true, blockReason: bg.HELD_CALL_TEXT });
+  assert.equal(rec.hold.notice.status, "unsent");
+  assert.equal(r.sent.length, 0);
+});
+
+test("must hold: a scan error on a background run's other call follows the unattended policy, never a prompt", async () => {
+  for (const [policy, decision, notices] of [
+    ["allow", "allowed_on_error", 0],
+    ["deny", "blocked_on_error", 1],
+    ["review", "blocked_on_error", 1],
+  ] as const) {
+    rmSync(path.join(stateDir, "scan-failure-notices.json"), { force: true });
+    const r = registered({ pluginConfig: { onScanError: policy } });
+    await r.command("sentrook-notify", "here");
+    setVerdict("error");
+    const { out, rec } = await r.save("review", OTHER);
+    assert.equal(out?.requireApproval, undefined, policy);
+    assert.equal(rec.decision, decision, policy);
+    assert.equal(r.sent.length, notices, policy);
+    if (notices) assert.match(r.sent[0].text, WHERE.review);
+  }
+});
+
+test("must stay as before: a background run's other call that is allowed runs, and one that is blocked is blocked", async () => {
+  for (const run of Object.keys(RUNS) as (keyof typeof RUNS)[]) {
+    const r = registered();
+    await r.command("sentrook-notify", "here");
+    reply = { ...VERDICTS.allow, self_edit: undefined };
+    assert.equal((await r.save(run, OTHER)).out, undefined, run);
+    reply = { ...VERDICTS.block, self_edit: undefined };
+    const { out, rec } = await r.save(run, OTHER);
+    assert.equal(out?.block, true, run);
+    assert.match(out.blockReason, /^Sentrook security block: /, run);
+    assert.equal(rec.decision, "blocked", run);
+    assert.equal(rec.hold, undefined, run);
+    assert.equal(r.sent.length, 0, `a blocked call that is not a save sends no notice: ${run}`);
+  }
+});
+
+test("must stay as before: observe mode never holds a background run's other call", async () => {
+  const r = registered({ pluginConfig: { mode: "observe" } });
+  await r.command("sentrook-notify", "here");
+  otherReview();
+  const { out, rec } = await r.save("review", OTHER);
+  assert.equal(out, undefined);
+  assert.equal(rec.decision, "allowed");
+  assert.equal(rec.hold, undefined);
+  assert.equal(r.sent.length, 0);
+});
+
+test("must stay as before: the same call in an owner's chat still asks", async () => {
+  const r = registered();
+  const ctx = { sessionKey: "agent:main:main", sessionId: "S1", agentId: "main", runId: "r1", trigger: "user", requester: { senderIsOwner: true, channel: "webchat" } };
+  await r.fire("before_prompt_build", { runId: "r1", prompt: "list the skills", currentUserMessage: "list the skills" }, ctx);
+  otherReview();
+  const out = await r.fire("before_tool_call", { ...OTHER, toolCallId: "o1", runId: "r1" }, ctx);
+  assert.ok(out?.requireApproval, "asked");
+  assert.equal(r.records("scan").at(-1).decision, "review_timed_out");
 });
 
 test("must hold: a review run's exec the scanner reads as a save is one of the run's saves, never asked", async () => {

@@ -15,8 +15,9 @@ every surface and whatever Hermes's approval settings:
 A snooze lets a would-be-held save through only when the save follows a session the owner attends (a chat or the
 terminal). Notices go to the `owner_channel` home channel, at most one of each kind per session every 6 hours. Without a home
 channel nothing changes but the notice, and `status` and `verify` say so. History marks these saves "(self-edit)".
-An owner's own skill or memory change, an owner's `/refine`, and any other tool the background run calls are not
-background saves and are unchanged.
+An owner's own skill or memory change and an owner's `/refine` are not background saves and are unchanged. Any other
+tool the background run calls is not a save either, but never asks: a review there is held, with one notice per
+session.
 """
 
 import io
@@ -665,15 +666,135 @@ def test_an_owner_refine_still_asks(h, monkeypatch):
     assert out["action"] == "approve" and "skill_review" not in rec
 
 
-def test_another_tool_in_the_background_run_is_unchanged(h, monkeypatch):
-    h.reply.update(risk=55)
+# ---- the background review's other calls -----------------------------------------------------------------------
+
+#: A call the review fork or the curator makes that is not a save.
+OTHER = ("read_file", {"path": "skills/tidy/SKILL.md"})
+HELD_CALL = "Sentrook held a tool call in Hermes's background review, so it did not run"
+
+
+def other(h, monkeypatch, surface="telegram", platform=None, call=OTHER):
+    """One call of the background run that is not a save: the hook's answer and the scan's record."""
+    if surface == "cli":
+        monkeypatch.setattr(sys, "stdin", Tty())
     h.ctx.hooks["pre_llm_call"](
-        turn_id="t1", user_message="x", platform="telegram", sender_id="u1", **SID
+        turn_id="t1",
+        user_message="keep replies short",
+        platform=platform or surface,
+        sender_id="u1",
+        **SID,
     )
     out = h.ctx.hooks["pre_tool_call"](
-        tool_name="read_file", args={"path": "notes.md"}, tool_call_id="c1", turn_id="t1", **SID
+        tool_name=call[0], args=call[1], tool_call_id=f"c{len(h.scans)}", turn_id="t1", **SID
     )
-    assert out["action"] == "approve"
+    hold.wait_for_notices()
+    return out, [r for r in h.traffic() if r.get("kind") == "scan"][-1]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("platform", [None, "curator"], ids=["fork", "curator"])
+@pytest.mark.parametrize("setting", ["allow", "review"])
+def test_another_call_of_the_background_run_is_held_with_one_notice(
+    h, monkeypatch, surface, platform, setting
+):
+    h.ctx.settings["skill_review"] = setting
+    h.reply.update(risk=55)
+    for nth in (1, 2):
+        out, rec = other(h, monkeypatch, surface, platform)
+        assert out == {"action": "block", "message": plugin.skill_review.HELD_CALL_TEXT}
+        assert rec["decision"] == "held" and rec["background_run"] is True
+        assert "skill_review" not in rec and "hold" not in rec
+        assert rec["notice"] == (
+            {"status": "queued", "target": "telegram"} if nth == 1 else {"status": "quiet"}
+        )
+    # nothing kept to wait for an answer, and no approvable hold
+    assert (
+        not (h.dir / "sentrook" / "reviews.json").exists()
+        or "sentrook:" not in (h.dir / "sentrook" / "reviews.json").read_text()
+    )
+    assert not (h.dir / "sentrook" / "holds.json").exists()
+    assert len(h.sent) == 1, "one notice per session"
+    assert shown(h)[0] == "held"
+
+
+def test_the_held_call_notice(h, monkeypatch):
+    h.reply.update(risk=55)
+    _, rec = other(h, monkeypatch)
+    (text,) = notices(h)
+    rid = rec["request_id"][:8]
+    assert text.splitlines() == [
+        "Sentrook held a tool call in Hermes's background review, so it did not run, and the review was told not "
+        "to retry it. Nobody can answer a prompt there, so it was not asked about.",
+        f"Run: background review, session {rec['session_ref']}",
+        "Tool: read_file: Saves a skill",
+        "Held because it changes the agent's own setup, such as its configuration, memory, plugins, skills or "
+        "scheduled jobs.",
+        "The review may have ended without saving what it learned; to keep something, ask the agent for it in a "
+        "chat.",
+        f"Details: /sentrook why {rid}; the review's calls are in /sentrook history.",
+        "More held calls of the background review in this session are not announced for 6 hours.",
+    ]
+    assert "approve" not in text
+
+
+def test_a_held_call_and_a_held_save_each_send_their_own_notice(h, monkeypatch):
+    h.reply.update(risk=55, self_edit=NOT_LENIENT)
+    other(h, monkeypatch)
+    run(h, monkeypatch, "fork-skill", "telegram")
+    sent = notices(h)
+    assert len(sent) == 2 and sent[0].startswith(HELD_CALL)
+    assert sent[1].startswith("Sentrook held a background skill save")
+
+
+def test_a_held_call_without_a_home_channel_is_still_held(h, monkeypatch):
+    del h.ctx.settings["owner_channel"]
+    h.reply.update(risk=55)
+    out, rec = other(h, monkeypatch)
+    assert out == {"action": "block", "message": plugin.skill_review.HELD_CALL_TEXT}
+    assert rec["notice"]["status"] == "unsent" and h.sent == []
+
+
+@pytest.mark.parametrize("policy", ["allow", "deny", "review"])
+def test_a_scan_error_on_another_call_follows_the_unattended_policy(h, monkeypatch, policy):
+    h.ctx.settings["on_scan_error"] = policy
+    set_verdict(h, monkeypatch, "scan-error")
+    out, rec = other(h, monkeypatch, "cli")
+    if policy == "allow":
+        assert out is None and rec["decision"] == "allowed_on_error" and h.sent == []
+    else:
+        assert out["action"] == "block" and rec["decision"] == "blocked_on_error"
+        assert len(h.sent) == 1 and "could not scan" in h.sent[0]["args"]["message"]
+        assert "Run: background review, session" in h.sent[0]["args"]["message"]
+
+
+def test_another_call_that_is_allowed_runs_and_one_that_is_blocked_is_blocked(h, monkeypatch):
+    h.reply.update(risk=5)
+    assert other(h, monkeypatch)[0] is None
+    h.reply.update(risk=92)
+    out, rec = other(h, monkeypatch)
+    assert out["action"] == "block" and out["message"] != plugin.skill_review.HELD_CALL_TEXT
+    assert rec["decision"] == "blocked" and "notice" not in rec and h.sent == []
+
+
+def test_observe_mode_never_holds_another_call(h, monkeypatch):
+    h.ctx.settings["mode"] = "observe"
+    h.reply.update(risk=55)
+    out, rec = other(h, monkeypatch)
+    assert out is None and rec["decision"] == "allowed" and "notice" not in rec and h.sent == []
+
+
+def test_another_call_in_an_owner_refine_still_asks(h, monkeypatch):
+    h.prov["attended"] = True
+    h.reply.update(risk=55)
+    out, rec = other(h, monkeypatch)
+    assert out["action"] == "approve" and "background_run" not in rec
+
+
+def test_the_same_call_in_an_owner_chat_still_asks(h, monkeypatch):
+    h.prov["origin"] = "assistant_tool"
+    h.reply.update(risk=55)
+    out, rec = other(h, monkeypatch)
+    assert out["action"] == "approve" and "background_run" not in rec
 
 
 def test_the_review_setting_still_never_asks(h, monkeypatch):
