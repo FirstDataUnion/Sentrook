@@ -1068,6 +1068,30 @@ A search or query API that takes its question as a POST body (a Notion database 
 - Suite: unmoved; a zero-cost replay of dev and held-out against current `main` moves no case and no sub-signal (no suite case sends a read-shaped request).
 - Tests: must score as a read (Notion query and search, with the key in a header variable or read from the environment, GraphQL query and shorthand, `_search`, `_msearch`, a vendor `/search`, `wget --post-data`, HTTPie, the web tool, `urllib`, `requests.post`, `fetch`, the oracle probe's own answer); must stay a send (Notion page create and PATCH, PUT and DELETE in every spelling, a write or any other command beside the read, `--url`, `-K` and header files, GraphQL mutations plain, escaped or percent-encoded, a persisted query, uploads, SQL (CTE, `COPY`, `CALL`, `SELECT INTO`), InfluxQL, Cypher and Hasura writes to `/query`, method overrides, a target with no scheme or computed in the shell or code, a URL name set twice, another request library (`axios`, `got`, `ky`, `request`, `urllib3`, `XMLHttpRequest`), a client session, `httpx.stream`, `head`, `options`, a websocket or a base URL beside a literal read, a local file, stdin, the environment, a table or a shell variable as the body, a capture, `known_bad` or look-alike host, no oracle answer); a credentials file sent to `/search` is still exfiltration. Slow shapes for the new body and code patterns.
 
+### A message send that names its channel in `channelId` (2026-11-23)
+OpenClaw's `message` tool takes `target`, `to` and `channelId` alike as an explicit delivery target, with no
+precedence between them. A held cron delivery named its channel only in `channelId` (beside `channelIds`,
+`targetAuthor` and a `guildId`), and preparation read only `target` and the other recipient keys: no channel
+entity, so no destination, nothing for a grant or channel binding to match, and no grant hint.
+- `planir.canonical`: on a `message_send`, a `channelId` (a string or a number) is a target written `channel:<id>`
+  (kept as written when it is already a prefixed target, a JID or a `#name`), beside any `target` or `to`. Every one
+  counts: a send naming a `target` and a different `channelId` needs both covered. The same channel named by both
+  (`channel:<id>`, the bare id, or a platform-prefixed one) is one target. `channelIds` (a read and search filter),
+  `targetAuthor` (the author of a message reacted to) and `guildId` (a server) are not read as send targets.
+- `planir.canonical`, `prepare.entities`: a read-only action (first word `read`, `search`, `list`, `get`, …, or last
+  word `list`, `info`, `search`, `history`, and not one whose first word changes something, such as `set-`) names the
+  channels it reads from in `channelId` / `channelIds`: channel entities with the `data_source` role, not recipients.
+- Grants, channel bindings and hints treat the channel as they treat a `target` one: a binding written
+  `channel:<id>`, `<id>` or `#<id>` covers the send, and the hint is `channel:<id>`, a pattern the grant command takes.
+- Suite: unmoved; no suite case names `channelId`. Replay of dev (582 cases) and held-out (288): every case scores as in the v30 baselines.
+- Tests: the held delivery's argument shape gives one channel; each `channelId` form is a target; the same channel in
+  `target` and `channelId` is one target, a different one is two; a poll's `number` does not hide the channel; a
+  writing action keeps a recipient. Must stay silent: `guildId` alone; `channelIds` or `targetAuthor` on a send; a
+  read-only action with `channelId` or `channelIds` (sources, not recipients); a binding for another channel; a
+  binding for the `target` alone when a different `channelId` rides along. Must fire: a binding for the id relieves
+  the send and scores as the same send by `target`; the held send's hint is `channel:<id>` and granting it clears a
+  second scan.
+
 ### An OpenClaw agent's own orders are the owner's, wherever the host keeps its workspace (2026-11-23)
 An OpenClaw agent whose workspace the host keeps at `~/.openclaw/workspace/<agent>/` read its own `AGENTS.md` on a scheduled run. Only the top of `~/.openclaw/`, `~/.openclaw/workspace/` and `~/.openclaw/workspace-<name>/` counted as the owner's own instruction files, so the read was untrusted content: the exposure check found instructions in it (the agent's own orders), the session was tainted, and the run's next send was scored as steered.
 - An instruction file (`AGENTS.md`, `SOUL.md`, ...) at the top of the run's own `workspace_root` now counts as the owner's own configuration when that workspace is one level inside one of the host's workspace directories (`~/.openclaw/workspace/<agent>/`, `~/.openclaw/workspace-<name>/<agent>/`; `session_sets.owner_config_path`). Another agent's workspace, a deeper file (a repository in the workspace), a config-named file there, any other directory under `~/.openclaw/`, a workspace outside it, a file the agent wrote in this session and a tainted file keep today's rule.
