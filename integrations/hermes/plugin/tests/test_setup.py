@@ -100,6 +100,34 @@ def test_the_last_approved_review_is_counted_in_days(now, last, text):
     assert setup.last_text(read(now), read(last)) == text
 
 
+@pytest.mark.parametrize(("reason", "line"), RULES["notes"])
+def test_the_agents_note_turns_no_link_mention_or_emphasis_on(reason, line):
+    assert setup.note_line(reason) == line
+
+
+def test_text_from_config_can_never_end_its_code_span_or_add_lines(scene):
+    """An MCP server entry the agent wrote with a newline, a backtick or a space is left out and counted."""
+    screen = scene["run"]("")
+    assert "99." not in screen and "apply 0000" not in screen and "ex ample" not in screen
+    assert "From your config: 3 items could not be read and are left out." in screen
+    for line in screen.splitlines():
+        assert line.count("`") % 2 == 0, line
+
+
+def test_a_covering_grants_id_is_neutralised(scene):
+    raw = json.loads((scene["state"] / "grants.json").read_text())
+    raw["grants"][0]["id"] = "[gr](https://evil.example) @here"
+    (scene["state"] / "grants.json").write_text(json.dumps(raw))
+    screen = scene["run"]("")
+    assert "Warning: a grant in force already covers this (`grhttps://evil.examp`)." in screen
+
+
+def test_a_proposal_dated_in_the_future_is_not_live(scene):
+    ids = [p["id"] for p in setup.load_proposals(scene["state"], NOW)]
+    assert "p-f00000" not in ids
+    assert "future.example.com" not in scene["run"]("")
+
+
 @pytest.mark.parametrize("case", RULES["exposure"])
 def test_exposure_flagged_by_the_scanner(case):
     assert setup.exposure_flagged(case["response"]) is case["flagged"]

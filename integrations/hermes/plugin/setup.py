@@ -13,9 +13,12 @@ The screen is a numbered list of items, each a grant or a channel binding, from 
 - **The agent's proposals** (`<state>/proposals.json`, `load_proposals`): items the agent suggested, each with its
   reason, shown last as a quoted note. A proposal lasts `PROPOSAL_TTL`.
 
-Every item is described in the plugin's words, from its kind, pattern, allows and lifetime; the agent's reason is only
-ever a quoted, neutralised note. Patterns are shown in code spans, so chat markup in them does nothing, and an item
-whose pattern holds a backtick is left out. Warnings name what to check: characters that are not plain ASCII (with
+Every item is described in the plugin's words, from its kind, pattern, allows and lifetime. Every candidate, from
+config, reviews and proposals alike, must be one the grant or bind command would accept (one printable word, no
+backtick), so nothing an agent wrote into a config file can end a line or a code span; the rest are counted and left
+out. Patterns, job ids, server names and the agent's reason (only ever a note, last) are shown neutralised in code
+spans, where chat apps turn no link, mention or emphasis on. A name in `xn--` form is flagged like one with letters
+that are not plain ASCII. Warnings name what to check: characters that are not plain ASCII (with
 the registrable domain in ASCII), deleting files, a folder at or above the home folder, a whole package registry, a
 grant in force that already covers the item, a cron job's target, and, for the agent's items, a proposing chat where
 the scanner flagged exposure (or the traffic log is off, so it could not be checked). Whether a pattern is too broad
@@ -62,6 +65,7 @@ MAX_ITEMS = 30
 DEFAULT_MINUTES = int(hold.GRANT_TTL.total_seconds() // 60)
 
 PROPOSAL_ID = re.compile(r"p-[0-9a-f]{6}")
+_GRANT_ID = re.compile(r"gr-[0-9a-f]{6}")
 _DURATION = re.compile(r"([0-9]{1,6})([mhd])")
 _MINUTES = {"m": 1, "h": 60, "d": 1440}
 _MAX_MINUTES = int(grants.MAX_EXPIRY.total_seconds() // 60)
@@ -80,8 +84,17 @@ def _show(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def _quoted(s: Any, cap: int) -> str:
-    return json.dumps(hold.inert(s, cap), ensure_ascii=False)
+def _span(s: Any, cap: int) -> str:
+    """Text someone else chose (a job id, a server name), neutralised and in a code span, where chat apps turn no
+    link, mention or emphasis on."""
+    return f"`{hold.inert(s, cap) or '?'}`"
+
+
+def note_line(reason: Any) -> str | None:
+    """The agent's reason as the screen shows it: neutralised, capped and in a code span, so a link, a bare domain,
+    a mention or emphasis in it does nothing; None when nothing is left of it."""
+    text = hold.inert(reason, 200) if isinstance(reason, str) else ""
+    return f"Agent's note: `{text}`" if text.strip() else None
 
 
 def minutes_of(text: Any) -> int | None:
@@ -279,14 +292,15 @@ def cron_targets(home: Path) -> list[tuple[str, str]]:
     return out
 
 
-def mcp_providers(servers: Any) -> list[tuple[str, str]]:
-    """(server name, provider identity) for each configured MCP server, by name."""
-    out = []
-    for name in sorted(servers) if isinstance(servers, dict) else []:
+def mcp_providers(servers: Any) -> list[tuple[str, str | None]]:
+    """(server name, provider identity) for each configured MCP server, by name; the identity is None when the
+    entry names none."""
+    out: list[tuple[str, str | None]] = []
+    for name in (
+        sorted(n for n in servers if isinstance(n, str)) if isinstance(servers, dict) else []
+    ):
         cfg = servers[name]
-        identity = server_identity(cfg)[0] if isinstance(cfg, dict) else None
-        if isinstance(name, str) and identity:
-            out.append((name, identity))
+        out.append((name, server_identity(cfg)[0] if isinstance(cfg, dict) else None))
     return out
 
 
@@ -341,7 +355,7 @@ def _live_proposals(raw: Any, now: datetime) -> list[dict[str, Any]]:
         created, expires = read_time(p.get("created_at")), read_time(p.get("expires_at"))
         if created is None or expires is None:
             continue
-        if min(expires, created + PROPOSAL_TTL) > now:
+        if created <= now < min(expires, created + PROPOSAL_TTL):
             out.append(p)
     return out
 
@@ -389,7 +403,16 @@ def in_force(
     ]
     for raw, g in grants._file_grants(data):
         if g["scope"] == "persistent" and not grants.expired(raw, now):
-            out.append((str(raw.get("id") or "-"), g))
+            gid = raw.get("id")
+            # An id the plugin made is shown as it is; anything else someone wrote into the file, in a code span.
+            out.append(
+                (
+                    gid
+                    if isinstance(gid, str) and _GRANT_ID.fullmatch(gid)
+                    else _span(gid or "-", 20),
+                    g,
+                )
+            )
     out += [
         ("a channel binding", {"kind": "destination", "pattern": b["pattern"].strip()})
         for b in grants._file_bindings(data)
@@ -484,14 +507,34 @@ def whole_registry(pattern: str) -> bool:
     return not re.sub(r"[*?\[\]@/\s]", "", rest)
 
 
+#: A label in its ASCII (punycode) form, which a name with look-alike letters becomes.
+_ENCODED = re.compile(r"(?:^|[.:@/*])xn--", re.IGNORECASE)
+
+
+def valid_item(cand: dict[str, Any]) -> dict[str, Any] | None:
+    """`cand` as the grant or bind command would accept it (one printable word, no backtick), whatever it came from;
+    None when it would not be."""
+    pattern = cand.get("pattern")
+    if not isinstance(pattern, str) or "`" in pattern:
+        return None
+    if cand.get("binding"):
+        if not _printable_word(pattern) or binding_problem(pattern):
+            return None
+        return {"binding": True, "kind": "destination", "pattern": pattern, "allows": None}
+    grant = grants.hint_grant(cand)
+    if grant is None or not _printable_word(grant["pattern"]) or "`" in grant["pattern"]:
+        return None
+    return {"binding": False, "allows": None, **grant}
+
+
 def item_warnings(item: dict[str, Any]) -> list[str]:
     """The warnings an item carries from its own kind, pattern and allows."""
     out = []
-    if not item["pattern"].isascii():
+    if not item["pattern"].isascii() or _ENCODED.search(item["pattern"]):
         domain = registrable(host_of(item))
         out.append(
-            "the name has characters that are not plain ASCII and may imitate another name"
-            + (f" (registrable domain {domain})" if domain else "")
+            "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate "
+            "another name" + (f" (registrable domain {domain})" if domain else "")
         )
     if not item.get("binding") and item["kind"] == "file":
         if not item.get("allows") or "delete" in item["allows"]:
@@ -550,18 +593,23 @@ def build(
     cfg: PluginConfig,
     data: dict[str, Any] | None,
     cron: list[tuple[str, str]],
-    mcp: list[tuple[str, str]],
+    mcp: list[tuple[str, str | None]],
     ev: Evidence,
     proposals: list[dict[str, Any]],
     now: datetime,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The screen's items, in order, and its notes. Each item has its grant (`binding`, kind, pattern, allows), its
     lifetime in minutes (None: until revoked or removed), its sources, its text lines under the first, and the
-    sources' tags for the grants file (`tags`)."""
+    sources' tags for the grants file (`tags`). Every candidate, whatever its source, must be one the grant or bind
+    command would accept: anything else (a config entry with a newline or a space in it) is left out and counted."""
     items: dict[str, dict[str, Any]] = {}
+    dropped = {"config": 0}
 
-    def add(cand: dict[str, Any], source: dict[str, Any]) -> None:
-        if "`" in cand["pattern"]:
+    def add(raw: dict[str, Any] | None, source: dict[str, Any]) -> None:
+        cand = valid_item(raw) if raw is not None else None
+        if cand is None:
+            if source["from"] in ("cron", "mcp"):
+                dropped["config"] += 1
             return
         k = key_of(cand)
         if k not in items:
@@ -580,10 +628,19 @@ def build(
             {"from": "cron", "job": jid},
         )
     for name, identity in mcp:
-        add({"kind": "provider", "pattern": identity}, {"from": "mcp", "server": name})
+        add(
+            {"kind": "provider", "pattern": identity} if identity else None,
+            {"from": "mcp", "server": name},
+        )
     for e in approved_suggestions(ev):
         add(e["grant"], {"from": "reviews"})
     notes = []
+    if dropped["config"]:
+        n = dropped["config"]
+        notes.append(
+            f"From your config: {n} item{'' if n == 1 else 's'} could not be read and "
+            f"{'is' if n == 1 else 'are'} left out."
+        )
     for p in proposals:
         for it in p["items"]:
             add(
@@ -622,9 +679,9 @@ def build(
         lines = []
         for s in item["sources"]:
             if s["from"] == "cron":
-                lines.append(f"From your config: cron job {_quoted(s['job'], 40)} delivers here.")
+                lines.append(f"From your config: cron job {_span(s['job'], 40)} delivers here.")
             elif s["from"] == "mcp":
-                lines.append(f"From your config: MCP server {_quoted(s['server'], 40)}.")
+                lines.append(f"From your config: MCP server {_span(s['server'], 40)}.")
         if backed:
             n = backed["count"]
             lines.append(
@@ -640,6 +697,10 @@ def build(
             warnings.append(
                 "cron jobs can be changed by the agent; check that you chose this channel"
             )
+        if any(s["from"] == "mcp" for s in item["sources"]):
+            warnings.append(
+                "MCP servers in the config can be changed by the agent; check that you added this one"
+            )
         for s in agent:
             if not ev.available:
                 warnings.append(
@@ -652,7 +713,7 @@ def build(
                     "the chat that proposed this had read content that tried to steer the agent"
                 )
         lines += [f"Warning: {w}." for w in dict.fromkeys(warnings)]
-        lines += [f"Agent's note: {_quoted(s['reason'], 200)}" for s in agent if s["reason"]]
+        lines += [line for s in agent if (line := note_line(s["reason"])) is not None]
         tags = ["config"] if any(s["from"] in ("cron", "mcp") for s in item["sources"]) else []
         tags += ["reviews"] if backed else []
         tags += [s["id"] for s in agent]

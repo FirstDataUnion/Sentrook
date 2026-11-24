@@ -344,8 +344,10 @@ commands run only for the owner, from any of three places:
   does anyone holding the shared gateway token. Limited Control UI sessions are refused.
 - **The machine**: whoever can run `openclaw` there counts as the owner.
 
-Group and channel rooms are refused. Every attempt, allowed or refused, is recorded in the traffic log
-(unless you turned it off).
+OpenClaw decides who the owner is by the sender, not the room, so in a group or channel room your own message runs
+them too, and the reply is shown to everyone there. `/sentrook-setup` refuses in a room (show and apply alike), since
+its list would be shown to the room; run it in your direct message instead. Every attempt, allowed or refused, is
+recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner

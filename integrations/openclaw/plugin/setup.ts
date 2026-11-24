@@ -14,9 +14,12 @@
  * - **The agent's proposals** (`<state>/proposals.json`, `loadProposals`): items the agent suggested, each with its
  *   reason, shown last as a quoted note. A proposal lasts `PROPOSAL_TTL_MS`.
  *
- * Every item is described in the plugin's words, from its kind, pattern, allows and lifetime; the agent's reason is
- * only ever a quoted, neutralised note. Patterns are shown in code spans, so chat markup in them does nothing, and an
- * item whose pattern holds a backtick is left out. OpenClaw writes a command's reply into the session transcript, so
+ * Every item is described in the plugin's words, from its kind, pattern, allows and lifetime. Every candidate, from
+ * config, reviews and proposals alike, must be one the grant or bind command would accept (one printable word, no
+ * backtick), so nothing an agent wrote into a config file can end a line or a code span; the rest are counted and
+ * left out. Patterns, job ids, server names and the agent's reason (only ever a note, last) are shown neutralised in
+ * code spans, where chat apps turn no link, mention or emphasis on. A name in `xn--` form is flagged like one with
+ * letters that are not plain ASCII. In a group or channel room the command refuses (`commands.ts`). OpenClaw writes a command's reply into the session transcript, so
  * the agent may read the screen afterwards: everything on it is the plugin's own text. Warnings name what to check:
  * characters that are not plain ASCII (with the registrable domain in ASCII), deleting files, a folder at or above the
  * home folder, a whole package registry, a grant in force that already covers the item, a cron job's target, and,
@@ -63,6 +66,7 @@ export const MAX_ITEMS = 30;
 export const DEFAULT_MINUTES = Math.floor(hold.GRANT_TTL_MS / 60_000);
 
 export const PROPOSAL_ID = /^p-[0-9a-f]{6}$/;
+const GRANT_ID = /^gr-[0-9a-f]{6}$/;
 const DURATION = /^([0-9]{1,6})([mhd])$/;
 const UNIT_MINUTES: Record<string, number> = { m: 1, h: 60, d: 1440 };
 const MAX_MINUTES = Math.floor(grants.MAX_EXPIRY_MS / 60_000);
@@ -72,7 +76,20 @@ export type RecordFn = (record: Record<string, unknown>) => void;
 
 const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-const quoted = (s: unknown, cap: number) => JSON.stringify(hold.inert(s, cap));
+/**
+ * Text someone else chose (a job id, a server name), neutralised and in a code span, where chat apps turn no link,
+ * mention or emphasis on.
+ */
+const span = (s: unknown, cap: number) => `\`${hold.inert(s, cap) || "?"}\``;
+
+/**
+ * The agent's reason as the screen shows it: neutralised, capped and in a code span, so a link, a bare domain, a
+ * mention or emphasis in it does nothing; null when nothing is left of it.
+ */
+export function noteLine(reason: unknown): string | null {
+  const text = typeof reason === "string" ? hold.inert(reason, 200) : "";
+  return text.trim() ? `Agent's note: \`${text}\`` : null;
+}
 const isAscii = (s: string) => /^[\x00-\x7f]*$/.test(s);
 const plural = (n: number) => (n === 1 ? "" : "s");
 
@@ -230,16 +247,15 @@ export function cronTargets(openclawDir: string): Array<[string, string]> {
   return out;
 }
 
-/** (server name, provider identity) for each configured MCP server, by name. */
-export function mcpProviders(servers: unknown): Array<[string, string]> {
+/** (server name, provider identity) for each configured MCP server, by name; the identity is null when the entry names none. */
+export function mcpProviders(servers: unknown): Array<[string, string | null]> {
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) return [];
-  const out: Array<[string, string]> = [];
-  for (const name of Object.keys(servers).sort()) {
-    const cfg = (servers as Entry)[name];
-    const identity = cfg && typeof cfg === "object" ? serverIdentity(cfg).identity : null;
-    if (identity) out.push([name, identity]);
-  }
-  return out;
+  return Object.keys(servers)
+    .sort()
+    .map((name) => {
+      const cfg = (servers as Entry)[name];
+      return [name, cfg && typeof cfg === "object" ? serverIdentity(cfg).identity : null];
+    });
 }
 
 // ---- proposals ----------------------------------------------------------------------------------------------------
@@ -282,7 +298,8 @@ function liveProposals(raw: ProposalsFile | null, now: Date): Entry[] {
     const created = readTime((p as Entry).created_at);
     const expires = readTime((p as Entry).expires_at);
     if (!created || !expires) continue;
-    if (Math.min(expires.getTime(), created.getTime() + PROPOSAL_TTL_MS) > now.getTime()) out.push(p as Entry);
+    const t = now.getTime();
+    if (created.getTime() <= t && t < Math.min(expires.getTime(), created.getTime() + PROPOSAL_TTL_MS)) out.push(p as Entry);
   }
   return out;
 }
@@ -332,7 +349,10 @@ export function inForce(cfg: PluginConfig, data: GrantsFile | null, now: Date): 
   });
   for (const p of cfg.channelBindings) out.push(["a channel binding", { kind: "destination", pattern: p }]);
   for (const [raw, g] of grants.fileGrants(data)) {
-    if (g.scope === "persistent" && !grants.expired(raw, now)) out.push([String(raw.id || "-"), g]);
+    // An id the plugin made is shown as it is; anything else someone wrote into the file, in a code span.
+    if (g.scope === "persistent" && !grants.expired(raw, now)) {
+      out.push([typeof raw.id === "string" && GRANT_ID.test(raw.id) ? raw.id : span(raw.id || "-", 20), g]);
+    }
   }
   for (const b of grants.fileBindings(data)) out.push(["a channel binding", { kind: "destination", pattern: b.pattern.trim() }]);
   return out;
@@ -464,12 +484,34 @@ export function wholeRegistry(pattern: string): boolean {
   return rest.replace(/[*?[\]@/\s]/gu, "") === "";
 }
 
+/** A label in its ASCII (punycode) form, which a name with look-alike letters becomes. */
+const ENCODED = /(?:^|[.:@/*])xn--/i;
+
+/**
+ * `cand` as the grant or bind command would accept it (one printable word, no backtick), whatever it came from; null
+ * when it would not be.
+ */
+export function validItem(cand: Entry): Entry | null {
+  const pattern = cand.pattern;
+  if (typeof pattern !== "string" || pattern.includes("`")) return null;
+  if (cand.binding) {
+    if (!printableWord(pattern) || bindingProblem(pattern)) return null;
+    return { binding: true, kind: "destination", pattern, allows: null };
+  }
+  const grant = grants.hintGrant(cand);
+  if (!grant || !printableWord(grant.pattern) || grant.pattern.includes("`")) return null;
+  return { binding: false, allows: null, ...grant };
+}
+
 /** The warnings an item carries from its own kind, pattern and allows. */
 export function itemWarnings(item: Entry): string[] {
   const out: string[] = [];
-  if (!isAscii(item.pattern)) {
+  if (!isAscii(item.pattern) || ENCODED.test(item.pattern)) {
     const domain = registrable(hostOf(item));
-    out.push(`the name has characters that are not plain ASCII and may imitate another name${domain ? ` (registrable domain ${domain})` : ""}`);
+    out.push(
+      "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name" +
+        (domain ? ` (registrable domain ${domain})` : ""),
+    );
   }
   if (!item.binding && item.kind === "file") {
     if (!item.allows?.length || item.allows.includes("delete")) out.push("this lets the agent delete files");
@@ -538,14 +580,21 @@ export function build(
   cfg: PluginConfig,
   data: GrantsFile | null,
   cron: Array<[string, string]>,
-  mcp: Array<[string, string]>,
+  mcp: Array<[string, string | null]>,
   ev: Evidence,
   proposals: Proposal[],
   now: Date,
 ): { items: Item[]; notes: string[] } {
   const items = new Map<string, Entry>();
-  const add = (cand: Entry, source: Entry) => {
-    if (cand.pattern.includes("`")) return;
+  // Every candidate, whatever its source, must be one the grant or bind command would accept: anything else (a config
+  // entry with a newline or a space in it) is left out and counted.
+  let droppedConfig = 0;
+  const add = (raw: Entry | null, source: Entry) => {
+    const cand = raw === null ? null : validItem(raw);
+    if (cand === null) {
+      if (source.from === "cron" || source.from === "mcp") droppedConfig++;
+      return;
+    }
     const k = keyOf(cand);
     if (!items.has(k)) {
       items.set(k, {
@@ -559,9 +608,13 @@ export function build(
     items.get(k)!.sources.push(source);
   };
   for (const [job, pattern] of cron) add({ binding: true, kind: "destination", pattern }, { from: "cron", job });
-  for (const [server, identity] of mcp) add({ kind: "provider", pattern: identity }, { from: "mcp", server });
+  for (const [server, identity] of mcp) add(identity ? { kind: "provider", pattern: identity } : null, { from: "mcp", server });
   for (const e of approvedSuggestions(ev)) add(e.grant, { from: "reviews" });
   const notes: string[] = [];
+  if (droppedConfig) {
+    const n = droppedConfig;
+    notes.push(`From your config: ${n} item${plural(n)} could not be read and ${n === 1 ? "is" : "are"} left out.`);
+  }
   for (const p of proposals) {
     for (const it of p.items) {
       add(it, { from: "proposal", id: p.id, session_ref: p.session_ref, reason: it.reason ?? null, minutes: it.minutes ?? null });
@@ -587,8 +640,8 @@ export function build(
     }
     const lines: string[] = [];
     for (const s of item.sources) {
-      if (s.from === "cron") lines.push(`From your config: cron job ${quoted(s.job, 40)} delivers here.`);
-      else if (s.from === "mcp") lines.push(`From your config: MCP server ${quoted(s.server, 40)}.`);
+      if (s.from === "cron") lines.push(`From your config: cron job ${span(s.job, 40)} delivers here.`);
+      else if (s.from === "mcp") lines.push(`From your config: MCP server ${span(s.server, 40)}.`);
     }
     if (backed) {
       lines.push(`Sentrook suggested this in ${backed.count} reviews you approved, the last one ${lastText(now, backed.last)}.`);
@@ -600,13 +653,19 @@ export function build(
     if (item.sources.some((s: Entry) => s.from === "cron")) {
       warnings.push("cron jobs can be changed by the agent; check that you chose this channel");
     }
+    if (item.sources.some((s: Entry) => s.from === "mcp")) {
+      warnings.push("MCP servers in the config can be changed by the agent; check that you added this one");
+    }
     for (const s of agent) {
       if (!ev.available) warnings.push("could not check what the proposing chat had read (the traffic log is off)");
       else if (s.session_ref === null) warnings.push("could not check what the proposing chat had read");
       else if (ev.exposed.has(s.session_ref)) warnings.push("the chat that proposed this had read content that tried to steer the agent");
     }
     for (const w of new Set(warnings)) lines.push(`Warning: ${w}.`);
-    for (const s of agent) if (s.reason) lines.push(`Agent's note: ${quoted(s.reason, 200)}`);
+    for (const s of agent) {
+      const note = noteLine(s.reason);
+      if (note !== null) lines.push(note);
+    }
     const tags = [
       ...(item.sources.some((s: Entry) => s.from === "cron" || s.from === "mcp") ? ["config"] : []),
       ...(backed ? ["reviews"] : []),

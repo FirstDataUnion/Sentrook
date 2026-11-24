@@ -271,7 +271,8 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where": (
                 "`{{cmd status}}` and `{{cmd help}}` are open to anyone. The dashed commands are for the owner "
                 "only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the "
-                "machine. Group rooms are refused."
+                "machine. OpenClaw also accepts them from the owner in a group room, except `{{cmd setup}}`, which "
+                "refuses there."
             ),
             "owner_commands_where_short": "as a direct message to you, in the Control UI, or on the machine",
             "notice_explain": (

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
+import { OWNER_SUBCOMMANDS, runSentrookCommand, SETUP_IN_GROUP } from "./commands.ts";
 import { resolveConfig } from "./config.ts";
 import { deliveryPattern } from "./cronDelivery.ts";
 import * as grants from "./grants.ts";
@@ -85,6 +85,32 @@ test("each item is described in the plugin's words", () => {
 
 test("the last approved review is counted in days", () => {
   for (const [now, last, text] of RULES.last) assert.equal(setup.lastText(new Date(now), new Date(last)), text);
+});
+
+test("the agent's note turns no link, mention or emphasis on", () => {
+  for (const [reason, line] of RULES.notes) assert.equal(setup.noteLine(reason), line, reason);
+});
+
+test("text from config can never end its code span or add lines", () => {
+  // An MCP server entry the agent wrote with a newline, a backtick or a space is left out and counted.
+  const screen = scene().run("");
+  assert.ok(!screen.includes("99.") && !screen.includes("apply 0000") && !screen.includes("ex ample"), screen);
+  assert.ok(screen.includes("From your config: 3 items could not be read and are left out."));
+  for (const line of screen.split("\n")) assert.equal((line.match(/`/g) ?? []).length % 2, 0, line);
+});
+
+test("a covering grant's id is neutralised", () => {
+  const s = scene();
+  const raw = JSON.parse(readFileSync(path.join(s.state, "grants.json"), "utf8"));
+  raw.grants[0].id = "[gr](https://evil.example) @here";
+  writeFileSync(path.join(s.state, "grants.json"), JSON.stringify(raw));
+  assert.ok(s.run("").includes("Warning: a grant in force already covers this (`grhttps://evil.examp`)."));
+});
+
+test("a proposal dated in the future is not live", () => {
+  const s = scene();
+  assert.ok(!setup.loadProposals(s.state, NOW)!.some((p) => p.id === "p-f00000"));
+  assert.ok(!s.run("").includes("future.example.com"));
 });
 
 test("exposure flagged by the scanner", () => {
@@ -335,7 +361,7 @@ test("the registered /sentrook-setup reads OpenClaw's MCP servers and job store,
     const dm = (args: string) => ({ senderId: "123", channel: "telegram", senderIsOwner: true, assertOwnerCurrent: () => undefined, args });
     const screen = String((await def.handler(dm(""))).text);
     assert.ok(screen.includes("1. Send messages to the channel `discord:#daily-brief`"), screen);
-    assert.ok(screen.includes("From your config: MCP server \"notes\"."), screen);
+    assert.ok(screen.includes("From your config: MCP server `notes`."), screen);
     const code = /\/sentrook-setup apply ([0-9]{4})\n/.exec(screen)![1];
     const reply = String((await def.handler(dm(`apply ${code} 2`))).text);
     assert.match(reply, /^2\. Granted gr-[0-9a-f]{6}: provider `npm:@example\/notes-mcp` \(persistent, expires /m);
@@ -344,6 +370,19 @@ test("the registered /sentrook-setup reads OpenClaw's MCP servers and job store,
     assert.equal(added.set_by.channel, "telegram");
     const refused = String((await def.handler({ ...dm(`apply ${code} 1`), senderIsOwner: false })).text);
     assert.match(refused, /^Only the owner can run \/sentrook setup/);
+    // OpenClaw marks the owner as the owner in a group room too: the list, and applying it, stay out of the room.
+    const before = readFileSync(path.join(s.state, "grants.json"), "utf8");
+    for (const sessionKey of ["agent:main:telegram:group:-1001234567890", "agent:main:discord:channel:123456"]) {
+      for (const args of ["", `apply ${code} 1`]) {
+        const reply = String((await def.handler({ ...dm(args), sessionKey })).text);
+        assert.equal(reply, SETUP_IN_GROUP);
+      }
+    }
+    assert.equal(readFileSync(path.join(s.state, "grants.json"), "utf8"), before);
+    const log = readFileSync(path.join(s.state, "traffic.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(log.filter((r) => r.kind === "command" && r.verb === "setup" && r.reason === "group_chat").length, 4);
+    // The owner's own DM names itself as one.
+    assert.ok(String((await def.handler({ ...dm(""), sessionKey: "agent:main:telegram:direct:123" })).text).startsWith("Sentrook setup: "));
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];

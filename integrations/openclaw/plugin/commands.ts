@@ -246,6 +246,12 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     run: (ctx, rest) => {
       if (!ctx.owner) return refusal("setup");
       const o = ctx.owner;
+      // OpenClaw treats the owner's message in a group or channel room as the owner's too, but the list (and its
+      // code) would be shown to everyone in the room, and kept in the room's transcript: refuse it there.
+      if (ctx.chat && hold.chatKindOf(ctx.chat) === "group") {
+        o.record({ kind: "command", verb: "setup", outcome: "refused", basis: o.by.basis, sender_ref: o.by.sender_ref, channel: o.by.channel, reason: "group_chat" });
+        return SETUP_IN_GROUP;
+      }
       return setup.run(configOf(ctx), rest, o.by, new Date(), CMD, o.record, o.beforeWrite, {
         openclawDir: ctx.openclawDir ?? openclawDir(ctx.env),
         hostConfig: ctx.hostConfig,
@@ -253,6 +259,10 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
     },
   },
 };
+
+export const SETUP_IN_GROUP =
+  "Open /sentrook-setup in your own direct message to the agent, in the Control UI or on the machine, not in a group or " +
+  "channel: everyone there would see the list.";
 
 /** The `session_ref` of the session the command was sent from; null when there is none. */
 function refOf(ctx: CommandContext): string | null {
