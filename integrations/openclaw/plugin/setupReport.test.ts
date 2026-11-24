@@ -365,3 +365,10 @@ test("a tool of that name the plugin did not offer in the session is scanned lik
   await none.fire("before_tool_call", { toolName: report.TOOL, params: {}, runId: "r1", toolCallId: "c1" }, OWNER);
   assert.equal(none.scans.length, 1);
 });
+
+test("the setup skill calls the tool at check-in", () => {
+  const skill = readFileSync(path.join(import.meta.dirname, "skills", "sentrook-setup", "SKILL.md"), "utf8");
+  const checkIn = skill.slice(skill.indexOf("## Check-in"), skill.indexOf("## Rules for every suggestion"));
+  assert.ok(checkIn.includes(`\`${report.TOOL}\``));
+  assert.ok(checkIn.includes(META.refusal));
+});

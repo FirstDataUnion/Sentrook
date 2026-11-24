@@ -417,3 +417,10 @@ def test_the_report_reads_this_installs_settings_and_log(h, monkeypatch):
     assert "- Notices of held calls: none (owner_channel is not set;" in text
     assert "- Traffic log: on." in text
     assert "Skills that outrank" not in text
+
+
+def test_the_setup_skill_calls_the_tool_at_check_in():
+    skill = (Path(plugin.__file__).parent / "skills" / "sentrook-setup" / "SKILL.md").read_text()
+    check_in = skill[skill.index("## Check-in") : skill.index("## Rules for every suggestion")]
+    assert f"`{setup_report.TOOL}`" in check_in
+    assert META["refusal"] in check_in
