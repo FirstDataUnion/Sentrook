@@ -113,6 +113,11 @@ def harness(tmp_path, monkeypatch):
         def register_hook(self, name, fn):
             self.hooks[name] = fn
 
+        def register_tool(self, name, toolset, schema, handler, **kw):
+            self.tools = getattr(self, "tools", {})
+            self.tools[name] = {"toolset": toolset, "schema": schema, "handler": handler, **kw}
+            return object()
+
         def dispatch_tool(self, name, args, **_kw):
             """Hermes's own answer where a tool is not registered; tests that send notices replace it."""
             return json.dumps({"error": f"Unknown tool: {name}"})

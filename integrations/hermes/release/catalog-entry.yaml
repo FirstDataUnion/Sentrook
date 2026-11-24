@@ -32,5 +32,4 @@ known_issues:
   - "Needs a free FIDU account: run hermes sentrook login after install. Until then, enforce mode stops every tool call."
   - "YOLO switched on for a session (/yolo, hermes chat --yolo) also auto-approves Sentrook's review prompts; Sentrook's blocks still apply."
 capabilities:
-  provides_tools: []
   provides_middleware: []
