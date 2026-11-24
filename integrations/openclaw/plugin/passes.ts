@@ -145,10 +145,10 @@ export function eligible(resp: ScanResponse | Entry): boolean {
 
 /**
  * How far the scanner lets the owner pass this call: `always`, `once`, or null (not at all). A response without the
- * field comes from a scanner that predates it and reads as `once`; any value but the two is null.
+ * field (a scanner that predates it), null or any value but the two is null: the scanner sends it on every scan, and
+ * only the scanner decides that a call may be passed.
  */
 export function levelOf(resp: ScanResponse | Entry): Level | null {
-  if (!Object.hasOwn(resp as object, "owner_pass")) return "once";
   const v = (resp as Entry).owner_pass;
   return (LEVELS as readonly unknown[]).includes(v) ? (v as Level) : null;
 }

@@ -16,7 +16,7 @@ import pytest
 import plugin
 from plugin import hold, passes, session_allow
 
-from .test_hold import FIXTURES, held_call_harness, holds, resolutions, slash, turn
+from .test_hold import ABSENT, FIXTURES, held_call_harness, holds, resolutions, slash, turn
 
 FP = "afp1:message_send|ch:discord:#ops-reports"
 #: A scan the scanner lets the owner pass for good: a send that names its channel.
@@ -27,8 +27,10 @@ ALWAYS = {
     "approval_fingerprint": FP,
     "reasons": [{"code": "trigger.scheduled"}, {"code": "send.unbound_channel", "subject": "E1"}],
 }
-#: The same send from a scanner that sends no `owner_pass` (it predates it): allow once and deny.
-NAMED = {k: v for k, v in ALWAYS.items() if k != "owner_pass"}
+#: The same send when the scanner offers it once: allow once and deny.
+NAMED = {**ALWAYS, "owner_pass": "once"}
+#: The same send from a scanner that sends no `owner_pass` (it predates it): no pass, deny only.
+MISSING = {**ALWAYS, "owner_pass": ABSENT}
 OTHER_CHANNEL = {"E1": {"kind": "channel", "display": "discord:#general"}}
 
 
@@ -87,7 +89,7 @@ def test_allow_lets_the_jobs_next_run_make_the_same_send_once(h):
     assert rec["hold"]["offers"] == [
         "allow",
         "deny",
-    ]  # this scanner sends no owner_pass: never always
+    ]  # the scanner offers it once: never always
     reply = slash(h, f"allow {hid}")
     assert reply.startswith(
         "Job job-j may make this call once: on its next run, or if the held run retries it."
@@ -199,12 +201,15 @@ def test_a_standing_pass_never_passes_a_riskier_call(h, later):
     [
         ({"owner_pass": "once"}, "for this one it offers it once"),
         ({"owner_pass": None}, "Sentrook does not offer to let this call through"),
-        ({}, "for this one it offers it once"),  # no owner_pass: an older scanner
+        (
+            None,
+            "Sentrook does not offer to let this call through",
+        ),  # no owner_pass: an older scanner
     ],
     ids=["once", "null", "missing"],
 )
 def test_allow_always_is_refused_with_a_reason_unless_the_scanner_offers_it(h, reply, why):
-    h.reply = {**ALWAYS, **reply} if reply else dict(NAMED)
+    h.reply = {**ALWAYS, **reply} if reply is not None else dict(MISSING)
     _out, rec = run(h, 1)
     hid = rec["hold"]["id"]
     assert "allow always" not in rec["hold"]["offers"]
