@@ -131,7 +131,7 @@ class ServeConfig:
     jev_timeout_s: float = 20.0
     # Shipped defaults: the call-v9 / exposure-v2 question sets and conv-v8 (conv-v5 plus the credential-home relief,
     # with the provider host relieved too). The frozen v1 sets, the earlier call sets, conv-v1 to conv-v5, conv-v7 and conv-v6 (the attended-owner ceiling, off by
-    # default) stay selectable
+    # default) stay selectable, and so do call-v10 and conv-v9 (service-name relief) until they are measured
     # (SENTROOK_JEV_*_QUESTIONS, SENTROOK_CONVERGENCE) for the Jev-only comparison; the library defaults (JevConfig, load_params) keep the frozen v1 reference.
     jev_exposure_question_set: str = "exposure-v2"
     jev_call_question_set: str = "call-v9"
