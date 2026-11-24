@@ -1068,6 +1068,11 @@ def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
         hx("hermes sentrook login"),
         hx("hermes sentrook login --name my-box"),
         hx("uv run hermes sentrook login"),
+        # The setup screen and applying it are the owner's: the agent can neither show nor apply it.
+        hx("hermes sentrook setup"),
+        hx("hermes sentrook setup apply 4821 1,3 --until-revoked"),
+        hx("hermes sentrook setup discard p-a1b2c3"),
+        ex("openclaw sentrook setup apply 4821"),
     ],
 )
 def test_c4star_plugin_commands_take_the_floor(raw):
