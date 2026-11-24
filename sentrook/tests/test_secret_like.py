@@ -12,7 +12,6 @@ import json
 import random
 import string
 import time
-import uuid
 
 import pytest
 
@@ -156,8 +155,8 @@ def test_json_escapes_do_not_join_a_letter_onto_the_key(text):
         # Identifiers, digests and words under a key.
         "commit: 9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a",
         "sha256: " + "ab12" * 16,
-        f"request_id: {uuid.uuid4()}",
-        f"X-Request-Id: {str(uuid.uuid4()).upper()}",
+        "request_id: 3f8e2a71-5c4d-4b9e-a0f6-1d2c3b4a5e6f",
+        "X-Request-Id: 9C1B7E24-0A3F-4D58-B6E2-7F9A1C3D5B80",
         "order: 4412398812",
         "version: 2.0.0a1",
         "className: PrimaryButton2Large",
