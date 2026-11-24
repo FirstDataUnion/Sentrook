@@ -69,9 +69,9 @@ config_schema:
     description: >
       Extra session platforms where a person answers Hermes's approval prompts (e.g. api_server behind a UI
       that shows them). A review there shows an approval prompt; elsewhere outside chat platforms it holds the
-      call for the owner's `/sentrook allow` or `/sentrook deny`. The owner can also add one with
-      `/sentrook attended add`, which needs --confirm for a platform Sentrook treats as unattended. Env
-      SENTROOK_ATTENDED_PLATFORMS.
+      call for the owner's `/sentrook allow` or `/sentrook deny`. The owner can also add a front end such as
+      api_server with `/sentrook attended add <platform> --confirm`; runs Hermes starts itself and the local
+      terminal cannot be added. Env SENTROOK_ATTENDED_PLATFORMS.
   owner_channel:
     type: str
     description: >

@@ -35,17 +35,19 @@ since the version the catalog pins.
   retry in the same session is not scored as a retry after a review nobody answered. The traffic log records calls
   a pass let through as `allowed_by_pass` and calls a denial refused as `denied_by_owner`, with the pass's id.
 - **`/sentrook notify here`** sets where Sentrook's notices go (calls held on scheduled jobs and other runs nobody
-  watches, scan failures there, Hermes's background saves) without editing the config: the chat you send it in. On
+  watches, scan failures there, Hermes's background saves) without editing the config: the chat you send it in,
+  which gets a test notice straight away. A chat Hermes cannot address yet is not stored, and the reply says why. On
   the command line, which has no chat, `hermes sentrook notify <platform>` names a platform with a home channel. When
   Hermes does not say which chat a command came from, `here` uses the platform's home channel and the reply names
   it. A target set this way wins over `owner_channel`, which still works; `notify off` goes back to it, and
   `notify status` says which is in force.
 - **`/sentrook attended add|remove|list <platform>`** adds platforms where a person answers Hermes's approval prompts
   (such as an `api_server` behind a UI that shows them) without editing `attended_platforms`. It loosens Sentrook:
-  a review there shows an approval prompt instead of holding the call. A platform Sentrook treats as unattended
-  needs `--confirm` and the reply warns first; unknown names are refused with the known list; cron jobs and
-  subagents can never be added.
-- Both commands are owner-only and recorded in the traffic log (by platform, never a chat id), kept in
+  a review there shows an approval prompt instead of holding the call. Only front ends such as the API server,
+  webhooks, A2A peers and relays can be added, each with `--confirm` after a warning. Runs Hermes starts itself (cron,
+  subagents, batch runs, the curator, kanban workers and the like), Raft and the local terminal can never be added;
+  unknown names are refused with the known list.
+- Both commands are owner-only and recorded in the traffic log and the Hermes log by platform, never a chat id; kept in
   `settings.json` in the plugin's folder, and blocked when the agent runs them as `hermes sentrook …`. `status`,
   `verify`, `help` and the commands themselves explain where notices go and which platforms are attended in the
   same plain words.

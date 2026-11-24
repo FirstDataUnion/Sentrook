@@ -442,7 +442,9 @@ In the chat where you want Sentrook's notices (a direct message with the agent),
 ```
 
 From then on the notices of held calls, of scan failures on unattended runs and of Hermes's background saves go to
-that chat. On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
+that chat, and Sentrook sends a test notice there straight away. If Hermes cannot address the chat yet (on some
+platforms Hermes lists a new chat only after a while), nothing is changed and the reply says so: try again a few
+minutes later. On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
 them to that platform's home channel (set with `/sethome` in the chat you want). If Hermes does not say which chat a
 command came from, `notify here` uses the platform's home channel and the reply names it, so you can tell when that
 is not the chat you are in. A platform with no home channel is refused, with what to set.
@@ -469,9 +471,13 @@ example a UI in front of the API server that shows them, add it:
 /sentrook attended add api_server --confirm
 ```
 
-This loosens Sentrook: on that platform a review shows an approval prompt instead of holding the call. Without
-`--confirm` the reply only warns you; an unknown name is refused with the list of known platforms; cron jobs and
-subagents can never be added. `/sentrook attended remove api_server` holds its reviews again, and
+This loosens Sentrook: on that platform a review shows an approval prompt instead of holding the call. Only front
+ends that can put a person in front of the prompts can be added (`api_server`, `webhook`, `a2a`, `relay`,
+`homeassistant`, `msgraph_webhook`, `wecom_callback`), and without `--confirm` the reply only warns you. Runs Hermes
+starts itself (cron jobs, subagents, batch runs, the curator, kanban workers and the like) and Raft can never be
+added: where nobody answers, Hermes may approve a prompt on its own. Nor can the local terminal (`cli`, `local`),
+which is attended when it has a terminal; a scripted run without one stays unattended. An unknown name is refused
+with the list of known platforms. `/sentrook attended remove api_server` holds its reviews again, and
 `/sentrook attended list` shows what is added and where it came from (`attended_platforms` in the config, or set by
 command). The plugin settings' `attended_platforms` still applies alongside.
 
