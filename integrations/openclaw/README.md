@@ -435,10 +435,13 @@ the agent (a service, a folder, a key name, a channel a job posts to) to your `/
 at a time, each with a short reason. It sets nothing: you read each item on the list in Sentrook's words and set it
 with the list's code. Each item must be one `/sentrook-grant ... --persistent` or `/sentrook-bind add` would accept;
 the agent is told which it did not add and why. It never takes settings, attended platforms or grants for one
-session, and a key is named, never its value. The agent hears only how many items were added and to ask you to open
+session, a destination's wildcard may only be `*.` and one registrable domain (such as `*.example.com`, never `*`
+or `*.com`), and a key is named, never its value (a name shaped like a key itself is refused). The agent hears only how many items were added and to ask you to open
 `/sentrook-setup`: never the list, its warnings or its code. A proposal is kept in `proposals.json` in the plugin's
 state folder for a day; at most three are open, and a new one replaces the oldest. Its reason never counts as
-evidence: an item stays "not seen yet" and lasts 30 days unless reviews you approved back it. It answers in the same
+evidence: an item stays "not seen yet" and lasts 30 days unless reviews you approved back it. If the chat had read
+something no scan had seen yet when the agent proposed (a page fetched just before, say), each of its items says
+Sentrook could not check what the chat read just before. It answers in the same
 places as the setup report, and anywhere else the whole answer is "Setup needs the owner in a direct chat." and
 nothing is stored. Each call is recorded in the traffic log as a `setup_proposal` record with its session and item
 count. If another plugin registers a tool with the same name and OpenClaw runs that one instead, Sentrook scans its

@@ -33,6 +33,7 @@ import path from "node:path";
 
 import * as grants from "./grants.ts";
 import { bindingProblem } from "./planir.ts";
+import { createRedactor } from "./redact.ts";
 import * as setup from "./setup.ts";
 import { LockTimeoutError, readTime, Store, withFileLock } from "./store.ts";
 
@@ -69,6 +70,14 @@ const NOT_A_GRANT = "Not a grant the grant command would accept.";
 const NO_CHANNEL = 'binding must be the channel as Sentrook saw it, such as "discord:#daily-brief".';
 const CHANNEL_WORD = "The channel must be one word, with no spaces or backticks.";
 const NOT_SHOWN = "The setup screen could not show this item.";
+export const BROAD =
+  "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to " +
+  "grant anything broader themselves.";
+export const VALUE_NAME =
+  "The credential name looks like a key's value, not its name: give the variable name, such as " +
+  "MY_SERVICE_TOKEN, never the key itself.";
+/** Characters that make a pattern match more than one name. */
+const WILDCARD = /[*?[\]]/;
 
 export function description(cmd: Cmd): string {
   return (
@@ -182,10 +191,25 @@ function grantItem(r: Entry): Entry | string {
   }
   const parsed = grants.parseGrant(words.join(" "), (sub) => sub);
   if (typeof parsed === "string") return parsed || NOT_A_GRANT;
+  if (parsed.kind === "destination" && tooBroad(parsed.pattern)) return BROAD;
+  if (parsed.kind === "credential" && valueShaped(parsed.pattern.slice(0, parsed.pattern.indexOf("@")))) return VALUE_NAME;
   const out: Entry = { kind: parsed.kind, pattern: parsed.pattern };
   if (parsed.allows?.length) out.allows = parsed.allows;
   if (expires !== undefined && expires !== null) out.expires = expires;
   return out;
+}
+
+/**
+ * A destination the agent may not propose: a wildcard anywhere but as `*.` and one registrable domain
+ * (`grants.wildcardDomainOk`). The owner's own grant command is not limited this way.
+ */
+function tooBroad(pattern: string): boolean {
+  return WILDCARD.test(pattern) && (WILDCARD.test(pattern.slice(2)) || !grants.wildcardDomainOk(pattern));
+}
+
+/** A credential name that the plugin's redactor would take for a secret value (a token's own shape). */
+function valueShaped(name: string): boolean {
+  return createRedactor("standard", "").string(name) !== name;
 }
 
 export type Checked = { ok: Entry[]; refused: Array<[number, string]> } | string;
@@ -238,9 +262,17 @@ const iso = (d: Date) => `${d.toISOString().slice(0, 19)}Z`;
 
 /**
  * Stores a proposal of `items` from the session `ref`: its id and the ids of the open proposals it replaced. Expired
- * proposals are dropped. Null when the proposals file cannot be read, so nothing in it is overwritten.
+ * proposals are dropped. `unchecked`: the chat had read content no scan had seen yet when the agent proposed it. Null
+ * when the proposals file cannot be read, so nothing in it is overwritten.
  */
-export function save(stateDir: string, items: Entry[], ref: string, now: Date, makeId: () => string = newId): { id: string; replaced: string[] } | null {
+export function save(
+  stateDir: string,
+  items: Entry[],
+  ref: string,
+  now: Date,
+  makeId: () => string = newId,
+  unchecked = false,
+): { id: string; replaced: string[] } | null {
   const store = new Store(stateDir);
   try {
     return withFileLock(path.join(stateDir, "proposals.json"), () => {
@@ -259,6 +291,7 @@ export function save(stateDir: string, items: Entry[], ref: string, now: Date, m
         created_at: iso(now),
         expires_at: iso(new Date(now.getTime() + setup.PROPOSAL_TTL_MS)),
         items,
+        ...(unchecked ? { unchecked: true } : {}),
       });
       raw.proposals = live;
       store.saveProposals(raw);
@@ -271,15 +304,29 @@ export function save(stateDir: string, items: Entry[], ref: string, now: Date, m
 }
 
 /** The tool's answer to a call whose arguments `check` gave `checked`, from the session `ref`, and what the traffic log records of it. */
-export function propose(stateDir: string, checked: Checked, ref: string, now: Date, cmd: Cmd, makeId: () => string = newId): { text: string; logged: Entry } {
+export function propose(
+  stateDir: string,
+  checked: Checked,
+  ref: string,
+  now: Date,
+  cmd: Cmd,
+  makeId: () => string = newId,
+  unchecked = false,
+): { text: string; logged: Entry } {
   if (typeof checked === "string") return { text: checked, logged: { outcome: "refused", reason: "invalid", items: 0 } };
   const { ok, refused } = checked;
   const log = { items: ok.length, rejected: refused.length };
   if (!ok.length) return { text: reply(0, refused, cmd), logged: { outcome: "none", ...log } };
-  const saved = save(stateDir, ok, ref, now, makeId);
+  const saved = save(stateDir, ok, ref, now, makeId, unchecked);
   if (saved === null) return { text: NOT_SAVED, logged: { outcome: "error", reason: "proposals file unreadable", ...log } };
   return {
     text: reply(ok.length, refused, cmd),
-    logged: { outcome: "stored", proposal: saved.id, ...(saved.replaced.length ? { replaced: saved.replaced } : {}), ...log },
+    logged: {
+      outcome: "stored",
+      proposal: saved.id,
+      ...(unchecked ? { unchecked: true } : {}),
+      ...(saved.replaced.length ? { replaced: saved.replaced } : {}),
+      ...log,
+    },
   };
 }

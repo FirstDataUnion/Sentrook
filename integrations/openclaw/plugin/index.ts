@@ -316,17 +316,33 @@ const plugin = {
     }
     // ---- the plugin's own agent tools, for the owner's own direct chat: the read-only setup report (setupReport.ts)
     // and the setup proposal (proposals.ts). Neither sets anything Sentrook allows. ---------------------------------
-    /** The calls `before_tool_call` allowed, by session and call id, for the tool's own `execute` to take. */
-    const ownMarkers = new setupReport.Markers();
+    /**
+     * The calls `before_tool_call` allowed, one set of markers per tool, by session and call id, for that tool's own
+     * `execute` to take: a marker for one tool never answers a call of the other.
+     */
+    const ownMarkers = new Map<string, setupReport.Markers>([
+      [setupReport.TOOL, new setupReport.Markers()],
+      [proposals.TOOL, new setupReport.Markers()],
+    ]);
+    /**
+     * For each allowed call (`ownKey`): the inputs its tool reads, as the gate saw them, which `execute` must find the
+     * same (a plugin that changed the arguments after this one's hook leaves the call refused); and whether the session
+     * held content no scan had seen yet.
+     */
+    const ownInputs = new Map<string, { inputs: string; unchecked: boolean }>();
+    const ownKey = (tool: string, sid: string, callId: unknown) => `${tool}\n${sid}\n${String(callId)}`;
     /** Sessions the factories offered the tools in (OpenClaw said the sender is the owner), most recent last. */
     const ownOffered = new Map<string, number>();
     /** The own tools OpenClaw took a registration for. */
     const ownRegistered = new Set<string>();
     /** Own tools another plugin's tool of the same name ran in place of, in this process: their calls are scanned. */
     const ownForeign = new Set<string>();
-    const OWN_RECORD: Record<string, string> = { [setupReport.TOOL]: "setup_report", [proposals.TOOL]: "setup_proposal" };
+    const OWN_RECORD = new Map<string, string>([
+      [setupReport.TOOL, "setup_report"],
+      [proposals.TOOL, "setup_proposal"],
+    ]);
     const ownRecord = (tool: string, sid: string, outcome: string, extra: Json) =>
-      traffic.write({ kind: OWN_RECORD[tool]!, session_ref: sessionRef(sid), outcome, ...extra });
+      traffic.write({ kind: OWN_RECORD.get(tool)!, session_ref: sessionRef(sid), outcome, ...extra });
     const itemsAsked = (params: unknown): Json => {
       const items = params && typeof params === "object" ? (params as any).items : undefined;
       return { items: Array.isArray(items) ? items.length : 0 };
@@ -370,13 +386,16 @@ const plugin = {
       label: string;
       description: string;
       parameters: unknown;
-      answer: (sid: string, params: unknown) => { text: string; logged: Json };
+      /** What the tool reads from its arguments; a marker holds it as the gate saw it. */
+      inputs: (params: unknown) => unknown;
+      answer: (sid: string, params: unknown, unchecked: boolean) => { text: string; logged: Json };
     }> = [
       {
         name: setupReport.TOOL,
         label: "Sentrook setup report",
         description: setupReport.DESCRIPTION,
         parameters: setupReport.PARAMETERS,
+        inputs: setupReport.daysOf,
         answer: (_sid, params) => {
           const days = setupReport.daysOf(params);
           return { text: reportText(days, new Date()), logged: { outcome: "answered", days } };
@@ -387,9 +406,10 @@ const plugin = {
         label: "Sentrook setup proposal",
         description: proposals.description(CMD),
         parameters: proposals.PARAMETERS,
-        answer: (sid, params) => {
+        inputs: proposals.check,
+        answer: (sid, params, unchecked) => {
           const { cfg } = loadConfig();
-          return proposals.propose(cfg.stateDir, proposals.check(params), sessionRef(sid), new Date(), CMD);
+          return proposals.propose(cfg.stateDir, proposals.check(params), sessionRef(sid), new Date(), CMD, proposals.newId, unchecked);
         },
       },
     ];
@@ -403,10 +423,14 @@ const plugin = {
         const extra = spec.name === proposals.TOOL ? itemsAsked(params) : {};
         let text: string = setupReport.REFUSAL;
         try {
-          if (!ownMarkers.take(sid, toolCallId)) {
+          const seen = ownInputs.get(ownKey(spec.name, sid, toolCallId));
+          ownInputs.delete(ownKey(spec.name, sid, toolCallId));
+          if (!ownMarkers.get(spec.name)!.take(sid, toolCallId)) {
             ownRecord(spec.name, sid, "refused", { reason: "no_marker", ...extra });
+          } else if (!seen || seen.inputs !== JSON.stringify(spec.inputs(params))) {
+            ownRecord(spec.name, sid, "refused", { reason: "changed", ...extra });
           } else {
-            const got = spec.answer(sid, params);
+            const got = spec.answer(sid, params, seen.unchecked);
             text = got.text;
             ownRecord(spec.name, sid, got.logged.outcome as string, Object.fromEntries(Object.entries(got.logged).filter(([k]) => k !== "outcome")));
           }
@@ -460,9 +484,10 @@ const plugin = {
     const foreignOwnTool = (event: any, ctx: any): void => {
       const tool = event?.toolName;
       const callId = event?.toolCallId ?? ctx?.toolCallId;
-      if (typeof tool !== "string" || !OWN_RECORD[tool] || !callId) return;
+      if (typeof tool !== "string" || !OWN_RECORD.has(tool) || !callId) return;
       const sid = sessionIdOf(ctx);
-      if (!ownMarkers.drop(sid, callId) || event?.error) return;
+      ownInputs.delete(ownKey(tool, sid, callId));
+      if (!ownMarkers.get(tool)!.drop(sid, callId) || event?.error) return;
       ownForeign.add(tool);
       api.logger.warn(`${LOG} ${tool}: ${setupReport.FOREIGN_TEXT}`);
       safely(`${tool} record`, () => ownRecord(tool, sid, "foreign_tool", {}));
@@ -781,7 +806,13 @@ const plugin = {
             ...(built.hostCallId ? { _host_call_id: built.hostCallId } : {}),
           });
           store.saveSession(sid, sess, cfg.historyLimit * 2);
-          ownMarkers.put(sid, callId);
+          ownMarkers.get(tool)!.put(sid, callId);
+          // Content the chat read since the last scan reaches the scanner only with the next scanned call: what it
+          // was cannot be checked now, so the owner is told. The plugin's own tools' results are its own text.
+          const unchecked = (built.planir.new_inputs as any[]).some((i) => !OWN_RECORD.has(i?.tool));
+          const spec = OWN_TOOLS.find((t) => t.name === tool)!;
+          ownInputs.set(ownKey(tool, sid, callId), { inputs: JSON.stringify(spec.inputs(event?.params)), unchecked });
+          while (ownInputs.size > 500) ownInputs.delete(ownInputs.keys().next().value!);
           return undefined;
         });
       } catch (err) {

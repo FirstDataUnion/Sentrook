@@ -64,6 +64,8 @@ export const PROPOSAL_TTL_MS = 24 * 3600_000;
 export const MAX_ITEMS = 30;
 /** Minutes an unseen grant lasts. */
 export const DEFAULT_MINUTES = Math.floor(hold.GRANT_TTL_MS / 60_000);
+/** The warning on an agent's item when the chat had read content no scan had seen yet as the agent proposed it. */
+export const UNCHECKED_WARNING = "Sentrook could not check what this chat read just before the agent proposed this";
 
 export const PROPOSAL_ID = /^p-[0-9a-f]{6}$/;
 const GRANT_ID = /^gr-[0-9a-f]{6}$/;
@@ -424,6 +426,8 @@ export interface Proposal {
   created_at: Date;
   items: Entry[];
   dropped: number;
+  /** The chat had read content no scan had seen yet when the agent proposed it. */
+  unchecked: boolean;
 }
 
 /**
@@ -445,6 +449,7 @@ export function loadProposals(stateDir: string, now: Date): Proposal[] | null {
       created_at: readTime(p.created_at)!,
       items: readable,
       dropped: items.length - readable.length,
+      unchecked: p.unchecked === true,
     });
   }
   return out.sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -731,7 +736,14 @@ export function build(
   }
   for (const p of proposals) {
     for (const it of p.items) {
-      add(it, { from: "proposal", id: p.id, session_ref: p.session_ref, reason: it.reason ?? null, minutes: it.minutes ?? null });
+      add(it, {
+        from: "proposal",
+        id: p.id,
+        session_ref: p.session_ref,
+        reason: it.reason ?? null,
+        minutes: it.minutes ?? null,
+        unchecked: p.unchecked === true,
+      });
     }
     if (p.dropped) {
       const n = p.dropped;
@@ -774,6 +786,7 @@ export function build(
       if (!ev.available) warnings.push("could not check what the proposing chat had read (the traffic log is off)");
       else if (s.session_ref === null) warnings.push("could not check what the proposing chat had read");
       else if (ev.exposed.has(s.session_ref)) warnings.push("the chat that proposed this had read content that tried to steer the agent");
+      if (s.unchecked) warnings.push(UNCHECKED_WARNING);
     }
     for (const w of new Set(warnings)) lines.push(`Warning: ${w}.`);
     for (const s of agent) {
