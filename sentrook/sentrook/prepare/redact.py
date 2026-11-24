@@ -504,7 +504,12 @@ _KEY_START = r"(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[nrt]))"
 _CODE_KEY = re.compile(
     _KEY_START
     + r"(?P<k>[A-Za-z][A-Za-z0-9_-]{0,40})\\{0,8}[\"']?[ \t]*(?P<sep>[:=])[ \t]*\\{0,8}[\"']?"
-    r"(?P<v>[A-Za-z0-9]{4,12})" + _CUE_END
+    r"(?P<v>[A-Za-z0-9]{4,12}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})" + _CUE_END
+)
+# The next code in a list after one the rules found: "backup codes: A, B and C", `codes=A,B`.
+_CODE_LIST_NEXT = re.compile(
+    r"(?:[ \t]*[,;][ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)(?P<v>[0-9]{4,10}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})"
+    + _CUE_END
 )
 # `value: <random>`, `"X-Desk": "<random>"`, `sig=<random>`: any key or header, a long value.
 _RANDOM_KEY = re.compile(
@@ -559,17 +564,36 @@ def _key_kind(key: str, value: str, sep: str, after_query: bool, prev_word: str 
         len(words) > 1 and words[-2] == "passport" and words[-1] in ("no", "num", "number")
     )
     if passport:
-        return IDENTIFIER if 6 <= len(value) <= 12 and _identifier_value(value) else None
-    if not value.isdigit() or not 4 <= len(value) <= 10:
-        return None
+        ok = 6 <= len(value) <= 12 and "-" not in value and _identifier_value(value)
+        return IDENTIFIER if ok else None
+    digits = value.isdigit() and 4 <= len(value) <= 10
     if words[-1] in ("pin", "passcode", "otp"):
-        return PIN
-    if words[-1] != "code":
+        return PIN if digits else None
+    if words[-1] not in ("code", "codes") or not (digits or ("-" in value and _code_value(value))):
         return None
     if len(words) > 1:
         return CODE if words[-2] not in _ORDINARY_CODE_PREFIX else None
     ordinary = prev_word.lower() in _ORDINARY_CODE_PREFIX  # "error code=447100"
     return CODE if sep == "=" and len(value) >= 6 and not after_query and not ordinary else None
+
+
+def _with_lists(
+    text: str, found: list[tuple[int, int, int, str]]
+) -> list[tuple[int, int, int, str]]:
+    """Each further code in a list after a code or PIN the rules found, as its own value: "backup codes: A, B and C"."""
+    out = list(found)
+    seen: set[int] = set()
+    for start, _, e, kind in found:
+        if kind not in (CODE, PIN):
+            continue
+        while e not in seen:
+            seen.add(e)
+            m = _CODE_LIST_NEXT.match(text, e)
+            if m is None or not _code_value(m.group("v")):
+                break
+            out.append((start, m.start("v"), m.end("v"), kind))
+            e = m.end("v")
+    return out
 
 
 def _class(ch: str) -> int:
@@ -662,7 +686,7 @@ def cue_spans(text: str) -> list[tuple[int, int, int, str]]:
             continue
         if _random_key(m.group("k"), m.group("v"), _after_query(text, m.start())):
             out.append((m.start(), m.start("v"), m.end("v"), RANDOM))
-    return out
+    return _with_lists(text, out)
 
 
 def object_kind(key: str, value: Any) -> str | None:
@@ -673,7 +697,7 @@ def object_kind(key: str, value: Any) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
     text = str(value)
-    if re.fullmatch(r"[A-Za-z0-9]{4,12}", text):
+    if re.fullmatch(r"[A-Za-z0-9]{4,12}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6}", text):
         kind = _key_kind(key, text, ":", False)
         if kind is not None:
             return kind

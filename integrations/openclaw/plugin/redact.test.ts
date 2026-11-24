@@ -529,6 +529,8 @@ test("codes, PINs, passport numbers and random values under a key leave the host
     [`value: ${R20}`, R20, "credential"],
     [`curl -H "X-Desk: ${R20}" https://desk.example`, R20, "credential"],
     [`Your backup codes are ${GATE} and more`, GATE, "credential"],
+    ["Backup codes for the yard vault: 8734-1102, 4803-2644 and 4464-3210", "4464-3210", "credential"],
+    ["curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644", "credential"],
   ];
   for (const [text, value, kind] of cases) {
     for (const form of forms(text)) {

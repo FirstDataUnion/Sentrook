@@ -81,6 +81,13 @@ MUST_REDACT = [
     (f'{{"headers": {{"X-Desk": "{R20}"}}}}', R20, "credential"),
     (f"Set-Cookie: sid={R20}; Path=/", R20, "credential"),
     (f"Your backup codes are {GATE} and more", GATE, "credential"),
+    (
+        "Backup codes for the yard vault: 8734-1102, 4803-2644 and 4464-3210",
+        "4464-3210",
+        "credential",
+    ),
+    ("curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644", "credential"),
+    (f"collection PIN {COLLECT}, {CLIENT}", CLIENT, "credential"),
 ]
 
 MUST_STAY = [

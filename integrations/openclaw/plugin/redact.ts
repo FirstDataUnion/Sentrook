@@ -413,8 +413,13 @@ const CUES: Array<{ kind: CueKind; re: RegExp; check?: (v: string) => boolean }>
 const KEY_START = String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[nrt]))`;
 /** `yard_code=090373`, `client_pin: 7021`, `gateCode: 4471`, `"passport_number": "PPCDHFZC6"`, `code=006960`. */
 const CODE_KEY = new RegExp(
-  String.raw`${KEY_START}(?<k>[A-Za-z][A-Za-z0-9_-]{0,40})\\{0,8}["']?[ \t]*(?<sep>[:=])[ \t]*\\{0,8}["']?(?<v>[A-Za-z0-9]{4,12})${CUE_END}`,
+  String.raw`${KEY_START}(?<k>[A-Za-z][A-Za-z0-9_-]{0,40})\\{0,8}["']?[ \t]*(?<sep>[:=])[ \t]*\\{0,8}["']?(?<v>[A-Za-z0-9]{4,12}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})${CUE_END}`,
   "gd",
+);
+/** The next code in a list after one the rules found: "backup codes: A, B and C", `codes=A,B`. */
+const CODE_LIST_NEXT = new RegExp(
+  String.raw`(?:[ \t]*[,;][ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)(?<v>[0-9]{4,10}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})${CUE_END}`,
+  "yd",
 );
 /** `value: <random>`, `"X-Desk": "<random>"`, `sig=<random>`: any key or header, a long value. */
 const RANDOM_KEY = new RegExp(
@@ -468,10 +473,10 @@ const keyKind = (key: string, value: string, sep: string, afterQuery: boolean, p
   const passport =
     ["passport", "passportno", "passportnum", "passportnumber"].includes(last) ||
     (words.length > 1 && words[words.length - 2] === "passport" && ["no", "num", "number"].includes(last));
-  if (passport) return value.length >= 6 && value.length <= 12 && identifierValue(value) ? "identifier" : null;
-  if (!/^[0-9]{4,10}$/.test(value)) return null;
-  if (["pin", "passcode", "otp"].includes(last)) return "pin";
-  if (last !== "code") return null;
+  if (passport) return value.length >= 6 && value.length <= 12 && !value.includes("-") && identifierValue(value) ? "identifier" : null;
+  const digits = /^[0-9]{4,10}$/.test(value);
+  if (["pin", "passcode", "otp"].includes(last)) return digits ? "pin" : null;
+  if (!["code", "codes"].includes(last) || !(digits || (value.includes("-") && codeValue(value)))) return null;
   if (words.length > 1) return ORDINARY_CODE_PREFIX.has(words[words.length - 2]) ? null : "code";
   const ordinary = ORDINARY_CODE_PREFIX.has(prevWord.toLowerCase()); // "error code=447100"
   return sep === "=" && value.length >= 6 && !afterQuery && !ordinary ? "code" : null;
@@ -561,6 +566,21 @@ function cueSpans(text: string): Array<[number, number, CueKind]> {
     const idx = m.indices?.groups?.v;
     if (idx && randomKey(g.k, g.v, afterQuery(text, m.index))) out.push([idx[0], idx[1], "random"]);
   });
+  // Each further code in a list after a code or PIN the rules found, as its own value: "backup codes: A, B and C".
+  const seen = new Set<number>();
+  for (const [, end, kind] of [...out]) {
+    if (kind !== "code" && kind !== "pin") continue;
+    let e = end;
+    while (!seen.has(e)) {
+      seen.add(e);
+      CODE_LIST_NEXT.lastIndex = e;
+      const m = CODE_LIST_NEXT.exec(text);
+      const idx = m?.indices?.groups?.v;
+      if (!m || !idx || !codeValue(m.groups!.v)) break;
+      out.push([idx[0], idx[1], kind]);
+      e = idx[1];
+    }
+  }
   return out;
 }
 
@@ -571,7 +591,7 @@ function cueSpans(text: string): Array<[number, number, CueKind]> {
 function objectKind(key: string, value: unknown): CueKind | null {
   if (typeof value !== "string" && !(typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) return null;
   const text = String(value);
-  if (/^[A-Za-z0-9]{4,12}$/.test(text)) {
+  if (/^(?:[A-Za-z0-9]{4,12}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})$/.test(text)) {
     const kind = keyKind(key, text, ":", false);
     if (kind) return kind;
   }

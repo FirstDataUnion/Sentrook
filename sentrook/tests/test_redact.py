@@ -556,6 +556,7 @@ CUE_MUST_REPLACE = [
     ("curl https://x.example -d 'code=" + "00" + "6960" + "'", "006960"),
     ("curl https://x.example -d 'passport=" + "PPCD" + "HFZC6" + "'", "PPCDHFZC6"),
     ("value: " + _R20, _R20),
+    ("curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644"),
     ('curl -H "X-Desk: ' + _R20 + '" https://desk.example', _R20),
 ]
 CUE_MUST_STAY = [
@@ -586,9 +587,9 @@ CUE_MUST_STAY = [
 def test_cue_and_key_values_are_replaced(text, secret):
     for form in (text, _as_result(text), json.dumps({"r": _as_result(text)})):
         out, n = redact_text(form)
-        assert secret not in out and n == 1, form
+        assert secret not in out and n >= 1, form
     out, n = second_pass({"arguments": {"command": text}})
-    assert secret not in json.dumps(out) and n == 1
+    assert secret not in json.dumps(out) and n >= 1
 
 
 @pytest.mark.parametrize("text", CUE_MUST_STAY)
