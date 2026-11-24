@@ -460,6 +460,7 @@ def test_a_fast_scan_is_unchanged():
 
 
 def test_history_with_a_long_option_run_scans_fast():
+    # At 1/4 size (15,000) the command is under MAX_PARSE_CHARS, but a history command is never parsed.
     def make(d: int) -> dict:
         command = _repeat("curl ", "-H x ", "https://example.com", size=60_000 // d)
         return ex("ls", history=[hist_step(1, "exec", "exec", {"command": command})])
