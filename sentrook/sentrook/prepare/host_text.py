@@ -7,6 +7,13 @@ prompt in front of the queued system events. Jev reads all of it (its preamble s
 rule-side matchers must not: a host sentence is not the owner naming a destination or asking for a secret, and
 outside content in a webhook envelope is not the owner's at all.
 
+Hermes also puts an invoked skill's whole text into the message (a skill's slash command, a cron job that lists
+skills), ahead of the owner's words. A skill is the agent's standing instructions for a service, often written by
+someone else: a host or address in it is not the owner naming it. The Hermes plugin sends only the owner's words;
+this shape covers messages from plugins that send the whole text. Context blocks Hermes puts inside a cron
+wrapper (the job's previous output, a script's output) stay in the words here, as before: only the plugin can
+tell them from the job's prompt.
+
 `owner_words` recognises each wrapper by its whole shape, anchored at both ends of the text, and keeps only the
 part the owner wrote. Anything else, including a host whose wording has changed and an owner message that quotes
 host text, passes through unchanged, so the matchers then read everything, as they did before.
@@ -22,16 +29,37 @@ _UNATTENDED = r"This is an unattended scheduled run\.[^\n]*"
 _INTERNAL = r"<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>(?:(?!<<<).)*<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"
 #: A queued system event line: `System: [<timestamp>] <event text>`.
 _EVENT_PREFIX = re.compile(r"^System: \[[^\]\n]*\] ", re.M)
+#: Hermes's skill invocation: one or more skills' whole text, then the owner's words after a marker. A skill's
+#: slash command builds it, and so does a cron job that lists skills (the words are then the cron wrapper).
+_HERMES_SKILLS = (
+    r"\A(?:\[IMPORTANT: The following skill\(s\) were listed for this job but could not be found[^\n]*\]\n+)?"
+    r'\[IMPORTANT: The user has invoked the "[^"\n]{1,128}" skill, indicating they want you to follow its '
+    r"instructions\. The full skill content is loaded below\.\]\n\n"
+)
+_HERMES_INSTRUCTION = (
+    "The user has provided the following instruction alongside the skill invocation: "
+)
 
 #: (shape, the owner's words from a match). Each shape covers the whole text.
 _SHAPES: list[tuple[re.Pattern[str], Callable[[re.Match[str]], str]]] = [
-    # Hermes cron: one bracketed line, then the job prompt.
+    # Hermes cron: one bracketed line and, from Hermes 0.23, the run time; then the job prompt.
     (
         re.compile(
-            r"\A\[IMPORTANT: You are running as a scheduled cron job\.[^\n]*\]\n+(?P<w>.*)\Z", re.S
+            r"\A\[IMPORTANT: You are running as a scheduled cron job\.[^\n]*\]\n+"
+            r"(?:\[CURRENT RUN TIME: [^\]\n]*\]\n+)?(?P<w>.*)\Z",
+            re.S,
         ),
         lambda m: m["w"],
     ),
+    # Hermes skills: the skills' text is not the owner's words; theirs follow the first marker (a cron run's
+    # words are its own cron wrapper, read again). Skills with no instruction carry none.
+    (
+        re.compile(
+            _HERMES_SKILLS + r".*?\n\n" + re.escape(_HERMES_INSTRUCTION) + r"(?P<w>.*)\Z", re.S
+        ),
+        lambda m: owner_words(m["w"]),
+    ),
+    (re.compile(_HERMES_SKILLS + r".*\Z", re.S), lambda m: ""),
     # OpenClaw cron: `[cron:<id> <name>] <prompt>`, the clock lines, the unattended-run paragraph.
     (
         re.compile(
