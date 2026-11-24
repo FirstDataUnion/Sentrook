@@ -245,15 +245,15 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: and the scope question (its instructions and within-scope criterion), which every form sends: on the same uncached
 #: bodies call-v9 cost 318 tokens more than call-v8 in every one, so its entry is call-v8's largest measured form plus
 #: 318 (8,930), rounded up. call-v10 is call-v9 plus one question sent only with a `services` block; without one its
-#: questions are call-v9's byte for byte. Its entry is not measured yet: call-v9's 8,930 plus the added question's
-#: 2,380 characters of questions JSON at 3 characters per token (794), rounded up. Replace it with a measurement once
-#: the suite has uncached bodies that carry the block.
+#: questions are call-v9's byte for byte. Measured live on 18 bodies that carry the block (6 cases, 3 repeats), against
+#: the same states under call-v9: the question and block cost 557 to 561 tokens more (2,380 characters of questions
+#: JSON, about 4.2 characters per token), so its entry is call-v9's 8,930 plus 561, rounded up.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
     ("call-v8", "d8a11ad2bb37"): 8_700,
     ("call-v9", "8582a5b42e1a"): 9_000,
-    ("call-v10", "e9dd2e10f223"): 9_800,
+    ("call-v10", "e9dd2e10f223"): 9_500,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
