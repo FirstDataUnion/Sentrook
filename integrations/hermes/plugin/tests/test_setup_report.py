@@ -3,6 +3,7 @@ plugin's tests check too (`integrations/fixtures/setup-report`), and who may get
 
 import io
 import json
+import re
 import sys
 import types
 from datetime import datetime, timedelta
@@ -108,7 +109,7 @@ def test_only_owner_approved_reviews_from_the_owners_own_message_count():
     # Nine reviews of evil.example: denied, timed out, unanswered or from a group chat.
     assert "`evil.example`" not in text
     # reports.example.com: approved three times, in a session where the scanner flagged exposure.
-    assert "reports.example.com" not in text
+    assert not re.search(r"reports\.example\.com", text)
     # send_email: one denied, one from a group chat, one on a scheduled run; three counted.
     assert '"send_email": 3 reviews' in text
     for name in ("GROUP_ONLY_TOKEN", "EXPOSED_API_KEY", "GRANTED_API_KEY", "FILE_ONLY_TOKEN"):
@@ -117,7 +118,7 @@ def test_only_owner_approved_reviews_from_the_owners_own_message_count():
 
 def test_a_broader_pattern_does_not_inherit_a_narrower_suggestions_count():
     text = report()
-    assert "*.example.com" not in text
+    assert not re.search(r"\*\.example\.com", text)
     assert "destination `api.example.com`: 3 reviews" in text
 
 
