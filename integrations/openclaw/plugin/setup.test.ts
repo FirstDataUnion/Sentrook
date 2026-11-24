@@ -202,8 +202,8 @@ test("applied grants are persistent and listed by grants", () => {
   s.run("apply 4821 3,4");
   const cfg = s.cfg();
   const listing = grants.formatGrants(cfg, grants.load(cfg.stateDir), NOW, CMD, null);
-  assert.match(listing, /^gr-[0-9a-f]{6}\s+destination\s+persistent\s+api\.example\.com$/m);
-  assert.match(listing, /^gr-[0-9a-f]{6}\s+destination\s+persistent\s+files\.example\.org$/m);
+  assert.match(listing, /^gr-[0-9a-f]{6}\s+destination\s+persistent\s+api\.example\.com\s/m);
+  assert.match(listing, /^gr-[0-9a-f]{6}\s+destination\s+persistent\s+files\.example\.org\s/m);
 });
 
 test("applying the same item twice changes nothing", () => {
