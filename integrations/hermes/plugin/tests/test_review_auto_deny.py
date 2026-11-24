@@ -8,8 +8,9 @@ That answer is recorded as `blocked` (what a review nobody can answer is), never
 history says "auto-denied by the review loop". A denial a person could have given (another surface, a
 gateway route, no auto-deny callback) or of an ordinary call is still the owner's.
 
-The fork's own skill and memory saves never ask (`test_background_saves`), so the prompts here are for the fork's
-other calls (a read) and for an owner's `/refine`, whose saves still ask.
+The automatic review never asks at all, neither for its saves nor for its other calls (`test_background_saves`), so
+the prompts here are an owner's `/refine`'s: its saves and its other calls (a read) still ask, and on the terminal the
+fork's callback denies them unseen.
 """
 
 import io
@@ -33,8 +34,10 @@ class Tty(io.StringIO):
 
 @pytest.fixture
 def h(loop_h, review_fork, monkeypatch):
-    """The local terminal, with a scanner that asks for a review; `.fork` is Hermes's approval plumbing."""
+    """An owner's `/refine` on the local terminal, with a scanner that asks for a review; `.fork` is Hermes's approval
+    plumbing."""
     monkeypatch.setattr(sys, "stdin", Tty())
+    loop_h.prov["attended"] = True
     loop_h.ctx.hooks["pre_llm_call"](
         turn_id="t1", user_message="keep replies short", platform="cli", sender_id="u1", **SID
     )
@@ -84,12 +87,10 @@ def shown(h):
 # ---- must fire ---------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("attended", [False, True], ids=["loop", "refine"])
-def test_the_review_loops_auto_deny_on_the_terminal_is_not_the_owners(h, attended):
-    """The automatic review and an owner's /refine both run in the fork, whose callback denies unseen: a read in
-    the automatic review, a save in a /refine."""
-    h.prov["attended"] = attended
-    key = ask(h, *(SAVE if attended else FORK))
+@pytest.mark.parametrize("call", [SAVE, FORK], ids=["save", "read"])
+def test_the_review_loops_auto_deny_on_the_terminal_is_not_the_owners(h, call):
+    """An owner's /refine runs in the fork, whose callback denies unseen: a save and a read."""
+    key = ask(h, *call)
     answer(h, key, "deny")
     sent = next_history(h)[0]
     # the scan of a retry is told the review loop denied it, so the retry may ask rather than block
@@ -103,6 +104,15 @@ def test_the_review_loops_auto_deny_on_the_terminal_is_not_the_owners(h, attende
     review, why = shown(h)
     assert review == AUTO
     assert f"review: {AUTO}" in why.splitlines()
+
+
+def test_the_automatic_reviews_calls_never_ask(h):
+    """The automatic review holds its calls instead of asking (`test_background_saves`): no prompt to deny."""
+    h.prov["attended"] = False
+    out = h.ctx.hooks["pre_tool_call"](
+        tool_name=FORK[0], args=FORK[1], tool_call_id="c0", turn_id="t1", **SID
+    )
+    assert out["action"] == "block"
 
 
 def test_any_call_the_fork_makes_is_covered(h):

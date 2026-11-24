@@ -6,6 +6,14 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- A call Hermes's own background review or curator makes that is not a skill or memory save, such as a file read or a
+  terminal command, is no longer sent to an approval prompt when it needs review. Nobody can answer a prompt there:
+  on the terminal Hermes denied it unseen, and on a gateway it reached nobody, so the call was lost without a word and
+  the review could stop before its save. Such a call is now held: it does not run, the review is told nobody can
+  approve it and not to retry it, and the owner gets one notice per session in the quiet period at the
+  `owner_channel` home channel. These holds are not kept with the holds `/sentrook approve` takes. A scan failure
+  there follows the policy for unattended runs, and the record says `background_run: true`. Allowed and blocked
+  calls, an owner's `/refine` and the owner's own chats are unchanged.
 - A turn Hermes builds around skills (a skill's slash command, or a cron job that lists skills) sends the owner's
   words as the request, not the skills' whole text. Hermes puts each invoked skill's text into the message ahead of
   the owner's instruction; sent whole, every host and command a skill names counted as the owner's own words, and on

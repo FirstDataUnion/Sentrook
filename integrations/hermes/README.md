@@ -406,7 +406,8 @@ keep. These saves never ask you (see [Background skill and memory saves](#backgr
 
 Every background save is scanned and logged, and `status` counts them: allowed, blocked, held, staged and let through. Only Hermes's
 automatic review and curator count: a skill or memory change you ask for in a turn, or a `/refine` you run, is
-scanned like any other call, and so is every other tool those background runs call. Every call a background run
+scanned like any other call. Every other tool those background runs call is scanned as usual too, but never asks
+(see [Background skill and memory saves](#background-skill-and-memory-saves)). Every call a background run
 makes is sent with your last message as its request and the number of the turn it follows, and does not count as
 a turn of its own; if you have not written anything in the session yet, the request names the background review
 instead. Set `skill_review` to `review`
@@ -414,8 +415,7 @@ to send the background saves like any other call, without the conversation; with
 expect more of them to be reviewed or blocked.
 
 On the local terminal the background review cannot show you its prompts, so Hermes denies them itself. That still
-happens to the review's other calls (reading a file, for example) and to a `/refine` you run there; history shows
-such a call as "auto-denied by the review loop". If you then ask the agent to make that call, or one whose review
+happens to the calls of a `/refine` you run there; history shows such a call as "auto-denied by the review loop". If you then ask the agent to make that call, or one whose review
 timed out, Sentrook treats it as a retry of a review nobody answered: it can ask you (or, on an unattended run, be
 held for you), but it is not blocked for being a retry. A retry of a call you denied yourself, or one Sentrook blocked, is scored as before.
 
@@ -445,6 +445,13 @@ way, but nothing tells you: `status` and `verify` say so, and the saves show onl
 otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal, TUI or desktop app
 session, or a platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
 cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
+
+The background review's and the curator's other calls (reading a file, a terminal command) never ask either: a
+prompt there would be lost the same way, and the review could stop before its save. An allowed call runs and a
+blocked one is blocked, as anywhere. A call that needs review is held: it does not run, and the review is told nobody
+can approve it and not to retry it. You get one notice per session every 6 hours, naming the call as a review would
+describe it; it is not kept with the held calls you can approve, and history shows it as "held". A scan failure
+follows `on_scan_error` as for any unattended run. An owner's `/refine` still asks.
 
 All of this needs the plugin to run inside Hermes, which is Hermes's default (`plugins.isolation: in_process`). With
 `plugins.isolation: host` Hermes runs plugins in a separate process, where the plugin cannot tell a background save
