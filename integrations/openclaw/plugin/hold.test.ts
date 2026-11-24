@@ -385,7 +385,7 @@ test("after 7 days the hold expires, an answer is refused and hold_expired is re
   assert.equal(r.records("resolution").length, 1);
 });
 
-test("expiry is exactly 7 days and recorded when the holds next change", () => {
+test("expiry is exactly 7 days and recorded when the holds next change", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "sentrook-hold-unit-"));
   const t0 = new Date("2026-11-16T09:00:00Z");
   const log: any[] = [];
@@ -402,7 +402,7 @@ test("expiry is exactly 7 days and recorded when the holds next change", () => {
   hold.sweep(dir, new Date(t0.getTime() + DAYS), (x) => log.push(x));
   assert.deepEqual(log.map((x) => [x.resolution, x.hold_id]), [["hold_expired", id]]);
   const by = { basis: ["sender_is_owner"], channel: "telegram", sender_ref: null };
-  const answer = hold.answer(dir, "allow", id!, by, new Date(t0.getTime() + DAYS + HOUR), (s) => `/sentrook-${s}`, (x) => log.push(x), () => undefined);
+  const answer = await hold.answer(dir, "allow", id!, by, new Date(t0.getTime() + DAYS + HOUR), (s) => `/sentrook-${s}`, (x) => log.push(x), () => undefined);
   assert.ok(answer.reply.startsWith(`No held call ${id}`));
 });
 
@@ -462,7 +462,7 @@ test("notice text: the shared text for each case", () => {
     assert.equal(where, c.where_text, c.name);
     const jobId = c.where.job_id;
     const match = passes.matchOf(c.tool, c.response, {}, "salt", jobId === null);
-    const offers = passes.offers(jobId, passes.offeredLevel(c.response), match.named, passes.riskOf(c.response), FIXTURES.block_at);
+    const offers = passes.offers(jobId, passes.offeredLevel(c.response), match.named, passes.riskOf(c.response), FIXTURES.block_at, !!(c as { acted?: boolean }).acted);
     assert.deepEqual(offers, c.offers, c.name);
     assert.equal(hold.noticeText(c.response, c.tool, where, c.id, offers, noticeCmd, jobId !== null), c.text, c.name);
   }

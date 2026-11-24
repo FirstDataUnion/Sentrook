@@ -179,10 +179,12 @@ test("allow lets the job's next run make the same send once; the run after is he
   let { out, rec } = await r.run(1);
   assert.deepEqual(out, HELD);
   const id = rec.hold.id;
-  assert.deepEqual(rec.hold.offers, ["allow", "deny"], "the scanner offers it once: never always");
+  assert.deepEqual(rec.hold.offers, ["allow", "allow later", "deny"], "the scanner offers it once: never always");
   assert.match(rec.hold.notice.status, /queued/);
+  // with no job in OpenClaw's job store nothing is started (runNow.test.ts): the pass waits for the next run
   const answer = await r.command("sentrook-allow", id);
-  assert.ok(answer.startsWith("Job job-j may make this call once: on its next run, or if the held run retries it."), answer);
+  assert.ok(answer.startsWith("Job job-j may make this call once, on its next scheduled run, until "), answer);
+  assert.ok(answer.includes("It was not run again now: the job no longer exists."), answer);
   const [p] = stored();
   assert.deepEqual([p.kind, p.uses, p.level, p.job_id], ["allow", "once", "once", "job-j"]);
   assert.deepEqual(holds(), []);
@@ -202,10 +204,12 @@ test("the job id may come as the hook's jobId too", async () => {
   assert.equal((await r.run(2, "job-j", { provenance: false })).out, undefined);
 });
 
-test("allow later is the same until the plugin can start the run", async () => {
+test("allow later waits for the job's next run", async () => {
   const r = registered();
   const { rec } = await r.run(1);
-  assert.ok((await r.command("sentrook-allow", `${rec.hold.id} later`)).startsWith("Job job-j may make this call once: on its next run, or if the held run retries it."));
+  const answer = await r.command("sentrook-allow", `${rec.hold.id} later`);
+  assert.ok(answer.startsWith("Job job-j may make this call once, on its next scheduled run, until "), answer);
+  assert.ok(!answer.includes("not run again now"), answer);
   assert.equal((await r.run(2)).out, undefined);
 });
 
@@ -213,7 +217,7 @@ test("allow always lets three later runs through and counts them", async () => {
   reply = { ...ALWAYS };
   const r = registered();
   const { rec } = await r.run(1);
-  assert.deepEqual(rec.hold.offers, ["allow", "allow always", "deny"]);
+  assert.deepEqual(rec.hold.offers, ["allow", "allow later", "allow always", "deny"]);
   const answer = await r.command("sentrook-allow", `${rec.hold.id} always`);
   let [p] = stored();
   assert.ok(answer.startsWith("Job job-j may make this call until "), answer);
@@ -353,7 +357,7 @@ test("a call that names nothing is offered allow once, bound to its arguments", 
   reply = { ...ALWAYS, approval_fingerprint: "afp1:message_send" };
   const r = registered();
   const { rec } = await r.run(1);
-  assert.deepEqual(rec.hold.offers, ["allow", "deny"]);
+  assert.deepEqual(rec.hold.offers, ["allow", "allow later", "deny"]);
   assert.match(await r.command("sentrook-allow", `${rec.hold.id} always`), /names nothing/);
   await r.command("sentrook-allow", rec.hold.id);
   // run 2 sends other words: other arguments, so it is held
@@ -407,9 +411,9 @@ for (const name of ["sentrook-allow", "sentrook-deny", "sentrook-approve", "sent
 }
 
 for (const [name, args, want] of [
-  ["sentrook-allow", "", "usage: /sentrook-allow <id> [later|always]"],
-  ["sentrook-allow", "h-zzzzzz", "usage: /sentrook-allow <id> [later|always]"],
-  ["sentrook-allow", "h-1a2b3c sometimes", "usage: /sentrook-allow <id> [later|always]"],
+  ["sentrook-allow", "", "usage: /sentrook-allow <id> [now|later|always]"],
+  ["sentrook-allow", "h-zzzzzz", "usage: /sentrook-allow <id> [now|later|always]"],
+  ["sentrook-allow", "h-1a2b3c sometimes", "usage: /sentrook-allow <id> [now|later|always]"],
   ["sentrook-deny", "h-1a2b3c always", "usage: /sentrook-deny <id>"],
   ["sentrook-deny", "p-1a2b3c", "usage: /sentrook-deny <id>"],
   ["sentrook-allow", "h-abcdef", "No held call h-abcdef: the id is unknown, already answered or expired."],

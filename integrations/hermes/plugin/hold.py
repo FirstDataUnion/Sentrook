@@ -722,7 +722,8 @@ def answer(
         except Exception as exc:  # noqa: BLE001 - the pass stands as set
             logger.warning("sentrook could not record the run started for %s: %s", hid, exc)
         if not started:
-            why_not = "unavailable" if failed == "unavailable" else "failed"
+            # a guard reason the host itself gave, `unavailable`, or else a failure
+            why_not = failed if failed != "failed" and failed in RUN_NOW_REASONS else "failed"
         record(
             {
                 "kind": "run_now",

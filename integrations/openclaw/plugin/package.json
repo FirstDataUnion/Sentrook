@@ -35,6 +35,7 @@
     "planir.ts",
     "redact.ts",
     "report.ts",
+    "runNow.ts",
     "scanClient.ts",
     "scanErrorPolicy.ts",
     "scanFailureNotice.ts",

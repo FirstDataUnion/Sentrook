@@ -11,9 +11,15 @@
  *   transcript, and both send the same text); the owner reads the risk, reasons and suggested grant with
  *   `/sentrook-why <id>`;
  * - the owner answers within 7 days (`answer`):
- *   - `/sentrook-allow <id>` (also `<id> later`): a one-use pass for this job and action, used by the job's next run
- *     (passes.ts). The held call itself is not run again. Until the plugin can start the job's run itself, both
- *     forms wait for the next run; `runNow` is where that will plug in.
+ *   - `/sentrook-allow <id>`: a one-use pass for this job and action, bound to a new run of the job, which the plugin
+ *     starts now (runNow.ts). The held call itself is never run by the plugin: the job runs again, and the same call
+ *     goes through once in that run. When the run ends, the owner gets one line saying what happened
+ *     (`passes.outcomeText`). Nothing is started, and the pass waits for the job's next run, when the job cannot be
+ *     started now (the reply says why: observe mode, the job gone, finished, disabled, running or changed since the
+ *     hold), or when the held run had already sent or written something before the held call (`acted`): a new run
+ *     would do that again, so only `/sentrook-allow <id> now` starts it then. A hold is answered once, so it starts
+ *     at most one run.
+ *   - `/sentrook-allow <id> later`: the same pass, for the job's next run; nothing is started.
  *   - `/sentrook-allow <id> always`: a standing pass for this job and action, for 30 days. Offered only when the
  *     scan's `owner_pass` is `always` and the call names its parties.
  *   - `/sentrook-deny <id>`: a standing denial for this job and action, for 30 days. A matching call is refused with a
@@ -140,10 +146,14 @@ export function cronJobId(ctx: any, run: any): string | null {
 
 /** The notice's line for each answer a hold offers; `{c}` is the command, `{id}` the hold's id. */
 const OFFER_LINES: Record<string, string> = {
-  [passes.ALLOW]: "- let this call through once, on the job's next run: {c} {id}",
+  [passes.ALLOW]: "- run the job again now, letting this call through once: {c} {id}",
+  [passes.ALLOW_LATER]: "- let it through once on the job's next scheduled run instead: {c} {id} later",
+  [passes.ALLOW_NOW]: "- run the whole job again now, repeating what it already sent or wrote: {c} {id} now",
   [passes.ALLOW_ALWAYS]: "- let this job make this call for 30 days: {c} {id} always",
   [passes.DENY]: "- refuse it on this job for 30 days, with no more notices: {c} {id}",
 };
+/** allow on a hold whose run had already acted: it waits for the next run (allow now starts one). */
+const NEXT_RUN_LINE = "- let this call through once, on the job's next scheduled run: {c} {id}";
 /** A hold that is not on a cron job: allow is bound to the exact call. */
 const EXACT_LINE = "- let this exact call through once, within 7 days: {c} {id}";
 
@@ -171,7 +181,12 @@ export function noticeText(
   if (offers.length) {
     lines.push("Reply within 7 days:");
     for (const verb of offers) {
-      const line = verb === passes.ALLOW && !onJob ? EXACT_LINE : OFFER_LINES[verb]!;
+      const line =
+        verb === passes.ALLOW && !onJob
+          ? EXACT_LINE
+          : verb === passes.ALLOW && offers.includes(passes.ALLOW_NOW)
+            ? NEXT_RUN_LINE
+            : OFFER_LINES[verb]!;
       lines.push(line.replace("{c}", cmd(verb === passes.DENY ? "deny" : "allow")).replace("{id}", holdId));
     }
   } else {
@@ -236,6 +251,12 @@ export interface NewHold {
   offers?: string[];
   /** The call as the notice describes it, for the passes list. */
   description?: string;
+  /** The job's definition as `runNow.digest` gives it; null when it could not be read. */
+  jobDigest?: string | null;
+  /** The held run had sent or written something before the held call. */
+  acted?: boolean;
+  /** The held run, which never counts as one started for an answer. */
+  runKey?: string | null;
 }
 
 /**
@@ -272,6 +293,10 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
     same.count = Number(same.count ?? 1) + 1;
     same.last_seen_at = iso(now);
     same.held = [...(Array.isArray(same.held) ? same.held : []), held].slice(-MAX_HELD);
+    // the latest run's job and run; acted when any of its runs had
+    same.job_digest = hold.jobDigest ?? null;
+    same.run_key = hold.runKey ?? null;
+    same.acted = !!same.acted || !!hold.acted;
     store.saveHolds(data);
     return { id: String(same.id), repeat: true };
   }
@@ -298,6 +323,9 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
     expires_at: iso(new Date(now.getTime() + HOLD_TTL_MS)),
     hint: hold.hint,
     notice: hold.notice,
+    job_digest: hold.jobDigest ?? null,
+    acted: !!hold.acted,
+    run_key: hold.runKey ?? null,
   });
   data.holds = data.holds.slice(-MAX_HOLDS);
   store.saveHolds(data);
@@ -316,10 +344,52 @@ export function repeated(stateDir: string, now: Date): Entry[] {
   return (data?.holds ?? []).filter((h): h is Entry => live(h, now) && Number((h as Entry).count ?? 1) > 1);
 }
 
-/** Starts the held call's job again now, for allow; null when it did, else why not (then the pass waits for the
- * job's next run). This plugin does not start runs yet: every allow waits. */
-function runNow(_hold: Entry): string | null {
-  return "not available";
+/** Why allow did not start the job now (runNow.ts); the shared fixture's `run_now.reasons`. */
+export const RUN_NOW_REASONS: Record<string, string> = {
+  observe: "Sentrook is in observe mode",
+  unknown: "Sentrook could not read the job, so it cannot check that the job is unchanged since the hold",
+  missing: "the job no longer exists",
+  paused: "the job is paused",
+  terminal: "the job has finished and is not scheduled to run again",
+  running: "the job is running now",
+  changed: "the job was changed since the call was held",
+  acted: "the held run had already sent or written something before this call, and a new run would do it again",
+  unavailable: "Sentrook cannot start the job from here",
+  failed: "starting it failed",
+};
+/** The owner's reply to allow on a cron job's hold; the shared fixture's `run_now.replies`. */
+export const RUN_NOW_REPLIES: Record<string, string> = {
+  started: "Running job {job} again now; this call will be let through once in that run. Undo: {passes} revoke {pass}.",
+  started_now:
+    "Running job {job} again now; this call will be let through once in that run. The whole job runs again, so " +
+    "what it already sent or wrote before this call happens again. Undo: {passes} revoke {pass}.",
+  later:
+    "Job {job} may make this call once, on its next scheduled run, until {until}. Sentrook does not run the held " +
+    "call itself. Undo: {passes} revoke {pass}.",
+  fallback:
+    "Job {job} may make this call once, on its next scheduled run, until {until}. It was not run again now: " +
+    "{reason}. Undo: {passes} revoke {pass}.",
+};
+/** The owner's line when a run started for an answer ends; the shared fixture's `run_now.outcomes`. */
+export const OUTCOMES: Record<string, string> = {
+  passed: "Sentrook: cron job {job} ran again, and the call you allowed went through once.",
+  passed_held:
+    "Sentrook: cron job {job} ran again, and the call you allowed went through once. It also made a different " +
+    "call, held as {hold}.",
+  held:
+    "Sentrook: cron job {job} ran again but did not make the call you allowed; it made a different call, held " +
+    "as {hold}.",
+  none: "Sentrook: cron job {job} ran again but did not make the call you allowed, so nothing was let through.",
+};
+
+/**
+ * What answer needs to start a held call's job again (runNow.Adapter): `guard(hold)`, why it may not be started now
+ * or null; `start(hold)`, whether it started, OpenClaw's run id for it, and why not (`unavailable` when this process
+ * has no way to start it).
+ */
+export interface RunNow {
+  guard(hold: Entry): string | null;
+  start(hold: Entry): Promise<{ started: boolean; runId: string | null; why: string }>;
 }
 
 /** Why a hold does not offer the answer `want`; the hold keeps waiting. */
@@ -340,7 +410,7 @@ function refusal(found: Entry, want: string, id: string, cmd: grants.Cmd): strin
   if (level !== "always") {
     return (
       "Not set: Sentrook offers to let this call through on every run only when it judges that safe, and for this one " +
-      `it offers it once. ${cmd("allow")} ${id} lets it through on the job's next run.`
+      `it offers it once. ${cmd("allow")} ${id} lets it through once.`
     );
   }
   if (!found.match?.named) {
@@ -349,14 +419,18 @@ function refusal(found: Entry, want: string, id: string, cmd: grants.Cmd): strin
   return `Not set: this call scored at the block line, so it can only be let through once: ${cmd("allow")} ${id}.`;
 }
 
-/** (hold id, answer) from `allow <id> [later|always]`, `approve <id>` or `deny <id>`; null when malformed. */
-function parseAnswer(verb: string, rest: string): [string, string] | null {
+/**
+ * (hold id, answer, mode) from `allow <id> [now|later|always]`, `approve <id>` or `deny <id>`; null when malformed.
+ * The mode is `now`, `later` or "" for an allow once.
+ */
+function parseAnswer(verb: string, rest: string): [string, string, string] | null {
   const words = rest.trim().split(/\s+/).filter(Boolean);
   if (!words.length || !ID.test(words[0]!)) return null;
-  if (verb === "deny") return words.length === 1 ? [words[0]!, passes.DENY] : null;
+  if (verb === "deny") return words.length === 1 ? [words[0]!, passes.DENY, ""] : null;
   const mode = (words[1] ?? "").toLowerCase();
-  if (words.length > 2 || !["", "later", "once", "always"].includes(mode)) return null;
-  return [words[0]!, mode === "always" ? passes.ALLOW_ALWAYS : passes.ALLOW];
+  if (words.length > 2 || !["", "now", "later", "once", "always"].includes(mode)) return null;
+  if (mode === "always") return [words[0]!, passes.ALLOW_ALWAYS, ""];
+  return [words[0]!, passes.ALLOW, mode === "once" ? "" : mode];
 }
 
 /** A held call to set in its session's history once answered. */
@@ -423,11 +497,12 @@ function approveV1(
 }
 
 /**
- * `allow <id> [later|always]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers, removes the
- * hold and records the answer; the reply says what was set and how to undo it. The caller sets the held calls'
+ * `allow <id> [now|later|always]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers, removes the
+ * hold and records the answer; the reply says what was set and how to undo it. On a cron job's hold, allow also starts
+ * the job again now through `runNow` unless a guard applies (see the module note). The caller sets the held calls'
  * history (`Answered.held`).
  */
-export function answer(
+export async function answer(
   stateDir: string,
   verb: "allow" | "deny" | "approve",
   rest: string,
@@ -436,15 +511,19 @@ export function answer(
   cmd: grants.Cmd,
   record: RecordFn,
   beforeWrite: () => void,
-): Answered {
+  runNow: RunNow | null = null,
+): Promise<Answered> {
   const none = (reply: string): Answered => ({ reply, held: [], decision: null });
   const parsed = parseAnswer(verb, rest);
   if (!parsed) {
-    const form = verb === "deny" ? `${cmd("deny")} <id>` : verb === "approve" ? `${cmd("approve")} <id>` : `${cmd("allow")} <id> [later|always]`;
+    const form = verb === "deny" ? `${cmd("deny")} <id>` : verb === "approve" ? `${cmd("approve")} <id>` : `${cmd("allow")} <id> [now|later|always]`;
     return none(`usage: ${form}, with the id from Sentrook's notice (h- and 6 hex digits)`);
   }
-  const [id, want] = parsed;
+  const [id, want, mode] = parsed;
   const store = new Store(stateDir);
+  /** Whether this answer starts the job again now, else why not (null: not asked to, `later`, or not a job). */
+  let start = false;
+  let whyNot: string | null = null;
   type Outcome = { done: string } | { found: Entry; entry: Entry };
   const outcome = withFileLock(holdsFile(stateDir), (): Outcome => {
     const data = store.loadHolds();
@@ -479,6 +558,15 @@ export function answer(
       save();
       return { done: refusal(found, want, id, cmd) };
     }
+    if (want === passes.ALLOW && found.job_ref && mode !== "later") {
+      try {
+        whyNot = runNow ? runNow.guard(found) : "unavailable";
+      } catch {
+        whyNot = "unknown";
+      }
+      if (whyNot === null && found.acted && mode !== "now") whyNot = "acted";
+      start = whyNot === null;
+    }
     // The hold is marked answered first, so a failure never leaves two passes for one answer.
     beforeWrite();
     data.holds = data.holds.filter((h) => h !== found);
@@ -499,6 +587,7 @@ export function answer(
           hold: found,
           by,
           now,
+          runBound: start,
         },
         beforeWrite,
       );
@@ -552,8 +641,38 @@ export function answer(
   else if (!found.job_ref) {
     reply = `The next identical call from an unattended run may go through once, until ${shown}. Sentrook does not run the held call itself. ${undo}`;
   } else {
-    runNow(found); // the seam for starting the job now; until then the pass waits for the next run
-    reply = `${job} may make this call once: on its next run, or if the held run retries it. Sentrook does not run the held call itself. ${undo}`;
+    if (start && runNow) {
+      let got: { started: boolean; runId: string | null; why: string };
+      try {
+        got = await runNow.start(found);
+      } catch (err) {
+        got = { started: false, runId: null, why: clean(String(err), 200) };
+      }
+      try {
+        if (got.started) passes.started(stateDir, entry.id, got.runId);
+        else passes.notStarted(stateDir, entry.id);
+      } catch {
+        // the pass stands as set
+      }
+      if (!got.started) whyNot = got.why !== "failed" && Object.hasOwn(RUN_NOW_REASONS, got.why) ? got.why : "failed";
+      record({
+        kind: "run_now",
+        op: "start",
+        hold_id: id,
+        pass_id: entry.id,
+        job_ref: entry.job_ref ?? null,
+        started: got.started,
+        ...(got.runId ? { run_id: got.runId } : {}),
+        ...(got.started ? {} : { reason: whyNot, detail: clean(got.why, 200) }),
+        by,
+      });
+    } else if (whyNot !== null) {
+      record({ kind: "run_now", op: "start", hold_id: id, pass_id: entry.id, job_ref: entry.job_ref ?? null, started: false, reason: whyNot, by });
+    }
+    const fields = { job: clean(found.job_id, 40), pass: String(entry.id), passes: cmd("passes"), until: shown };
+    if (start && whyNot === null) reply = passes.fill(RUN_NOW_REPLIES[found.acted ? "started_now" : "started"]!, fields);
+    else if (whyNot === null) reply = passes.fill(RUN_NOW_REPLIES.later!, fields);
+    else reply = passes.fill(RUN_NOW_REPLIES.fallback!, { ...fields, reason: RUN_NOW_REASONS[whyNot]! });
   }
   return { reply, held: held.filter((h) => !!h.sid), decision };
 }

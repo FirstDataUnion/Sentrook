@@ -731,7 +731,7 @@ test("pending items sit at the top with the commands to answer them and their fu
   assert.match(text, /\/sentrook-why 8888a1b2/);
   assert.match(text, /\/sentrook-approve h-2c2c2c/);
   // A v2 hold lists the answers it offers, and how often it was held.
-  assert.match(text, /\/sentrook-allow h-4e4e4eCopyLet this call through once, on the job's next run\./);
+  assert.match(text, /\/sentrook-allow h-4e4e4eCopyRun the job again now, letting this call through once\./);
   assert.match(text, /\/sentrook-allow h-4e4e4e alwaysCopyLet this job make this call for 30 days\./);
   assert.match(text, /\/sentrook-deny h-4e4e4eCopyRefuse it on this job for 30 days/);
   assert.match(text, /held 3 times/);

@@ -4,7 +4,8 @@
  * A held call (hold.ts) is answered with `/sentrook-allow`, `/sentrook-allow <id> always` or `/sentrook-deny`. Each
  * answer is kept here, in `<state>/sentrook/passes.json`, bound to the cron job the held call came from and to the
  * action:
- * - allow (once): a one-use pass. The job's next run that makes the same call goes through once.
+ * - allow (once): a one-use pass. When the plugin starts a new run of the job for the answer (runNow.ts), the pass is
+ *   bound to that run (`runs`, below); otherwise the job's next run that makes the same call goes through once.
  * - allow always: a standing pass for the job, for 30 days, with a use count.
  * - deny: a standing denial for the job, for 30 days. A matching call gets `DECLINED_TEXT` and no notice is sent.
  *
@@ -25,6 +26,12 @@
  * The match key is an HMAC under the install's salt, so the file reveals nothing about the action; it keeps the
  * tool, the run's description of the call (as the hold's notice showed it) and the job, for the owner's list.
  * `passes.json` is changed under the same cross-process lock as `holds.json` and `grants.json`.
+ *
+ * A pass bound to a run the plugin started (`run_bound`) has a record in the file's `runs` list: the job, when it was
+ * asked for, the run id `openclaw cron run` returned, and, once a scan or the run's end finds it, the run it is bound
+ * to. A run is the started one when its running receipt names that run id, or (before the id is recorded) when it is
+ * not the held run and started after the answer. The record notes whether the call went through and the holds the run
+ * made, so the owner gets one line when the run ends (`outcomeText`); a run-bound pass the run did not use ends with it.
  */
 
 import { createHash, createHmac, randomBytes } from "node:crypto";
@@ -54,6 +61,31 @@ export type Level = (typeof LEVELS)[number];
 export const ALLOW = "allow";
 export const ALLOW_ALWAYS = "allow always";
 export const DENY = "deny";
+export const ALLOW_LATER = "allow later";
+/** allow that starts the job again even though the held run had already acted (`acts`). */
+export const ALLOW_NOW = "allow now";
+
+/**
+ * A call acted (sent or wrote something a new run would do again) when it ran with one of these tool kinds, or when the
+ * scan described it with one of these categories.
+ */
+export const ACTING_KINDS = new Set(["file_edit", "file_write", "memory_write", "message_send"]);
+export const ACTING_CATEGORIES = new Set([
+  "deletes_data",
+  "modifies_agent_or_host_config",
+  "sends_data_off_host",
+  "sends_message_to_person",
+  "writes_local_files",
+]);
+/** How much earlier than the answer a run may say it started and still count as the one started for it (clocks). */
+const RUN_SLACK_MS = 2_000;
+
+/** Whether a call of tool kind `kind`, scanned as `resp`, sends or writes something. */
+export function acts(kind: unknown, resp: ScanResponse | Entry | null | undefined): boolean {
+  const desc = (resp as Entry | null | undefined)?.tool_description;
+  const category = desc && typeof desc === "object" ? desc.category : null;
+  return ACTING_KINDS.has(String(kind)) || ACTING_CATEGORIES.has(String(category));
+}
 
 // ---- the match (the same terms as the Hermes plugin's Session answer) ------------------------------------
 
@@ -226,15 +258,23 @@ export function covers(held: Entry | null | undefined, later: Match | Entry): bo
 
 /**
  * The answers a hold offers, in the notice's order. On a cron job: allow when the scanner lets the owner pass the
- * call at all, allow always when it lets it pass for good and the call names its parties below the block line, and
- * deny. Elsewhere only allow (bound to the exact call). `later` is accepted wherever allow is: until the plugin can
- * start a job's run itself, both use the job's next run.
+ * call at all, then allow later (allow starts the job again now), or allow now when the held run had already acted
+ * (allow then waits for the next run); allow always when it lets it pass for good and the call names its parties below
+ * the block line; and deny. Elsewhere only allow (bound to the exact call).
  */
-export function offers(jobId: string | null, level: Level | null, named: boolean, risk: number | null, blockAt: number): string[] {
+export function offers(
+  jobId: string | null,
+  level: Level | null,
+  named: boolean,
+  risk: number | null,
+  blockAt: number,
+  acted = false,
+): string[] {
   if (!jobId) return level !== null ? [ALLOW] : [];
   const out: string[] = [];
   if (level !== null) {
     out.push(ALLOW);
+    out.push(acted ? ALLOW_NOW : ALLOW_LATER);
     if (level === "always" && named && risk !== null && risk < blockAt) out.push(ALLOW_ALWAYS);
   }
   out.push(DENY);
@@ -267,13 +307,22 @@ export function live(data: PassesFile | null, now: Date): Entry[] {
   return (data?.passes ?? []).filter((p): p is Entry => isLive(p, now));
 }
 
+function liveRuns(data: PassesFile, now: Date): Entry[] {
+  const runs = Array.isArray(data.runs) ? (data.runs as unknown[]) : [];
+  return runs.filter((r): r is Entry => {
+    const at = r && typeof r === "object" ? readTime((r as Entry).expires_at) : null;
+    return at !== null && at.getTime() > now.getTime();
+  });
+}
+
 /**
  * Stores a pass (`kind` allow) or denial (deny) set from `hold`; returns the entry, or null when the file cannot be
- * read. `uses`: once or standing.
+ * read. `uses`: once or standing. `runBound`: a one-use pass for a run the plugin is about to start, with its record in
+ * `runs`.
  */
 export function add(
   stateDir: string,
-  b: { kind: "allow" | "deny"; uses: "once" | "standing"; level: Level | null; hold: Entry; by: Entry; now: Date },
+  b: { kind: "allow" | "deny"; uses: "once" | "standing"; level: Level | null; hold: Entry; by: Entry; now: Date; runBound?: boolean },
   beforeWrite: () => void = () => {},
 ): Entry | null {
   return withFileLock(file(stateDir), () => {
@@ -302,6 +351,24 @@ export function add(
       use_count: 0,
       last_used_at: null,
     };
+    const runs = liveRuns(data, b.now);
+    if (b.runBound) {
+      entry.run_bound = true;
+      runs.push({
+        id,
+        hold_id: b.hold.id ?? null,
+        job_id: b.hold.job_id ?? null,
+        job_ref: b.hold.job_ref ?? null,
+        requested_at: iso(b.now),
+        not_run: b.hold.run_key ?? null,
+        run_id: null,
+        run_key: null,
+        passed: false,
+        held: [],
+        expires_at: entry.expires_at,
+      });
+    }
+    data.runs = runs.slice(-MAX_PASSES);
     data.passes.push(entry);
     data.passes = data.passes.slice(-MAX_PASSES);
     beforeWrite();
@@ -315,13 +382,28 @@ export function add(
  * applies only to an eligible scan that it covers at an `owner_pass` level at or above its own. A one-use pass is used
  * up; a standing one counts the use. A file that cannot be read settles nothing (the call is held as before).
  */
-export function check(stateDir: string, ref: string | null, match: Match, resp: ScanResponse | Entry, now: Date): Entry | null {
+export function check(
+  stateDir: string,
+  ref: string | null,
+  match: Match,
+  resp: ScanResponse | Entry,
+  now: Date,
+  inRun: string | null = null,
+): Entry | null {
   return withFileLock(file(stateDir), () => {
     const store = new Store(stateDir);
     const data = store.loadPasses();
     if (data === null) return null;
     const found = live(data, now);
-    const same = found.filter((p) => p.job_ref === ref && p.match && typeof p.match === "object" && p.match.key === match.key);
+    const same = found.filter(
+      (p) =>
+        p.job_ref === ref &&
+        p.match &&
+        typeof p.match === "object" &&
+        p.match.key === match.key &&
+        // a pass bound to a run the plugin started serves that run only (`inRun`, from runOf)
+        (!p.run_bound || (inRun !== null && p.id === inRun)),
+    );
     let hit = ref !== null ? (same.find((p) => p.kind === "deny") ?? null) : null;
     if (hit === null && eligible(resp)) {
       const have = levelOf(resp);
@@ -372,6 +454,7 @@ export function describe(p: Entry): string {
   const until = at ? show(at) : "?";
   const call = `${clean(p.tool ?? "?", 60)}: ${clean(p.description ?? "?", 120)}`;
   if (p.kind === "deny") return `denied on ${jobText(p)} until ${until}: ${call}`;
+  if (p.uses === "once" && p.run_bound) return `allowed once in the run of ${jobText(p)} started for it, until ${until}: ${call}`;
   if (p.uses === "once") return `allowed once on ${jobText(p)}'s next run, until ${until}: ${call}`;
   const used = Number(p.use_count ?? 0);
   return `allowed on ${jobText(p)} until ${until}, used ${used} time${used === 1 ? "" : "s"}: ${call}`;
@@ -399,3 +482,127 @@ export function counts(stateDir: string, now: Date): string {
 }
 
 export const isId = (text: string) => ID.test(text);
+
+// ---- runs started for an answer (runNow.ts) -------------------------------------------------------------
+
+/** Runs `change(data, record)` on the run record of pass `id` under the lock and saves; a copy of it, or null. */
+function changeRun(stateDir: string, id: string, change: (data: PassesFile, rec: Entry) => void): Entry | null {
+  return withFileLock(file(stateDir), () => {
+    const store = new Store(stateDir);
+    const data = store.loadPasses();
+    if (data === null) return null;
+    const rec = (Array.isArray(data.runs) ? (data.runs as Entry[]) : []).find((r) => r && r.id === id);
+    if (!rec) return null;
+    change(data, rec);
+    store.savePasses(data);
+    return { ...rec };
+  });
+}
+
+/** The run started for pass `id`, with the run id OpenClaw gave it. */
+export function started(stateDir: string, id: string, runId: string | null): void {
+  changeRun(stateDir, id, (_data, rec) => {
+    if (runId) rec.run_id = runId;
+  });
+}
+
+/** The run for pass `id` could not be started: the pass is left for the job's next run, as allow later. */
+export function notStarted(stateDir: string, id: string): void {
+  changeRun(stateDir, id, (data, rec) => {
+    data.runs = (data.runs as Entry[]).filter((r) => r !== rec);
+    for (const p of data.passes as Entry[]) if (p && p.id === id) delete p.run_bound;
+  });
+}
+
+function isRun(rec: Entry, runKey: string | null, startedAt: Date | null): boolean {
+  if (rec.ended || !runKey) return false;
+  if (rec.run_key) return rec.run_key === runKey;
+  if (rec.run_id) return rec.run_id === runKey;
+  const asked = readTime(rec.requested_at);
+  const after = startedAt === null || asked === null || startedAt.getTime() >= asked.getTime() - RUN_SLACK_MS;
+  return runKey !== rec.not_run && after;
+}
+
+/** Marks a started run ended and drops its pass if the run did not use it. */
+function endRun(data: PassesFile, rec: Entry): void {
+  rec.ended = true;
+  data.passes = (data.passes as Entry[]).filter((p) => !(p && p.id === rec.id && p.run_bound));
+}
+
+/**
+ * (the record of the run the plugin started for an answer that this run of job `ref` is, now bound to it, or null;
+ * the records of earlier started runs of the job that ended without the plugin seeing their end, now ended).
+ */
+export function runOf(
+  stateDir: string,
+  ref: string | null,
+  runKey: string | null,
+  startedAt: Date | null,
+  now: Date,
+): { mine: Entry | null; gone: Entry[] } {
+  if (ref === null || !runKey) return { mine: null, gone: [] };
+  return withFileLock(file(stateDir), () => {
+    const store = new Store(stateDir);
+    const data = store.loadPasses();
+    if (data === null) return { mine: null, gone: [] };
+    const runs = liveRuns(data, now);
+    let changed = runs.length !== (Array.isArray(data.runs) ? data.runs.length : 0);
+    const mine = runs.find((r) => r.job_ref === ref && isRun(r, runKey, startedAt)) ?? null;
+    if (mine && mine.run_key !== runKey) {
+      mine.run_key = runKey;
+      changed = true;
+    }
+    const gone = runs.filter((r) => r.job_ref === ref && r !== mine && !r.ended && r.run_key && r.run_key !== runKey);
+    for (const r of gone) {
+      endRun(data, r);
+      changed = true;
+    }
+    data.runs = runs;
+    if (changed) store.savePasses(data);
+    return { mine: mine ? { ...mine } : null, gone: gone.map((r) => ({ ...r })) };
+  });
+}
+
+/** Notes on the record of the run started for pass `id` that the call went through, or a hold it made. */
+export function note(stateDir: string, id: string, what: { passed?: boolean; held?: string }): void {
+  changeRun(stateDir, id, (_data, rec) => {
+    if (what.passed) rec.passed = true;
+    if (what.held) {
+      if (!Array.isArray(rec.held)) rec.held = [];
+      if (!rec.held.includes(what.held)) rec.held.push(what.held);
+    }
+  });
+}
+
+/**
+ * The run `runKey` of job `ref` ended: when it is a run the plugin started for an answer, its record, now ended (its
+ * pass dropped if unused); else null.
+ */
+export function runEnd(stateDir: string, ref: string | null, runKey: string | null, startedAt: Date | null, now: Date): Entry | null {
+  if (ref === null || !runKey) return null;
+  return withFileLock(file(stateDir), () => {
+    const store = new Store(stateDir);
+    const data = store.loadPasses();
+    if (data === null) return null;
+    const runs = liveRuns(data, now);
+    const mine = runs.find((r) => r.job_ref === ref && isRun(r, runKey, startedAt));
+    if (!mine) return null;
+    mine.run_key = runKey;
+    endRun(data, mine);
+    data.runs = runs;
+    store.savePasses(data);
+    return { ...mine };
+  });
+}
+
+/** The owner's one line when a started run ended, from `texts` (the `outcomes` the shared fixture gives). */
+export function outcomeText(rec: Entry, texts: Record<string, string>): string {
+  const held: string[] = (Array.isArray(rec.held) ? rec.held : []).filter((h: unknown): h is string => typeof h === "string");
+  const kind = rec.passed ? (held.length ? "passed_held" : "passed") : held.length ? "held" : "none";
+  return fill(texts[kind]!, { job: clean(rec.job_id, 40), hold: held.join(", ") });
+}
+
+/** `template` with each `{name}` replaced by `values[name]`, in one pass (as Python's `str.format`). */
+export function fill(template: string, values: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (all, name: string) => (Object.hasOwn(values, name) ? values[name]! : all));
+}
