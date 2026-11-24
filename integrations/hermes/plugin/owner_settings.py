@@ -2,15 +2,22 @@
 
 `notify here|off|status|<platform>`: where Sentrook's notices go (held calls on unattended runs, scan failures there,
 background saves). `here` stores the chat the command was sent in (its platform, chat id and thread), and notices
-are sent there with `hermes send --to <platform>:<chat id>[:<thread>]`. When Hermes does not say which chat it was,
+are sent there with `hermes send --to <platform>:<chat id>[:<thread>]`. The chat must be the one the owner check
+judged (same platform, same chat id when the check had one, a direct message), Hermes must be able to address it
+(`addressable`; a chat it cannot address yet is not stored), and it gets a test notice. When Hermes does not say which chat it was,
 `here` stores the platform and notices go to its home channel (`/sethome`), and the reply says so and names that
 channel. `notify <platform>` (the form for the terminal, which has no chat) stores a platform with a home channel.
 A target set by command wins over `owner_channel` in the config; `off` removes it, so `owner_channel` applies again.
 
 `attended add|remove|list <platform> [--confirm]`: platforms where a person answers Hermes's approval prompts,
 added to `attended_platforms` in the config. Adding one loosens Sentrook: a review there shows an approval prompt
-instead of holding the call for the owner. A platform Sentrook treats as unattended needs `--confirm`; scheduled
-jobs and subagents can never be attended.
+instead of holding the call for the owner. Only front ends that can put a person in front of those prompts (the API
+server, webhooks, A2A peers, relays and the like: `CONFIRMABLE`) can be added, each with `--confirm` after a warning.
+Runs Hermes starts itself (cron, subagents, batch runs, the curator, kanban workers, ...) can never be added: where
+nobody answers, Hermes may approve a prompt itself (its cron and unattended approval modes), so a risky call could run
+unseen. Nor can Raft, whose prompts reach nobody, or the local terminal (`cli`, `local`), which is attended only with
+a terminal; adding it would make a scripted `hermes chat -q` count as attended. A platform outside `CONFIRMABLE` in
+the file is ignored.
 
 Both are owner-only (the owner check audits every attempt) and every change is written to the traffic log as a
 `settings` record that names the platform, never a chat id. A file that cannot be read sets nothing: no notice
@@ -55,6 +62,21 @@ KNOWN_PLATFORMS = frozenset(
 )
 #: Attended without being added: a review there already shows an approval prompt.
 ATTENDED_BY_DEFAULT = ATTENDED_PLATFORMS | APP_PLATFORMS
+#: Runs Hermes starts itself, where an approval nobody answers may be approved by Hermes, and Raft, whose approval
+#: prompts reach nobody: never attended.
+SELF_STARTED = UNATTENDED_PLATFORMS | frozenset(
+    {"batch", "codex", "curator", "gateway", "kanban", "raft", "tool"}
+)
+#: The local terminal, attended only when it has a terminal (`intent.is_unattended`): never added.
+TERMINAL = LOCAL_PLATFORMS - APP_PLATFORMS
+#: Front ends that can put a person in front of Hermes's approval prompts: the only platforms `attended add` takes.
+CONFIRMABLE = KNOWN_PLATFORMS - ATTENDED_BY_DEFAULT - SELF_STARTED - TERMINAL
+
+#: Sent once where notices now go, so the owner sees they arrive.
+TEST_NOTICE = (
+    "Sentrook test notice: Sentrook's notices will come here. You set this with /sentrook notify; "
+    "/sentrook notify off undoes it."
+)
 
 NOTICE_WHY = (
     "When a scheduled job or another run nobody watches tries something Sentrook wants you to check, "
@@ -81,7 +103,9 @@ class Notify:
         """The target as `hermes send --to` takes it."""
         if not self.chat_id:
             return self.platform
-        # A thread is kept only when the chat id itself has no colon (a Matrix room id has one).
+        # A thread is kept only when the chat id itself has no colon. Hermes reads everything after the platform of a
+        # Matrix (or XMPP) target as the room id, so `!room:server:$event` would name a room that does not exist;
+        # dropping the thread there is deliberate, and the notice goes to the room itself.
         thread = f":{self.thread_id}" if self.thread_id and ":" not in self.chat_id else ""
         return f"{self.platform}:{self.chat_id}{thread}"
 
@@ -122,7 +146,7 @@ def _stored_attended(data: dict[str, Any] | None) -> list[str]:
     out: list[str] = []
     for e in (data or {}).get("attended") or []:
         p = e.get("platform") if isinstance(e, dict) else None
-        if isinstance(p, str) and p in KNOWN_PLATFORMS and p not in out:
+        if isinstance(p, str) and p in CONFIRMABLE and p not in out:
             out.append(p)
     return out
 
@@ -234,9 +258,12 @@ def run_notify(
     by: dict[str, Any],
     now: datetime,
     cmd: Cmd,
+    send: Callable[[str, str], None] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
-    """`notify ...` sent from `chat` (the platform, chat id, thread id and chat type Hermes gave the command; empty
-    for the terminal): the reply and the change record for the traffic log, or None when nothing changed."""
+    """`notify ...` sent from `chat` (the platform, chat id, thread id and chat type Hermes gave the command, and
+    the chat id and type the owner check judged; empty for the terminal): the reply and the change record for the
+    traffic log, or None when nothing changed. Once a target is set, `send` (target, text) sends it a test
+    notice."""
     from .hold import home_channel_name, home_platforms
 
     words = rest.split()
@@ -256,6 +283,24 @@ def run_notify(
     if isinstance(entry, str):
         return entry, None
     stored, said = entry
+    target = Notify(stored["platform"], stored.get("chat_id", ""), stored.get("thread_id", ""))
+    reached = ""
+    if target.chat_id:
+        ok, why = addressable(target.platform, target.to.partition(":")[2])
+        if ok is False:
+            return (
+                f"Hermes could not address this chat yet ({_clean(why, 200)}), so nothing was changed. Try again "
+                f"in a few minutes, once Hermes has listed this chat, or use {cmd('notify <platform>')} for "
+                "that platform's home channel."
+            ), None
+        reached = (
+            "Notices will come to this chat; a test notice was sent."
+            if ok
+            else "Sentrook could not check that Hermes can address this chat; a test notice was sent. If it "
+            "does not arrive, see the Hermes log."
+        )
+    elif send is not None:
+        reached = "A test notice was sent there."
     stored.update(set_at=_show(now), set_by=by)
 
     def fn(data: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
@@ -268,7 +313,14 @@ def run_notify(
             cfg.owner_channel,
         )
         reply = "\n".join(
-            x for x in (said, notify_line(n, cmd), f"To undo: {cmd('notify off')}.") if x
+            x
+            for x in (
+                said,
+                notify_line(n, cmd),
+                reached if send else "",
+                f"To undo: {cmd('notify off')}.",
+            )
+            if x
         )
         op_name = "notify_here" if op == "here" else "notify_platform"
         return reply, {
@@ -277,7 +329,30 @@ def run_notify(
             "chat": bool(stored.get("chat_id")),
         }
 
-    return _change(cfg.state_dir, fn)
+    reply, record = _change(cfg.state_dir, fn)
+    if record is not None and send is not None:
+        send(target.to, TEST_NOTICE)
+    return reply, record
+
+
+def addressable(platform: str, ref: str) -> tuple[bool | None, str]:
+    """Whether Hermes's sender can address chat `ref` on `platform` now, as `hermes send` would resolve it: (True,
+    ""), (False, Hermes's reason), or (None, "") when this Hermes cannot say. A platform with no target syntax of its
+    own finds a chat id only in Hermes's channel directory, which Hermes refreshes from time to time, so a new chat
+    may not be addressable yet."""
+    try:
+        from tools.send_message_targets import resolve_send_target
+        from tools.send_message_tool import prepare_send_message_platforms
+    except Exception:  # noqa: BLE001 - not Hermes, or a Hermes without them: cannot say
+        return None, ""
+    try:
+        prepare_send_message_platforms()
+        chat_id, _thread, error = resolve_send_target(platform, ref)
+    except Exception as exc:  # noqa: BLE001 - cannot say, and the test notice will show
+        return None, _clean(exc, 200)
+    if error or not chat_id:
+        return False, str(error or "no chat id")
+    return True, ""
 
 
 def _no_chat(cmd: Cmd) -> str:
@@ -304,10 +379,15 @@ def _here(
         or platform in NOT_ATTENDED_PLATFORMS
     ):
         return _no_chat(cmd)
-    # The owner check judged the chat Hermes bound for this command; the chat to store must be that one.
-    if by.get("platform") and by["platform"] != platform:
-        return "Sentrook could not tell which chat this is; nothing was changed."
-    if (chat.get("chat_type") or "dm").lower() != "dm":
+    # The owner check judged the chat Hermes bound for this command; the chat to store must be that one: the same
+    # platform, the same chat id when the check had one, and never a chat when the check passed the local terminal.
+    unsure = "Sentrook could not tell which chat this is; nothing was changed."
+    if "local_terminal" in (by.get("basis") or []) or by.get("platform") != platform:
+        return unsure
+    judged = chat.get("owner_chat_id") or ""
+    if judged and judged != (chat.get("chat_id") or ""):
+        return unsure
+    if (chat.get("chat_type") or chat.get("owner_chat_type") or "").lower() != "dm":
         return (
             f"Send {cmd('notify here')} in a direct message to the agent: notices go to you alone."
         )
@@ -436,10 +516,17 @@ def run_attended(
             f"{platform} is already attended: Sentrook asks you there by default. Nothing was changed.",
             None,
         )
-    if platform in UNATTENDED_PLATFORMS:
+    if platform in SELF_STARTED:
         return (
-            f"{platform} runs never have a person to answer, so Sentrook holds their reviews whatever this "
-            "list says; nothing was changed."
+            f"{platform} cannot be added: Hermes starts these runs itself, or their approval prompts reach "
+            "nobody, and where nobody answers Hermes may approve a prompt on its own, so a risky call could run "
+            "unseen. Sentrook holds their reviews for you. Nothing was changed."
+        ), None
+    if platform in TERMINAL:
+        return (
+            f"{platform} cannot be added: the local terminal is already attended when it has a terminal, and "
+            "adding it would make scripted runs without one (such as hermes chat -q) count as attended. "
+            "Nothing was changed."
         ), None
     if in_config:
         return f"{platform} is already attended (attended_platforms in the plugin config).", None

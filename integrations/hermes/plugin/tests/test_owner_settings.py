@@ -12,10 +12,10 @@ import types
 import pytest
 
 import plugin
-from plugin import cli, commands, hold, intent, owner_settings
+from plugin import cli, commands, hold, owner_settings
 
 from . import test_hold
-from .test_hold import send, slash, turn
+from .test_hold import _cron, send, slash, turn
 from .test_plugin import call
 from .test_plugin import turn as chat_turn
 
@@ -41,9 +41,15 @@ def from_chat(h, monkeypatch, raw, *, facts=None, src=None, platform="telegram")
     """`raw` sent as `/sentrook ...` in a chat (by default the owner's Telegram DM), then back to the
     harness's local terminal for whatever the test runs next."""
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", DM_USER)
-    facts = (
-        {"platform": platform, "chat_type": "dm", "user_id": DM_USER} if facts is None else facts
-    )
+    src = source(platform) if src is None else src
+    if facts is None:
+        # The gateway binds the same chat for the owner check as it passes the handler.
+        facts = {
+            "platform": platform,
+            "chat_type": "dm",
+            "user_id": DM_USER,
+            "chat_id": src.chat_id,
+        }
     monkeypatch.setattr(plugin, "session_facts", lambda: dict(facts))
     monkeypatch.setattr(plugin, "session_surface", lambda: "")
     try:
@@ -52,11 +58,26 @@ def from_chat(h, monkeypatch, raw, *, facts=None, src=None, platform="telegram")
             session_id="s-chat",
             session_key="k-chat",
             platform=platform,
-            source=source(platform) if src is None else src,
+            source=src,
         )
     finally:
         monkeypatch.setattr(plugin, "session_facts", lambda: {})
         monkeypatch.setattr(plugin, "session_surface", lambda: "cli")
+
+
+def held(h):
+    """The held-call notices sent, as (target, text)."""
+    return [
+        (s["args"]["target"], s["args"]["message"])
+        for s in h.sent
+        if s["args"]["message"].startswith("Sentrook held")
+    ]
+
+
+def sent_test_notices(h):
+    return [
+        s["args"]["target"] for s in h.sent if s["args"]["message"] == owner_settings.TEST_NOTICE
+    ]
 
 
 def records(h, kind):
@@ -81,6 +102,9 @@ def verify(h):
 def test_notify_here_in_a_telegram_dm_sends_the_next_held_call_notice_to_that_dm(h, monkeypatch):
     del h.ctx.settings["owner_channel"]
     reply = from_chat(h, monkeypatch, "notify here")
+    hold.wait_for_notices()
+    assert sent_test_notices(h) == ["telegram:4242"]
+    assert "a test notice was sent" in reply
     line = owner_settings.notify_line(owner_settings.notify_of(plugin._load()[0]))
     assert line.startswith(
         "Notices: the telegram chat where you sent /sentrook notify here (set by command)."
@@ -91,7 +115,7 @@ def test_notify_here_in_a_telegram_dm_sends_the_next_held_call_notice_to_that_dm
 
     turn(h)
     _out, rec = send(h)
-    assert h.sent[0]["args"]["target"] == "telegram:4242"
+    assert [t for t, _ in held(h)] == ["telegram:4242"]
     # The traffic log names the platform, never the chat id (on Telegram a DM's id is the person's).
     assert rec["hold"]["notice"] == {"status": "queued", "target": "telegram chat"}
     assert line in status_lines(h)
@@ -103,8 +127,8 @@ def test_notify_here_sends_with_hermes_send_to_that_chat_and_thread(h, hermes_se
     from_chat(h, monkeypatch, "notify here", src=source(chat_id="-1009", thread_id="17"))
     turn(h)
     send(h)
-    [run] = hermes_send.runs
-    assert run["argv"][2:4] == ["--to", "telegram:-1009:17"]
+    assert [r["argv"][2:4] for r in hermes_send.runs] == [["--to", "telegram:-1009:17"]] * 2
+    assert hermes_send.runs[0]["input"] == owner_settings.TEST_NOTICE
 
 
 def test_a_command_set_target_wins_over_owner_channel_in_config_and_status_names_both(
@@ -114,7 +138,7 @@ def test_a_command_set_target_wins_over_owner_channel_in_config_and_status_names
     from_chat(h, monkeypatch, "notify here")
     turn(h)
     send(h)
-    assert h.sent[0]["args"]["target"] == "telegram:4242"
+    assert [t for t, _ in held(h)] == ["telegram:4242"]
     [line] = [x for x in status_lines(h) if x.startswith("Notices:")]
     assert "telegram" in line and "set by command" in line
     assert "owner_channel discord in config is not used" in line
@@ -129,7 +153,7 @@ def test_notify_off_goes_back_to_owner_channel_in_config(h, monkeypatch):
     assert settings_file(h)["notify"] is None
     turn(h)
     send(h)
-    assert h.sent[0]["args"]["target"] == "discord"
+    assert [t for t, _ in held(h)] == ["discord"]
     assert [r["op"] for r in records(h, "settings")] == ["notify_here", "notify_off"]
 
 
@@ -140,7 +164,8 @@ def test_notify_platform_from_the_terminal_needs_its_home_channel(h, monkeypatch
     assert "home channel, which is ops-home" in reply
     turn(h)
     send(h)
-    assert h.sent[0]["args"]["target"] == "discord"
+    assert [t for t, _ in held(h)] == ["discord"]
+    assert sent_test_notices(h) == ["discord"]
     assert "Notices: the discord home channel (set by command)." in slash(h, "notify status")
 
 
@@ -224,21 +249,67 @@ def test_attended_add_refuses_an_unknown_platform_with_the_known_list(h):
     assert not (h.dir / "sentrook" / "settings.json").exists()
 
 
-@pytest.mark.parametrize(
-    "platform", sorted(intent.NOT_ATTENDED_PLATFORMS - {"", "cron", "subagent"})
-)
-def test_attended_add_of_a_platform_sentrook_treats_as_unattended_needs_confirm(h, platform):
+#: Front ends that may put a person in front of Hermes's approval prompts.
+FRONT_ENDS = [
+    "a2a",
+    "api_server",
+    "homeassistant",
+    "msgraph_webhook",
+    "relay",
+    "webhook",
+    "wecom_callback",
+]
+#: Runs Hermes starts itself (where an approval nobody answers may be auto-approved), Raft (its prompts reach
+#: nobody), and the local terminal (attended only with a terminal, which a scripted run lacks).
+NEVER = [
+    "batch",
+    "codex",
+    "cron",
+    "curator",
+    "gateway",
+    "kanban",
+    "raft",
+    "subagent",
+    "tool",
+    "cli",
+    "local",
+]
+
+
+def test_every_platform_is_in_exactly_one_group():
+    groups = [
+        set(FRONT_ENDS),
+        set(NEVER),
+        set(owner_settings.ATTENDED_BY_DEFAULT),
+    ]
+    assert set().union(*groups) == set(owner_settings.KNOWN_PLATFORMS)
+    assert sum(map(len, groups)) == len(owner_settings.KNOWN_PLATFORMS)
+    assert set(FRONT_ENDS) == set(owner_settings.CONFIRMABLE)
+
+
+@pytest.mark.parametrize("platform", FRONT_ENDS)
+def test_attended_add_of_a_front_end_needs_confirm_and_warns(h, platform):
     reply = slash(h, f"attended add {platform}")
     assert reply.startswith(f"Warning: Sentrook treats {platform} as a place nobody watches.")
     assert f"/sentrook attended add {platform} --confirm" in reply
     assert not (h.dir / "sentrook" / "settings.json").exists()
+    assert "This loosens Sentrook" in slash(h, f"attended add {platform} --confirm")
 
 
-@pytest.mark.parametrize("platform", ["cron", "subagent"])
-def test_scheduled_jobs_and_subagents_can_never_be_attended(h, platform):
+@pytest.mark.parametrize("platform", NEVER)
+def test_self_started_runs_and_the_local_terminal_can_never_be_added(h, platform):
     reply = slash(h, f"attended add {platform} --confirm")
-    assert "nothing was changed" in reply
+    assert "Nothing was changed" in reply
+    assert "Warning" not in reply
     assert not (h.dir / "sentrook" / "settings.json").exists()
+
+
+@pytest.mark.parametrize("platform", ["kanban", "cli"])
+def test_a_never_attended_platform_in_the_file_does_not_apply(h, platform):
+    path = h.dir / "sentrook" / "settings.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "attended": [{"platform": platform}]}))
+    assert owner_settings.attended_of(plugin._load()[0]) == frozenset()
 
 
 def test_a_platform_attended_by_default_is_not_added(h):
@@ -254,6 +325,60 @@ def test_notify_here_with_no_home_channel_and_no_chat_id_is_refused_with_what_to
     assert "telegram has no home channel" in reply
     assert "send /sethome in the chat where you want notices" in reply
     assert not (h.dir / "sentrook" / "settings.json").exists()
+
+
+def test_notify_here_with_a_chat_other_than_the_one_the_owner_check_passed_is_refused(
+    h, monkeypatch
+):
+    """The owner check passed for the owner's DM, but the chat the handler is given is another one."""
+    facts = {"platform": "telegram", "chat_type": "dm", "user_id": DM_USER, "chat_id": "4242"}
+    reply = from_chat(h, monkeypatch, "notify here", facts=facts, src=source(chat_id="-100123"))
+    assert "could not tell which chat" in reply
+    assert not (h.dir / "sentrook" / "settings.json").exists()
+
+
+def test_notify_here_takes_the_chat_type_from_the_owner_check_when_the_chat_has_none(
+    h, monkeypatch
+):
+    facts = {"platform": "telegram", "chat_type": "dm", "user_id": DM_USER, "chat_id": "4242"}
+    reply = from_chat(h, monkeypatch, "notify here", facts=facts, src=source(chat_type=""))
+    assert "a test notice was sent" in reply
+    assert settings_file(h)["notify"]["chat_id"] == "4242"
+
+
+def test_notify_here_from_the_local_terminal_naming_a_chat_is_refused(h):
+    """The owner passed as the local terminal, yet the handler was given a chat platform's source."""
+    reply = h.ctx.commands["sentrook"]["handler"](
+        "notify here", session_id="", platform="cli", source=source()
+    )
+    assert "could not tell which chat" in reply
+    assert not (h.dir / "sentrook" / "settings.json").exists()
+
+
+def test_notify_here_a_chat_hermes_cannot_address_yet_is_not_stored(h, monkeypatch):
+    monkeypatch.setattr(
+        owner_settings,
+        "addressable",
+        lambda platform, ref: (False, f"Could not resolve '{ref}' on {platform}."),
+    )
+    reply = from_chat(h, monkeypatch, "notify here")
+    assert reply.startswith("Hermes could not address this chat yet")
+    assert "Could not resolve" in reply
+    assert not (h.dir / "sentrook" / "settings.json").exists()
+    hold.wait_for_notices()
+    assert h.sent == []
+
+
+def test_notify_here_a_chat_hermes_can_address_says_so(h, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        owner_settings,
+        "addressable",
+        lambda platform, ref: seen.append((platform, ref)) or (True, ""),
+    )
+    reply = from_chat(h, monkeypatch, "notify here", src=source(chat_id="-1009", thread_id="17"))
+    assert seen == [("telegram", "-1009:17")]
+    assert "Notices will come to this chat; a test notice was sent." in reply
 
 
 def test_notify_here_from_the_terminal_is_refused_with_the_platform_form(h):
@@ -313,6 +438,33 @@ def test_status_verify_and_help_show_the_same_explanations(h):
     assert notices in helped and attended in helped
     assert notices in slash(h, "notify status")
     assert attended in slash(h, "attended list")
+
+
+def test_open_status_and_help_never_show_the_chat_id(h, monkeypatch):
+    from_chat(h, monkeypatch, "notify here", src=source(chat_id="-1009876", thread_id="55"))
+    for text in (slash(h, "status"), slash(h, "help"), slash(h, "notify status")):
+        assert "-1009876" not in text and ":55" not in text
+    assert "-1009876" not in json.dumps(h.traffic())
+
+
+def test_a_scan_failure_notice_goes_to_the_chat_set_by_command(h, monkeypatch):
+    del h.ctx.settings["owner_channel"]
+    from_chat(h, monkeypatch, "notify here")
+    h.unreachable = True
+    out, rec = _cron(h)
+    assert out["action"] == "block"
+    assert rec["notice"] == {"status": "queued", "target": "telegram chat"}
+    failure = [s for s in h.sent if s["args"]["message"] != owner_settings.TEST_NOTICE]
+    assert [s["args"]["target"] for s in failure] == ["telegram:4242"]
+
+
+def test_the_hermes_log_names_the_platform_not_the_chat(h, notice_route, monkeypatch, caplog):
+    from_chat(h, monkeypatch, "notify here", src=source(chat_id="-1009876"))
+    h.ctx.dispatch_tool = lambda *_a, **_k: json.dumps({"error": "Could not resolve '-1009876'"})
+    turn(h)
+    send(h)
+    assert "not delivered" in caplog.text and "telegram chat" in caplog.text
+    assert "-1009876" not in caplog.text
 
 
 def test_both_verbs_are_owner_only_in_help():

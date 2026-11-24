@@ -856,3 +856,15 @@ def test_status_counts_saves_let_through(h, monkeypatch):
     run(h, monkeypatch, "fork-skill", "telegram")
     line = next(x for x in status_lines(h) if x.startswith("skill review:"))
     assert line.endswith("1 held, 2 let through")
+
+
+def test_a_background_save_notice_goes_to_the_chat_set_by_notify_here(h, monkeypatch):
+    """`/sentrook notify here` (kept in settings.json) wins over owner_channel for these notices too."""
+    (h.dir / "sentrook").mkdir(exist_ok=True)
+    (h.dir / "sentrook" / "settings.json").write_text(
+        json.dumps({"version": 1, "notify": {"platform": "telegram", "chat_id": "4242"}})
+    )
+    h.reply.update(risk=55, self_edit=NOT_LENIENT)
+    _out, rec = run(h, monkeypatch, "fork-skill", "telegram")
+    assert rec["notice"] == {"status": "queued", "target": "telegram chat"}
+    assert [s["args"]["target"] for s in h.sent] == ["telegram:4242"]

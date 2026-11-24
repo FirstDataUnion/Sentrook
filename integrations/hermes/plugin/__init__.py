@@ -39,6 +39,7 @@ from . import (
     staging,
 )
 from .auth import resolve_oidc_credentials
+from .commands import OWNER_CHAT
 from .config import PluginConfig, hermes_home, resolve_config
 from .decision import (
     BLOCK_CATEGORIES,
@@ -244,7 +245,8 @@ def owner_command(
 
     Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
     through this. Any failure while checking the sender refuses the command. `fn` gets the raw
-    arguments and who ran it: `{"basis", "platform", "sender_ref"}`.
+    arguments and who ran it: `{"basis", "platform", "sender_ref"}`, plus the chat the check judged under
+    `OWNER_CHAT` (its chat id and type, never recorded).
     """
 
     def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
@@ -255,11 +257,12 @@ def owner_command(
             logger.warning("owner check for %s failed: %s", verb, exc)
             return owner.refusal(verb)
         try:
+            facts = session_facts()
             check = owner.gate(
                 verb,
                 traffic,
                 store.salt(),
-                facts=session_facts(),
+                facts=facts,
                 env=env,
                 surface=session_surface() or platform,
                 local_cli=local_cli,
@@ -276,7 +279,11 @@ def owner_command(
             return owner.refusal(verb)
         if not check["owner"]:
             return owner.refusal(verb)
-        return fn(raw_args, {k: check[k] for k in ("basis", "platform", "sender_ref")})
+        who = {k: check[k] for k in ("basis", "platform", "sender_ref")}
+        # The chat the check judged, for a command that stores it (`notify here`); taken off `who` before `who`
+        # is recorded anywhere (`commands.dispatch`).
+        who[OWNER_CHAT] = {k: str(facts.get(k) or "") for k in ("chat_id", "chat_type")}
+        return fn(raw_args, who)
 
     return handler
 

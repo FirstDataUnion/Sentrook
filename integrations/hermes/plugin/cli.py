@@ -8,6 +8,7 @@ as the owner.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -188,7 +189,8 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
     def handler(args: argparse.Namespace) -> None:
         cmd = getattr(args, "sentrook_cmd", None)
         if cmd in CLI_COMMANDS:
-            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate))
+            send = functools.partial(hold.deliver, ctx)
+            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate, send=send))
             return
         if cmd != "verify":
             print(f"usage: hermes sentrook {{{','.join(('verify', *CLI_COMMANDS))}}}")

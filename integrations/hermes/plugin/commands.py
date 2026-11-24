@@ -42,6 +42,11 @@ Who = dict[str, Any]
 OwnerGate = Callable[[str, Callable[[str, Who], str]], Callable[[str], str]]
 #: How the owner types a subcommand, for usage and hints.
 CMD = "/sentrook {}".format
+#: The key under which the owner check hands over the chat it judged (chat id and type); `dispatch` takes it off
+#: `who` before a subcommand sees `who`, so it is never recorded.
+OWNER_CHAT = "_owner_chat"
+#: (target, text) -> sends one notice the way held-call notices go.
+SendNotice = Callable[[str, str], None]
 
 
 @dataclass(frozen=True)
@@ -57,8 +62,9 @@ class Subcommand:
     cli_rest: bool = False
     #: `run` also gets the current session's id (`session_id`, "" when there is none).
     session: bool = False
-    #: `run` also gets the chat the command was sent in (`chat`: platform, chat_id, thread_id, chat_type; empty
-    #: when there is none).
+    #: `run` also gets the chat the command was sent in (`chat`: platform, chat_id, thread_id, chat_type, and the
+    #: chat id and type the owner check judged as owner_chat_id and owner_chat_type; empty when there is none) and
+    #: a way to send a notice (`send`, None when there is none).
     chat: bool = False
 
 
@@ -280,12 +286,13 @@ def run_notify(
     env: dict[str, str] | None = None,
     who: Who | None = None,
     chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
 ) -> str:
     cfg = resolve_config(settings, env)
     if who is None:
         return refusal("notify")
     now = datetime.now(UTC)
-    result = owner_settings.run_notify(cfg, rest, chat or {}, who, now, CMD)
+    result = owner_settings.run_notify(cfg, rest, chat or {}, who, now, CMD, send)
     return _changed(cfg, result, who, "settings")
 
 
@@ -450,10 +457,12 @@ def dispatch(
     gate: OwnerGate | None = None,
     session_id: str = "",
     chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
 ) -> str:
     """Run the named subcommand; empty or unknown input gets the help text. An owner-only
     subcommand runs through `gate`, and is refused without one. `session_id` is the session the
-    command was sent from ("" for none); `chat` the chat (empty for none, as on the CLI)."""
+    command was sent from ("" for none); `chat` the chat (empty for none, as on the CLI); `send`
+    sends a notice from this process."""
     name, _, rest = (raw_args or "").strip().partition(" ")
     name = name.lower()
     cmd = COMMANDS.get(name)
@@ -464,9 +473,21 @@ def dispatch(
     if gate is None:
         return refusal(name)
     extra: dict[str, Any] = {"session_id": session_id} if cmd.session else {}
-    if cmd.chat:
-        extra["chat"] = dict(chat or {})
-    return gate(name, lambda r, who: cmd.run(r.strip(), settings, env, who, **extra))(rest)
+
+    def run(r: str, who: Who) -> str:
+        who = dict(who)
+        judged = who.pop(OWNER_CHAT, None) or {}
+        more = dict(extra)
+        if cmd.chat:
+            more["chat"] = {
+                **(chat or {}),
+                "owner_chat_id": str(judged.get("chat_id") or ""),
+                "owner_chat_type": str(judged.get("chat_type") or ""),
+            }
+            more["send"] = send
+        return cmd.run(r.strip(), settings, env, who, **more)
+
+    return gate(name, run)(rest)
 
 
 def chat_of(source: Any) -> dict[str, str]:
@@ -503,6 +524,7 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
                 gate=gate_here,
                 session_id=sid if isinstance(sid, str) else "",
                 chat=chat_of(context.get("source")),
+                send=functools.partial(hold.deliver, ctx),
             )
         except Exception as exc:  # noqa: BLE001 - a reply beats a stack trace in the chat
             logger.warning("/sentrook failed: %s", exc)

@@ -962,6 +962,15 @@ def _with_send_tool(ctx: Any, platform: str, text: str) -> tuple[bool, str]:
     return (True, "") if _delivered(out) else (False, _clean(raw, 300))
 
 
+def _unnamed(said: str, to: str) -> str:
+    """What Hermes said about a send, without the chat or thread id in `to`: the log names the platform only, as the
+    traffic log does (on Telegram a direct message's chat id is the person's own id)."""
+    for part in sorted(to.partition(":")[2].split(":"), key=len, reverse=True):
+        if len(part) >= 4:  # shorter ones identify nobody, and would blank out ordinary text
+            said = said.replace(part, "<chat>")
+    return said
+
+
 def _send(
     ctx: Any,
     route: str | None,
@@ -978,12 +987,17 @@ def _send(
         if not delivered:
             logger.warning(
                 "sentrook hold notice to %s not delivered with %s: %s",
-                platform,
+                target_label(platform),
                 route or "no route",
-                said,
+                _unnamed(said, platform),
             )
     except Exception as exc:  # noqa: BLE001 - nobody to tell but the log
-        logger.warning("sentrook hold notice to %s failed with %s: %s", platform, route, exc)
+        logger.warning(
+            "sentrook hold notice to %s failed with %s: %s",
+            target_label(platform),
+            route,
+            _unnamed(str(exc), platform),
+        )
     if not delivered and on_fail is not None:
         try:
             on_fail()
