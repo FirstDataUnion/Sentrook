@@ -25,7 +25,9 @@ since the version the catalog pins.
   bindings you told the agent about, each with a reason of at most 200 characters, to your `/sentrook setup` list as
   "proposed by the agent, not seen yet". It sets nothing. Each item must be one `/sentrook grant ... --persistent` or
   `/sentrook bind add` would accept, and the agent is told which were not added and why; settings, attended platforms
-  and session grants are refused, and a key is named, never its value. The agent hears only how many items were added
+  and session grants are refused, a destination's wildcard may only be `*.` and one registrable domain, and a key is
+  named, never its value (a key-shaped name is refused). When the chat had read content no scan had seen yet as the
+  agent proposed, the screen says Sentrook could not check what it read just before. The agent hears only how many items were added
   and to ask you to open `/sentrook setup`. A proposal is kept in `proposals.json` for a day, at most three at once.
   It answers only where the setup report does, with the same refusal elsewhere and nothing stored; the call itself is
   not scanned, its result goes to the next scan, and each call is logged as a `setup_proposal` record. The setup
