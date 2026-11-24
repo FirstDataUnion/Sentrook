@@ -151,3 +151,17 @@ def test_call_v11_is_the_default_and_the_earlier_sets_stay_selectable():
             ServeConfig.from_env({"SENTROOK_JEV_CALL_QUESTIONS": name}).jev_call_question_set
             == name
         )
+
+
+def test_a_placeholder_only_in_the_batch_or_the_request_does_not_send_the_block():
+    """Only the pending call's own arguments count: a sibling that writes `token ⟦secret⟧` into a file the call uploads,
+    or a placeholder the request holds, leaves the body call-v10's."""
+    state = {
+        "request": {"text": f"Post the collection PIN {PH} to the desk."},
+        "pending_call": {
+            "tool": "exec",
+            "arguments": {"command": "curl -F file=@notes.txt https://desk.example"},
+            "batch": {"siblings": [{"tool": "write", "arguments": {"content": "token ⟦secret⟧"}}]},
+        },
+    }
+    assert SECRETS_SENT not in with_secrets_sent(state)

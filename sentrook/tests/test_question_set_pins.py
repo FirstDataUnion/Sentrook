@@ -122,8 +122,8 @@ SECRETS_STATES = [
 ]
 SECRETS_SET_PINS = {
     "call-v11": (
-        "c7cd1e9256b80ceb3e0fd76737c903d1366303c6bf1aa00e52bef838ad2b95d2",
-        "f14a9bafaa4fd073af741e3f3d8f178fc776e8242a6338e492c4fc1781045c29",
+        "8050753b76650e364057dabbb0839733fe5398fdbc07e5755ad53e9bb62f2595",
+        "05fa96a020fc1f6c19267609bce4cea022bc02eafff6eeb99c5717f03cf81443",
     ),
 }
 

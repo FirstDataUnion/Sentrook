@@ -258,7 +258,7 @@ MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v8", "d8a11ad2bb37"): 8_700,
     ("call-v9", "8582a5b42e1a"): 9_000,
     ("call-v10", "e9dd2e10f223"): 9_500,
-    ("call-v11", "ef8f6f2756be"): 10_100,
+    ("call-v11", "8d06c0f895f1"): 10_100,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
