@@ -135,7 +135,8 @@ def test_a_covering_grants_id_is_neutralised(scene):
 def test_a_proposal_dated_in_the_future_is_not_live(scene):
     ids = [p["id"] for p in setup.load_proposals(scene["state"], NOW)]
     assert "p-f00000" not in ids
-    assert "future.example.com" not in scene["run"]("")
+    # No item of the screen is that proposal's: matched as a whole item line, not as a substring.
+    assert not re.search(r"^\d+\. Send data to `future\.example\.com`, ", scene["run"](""), re.M)
 
 
 @pytest.mark.parametrize("case", RULES["exposure"])
@@ -248,7 +249,10 @@ def test_applying_the_same_item_twice_changes_nothing(scene):
     first = (scene["state"] / "grants.json").read_text()
     # The same screen again (the same items), applied again with its new code.
     screen = scene["run"]("")
-    assert "`discord:#daily-brief`" not in screen and "`api.example.com`" not in screen
+    assert not re.search(
+        r"^\d+\. Send messages to the channel `discord:#daily-brief`, ", screen, re.M
+    )
+    assert not re.search(r"^\d+\. Send data to `api\.example\.com`, ", screen, re.M)
     kept = Store(scene["state"]).load_setup()
     kept["items"] = [
         {

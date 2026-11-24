@@ -121,7 +121,8 @@ test("a covering grant's id is neutralised", () => {
 test("a proposal dated in the future is not live", () => {
   const s = scene();
   assert.ok(!setup.loadProposals(s.state, NOW)!.some((p) => p.id === "p-f00000"));
-  assert.ok(!s.run("").includes("future.example.com"));
+  // No item of the screen is that proposal's: matched as a whole item line, not as a substring.
+  assert.doesNotMatch(s.run(""), /^\d+\. Send data to `future\.example\.com`, /m);
 });
 
 test("exposure flagged by the scanner", () => {
@@ -212,7 +213,8 @@ test("applying the same item twice changes nothing", () => {
   s.run("apply 4821 1,3");
   const first = readFileSync(path.join(s.state, "grants.json"), "utf8");
   const screen = s.run("");
-  assert.ok(!screen.includes("`discord:#daily-brief`") && !screen.includes("`api.example.com`"));
+  assert.doesNotMatch(screen, /^\d+\. Send messages to the channel `discord:#daily-brief`, /m);
+  assert.doesNotMatch(screen, /^\d+\. Send data to `api\.example\.com`, /m);
   const store = new Store(s.state);
   const kept = store.loadSetup();
   kept.items = [
