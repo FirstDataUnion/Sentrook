@@ -722,14 +722,19 @@ test("pending items sit at the top with the commands to answer them and their fu
   assert.equal(root.children[1]!.className, "srk-pending-section", "right under the header");
   const section = root.byClass("srk-pending-section")[0]!;
   const text = section.textContent;
-  assert.match(text, /^Waiting for you4/);
+  assert.match(text, /^Waiting for you5/);
   // Each waiting item has its own box.
-  assert.equal(section.byClass("srk-pending-item").length, 4);
+  assert.equal(section.byClass("srk-pending-item").length, 5);
   // History follows as its own section.
   assert.equal(root.children[2]!.textContent, "History6");
   assert.match(text, /\/approve <approval id> deny/);
   assert.match(text, /\/sentrook-why 8888a1b2/);
   assert.match(text, /\/sentrook-approve h-2c2c2c/);
+  // A v2 hold lists the answers it offers, and how often it was held.
+  assert.match(text, /\/sentrook-allow h-4e4e4eCopyLet this call through once, on the job's next run\./);
+  assert.match(text, /\/sentrook-allow h-4e4e4e alwaysCopyLet this job make this call for 30 days\./);
+  assert.match(text, /\/sentrook-deny h-4e4e4eCopyRefuse it on this job for 30 days/);
+  assert.match(text, /held 3 times/);
   assert.match(text, /destination channel:1234567890/);
   assert.match(text, /There is no suggested grant/);
   // The open prompt and the hold whose scan is still in the log carry the full breakdown, without repeating why.
@@ -793,14 +798,16 @@ test("search: the read limit, a lost cursor and an empty result each say so", ()
   assert.match(lost.byClass("srk-status")[0]!.textContent, /no longer in the log/);
 });
 
-test("grants and snooze sections explain the commands, in this host's command form", () => {
+test("grants, passes and snooze sections explain the commands, in this host's command form", () => {
   const model: any = { ...viewModel(), commands: { prefix: "/sentrook " } };
   const root = drawView(model);
   const sections = root.byClass("srk-howto");
-  assert.equal(sections.length, 2);
+  assert.equal(sections.length, 3);
   assert.equal(sections[0]!.getAttribute("open"), null);
   assert.match(sections[0]!.textContent, /\/sentrook grant destination api\.example\.com --persistent --expires 30d/);
-  assert.match(sections[1]!.textContent, /\/sentrook snooze 2h --all/);
+  assert.match(sections[1]!.textContent, /^Passes and denials/);
+  assert.match(sections[1]!.textContent, /\/sentrook passes revoke <id>/);
+  assert.match(sections[2]!.textContent, /\/sentrook snooze 2h --all/);
 });
 
 test("the view never writes markup: no innerHTML, outerHTML, insertAdjacentHTML or document.write", () => {

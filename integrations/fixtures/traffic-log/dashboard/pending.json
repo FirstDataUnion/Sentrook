@@ -115,6 +115,22 @@
   ],
   "holds": [
     {
+      "id": "h-4e4e4e",
+      "request_id": "aaaa0000-0000-4000-8000-000000000005",
+      "tool": "message",
+      "where": "cron job 7f3a, job name \"daily-brief\", session s_cron",
+      "held_at": "2026-10-29T08:30:00Z",
+      "expires_at": "2026-11-05T08:30:00Z",
+      "grant": null,
+      "scan": null,
+      "offers": [
+        "allow",
+        "allow always",
+        "deny"
+      ],
+      "count": 3
+    },
+    {
       "id": "h-3d3d3d",
       "request_id": "aaaa0000-0000-4000-8000-000000000004",
       "tool": "terminal",
@@ -122,7 +138,9 @@
       "held_at": "2026-10-29T09:40:00Z",
       "expires_at": "2026-10-30T09:40:00Z",
       "grant": null,
-      "scan": null
+      "scan": null,
+      "offers": null,
+      "count": 1
     },
     {
       "id": "h-2c2c2c",
@@ -243,7 +261,9 @@
           }
         ],
         "entities": []
-      }
+      },
+      "offers": null,
+      "count": 1
     },
     {
       "id": "h-1b1b1b",
@@ -253,7 +273,9 @@
       "held_at": "2026-10-29T07:00:00Z",
       "expires_at": "2026-10-30T07:00:00Z",
       "grant": null,
-      "scan": null
+      "scan": null,
+      "offers": null,
+      "count": 1
     }
   ],
   "holds_readable": true,

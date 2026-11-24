@@ -274,6 +274,19 @@ class Response(_Model):
             "lowest resulting risk first. Empty when none would, and on every call below the line."
         ),
     )
+    owner_pass: Literal["always", "once"] | None = Field(
+        default=None,
+        description=(
+            "Whether the owner may let this call through when a plugin holds it for a later answer. `always`: a "
+            "standing pass for the same action may be offered. `once`: this call only (the session read content "
+            "that tried to instruct the agent, the scan is not fully informed, the turn is not the owner's, a "
+            "fetch's address carries text from a local read, `approval_fingerprint` names no party or only the "
+            "tool's provider, a send names no destination or recipient, or the call runs code or names a code "
+            "source or an executable). Null: no pass (an `enforced` decision, any floor, or another independent "
+            "strong signal). Set on every scan; it never changes `risk`, `grant_hints` or "
+            "`relaxable`. A response without it reads as null."
+        ),
+    )
     tool_description: ToolDescription | None = None
     entities: dict[str, EntityDisplay] = Field(default_factory=dict)
     action_fingerprint: str | None = Field(

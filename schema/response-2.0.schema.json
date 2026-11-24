@@ -868,6 +868,23 @@
     "metadata": {
       "$ref": "#/$defs/Metadata"
     },
+    "owner_pass": {
+      "anyOf": [
+        {
+          "enum": [
+            "always",
+            "once"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Whether the owner may let this call through when a plugin holds it for a later answer. `always`: a standing pass for the same action may be offered. `once`: this call only (the session read content that tried to instruct the agent, the scan is not fully informed, the turn is not the owner's, a fetch's address carries text from a local read, `approval_fingerprint` names no party or only the tool's provider, a send names no destination or recipient, or the call runs code or names a code source or an executable). Null: no pass (an `enforced` decision, any floor, or another independent strong signal). Set on every scan; it never changes `risk`, `grant_hints` or `relaxable`. A response without it reads as null.",
+      "title": "Owner Pass"
+    },
     "reasons": {
       "description": "Ordered by contribution to the result",
       "items": {
