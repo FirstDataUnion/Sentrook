@@ -56,7 +56,14 @@ from ..planir.models import (
     ToolKind,
 )
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
-from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
+from ..state.token import (
+    SessionState,
+    decode_state,
+    entity_hash,
+    new_salt,
+    seed_state,
+    settle_pending,
+)
 from . import views
 from .copies import CopyHistory, copy_history
 from .entities import (
@@ -1358,6 +1365,21 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             expected_step=planir.session.step - 1,
             deployment=options.deployment,
             deterministic_salt=options.deterministic_salt,
+        )
+        # What earlier calls read or wrote counts only once the history shows they ran.
+        settle_pending(
+            state,
+            [(h.call_id, h.decision.value) for h in planir.history],
+            ran={
+                h.call_id
+                for h in planir.history
+                if h.result is not None and h.result.status is ResultStatus.OK
+            }
+            | {
+                i.call_id
+                for i in planir.new_inputs
+                if i.kind is InputKind.TOOL_RESULT and i.call_id
+            },
         )
         if state.fresh:
             coverage.append(
