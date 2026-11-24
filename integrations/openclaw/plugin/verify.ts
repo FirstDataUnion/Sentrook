@@ -1,10 +1,10 @@
 /**
- * `openclaw sentrook verify`: endpoints valid, credentials present, scanner healthy, token mint works; notes on
- * settings that leave something unscanned.
+ * `openclaw sentrook verify`: endpoints valid, credentials present, every plugin-config setting read as written,
+ * scanner healthy, token mint works; notes on settings that leave something unscanned.
  */
 
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
-import { resolveConfig } from "./config.ts";
+import { configProblemsSummary, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
 import { NOTIFY_UNSET, targetText } from "./hold.ts";
@@ -43,6 +43,13 @@ export async function runVerify(
     name: "credentials",
     ok: !!oidc,
     detail: oidc ? `client ${oidc.clientId}, audience ${oidc.audience}` : "SENTROOK_SCAN_CLIENT_ID / _SECRET not set",
+  });
+
+  // Failed, not reported: a setting Sentrook cannot read is ignored or replaced, which may not be what the owner meant.
+  checks.push({
+    name: "settings",
+    ok: cfg.configProblems.length === 0,
+    detail: cfg.configProblems.length ? configProblemsSummary(cfg.configProblems) : "all read as written",
   });
 
   if (scan.ok) {

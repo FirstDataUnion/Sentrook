@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -7,13 +6,11 @@ import {
   resolveApprovalPolicyConfig,
   resolveApprovalTiming,
 } from "./approvalPolicy.ts";
+import { configProblems } from "./config.ts";
 
-const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
-const approvalSchema = manifest.configSchema.properties.approval;
-
-test("the manifest's approval settings are the interactive timeout and the unattended run kinds, nothing else", () => {
-  assert.deepEqual(Object.keys(approvalSchema.properties).sort(), ["interactiveTimeoutMs", "scheduledIntentKinds"]);
-  assert.equal(approvalSchema.additionalProperties, false);
+test("the approval settings are the interactive timeout and the unattended run kinds, nothing else", () => {
+  assert.deepEqual(configProblems({ approval: { interactiveTimeoutMs: 1000, scheduledIntentKinds: ["cron"] } }), []);
+  assert.deepEqual(configProblems({ approval: { timeoutMs: 1000 } }), ["approval.timeoutMs: not a Sentrook setting; ignored"]);
 });
 
 test("a review in a chat waits the interactive timeout, 5 minutes unless set", () => {

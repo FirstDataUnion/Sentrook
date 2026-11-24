@@ -100,6 +100,7 @@ Every line should start with `ok`, and `policy` should show `mode=enforce`:
 | `token mint` | The Client ID or secret is wrong or revoked: create new credentials (step 1) and replace them in `.env`. |
 | `scan URL`, `OIDC issuer`, `Rookery URL` | A custom endpoint is set that the plugin refuses (see [Settings](#settings)). Remove it. |
 | `scanner health` | The scan service is unreachable from this machine. Check outbound HTTPS to `sentrook.firstdataunion.org`. |
+| `settings` | A setting in `plugins.entries.sentrook.config` that Sentrook cannot read as written: a misspelt key, a value of the wrong type or out of range. The line names each one and what is used instead; fix them (see [Settings](#settings)). |
 
 `openclaw plugins list` should show `sentrook` as enabled, with a 2.0 version.
 
@@ -266,7 +267,7 @@ command line as `openclaw sentrook <verb>`.
 
 | Chat | What it does |
 | --- | --- |
-| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls (and the one held most often), where notices go, passes and denials, and OpenClaw's own saves by outcome |
+| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls (and the one held most often), where notices go, passes and denials, OpenClaw's own saves by outcome, and any settings Sentrook cannot read |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
 | `/sentrook-why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
@@ -690,6 +691,12 @@ In short, for anyone deciding whether to install it:
 
 Set with `openclaw config set plugins.entries.sentrook.config.<key> <value>` and restart the gateway. Most keys can
 also come from a `SENTROOK_*` environment variable; the config value wins.
+
+Sentrook checks these settings itself; OpenClaw accepts any value for them. A setting it cannot read as written (a
+misspelt key, a value of the wrong type or out of range) never turns scanning off: it is ignored or replaced, the
+stricter way where there is one, and Sentrook says so in the gateway log at start, on the `settings` line of
+`openclaw sentrook verify` and `/sentrook status`, and in a notice to you (where [held-call notices](#commands) go)
+at most every 6 hours while it stands. Running `openclaw doctor --fix` leaves Sentrook's settings alone.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

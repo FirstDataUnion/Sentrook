@@ -16,7 +16,7 @@
  */
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
-import { type PluginConfig, resolveConfig } from "./config.ts";
+import { configProblemsSummary, type PluginConfig, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
@@ -353,6 +353,11 @@ function statusText(ctx: CommandContext): string {
       selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
       cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
     )}`,
+    `settings: ${
+      cfg.configProblems.length
+        ? `${cfg.configProblems.length} not read as written: ${configProblemsSummary(cfg.configProblems)} (see openclaw sentrook verify)`
+        : "all read as written"
+    }`,
   ];
   return lines.join("\n");
 }

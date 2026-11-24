@@ -16,6 +16,14 @@ expiry) that cover what the call does (`allows`):
   the destination; never to a turn whose sender is someone else or an open channel, and on those turns
   never to a destination that content the agent read supplied. Who wrote the task stays priced by
   `request_origin`.
+- **Service-name relief** (parameter `service_name_relief`, off by default, on in `conv-v9`): a host the owner's
+  request names by its service (`prepare.service_names`: the entity library lists the host as that service's own, and
+  the request contains one of its names as a word), where the call judge read the request as meaning the service and
+  not the ordinary word (call-v10's `names_service`, at or above `service_name_min_yes`), is relieved as a
+  request-named destination: on the same turns and in the same roles, never for a host the call or a later run takes
+  code from. A host the call only reads from loses its untrusted origin alone, as naming it verbatim would clear its
+  origin in the context probe and leave its distrust as a source. The check already leaves out a host content the
+  agent read supplied (its own installed-skill reads aside).
 - **Known-good destination relief**: a destination or recipient the entity oracle marks `known_good`
   is treated the same way, for sends only, unless it reached the agent through untrusted content
   (a destination dictated by something the agent read keeps its origin, however reputable).
@@ -129,11 +137,13 @@ def compute_relief(
     withdrawn_trust: Iterable[str] = (),
     known_good_exact: Iterable[str] = (),
     exposure: float | None = None,
+    service_named: Iterable[str] = (),
 ) -> list[Relief]:
     """`known_good`: entity ids the oracle probe reported as `known_good` in this scan.
     `withdrawn_trust`: hashes of the entities a config read supplied that this scan judged injected.
     `known_good_exact`: the `known_good` ids whose library entry matched exactly.
-    `exposure`: this scan's merged exposure, None when no probe judged the new inputs."""
+    `exposure`: this scan's merged exposure, None when no probe judged the new inputs.
+    `service_named`: hosts the request names by their service, as the call judge read it (`service_name_relief`)."""
     out: list[Relief] = []
     grants = {g.grant_ref: g for g in prepared.planir.grants}
     off_host = sends_off_host(prepared.pending, prepared.entities.pending())
@@ -184,27 +194,51 @@ def compute_relief(
         host_task = not owner and _host_task_turn(prepared, params)
         if owner or host_task or not params.request_named_owner_only:
             relieved = {r.subject for r in out}
+            by_service = set(service_named) if params.service_name_relief else set()
             for ent in prepared.entities:
                 if not ent.has_origin(Origin.PENDING_CALL, Origin.SIBLING, Origin.WRITTEN_FILE):
                     continue  # the destination may live in the script the call runs
-                if ent.id in relieved or Origin.REQUEST not in ent.origins:
+                if ent.id in relieved:
                     continue
-                if host_task and (
-                    ent.in_session_untrusted
-                    or (Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first)
+                named = Origin.REQUEST in ent.origins
+                if not named and ent.id not in by_service:
+                    continue
+                if (
+                    host_task
+                    and named
+                    and (
+                        ent.in_session_untrusted
+                        or (Origin.UNTRUSTED_INPUT in ent.origins and not ent.agent_first)
+                    )
                 ):
-                    continue  # a task text is not the owner's word against content that supplied it
-                roles = _acting_roles(ent)
-                if not roles & set(params.request_named_roles):
+                    # a task text is not the owner's word against content that supplied it (a service-named host
+                    # passed the same test in its check, the agent's own installed-skill reads aside)
                     continue
+                roles = _acting_roles(ent)
                 if roles & {Role.CODE_SOURCE.value, Role.EXECUTABLE.value}:
                     continue  # naming a host sanctions sending to it, never running code from it
+                if not roles & set(params.request_named_roles):
+                    if not named and Role.DATA_SOURCE.value in roles:
+                        # a read from the service the owner named: the host is the owner's choice, as a verbatim name
+                        # makes it for the context probe; its distrust as a source stays, as it does for that name
+                        out.append(
+                            Relief(
+                                None,
+                                ent.id,
+                                "untrusted_origin",
+                                "relief.request_named_service",
+                                (("suspicion.untrusted_origin", ent.id),),
+                            )
+                        )
+                    continue
                 out.append(
                     Relief(
                         None,
                         ent.id,
                         "distrust+untrusted_origin",
-                        "relief.request_named_destination",
+                        "relief.request_named_destination"
+                        if named
+                        else "relief.request_named_service",
                         (("suspicion.distrust", ent.id), ("suspicion.untrusted_origin", ent.id)),
                     )
                 )
