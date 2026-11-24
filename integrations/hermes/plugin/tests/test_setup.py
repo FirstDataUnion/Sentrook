@@ -105,6 +105,16 @@ def test_the_agents_note_turns_no_link_mention_or_emphasis_on(reason, line):
     assert setup.note_line(reason) == line
 
 
+def test_mcp_servers_are_listed_by_name_in_code_point_order():
+    order = RULES["mcp_order"]
+    assert [name for name, _ in setup.mcp_providers(order["servers"])] == order["names"]
+
+
+@pytest.mark.parametrize(("gid", "label"), RULES["grant_labels"])
+def test_a_covering_grant_is_named_safely(gid, label):
+    assert setup.grant_label(gid) == label
+
+
 def test_text_from_config_can_never_end_its_code_span_or_add_lines(scene):
     """An MCP server entry the agent wrote with a newline, a backtick or a space is left out and counted."""
     screen = scene["run"]("")
@@ -339,7 +349,7 @@ def test_a_proposal_lasts_a_day_at_most(scene):
     (scene["state"] / "proposals.json").write_text(json.dumps(raw))
     later = NOW + timedelta(hours=22, minutes=30)
     ids = [p["id"] for p in setup.load_proposals(scene["state"], later)]
-    assert ids == ["p-d4e5f6"]
+    assert ids == ["p-d4e5f6", "p-b0b0b0"]
 
 
 # ---- the command --------------------------------------------------------------------------------------------------

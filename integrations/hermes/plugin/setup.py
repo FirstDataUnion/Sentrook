@@ -84,16 +84,30 @@ def _show(dt: datetime) -> str:
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _spanned(s: Any, cap: int) -> str:
+    """`s` neutralised and capped, without backslashes (a chat format may read one as an escape of the closing
+    backtick), for a code span."""
+    return hold.inert(s, cap).replace("\\", "")
+
+
 def _span(s: Any, cap: int) -> str:
     """Text someone else chose (a job id, a server name), neutralised and in a code span, where chat apps turn no
     link, mention or emphasis on."""
-    return f"`{hold.inert(s, cap) or '?'}`"
+    return f"`{_spanned(s, cap) or '?'}`"
+
+
+def grant_label(gid: Any) -> str:
+    """How a grant in force is named on the screen: an id the plugin made as it is; any other text someone wrote
+    into the file in a code span; anything that is not text as `?`."""
+    if isinstance(gid, str) and _GRANT_ID.fullmatch(gid):
+        return gid
+    return _span(gid, 20) if isinstance(gid, str) else "`?`"
 
 
 def note_line(reason: Any) -> str | None:
     """The agent's reason as the screen shows it: neutralised, capped and in a code span, so a link, a bare domain,
     a mention or emphasis in it does nothing; None when nothing is left of it."""
-    text = hold.inert(reason, 200) if isinstance(reason, str) else ""
+    text = _spanned(reason, 200) if isinstance(reason, str) else ""
     return f"Agent's note: `{text}`" if text.strip() else None
 
 
@@ -307,6 +321,12 @@ def mcp_providers(servers: Any) -> list[tuple[str, str | None]]:
 # ---- proposals --------------------------------------------------------------------------------------------------
 
 
+def _raw_ok(p: Any) -> bool:
+    """A pattern as written can be shown and set: one printable word, no backtick, no backslash at its end. Checked
+    before anything trims it, so both plugins read the same patterns."""
+    return _printable_word(p) and "`" not in p and not p.endswith("\\")
+
+
 def _printable_word(p: Any) -> bool:
     return (
         isinstance(p, str)
@@ -333,10 +353,10 @@ def proposal_item(raw: Any) -> dict[str, Any] | None:
         pattern = raw.get("pattern")
         if raw.get("kind") not in (None, "destination") or raw.get("allows") is not None:
             return None
-        if minutes is not None or not _printable_word(pattern) or binding_problem(pattern):
+        if minutes is not None or not _raw_ok(pattern) or binding_problem(pattern):
             return None
         return {"binding": True, "kind": "destination", "pattern": pattern, "reason": reason}
-    if raw.get("binding") not in (None, False):
+    if raw.get("binding") not in (None, False) or not _raw_ok(raw.get("pattern")):
         return None
     grant = grants.hint_grant(
         {"kind": raw.get("kind"), "pattern": raw.get("pattern"), "allows": raw.get("allows")}
@@ -403,16 +423,7 @@ def in_force(
     ]
     for raw, g in grants._file_grants(data):
         if g["scope"] == "persistent" and not grants.expired(raw, now):
-            gid = raw.get("id")
-            # An id the plugin made is shown as it is; anything else someone wrote into the file, in a code span.
-            out.append(
-                (
-                    gid
-                    if isinstance(gid, str) and _GRANT_ID.fullmatch(gid)
-                    else _span(gid or "-", 20),
-                    g,
-                )
-            )
+            out.append((grant_label(raw.get("id")), g))
     out += [
         ("a channel binding", {"kind": "destination", "pattern": b["pattern"].strip()})
         for b in grants._file_bindings(data)
@@ -515,14 +526,14 @@ def valid_item(cand: dict[str, Any]) -> dict[str, Any] | None:
     """`cand` as the grant or bind command would accept it (one printable word, no backtick), whatever it came from;
     None when it would not be."""
     pattern = cand.get("pattern")
-    if not isinstance(pattern, str) or "`" in pattern:
+    if not _raw_ok(pattern):
         return None
     if cand.get("binding"):
-        if not _printable_word(pattern) or binding_problem(pattern):
+        if binding_problem(pattern):
             return None
         return {"binding": True, "kind": "destination", "pattern": pattern, "allows": None}
     grant = grants.hint_grant(cand)
-    if grant is None or not _printable_word(grant["pattern"]) or "`" in grant["pattern"]:
+    if grant is None or not _raw_ok(grant["pattern"]):
         return None
     return {"binding": False, "allows": None, **grant}
 
@@ -534,7 +545,7 @@ def item_warnings(item: dict[str, Any]) -> list[str]:
         domain = registrable(host_of(item))
         out.append(
             "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate "
-            "another name" + (f" (registrable domain {domain})" if domain else "")
+            "another name" + (f" (registrable domain {_span(domain, 300)})" if domain else "")
         )
     if not item.get("binding") and item["kind"] == "file":
         if not item.get("allows") or "delete" in item["allows"]:

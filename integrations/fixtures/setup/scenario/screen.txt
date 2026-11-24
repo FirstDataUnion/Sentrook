@@ -43,7 +43,7 @@ Sentrook setup: 12 items. Sentrook describes each one from what it found; read t
 
 10. Send data to `аpple.com`, from any chat or job, for 30 days.
    Proposed by the agent (p-d4e5f6), not seen yet.
-   Warning: the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--pple-43d.com).
+   Warning: the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`).
    Agent's note: `Check your account`
 
 11. Send messages to the channel `discord:#alerts`, from any chat or job, until you remove it.
@@ -56,6 +56,7 @@ Sentrook setup: 12 items. Sentrook describes each one from what it found; read t
 
 From your config: 3 items could not be read and are left out.
 Proposal p-d4e5f6: 1 item could not be read and is left out.
+Proposal p-b0b0b0: 4 items could not be read and are left out.
 
 To set them all, send: {setup} apply 4821
 To set some, list their numbers: {setup} apply 4821 1,3

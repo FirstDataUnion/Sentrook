@@ -275,7 +275,8 @@ export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
 const CHANNELS = new Set(["discord", "telegram", "slack", "email", "webhook"]);
 /** OpenClaw's own chat surfaces: the Control UI, webchat and the terminal, which only the operator reaches. */
 const CHAT_SURFACES = new Set(["webchat", "chat", "cli", "control-ui"]);
-function channelOf(v: unknown): string | null {
+/** A turn's channel as the chat-kind check reads it: a known chat channel, `chat` for OpenClaw's own surfaces, else `other`. */
+export function channelOf(v: unknown): string | null {
   if (typeof v !== "string" || !v) return null;
   const c = v.toLowerCase();
   if (CHANNELS.has(c)) return c;

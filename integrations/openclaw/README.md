@@ -346,7 +346,9 @@ commands run only for the owner, from any of three places:
 
 OpenClaw decides who the owner is by the sender, not the room, so in a group or channel room your own message runs
 them too, and the reply is shown to everyone there. `/sentrook-setup` refuses in a room (show and apply alike), since
-its list would be shown to the room; run it in your direct message instead. Every attempt, allowed or refused, is
+its list would be shown to the room, and in a chat it cannot tell from one (a chat channel with no session key, or
+the agent's main session when `session.groupScope` routes rooms into it); run it in your direct message, the Control
+UI or on the machine instead. Every attempt, allowed or refused, is
 recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you

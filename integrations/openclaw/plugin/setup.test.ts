@@ -91,6 +91,17 @@ test("the agent's note turns no link, mention or emphasis on", () => {
   for (const [reason, line] of RULES.notes) assert.equal(setup.noteLine(reason), line, reason);
 });
 
+test("MCP servers are listed by name in code point order", () => {
+  assert.deepEqual(
+    setup.mcpProviders(RULES.mcp_order.servers).map(([name]) => name),
+    RULES.mcp_order.names,
+  );
+});
+
+test("a covering grant is named safely", () => {
+  for (const [gid, label] of RULES.grant_labels) assert.equal(setup.grantLabel(gid), label, JSON.stringify(gid));
+});
+
 test("text from config can never end its code span or add lines", () => {
   // An MCP server entry the agent wrote with a newline, a backtick or a space is left out and counted.
   const screen = scene().run("");
@@ -294,7 +305,7 @@ test("a proposal lasts a day at most", () => {
   const later = new Date(NOW.getTime() + (22 * 60 + 30) * 60_000);
   assert.deepEqual(
     setup.loadProposals(s.state, later)!.map((p) => p.id),
-    ["p-d4e5f6"],
+    ["p-d4e5f6", "p-b0b0b0"],
   );
 });
 
@@ -358,7 +369,15 @@ test("the registered /sentrook-setup reads OpenClaw's MCP servers and job store,
     const def = commands["sentrook-setup"];
     assert.deepEqual(def.requiredScopes, ["operator.admin"]);
     // A chat sender holds no gateway scopes; the host marks the owner's own DM with senderIsOwner.
-    const dm = (args: string) => ({ senderId: "123", channel: "telegram", senderIsOwner: true, assertOwnerCurrent: () => undefined, args });
+    // Under OpenClaw's default `session.dmScope: "main"`, the owner's DM runs in the agent's main session.
+    const dm = (args: string) => ({
+      senderId: "123",
+      channel: "telegram",
+      sessionKey: "agent:main:main",
+      senderIsOwner: true,
+      assertOwnerCurrent: () => undefined,
+      args,
+    });
     const screen = String((await def.handler(dm(""))).text);
     assert.ok(screen.includes("1. Send messages to the channel `discord:#daily-brief`"), screen);
     assert.ok(screen.includes("From your config: MCP server `notes`."), screen);
@@ -388,5 +407,60 @@ test("the registered /sentrook-setup reads OpenClaw's MCP servers and job store,
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
+  }
+});
+
+test("/sentrook-setup refuses a chat it cannot tell from a room; the Control UI and the command line still work", async () => {
+  const { default: plugin } = await import("./index.ts");
+  const s = scene();
+  const saved = { OPENCLAW_STATE_DIR: process.env.OPENCLAW_STATE_DIR };
+  process.env.OPENCLAW_STATE_DIR = s.oc;
+  try {
+    const commands: Record<string, any> = {};
+    // Rooms routed into the agent's main session: the main key no longer says a DM.
+    plugin.register({
+      pluginConfig: { reviewAt: 45 },
+      config: { session: { groupScope: "main" } },
+      registrationMode: "full",
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      on: () => undefined,
+      registerCommand: (def: any) => {
+        commands[def.name] = def;
+      },
+    } as any);
+    const def = commands["sentrook-setup"];
+    const owner = { senderIsOwner: true, assertOwnerCurrent: () => undefined, args: "" };
+    const text = async (ctx: Record<string, unknown>) => String((await def.handler({ ...owner, ...ctx })).text);
+    // A group message on the main key, a chat channel with no session key, a reply address that names no person.
+    for (const ctx of [
+      { senderId: "123", channel: "telegram", sessionKey: "agent:main:main" },
+      { senderId: "123", channel: "telegram" },
+      { senderId: "U1", channel: "slack", to: "slack:C123" },
+    ]) {
+      assert.equal(await text(ctx), SETUP_IN_GROUP, JSON.stringify(ctx));
+    }
+    // The owner's own DM, by its own key; the Control UI on the main key (no sender, the admin scope).
+    assert.ok((await text({ senderId: "123", channel: "telegram", sessionKey: "agent:main:telegram:direct:123" })).startsWith("Sentrook setup: "));
+    const ui = { senderId: "", channel: "webchat", sessionKey: "agent:main:main", gatewayClientScopes: ["operator.read", "operator.write", "operator.admin"] };
+    assert.ok((await text(ui)).startsWith("Sentrook setup: "));
+    assert.ok((await text({ ...ui, gatewayClientScopes: undefined })).startsWith("Sentrook setup: "), "webchat is the operator's own surface");
+    const log = readFileSync(path.join(s.state, "traffic.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(log.filter((r) => r.kind === "command" && r.verb === "setup" && r.reason === "unknown_chat").length, 3);
+    // The command line has no chat: it is the machine's owner.
+    const o = OWNER_SUBCOMMANDS.setup!;
+    const cli = await o.run(
+      {
+        pluginConfig: { reviewAt: 45 },
+        env: { OPENCLAW_STATE_DIR: s.oc },
+        owner: { by: BY, beforeWrite: () => undefined, record: () => undefined },
+        hostConfig: { session: { groupScope: "main" } },
+        openclawDir: s.oc,
+      },
+      "",
+    );
+    assert.ok(cli.startsWith("Sentrook setup: "), cli);
+  } finally {
+    if (saved.OPENCLAW_STATE_DIR === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = saved.OPENCLAW_STATE_DIR;
   }
 });

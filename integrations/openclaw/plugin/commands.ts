@@ -35,7 +35,7 @@ import {
 } from "./history.ts";
 import { OWNER_ROUTES, refusal } from "./owner.ts";
 import * as report from "./report.ts";
-import { PLUGIN_VERSION, sessionRef } from "./planir.ts";
+import { channelOf, chatKindOfTurn, PLUGIN_VERSION, sessionRef } from "./planir.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as setup from "./setup.ts";
 import * as snooze from "./snooze.ts";
@@ -248,8 +248,9 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
       const o = ctx.owner;
       // OpenClaw treats the owner's message in a group or channel room as the owner's too, but the list (and its
       // code) would be shown to everyone in the room, and kept in the room's transcript: refuse it there.
-      if (ctx.chat && hold.chatKindOf(ctx.chat) === "group") {
-        o.record({ kind: "command", verb: "setup", outcome: "refused", basis: o.by.basis, sender_ref: o.by.sender_ref, channel: o.by.channel, reason: "group_chat" });
+      const room = setupRoom(ctx);
+      if (room) {
+        o.record({ kind: "command", verb: "setup", outcome: "refused", basis: o.by.basis, sender_ref: o.by.sender_ref, channel: o.by.channel, reason: room });
         return SETUP_IN_GROUP;
       }
       return setup.run(configOf(ctx), rest, o.by, new Date(), CMD, o.record, o.beforeWrite, {
@@ -261,8 +262,23 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
 };
 
 export const SETUP_IN_GROUP =
-  "Open /sentrook-setup in your own direct message to the agent, in the Control UI or on the machine, not in a group or " +
-  "channel: everyone there would see the list.";
+  "Open /sentrook-setup in your own direct message to the agent, in the Control UI or on the machine: this chat is a " +
+  "group or channel, or one Sentrook cannot tell from one, and everyone there would see the list.";
+
+/**
+ * Why `/sentrook-setup` may not run in the chat it was sent from: `group_chat` for a group or channel room (by its
+ * session key or reply address, as scans read a turn's chat), `unknown_chat` for a chat channel whose kind nothing
+ * says (no session key, or the main session while OpenClaw routes rooms into it); null for a direct chat, OpenClaw's
+ * own surfaces (the Control UI, webchat, the terminal), a gateway client with the admin scope, and the command line.
+ */
+function setupRoom(ctx: CommandContext): "group_chat" | "unknown_chat" | null {
+  if (!ctx.chat) return null;
+  const channel = channelOf(ctx.chat.channel);
+  const kind = chatKindOfTurn(ctx.chat.sessionKey, channel, ctx.hostConfig);
+  if (kind === "group" || hold.chatKindOf(ctx.chat) === "group") return "group_chat";
+  if (kind === "direct" || channel === "chat" || ctx.owner?.by.basis.includes("operator.admin")) return null;
+  return "unknown_chat";
+}
 
 /** The `session_ref` of the session the command was sent from; null when there is none. */
 function refOf(ctx: CommandContext): string | null {

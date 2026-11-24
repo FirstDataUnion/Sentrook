@@ -1,5 +1,5 @@
 {
-  "_comment": "The setup screen's rules, shared by both plugins. `delivery`: a cron job's delivery target as a channel binding pattern (Hermes `deliver: \"<platform>:<to>\"`, OpenClaw an announce delivery with that channel and to), null for a person, a phone number, a thread or anything not a room. `covers`: whether a grant in force (existing) already covers an item (candidate): the same kind, the same pattern (case ignored except for files) or `*.` over the domain and every name under it, or a file folder's `/*` over a file directly in it, and allows no narrower. `warnings`: the warnings an item carries from its own kind, pattern and allows. `registrable`: the registrable domain of a host, in ASCII. `describe`: the item's first line, in the plugin's words (lifetime in minutes, null for until revoked or removed). `last`: how long ago the last approved review was, by UTC calendar day. `exposure`: whether a scan response flags exposure (an `exposure.*` reason, or exposure or session_exposure above 0). `notes`: the agent's reason as the screen shows it, inside a code span so links, mentions and emphasis do nothing (null: no note line).",
+  "_comment": "The setup screen's rules, shared by both plugins. `delivery`: a cron job's delivery target as a channel binding pattern (Hermes `deliver: \"<platform>:<to>\"`, OpenClaw an announce delivery with that channel and to), null for a person, a phone number, a thread or anything not a room. `covers`: whether a grant in force (existing) already covers an item (candidate): the same kind, the same pattern (case ignored except for files) or `*.` over the domain and every name under it, or a file folder's `/*` over a file directly in it, and allows no narrower. `warnings`: the warnings an item carries from its own kind, pattern and allows. `registrable`: the registrable domain of a host, in ASCII. `describe`: the item's first line, in the plugin's words (lifetime in minutes, null for until revoked or removed). `last`: how long ago the last approved review was, by UTC calendar day. `exposure`: whether a scan response flags exposure (an `exposure.*` reason, or exposure or session_exposure above 0). `notes`: the agent's reason as the screen shows it, inside a code span so links, mentions and emphasis do nothing (null: no note line). `mcp_order`: MCP servers are listed by name in code point order. `grant_labels`: how the id of a grant in force that covers an item is shown (a plugin-made id as it is; any other string neutralised in a code span; anything not a string as `?`). Every code span's text has no backtick and no backslash (a chat format may read one as an escape).",
   "delivery": [
     [
       "discord",
@@ -299,7 +299,7 @@
         "pattern": "аpple.com"
       },
       "warnings": [
-        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--pple-43d.com)"
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`)"
       ]
     },
     {
@@ -308,7 +308,7 @@
         "pattern": "https://login.аpple.co.uk/path"
       },
       "warnings": [
-        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--pple-43d.co.uk)"
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.co.uk`)"
       ]
     },
     {
@@ -317,7 +317,7 @@
         "pattern": "EXAMPLE_KEY@*.pаy.example"
       },
       "warnings": [
-        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--py-7kc.example)"
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--py-7kc.example`)"
       ]
     },
     {
@@ -326,7 +326,7 @@
         "pattern": "xn--pple-43d.com"
       },
       "warnings": [
-        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--pple-43d.com)"
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`)"
       ]
     },
     {
@@ -335,7 +335,7 @@
         "pattern": "remote:login.XN--pple-43d.com"
       },
       "warnings": [
-        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--pple-43d.com)"
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--pple-43d.com`)"
       ]
     },
     {
@@ -344,7 +344,7 @@
         "pattern": "KEY@*.xn--py-7kc.example"
       },
       "warnings": [
-        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain xn--py-7kc.example)"
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--py-7kc.example`)"
       ]
     },
     {
@@ -516,6 +516,51 @@
         "pattern": "discord:#daily-brief"
       },
       "warnings": []
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.[Approve](evil.com)"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `approveevil.com`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.**APPROVE**"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--a.**approve**`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.||spoiler||"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--a.spoiler`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "xn--a.~~gone~~"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `xn--a.~~gone~~`)"
+      ]
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.xn--e1afmkfd.*evil*.com"
+      },
+      "warnings": [
+        "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name (registrable domain `*evil*.com`)"
+      ]
     }
   ],
   "registrable": [
@@ -725,6 +770,96 @@
     [
       "   ",
       null
+    ],
+    [
+      "a\\",
+      "Agent's note: `a`"
+    ],
+    [
+      "\\\\",
+      null
+    ],
+    [
+      "C:\\temp\\ is mine",
+      "Agent's note: `C:temp is mine`"
+    ]
+  ],
+  "mcp_order": {
+    "servers": {
+      "😀-astral": {
+        "command": "npx",
+        "args": [
+          "@example/astral"
+        ]
+      },
+      "ｚ-fullwidth": {
+        "command": "npx",
+        "args": [
+          "@example/fullwidth"
+        ]
+      },
+      "b-plain": {
+        "command": "npx",
+        "args": [
+          "@example/plain"
+        ]
+      },
+      "A-upper": {
+        "command": "npx",
+        "args": [
+          "@example/upper"
+        ]
+      }
+    },
+    "names": [
+      "A-upper",
+      "b-plain",
+      "ｚ-fullwidth",
+      "😀-astral"
+    ]
+  },
+  "grant_labels": [
+    [
+      "gr-0a0b0c",
+      "gr-0a0b0c"
+    ],
+    [
+      "[gr](https://evil.example) @here",
+      "`grhttps://evil.examp`"
+    ],
+    [
+      "gr-0a0b0c\\",
+      "`gr-0a0b0c`"
+    ],
+    [
+      "",
+      "`?`"
+    ],
+    [
+      1.0,
+      "`?`"
+    ],
+    [
+      7,
+      "`?`"
+    ],
+    [
+      true,
+      "`?`"
+    ],
+    [
+      null,
+      "`?`"
+    ],
+    [
+      [
+        "gr-0a0b0c"
+      ],
+      "`?`"
+    ],
+    [
+      "gr-\\0a0b0c",
+      "`gr-0a0b0c`"
     ]
   ]
 }

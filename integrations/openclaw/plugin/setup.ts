@@ -80,14 +80,36 @@ const show = (d: Date) => `${d.toISOString().slice(0, 16).replace("T", " ")} UTC
  * Text someone else chose (a job id, a server name), neutralised and in a code span, where chat apps turn no link,
  * mention or emphasis on.
  */
-const span = (s: unknown, cap: number) => `\`${hold.inert(s, cap) || "?"}\``;
+/**
+ * `s` neutralised and capped, without backslashes (a chat format may read one as an escape of the closing backtick),
+ * for a code span.
+ */
+const spanned = (s: unknown, cap: number) => hold.inert(s, cap).replaceAll("\\", "");
+const span = (s: unknown, cap: number) => `\`${spanned(s, cap) || "?"}\``;
+
+/**
+ * How a grant in force is named on the screen: an id the plugin made as it is; any other text someone wrote into the
+ * file in a code span; anything that is not text as `?`.
+ */
+export function grantLabel(gid: unknown): string {
+  if (typeof gid === "string" && GRANT_ID.test(gid)) return gid;
+  return typeof gid === "string" ? span(gid, 20) : "`?`";
+}
+
+/** Strings in code point order, as Python sorts them (not UTF-16 code units). */
+function byCodePoint(a: string, b: string): number {
+  const x = Array.from(a, (c) => c.codePointAt(0)!);
+  const y = Array.from(b, (c) => c.codePointAt(0)!);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+  return x.length - y.length;
+}
 
 /**
  * The agent's reason as the screen shows it: neutralised, capped and in a code span, so a link, a bare domain, a
  * mention or emphasis in it does nothing; null when nothing is left of it.
  */
 export function noteLine(reason: unknown): string | null {
-  const text = typeof reason === "string" ? hold.inert(reason, 200) : "";
+  const text = typeof reason === "string" ? spanned(reason, 200) : "";
   return text.trim() ? `Agent's note: \`${text}\`` : null;
 }
 const isAscii = (s: string) => /^[\x00-\x7f]*$/.test(s);
@@ -251,7 +273,7 @@ export function cronTargets(openclawDir: string): Array<[string, string]> {
 export function mcpProviders(servers: unknown): Array<[string, string | null]> {
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) return [];
   return Object.keys(servers)
-    .sort()
+    .sort(byCodePoint)
     .map((name) => {
       const cfg = (servers as Entry)[name];
       return [name, cfg && typeof cfg === "object" ? serverIdentity(cfg).identity : null];
@@ -259,6 +281,14 @@ export function mcpProviders(servers: unknown): Array<[string, string | null]> {
 }
 
 // ---- proposals ----------------------------------------------------------------------------------------------------
+
+/**
+ * A pattern as written can be shown and set: one printable word, no backtick, no backslash at its end. Checked before
+ * anything trims it, so both plugins read the same patterns.
+ */
+function rawOk(p: unknown): p is string {
+  return printableWord(p) && !p.includes("`") && !p.endsWith("\\");
+}
 
 function printableWord(p: unknown): p is string {
   return typeof p === "string" && p.length > 0 && p.length <= grants.MAX_PATTERN && grants.printable(p) && !/\s/u.test(p);
@@ -281,10 +311,10 @@ export function proposalItem(raw: unknown): Entry | null {
     if ((r.kind !== undefined && r.kind !== null && r.kind !== "destination") || (r.allows !== undefined && r.allows !== null)) {
       return null;
     }
-    if (minutes !== null || !printableWord(r.pattern) || bindingProblem(r.pattern)) return null;
+    if (minutes !== null || !rawOk(r.pattern) || bindingProblem(r.pattern)) return null;
     return { binding: true, kind: "destination", pattern: r.pattern, reason };
   }
-  if (r.binding !== undefined && r.binding !== null && r.binding !== false) return null;
+  if ((r.binding !== undefined && r.binding !== null && r.binding !== false) || !rawOk(r.pattern)) return null;
   const grant = grants.hintGrant({ kind: r.kind, pattern: r.pattern, allows: r.allows });
   if (!grant) return null;
   return { binding: false, ...grant, minutes, reason };
@@ -351,7 +381,7 @@ export function inForce(cfg: PluginConfig, data: GrantsFile | null, now: Date): 
   for (const [raw, g] of grants.fileGrants(data)) {
     // An id the plugin made is shown as it is; anything else someone wrote into the file, in a code span.
     if (g.scope === "persistent" && !grants.expired(raw, now)) {
-      out.push([typeof raw.id === "string" && GRANT_ID.test(raw.id) ? raw.id : span(raw.id || "-", 20), g]);
+      out.push([grantLabel(raw.id), g]);
     }
   }
   for (const b of grants.fileBindings(data)) out.push(["a channel binding", { kind: "destination", pattern: b.pattern.trim() }]);
@@ -493,13 +523,13 @@ const ENCODED = /(?:^|[.:@/*])xn--/i;
  */
 export function validItem(cand: Entry): Entry | null {
   const pattern = cand.pattern;
-  if (typeof pattern !== "string" || pattern.includes("`")) return null;
+  if (!rawOk(pattern)) return null;
   if (cand.binding) {
-    if (!printableWord(pattern) || bindingProblem(pattern)) return null;
+    if (bindingProblem(pattern)) return null;
     return { binding: true, kind: "destination", pattern, allows: null };
   }
   const grant = grants.hintGrant(cand);
-  if (!grant || !printableWord(grant.pattern) || grant.pattern.includes("`")) return null;
+  if (!grant || !rawOk(grant.pattern)) return null;
   return { binding: false, allows: null, ...grant };
 }
 
@@ -510,7 +540,7 @@ export function itemWarnings(item: Entry): string[] {
     const domain = registrable(hostOf(item));
     out.push(
       "the name has characters that are not plain ASCII, or is written in their xn-- form, and may imitate another name" +
-        (domain ? ` (registrable domain ${domain})` : ""),
+        (domain ? ` (registrable domain ${span(domain, 300)})` : ""),
     );
   }
   if (!item.binding && item.kind === "file") {

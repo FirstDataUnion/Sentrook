@@ -22,4 +22,5 @@ A refused owner command now says where owner commands run: your own direct messa
 on the machine. It used to name only the Control UI.
 
 `/sentrook-setup` refuses in a group or channel room, where OpenClaw would still count your message as the owner's
-and the list would be shown to everyone there.
+and the list would be shown to everyone there, and in a chat it cannot tell from one (no session key, or the main
+session while `session.groupScope: "main"` routes rooms into it). The Control UI and the command line are unchanged.
