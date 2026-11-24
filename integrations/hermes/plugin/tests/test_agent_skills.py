@@ -79,7 +79,7 @@ def test_every_command_the_hermes_text_names_exists_in_hermes(template):
         assert m[2] is None, f"OpenClaw spelling /sentrook-{m[2]} in the Hermes {template}"
         assert m[1] in commands.COMMANDS, f"/sentrook {m[1]} in the Hermes {template}"
     for m in HERMES_CLI.finditer(text):
-        assert m[1] in ("verify", *cli.CLI_COMMANDS), (
+        assert m[1] in (*cli.LOCAL_COMMANDS, *cli.CLI_COMMANDS), (
             f"hermes sentrook {m[1]} in the Hermes {template}"
         )
     assert "openclaw" not in text.lower()

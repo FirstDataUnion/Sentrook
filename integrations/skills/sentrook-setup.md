@@ -21,7 +21,8 @@ There are two entry points:
 1. **Check that it works.** Run `{{cli verify}}` (you may run it, and `{{cli status}}`), or ask the owner to send
    `{{cmd status}}`. Every `verify` line should start with `ok` and the policy should say `mode=enforce`. Explain any
    `FAIL` line in one sentence and send the owner to the install guide's "Check the setup" table; never ask for the
-   scan credentials or handle them yourself.
+   scan credentials or handle them yourself. If Sentrook is not signed in, the owner runs `{{cli login}}` in a
+   terminal on this machine; never run it yourself (Sentrook blocks it).
 2. **Ask the owner what is routine**, one question per message, in plain words:
    - What do you ask me to do regularly (reports, email, code, notes, bookings)?
    - Which services, websites or APIs do I use for that? (Their host names, such as `api.example.com`.)

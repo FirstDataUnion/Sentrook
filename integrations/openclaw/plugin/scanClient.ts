@@ -100,7 +100,8 @@ export async function postScan(opts: {
     return {
       ok: false,
       kind: "config",
-      detail: "no scan credentials (set SENTROOK_SCAN_CLIENT_ID and SENTROOK_SCAN_CLIENT_SECRET)",
+      detail: "not signed in (run openclaw sentrook login)",
+      setup: "not_signed_in",
     };
   }
   try {

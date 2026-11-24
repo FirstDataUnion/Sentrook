@@ -1,0 +1,547 @@
+{
+  "_comment": "`openclaw sentrook login` and `hermes sentrook login` against a fake identity service. Each case drives the device sign-in: discovery, the device-code request, then one answer per poll of the credential endpoint, in order. A poll answer is {status, body} or {network_error: true}. Both plugins must send `code_request` (with `device_name` from `name_arg`, cleaned) and, on every poll, `client_id` and the device code; sleep exactly `sleeps` (seconds, on a fake clock that each sleep advances); store `saved` (null: nothing stored); exit with `exit`; and print `output`, line by line, where {cmd} is `openclaw` or `hermes`, {where} is where that host stored the credentials, {restart} is that host's restart line (or nothing), and {verify} is the verify report (tests stub it as `verify_report`, failing when `verify_ok` is false). `requests` lists which endpoints were called, in order. The plugin prints no text the identity service chose, and never the secret.",
+  "issuer": "https://identity.firstdataunion.org",
+  "discovery": {
+    "issuer": "https://identity.firstdataunion.org",
+    "token_endpoint": "https://identity.firstdataunion.org/oauth/token",
+    "device_authorization_endpoint": "https://identity.firstdataunion.org/oauth/device/code"
+  },
+  "credentials_endpoint": "https://identity.firstdataunion.org/oauth/device/sentrook-credentials",
+  "device_id": "0123456789abcdef0123456789abcdef",
+  "code_request": {
+    "client_id": "sentrook-plugin",
+    "scope": "sentrook.scan",
+    "device_name": "test box",
+    "device_id": "0123456789abcdef0123456789abcdef"
+  },
+  "code_response": {
+    "device_code": "dc-0001",
+    "user_code": "ABCD-1234",
+    "verification_uri": "https://identity.firstdataunion.org/oauth/device",
+    "verification_uri_complete": "https://identity.firstdataunion.org/d/ABCD-1234",
+    "expires_in": 600,
+    "interval": 5
+  },
+  "verify_report": "ok   stubbed verify",
+  "start_output": [
+    "Sign in to connect Sentrook on this machine:",
+    "",
+    "  https://identity.firstdataunion.org/d/ABCD-1234",
+    "",
+    "Open the link on any device, sign in or create a free FIDU account, and check the code matches: ABCD-1234",
+    "Waiting for approval (the code expires in 10 minutes; Ctrl-C to cancel)..."
+  ],
+  "cases": [
+    {
+      "name": "approved after waiting and a slow_down",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "authorization_pending"
+          }
+        },
+        {
+          "status": 400,
+          "body": {
+            "error": "slow_down"
+          }
+        },
+        {
+          "status": 200,
+          "body": {
+            "client_id": "sentrook-scan-abc-0001",
+            "client_secret": "not-a-real-secret-aaaaaaaaaaaaaaaa",
+            "name": "test box",
+            "replaced": false
+          }
+        }
+      ],
+      "verify_ok": true,
+      "expect": {
+        "exit": 0,
+        "sleeps": [
+          5,
+          5,
+          10
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll",
+          "poll",
+          "poll"
+        ],
+        "saved": {
+          "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0001",
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-aaaaaaaaaaaaaaaa"
+        },
+        "output": [
+          "{start}",
+          "Connected as \"test box\". Credentials saved {where}.",
+          "{restart}",
+          "",
+          "{verify}"
+        ]
+      }
+    },
+    {
+      "name": "denied in the browser",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "authorization_pending"
+          }
+        },
+        {
+          "status": 400,
+          "body": {
+            "error": "access_denied"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5,
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "{start}",
+          "Sign-in was denied in the browser. Nothing was changed."
+        ]
+      }
+    },
+    {
+      "name": "the server says the code expired",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "expired_token"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "{start}",
+          "The code expired before it was approved. Run {cmd} sentrook login again."
+        ]
+      }
+    },
+    {
+      "name": "the code runs out without another poll",
+      "name_arg": "test box",
+      "code_response": {
+        "device_code": "dc-0001",
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://identity.firstdataunion.org/oauth/device",
+        "verification_uri_complete": "https://identity.firstdataunion.org/d/ABCD-1234",
+        "expires_in": 10,
+        "interval": 5
+      },
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "authorization_pending"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5,
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "Sign in to connect Sentrook on this machine:",
+          "",
+          "  https://identity.firstdataunion.org/d/ABCD-1234",
+          "",
+          "Open the link on any device, sign in or create a free FIDU account, and check the code matches: ABCD-1234",
+          "Waiting for approval (the code expires in 1 minute; Ctrl-C to cancel)...",
+          "The code expired before it was approved. Run {cmd} sentrook login again."
+        ]
+      }
+    },
+    {
+      "name": "the account is at its connection limit",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 409,
+          "body": {
+            "error": "credential_limit",
+            "error_description": "\u001b[31mTEXT THE PLUGIN MUST NOT PRINT",
+            "manage_uri": "https://elsewhere.example/dashboard"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "{start}",
+          "This account already has the most Sentrook connections allowed. Remove one you no longer use at https://identity.firstdataunion.org/dashboard#sentrook, then run {cmd} sentrook login again."
+        ]
+      }
+    },
+    {
+      "name": "a network error and a server error are retried",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "network_error": true
+        },
+        {
+          "status": 503,
+          "body": "busy"
+        },
+        {
+          "status": 200,
+          "body": {
+            "client_id": "sentrook-scan-abc-0002",
+            "client_secret": "not-a-real-secret-bbbbbbbbbbbbbbbb",
+            "name": "test box",
+            "replaced": true
+          }
+        }
+      ],
+      "verify_ok": true,
+      "expect": {
+        "exit": 0,
+        "sleeps": [
+          5,
+          5,
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll",
+          "poll",
+          "poll"
+        ],
+        "saved": {
+          "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0002",
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-bbbbbbbbbbbbbbbb"
+        },
+        "output": [
+          "{start}",
+          "Connected as \"test box\". Credentials saved {where}.",
+          "{restart}",
+          "",
+          "{verify}"
+        ]
+      }
+    },
+    {
+      "name": "saved, but verify fails",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 200,
+          "body": {
+            "client_id": "sentrook-scan-abc-0003",
+            "client_secret": "not-a-real-secret-cccccccccccccccc",
+            "name": "test box",
+            "replaced": false
+          }
+        }
+      ],
+      "verify_ok": false,
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": {
+          "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0003",
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-cccccccccccccccc"
+        },
+        "output": [
+          "{start}",
+          "Connected as \"test box\". Credentials saved {where}.",
+          "{restart}",
+          "",
+          "{verify}",
+          "Signed in, but a check above failed. Fix it, then run {cmd} sentrook verify."
+        ]
+      }
+    },
+    {
+      "name": "a sign-in address outside the issuer is refused before it is called",
+      "name_arg": "test box",
+      "discovery": {
+        "issuer": "https://identity.firstdataunion.org",
+        "token_endpoint": "https://identity.firstdataunion.org/oauth/token",
+        "device_authorization_endpoint": "https://evil.example/oauth/device/code"
+      },
+      "polls": [],
+      "expect": {
+        "exit": 1,
+        "sleeps": [],
+        "requests": [
+          "discovery"
+        ],
+        "saved": null,
+        "output": [
+          "Sign-in failed: the identity service gave a sign-in address outside https://identity.firstdataunion.org."
+        ]
+      }
+    },
+    {
+      "name": "a link outside the issuer is not printed",
+      "name_arg": "test box",
+      "code_response": {
+        "device_code": "dc-0001",
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://evil.example/oauth/device",
+        "verification_uri_complete": "https://evil.example/d/ABCD-1234",
+        "expires_in": 600,
+        "interval": 5
+      },
+      "polls": [],
+      "expect": {
+        "exit": 1,
+        "sleeps": [],
+        "requests": [
+          "discovery",
+          "code"
+        ],
+        "saved": null,
+        "output": [
+          "Sign-in failed: the identity service gave a sign-in address outside https://identity.firstdataunion.org."
+        ]
+      }
+    },
+    {
+      "name": "a link with characters a terminal would act on is not printed",
+      "name_arg": "test box",
+      "code_response": {
+        "device_code": "dc-0001",
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://identity.firstdataunion.org/oauth/device",
+        "verification_uri_complete": "https://identity.firstdataunion.org/d/ABCD-1234\u001b]8;;https://evil.example\u0007",
+        "expires_in": 600,
+        "interval": 5
+      },
+      "polls": [],
+      "expect": {
+        "exit": 1,
+        "sleeps": [],
+        "requests": [
+          "discovery",
+          "code"
+        ],
+        "saved": null,
+        "output": [
+          "Sign-in failed: the identity service gave a sign-in link that cannot be shown safely."
+        ]
+      }
+    },
+    {
+      "name": "an empty complete link falls back to the plain one",
+      "name_arg": "test box",
+      "code_response": {
+        "device_code": "dc-0001",
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://identity.firstdataunion.org/oauth/device",
+        "verification_uri_complete": "",
+        "expires_in": 600,
+        "interval": 5
+      },
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "access_denied"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "Sign in to connect Sentrook on this machine:",
+          "",
+          "  https://identity.firstdataunion.org/oauth/device",
+          "",
+          "Open the link on any device, sign in or create a free FIDU account, and check the code matches: ABCD-1234",
+          "Waiting for approval (the code expires in 10 minutes; Ctrl-C to cancel)...",
+          "Sign-in was denied in the browser. Nothing was changed."
+        ]
+      }
+    },
+    {
+      "name": "the identity service does not know the plugin's client",
+      "name_arg": "test box",
+      "code_status": 401,
+      "code_response": {
+        "error": "invalid_client",
+        "error_description": "invalid client"
+      },
+      "polls": [],
+      "expect": {
+        "exit": 1,
+        "sleeps": [],
+        "requests": [
+          "discovery",
+          "code"
+        ],
+        "saved": null,
+        "output": [
+          "Sign-in failed: this identity service does not offer plugin sign-in. Set the credentials by hand instead (see the install guide)."
+        ]
+      }
+    },
+    {
+      "name": "credentials that could break the settings file are refused",
+      "name_arg": "test box",
+      "polls": [
+        {
+          "status": 200,
+          "body": {
+            "client_id": "sentrook-scan-abc-0004",
+            "client_secret": "not-a-real-secret\nSENTROOK_MODE=observe",
+            "name": "test box",
+            "replaced": false
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "{start}",
+          "Sign-in failed: the identity service's answer could not be used. Run {cmd} sentrook login again."
+        ]
+      }
+    },
+    {
+      "name": "the device name is cleaned before it is sent",
+      "name_arg": "  my\tbox\u202e\u0007 ",
+      "code_request": {
+        "client_id": "sentrook-plugin",
+        "scope": "sentrook.scan",
+        "device_name": "my box",
+        "device_id": "0123456789abcdef0123456789abcdef"
+      },
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "access_denied"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "{start}",
+          "Sign-in was denied in the browser. Nothing was changed."
+        ]
+      }
+    },
+    {
+      "name": "a long device name is cut to 64 characters",
+      "name_arg": "0123456789012345678901234567890123456789012345678901234567890123456789",
+      "code_request": {
+        "client_id": "sentrook-plugin",
+        "scope": "sentrook.scan",
+        "device_name": "0123456789012345678901234567890123456789012345678901234567890123",
+        "device_id": "0123456789abcdef0123456789abcdef"
+      },
+      "polls": [
+        {
+          "status": 400,
+          "body": {
+            "error": "access_denied"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "sleeps": [
+          5
+        ],
+        "requests": [
+          "discovery",
+          "code",
+          "poll"
+        ],
+        "saved": null,
+        "output": [
+          "{start}",
+          "Sign-in was denied in the browser. Nothing was changed."
+        ]
+      }
+    }
+  ]
+}

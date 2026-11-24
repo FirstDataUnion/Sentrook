@@ -46,7 +46,9 @@ export async function runVerify(
   checks.push({
     name: "credentials",
     ok: !!oidc,
-    detail: oidc ? `client ${oidc.clientId}, audience ${oidc.audience}` : "SENTROOK_SCAN_CLIENT_ID / _SECRET not set",
+    detail: oidc
+      ? `client ${oidc.clientId}, audience ${oidc.audience}`
+      : "not signed in: SENTROOK_SCAN_CLIENT_ID / _SECRET not set (run openclaw sentrook login)",
   });
 
   // Failed, not reported: a setting Sentrook cannot read is ignored or replaced, which may not be what the owner meant.
@@ -75,7 +77,14 @@ export async function runVerify(
       await getScanAccessToken(oidc, fetchImpl, timeoutMs);
       checks.push({ name: "token mint", ok: true, detail: `issued by ${oidc.issuer}` });
     } catch (err) {
-      checks.push({ name: "token mint", ok: false, detail: String(err).slice(0, 200) });
+      const detail = String(err).slice(0, 200);
+      checks.push({
+        name: "token mint",
+        ok: false,
+        detail: detail.includes("invalid_client")
+          ? "the identity service refused these credentials (revoked or wrong); run openclaw sentrook login"
+          : detail,
+      });
     }
   }
   checks.push({

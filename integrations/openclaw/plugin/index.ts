@@ -219,6 +219,15 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    if (mode === "full") {
+      const { cfg: bootCfg, env: bootEnv } = loadConfig();
+      const issuer = bootCfg.endpoints.issuer;
+      if (issuer.ok && !resolveOidcCredentials(api.pluginConfig ?? {}, bootEnv, issuer.url)) {
+        api.logger.warn(
+          `${LOG} not signed in; every tool call is stopped until you run openclaw sentrook login on this machine`,
+        );
+      }
+    }
     /** The plugin's own skill texts as it loaded them: a read is the plugin's skill read only if it returned these. */
     const skillTexts = shippedSkillTexts();
     /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
