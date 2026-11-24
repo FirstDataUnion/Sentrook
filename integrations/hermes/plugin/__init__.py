@@ -967,7 +967,7 @@ def _report_gate(kw: dict[str, Any]) -> dict[str, Any] | None:
                 platform=built["platform"],
                 subagent=built["subagent"],
                 env=env,
-                attended_platforms=cfg.attended_platforms,
+                attended_platforms=owner_settings.attended_of(cfg),
                 background=background or skill_review.in_unattended_review(),
                 isolated=skill_review.host_isolated(env),
             )
@@ -1031,7 +1031,14 @@ def report_handler(
 
 
 def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetime) -> str:
-    target, why = _notice_target(cfg.owner_channel)
+    notify = owner_settings.notify_of(cfg)
+    target, why = _notice_target(cfg)
+    if not target:
+        where = None
+    elif notify.chat_id:
+        where = f"a {notify.platform} chat"
+    else:
+        where = f"the {target} home channel"
     state = {
         "plugin_version": PLUGIN_VERSION,
         "mode": cfg.mode,
@@ -1040,11 +1047,13 @@ def _report_text(cfg: PluginConfig, env: dict[str, str], days: int, now: datetim
         "scan_ok": cfg.endpoints.scan.ok and cfg.endpoints.issuer.ok,
         "credentials_missing": auth_missing_credentials(),
         "notice": {
-            "target": f"the {target} home channel" if target else None,
-            "source": "the owner_channel setting",
+            "target": where,
+            "source": "the notify command"
+            if notify.source == "command"
+            else "the owner_channel setting",
             "why": why,
         },
-        "attended_platforms": sorted(cfg.attended_platforms),
+        "attended_platforms": sorted(owner_settings.attended_of(cfg)),
         "unsent_grants": len(cfg.unsent_grants),
         "shadowed_skills": None,
         "traffic_log": cfg.traffic_log_enabled,

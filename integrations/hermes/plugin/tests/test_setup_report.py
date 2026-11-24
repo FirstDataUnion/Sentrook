@@ -471,9 +471,32 @@ def test_the_report_reads_this_installs_settings_and_log(h, monkeypatch):
     text = run(h)
     assert '- Attended platforms added: "api_server".' in text
     assert "- Grants in force everywhere: 1 (1 file); channel bindings: 0." in text
-    assert "- Notices of held calls: none (owner_channel is not set;" in text
+    assert (
+        "- Notices of held calls: none (no notice target is set; send /sentrook notify here" in text
+    )
     assert "- Traffic log: on." in text
     assert "Skills that outrank" not in text
+
+
+def test_the_report_shows_settings_the_owner_set_by_command(h, monkeypatch, tmp_path):
+    """A notice chat set with `/sentrook notify here` and a platform added with `/sentrook attended add` show as
+    such, with no chat id."""
+    from plugin.store import Store
+
+    monkeypatch.delenv("SENTROOK_ATTENDED_PLATFORMS", raising=False)
+    Store(tmp_path / "sentrook").save_settings(
+        {
+            "version": 1,
+            "notify": {"platform": "telegram", "chat_id": "4242", "thread_id": ""},
+            "attended": [{"platform": "api_server"}],
+        }
+    )
+    monkeypatch.setattr(plugin.hold, "home_platforms", lambda: [])
+    assert ask(h) is None
+    text = run(h)
+    assert '- Attended platforms added: "api_server".' in text
+    assert "- Notices of held calls: a telegram chat (set by the notify command)." in text
+    assert "4242" not in text
 
 
 def test_the_setup_skill_calls_the_tool_at_check_in():
