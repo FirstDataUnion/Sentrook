@@ -40,6 +40,7 @@
     "scanFailureNotice.ts",
     "selfEdit.ts",
     "setup.ts",
+    "setupReport.ts",
     "snooze.ts",
     "store.ts",
     "traffic.ts",

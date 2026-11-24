@@ -161,14 +161,38 @@ export interface Approved {
   last: Date;
 }
 
+/** A tally of approved reviews with nothing to suggest, by tool. */
+export interface Unsuggested {
+  tool: string;
+  count: number;
+  last: Date;
+}
+
+/** A tally of a key the scanner saw sent only to its own service, by name and host. */
+export interface OwnService {
+  name: string;
+  host: string;
+  count: number;
+  last: Date;
+}
+
 /**
  * What the traffic log says: the grants Sentrook suggested on reviews the owner approved (`approved`, by `keyOf`, each
  * with its count and the time of the last), and the sessions where the scanner flagged exposure. `available` is false
  * when the traffic log is off.
+ *
+ * Also, under the same rule (the owner's own message, no exposure flagged in the session): the approved reviews with no
+ * grant to suggest, by tool (`unsuggested`), and the keys the scanner saw sent only to their own service, by name and
+ * host (`ownService`, see `ownServiceKeys`); each with its count and last time. `scans` counts the scan records read
+ * and `oldest` is the time of the oldest record read, so a reader can tell how far back the log went.
  */
 export class Evidence {
   approved = new Map<string, Approved>();
   exposed = new Set<string>();
+  unsuggested = new Map<string, Unsuggested>();
+  ownService = new Map<string, OwnService>();
+  scans = 0;
+  oldest: Date | null = null;
   readonly available: boolean;
   constructor(available: boolean) {
     this.available = available;
@@ -182,17 +206,22 @@ export class Evidence {
 }
 
 /**
- * The evidence in the traffic log at `log` (null when the log is off), as of `now`. The suggested grant of a review is
- * the one its prompt named: the first the grant command accepts that brings the call below `reviewAt`.
+ * The evidence in the traffic log at `log` (null when the log is off), as of `now`, over `windowMs`. The suggested
+ * grant of a review is the one its prompt named: the first the grant command accepts that brings the call below
+ * `reviewAt`.
  */
-export function readEvidence(log: string | null, reviewAt: number, now: Date): Evidence {
+export function readEvidence(log: string | null, reviewAt: number, now: Date, windowMs = EVIDENCE_WINDOW_MS): Evidence {
   if (log === null) return new Evidence(false);
   const ev = new Evidence(true);
-  const since = now.getTime() - EVIDENCE_WINDOW_MS;
+  const since = now.getTime() - windowMs;
   const resolutions = new Map<string, Entry>();
   const seen = new Set<string>();
   const found: Array<[string, Entry, Date]> = [];
+  const bare: Array<[string, string, Date]> = [];
+  const sent: Array<[string, string, string, Date]> = [];
   for (const rec of recordsBackward(log)) {
+    const stamp = readTime(rec.ts);
+    if (stamp !== null && (ev.oldest === null || stamp.getTime() < ev.oldest.getTime())) ev.oldest = stamp;
     const rid = rec.request_id;
     if (typeof rid !== "string") continue;
     if (rec.kind === "resolution") {
@@ -201,10 +230,11 @@ export function readEvidence(log: string | null, reviewAt: number, now: Date): E
     }
     if (rec.kind !== "scan" || seen.has(rid)) continue;
     seen.add(rid);
+    ev.scans += 1;
     const resp = rec.response;
     const sref = rec.session_ref;
     if (exposureFlagged(resp) && typeof sref === "string") ev.exposed.add(sref);
-    const at = readTime(rec.ts);
+    const at = stamp;
     const planir = rec.planir;
     if (
       at === null ||
@@ -220,21 +250,75 @@ export function readEvidence(log: string | null, reviewAt: number, now: Date): E
     ) {
       continue;
     }
+    if (!grants.mayRemember(planir)) continue;
+    for (const [name, host] of ownServiceKeys(planir, resp)) sent.push([sref, name, host, at]);
     const resolution = resolutions.get(rid) ?? null;
     if (reviewOf(actionOf(rec, resolution), resolution) !== "approved") continue;
-    if (!grants.mayRemember(planir)) continue;
     const grant = hold.grantHint(resp, reviewAt);
     if (grant) found.push([sref, grant, at]);
+    else if (typeof rec.tool === "string") bare.push([sref, rec.tool, at]);
   }
-  for (const [sref, grant, at] of found) {
-    if (ev.exposed.has(sref)) continue;
-    const k = keyOf(grant);
-    const entry = ev.approved.get(k) ?? { grant, count: 0, last: at };
+  const count = <T extends { count: number; last: Date }>(into: Map<string, T>, key: string, row: Omit<T, "count" | "last">, at: Date) => {
+    const entry = into.get(key) ?? ({ ...row, count: 0, last: at } as T);
     entry.count += 1;
     if (at.getTime() > entry.last.getTime()) entry.last = at;
-    ev.approved.set(k, entry);
+    into.set(key, entry);
+  };
+  for (const [sref, grant, at] of found) {
+    if (!ev.exposed.has(sref)) count<Approved>(ev.approved, keyOf(grant), { grant }, at);
+  }
+  for (const [sref, tool, at] of bare) {
+    if (!ev.exposed.has(sref)) count<Unsuggested>(ev.unsuggested, tool, { tool }, at);
+  }
+  for (const [sref, name, host, at] of sent) {
+    if (!ev.exposed.has(sref)) count<OwnService>(ev.ownService, JSON.stringify([name, host]), { name, host }, at);
   }
   return ev;
+}
+
+/**
+ * An environment name shaped like a credential, as the scanner reads one (words joined by `_` ending in a key, token,
+ * secret or password word).
+ */
+export const CREDENTIAL_NAME = new RegExp(
+  "(?<![A-Za-z0-9_])(" +
+    "[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:API_?KEY|KEY|KEY_ID|TOKEN|SECRET|SECRET_KEY|PASSWORD|PASSWD|PASS|PAT" +
+    "|AUTH|AUTH_TOKEN|CREDENTIALS?|ACCESS_KEY|ACCESS_KEY_ID|PRIVATE_KEY)" +
+    ")(?![A-Za-z0-9_])",
+  "g",
+);
+/** What the scanner's relief for a key sent only to its own service removes; it names no grant. */
+const OWN_SERVICE_EFFECTS = new Set(["sensitivity", "sensitivity+distrust+untrusted_origin"]);
+
+function stringsIn(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  if (value && typeof value === "object") return Object.values(value).flatMap(stringsIn);
+  return [];
+}
+
+/**
+ * [key name, host] for a scan the scanner relieved because the call sent its keys only to their own service: a relief
+ * that names no grant and takes sensitivity off a host. The scanner holds that only when every credential-shaped name
+ * the call uses is one that host's service issues, so the names are those in the call's arguments as logged; nothing
+ * else of the arguments is kept.
+ */
+export function ownServiceKeys(planir: Entry, resp: Entry): Array<[string, string]> {
+  const entities = resp?.entities && typeof resp.entities === "object" && !Array.isArray(resp.entities) ? resp.entities : {};
+  const hosts: string[] = [];
+  for (const r of Array.isArray(resp?.relief_applied) ? resp.relief_applied : []) {
+    if (!r || typeof r !== "object" || (r.grant_ref ?? null) !== null) continue;
+    if (!OWN_SERVICE_EFFECTS.has(r.effect)) continue;
+    const ent = typeof r.subject === "string" && Object.hasOwn(entities, r.subject) ? entities[r.subject] : null;
+    if (ent && typeof ent === "object" && ent.kind === "host" && typeof ent.display === "string") {
+      if (!hosts.includes(ent.display)) hosts.push(ent.display);
+    }
+  }
+  if (!hosts.length) return [];
+  const call = planir?.pending_call && typeof planir.pending_call === "object" ? planir.pending_call : {};
+  const names = new Set<string>();
+  for (const text of stringsIn(call.arguments)) for (const m of text.matchAll(CREDENTIAL_NAME)) names.add(m[1]!);
+  return [...names].sort().flatMap((n) => hosts.map((h): [string, string] => [n, h]));
 }
 
 /** The suggested grants with enough approved reviews behind them, most reviews first, then the most recent. */
