@@ -290,6 +290,19 @@ def test_plugin_version_matches_manifest():
     assert f"version: {plugin.PLUGIN_VERSION}" in manifest
 
 
+def test_manifest_license_matches_the_repository_and_the_openclaw_package():
+    """Hermes shows the manifest's `license`; it must say what the code is licensed under."""
+    import yaml
+
+    plugin_dir = Path(plugin.__file__).parent
+    repo = plugin_dir.parents[2]
+    manifest = yaml.safe_load((plugin_dir / "plugin.yaml").read_text())
+    package = json.loads((repo / "integrations/openclaw/plugin/package.json").read_text())
+    assert manifest["license"] == "MIT"
+    assert (repo / "LICENSE").read_text().splitlines()[0] == "MIT License"
+    assert package["license"] == manifest["license"]
+
+
 def test_attended_platforms_setting_turns_api_server_reviews_into_approvals(harness, monkeypatch):
     turn(harness, platform="api_server")
     assert call(harness, "c1", "rm REVIEW")["action"] == "block"

@@ -6,6 +6,8 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The plugin's manifest declares its licence as MIT, as the code always was. It said Apache-2.0, which Hermes showed
+  as the plugin's licence.
 - A destination grant or binding written `channel:<id>` (or `group:`, `thread:`, or `#<id>`) is sent with a scan whose call
   names that channel by its bare id, as OpenClaw's message tool writes it in `channelId`. Kept the same as the
   OpenClaw plugin, so both send the same grants for the same call.

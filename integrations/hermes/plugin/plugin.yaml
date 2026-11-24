@@ -8,7 +8,7 @@ requires_hermes: ">=0.23.0"
 description: >
   Scans agent tool calls with Sentrook and allows, escalates to Hermes's native approval, or blocks them.
 author: First Data Union
-license: Apache-2.0
+license: MIT
 homepage: https://github.com/FirstDataUnion/Sentrook
 tags:
   - security
