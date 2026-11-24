@@ -259,6 +259,10 @@ def test_other_spellings_of_a_helper_write_are_a_send(call):
         f'curl -s -XPUT -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/pages/abc',
         f'curl -s -X PATCH -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/pages/$PID -d \'{{"archived":true}}\'',
         f'curl -s --request=delete -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/blocks/abc',
+        f'curl -sX DELETE "https://{HOST}/v1/$EP" -H "Authorization: Bearer $EXAMPLE_API_KEY" -d x',
+        f'curl -sXPATCH "https://{HOST}/v1/$EP" -H "Authorization: Bearer $EXAMPLE_API_KEY" -d x',
+        f'curl -s -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/search -d @notes.json',
+        f'curl -s -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/search --data-binary=@notes.json',
     ],
 )
 def test_a_shell_method_option_that_writes_is_a_send(cmd):
@@ -414,3 +418,31 @@ def test_the_write_check_grows_linearly_with_the_call(unit):
     large = min(_visible_write_seconds(text(1200)) for _ in range(3))
     assert large < max(small, 0.002) * 9
     assert large < 2.0
+
+
+def test_lower_case_x_is_not_a_method_option():
+    """`-x` is curl's proxy option and `tar -xzf` extracts: neither names a method. `-X`, `-sX` and `-XPUT` do."""
+    found = lambda t: [m.group(3) for m in detectors._LITERAL_METHOD.finditer(t) if m.group(3)]  # noqa: E731
+    assert found("curl -x http://127.0.0.1:8080 https://h/v1/search") == []
+    assert found("tar -xzf a.tgz; find . -exec rm {} +") == []
+    assert found("curl -X PATCH u; curl -sX delete u; curl -XPUT u") == ["PATCH", "delete", "PUT"]
+
+
+def test_a_file_body_without_a_space_is_not_read():
+    cmd = (
+        "set -a; . ~/.hermes/.env; set +a; "
+        f'curl -s -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/search -d@notes.json'
+    )
+    res = scan(cmd, tool="terminal")
+    assert send_weights(res).get("irreversibility", 0.8) != pytest.approx(0.1)
+    assert detectors._FILE_BODY.search(" -d@notes.json")
+
+
+def test_a_path_keyword_whose_literal_runs_past_the_window_is_read_whole():
+    gap = "x" * 280
+    src = (
+        READ_KEY
+        + HELPER.replace("def req(m, p, b=None):", "def req(m=None, p=None, b=None):")
+        + (f"req(m='post', b={{'t':'{gap}'}}, p='pages/' + 'x')\n")
+    )
+    assert_send(scan(src))

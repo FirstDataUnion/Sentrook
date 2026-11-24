@@ -777,18 +777,18 @@ _STR = r"""[fFrRbBuU]{0,2}(?:"([^"\n]{0,500})"|'([^'\n]{0,500})'|`([^`\n]{0,500}
 #: A method written as a literal: quoted (`'PATCH'`, `"delete"`), or a shell client's method option (`-X PUT`,
 #: `-XPATCH`, `--request=delete`, `--method PUT`).
 _LITERAL_METHOD = re.compile(
-    r"""(["'`])(post|put|patch|delete)\1|(?:\s|\A)(?:-[a-z]*X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?([a-z]+)""",
+    r"""(["'`])(post|put|patch|delete)\1|(?:\s|\A)(?:-[a-zA-Z]*(?-i:X)\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?([a-z]+)""",
     re.IGNORECASE,
 )
 #: A shell body taken from a local file (`-d @notes.json`, `--data-binary=@-`): an upload, whatever the path.
 _FILE_BODY = re.compile(
-    r"""(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-file|--body-file)(?:\s+|=)["']?@""",
+    r"""(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-file|--body-file)(?:\s+|=)?["']?@""",
     re.IGNORECASE,
 )
 #: Code or a command that sends a body or names POST: `.post(`, a quoted POST, a `data`/`json`/`body` argument or
 #: field, a curl or wget body option, `-X POST`.
 _POST_SIGNAL = re.compile(
-    r"""\.post\s*\(|["'`]post["'`]|\b(?:data|json|body)\s*[=:](?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-(?:data|file)|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)(?:-[a-z]*X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?post\b""",
+    r"""\.post\s*\(|["'`]post["'`]|\b(?:data|json|body)\s*[=:](?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-(?:data|file)|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)(?:-[a-zA-Z]*(?-i:X)\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?post\b""",
     re.IGNORECASE,
 )
 #: A call whose first argument is a literal method and whose second is a literal path: `req('POST', 'pages', ...)`.
@@ -904,7 +904,10 @@ def _visible_write(a: CallAnalysis, ctx: Context) -> bool:
     for m in _METHOD_KEYWORD.finditer(text):
         lo, hi = max(m.start() - 300, covered), m.end() + 300
         if lo < hi:
-            for k in _PATH_KEYWORD.finditer(text, lo, hi):
+            # a keyword starting in the window is read whole, even where its literal runs past the window's end
+            for k in _PATH_KEYWORD.finditer(text, lo):
+                if k.start() >= hi:
+                    break
                 paths.add(_as_path(_literal(k, 1)))
         covered = max(covered, hi)
     if _POST_SIGNAL.search(text):
