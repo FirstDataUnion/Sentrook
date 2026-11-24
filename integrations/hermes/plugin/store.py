@@ -12,11 +12,12 @@ the separate `hermes cron run` process.
 - `snooze.json`: snoozes set by command (see `snooze`)
 - `holds.json`: unattended reviews held for the owner's approval (see `hold`)
 - `passes.json`: the passes and denials the owner's answers to held calls set (see `passes`)
+- `settings.json`: where notices go and the extra attended platforms, set by command (see `owner_settings`)
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
-read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `passes.json`, `grants.json`
-and `snooze.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
+read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `passes.json`, `grants.json`,
+`snooze.json` and `settings.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
 `hermes sentrook`) can change them at the same time.
 """
 
@@ -416,3 +417,24 @@ class Store:
     def save_passes(self, value: dict[str, Any]) -> None:
         with self.lock:
             self._write(self.dir / "passes.json", value)
+
+    def load_settings(self) -> dict[str, Any] | None:
+        """`settings.json`, empty when absent; None when it exists but cannot be read."""
+        path = self.dir / "settings.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "notify": None, "attended": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("notify", None)
+        data.setdefault("attended", [])
+        if not isinstance(data["attended"], list) or not (
+            data["notify"] is None or isinstance(data["notify"], dict)
+        ):
+            return None
+        return data
+
+    def save_settings(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "settings.json", value)
