@@ -117,7 +117,23 @@ HOSTS: dict[str, dict] = {
             "deny",
             "approve",
             "passes",
+            "notify",
+            "attended",
         ),
+        #: Where a command's arguments or summary differ from the shared `SUMMARIES` on this host.
+        "summaries": {
+            "notify": (
+                "here|off|status|<platform>",
+                "where notices go: `here`, sent as a direct message to the agent, sends them to that chat (with a "
+                "test notice); `<platform>` (on the machine) to that platform's home channel; `off` goes back to the "
+                "`owner_channel` setting",
+            ),
+            "attended": (
+                "add|remove|list [platform] [--confirm]",
+                "the platforms with a person answering Hermes's approval prompts; adding one loosens Sentrook (a "
+                "review there asks instead of holding the call), so it needs `--confirm`",
+            ),
+        },
         #: Chat commands typed as `/sentrook VERB` by anyone; the rest are owner commands, spelled the same here.
         "open": ("status", "help"),
         "owner_spelling": "/sentrook {}",
@@ -132,6 +148,9 @@ HOSTS: dict[str, dict] = {
             "deny",
             "approve",
             "passes revoke",
+            "notify",
+            "attended add",
+            "attended remove",
         ),
         "values": {
             "host": "Hermes",
@@ -146,15 +165,16 @@ HOSTS: dict[str, dict] = {
             ),
             "unattended_runs": "cron jobs, subagents, webhooks, the API server",
             "held_notice": (
-                "The owner gets one notice on the home channel of the platform set in Sentrook's `owner_channel` "
-                "setting; until it is set, nothing is sent and the call is still held."
+                "The owner gets one notice on the chat where they sent `{{cmd notify}} here` (or the home channel "
+                "of the platform in Sentrook's `owner_channel` setting); until one is set, nothing is sent and the "
+                "call is still held."
             ),
             "background_saves": (
                 "Hermes saves skills and memory in the background after a turn, with nobody there to answer a "
                 "prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a "
                 "save it would review is let through, staged in Hermes's pending list (`/skills pending`, "
-                "`/memory pending`) or held; a blocked one is not saved. A notice on the `owner_channel` home "
-                "channel says which."
+                "`/memory pending`) or held; a blocked one is not saved. A notice where held-call notices go "
+                "says which."
             ),
             "owner_commands_where": (
                 "Only the owner can run the commands below except `{{cmd status}}` and `{{cmd help}}`: in a direct "
@@ -164,17 +184,18 @@ HOSTS: dict[str, dict] = {
             "owner_commands_where_short": "in a direct message to you, or on the machine",
             "notice_explain": (
                 "When a call is held, a scan fails on an unattended run, or a background save is held or let "
-                "through, Sentrook sends the owner a notice on the home channel (`/sethome`) of one platform. The "
-                "owner chooses it on the machine, for example "
-                "`hermes config set plugins.entries.sentrook.settings.owner_channel telegram`, then restarts Hermes. "
-                "Until then no notice is sent: held calls still wait, but nobody is told."
+                "through, Sentrook sends the owner a notice. The owner chooses where by sending `{{cmd notify}} here` "
+                "as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test "
+                "notice there, and `{{cmd notify}} status` says whether it arrived. Until then no notice is sent: "
+                "held calls still wait, but nobody is told."
             ),
             "attended_explain": (
                 "Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local "
                 "terminal count as attended. The API server, cron jobs, subagents and webhooks do not: a call there "
                 "that needs review is held for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of asking. If a UI in front of the API "
-                "server shows Hermes's approval prompts, the owner can add it to Sentrook's `attended_platforms` "
-                "setting (see the install guide's Settings)."
+                "server shows Hermes's approval prompts, the owner can add it with "
+                "`{{cmd attended}} add api_server --confirm`. That loosens Sentrook, so only suggest it when the "
+                "owner really answers prompts there."
             ),
         },
     },
@@ -281,11 +302,16 @@ def change_command(entry: str) -> str:
     return f"`{{{{cmd {verb}}}}}{' ' + sub if sub else ''}`"
 
 
+def summary_of(host: str, verb: str) -> tuple[str, str]:
+    """(arguments, summary) for `verb` on `host`."""
+    return HOSTS[host].get("summaries", {}).get(verb) or SUMMARIES[verb]
+
+
 def values(host: str) -> dict[str, str]:
     h = HOSTS[host]
     lines = []
     for verb in h["commands"]:
-        args, summary = SUMMARIES[verb]
+        args, summary = summary_of(host, verb)
         usage = f"{{{{cmd {verb}}}}} {args}".rstrip()
         lines.append(f"- `{usage}`: {summary}.")
     return {
