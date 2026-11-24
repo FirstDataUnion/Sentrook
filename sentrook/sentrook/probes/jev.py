@@ -5,7 +5,9 @@
   `suspicion.exposure`; above the taint threshold it sets the `tainted` session flag. It is skipped
   when there is nothing new and untrusted to read. Reads of the agent's own skills and memory
   (`prepare.own_store.own_store_read`) are left out: a skill is instructions by design and a memory note is the
-  agent's own standing context.
+  agent's own standing context. So are reads of the owner's own instruction files (`AGENTS.md`, `SOUL.md`, ...
+  where the host keeps them: `prepare.session_sets.owner_config_path`), the owner's orders to the agent; a config
+  file read is still judged.
 - `JevCallProbe` sends the call view (request, pending call, history arguments, grants, trigger; `call-v2`
   adds the turn's inputs; `call-v3` adds the entity library's verdicts for the call's own entities,
   filled from the oracle probe) with the `call-v1`, `call-v2` or `call-v3` questions and contributes misalignment,
@@ -232,7 +234,7 @@ class JevExposureProbe(_JevProbe):
         seqs = {
             i.input.input_seq
             for i in prepared.untrusted_inputs(new_only=True)
-            if i.input.content and i.input.input_seq not in prepared.own_store_inputs
+            if i.input.content and i.input.input_seq not in prepared.exposure_left_out
         }
         if not seqs:
             return None
@@ -246,16 +248,14 @@ class JevExposureProbe(_JevProbe):
         except KeyError:
             return self._no_view()
         if state is None:
-            own = sorted(prepared.own_store_inputs)
-            env = Envelope.skipped(
-                self.step,
-                "only reads of the agent's own skills or memory"
-                if own
-                else "no new untrusted inputs with content",
-                self.versions,
-            )
-            if own:
-                env.evidence["own_store_skipped"] = own
+            if prepared.owner_instruction_inputs:
+                why = "only reads of the agent's own instruction files, skills or memory"
+            elif prepared.own_store_inputs:
+                why = "only reads of the agent's own skills or memory"
+            else:
+                why = "no new untrusted inputs with content"
+            env = Envelope.skipped(self.step, why, self.versions)
+            env.evidence.update(_left_out_evidence(prepared))
             return env
         # the questions' largest form: chunks are cut before each is built, so a set whose blocks depend on the
         # state is sized as if every block were sent
@@ -331,13 +331,20 @@ class JevExposureProbe(_JevProbe):
                 "input_seqs": sorted(
                     {n["input_seq"] for n in state.get("new_inputs") or [] if "input_seq" in n}
                 ),
-                **(
-                    {"own_store_skipped": sorted(prepared.own_store_inputs)}
-                    if prepared.own_store_inputs
-                    else {}
-                ),
+                **_left_out_evidence(prepared),
             },
         )
+
+
+def _left_out_evidence(prepared: Prepared) -> dict[str, list[int]]:
+    """The new inputs the exposure probe left out, by why: reads of the agent's own skills or memory, and of the
+    owner's own instruction files."""
+    out: dict[str, list[int]] = {}
+    if prepared.own_store_inputs:
+        out["own_store_skipped"] = sorted(prepared.own_store_inputs)
+    if prepared.owner_instruction_inputs:
+        out["owner_instructions_skipped"] = sorted(prepared.owner_instruction_inputs)
+    return out
 
 
 class JevCallProbe(_JevProbe):
