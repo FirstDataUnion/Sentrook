@@ -30,6 +30,7 @@ from . import (
     owner,
     scan_failure_notice,
     skill_review,
+    skill_turn,
     snooze,
     staging,
 )
@@ -291,7 +292,16 @@ def on_pre_llm_call(**kw: Any) -> None:
         # event notice is not a request either, and its text goes as an untrusted input.
         host = None if background else host_turns.classify(kw.get("user_message"))
         own, content = host_turns.parts(host, kw.get("user_message")) if host else (None, None)
-        if host is None:
+        # A message Hermes built around skills (a skill's slash command, a cron job with skills): the request
+        # is the owner's words; what is neither theirs nor an installed skill's own text is untrusted content.
+        skill = (
+            None
+            if background or host is not None
+            else _skill_turn(host_turns.strip_notes(kw.get("user_message")))
+        )
+        if skill is not None:
+            own, content = skill.request, skill.content
+        elif host is None:
             # An ordinary message behind host notes: the request is the message without them.
             rest = host_turns.strip_notes(kw.get("user_message"))
             if rest != host_turns.message_text(kw.get("user_message")):
@@ -329,6 +339,8 @@ def on_pre_llm_call(**kw: Any) -> None:
                     s["turns"].append(turn_id)
                 if host is not None and content is not None:
                     _buffer_host_text(cfg, store, s, content, host.input_kind or "other")
+                elif skill is not None and content is not None:
+                    _buffer_host_text(cfg, store, s, content, "other")
                 store.save_session(sid, s, cfg.history_limit * 2)
             if _capturing(cfg, store) and not background:
                 facts = session_facts()
@@ -349,6 +361,38 @@ def on_pre_llm_call(**kw: Any) -> None:
                 )
     except Exception as exc:  # noqa: BLE001
         logger.warning("pre_llm_call failed: %s", exc)
+
+
+def _cron_job_prompt() -> str | None:
+    """The running cron job's own prompt, from Hermes's job record; None outside a cron run or when Hermes
+    cannot say."""
+    try:
+        read = getattr(_ctx, "current_cron_execution", None)
+        run = read() if callable(read) else None
+        job_id = getattr(run, "job_id", None)
+        if not isinstance(job_id, str) or not job_id.strip():
+            return None
+        from cron.jobs import get_job
+
+        job = get_job(job_id.strip())
+    except Exception:  # noqa: BLE001 - no job record: the split falls back to the whole instruction
+        return None
+    prompt = job.get("prompt") if isinstance(job, dict) else None
+    return prompt if isinstance(prompt, str) and prompt.strip() else None
+
+
+def _skill_turn(text: str) -> skill_turn.SkillTurn | None:
+    """`skill_turn.split` of a user message, with the running cron job's prompt; None for any other message,
+    and when the split itself fails (the message is then the request, as before)."""
+    try:
+        if not text.startswith(
+            ("[IMPORTANT: The user has invoked", "[IMPORTANT: The following skill")
+        ):
+            return None
+        return skill_turn.split(text, job_prompt=_cron_job_prompt())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("skill turn not split: %s", exc)
+        return None
 
 
 def _buffer_host_text(
