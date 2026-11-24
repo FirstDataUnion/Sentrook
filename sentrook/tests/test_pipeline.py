@@ -46,7 +46,9 @@ def test_attack_example_with_aira(attack_case):
         and SessionFlag.TAINTED in res.converge.flags
     )
     state = decode_state(r.state, key=KEY, session_ref="s_ex1", expected_step=2, deployment=None)
-    assert state.flags == {SessionFlag.TAINTED, SessionFlag.HOLDS_SENSITIVE}
+    # tainted from the earlier result is set; the call's own credential read waits until it is known to have run
+    assert state.flags == {SessionFlag.TAINTED}
+    assert [m.flags for m in state.pending] == [{SessionFlag.HOLDS_SENSITIVE}]
     assert r.metadata.probes[2].versions["ruleset"].startswith("sensitive_paths=")
 
 

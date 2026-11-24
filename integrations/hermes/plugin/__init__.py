@@ -30,6 +30,7 @@ from . import (
     hold,
     host_turns,
     owner,
+    passes,
     scan_failure_notice,
     session_allow,
     skill_review,
@@ -589,6 +590,9 @@ def _scan_one(
     session_allowed: dict[str, Any] | None = None
     allow_key: str | None = None
     held: dict[str, Any] | None = None
+    by_pass: dict[str, Any] | None = (
+        None  # the owner's pass or denial that settled an unattended review
+    )
     stage: dict[str, Any] | None = (
         None  # what became of a held background save (`_stage_background`)
     )
@@ -676,10 +680,35 @@ def _scan_one(
             directive = {"action": "block", "message": skill_review.HELD_CALL_TEXT}
             notice = _background_notice(cfg, built, resp, "held-call")
         elif unattended:
-            # A review nobody can answer (or Hermes would auto-approve) waits for the owner (`hold`).
-            entry["decision"] = "held"
-            directive = {"action": "block", "message": hold.HELD_TEXT}
-            held = _hold(cfg, traffic, built, resp)
+            # A review nobody can answer (or Hermes would auto-approve): the owner's denial or pass for this job and
+            # action settles it (`passes`); otherwise it waits for the owner (`hold`).
+            job_id = _run_of(built)[1]
+            match = passes.match_of(
+                str(built.get("tool") or ""), resp, kw.get("args"), store.salt(), job_id is None
+            )
+            try:
+                settled = passes.check(
+                    cfg.state_dir, passes.job_ref(job_id), match, resp, datetime.now(UTC)
+                )
+            except Exception as exc:  # noqa: BLE001 - nothing settled: held as before
+                logger.warning("sentrook could not read the passes: %s", exc)
+                settled = None
+            if settled is not None and settled["kind"] == "deny":
+                entry["decision"] = "denied_by_owner"
+                directive = {"action": "block", "message": passes.DECLINED_TEXT}
+                by_pass = {"id": settled["id"], "kind": "deny"}
+            elif settled is not None:
+                entry["decision"] = "allowed_by_pass"
+                by_pass = {
+                    "id": settled["id"],
+                    "kind": "allow",
+                    "uses": settled.get("uses"),
+                    "use_count": settled.get("use_count"),
+                }
+            else:
+                entry["decision"] = "held"
+                directive = {"action": "block", "message": hold.HELD_TEXT}
+                held = _hold(cfg, traffic, built, resp, sid=sid, job_id=job_id, match=match)
         elif (
             not relaxed
             and snooze.applies(resp, cfg.block_at)
@@ -809,6 +838,7 @@ def _scan_one(
             **({"relaxed": True} if relaxed else {}),
             **({"session_allowed": session_allowed} if session_allowed is not None else {}),
             **({"hold": held} if held is not None else {}),
+            **({"pass": by_pass} if by_pass is not None else {}),
             **({"notice": notice} if notice is not None else {}),
             **({"staging": stage} if stage is not None else {}),
             **({"skill_review": True} if loop_save else {}),
@@ -835,6 +865,8 @@ def _scan_one(
             if snoozed
             else " (covered by an earlier Session answer)"
             if session_allowed is not None
+            else f" ({'refused by' if by_pass['kind'] == 'deny' else 'let through by'} {by_pass['id']})"
+            if by_pass is not None
             else " (block relaxed to review by snooze)"
             if relaxed
             else " (let through)"
@@ -1118,10 +1150,18 @@ def _scan_failure_notice(
 
 
 def _hold(
-    cfg: PluginConfig, traffic: TrafficLog, built: dict[str, Any], resp: dict[str, Any]
+    cfg: PluginConfig,
+    traffic: TrafficLog,
+    built: dict[str, Any],
+    resp: dict[str, Any],
+    *,
+    sid: str = "",
+    job_id: str | None = None,
+    match: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Stores the hold and sends the owner's notice; returns what the scan record says about it. The
-    call is held whatever happens here: a hold that cannot be stored only cannot be approved."""
+    call is held whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of
+    a waiting hold of the same job and action is counted on it, and no notice is sent."""
     now = datetime.now(UTC)
     planir = built["planir"]
     target, why = _notice_target(cfg.owner_channel)
@@ -1132,8 +1172,18 @@ def _hold(
     )
     hint = hold.grant_hint(resp, cfg.review_at) if grants.owner_sender(planir) else None
     where = _where(built)
+    match = match or {}
+    level = passes.offered_level(resp)
+    offers = passes.offers(
+        job_id, level, bool(match.get("named")), session_allow.risk_of(resp), cfg.block_at
+    )
+    repeat = False
     try:
-        hid = hold.create(
+        description = hold.inert(describe(resp, built["tool"]), 160)
+    except Exception:  # noqa: BLE001 - a malformed response: no description
+        description = ""
+    try:
+        hid, repeat = hold.create(
             cfg.state_dir,
             request_id=planir["request_id"],
             session_ref=planir["session"]["session_ref"],
@@ -1143,18 +1193,26 @@ def _hold(
             notice=notice,
             now=now,
             record=traffic.write,
+            sid=sid,
+            job_id=job_id,
+            match=match,
+            level=level,
+            offers=offers,
+            description=description,
         )
         if hid is None:
             notice = {"status": "unsent", "target": None, "reason": "holds file unreadable"}
     except LockTimeout:
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file locked"}
-    except Exception as exc:  # noqa: BLE001 - still held, just not approvable
+    except Exception as exc:  # noqa: BLE001 - still held, just not answerable
         logger.warning("sentrook could not store a hold: %s", exc)
         hid, notice = None, {"status": "unsent", "target": None, "reason": "holds file not written"}
-    if hid is not None and target:
+    if repeat:
+        notice = {"status": "not_sent", "target": None, "reason": "repeat of a waiting hold"}
+    elif hid is not None and target:
         try:
             text = hold.notice_text(
-                resp, built["tool"], where, hid, commands.CMD("approve"), commands.CMD("why")
+                resp, built["tool"], where, hid, offers, commands.CMD, on_job=job_id is not None
             )
             hold.deliver(_ctx, target, text)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
@@ -1164,8 +1222,12 @@ def _hold(
         logger.warning("sentrook held a call but sent no notice: %s", notice.get("reason"))
     return {
         "id": hid,
-        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ") if hid else None,
+        "expires_at": (now + hold.HOLD_TTL).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if hid and not repeat
+        else None,
         "hint": hint is not None,
+        "offers": offers if hid else [],
+        **({"repeat": True} if repeat else {}),
         "notice": notice,
     }
 

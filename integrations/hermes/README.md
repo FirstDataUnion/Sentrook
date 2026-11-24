@@ -121,7 +121,8 @@ being sent out of a session that has read content trying to instruct the agent, 
 signal, and it suggests trusting a new tool provider only when you asked for the work in your own chat. It suggests
 a grant only for a call that came from your own message or from a cron job Hermes started itself; a group chat,
 someone else's message, a subagent or a webhook gets none. A cron job's suggestion reaches you only through its held
-call: `/sentrook why <id>` names the grant and the job it came from, and `/sentrook approve <id>` sets it. A suggestion is a good guess, not a promise: Sentrook's judge sees the
+call: `/sentrook why <id>` names the grant, the job it came from and the command that sets it; answering the hold never
+sets it, so you decide whether to trust it for every job. A suggestion is a good guess, not a promise: Sentrook's judge sees the
 grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), answering
 **Always** also sets that grant, persistent for 30 days, and answering **Session** sets it for this session only.
 `/sentrook why` lists every grant Sentrook suggested for a scan.
@@ -229,16 +230,19 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
-| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls and where their notices go, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
+| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls (and the one held most often) and where their notices go, passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
-| `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold and the grant approving it sets |
+| `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
 | `grants` | Grants in force: from config (read-only) and set by command |
 | `grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
 | `revoke <id>` | Remove a grant set by command |
 | `bind add\|remove\|list [channel]` | Manage channel bindings |
 | `snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
-| `approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-on-unattended-runs)) |
+| `allow <id> [later\|always]` | Answer a held call by the id in its notice, within 7 days: let it through once on the job's next run, or with `always` for 30 days on that job (see [Held calls](#held-calls-on-unattended-runs)) |
+| `deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
+| `approve <id>` | The same as `allow <id>`, kept for one release |
+| `passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
 | `help` | Lists the commands |
 
 **Owner only.** `status` and `help` are open to anyone the gateway admits. Every other command runs only for the
@@ -414,15 +418,33 @@ Where nobody can answer a review (the runs above), the call is **held**:
   the desktop app's backend (`hermes serve`), the command line and cron. Where a Hermes process has neither
   `hermes send` nor a `send_message` tool, the call is still held, its record says the notice is `unsent` and why,
   and the startup log, `status` and `verify` say that notices cannot be sent from that process.
-- Reply `/sentrook approve <id>` within 24 hours (from a direct message or the local terminal, like the other owner
-  commands). When Sentrook suggested a grant for the call, approving sets it as a persistent grant that ends after 30
-  days, so the job's next run is scanned with it. When it suggested none, approving sets nothing and the reply says
-  so; add a grant with `/sentrook grant ... --persistent` if the job should pass. The held call itself is never run
-  again.
-- A hold nobody approves expires after 24 hours, and nothing runs.
+- Answer within 7 days, from a direct message or the local terminal (like the other owner commands). The notice
+  lists only the answers this hold offers:
+  - `/sentrook allow <id>`: the job's next run may make the same call once. The held call itself is not run again.
+    (`/sentrook allow <id> later` does the same.)
+  - `/sentrook allow <id> always`: the job may make the same call for 30 days. Offered only when Sentrook judges the
+    call safe to let through on every run and the call names who or what it acts on.
+  - `/sentrook deny <id>`: the job is refused the same call for 30 days. The agent is told you declined it and to go
+    on without it, and you get no more notices about it.
+  - `/sentrook approve <id>` still works, as `allow`.
+- "The same call" means: the same tool, about the same parties (the destination, file or account the hold named),
+  scoring no higher, with no warning the held call did not have, and nothing Sentrook enforces or floors. A send to
+  another channel, a riskier version of the call, or the same call from another job is held again. A call that names
+  nothing Sentrook can recognise is matched on its exact arguments, and only `allow` is offered for it. The job is
+  the one Hermes says the run belongs to, never anything in the prompt.
+- On a run that is not a cron job (a subagent, a webhook, the API server), only `allow` is offered: the next call
+  with exactly the same arguments, from any such run, goes through once within 7 days.
+- `/sentrook passes` lists what your answers set, with their use counts and end dates; `/sentrook passes revoke <id>`
+  removes one. `status`, `verify` and the dashboard show them too.
+- Answering never sets the grant Sentrook may suggest for the call: `/sentrook why <id>` shows its command, for you to
+  run if you want that destination trusted for every job.
+- A daily job held again before you answer does not send another notice: the waiting hold counts it, and `status`
+  and `why` say how many times it was held.
+- A hold nobody answers expires after 7 days, and nothing runs.
 
 A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
-the scan with decision `held`, then the approval or the expiry; `/sentrook history` shows them.
+the scan with decision `held`, then your answer or the expiry; a call a pass let through is recorded as
+`allowed_by_pass`, and one a denial refused as `denied_by_owner`. `/sentrook history` shows them.
 
 ### Hermes's own skill and memory saves
 
@@ -650,7 +672,7 @@ In short, for anyone deciding whether to install it:
   failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
   only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
-  the traffic log, grants, snooze state, held calls, when each job last had a scan-failure notice, and the
+  the traffic log, grants, snooze state, held calls, passes and denials, when each job last had a scan-failure notice, and the
   conversation logs above), or to the paths you set for them
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
   secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`

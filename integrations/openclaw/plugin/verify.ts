@@ -10,6 +10,7 @@ import { configProblemsSummary, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
 import { NOTIFY_UNSET, targetText } from "./hold.ts";
+import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
 import { Store } from "./store.ts";
 
@@ -104,6 +105,9 @@ export async function runVerify(
   // Reported, not failed: without a notify target a held call still waits; the owner is just not told.
   const target = new Store(cfg.stateDir).loadNotify();
   checks.push({ name: "held-call notices", ok: true, detail: target ? `by ${targetText(target)}` : `not sent: ${NOTIFY_UNSET}` });
+  // Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
+  const passState = passes.counts(cfg.stateDir, new Date());
+  checks.push({ name: "held-call passes", ok: passState !== "passes file unreadable", detail: passState });
   // Reported, not failed: OpenClaw's background saves are never asked about; without a target the owner is not told
   // what was let through, saved as a draft, held or blocked.
   checks.push({ name: "background-save notices", ok: true, detail: noticeStatus(target) });

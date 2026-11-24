@@ -26,8 +26,9 @@ import * as dashboard from "./dashboard.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
+import * as passes from "./passes.ts";
 import { reviewCard } from "./card.ts";
-import { blockReason, decide, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
+import { blockReason, decide, describe as describeCall, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
 import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind, triggerKind } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
@@ -680,6 +681,8 @@ const plugin = {
         return params ? { params } : null;
       };
       let held: Json | null = null;
+      /** The owner's pass or denial that settled an unattended review (passes.ts). */
+      let byPass: Json | null = null;
       /** The suggested grant "allow always" sets, when the prompt offers it. */
       let remember: grants.Entry | null = null;
       if (result.ok) {
@@ -780,10 +783,28 @@ const plugin = {
           hook = { block: true, blockReason: bg.HELD_CALL_TEXT };
           held = { id: null, background: true, run: runKind, notice: heldCallNotice(cfg, built, resp, event.toolName, triggerKind, run, runKind) };
         } else if (unattended) {
-          // Nobody can answer a review here: the call waits for the owner (hold.ts).
-          entry.decision = "held";
-          hook = { block: true, blockReason: hold.HELD_TEXT };
-          held = holdCall(cfg, built, resp, event.toolName, triggerKind, run);
+          // Nobody can answer a review here: the owner's denial or pass for this job and action settles it
+          // (passes.ts); otherwise the call waits for the owner (hold.ts).
+          const jobId = hold.cronJobId(ctx, run);
+          const match = passes.matchOf(event.toolName, resp, event?.params ?? {}, store.salt(), jobId === null);
+          let settled: Json | null = null;
+          try {
+            settled = passes.check(cfg.stateDir, passes.jobRef(jobId), match, resp, new Date());
+          } catch (err) {
+            api.logger.warn(`${LOG} could not read the passes: ${String(err)}`);
+          }
+          if (settled?.kind === "deny") {
+            entry.decision = "denied_by_owner";
+            hook = { block: true, blockReason: passes.DECLINED_TEXT };
+            byPass = { id: settled.id, kind: "deny" };
+          } else if (settled) {
+            entry.decision = "allowed_by_pass";
+            byPass = { id: settled.id, kind: "allow", uses: settled.uses, use_count: settled.use_count };
+          } else {
+            entry.decision = "held";
+            hook = { block: true, blockReason: hold.HELD_TEXT };
+            held = holdCall(cfg, built, resp, event.toolName, triggerKind, run, { sid, jobId, match });
+          }
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -846,6 +867,7 @@ const plugin = {
         ...(relaxed ? { relaxed: true } : {}),
         ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
+        ...(byPass ? { pass: byPass } : {}),
         ...(notice ? { notice } : {}),
         ...(scannedSelfEdit ? { skill_review: true, self_edit: { kind: hostKind, store: declaredStore } } : {}),
         ...(hostKind && !scannedSelfEdit ? { host_process: hostKind } : {}),
@@ -860,7 +882,7 @@ const plugin = {
       api.logger.info(
         `${LOG} scan step=${built.step} tool=${event.toolName} ` +
           (result.ok
-            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
+            ? `risk=${result.response.risk} enforced=${result.response.enforced} status=${result.response.status} verdict=${verdict}${snoozed ? " (snoozed)" : relaxed ? " (block relaxed to review by snooze)" : byPass ? ` (${byPass.kind === "deny" ? "refused by" : "let through by"} ${byPass.id})` : ""}${scannedSelfEdit ? " (self-edit)" : hostKind ? " (host process)" : ""}${bgSave ? ` background_save=${entry.decision}${lenient ? " (lenient)" : ""}` : ""} mode=${cfg.mode}`
             : `failed=${result.kind} decision=${entry.decision}`) +
           ` ms=${result.ok ? result.latencyMs : "-"}`,
       );
@@ -928,6 +950,7 @@ const plugin = {
       triggerKind: string,
       run: any,
       kind: selfEdit.SelfEditKind | null = null,
+      boundJob?: string | null,
     ): { where: string; jobId: string | null } {
       const label: Record<string, string> = {
         scheduled: "scheduled run",
@@ -935,7 +958,11 @@ const plugin = {
         hook: "webhook or event run",
         subagent: "subagent run",
       };
-      const job = triggerKind === "scheduled" || kind === "curator" ? hold.cronJobOf(run?.prompt) : null;
+      // The job OpenClaw's run metadata names comes first; the prompt's tag only names a run the metadata does not.
+      const tagged = triggerKind === "scheduled" || kind === "curator" ? hold.cronJobOf(run?.prompt) : null;
+      // A hold names the job its answers are bound to (`boundJob`, from the run metadata), never the tag alone.
+      const hostJob = boundJob !== undefined ? boundJob : hold.cronJobId(null, run);
+      const job = hostJob ? { id: hostJob, name: tagged?.id === hostJob ? tagged.name : null } : boundJob !== undefined ? null : tagged;
       const name = kind ? bg.RUN_LABELS[kind] : (label[triggerKind] ?? "unattended run");
       return { where: hold.whereText(name, sref, job?.id, job?.name), jobId: job?.id ?? null };
     }
@@ -1102,7 +1129,8 @@ const plugin = {
 
     /**
      * Stores the hold and sends the owner's notice; returns what the scan record says about it. The call is held
-     * whatever happens here: a hold that cannot be stored only cannot be approved.
+     * whatever happens here: a hold that cannot be stored only cannot be answered. A repeat of a waiting hold of the
+     * same job and action is counted on it, and no notice is sent.
      */
     function holdCall(
       cfg: PluginConfig,
@@ -1111,10 +1139,11 @@ const plugin = {
       tool: string,
       triggerKind: string,
       run: any,
+      bound: { sid: string; jobId: string | null; match: passes.Match },
     ): Json {
       const now = new Date();
       const sref: string = built.planir.session.session_ref;
-      const { where } = unattendedRun(sref, triggerKind, run);
+      const { where } = unattendedRun(sref, triggerKind, run, null, bound.jobId);
       const target = store.loadNotify();
       const outbound = outboundOf();
       let notice: Json = target
@@ -1125,18 +1154,47 @@ const plugin = {
       }
       const hint = grants.ownerSender(built.planir) ? hold.grantHint(resp, cfg.reviewAt) : null;
       const record = (r: Record<string, unknown>) => traffic.write(r);
-      let id: string | null = null;
+      const level = passes.offeredLevel(resp);
+      const offers = passes.offers(bound.jobId, level, bound.match.named, passes.riskOf(resp), cfg.blockAt);
+      let description = "";
       try {
-        id = hold.create(cfg.stateDir, { requestId: built.planir.request_id, sessionRef: sref, tool, where, hint, notice }, now, record);
+        description = hold.inert(describeCall(resp, tool), 160);
+      } catch {
+        // a malformed response: no description
+      }
+      let id: string | null = null;
+      let repeat = false;
+      try {
+        ({ id, repeat } = hold.create(
+          cfg.stateDir,
+          {
+            requestId: built.planir.request_id,
+            sessionRef: sref,
+            tool,
+            where,
+            hint,
+            notice,
+            sid: bound.sid,
+            jobId: bound.jobId,
+            match: bound.match,
+            level,
+            offers,
+            description,
+          },
+          now,
+          record,
+        ));
         if (id === null) notice = { status: "unsent", target: null, reason: "holds file unreadable" };
       } catch (err) {
         const locked = err instanceof hold.LockTimeoutError;
         if (!locked) api.logger.warn(`${LOG} could not store a hold: ${String(err)}`);
         notice = { status: "unsent", target: null, reason: locked ? "holds file locked" : "holds file not written" };
       }
-      if (id !== null && target && notice.status === "queued") {
+      if (repeat) {
+        notice = { status: "not_sent", target: null, reason: "repeat of a waiting hold" };
+      } else if (id !== null && target && notice.status === "queued") {
         try {
-          const text = hold.noticeText(resp, tool, where, id, "/sentrook-approve", "/sentrook-why");
+          const text = hold.noticeText(resp, tool, where, id, offers, (v) => `/sentrook-${v}`, bound.jobId !== null);
           const sent = hold.deliver(outbound, hostConfig(), target, text).then((why) => {
             if (why) api.logger.warn(`${LOG} held-call notice not delivered: ${why}`);
           });
@@ -1151,8 +1209,10 @@ const plugin = {
       }
       return {
         id,
-        expires_at: id ? `${new Date(now.getTime() + hold.HOLD_TTL_MS).toISOString().slice(0, 19)}Z` : null,
+        expires_at: id && !repeat ? `${new Date(now.getTime() + hold.HOLD_TTL_MS).toISOString().slice(0, 19)}Z` : null,
         hint: hint !== null,
+        offers: id ? offers : [],
+        ...(repeat ? { repeat: true } : {}),
         notice,
       };
     }

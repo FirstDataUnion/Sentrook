@@ -1,8 +1,8 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
 Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
-→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → tool description → flags
-and token. Only numbers, enums and opaque entity IDs enter here; no request text.
+→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → owner pass (`owner_pass`: whether a held
+call may be passed once, always or not at all) → tool description → flags and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
 from __future__ import annotations
@@ -31,13 +31,14 @@ from ..response.models import (
     RiskTree,
     SuspicionTier,
 )
-from ..state.token import encode_state
+from ..state.token import PendingMarks, call_hash, encode_state
 from .attended import DEFAULT_BLOCK_LINE, relaxable, withheld
 from .attended import check as attended_check
 from .describe import describe, entity_table
 from .formulas import Tiers, compute
 from .hints import grant_hints
 from .merge import Claim, Merged, collect, merge
+from .owner_pass import owner_pass
 from .params import ConvergenceParams, load_params
 from .registry import SIGNALS, reason_text
 from .relief import Relief, compute_relief
@@ -103,13 +104,32 @@ def _tree(merged: Merged, tiers: Tiers) -> RiskTree:
     )
 
 
-def _mint_session_sets(prepared: Prepared, envelopes: list[Envelope]) -> None:
-    """Add what this scan's judgements are about to the token's sets: the files a sensitive judgement
-    names (or the unbound marker when it names none), the files and tables an injected result's call
-    produced (when the judgement was about that input alone), moving anything an injected input added to
-    the trusted set into the untrusted set, and the local files the call writes from a file already in a
-    set."""
+#: Flags a scan sets from the pending call's own read: they wait in the token until the call is known to have run.
+OWN_READ_FLAGS = frozenset({SessionFlag.HOLDS_SENSITIVE})
+
+
+def _add_new(into: list[str], hashes: list[str]) -> None:
+    into.extend(h for h in hashes if h not in into)
+
+
+def _mint_session_sets(
+    prepared: Prepared,
+    envelopes: list[Envelope],
+    own_flags: frozenset[SessionFlag] | set[SessionFlag] = frozenset(),
+) -> PendingMarks:
+    """Add what this scan's judgements are about to the token's sets: the files and tables an injected
+    result's call produced (when the judgement was about that input alone), and moving anything an injected
+    input added to the trusted set into the untrusted set. Those results came from calls that ran.
+
+    What the pending call itself would add waits in the token, keyed to the call, until a later scan's
+    history shows it ran (`state.token.settle_pending`): `own_flags`, the files a sensitive judgement names
+    (or the unbound marker when it names none), and the local files the call writes from a file already in a
+    set (or that it read itself). Returns those pending marks."""
     state = prepared.state
+    marks = PendingMarks(
+        call=call_hash(state.salt, prepared.planir.pending_call.call_id),
+        flags=set(own_flags),
+    )
     for env in envelopes:
         if env.status is not ProbeStatus.OK:
             continue
@@ -117,9 +137,9 @@ def _mint_session_sets(prepared: Prepared, envelopes: list[Envelope]) -> None:
             if m.judgement == "sensitive":
                 ent = prepared.entities.by_id(m.subject) if m.subject else None
                 if m.subject is None:
-                    state.sensitive_unbound = True
+                    marks.sensitive_unbound = True
                 elif ent is not None and ent.hash and ent.kind is EntityKind.PATH:
-                    state.add_sensitive([ent.hash])
+                    _add_new(marks.sensitive, [ent.hash])
             elif m.input_seq is not None:
                 if m.attributed:
                     state.add_tainted(prepared.producer_artefacts.get(m.input_seq, []))
@@ -132,13 +152,15 @@ def _mint_session_sets(prepared: Prepared, envelopes: list[Envelope]) -> None:
             elif m.subject is not None:
                 ent = prepared.entities.by_id(m.subject)
                 if ent is not None and ent.hash and ent.kind is EntityKind.PATH:
-                    state.add_tainted([ent.hash])
+                    _add_new(marks.tainted, [ent.hash])
     binding = prepared.session_binding
     if binding.writes:
-        if any(h in state.sensitive for h in binding.takes):
-            state.add_sensitive(binding.writes)
-        if any(h in state.tainted for h in binding.takes):
-            state.add_tainted(binding.writes)
+        if any(h in state.sensitive or h in marks.sensitive for h in binding.takes):
+            _add_new(marks.sensitive, binding.writes)
+        if any(h in state.tainted or h in marks.tainted for h in binding.takes):
+            _add_new(marks.tainted, binding.writes)
+    state.add_pending(marks)
+    return marks
 
 
 def _reasons(
@@ -409,16 +431,13 @@ def converge(
         retry_cap["capped"] = False
         retry_cap["withheld"] = "degraded"
 
-    held_back = (
-        withheld(
-            envelopes,
-            degraded=degraded,
-            state_lost=prepared.state.fresh,
-            exposure_unjudged=unjudged,
-        )
-        if cap.attended
-        else []
+    not_informed = withheld(
+        envelopes,
+        degraded=degraded,
+        state_lost=prepared.state.fresh,
+        exposure_unjudged=unjudged,
     )
+    held_back = not_informed if cap.attended else []
     # One check: the mark in every parameter set, the ceiling only where the parameters turn it on.
     relax = relaxable(cap, held_back, enforced)
     attended_ceiling = relax and params.attended_owner_cap
@@ -438,9 +457,11 @@ def converge(
             category = env.evidence.get("action_category")
 
     state = prepared.state
-    state.flags = flags
+    # `flags` stays this scan's whole view (hints, metadata); the token holds the call's own read back.
+    own_flags = {f for f in flags if f in OWN_READ_FLAGS} - state.flags
+    state.flags = flags - own_flags
     state.max_input_seq = prepared.scanned_max_seq
-    _mint_session_sets(prepared, envelopes)
+    pending = _mint_session_sets(prepared, envelopes, own_flags)
     token = encode_state(
         state,
         key=token_key,
@@ -478,6 +499,18 @@ def converge(
         exposure_unjudged=unjudged,
         flags=flags,
     )
+    passable = owner_pass(
+        prepared,
+        claims,
+        [c for kept in merged.claims.values() for c in kept],
+        [(r.subject, r.reason) for r in relief],
+        [f.floor for f in floors],
+        params,
+        enforced=enforced,
+        held_back=not_informed,
+        flags=flags,
+        unanswered_retry=retry_unanswered,
+    )
     # make sure every entity a reason or a hint names is displayable
     for r in [*reasons, *hints]:
         if r.subject and r.subject not in entities:
@@ -500,6 +533,7 @@ def converge(
         ],
         reasons=reasons,
         grant_hints=hints,
+        owner_pass=passable,
         tool_description=describe(prepared, category),
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),
@@ -533,6 +567,11 @@ def converge(
                 "views": views,
                 "taint_link": tiers.taint_link,
                 "flags": sorted(f.value for f in flags),
+                **(
+                    {"flags_pending": sorted(f.value for f in pending.flags)}
+                    if pending.flags
+                    else {}
+                ),
                 "token_status": prepared.state.status.value,
                 "coverage_notes": sorted(coverage_codes),
                 "attended_owner": attended,
