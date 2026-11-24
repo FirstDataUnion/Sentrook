@@ -59,6 +59,13 @@ export function credentialPatternOk(pattern: string): boolean {
   if (labels.every((l) => /^\d+$/.test(l))) return false;
   return !(labels.length === 2 && SHARED_SECOND_LEVEL.has(labels[0]!) && labels[1]!.length === 2);
 }
+/**
+ * `pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared country
+ * second level (`*.co.uk`) or part of a numeric address. The rule is `credentialPatternOk`'s, for the host alone.
+ */
+export function wildcardDomainOk(pattern: string): boolean {
+  return pattern.startsWith("*.") && credentialPatternOk(`NAME@${pattern.toLowerCase().replace(/\.+$/, "")}`);
+}
 export const ALLOWS = ["read", "write", "edit", "delete", "exec"];
 export const SCOPES = ["session", "persistent"];
 export const SESSION_REF = /^s_[0-9a-f]{12}$/;

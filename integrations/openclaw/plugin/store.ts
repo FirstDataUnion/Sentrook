@@ -454,14 +454,22 @@ export class Store {
     this.writeJson(path.join(this.dir, "notify.json"), { version: 1, target });
   }
 
-  /** When another plugin's tool ran under the setup report's name (`report-tool.json`); null when never. */
-  loadReportForeign(): string | null {
-    const data = this.readJson<any>(path.join(this.dir, "report-tool.json"), null);
-    return data && typeof data === "object" && typeof data.foreign_at === "string" ? data.foreign_at : null;
+  /**
+   * The plugin's own agent tools another plugin's tool of the same name ran in place of, and when
+   * (`foreign-tools.json`, by tool name). A `report-tool.json` from an earlier beta still counts for the setup report.
+   */
+  loadForeignTools(): Record<string, string> {
+    const data = this.readJson<any>(path.join(this.dir, "foreign-tools.json"), null);
+    const tools = data && typeof data === "object" && data.tools && typeof data.tools === "object" ? data.tools : {};
+    const out = Object.fromEntries(Object.entries(tools).filter((e): e is [string, string] => typeof e[1] === "string"));
+    const old = this.readJson<any>(path.join(this.dir, "report-tool.json"), null);
+    if (old && typeof old === "object" && typeof old.foreign_at === "string") out.sentrook_setup_report ??= old.foreign_at;
+    return out;
   }
 
-  saveReportForeign(at: Date): void {
-    this.writeJson(path.join(this.dir, "report-tool.json"), { version: 1, foreign_at: at.toISOString() });
+  saveForeignTool(tool: string, at: Date): void {
+    const tools = { ...this.loadForeignTools(), [tool]: at.toISOString() };
+    this.writeJson(path.join(this.dir, "foreign-tools.json"), { version: 1, tools });
   }
 
   private selfEditFile(runId: string) {

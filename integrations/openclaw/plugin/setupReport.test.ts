@@ -221,7 +221,7 @@ function harness(withTool = true) {
   };
   const records = () => traffic().filter((r) => r.kind === "setup_report");
   /** The tool as OpenClaw assembles it for a run with this context (null: not offered). */
-  const offer = (ctx: any) => (tools.length ? tools[0]!.factory(ctx) : null);
+  const offer = (ctx: any) => tools.find((t) => t.opts.name === report.TOOL)?.factory(ctx) ?? null;
   /** A run started with `trigger`, the factory offering the tool as the owner's, then a call of it. */
   const ask = async (ctx: any, trigger: string, callId = "c1", params: any = {}) => {
     await fire("before_agent_run", { runId: ctx.runId, prompt: "help me set up Sentrook", senderIsOwner: true }, { ...ctx, trigger });
@@ -237,10 +237,9 @@ const REFUSED = { block: true, blockReason: META.refusal };
 
 test("the tool is registered as a factory and declared in the manifest", () => {
   const h = harness();
-  assert.equal(h.tools.length, 1);
-  assert.equal(h.tools[0]!.opts.name, report.TOOL);
+  assert.ok(h.tools.some((t) => t.opts.name === report.TOOL));
   const manifest = JSON.parse(readFileSync(path.join(import.meta.dirname, "openclaw.plugin.json"), "utf8"));
-  assert.deepEqual(manifest.contracts.tools, [report.TOOL]);
+  assert.ok(manifest.contracts.tools.includes(report.TOOL));
   const tool = h.offer({ senderIsOwner: true, sessionKey: "agent:main:main" });
   assert.equal(tool.name, report.TOOL);
   assert.equal(tool.parameters.properties.days.maximum, 30);

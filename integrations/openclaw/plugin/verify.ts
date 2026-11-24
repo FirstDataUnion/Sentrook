@@ -12,7 +12,7 @@ import { bindingProblemsSummary, unsentSummary } from "./grants.ts";
 import { NOTIFY_UNSET, targetText } from "./hold.ts";
 import * as passes from "./passes.ts";
 import { memoryWriterChecks } from "./memoryWriters.ts";
-import { FOREIGN_TEXT } from "./setupReport.ts";
+import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
 import { Store } from "./store.ts";
 
 export interface VerifyCheck {
@@ -125,9 +125,11 @@ export async function runVerify(
   checks.push(...memoryWriterChecks(opts.hostConfig));
   // Reported, not failed: a workspace, project or managed skill with the name of one the plugin ships replaces it.
   checks.push(shadowCheck(opts.hostConfig, env, { home: opts.home }));
-  // Reported, not failed: another plugin's tool ran under the setup report's name, so every call of it is scanned.
-  const foreign = new Store(cfg.stateDir).loadReportForeign();
-  if (foreign) checks.push({ name: "setup report tool", ok: true, detail: `warning: ${FOREIGN_TEXT} (since ${foreign})` });
+  // Reported, not failed: another plugin's tool ran under the name of one of the plugin's own, so every call of it is
+  // scanned.
+  for (const [tool, since] of Object.entries(new Store(cfg.stateDir).loadForeignTools())) {
+    checks.push({ name: OWN_TOOL_LABELS[tool] ?? tool, ok: true, detail: `warning: ${FOREIGN_TEXT} (since ${since})` });
+  }
   return checks;
 }
 

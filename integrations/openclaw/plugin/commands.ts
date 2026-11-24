@@ -39,7 +39,7 @@ import { channelOf, chatKindOfTurn, PLUGIN_VERSION, sessionRef } from "./planir.
 import * as selfEdit from "./selfEdit.ts";
 import * as setup from "./setup.ts";
 import * as snooze from "./snooze.ts";
-import { FOREIGN_TEXT } from "./setupReport.ts";
+import { FOREIGN_TEXT, OWN_TOOL_LABELS } from "./setupReport.ts";
 import { Store } from "./store.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
@@ -69,7 +69,7 @@ export interface CommandContext {
 }
 
 /** How the owner types an owner-only subcommand, for usage and hints. */
-const CMD: grants.Cmd = (sub) => `/sentrook-${sub}`;
+export const CMD: grants.Cmd = (sub) => `/sentrook-${sub}`;
 
 export interface Subcommand {
   description: string;
@@ -386,7 +386,7 @@ function statusText(ctx: CommandContext): string {
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
   ].filter(Boolean);
   const target = new Store(cfg.stateDir).loadNotify();
-  const foreign = new Store(cfg.stateDir).loadReportForeign();
+  const foreign = new Store(cfg.stateDir).loadForeignTools();
   const lines = [
     `Sentrook plugin: ${PLUGIN_VERSION}`,
     `mode: ${cfg.mode}`,
@@ -410,7 +410,7 @@ function statusText(ctx: CommandContext): string {
         ? `${cfg.configProblems.length} not read as written: ${configProblemsSummary(cfg.configProblems)} (see openclaw sentrook verify)`
         : "all read as written"
     }`,
-    ...(foreign ? [`setup report tool: ${FOREIGN_TEXT} (since ${foreign})`] : []),
+    ...Object.entries(foreign).map(([tool, since]) => `${OWN_TOOL_LABELS[tool] ?? tool}: ${FOREIGN_TEXT} (since ${since})`),
   ];
   return lines.join("\n");
 }

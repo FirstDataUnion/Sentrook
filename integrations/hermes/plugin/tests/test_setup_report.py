@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import setup, setup_report
+from plugin import proposals, setup, setup_report
 from plugin.config import resolve_config
 
 from .test_plugin import dump_planirs
@@ -201,7 +201,14 @@ def h(harness, provenance, monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "tools.registry", registry)
     harness.registry = registry
-    monkeypatch.setattr(plugin, "_report_markers", setup_report.Markers(setup_report.days_of))
+    monkeypatch.setattr(
+        plugin,
+        "_tool_markers",
+        {
+            setup_report.TOOL: setup_report.Markers(setup_report.days_of),
+            proposals.TOOL: setup_report.Markers(proposals.check),
+        },
+    )
     return harness
 
 
@@ -248,7 +255,7 @@ def test_the_tool_is_registered_and_declared(h):
     assert tool["schema"]["name"] == setup_report.TOOL
     assert tool["schema"]["parameters"]["properties"]["days"]["maximum"] == 30
     manifest = yaml.safe_load((Path(plugin.__file__).parent / "plugin.yaml").read_text())
-    assert manifest["provides_tools"] == [setup_report.TOOL]
+    assert setup_report.TOOL in manifest["provides_tools"]
 
 
 def test_the_owners_direct_message_gets_the_report(h):
@@ -454,7 +461,7 @@ def test_where_hermes_registry_cannot_be_read_the_call_is_scanned_and_the_handle
 
 
 def test_without_a_registration_the_name_alone_is_scanned(h, monkeypatch):
-    monkeypatch.setattr(plugin, "_report_registered", False)
+    monkeypatch.setattr(plugin, "_own_tools", {})
     h.ctx.hooks["pre_llm_call"](
         turn_id="t1", user_message="hi", platform="telegram", sender_id="u1", **SID
     )

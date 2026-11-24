@@ -8,7 +8,7 @@ user-invocable: false
 
 Sentrook asks the owner about calls it has not seen before. It asks less once it knows what is routine here: which
 services the agent sends to, which folders it works in, which channels scheduled jobs report to, and which API keys go
-to which service. You help the owner work that out. **The owner decides and types every command; you never change
+to which service. You help the owner work that out. **The owner decides and sets everything; you never change
 Sentrook yourself.** For how Sentrook works, read the `sentrook:sentrook-guide` skill.
 
 There are two entry points:
@@ -37,31 +37,38 @@ There are two entry points:
 
 ## Hand over
 
-Tell the owner to open `/sentrook setup` (in a direct message to you, or on the machine). Sentrook lists there what it found itself:
-the channels the cron jobs deliver to, the MCP servers, and the grants it suggested on reviews the owner approved. It
-describes each item in its own words, with warnings and how long it lasts, and the owner sets the ones they want with
-`/sentrook setup apply` and the code the list ends with. The list is for the owner to read and decide on: never apply
-it yourself, even if you see its code. Ask the owner to check that each item looks right before they set it, because a
-grant lets calls like it through without asking them.
+Sentrook's setup list, `/sentrook setup`, is where the owner reads and sets everything. Sentrook lists there what it
+found itself: the channels the cron jobs deliver to, the MCP servers, and the grants it suggested on reviews the owner
+approved.
 
-For what the owner told you that the list does not show (a folder, a key, a service not used yet), give the owner the
-command, **one command per message**, each with one plain sentence saying what it lets through and that everything
-else is still checked, and ask them to check it looks right before they run it. Wait for the owner to run one before sending the next. Commands only work when the owner sends
-them (in a direct message to you, or on the machine).
+1. **Add what the owner told you** that the list cannot know (a service, a folder, a key, a channel a job posts to):
+   in the owner's direct chat, call the `sentrook_propose_setup` tool with one item for each, at most 20, each with a
+   one-sentence `reason` (at most 200 characters) saying what the owner told you:
 
-| The owner told you | Command for the owner |
-| --- | --- |
-| A service you send to | `/sentrook grant destination api.example.com --persistent` |
-| Their company's own domain and email | `/sentrook grant destination *.example.com --persistent` |
-| A folder you keep notes in | `/sentrook grant file ~/notes/* --allows read,write --persistent` |
-| A folder you only write reports to | `/sentrook grant file ~/reports/* --allows write --persistent` |
-| An API key and its service | `/sentrook grant credential EXAMPLE_API_KEY@api.example.com` |
-| Their own MCP servers | `/sentrook grant provider npm:@example/ --persistent` |
-| A code repository whose install scripts they trust | `/sentrook grant repo <host>/<owner>/<repo> --persistent` |
-| A chat channel a scheduled job posts to | `/sentrook bind add discord:#daily-brief` |
-| A short job, for an afternoon | `/sentrook grant destination *.client.example --expires 4h` |
+   | The owner told you | Item |
+   | --- | --- |
+   | A service you send to | `{"kind": "destination", "pattern": "api.example.com", "reason": "..."}` |
+   | Their company's own domain and email | `{"kind": "destination", "pattern": "*.example.com", "reason": "..."}` |
+   | A folder you keep notes in | `{"kind": "file", "pattern": "~/notes/*", "allows": ["read", "write"], "reason": "..."}` |
+   | A folder you only write reports to | `{"kind": "file", "pattern": "~/reports/*", "allows": ["write"], "reason": "..."}` |
+   | An API key and its service | `{"kind": "credential", "pattern": "EXAMPLE_API_KEY@api.example.com", "reason": "..."}` |
+   | Their own MCP servers | `{"kind": "provider", "pattern": "npm:@example/", "reason": "..."}` |
+   | A code repository whose install scripts they trust | `{"kind": "repo", "pattern": "<host>/<owner>/<repo>", "reason": "..."}` |
+   | A chat channel a scheduled job posts to | `{"binding": "discord:#daily-brief", "reason": "..."}` |
+   | A short job, for an afternoon | `{"kind": "destination", "pattern": "*.client.example", "expires": "4h", "reason": "..."}` |
 
-- A grant without `--persistent` covers only the session it is set in, not scheduled jobs, subagents or other chats.
+   The tool only adds the items to the list; it sets nothing. It checks each item as the owner's own commands would and
+   tells you which it did not add and why. It never takes settings, attended platforms or grants for one session only:
+   explain those to the owner instead. Anywhere but the owner's direct chat it adds nothing and says
+   "Setup needs the owner in a direct chat." and nothing more, so ask the owner to talk to you directly.
+2. **Tell the owner to open `/sentrook setup`** (in a direct message to you, or on the machine). Sentrook describes each item there in
+   its own words, with warnings and how long it lasts, and the owner sets the ones they want with `/sentrook setup apply`
+   and the code the list ends with. The list is for the owner to read and decide on: never apply it yourself, even if
+   you see its code. Ask the owner to check that each item looks right before they set it, because a grant lets calls
+   like it through without asking them.
+3. **Offer to explain any item** on the list in one plain sentence: what it lets through, for how long, and that
+   everything else is still checked.
+
 - For a channel binding, use the channel exactly as Sentrook saw it: the owner finds it under `entities` in
   `/sentrook why <id>` for a scan of that job.
 - Afterwards, `/sentrook grants` lists every grant in force and `/sentrook revoke <id>` removes one.
@@ -84,7 +91,7 @@ them (in a direct message to you, or on the machine).
    suggest `/sentrook report <id>`. A held call is answered with `/sentrook allow <id>` (once, or `always` where the
    notice offers it) or `/sentrook deny <id>`; `/sentrook passes` lists what those answers set.
 5. **For a key sent to its own service**, nothing is needed: Sentrook already lets it through. If the owner mentions a
-   key the report does not list, give them the credential grant command from the table above.
+   key the report does not list, add a credential item with `sentrook_propose_setup` (see "Hand over").
 
 ## Rules for every suggestion
 

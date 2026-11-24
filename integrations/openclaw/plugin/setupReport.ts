@@ -54,6 +54,11 @@ export const MAX_ROWS = 10;
 /** What status says once another plugin's tool of this name ran in place of the plugin's own. */
 export const FOREIGN_TEXT =
   "another plugin's tool of the same name ran in place of Sentrook's; every call of that name is scanned";
+/** How status and verify name each of the plugin's own agent tools when another plugin's tool ran in its place. */
+export const OWN_TOOL_LABELS: Record<string, string> = {
+  sentrook_setup_report: "setup report tool",
+  sentrook_propose_setup: "setup proposal tool",
+};
 /** How long `before_tool_call`'s marker waits for the tool to run. */
 export const MARKER_TTL_MS = 120_000;
 
