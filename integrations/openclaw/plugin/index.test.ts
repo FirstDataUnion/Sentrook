@@ -1225,3 +1225,24 @@ test("a clean config sends no settings notice", async () => {
   await settle();
   assert.equal(h.sent.filter((m) => String(m.text).includes("cannot read some of its settings")).length, 0);
 });
+
+test("a read of the plugin's own shipped skill goes to the scanner as the plugin's skill read; a copy stays a read", async () => {
+  const h = setup();
+  const shipped = new URL("./skills/sentrook-setup/SKILL.md", import.meta.url).pathname;
+  const ws = mkdtempSync(path.join(tmpdir(), "sentrook-ws-"));
+  const copy = path.join(ws, "SKILL.md");
+  writeFileSync(copy, readFileSync(shipped, "utf8"));
+  await h.fire("before_agent_run", { runId: "r1", senderIsOwner: true }, { ...CTX, workspaceDir: ws });
+  for (const [id, p] of [["c1", shipped], ["c2", "SKILL.md"]] as const) {
+    await h.fire("before_tool_call", { toolName: "read", toolCallId: id, runId: "r1", params: { path: p } });
+    await h.fire("after_tool_call", { toolName: "read", toolCallId: id, runId: "r1", params: { path: p }, result: "---\nname: sentrook-setup\n---" });
+  }
+  await h.fire("before_tool_call", call("c3", "ls"));
+  const last = h.scans.at(-1);
+  assert.deepEqual(last.history.map((s: any) => s.tool), ["plugin_skill:read", "read"]);
+  // each result goes with the scan after it
+  const inputs = h.scans.flatMap((s) => s.new_inputs);
+  assert.deepEqual(inputs.map((i: any) => [i.call_id, i.tool]), [["c1", "plugin_skill:read"], ["c2", "read"]]);
+  assert.equal(inputs[0].provider.kind, "host");
+  dumpPlanirs(h.scans);
+});
