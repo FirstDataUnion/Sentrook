@@ -26,9 +26,15 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
   category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
   with `{{cmd why}} last`.
-- **A held call.** Where nobody can answer a prompt ({{unattended_runs}}), a call that needs review does not run. It
-  waits up to 24 hours for the owner's `{{cmd approve}} <id>`, which sets the grant Sentrook suggested (if any) so the
-  job's next run passes; the held call itself never runs. {{held_notice}}
+- **A held call.** Where nobody can answer a prompt ({{unattended_runs}}), a call that needs review does not run, and
+  you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
+  `{{cmd allow}} <id>` lets the job's next run make the same call once; `{{cmd allow}} <id> always` lets the job make
+  it for 30 days; `{{cmd deny}} <id>` refuses the job the same call for 30 days. "The same call" is the same tool
+  about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
+  `{{cmd why}} <id>` shows the grant Sentrook suggests, and `{{cmd passes}}` lists what the answers set. A hold nobody
+  answers expires after 7 days. {{held_notice}}
+- **A declined call.** When the owner has denied a held call for a job, that job's same call is refused with "The
+  owner declined this action for this job". Continue without it; do not retry it another way.
 - **A background-save notice.** {{background_saves}}
 - **A scan failure.** When the scan service cannot answer, the owner is asked whether to run the call unscanned where
   someone is there to answer; on an unattended run the call is blocked and the owner gets one notice. This is a

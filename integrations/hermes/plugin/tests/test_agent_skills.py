@@ -101,8 +101,21 @@ def test_the_hermes_guide_lists_every_command():
 def test_the_rules_name_every_command_that_changes_sentrook(host):
     """The always-loaded rules and both skills forbid every command that changes what Sentrook allows."""
     for template, text in rendered(host).items():
-        for verb in render.HOSTS[host]["change"]:
-            assert render.chat(host, verb) in text, (host, template, verb)
+        for entry in render.HOSTS[host]["change"]:
+            verb, _, sub = entry.partition(" ")
+            assert f"`{render.chat(host, verb)}{' ' + sub if sub else ''}`" in text, (
+                host,
+                template,
+                entry,
+            )
+
+
+def test_every_hermes_owner_command_that_answers_or_changes_is_in_the_never_run_list():
+    """Every owner-only command except the ones that only show something is one the agent must never run."""
+    shows = {"history", "why", "report", "grants", "passes"}
+    change = {e.split(" ")[0] for e in render.HOSTS["hermes"]["change"]}
+    owner = {name for name, c in commands.COMMANDS.items() if c.owner_only}
+    assert owner - shows <= change and "passes revoke" in render.HOSTS["hermes"]["change"]
 
 
 #: Host names in the text: only invented ones (example.com and its kind).

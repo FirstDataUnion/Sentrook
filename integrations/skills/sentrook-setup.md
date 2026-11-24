@@ -62,7 +62,8 @@ Commands only work when the owner sends them ({{owner_commands_where_short}}).
    Sentrook's history yourself.
 2. For each one the owner says is routine, ask them to run `{{cmd why}} <id>`: it names the grant Sentrook suggests,
    which is the narrowest one that lets calls like it through. Explain it in one sentence; the owner sets it with
-   the command `why` gives, or approves a held call with `{{cmd approve}} <id>`.
+   the command `why` gives. A held call is answered with `{{cmd allow}} <id>` (once, or `always` where the notice
+   offers it) or `{{cmd deny}} <id>`; `{{cmd passes}}` lists what those answers set.
 3. A review the owner does not recognise is worth a closer look, not a grant: suggest `{{cmd report}} <id>` if they
    think Sentrook got it wrong.
 

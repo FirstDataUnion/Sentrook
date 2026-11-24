@@ -30,7 +30,7 @@ There are two entry points:
    - Do I use API keys for those services? (Only the key's name, such as `EXAMPLE_API_KEY`, never its value.)
    - Do I use MCP servers or other plugins? Which ones?
 3. **Explain where notices go.** When a call is held, a scan fails on an unattended run, or a background save is held, drafted or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook-notify here` as a direct message to you on the chat where they want them (not in a group or channel). Until then no notice is sent: held calls still wait, but nobody is told.
-4. **Explain attended chats.** Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, heartbeat or subagent holds the call for `/sentrook-approve` instead of asking. Which runs hold is set by Sentrook's `approval.scheduledIntentKinds` setting.
+4. **Explain attended chats.** Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, heartbeat or subagent holds the call for the owner's `/sentrook-allow` or `/sentrook-deny` instead of asking. Which runs hold is set by Sentrook's `approval.scheduledIntentKinds` setting.
 5. **Hand over** (next section).
 
 ## Hand over
@@ -62,7 +62,8 @@ Commands only work when the owner sends them (as a direct message to you, in the
    Sentrook's history yourself.
 2. For each one the owner says is routine, ask them to run `/sentrook-why <id>`: it names the grant Sentrook suggests,
    which is the narrowest one that lets calls like it through. Explain it in one sentence; the owner sets it with
-   the command `why` gives, or approves a held call with `/sentrook-approve <id>`.
+   the command `why` gives. A held call is answered with `/sentrook-allow <id>` (once, or `always` where the notice
+   offers it) or `/sentrook-deny <id>`; `/sentrook-passes` lists what those answers set.
 3. A review the owner does not recognise is worth a closer look, not a grant: suggest `/sentrook-report <id>` if they
    think Sentrook got it wrong.
 
@@ -80,7 +81,7 @@ Commands only work when the owner sends them (as a direct message to you, in the
 
 ## What you never do
 
-- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-notify`, `/sentrook-approve`, or their `openclaw sentrook` forms. Only the owner runs them.
+- Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and

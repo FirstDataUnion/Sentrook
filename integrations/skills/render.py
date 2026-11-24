@@ -47,7 +47,7 @@ SUMMARIES: dict[str, tuple[str, str]] = {
     "why": (
         "[request_id|last]",
         "one scan in detail: risk, reasons, the hosts and files found, and the grant that would let calls like it "
-        "through; with a held call's id, also the hold and the grant approving it sets",
+        "through; with a held call's id, also the hold, the answers it offers and the grant Sentrook suggests",
     ),
     "report": (
         "[request_id|last] [--full|--github|--save]",
@@ -73,10 +73,22 @@ SUMMARIES: dict[str, tuple[str, str]] = {
         "1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook "
         "enforces or unattended runs; `off` ends it",
     ),
-    "approve": (
+    "allow": (
+        "<id> [later|always]",
+        "answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: lets it through "
+        "once on the job's next run (`later`: the same), or with `always` for 30 days on that job, where the notice "
+        "offers it; the held call is not run again",
+    ),
+    "deny": (
         "<id>",
-        "approves a call held on an unattended run, by the id in Sentrook's notice, within 24 hours: sets the grant "
-        "Sentrook suggested (persistent, 30 days), if any; the held call is not run again",
+        "refuses a call held on a cron job, by the id in Sentrook's notice: that job is refused the same call for "
+        "30 days, with no more notices",
+    ),
+    "approve": ("<id>", "the same as allow (kept for one release)"),
+    "passes": (
+        "[revoke <id>]",
+        "the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` "
+        "removes one",
     ),
     "notify": (
         "here|off|status",
@@ -101,13 +113,26 @@ HOSTS: dict[str, dict] = {
             "revoke",
             "bind",
             "snooze",
+            "allow",
+            "deny",
             "approve",
+            "passes",
         ),
         #: Chat commands typed as `/sentrook VERB` by anyone; the rest are owner commands, spelled the same here.
         "open": ("status", "help"),
         "owner_spelling": "/sentrook {}",
-        #: The commands that change what Sentrook allows or where it reports: the agent never runs them.
-        "change": ("grant", "revoke", "bind", "snooze", "approve"),
+        #: The commands that change what Sentrook allows or where it reports, each a verb and any subcommand after it:
+        #: the agent never runs them.
+        "change": (
+            "grant",
+            "revoke",
+            "bind",
+            "snooze",
+            "allow",
+            "deny",
+            "approve",
+            "passes revoke",
+        ),
         "values": {
             "host": "Hermes",
             "guide_skill": "`sentrook:sentrook-guide`",
@@ -147,7 +172,7 @@ HOSTS: dict[str, dict] = {
             "attended_explain": (
                 "Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local "
                 "terminal count as attended. The API server, cron jobs, subagents and webhooks do not: a call there "
-                "that needs review is held for `{{cmd approve}}` instead of asking. If a UI in front of the API "
+                "that needs review is held for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of asking. If a UI in front of the API "
                 "server shows Hermes's approval prompts, the owner can add it to Sentrook's `attended_platforms` "
                 "setting (see the install guide's Settings)."
             ),
@@ -167,12 +192,25 @@ HOSTS: dict[str, dict] = {
             "revoke",
             "bind",
             "snooze",
-            "notify",
+            "allow",
+            "deny",
             "approve",
+            "passes",
+            "notify",
         ),
         "open": ("status", "help"),
         "owner_spelling": "/sentrook-{}",
-        "change": ("grant", "revoke", "bind", "snooze", "notify", "approve"),
+        "change": (
+            "grant",
+            "revoke",
+            "bind",
+            "snooze",
+            "allow",
+            "deny",
+            "approve",
+            "passes revoke",
+            "notify",
+        ),
         "values": {
             "host": "OpenClaw",
             "guide_skill": "`sentrook-guide`",
@@ -211,7 +249,7 @@ HOSTS: dict[str, dict] = {
             "attended_explain": (
                 "Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control "
                 "UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, "
-                "heartbeat or subagent holds the call for `{{cmd approve}}` instead of asking. Which runs hold is set "
+                "heartbeat or subagent holds the call for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of asking. Which runs hold is set "
                 "by Sentrook's `approval.scheduledIntentKinds` setting."
             ),
         },
@@ -237,6 +275,12 @@ def cli(host: str, verb: str) -> str:
     return f"{h['cli']} {verb}"
 
 
+def change_command(entry: str) -> str:
+    """`verb [subcommand]` as a placeholder for the never-run list, in backticks."""
+    verb, _, sub = entry.partition(" ")
+    return f"`{{{{cmd {verb}}}}}{' ' + sub if sub else ''}`"
+
+
 def values(host: str) -> dict[str, str]:
     h = HOSTS[host]
     lines = []
@@ -248,7 +292,7 @@ def values(host: str) -> dict[str, str]:
         **h["values"],
         "cli_prefix": h["cli"],
         "commands": "\n".join(lines),
-        "change_commands": ", ".join(f"`{{{{cmd {verb}}}}}`" for verb in h["change"]),
+        "change_commands": ", ".join(change_command(entry) for entry in h["change"]),
     }
 
 
