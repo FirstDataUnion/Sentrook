@@ -35,6 +35,9 @@ const REVIEW: Record<string, string> = {
   timeout: "timed out",
   cancelled: "cancelled",
   hold_approved: "approved",
+  hold_allowed: "allowed once",
+  hold_allowed_always: "allowed always",
+  hold_denied: "denied",
   hold_expired: "expired",
 };
 /** A resolution's `decided_by` when the Hermes review loop denied the prompt itself, nobody asked. */
@@ -189,6 +192,9 @@ function baseAction(scan: Rec, resolution: Rec | null): string {
     if (decision === "allowed" && scan.snoozed === true) return "allowed (snoozed)";
     if (decision === "allowed" && scan.lenient === true) return "allowed (let through)";
     if (decision === "held") return "held";
+    // settled by the owner's pass or denial for this job (passes.ts)
+    if (decision === "allowed_by_pass") return "allowed (pass)";
+    if (decision === "denied_by_owner") return "declined (denied by owner)";
     // a background skill save sent to the Skill Workshop drafts: kept there, lost, or run live instead, once
     // OpenClaw says which
     if (decision === "drafted" || decision === "draft_failed") {

@@ -790,17 +790,35 @@
       ]));
     });
     holds.forEach(function (h) {
-      items.push(el("div", { class: "srk-pending-item" }, [
-        el("div", { class: "srk-pending-title", text: "Held for your approval: " + (h.tool || "unknown tool") }),
-        el("div", { class: "srk-pending-meta", text: (h.where || "an unattended run") + " · held " + when(h.held_at) + (h.expires_at ? " · expires " + until(h.expires_at) : "") }),
-        el("div", { class: "srk-help", text: h.grant
+      // `offers`: the answers this hold offers; null for a hold from before they were kept (approve sets its grant).
+      var offers = Array.isArray(h.offers) ? h.offers : null;
+      var onJob = offers ? offers.indexOf("deny") >= 0 : true;
+      var answers = offers
+        ? offers.map(function (o) {
+            if (o === "allow") {
+              return onJob
+                ? command(cmd("allow") + " " + h.id, "Let this call through once, on the job's next run.")
+                : command(cmd("allow") + " " + h.id, "Let this exact call through once, within 7 days.");
+            }
+            if (o === "allow always") return command(cmd("allow") + " " + h.id + " always", "Let this job make this call for 30 days.");
+            return command(cmd("deny") + " " + h.id, "Refuse it on this job for 30 days, with no more notices.");
+          })
+        : [command(cmd("approve") + " " + h.id, "Approve within 24 hours of the hold.")];
+      var help = offers
+        ? offers.length
+          ? "Answer within 7 days of the hold; the held call itself does not run again. " + cmd("passes") + " lists what your answers set."
+          : "Sentrook offers no way to let this call through. Leave it and it expires; the call never runs."
+        : h.grant
           ? "Approving sets this grant for 30 days, so the next run is allowed: " + h.grant + ". The held call itself does not run again."
-          : "There is no suggested grant: approving records your answer and sets nothing." }),
-        el("div", { class: "srk-cmds" }, [
-          command(cmd("approve") + " " + h.id, "Approve within 24 hours of the hold."),
-          command(cmd("why") + " " + h.id, "The held call's scan and what approving would set."),
-        ]),
-        el("div", { class: "srk-help", text: "To refuse it, do nothing: the hold expires and the call never runs." }),
+          : "There is no suggested grant: approving records your answer and sets nothing.";
+      items.push(el("div", { class: "srk-pending-item" }, [
+        el("div", { class: "srk-pending-title", text: "Held for your answer: " + (h.tool || "unknown tool") }),
+        el("div", { class: "srk-pending-meta", text: (h.where || "an unattended run") + " · held " + when(h.held_at) + (h.count > 1 ? " · held " + h.count + " times" : "") + (h.expires_at ? " · expires " + until(h.expires_at) : "") }),
+        el("div", { class: "srk-help", text: help }),
+        el("div", { class: "srk-cmds" }, answers.concat([
+          command(cmd("why") + " " + h.id, offers ? "The held call's scan, the answers it offers and any grant Sentrook suggests." : "The held call's scan and what approving would set."),
+        ])),
+        offers && onJob ? null : el("div", { class: "srk-help", text: "To refuse it, do nothing: the hold expires and the call never runs." }),
         h.scan
           ? el("div", { class: "srk-pending-detail" }, [detail(h.scan, model, open, { noCommands: true })])
           : el("div", { class: "srk-help", text: "Its scan is no longer in the traffic log; " + cmd("why") + " " + h.id + " shows it." }),
@@ -810,7 +828,7 @@
     return el("section", { class: "srk-pending-section", "aria-label": "Waiting for you" }, [
       el("h2", { class: "srk-section" }, [
         el("span", { class: "srk-dot", style: "background:var(--srk-mid);width:10px;height:10px" }),
-        hinted("span", "Waiting for you", "Approval prompts still open and calls held for your approval. Each shows how to answer it."),
+        hinted("span", "Waiting for you", "Approval prompts still open and calls held for your answer. Each shows how to answer it."),
         el("span", { class: "srk-section-count", text: String(reviews.length + holds.length) }),
       ]),
     ].concat(items));
@@ -825,6 +843,19 @@
 
   function firstLine(text) {
     return String(text || "").split("\n")[0];
+  }
+
+  function passesSection(model) {
+    var cmd = cmdOf(model);
+    var state = model.state || {};
+    return howto("Passes and denials", firstLine(state.passes), [
+      el("p", { text: "Your answers to held calls. A pass lets one cron job make the call it was held for: once, on the job's next run, or for 30 days with allow always. A denial refuses it on that job for 30 days, with no more notices. A pass never covers a call that scores higher, carries a new warning, involves another party, or that Sentrook enforces." }),
+      el("pre", { class: "srk-pre", text: state.passes || "–" }),
+      el("div", { class: "srk-cmds" }, [
+        command(cmd("passes"), "List passes and denials, with their use counts."),
+        command(cmd("passes") + " revoke <id>", "Remove one, by the id the list shows."),
+      ]),
+    ]);
   }
 
   function grantsSection(model) {
@@ -1172,6 +1203,7 @@
     }
     root.appendChild(el("h2", { text: "Change what Sentrook allows" }));
     root.appendChild(grantsSection(model));
+    root.appendChild(passesSection(model));
     root.appendChild(snoozeSection(model));
     root.appendChild(el("p", {
       class: "srk-note",

@@ -143,8 +143,8 @@ out of a session that has read content trying to instruct the agent, or for a ca
 suggests trusting a new tool provider only when you asked for the work in your own chat. It suggests a grant only for
 a call that came from your own message (or a run OpenClaw marks as yours), or from a cron job or heartbeat OpenClaw
 started itself; someone else's message, a subagent or a webhook or event run gets none. A cron job's or heartbeat's
-suggestion reaches you only through its held call: `/sentrook-why <id>` names the grant and the run it came from, and
-`/sentrook-approve <id>` sets it. A suggestion is a good guess, not a promise: Sentrook's judge sees
+suggestion reaches you only through its held call: `/sentrook-why <id>` names the grant, the run it came from and the
+command that sets it; answering the hold never sets it, so you decide whether to trust it for every job. A suggestion is a good guess, not a promise: Sentrook's judge sees
 the grant on the next scan too. When you asked for the work yourself (your own message, not a group chat), the card also offers
 **Allow always**, which allows the call and sets that grant, persistent for 30 days. `/sentrook-why` lists every
 grant Sentrook suggested for a scan.
@@ -267,10 +267,10 @@ command line as `openclaw sentrook <verb>`.
 
 | Chat | What it does |
 | --- | --- |
-| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls, where notices go, OpenClaw's own saves by outcome, and any settings Sentrook cannot read |
+| `/sentrook status` | Plugin version, mode, thresholds, scan host, whether credentials are set, held calls (and the one held most often), where notices go, passes and denials, OpenClaw's own saves by outcome, and any settings Sentrook cannot read |
 | `/sentrook help` | Lists the commands |
 | `/sentrook-history [n]` | The last n scans (default 10) |
-| `/sentrook-why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold and the grant approving it sets |
+| `/sentrook-why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `/sentrook-report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
 | `/sentrook-grants` | Grants in force: from config (read-only) and set by command |
 | `/sentrook-grant <kind> <pattern> [flags]` | Add a grant. `kind` is `destination`, `file` or `provider`. Flags: `--persistent` (default is this session only, not cron jobs, subagents or other chats), `--session <ref>` (bind to that session instead, ref from `history`), `--allows read,write` (file only), `--expires 12h` |
@@ -278,7 +278,10 @@ command line as `openclaw sentrook <verb>`.
 | `/sentrook-bind add\|remove\|list [channel]` | Manage channel bindings |
 | `/sentrook-snooze [duration\|off\|status] [--all]` | Allow review prompts in this session (`--all`: every session) for a while, default 1h, at most 24h; blocks without a clear attack signal ask you instead |
 | `/sentrook-notify here\|off\|status` | Where notices go (held calls, scan failures on unattended runs, [background saves](#background-skill-and-memory-saves)): `here`, sent as a direct message to the agent, sends notices to you in that chat |
-| `/sentrook-approve <id>` | Approve a held call by the id in its notice, within 24 hours (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
+| `/sentrook-allow <id> [later\|always]` | Answer a held call by the id in its notice, within 7 days: let it through once on the job's next run, or with `always` for 30 days on that job (see [Held calls](#held-calls-in-cron-jobs-and-subagents)) |
+| `/sentrook-deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
+| `/sentrook-approve <id>` | The same as `/sentrook-allow <id>`, kept for one release |
+| `/sentrook-passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
 
 `openclaw sentrook verify` exists only on the command line. There is no session on the command line, so
 `openclaw sentrook snooze` needs `--all` and `openclaw sentrook grant` needs `--persistent` or `--session <ref>`.
@@ -286,8 +289,8 @@ command line as `openclaw sentrook <verb>`.
 **Owner only.** `/sentrook status` and `/sentrook help` are open to anyone who can message the agent. The dashed
 commands need the gateway scope `operator.admin`: the owner's default Control UI connection has it, and so does
 anyone holding the shared gateway token. Limited Control UI sessions are refused. In a chat channel, OpenClaw lets the
-owner (a sender in `commands.ownerAllowFrom`) run them from a direct message, which is how `/sentrook-notify here` and
-`/sentrook-approve` are meant to be used. On the command line, whoever can
+owner (a sender in `commands.ownerAllowFrom`) run them from a direct message, which is how `/sentrook-notify here`,
+`/sentrook-allow` and `/sentrook-deny` are meant to be used. On the command line, whoever can
 run `openclaw` on the machine counts as the owner. Every attempt, allowed or refused, is recorded in the traffic log
 (unless you turned it off).
 
@@ -423,14 +426,33 @@ by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats a
   and the commands; read the risk, the reasons and any grant Sentrook suggests with `/sentrook-why <id>`. Run `/sentrook-notify here` once, as a direct message to the
   agent on the channel where you want the notices (not in a group or channel; on Discord the notice goes to you as
   a user). Until then nothing is sent, the call is still held, and `status` and `verify` say notices are not sent.
-- Reply `/sentrook-approve <id>` within 24 hours. When Sentrook suggested a grant for the call, approving sets it as a
-  persistent grant that ends after 30 days, so the job's next run is scanned with it. When it suggested none,
-  approving sets nothing and the reply says so; add a grant with `/sentrook-grant --persistent` if the job should pass.
-  The held call itself is never run again.
-- A hold nobody approves expires after 24 hours, and nothing runs.
+- Answer within 7 days, from a direct message (like the other owner commands). The notice lists only the answers
+  this hold offers:
+  - `/sentrook-allow <id>`: the job's next run may make the same call once. The held call itself is not run again.
+    (`/sentrook-allow <id> later` does the same.)
+  - `/sentrook-allow <id> always`: the job may make the same call for 30 days. Offered only when Sentrook judges the
+    call safe to let through on every run and the call names who or what it acts on.
+  - `/sentrook-deny <id>`: the job is refused the same call for 30 days. The agent is told you declined it and to go
+    on without it, and you get no more notices about it.
+  - `/sentrook-approve <id>` still works, as `/sentrook-allow`.
+- "The same call" means: the same tool, about the same parties (the destination, file or account the hold named),
+  scoring no higher, with no warning the held call did not have, and nothing Sentrook enforces or floors. A send to
+  another channel, a riskier version of the call, or the same call from another job is held again. A call that names
+  nothing Sentrook can recognise is matched on its exact arguments, and only allow is offered for it. The job is the
+  one OpenClaw's run metadata names, never the `[cron:...]` tag in the prompt.
+- On a run that is not a cron job (a heartbeat, a subagent, a webhook or event run), only allow is offered: the next
+  call with exactly the same arguments, from any such run, goes through once within 7 days.
+- `/sentrook-passes` lists what your answers set, with their use counts and end dates; `/sentrook-passes revoke <id>`
+  removes one. `status`, `verify` and the dashboard show them too.
+- Answering never sets the grant Sentrook may suggest for the call: `/sentrook-why <id>` shows its command, for you to
+  run if you want that destination trusted for every job.
+- A daily job held again before you answer does not send another notice: the waiting hold counts it, and `status`
+  and `/sentrook-why` say how many times it was held.
+- A hold nobody answers expires after 7 days, and nothing runs.
 
 A block (at `blockAt` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out or was held) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
-the scan with decision `held`, then the approval or the expiry; `/sentrook-history` shows them.
+the scan with decision `held`, then your answer or the expiry; a call a pass let through is recorded as
+`allowed_by_pass`, and one a denial refused as `denied_by_owner`. `/sentrook-history` shows them.
 
 ### Skills and memory the agent saves on its own
 
@@ -651,7 +673,7 @@ In short, for anyone deciding whether to install it:
   you ([Background skill and memory saves](#background-skill-and-memory-saves)). Turning a save into a draft is the
   only change it makes to a call; those notices are the only messages it sends.
 - **Files:** it writes only to its own folder, `~/.openclaw/sentrook/` (the traffic log, grants and bindings set by
-  command, snooze state, held calls and their lock files, the notice target, when each job or run last had a notice with a quiet period, and
+  command, snooze state, held calls, passes and denials and their lock files, the notice target, when each job or run last had a notice with a quiet period, and
   the conversations above), or to the paths you set for them (`stateDir`,
   `trafficLog.path`). It reads OpenClaw's live config for how commands are run and which memory writers are on; on a
   cron run, that job's definition from OpenClaw's job store (`~/.openclaw/state/openclaw.sqlite`, or
