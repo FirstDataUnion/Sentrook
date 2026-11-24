@@ -9,7 +9,8 @@ answers three questions for the preparation stage:
   names: what it wrote the result to (`out`, `-o`, a table) and what it read it from. Both now hold the
   injected content.
 - Is an input the owner's own configuration (`owner_config_path`)? A scanned read of one of the agent's own
-  config or instruction files that the agent did not write in this session.
+  config or instruction files that the agent did not write in this session. A read of an instruction file
+  (`is_instruction_file`) is also left out of the exposure probe: it is the owner's orders to the agent.
 
 A call is *bound* to a set when one of the files or tables it reads, runs or applies is in the set. A call
 with no file or table to match (a raw body, a pipe, a message text) is *unidentifiable*: nothing can be
@@ -18,12 +19,13 @@ matched, so the bare session flag keeps its weight.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-from ..planir.canonical import CanonicalCall
+from ..planir.canonical import CanonicalCall, joined_text
 from ..planir.models import ToolKind
 from ..state.token import entity_hash, table_key
 from .entities import (
@@ -260,6 +262,62 @@ def producer_artefacts(
     return list(dict.fromkeys(out))
 
 
+def _acting_flag(head: str, seg: list[str]) -> bool:
+    """A reading head's segment carries a flag that makes it run or rewrite what it reads (`_ACTING_FLAGS`)."""
+    flags = _ACTING_FLAGS.get(head, ())
+    return any(t == f or t.startswith(f) and f in ("-i", "-f") for t in seg[1:] for f in flags)
+
+
+def _plain_read(seg: list[str]) -> bool:
+    """A segment only reads: a reading head with no flag that runs or rewrites what it reads, and no output
+    into a file."""
+    head = PurePosixPath(seg[0]).name
+    return (
+        head in READ_HEADS
+        and not _acting_flag(head, seg)
+        and not _redirects(seg)
+        and not _substitutes(seg)
+    )
+
+
+#: Reading heads with no option that writes a file or runs a program: an earlier command made only of
+#: these cannot have changed an instruction file (`instruction_may_have_changed`). `sed`, `awk`,
+#: `sort`, `uniq`, `find`, `jq`, `yq`, `xxd`, `diff` and the like can, through a flag or their program.
+_INERT_READ_HEADS = frozenset(
+    "cat head tail less more wc stat ls grep md5sum sha1sum sha256sum nl strings".split()
+)
+
+
+def _inert_read(seg: list[str]) -> bool:
+    """A segment of an inert reading head (`_INERT_READ_HEADS`) that redirects into no file and runs no
+    other command."""
+    return (
+        PurePosixPath(seg[0]).name in _INERT_READ_HEADS
+        and not _redirects(seg)
+        and not _substitutes(seg)
+    )
+
+
+def _substitutes(seg: list[str]) -> bool:
+    """A word of the segment runs another command: a command or process substitution, also inside quotes."""
+    return any(m in w for w in seg for m in ("$(", "`", "<(", ">("))
+
+
+def _redirects(seg: list[str]) -> bool:
+    """A segment has a `>` in any word but an error stream dropped or merged (`2>/dev/null`, `2> /dev/null`,
+    `2>&1`): an output into a file, however it is spelled (`> f`, `>>f`, `a>f`, `&> f`), or a `>` in a
+    program, which may write one."""
+    words = seg[1:]
+    for i, w in enumerate(words):
+        if w in ("2>/dev/null", "2>&1") or w == "/dev/null" and i and words[i - 1] == "2>":
+            continue
+        if w == "2>" and i + 1 < len(words) and words[i + 1] == "/dev/null":
+            continue
+        if ">" in w:
+            return True
+    return False
+
+
 def _exec_acts(call: CanonicalCall, applies_to) -> bool:
     for seg in shell_segments(call.command or ""):
         head = PurePosixPath(seg[0]).name
@@ -270,8 +328,7 @@ def _exec_acts(call: CanonicalCall, applies_to) -> bool:
                 return True
             continue
         if head in READ_HEADS:
-            flags = _ACTING_FLAGS.get(head, ())
-            if any(t == f or t.startswith(f) and f in ("-i", "-f") for t in seg[1:] for f in flags):
+            if _acting_flag(head, seg):
                 return True
             continue
         if head in COPY_HEADS:
@@ -348,6 +405,96 @@ _HOST_CONFIG = re.compile(
 #: Directories, relative to the home, whose top-level instruction files the host itself loads: its own
 #: directory, an OpenClaw agent workspace (`workspace`, `workspace-<agent>`) and a Hermes profile.
 _HOST_TOP_DIR = re.compile(r"/\.openclaw(?:/workspace(?:-[^/]+)?)?|/\.hermes(?:/profiles/[^/]+)?")
+#: An OpenClaw agent workspace the host keeps one level inside one of its workspace directories
+#: (`~/.openclaw/workspace/<agent>/`, `~/.openclaw/workspace-<name>/<agent>/`), relative to the home.
+_HOST_AGENT_WORKSPACE = re.compile(r"/\.openclaw/workspace(?:-[^/]+)?/[^/]+")
+
+
+def _host_workspace(home_root: str | None, workspace_root: str | None) -> str | None:
+    """The run's own workspace relative to the home when it is an agent workspace the host keeps inside one
+    of its workspace directories (`_HOST_AGENT_WORKSPACE`), else None. Spelled with `~`, `$HOME`, `.` or
+    `..` as it may be, it is normalised first."""
+    if not home_root or not workspace_root:
+        return None
+    ws = normalise_path(workspace_root, home=home_root, workspace_root=None)
+    if not ws.startswith(home_root + "/"):
+        return None
+    rel = ws[len(home_root) :]
+    return rel if _HOST_AGENT_WORKSPACE.fullmatch(rel) else None
+
+
+def _resolved(
+    path: str, call: CanonicalCall, *, home: str | None, workspace_root: str | None
+) -> str:
+    """`path` (normalised) made absolute: a relative path resolves against the call's working directory,
+    else the workspace, as the host resolves it."""
+    if path.startswith("/") or not (call.get("cwd") or workspace_root):
+        return path
+    base = (
+        call.get("cwd") if isinstance(call.get("cwd"), str) and call.get("cwd") else workspace_root
+    )
+    return normalise_path(f"{base}/{path}", home=home, workspace_root=workspace_root)
+
+
+def is_instruction_file(path: str) -> bool:
+    """`path` names one of the agents' instruction files (`AGENTS.md`, `SOUL.md`, ...: the `agent_config`
+    list's basenames), not a config file."""
+    from ..aira.lists import load_lists
+
+    names = {b.lower() for b in load_lists().group("agent_config").basenames}
+    return PurePosixPath(path).name.lower() in names
+
+
+def instruction_may_have_changed(
+    path: str,
+    history: list[CanonicalCall],
+    *,
+    reader: CanonicalCall,
+    home: str | None,
+    workspace_root: str | None,
+) -> bool:
+    """An earlier call in the history other than `reader` may have changed the instruction file at `path`
+    (normalised). Every call counts but a file read and a shell command made only of reads that cannot
+    write (`_inert_read`) when it names the file (in any case,
+    with quotes or backslashes inside the name, or as a glob that matches it, anywhere in its arguments:
+    a write, a redirect, a patch, a script), or names a path that is its folder or directly inside it.
+    A read of the owner's own instructions leaves the exposure probe only when no call did, so the probe
+    never misses content the agent may have put there. A change the history no longer shows (older than
+    its window, or a command that changes the folder without naming it, such as a checkout run inside
+    it) is not caught here. A path counts whatever role extraction gave it."""
+    name = PurePosixPath(path).name.lower()
+    folder = str(PurePosixPath(path).parent)
+    for call in history:
+        if call is reader or call.tool_kind is ToolKind.FILE_READ:
+            continue
+        if call.tool_kind is ToolKind.EXEC:
+            segments = shell_segments(call.command or "")
+            if segments and all(_inert_read(seg) for seg in segments):
+                continue
+        if _names_file(f"{joined_text(call.raw)}\n{call.command or ''}", name):
+            return True
+        for f in extract_call(call, home=home, workspace_root=workspace_root):
+            if f.kind is not EntityKind.PATH:
+                continue
+            target = _resolved(f.value, call, home=home, workspace_root=workspace_root)
+            if target == folder or str(PurePosixPath(target).parent) == folder:
+                return True
+    return False
+
+
+_NAME_SPLIT = re.compile(r"[\s/=;&|<>()`,{}:]+")
+
+
+def _names_file(text: str, name: str) -> bool:
+    """`text` names the file `name` (lower case): in any case, with quotes or backslashes inside the name, or as
+    a glob that matches it."""
+    flat = re.sub(r"[\"'\\]", "", text.lower())
+    if name in flat:
+        return True
+    return any(
+        any(c in word for c in "*?[") and fnmatch.fnmatchcase(name, word)
+        for word in _NAME_SPLIT.split(flat)
+    )
 
 
 def owner_config_path(
@@ -362,16 +509,21 @@ def owner_config_path(
     (`~/.openclaw/openclaw.json`, `~/.openclaw/config/...`, an agent's `~/.openclaw/agents/<id>/agent/`,
     `~/.hermes/config.yaml` and `.env`, at the top or in a profile; anything in `/etc/hermes/`). An
     instruction file (`AGENTS.md`, `SOUL.md`, ...) counts only at the top of `~/.openclaw/`, an OpenClaw
-    agent workspace (`~/.openclaw/workspace*/`), `~/.hermes/`, a Hermes profile or `/etc/hermes/`. A
-    workspace anywhere else (Hermes works in its working directory) holds the files of whatever
-    repository the owner opened, and a deeper file is a repository, a skill or a copy the agent brought
-    in: their instructions are their author's, not the owner's. So is a config-named file among them,
-    and an agent's session transcripts hold what it read."""
+    agent workspace (`~/.openclaw/workspace*/`), `~/.hermes/`, a Hermes profile or `/etc/hermes/`, and at
+    the top of the run's own `workspace_root` when the host keeps it one level inside one of its
+    workspace directories (`~/.openclaw/workspace/<agent>/`: the host loads that agent's instruction
+    files from there). A relative path resolves against the call's working directory, else the
+    workspace. A workspace anywhere else (Hermes works in its working directory)
+    holds the files of whatever repository the owner opened, and a deeper file is a repository, a skill,
+    another agent's workspace or a copy the agent brought in: their instructions are their author's, not
+    the owner's. So is a config-named file among them, and an agent's session transcripts hold what it
+    read."""
     from ..aira.lists import load_lists
 
     group = load_lists().group("agent_config")
     instruction_names = {b.lower() for b in group.basenames}
     home_root = home.rstrip("/") if home and home.rstrip("/") else None
+    own_ws = _host_workspace(home_root, workspace_root)
 
     def owned(path: str) -> bool:
         if path.startswith("/etc/hermes/"):
@@ -381,21 +533,27 @@ def owner_config_path(
             return False
         rel = path[len(home_root) :]
         if PurePosixPath(rel).name.lower() in instruction_names:
-            return bool(_HOST_TOP_DIR.fullmatch(str(PurePosixPath(rel).parent)))
+            parent = str(PurePosixPath(rel).parent)
+            return bool(_HOST_TOP_DIR.fullmatch(parent)) or parent == own_ws
         return bool(_HOST_CONFIG.fullmatch(rel))
 
     if call.tool_kind is ToolKind.FILE_READ:
         if not call.path:
             return None
-        norm = normalise_path(call.path, home=home, workspace_root=workspace_root)
+        norm = _resolved(
+            normalise_path(call.path, home=home, workspace_root=workspace_root),
+            call,
+            home=home,
+            workspace_root=workspace_root,
+        )
         return norm if group.search(norm) and owned(norm) else None
     if call.tool_kind is not ToolKind.EXEC:
         return None
     segments = shell_segments(call.command or "")
-    if not segments or any(PurePosixPath(seg[0]).name not in READ_HEADS for seg in segments):
+    if not segments or not all(_plain_read(seg) for seg in segments):
         return None
     sources = [
-        f.value
+        _resolved(f.value, call, home=home, workspace_root=workspace_root)
         for f in extract_call(call, home=home, workspace_root=workspace_root)
         if f.kind is EntityKind.PATH and f.role is Role.DATA_SOURCE
     ]
