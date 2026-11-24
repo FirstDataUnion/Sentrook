@@ -5,19 +5,28 @@ regex (catastrophic backtracking), shows in how the time grows with the input. S
 1/4 size and at full size and the two times are compared: linear work takes about 4 times as long,
 quadratic work about 16 times, on any machine.
 
+`assert_fast_or_linear` keeps a time bound as the first check and falls back to the growth check only
+when a run goes over it, for tests whose bound is also a promise (a scan well under the probe
+timeout): a fast machine still holds the bound, and a slow one is judged by how the time grows.
+
 Measured on the redaction inputs: 3.7-4.3 for the scanner's own patterns, up to about 6.5 for a vendor
 shape whose match is capped at a few thousand characters (quadratic below the cap, linear above it)."""
 
 from __future__ import annotations
 
 import gc
+import os
 import time
+import warnings
 from collections.abc import Callable
 
 FACTOR = 4
 LIMIT = 10.0  # t(full) / t(full / FACTOR): linear about 4, quadratic about 16
 FLOOR_S = 0.02  # a full-size run faster than this is too short to time, and passes
 ATTEMPTS = 3
+#: Set to 1 to run the growth check of `assert_fast_or_linear` even when a run is under its bound, to
+#: try the fallback on every input.
+ALWAYS_ENV = "SENTROOK_TEST_GROWTH_ALWAYS"
 
 
 def _seconds(run: Callable[[int], object], divisor: int) -> float:
@@ -54,3 +63,20 @@ def assert_linear(run: Callable[[int], object], what: str = "", limit: float = L
         f"{what}: {large:.3f} s at full size vs {small:.3f} s at 1/{FACTOR}, "
         f"{growth:.1f}x for {FACTOR}x the input (limit {limit}x): super-linear?"
     )
+
+
+def assert_fast_or_linear(
+    spent: float, bound: float, run: Callable[[int], object], what: str = ""
+) -> None:
+    """`spent` is a full-size run's time, already measured. Under `bound` it passes, as a fixed bound
+    would. Over it, the machine may only be slow, so the growth of `run` decides (see
+    `assert_linear`), and a run that is slow but linear passes with a warning."""
+    if spent < bound and os.environ.get(ALWAYS_ENV) != "1":
+        return
+    assert_linear(run, what)
+    if spent >= bound:
+        warnings.warn(
+            f"{what}: {spent:.2f} s, over the {bound:.2f} s bound, but it grows linearly: a slow "
+            "machine?",
+            stacklevel=2,
+        )

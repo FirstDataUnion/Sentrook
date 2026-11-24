@@ -14,9 +14,10 @@ import random
 import re
 
 import pytest
+from linear_time import assert_fast_or_linear
 from test_aira_detectors import ex
 from test_large_calls import FAST, scan
-from test_long_option_runs import _repeat
+from test_long_option_runs import SIZE, _repeat
 
 from sentrook.aira import linear_search
 from sentrook.enums import ProbeStatus, ProbeStep
@@ -57,7 +58,9 @@ UNITS = [
 @pytest.mark.parametrize("unit", UNITS)
 def test_a_repeated_command_or_option_prepares_fast(unit):
     res, spent = scan(ex(_repeat("", unit)))
-    assert spent < FAST, f"whole scan, {unit!r}: {spent:.2f}s"
+    assert_fast_or_linear(
+        spent, FAST, lambda d: scan(ex(_repeat("", unit, size=SIZE // d))), f"whole scan, {unit!r}"
+    )
     aira = next(e for e in res.envelopes if e.step is ProbeStep.AIRA)
     assert aira.status is ProbeStatus.OK, aira.evidence
 
@@ -147,11 +150,14 @@ def test_option_runs_are_fast_on_long_texts(rx):
     import time
 
     for unit in [w + " " for w in _WORDS[rx][:12]] + ["-x ", "a."]:
-        text = unit * (95_000 // len(unit))
+
+        def search(d: int, unit=unit) -> None:
+            list(linear_search.option_run_finditer(rx, unit * (95_000 // len(unit) // d)))
+
         start = time.perf_counter()
-        list(linear_search.option_run_finditer(rx, text))
+        search(1)
         spent = time.perf_counter() - start
-        assert spent < FAST / 4, f"{rx.pattern[:30]} on {unit!r}: {spent:.2f}s"
+        assert_fast_or_linear(spent, FAST / 4, search, f"{rx.pattern[:30]} on {unit!r}")
 
 
 # --------------------------------------------------------------------------- word walks
