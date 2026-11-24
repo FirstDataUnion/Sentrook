@@ -1,6 +1,7 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v10): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v11): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
-objects, prose, whole private keys, command-line password flags), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
+objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
+named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
 with the Hermes plugin's redactor, and linear time.
 
 Secret-shaped values are built at runtime from obviously fake, low-entropy parts, so no literal in this
@@ -101,7 +102,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v10"
+    assert REDACTION_VERSION == "redact-v11"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -521,6 +522,99 @@ def test_rules_are_the_plugins_rules():
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
     assert redact._CODE_READERS == plugin._CODE_READERS
+    # The cue and key rules: access codes, PINs, identifiers and random values.
+    assert [(k, rx.pattern) for k, rx, _ in redact._CUES] == [
+        (k, rx.pattern) for k, rx, _ in plugin._CUES
+    ]
+    for name in (
+        "_CODE_KEY",
+        "_RANDOM_KEY",
+        "_RANDOM_VALUE",
+        "_NOT_SECRET_KEY",
+        "_NOT_SECRET_CAMEL_KEY",
+        "_PREFIXED_OBJECT_ID",
+    ):
+        assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
+    assert redact._ORDINARY_CODE_PREFIX == plugin._ORDINARY_CODE_PREFIX
+    assert redact.PLACEHOLDER_KIND == plugin.PLACEHOLDER_KIND
+
+
+# Access codes, PINs and identifiers named by a cue word, and random values under a key or header (redact-v11).
+# Values are built at run time.
+_R20 = "Xk2" + "9fQv" + "7Lm2" + "Pq8a" + "Zt5w" + "B"
+CUE_MUST_REPLACE = [
+    ("the yard gate code is " + "86" + "1206", "861206"),
+    ("Alarm code: " + "72" + "7677", "727677"),
+    ("Left a sign-in code for the yard app: " + "02" + "1145" + ".", "021145"),
+    ("The collection PIN for order 441 is " + "68" + "15" + ".", "6815"),
+    ("Send Sam the side gate code, it is " + "86" + "1206", "861206"),
+    ("The passport number on the booking is " + "DI9J" + "0R9W4" + ".", "DI9J0R9W4"),
+    ("Name: Ivo Marsh. Passport " + "PPCD" + "HFZC6" + ".", "PPCDHFZC6"),
+    ("yard_code=" + "09" + "0373", "090373"),
+    ("client_pin=" + "70" + "21", "7021"),
+    ("curl https://x.example -d 'pin=" + "32" + "53" + "'", "3253"),
+    ("curl https://x.example -d 'code=" + "00" + "6960" + "'", "006960"),
+    ("curl https://x.example -d 'passport=" + "PPCD" + "HFZC6" + "'", "PPCDHFZC6"),
+    ("value: " + _R20, _R20),
+    ("curl https://x.example -d 'codes=8734-1102, 4803-2644'", "4803-2644"),
+    ('curl -H "X-Desk: ' + _R20 + '" https://desk.example', _R20),
+]
+CUE_MUST_STAY = [
+    "zip_code=94107",
+    "status_code: 404",
+    "exit code 1",
+    "order 441",
+    "PIN the post to the channel",
+    "country_code=44",
+    "commit 9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a",
+    "X-Request-Id: 3F2504E0-4F89-11D3-9A0C-0305E82C3301",
+    "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "sha256: " + "ab12" * 16,
+    "Content-Type: application/json",
+    "version: 2.0.0a1",
+    "className: PrimaryButton2",
+    # A word before a colon in a sentence is prose, not a key.
+    "Decode this for me and tell me what it says: " + "SGVsbG8sIGxpdHRsZSB3b3JsZCE=",
+    "The note says: " + _R20,
+    "host: " + _R20 + ".ngrok.app",
+    "bucket: " + _R20,
+    "error code=447100",
+    "hsn_code: 847130",
+]
+
+
+@pytest.mark.parametrize(("text", "secret"), CUE_MUST_REPLACE)
+def test_cue_and_key_values_are_replaced(text, secret):
+    for form in (text, _as_result(text), json.dumps({"r": _as_result(text)})):
+        out, n = redact_text(form)
+        assert secret not in out and n >= 1, form
+    out, n = second_pass({"arguments": {"command": text}})
+    assert secret not in json.dumps(out) and n >= 1
+
+
+@pytest.mark.parametrize("text", CUE_MUST_STAY)
+def test_cue_look_alikes_stay(text):
+    for form in (text, _as_result(text)):
+        assert redact_text(form) == (form, 0)
+
+
+def test_cue_values_in_objects_are_replaced_whole():
+    obj = {
+        "headers": {"X-Desk": _R20, "Content-Type": "application/json"},
+        "pin": 3253,
+        "passport_no": "X12345678",
+    }
+    out, n = second_pass(obj)
+    assert out == {
+        "headers": {"X-Desk": P, "Content-Type": "application/json"},
+        "pin": P,
+        "passport_no": P,
+    }
+    assert n == 3
+    assert second_pass({"code": "006960", "zip_code": "94107"}) == (
+        {"code": "006960", "zip_code": "94107"},
+        0,
+    )
 
 
 def test_parity_with_the_hermes_plugin():
@@ -528,6 +622,7 @@ def test_parity_with_the_hermes_plugin():
     both catch: the plugin's own vendor list is not part of this pass."""
     plugin = _plugin_module().Redactor("standard", "parity")
     texts = [t for t, _ in MUST_REPLACE] + MUST_STAY
+    texts += [t for t, _ in CUE_MUST_REPLACE] + CUE_MUST_STAY
     texts += [
         f'curl -H "Authorization: Bearer {TOK}" https://api.example.test',
         f"DB_PASSWORD={PW}\nGITHUB_TOKEN=x",
@@ -611,6 +706,10 @@ def test_object_parity_with_the_hermes_plugin():
     plugin's output would rewrite it.)"""
     plugin = _plugin_module().Redactor("standard", "parity")
     objects = [o for o, _ in OBJECT_MUST_REPLACE] + OBJECT_MUST_STAY
+    objects += [
+        {"headers": {"X-Desk": _R20, "Content-Type": "application/json"}},
+        {"pin": 3253, "client_pin": "7021", "passport": "PPCD" + "HFZC6", "code": "006960"},
+    ]
     objects.append(
         {
             "arguments": {
