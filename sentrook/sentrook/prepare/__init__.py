@@ -105,6 +105,8 @@ from .session_sets import (
     acts,
     bind,
     call_artefacts,
+    instruction_may_have_changed,
+    is_instruction_file,
     owner_config_path,
     producer_artefacts,
 )
@@ -360,6 +362,15 @@ class Prepared:
     sibling_values: tuple[str, ...] = ()
     #: New inputs read from the owner's own configuration: owner-supplied, not untrusted content.
     owner_config_inputs: frozenset[int] = frozenset()
+    #: Those of `owner_config_inputs` that read an instruction file (`AGENTS.md`, `SOUL.md`, ...): the owner's
+    #: orders to the agent, left out of the exposure probe like `own_store_inputs`. A config file is still judged.
+    owner_instruction_inputs: frozenset[int] = frozenset()
+
+    @property
+    def exposure_left_out(self) -> frozenset[int]:
+        """The inputs the exposure probe leaves out: reads of the agent's own skills and memory, and of the
+        owner's own instruction files."""
+        return self.own_store_inputs | self.owner_instruction_inputs
 
     @property
     def platform(self) -> str:
@@ -1012,6 +1023,16 @@ def _mark_skill_named(
     state.add_skill_named(added)
 
 
+def _path_spellings(path: str, ws: str) -> set[str]:
+    """`path` and the relative spellings lineage may have recorded it under (a bare relative path is kept as the
+    agent wrote it): relative to the workspace, with and without `./`."""
+    out = {path}
+    if ws and path.startswith(ws.rstrip("/") + "/"):
+        rel = path[len(ws.rstrip("/")) + 1 :]
+        out |= {rel, f"./{rel}"}
+    return out
+
+
 def _created_paths(history: list[CanonicalCall], home: str, ws: str) -> dict[str, int]:
     created: dict[str, int] = {}
     for call in history:
@@ -1608,6 +1629,7 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     hist_by_step = {c.step: c for c in history if c.step is not None}
     prior_tainted = frozenset(state.tainted)
     owner_config: set[int] = set()
+    owner_instructions: set[int] = set()
     for pi in inputs:
         call = hist_by_step.get(pi.step) if pi.input.kind is InputKind.TOOL_RESULT else None
         if call is None:
@@ -1619,6 +1641,17 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             and entity_hash(state.salt, "path", cfg) not in prior_tainted
         ):
             owner_config.add(pi.input.input_seq)
+            if (
+                is_instruction_file(cfg)
+                and not instruction_may_have_changed(
+                    cfg, history, reader=call, home=home, workspace_root=ws
+                )
+                and not any(
+                    entity_hash(state.salt, "path", p) in prior_tainted
+                    for p in _path_spellings(cfg, ws)
+                )
+            ):
+                owner_instructions.add(pi.input.input_seq)
 
     for pi in inputs:
         content = pi.input.content or ""
@@ -1859,15 +1892,17 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
     ).render()
 
     # 8. views (exposure: only the new untrusted inputs with content, which is every input the plugin
-    # sent in the common case, less reads of the agent's own skills and memory; call: the full trimmed call view)
+    # sent in the common case, less reads of the agent's own skills and memory and of the owner's own
+    # instruction files; call: the full trimmed call view)
     own_store_inputs = _own_store_inputs(planir, inputs, state, home=home, ws=ws)
+    owner_instruction_inputs = frozenset(owner_instructions)
     untrusted_seqs = {
         i.input.input_seq
         for i in inputs
         if i.trust is Trust.UNTRUSTED
         and i.new
         and i.input.content
-        and i.input.input_seq not in own_store_inputs
+        and i.input.input_seq not in own_store_inputs | owner_instruction_inputs
     }
     built = views.build_views(
         _as_analysed(raw, pending, siblings, history),
@@ -1931,4 +1966,5 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
         url_carries=url_carries,
         sibling_values=resolution.values,
         owner_config_inputs=frozenset(owner_config),
+        owner_instruction_inputs=owner_instruction_inputs,
     )
