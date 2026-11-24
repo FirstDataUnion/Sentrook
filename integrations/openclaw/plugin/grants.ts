@@ -32,7 +32,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { type GrantConfig, parseGrants, type PluginConfig } from "./config.ts";
-import { bindingProblem } from "./planir.ts";
+import { bindingProblem, HOST_TASK_KINDS } from "./planir.ts";
 import { type GrantsFile, readTime, Store, withFileLock } from "./store.ts";
 
 export const KINDS = ["destination", "file", "provider", "repo", "credential"];
@@ -483,8 +483,7 @@ export function grantCommand(grant: Entry, cmd: Cmd): string {
   return clean(words.join(" "), 400);
 }
 
-/** Runs the host starts itself from a task the owner set up. */
-export const HOST_TASK_KINDS = new Set(["scheduled", "heartbeat"]);
+export { HOST_TASK_KINDS };
 /** The line `/sentrook-why <hold id>` adds under a suggestion from a host task run. */
 export const HOLD_CONTEXT = "this suggestion comes from a {kind} run, not your own message: {where}";
 
