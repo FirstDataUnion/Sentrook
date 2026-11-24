@@ -10,9 +10,15 @@
  * `integrations/skills/`.
  *
  * A skill is instructions by design, so reading one would otherwise look to the scanner like content trying to steer
- * the agent. A read whose resolved real path is one of the plugin's own shipped `SKILL.md` files is reported under
- * `SKILL_READ_TOOL`, which the scanner counts as a read of the agent's own skills. Anything else that holds the same
- * text (a copy in the workspace, a symlink swapped in for the plugin's file) is an ordinary `read`.
+ * the agent. A `read` is reported under `SKILL_READ_TOOL`, which the scanner counts as a read of the agent's own
+ * skills, only when both hold:
+ * - the path it names, exactly as given (absolute or `~/`, no surrounding spaces, which OpenClaw keeps), resolves to
+ *   one of the plugin's own `SKILL.md` files, with the plugin's folder itself resolved;
+ * - what it returned is part of a skill text the plugin read from its own folder when it loaded. The path is checked
+ *   after the read ran, and a link on the way (OpenClaw's own plugin-skills link, or one in the workspace) could point
+ *   elsewhere by then; the text cannot.
+ * Anything else that holds the same text (a copy in the workspace, a symlink swapped in for the plugin's file, a file
+ * changed since the plugin loaded) is an ordinary `read`.
  *
  * Workspace, project, personal and managed skills outrank plugin skills, so a same-named skill there replaces ours
  * without any change to the plugin; `verify` names any it finds (`shadowCheck`).
@@ -56,29 +62,49 @@ export function agentRules(root: string | null = pluginRoot()): string[] {
   }
 }
 
-/** The path a `read` call names, as the host resolves it: `~` is the home folder, a relative path the workspace. */
-function resolveReadPath(params: unknown, workspaceDir: unknown, home: string): string | null {
-  const p = params as Record<string, unknown> | null | undefined;
-  const raw = [p?.path, p?.file_path, p?.filePath].find((v) => typeof v === "string" && v.trim());
-  if (typeof raw !== "string") return null;
-  const given = raw.trim();
-  if (given === "~" || given.startsWith("~/")) return path.join(home, given.slice(1));
-  if (path.isAbsolute(given)) return given;
-  return typeof workspaceDir === "string" && workspaceDir ? path.resolve(workspaceDir, given) : null;
+/** The skill texts in the plugin's folder now, for the plugin to keep from load; a skill that cannot be read is left out. */
+export function shippedSkillTexts(root: string | null = pluginRoot()): string[] {
+  if (!root) return [];
+  return SKILL_NAMES.flatMap((name) => {
+    try {
+      return [readFileSync(path.join(root, "skills", name, "SKILL.md"), "utf8")];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /**
- * Whether a `read` with these parameters read one of the plugin's own shipped skill files: its resolved real path is
- * exactly `<plugin root>/skills/<name>/SKILL.md` (the root itself resolved), and that is a regular file. A copy, or a
- * symlink anywhere on the way that leads out of the plugin's folder, is not.
+ * The path a `read` call names, when the plugin can know which file the host read: an absolute path, or one under the
+ * home folder (`~/`), exactly as given. A relative path resolves against the host's working folder, which the plugin
+ * cannot be sure of, and the host keeps spaces around a path (` /x` is a file in a folder named ` `): both are null.
  */
-export function isShippedSkillRead(
-  params: unknown,
-  opts: { workspaceDir?: unknown; home?: string; root?: string | null } = {},
-): boolean {
+function readPath(params: unknown, home: string): string | null {
+  const p = params as Record<string, unknown> | null | undefined;
+  const raw = [p?.path, p?.file_path, p?.filePath].find((v) => typeof v === "string" && v !== "");
+  if (typeof raw !== "string" || raw !== raw.trim()) return null;
+  if (raw.startsWith("~/")) return path.join(home, raw.slice(2));
+  return path.isAbsolute(raw) ? raw : null;
+}
+
+export interface SkillReadOpts {
+  /** The skill texts the plugin kept when it loaded (`shippedSkillTexts`). */
+  texts: readonly string[];
+  home?: string;
+  root?: string | null;
+}
+
+/**
+ * Whether a `read` with these parameters, which returned `result`, read one of the plugin's own shipped skill files:
+ * `result` is a non-empty part of a text the plugin kept at load (a whole file, or the lines an offset and limit
+ * picked), and the path resolves to exactly `<plugin root>/skills/<name>/SKILL.md` (the root itself resolved), a
+ * regular file. A copy, or a symlink anywhere on the way that leads out of the plugin's folder, is not.
+ */
+export function isShippedSkillRead(params: unknown, result: string, opts: SkillReadOpts): boolean {
+  if (!result || !opts.texts.some((t) => t.includes(result))) return false;
   const root = opts.root === undefined ? pluginRoot() : opts.root;
   if (!root) return false;
-  const target = resolveReadPath(params, opts.workspaceDir, opts.home ?? homedir());
+  const target = readPath(params, opts.home ?? homedir());
   if (!target) return false;
   try {
     const real = realpathSync(target);
@@ -95,13 +121,9 @@ export function isShippedSkillRead(
 }
 
 /** The tool name to report for a host tool call that ran: `read` of a shipped skill file becomes `SKILL_READ_TOOL`. */
-export function reportedTool(
-  tool: string,
-  params: unknown,
-  opts: { workspaceDir?: unknown; home?: string; root?: string | null } = {},
-): string {
+export function reportedTool(tool: string, params: unknown, result: string, opts: SkillReadOpts): string {
   if (tool === SKILL_READ_TOOL) return SKILL_READ_TOOL_TAKEN;
-  if (tool === "read" && isShippedSkillRead(params, opts)) return SKILL_READ_TOOL;
+  if (tool === "read" && isShippedSkillRead(params, result, opts)) return SKILL_READ_TOOL;
   return tool;
 }
 
@@ -111,8 +133,10 @@ const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? 
 
 /**
  * The skill folders that outrank the plugin's own: each agent workspace's `skills/` and `.agents/skills/`, the
- * agents' Skill Workshop folders, OpenClaw's managed `skills/`, the personal `~/.agents/skills/` and any extra folders
- * in `skills.load.extraDirs`.
+ * agents' Skill Workshop folders, OpenClaw's managed `skills/`, and the personal `~/.agents/skills/` (which OpenClaw
+ * reads only with its state in the default place). `skills.load.extraDirs` is not one: OpenClaw puts those folders
+ * before the plugins' in the same tier, and the later one wins. Not checked: another plugin shipping a skill of the
+ * same name, and OpenClaw's own plugin-skills link pointed somewhere else.
  */
 export function outrankingSkillDirs(hostConfig: any, env: NodeJS.ProcessEnv, home: string = homedir()): string[] {
   const oc = openclawDir(env);
@@ -138,13 +162,12 @@ export function outrankingSkillDirs(hostConfig: any, env: NodeJS.ProcessEnv, hom
   } catch {
     // No agents folder yet.
   }
-  const extra: unknown[] = Array.isArray(hostConfig?.skills?.load?.extraDirs) ? hostConfig.skills.load.extraDirs : [];
+  const defaultState = !env.OPENCLAW_STATE_DIR?.trim() && !env.OPENCLAW_HOME?.trim();
   return [
     ...[...workspaces].flatMap((ws) => [path.join(ws, "skills"), path.join(ws, ".agents", "skills")]),
     ...[...agentDirs].map((d) => path.join(d, "workshop-skills")),
     path.join(oc, "skills"),
-    path.join(home, ".agents", "skills"),
-    ...extra.map(str).filter((d): d is string => d !== null).map((d) => expandHome(d, home)),
+    ...(defaultState ? [path.join(home, ".agents", "skills")] : []),
   ];
 }
 

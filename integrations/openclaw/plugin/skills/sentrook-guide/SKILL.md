@@ -43,18 +43,18 @@ still blocked whatever is granted.
 `/sentrook status` and `/sentrook help` are open to anyone. The dashed commands are for the owner only: from a direct message by the owner, the Control UI, or `openclaw sentrook <command>` on the machine. Group rooms are refused. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
 owner type it.
 
-- `/sentrook status`: plugin version, mode, scan host, whether credentials are set, how many grants and bindings, held calls and where notices go. Anyone may run it.
+- `/sentrook status`: plugin version, mode and thresholds, scan host, whether credentials are set, how many grants and bindings, snooze, held calls and where notices go. Anyone may run it.
 - `/sentrook help`: lists the commands.
-- `/sentrook-history [n]`: the last n scans: time, session, tool, risk, what Sentrook did, the review.
-- `/sentrook-why [id|last]`: one scan in detail: risk, reasons, the hosts and files found, and the grant that would let calls like it through; with a held call's id, also the hold.
-- `/sentrook-report [id|last] [--github|--save]`: a report of a scan that looks wrong, to send to the Sentrook team.
-- `/sentrook-grants`: every grant in force, from config and set by command.
-- `/sentrook-grant <kind> <pattern> [flags]`: adds a grant: destination, file, provider, repo or credential; for this session only unless `--persistent`; `--allows read,write` for files, `--expires 12h`.
+- `/sentrook-history [n]`: the last n scans (default 10, at most 50): time, session, tool, risk, what Sentrook did, the review.
+- `/sentrook-why [request_id|last]`: one scan in detail: risk, reasons, the hosts and files found, and the grant that would let calls like it through; with a held call's id, also the hold and the grant approving it sets.
+- `/sentrook-report [request_id|last] [--full|--github|--save]`: a report of a scan that looks wrong, to send to the Sentrook team: `--full` adds the exact request (send it privately), `--github` opens a public issue with the summary filled in, `--save` writes the report and the full record to a file to email.
+- `/sentrook-grants`: every grant in force, from config (read-only) and set by command.
+- `/sentrook-grant <kind> <pattern> [flags]`: adds a grant: destination, file, provider, repo or credential; for this session only (not cron jobs, subagents or other chats) unless `--persistent`; `--session <ref>` binds it to a session from history, `--allows read,write` (files only), `--expires 12h`.
 - `/sentrook-revoke <id>`: removes a grant set by command.
-- `/sentrook-bind add|remove|list [channel]`: the channels this deployment normally delivers to.
-- `/sentrook-snooze [duration|off|status] [--all]`: for up to 24 hours, a block with no clear attack signal asks instead; never lets a block through and never applies to unattended runs.
-- `/sentrook-notify here|off|status`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat.
-- `/sentrook-approve <id>`: approves a held call within 24 hours: sets the grant Sentrook suggested, if any; the held call is not run again.
+- `/sentrook-bind add|remove|list [channel]`: lists, adds or removes a channel binding: a channel this deployment normally delivers to.
+- `/sentrook-snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook enforces or unattended runs; `off` ends it.
+- `/sentrook-notify here|off|status`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat; `off` stops them.
+- `/sentrook-approve <id>`: approves a call held on an unattended run, by the id in Sentrook's notice, within 24 hours: sets the grant Sentrook suggested (persistent, 30 days), if any; the held call is not run again.
 - `openclaw sentrook verify` (on the machine): checks the endpoints, the credentials, the scan service and the token.
 
 ## A scan that looks wrong

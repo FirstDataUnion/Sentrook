@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 
-import { agentRules, reportedTool, SKILL_READ_TOOL } from "./agentSkills.ts";
+import { agentRules, reportedTool, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
@@ -218,6 +218,8 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    /** The plugin's own skill texts as it loaded them: a read is the plugin's skill read only if it returned these. */
+    const skillTexts = shippedSkillTexts();
     /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
     const ocDir = openclawDir(process.env);
     const hostVersion = runtimeVersion();
@@ -481,9 +483,9 @@ const plugin = {
           // A read of one of the plugin's own skill files that succeeded goes to the scanner as a read of the agent's
           // own skills (`agentSkills.ts`).
           if (entry.tool === "read" || entry.tool === SKILL_READ_TOOL) {
-            const runId = event?.runId ?? ctx?.runId;
-            entry.tool = reportedTool(entry.tool, ran && !event?.error ? (event?.params ?? entry.arguments) : null, {
-              workspaceDir: (runId ? store.loadRun(runId).workspaceDir : undefined) ?? ctx?.workspaceDir,
+            const ok = ran && !event?.error;
+            entry.tool = reportedTool(entry.tool, ok ? (event?.params ?? entry.arguments) : null, ok ? text : "", {
+              texts: skillTexts,
             });
           }
           if (ran) {

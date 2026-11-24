@@ -334,13 +334,14 @@ a few short rules, added with the `/sentrook` command, that it follows whether o
 commands that change Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked
 or held call reworded.
 
-A skill is instructions by design, so the plugin tells the scanner when the agent reads its own skill file: a read
-whose real path is one of the `SKILL.md` files in the plugin's install folder is sent as `plugin_skill:read`, and the
-scanner does not count its text as content trying to steer the agent. A copy of the text anywhere else, or a link
-that leads out of the plugin's folder, is an ordinary read.
+A skill is instructions by design, so the plugin tells the scanner when the agent reads its own skill file: a read of
+an absolute or `~/` path whose real path is one of the `SKILL.md` files in the plugin's install folder, and which
+returned (part of) the text the plugin loaded from there, is sent as `plugin_skill:read`, and the scanner does not
+count its text as content trying to steer the agent. A copy of the text anywhere else, a link that leads out of the
+plugin's folder, a relative path or a file changed since the plugin loaded is an ordinary read.
 
-OpenClaw loads a workspace, project (`.agents/skills`), personal (`~/.agents/skills`), managed (`~/.openclaw/skills`)
-or Skill Workshop skill in place of a plugin skill with the same name. `openclaw sentrook verify` warns on its
+OpenClaw loads a workspace, project (`.agents/skills`), personal (`~/.agents/skills`, with OpenClaw's state in its
+default place), managed (`~/.openclaw/skills`) or Skill Workshop skill in place of a plugin skill with the same name. `openclaw sentrook verify` warns on its
 `agent skills` line when one named `sentrook-guide` or `sentrook-setup` exists; remove or rename it unless you wrote
 it yourself.
 

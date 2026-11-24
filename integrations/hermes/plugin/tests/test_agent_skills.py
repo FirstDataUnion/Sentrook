@@ -85,6 +85,11 @@ def test_every_command_the_hermes_text_names_exists_in_hermes(template):
     assert "openclaw" not in text.lower()
 
 
+def test_the_command_list_takes_the_arguments_each_hermes_command_takes():
+    for verb in render.HOSTS["hermes"]["commands"]:
+        assert render.SUMMARIES[verb][0] == commands.COMMANDS[verb].args, verb
+
+
 def test_the_hermes_guide_lists_every_command():
     guide = rendered("hermes")["sentrook-guide.md"]
     for name in commands.COMMANDS:
