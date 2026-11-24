@@ -1,6 +1,6 @@
 {
   "name": "conv-v9",
-  "notes": "2026-11-24: conv-v8 with service_name_relief on. A host the entity library lists as a service's own (`service_names`), whose service the owner's request names as a whole word, and that no content the agent read supplied (the agent's own installed-skill reads aside), is relieved of its distrust and untrusted origin as a request-named destination when the call judge (call-v10's names_service question) reads the request as meaning the service and not the ordinary word, at or above min_yes. Sends only: never a host the call or a later run takes code from. Everything else is conv-v8's; conv-v1 to conv-v8 stay selectable, unchanged.",
+  "notes": "2026-11-24: conv-v8 with service_name_relief on. A host the entity library lists as a service's own (`service_names`), whose service the owner's request names as a whole word, and that no content the agent read supplied (the agent's own installed-skill reads aside), is relieved of its distrust and untrusted origin as a request-named destination when the call judge (call-v10's names_service question) reads the request as meaning the service and not the ordinary word, at or above min_yes (0.7, so an undecided reading near 0.5 gives nothing). Sends only: never a host the call or a later run takes code from. Everything else is conv-v8's; conv-v1 to conv-v8 stay selectable, unchanged.",
   "u": 0.5,
   "certainty": "mean",
   "consequence": "mean",
@@ -79,6 +79,6 @@
   },
   "service_name_relief": {
     "enabled": true,
-    "min_yes": 0.5
+    "min_yes": 0.7
   }
 }
