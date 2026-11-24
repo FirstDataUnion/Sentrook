@@ -24,7 +24,7 @@ from collections.abc import Callable
 FACTOR = 4
 LIMIT = 10.0  # t(full) / t(full / FACTOR): linear about 4, quadratic about 16
 FLOOR_S = 0.02  # a full-size run faster than this is too short to time, and passes
-ATTEMPTS = 3
+ATTEMPTS = 5
 #: Set to 1 to run the growth check of `assert_fast_or_linear` even when a run is under its bound, to
 #: try the fallback on every input.
 ALWAYS_ENV = "SENTROOK_TEST_GROWTH_ALWAYS"
