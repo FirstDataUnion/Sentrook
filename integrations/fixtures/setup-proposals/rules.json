@@ -1,0 +1,965 @@
+{
+  "_comment": "What the agent's setup proposal tool takes, shared by both plugins. `items`: each item as the agent sent it, and either what is stored in the proposals file (`stored`) or the error the agent gets back for it (`error`). A grant must be one `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` would accept, a binding one `bind add` would add that could ever apply, and either one the setup screen can show; session grants, settings and attended platforms are refused. `calls`: the tool's whole answer to a call's arguments (with {setup} replaced by /sentrook setup on Hermes and /sentrook-setup on OpenClaw) and how many items it stores; items sent as JSON text read as the list it holds. `store`: the proposals file before and after a proposal is stored at `now` from `session_ref`, with ids drawn in the order `ids` gives: at most three open, a new one replacing the oldest, expired ones dropped.",
+  "refusal": "Setup needs the owner in a direct chat.",
+  "items": [
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "reason": "You send the daily report there"
+      },
+      "stored": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "reason": "You send the daily report there"
+      }
+    },
+    {
+      "item": {
+        "kind": "Destination",
+        "pattern": "*.example.com",
+        "scope": "persistent",
+        "reason": "Your company's own domain"
+      },
+      "stored": {
+        "kind": "destination",
+        "pattern": "*.example.com",
+        "reason": "Your company's own domain"
+      }
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read",
+          "write",
+          "read"
+        ],
+        "expires": "7d",
+        "reason": "Notes folder"
+      },
+      "stored": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read",
+          "write"
+        ],
+        "expires": "7d",
+        "reason": "Notes folder"
+      }
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "MY_SERVICE_TOKEN@API.Example.com.",
+        "reason": "The key for that service"
+      },
+      "stored": {
+        "kind": "credential",
+        "pattern": "MY_SERVICE_TOKEN@api.example.com",
+        "reason": "The key for that service"
+      }
+    },
+    {
+      "item": {
+        "kind": "provider",
+        "pattern": "npm:@example/",
+        "reason": "Your own MCP servers"
+      },
+      "stored": {
+        "kind": "provider",
+        "pattern": "npm:@example/",
+        "reason": "Your own MCP servers"
+      }
+    },
+    {
+      "item": {
+        "kind": "repo",
+        "pattern": "github.com/example/tools",
+        "expires": "4h",
+        "reason": "Install its scripts this afternoon"
+      },
+      "stored": {
+        "kind": "repo",
+        "pattern": "github.com/example/tools",
+        "expires": "4h",
+        "reason": "Install its scripts this afternoon"
+      }
+    },
+    {
+      "item": {
+        "binding": "discord:#daily-brief",
+        "reason": "The daily brief posts there"
+      },
+      "stored": {
+        "binding": true,
+        "pattern": "discord:#daily-brief",
+        "reason": "The daily brief posts there"
+      }
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "stored": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    },
+    {
+      "item": "api.example.com",
+      "error": "Not an item: give a grant (kind, pattern, reason) or a channel binding (binding, reason)."
+    },
+    {
+      "item": {
+        "setting": "notify",
+        "reason": "Send notices here"
+      },
+      "error": "Settings are not proposed: the owner changes them with their own commands; explain the setting to them instead."
+    },
+    {
+      "item": {
+        "setting": "attended",
+        "reason": "You answer here"
+      },
+      "error": "Attended platforms are never proposed: only the owner adds one, by changing the setting themselves."
+    },
+    {
+      "item": {
+        "kind": "attended",
+        "pattern": "api_server",
+        "reason": "You answer here"
+      },
+      "error": "Attended platforms are never proposed: only the owner adds one, by changing the setting themselves."
+    },
+    {
+      "item": {
+        "attended": [
+          "api_server"
+        ],
+        "reason": "You answer here"
+      },
+      "error": "Attended platforms are never proposed: only the owner adds one, by changing the setting themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "scope": "session",
+        "reason": "Just this chat"
+      },
+      "error": "Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "session": "s_0123456789ab",
+        "reason": "Just this chat"
+      },
+      "error": "Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "note": "x",
+        "reason": "Unknown field"
+      },
+      "error": "Unknown field \"note\": a grant takes kind, pattern, allows, expires and reason."
+    },
+    {
+      "item": {
+        "binding": "discord:#daily-brief",
+        "expires": "7d",
+        "reason": "Binding with expiry"
+      },
+      "error": "Unknown field \"expires\": a channel binding takes binding and reason."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com"
+      },
+      "error": "Each item needs a reason: one sentence on why the owner would want it."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "reason": "   "
+      },
+      "error": "Each item needs a reason: one sentence on why the owner would want it."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "error": "The reason must be at most 200 characters."
+    },
+    {
+      "item": {
+        "pattern": "api.example.com",
+        "reason": "No kind"
+      },
+      "error": "A grant needs a kind: destination, file, provider, repo or credential."
+    },
+    {
+      "item": {
+        "kind": "website",
+        "pattern": "api.example.com",
+        "reason": "Unknown kind"
+      },
+      "error": "Unknown grant kind \"website\": use destination, file, provider, repo or credential."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "reason": "No pattern"
+      },
+      "error": "A grant needs a pattern, such as api.example.com."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com evil.example",
+        "reason": "Two words"
+      },
+      "error": "The pattern must be one word, with no spaces or backticks."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api`.example.com",
+        "reason": "Backtick"
+      },
+      "error": "The pattern must be one word, with no spaces or backticks."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "--persistent",
+        "reason": "Option-shaped"
+      },
+      "error": "Not a grant the grant command would accept."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "allows": [
+          "read"
+        ],
+        "reason": "Allows on a destination"
+      },
+      "error": "--allows applies to file grants only."
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [
+          "read",
+          "burn"
+        ],
+        "reason": "Unknown verb"
+      },
+      "error": "Unknown allows value \"burn\": use read, write, edit, delete or exec."
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": "read,write",
+        "reason": "Allows as a string"
+      },
+      "error": "allows must be a list of read, write, edit, delete or exec."
+    },
+    {
+      "item": {
+        "kind": "file",
+        "pattern": "~/notes/*",
+        "allows": [],
+        "reason": "Empty allows"
+      },
+      "error": "--allows needs a value."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "expires": "forever",
+        "reason": "Bad expiry"
+      },
+      "error": "Unknown expiry \"forever\": use a number with m, h or d, from 1m to 365d."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "expires": "400d",
+        "reason": "Too long"
+      },
+      "error": "Unknown expiry \"400d\": use a number with m, h or d, from 1m to 365d."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api.example.com",
+        "expires": 7,
+        "reason": "Expiry as a number"
+      },
+      "error": "expires must be a lifetime such as 7d: a number with m, h or d, from 1m to 365d."
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "MY_SERVICE_TOKEN=abc123@api.example.com",
+        "reason": "A value in it"
+      },
+      "error": "\"MY_SERVICE_TOKEN=abc123@api.example.com\" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com)."
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "MY_SERVICE_TOKEN@*.co.uk",
+        "reason": "Shared second level"
+      },
+      "error": "\"MY_SERVICE_TOKEN@*.co.uk\" is not a credential pattern: use NAME@host, such as MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, host may be *.example.com)."
+    },
+    {
+      "item": {
+        "binding": "*",
+        "reason": "Every channel"
+      },
+      "error": "This channel binding would never apply: matches every channel, ignored."
+    },
+    {
+      "item": {
+        "binding": "ab",
+        "reason": "Too short"
+      },
+      "error": "This channel binding would never apply: too short, never sent."
+    },
+    {
+      "item": {
+        "binding": "discord: #daily-brief",
+        "reason": "A space"
+      },
+      "error": "The channel must be one word, with no spaces or backticks."
+    },
+    {
+      "item": {
+        "binding": true,
+        "pattern": "discord:#daily-brief",
+        "reason": "Old shape"
+      },
+      "error": "Unknown field \"pattern\": a channel binding takes binding and reason."
+    },
+    {
+      "item": {
+        "binding": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "reason": "Too long"
+      },
+      "error": "The channel must be at most 256 printable characters."
+    }
+  ],
+  "calls": [
+    {
+      "name": "three grants and a binding",
+      "args": {
+        "items": [
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "file",
+            "pattern": "~/notes/*",
+            "allows": [
+              "read",
+              "write",
+              "read"
+            ],
+            "expires": "7d",
+            "reason": "Notes folder"
+          },
+          {
+            "kind": "credential",
+            "pattern": "MY_SERVICE_TOKEN@API.Example.com.",
+            "reason": "The key for that service"
+          },
+          {
+            "binding": "discord:#daily-brief",
+            "reason": "The daily brief posts there"
+          }
+        ]
+      },
+      "reply": "Added 4 items to Sentrook's setup list. Ask the owner to send {setup} to review them.",
+      "stored": 4
+    },
+    {
+      "name": "one item",
+      "args": {
+        "items": [
+          {
+            "kind": "provider",
+            "pattern": "npm:@example/",
+            "reason": "Your own MCP servers"
+          }
+        ]
+      },
+      "reply": "Added 1 item to Sentrook's setup list. Ask the owner to send {setup} to review it.",
+      "stored": 1
+    },
+    {
+      "name": "items as JSON text",
+      "args": {
+        "items": "[{\"kind\": \"provider\", \"pattern\": \"npm:@example/\", \"reason\": \"Your own MCP servers\"}]"
+      },
+      "reply": "Added 1 item to Sentrook's setup list. Ask the owner to send {setup} to review it.",
+      "stored": 1
+    },
+    {
+      "name": "items as text that is not JSON",
+      "args": {
+        "items": "[{"
+      },
+      "reply": "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added.",
+      "stored": 0
+    },
+    {
+      "name": "some refused",
+      "args": {
+        "items": [
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "scope": "session",
+            "reason": "Just this chat"
+          },
+          {
+            "setting": "notify",
+            "reason": "Send notices here"
+          },
+          {
+            "kind": "repo",
+            "pattern": "github.com/example/tools",
+            "expires": "4h",
+            "reason": "Install its scripts this afternoon"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        ]
+      },
+      "reply": "Added 2 items to Sentrook's setup list. Ask the owner to send {setup} to review them.\n3 items not added:\n- Item 2: Session grants are not proposed: setup is for lasting grants; give expires (such as 7d) to end one sooner.\n- Item 3: Settings are not proposed: the owner changes them with their own commands; explain the setting to them instead.\n- Item 5: The reason must be at most 200 characters.",
+      "stored": 2
+    },
+    {
+      "name": "all refused",
+      "args": {
+        "items": [
+          {
+            "kind": "attended",
+            "pattern": "api_server",
+            "reason": "You answer here"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "   "
+          }
+        ]
+      },
+      "reply": "Nothing was added to Sentrook's setup list.\n2 items not added:\n- Item 1: Attended platforms are never proposed: only the owner adds one, by changing the setting themselves.\n- Item 2: Each item needs a reason: one sentence on why the owner would want it.",
+      "stored": 0
+    },
+    {
+      "name": "no items",
+      "args": {
+        "items": []
+      },
+      "reply": "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added.",
+      "stored": 0
+    },
+    {
+      "name": "no items key",
+      "args": {},
+      "reply": "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added.",
+      "stored": 0
+    },
+    {
+      "name": "items not a list",
+      "args": {
+        "items": "api.example.com"
+      },
+      "reply": "Give items: a list of 1 to 20 grants or channel bindings, each with a reason. Nothing was added.",
+      "stored": 0
+    },
+    {
+      "name": "more than 20 items",
+      "args": {
+        "items": [
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          }
+        ]
+      },
+      "reply": "At most 20 items in one proposal. Nothing was added.",
+      "stored": 0
+    },
+    {
+      "name": "exactly 20 items",
+      "args": {
+        "items": [
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          },
+          {
+            "kind": "destination",
+            "pattern": "api.example.com",
+            "reason": "You send the daily report there"
+          }
+        ]
+      },
+      "reply": "Added 20 items to Sentrook's setup list. Ask the owner to send {setup} to review them.",
+      "stored": 20
+    }
+  ],
+  "store": [
+    {
+      "name": "a fourth open proposal replaces the oldest; expired ones are dropped",
+      "now": "2026-11-24T12:00:00Z",
+      "session_ref": "s_0123456789ab",
+      "ids": [
+        "p-000002",
+        "p-abc123"
+      ],
+      "items": [
+        {
+          "kind": "destination",
+          "pattern": "api.example.com",
+          "reason": "You send the daily report there"
+        }
+      ],
+      "before": {
+        "version": 1,
+        "proposals": [
+          {
+            "id": "p-000001",
+            "session_ref": "s_0000000000a1",
+            "created_at": "2026-11-23T08:00:00Z",
+            "expires_at": "2026-11-24T08:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "stale.example.com",
+                "reason": "Expired"
+              }
+            ]
+          },
+          {
+            "id": "p-000002",
+            "session_ref": "s_0000000000a1",
+            "created_at": "2026-11-24T09:00:00Z",
+            "expires_at": "2026-11-25T09:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "one.example.com",
+                "reason": "Oldest open"
+              }
+            ]
+          },
+          {
+            "id": "p-000003",
+            "session_ref": "s_0000000000a2",
+            "created_at": "2026-11-24T10:00:00Z",
+            "expires_at": "2026-11-25T10:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "two.example.com",
+                "reason": "Second"
+              }
+            ]
+          },
+          {
+            "id": "p-000004",
+            "session_ref": "s_0000000000a2",
+            "created_at": "2026-11-24T11:00:00Z",
+            "expires_at": "2026-11-25T11:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "three.example.com",
+                "reason": "Third"
+              }
+            ]
+          }
+        ]
+      },
+      "id": "p-abc123",
+      "replaced": [
+        "p-000002"
+      ],
+      "after": {
+        "version": 1,
+        "proposals": [
+          {
+            "id": "p-000003",
+            "session_ref": "s_0000000000a2",
+            "created_at": "2026-11-24T10:00:00Z",
+            "expires_at": "2026-11-25T10:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "two.example.com",
+                "reason": "Second"
+              }
+            ]
+          },
+          {
+            "id": "p-000004",
+            "session_ref": "s_0000000000a2",
+            "created_at": "2026-11-24T11:00:00Z",
+            "expires_at": "2026-11-25T11:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "three.example.com",
+                "reason": "Third"
+              }
+            ]
+          },
+          {
+            "id": "p-abc123",
+            "session_ref": "s_0123456789ab",
+            "created_at": "2026-11-24T12:00:00Z",
+            "expires_at": "2026-11-25T12:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "api.example.com",
+                "reason": "You send the daily report there"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "the first proposal",
+      "now": "2026-11-24T12:00:00Z",
+      "session_ref": "s_0123456789ab",
+      "ids": [
+        "p-abc123"
+      ],
+      "items": [
+        {
+          "kind": "destination",
+          "pattern": "api.example.com",
+          "reason": "You send the daily report there"
+        }
+      ],
+      "before": null,
+      "id": "p-abc123",
+      "replaced": [],
+      "after": {
+        "version": 1,
+        "proposals": [
+          {
+            "id": "p-abc123",
+            "session_ref": "s_0123456789ab",
+            "created_at": "2026-11-24T12:00:00Z",
+            "expires_at": "2026-11-25T12:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "api.example.com",
+                "reason": "You send the daily report there"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an id already taken is drawn again",
+      "now": "2026-11-24T12:00:00Z",
+      "session_ref": "s_0123456789ab",
+      "ids": [
+        "p-000004",
+        "p-abc123"
+      ],
+      "items": [
+        {
+          "kind": "destination",
+          "pattern": "api.example.com",
+          "reason": "You send the daily report there"
+        }
+      ],
+      "before": {
+        "version": 1,
+        "proposals": [
+          {
+            "id": "p-000004",
+            "session_ref": "s_0000000000a2",
+            "created_at": "2026-11-24T11:00:00Z",
+            "expires_at": "2026-11-25T11:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "three.example.com",
+                "reason": "Third"
+              }
+            ]
+          }
+        ]
+      },
+      "id": "p-abc123",
+      "replaced": [],
+      "after": {
+        "version": 1,
+        "proposals": [
+          {
+            "id": "p-000004",
+            "session_ref": "s_0000000000a2",
+            "created_at": "2026-11-24T11:00:00Z",
+            "expires_at": "2026-11-25T11:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "three.example.com",
+                "reason": "Third"
+              }
+            ]
+          },
+          {
+            "id": "p-abc123",
+            "session_ref": "s_0123456789ab",
+            "created_at": "2026-11-24T12:00:00Z",
+            "expires_at": "2026-11-25T12:00:00Z",
+            "items": [
+              {
+                "kind": "destination",
+                "pattern": "api.example.com",
+                "reason": "You send the daily report there"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
