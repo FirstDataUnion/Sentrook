@@ -12,8 +12,9 @@
 # --force --accept-capabilities, enable, then `openclaw plugins doctor` and `inspect --runtime`, `openclaw
 # sentrook verify` and `status` against the mock identity service and scanner, and two real agent turns
 # (`openclaw agent --local`, model served by the mock) in one session: in the first Sentrook must block one exec
-# call and allow the next; the second only gives the seam probe a conversation with history. Every step runs
-# even after a failure; the exit code is 1 when any failed.
+# call and allow the next; the second only gives the seam probe a conversation with history. Last, settings
+# Sentrook cannot read go into its config and `openclaw doctor --fix` runs: the plugin must stay enabled and keep
+# scanning. Every step runs even after a failure; the exit code is 1 when any failed.
 #
 # Synthetic credentials only. COMPAT_CLIENT_SECRET overrides the secret given to OpenClaw (the mock accepts only
 # compat-secret), which is how the self-test makes the token mint fail. COMPAT_PROBE_EXTRA is passed to the
@@ -243,5 +244,65 @@ record turn "${turn_detail%%$'\t'*}" "${turn_detail#*$'\t'}"
 (cd /tmp && run turn-2 openclaw agent --local --agent main --session-id sentrook-compat -m "Thanks.")
 detail=$(python3 /compat/seams.py "$COMPAT_PROBE_OUT")
 record seams "${detail%%$'\t'*}" "${detail#*$'\t'}"
+
+# 10. Settings Sentrook cannot read must not get it disabled. OpenClaw's `doctor --fix` (which the official image
+# runs before every gateway start) deletes the config of a plugin that fails its manifest schema and disables the
+# plugin; Sentrook's manifest accepts any object and reports such settings itself. With a misspelt key, a misspelt
+# grant scope and a wrong type in the config, doctor --fix must leave the entry enabled with its config, verify must
+# fail naming them, and a turn in a new session must still be scanned (the block held, the allow ran).
+python3 - "$STATE/openclaw.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+cfg = json.load(open(p))
+c = cfg["plugins"]["entries"]["sentrook"].setdefault("config", {})
+c["modee"] = "observe"
+c["reviewAt"] = "abc"
+c["grants"] = [{"kind": "destination", "pattern": "compat.example", "scope": "persistant"}]
+json.dump(cfg, open(p, "w"), indent=2)
+PY
+run settings-doctor openclaw doctor --fix --non-interactive
+doctor_rc=$?
+settings_detail=$(python3 - "$STATE/openclaw.json" "$doctor_rc" <<'PY'
+import json, sys
+entry = json.load(open(sys.argv[1]))["plugins"]["entries"].get("sentrook") or {}
+c = entry.get("config") or {}
+problems = []
+if sys.argv[2] != "0":
+    problems.append(f"openclaw doctor --fix exited {sys.argv[2]} (see settings-doctor.log)")
+if entry.get("enabled") is False:
+    problems.append("doctor --fix disabled the plugin")
+if c.get("modee") != "observe" or c.get("reviewAt") != "abc" or not c.get("grants"):
+    problems.append("doctor --fix removed or changed the Sentrook config")
+print(("FAIL\t" + "; ".join(problems)) if problems else "ok\tdoctor --fix kept the plugin enabled and its config as written")
+PY
+)
+record settings-doctor "${settings_detail%%$'\t'*}" "${settings_detail#*$'\t'}"
+run settings-verify openclaw sentrook verify
+line=$(grep -m1 '^FAIL settings: ' "$OUT/settings-verify.log")
+if grep -q 'modee: not a Sentrook setting' <<<"$line" && grep -q 'reviewAt: not a number' <<<"$line" &&
+  grep -q 'grants\[0\]\.scope: "persistant"' <<<"$line"; then
+  record settings-verify ok "verify names all three settings"
+else
+  record settings-verify FAIL "verify did not name the settings: $(grep -m1 'settings' "$OUT/settings-verify.log" | cut -c1-200)"
+fi
+scans_before=$(python3 -c 'import json, os, sys; p = sys.argv[1]; print(sum(json.loads(l).get("path") == "/scan" for l in open(p)) if os.path.exists(p) else 0)' "$OUT/mock.jsonl")
+rm -f "$BLOCKED_FILE" "$ALLOWED_FILE"
+(cd /tmp && run settings-turn openclaw agent --local --agent main --session-id sentrook-compat-settings -m "Run the compatibility steps.")
+settings_detail=$(python3 - "$OUT/mock.jsonl" "$scans_before" "$BLOCKED_FILE" "$ALLOWED_FILE" <<'PY'
+import json, os, sys
+log, before, blocked, allowed = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+scans = [e for e in map(json.loads, open(log)) if e.get("path") == "/scan"] if os.path.exists(log) else []
+new = scans[before:]
+problems = []
+if len(new) < 2:
+    problems.append(f"{len(new)} scans after doctor --fix, expected 2")
+if os.path.exists(blocked):
+    problems.append("the blocked exec call ran")
+if not os.path.exists(allowed):
+    problems.append("the allowed exec call did not run")
+print(("FAIL\t" + "; ".join(problems)) if problems else f"ok\t{len(new)} scans with the bad settings in place; block held")
+PY
+)
+record settings-turn "${settings_detail%%$'\t'*}" "${settings_detail#*$'\t'}"
 
 exit "$failed"

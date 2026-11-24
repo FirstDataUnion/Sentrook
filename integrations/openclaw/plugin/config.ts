@@ -8,13 +8,24 @@
  * on a firstdataunion.org host: a scan URL the agent could redirect would send every tool call
  * somewhere else. `SENTROOK_DEV_ENDPOINTS=1` (env only) lifts that for local sandboxes and dev stacks.
  * An endpoint that fails these checks is a configuration error and scans fail closed.
+ *
+ * The plugin config is checked here, not by OpenClaw: the manifest's `configSchema` accepts any object, because
+ * OpenClaw's `doctor --fix` (which the official Docker image runs on every start) deletes the config of a plugin that
+ * fails its manifest schema and disables the plugin, leaving every tool call unscanned. A setting this file cannot
+ * read as written is ignored or replaced (never in a way that turns scanning off) and listed in `configProblems`,
+ * which the gateway log, `openclaw sentrook verify`, `/sentrook status` and an owner notice report.
  */
 
 import path from "node:path";
 
-import { type ApprovalPolicyConfig, resolveApprovalPolicyConfig } from "./approvalPolicy.ts";
+import {
+  type ApprovalPolicyConfig,
+  DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS,
+  DEFAULT_SCHEDULED_INTENT_KINDS,
+  resolveApprovalPolicyConfig,
+} from "./approvalPolicy.ts";
 import { resolveSetting, type SkillReviewSetting } from "./selfEdit.ts";
-import { type OnScanError, resolveOnScanError } from "./scanErrorPolicy.ts";
+import { DEFAULT_ON_SCAN_ERROR, type OnScanError, resolveOnScanError } from "./scanErrorPolicy.ts";
 
 export const DEFAULT_SCAN_URL = "https://sentrook.firstdataunion.org";
 export const DEFAULT_ROOKERY_URL = "https://rookery.firstdataunion.org";
@@ -43,6 +54,9 @@ export interface Endpoints {
   issuer: Endpoint;
   dev: boolean;
 }
+
+/** The grant kinds Sentrook reads; a grant of any other kind never applies. */
+export const GRANT_KINDS: readonly string[] = ["destination", "file", "provider", "repo", "credential"];
 
 export interface GrantConfig {
   kind: string;
@@ -85,6 +99,8 @@ export interface PluginConfig {
   skillReview: SkillReviewSetting;
   /** The configured value when it was not `allow` or `review` (read as allow). */
   skillReviewUnknown: string | null;
+  /** Plugin-config settings not read as written, each with what is used instead (`configProblems`). */
+  configProblems: string[];
 }
 
 type Env = NodeJS.ProcessEnv;
@@ -284,10 +300,299 @@ export function resolveConfig(pluginConfig: Record<string, unknown> | undefined,
     // delivery to its usual channel is sanctioned even though the channel is not in the prompt.
     channelBindings: list(cfg.channelBindings),
     ...skillReviewOf(cfg.skillReview ?? env.SENTROOK_SKILL_REVIEW),
+    configProblems: [...configProblems(pluginConfig), ...blockBelowReview(cfg.blockAt, reviewAt)],
   };
+}
+
+/** A configured block line below the review line is raised to it (`resolveConfig`), which is named. */
+function blockBelowReview(raw: unknown, reviewAt: number): string[] {
+  const block = num(raw, NaN, 0, 101);
+  return block < reviewAt ? [`blockAt: below reviewAt (${reviewAt}); using ${reviewAt}`] : [];
 }
 
 function skillReviewOf(raw: unknown): { skillReview: SkillReviewSetting; skillReviewUnknown: string | null } {
   const { setting, unknown } = resolveSetting(raw);
   return { skillReview: setting, skillReviewUnknown: unknown };
+}
+
+// ---- settings not read as written -------------------------------------------------------------------------------
+
+/**
+ * What each plugin-config setting may hold, as the parsers above read it. Each check names a value the parser does
+ * not read as written and what it uses instead. `null` counts as not set everywhere; blank text counts as not set
+ * only where the parser reads it so (text, secrets, lists, `mode`): elsewhere it stops the env fallback and the
+ * default is used, so it is named.
+ */
+type Spec =
+  | { kind: "text" }
+  | { kind: "secret" }
+  | { kind: "flag"; fallback: boolean }
+  | { kind: "number"; range: string; ok: (n: number) => boolean; fallback: number | string }
+  /** `exact`: compared as written (no trimming, case kept); `blankUnset`: blank text is read as not set. */
+  | {
+      kind: "choice";
+      values: readonly string[];
+      caseless: boolean;
+      effect: string;
+      notText?: string;
+      exact?: boolean;
+      blankUnset?: boolean;
+    }
+  /** `commas`: a comma-separated string is read as the list too. */
+  /** `none`: what is used when no item is read (else nothing). */
+  | { kind: "list"; commas: boolean; item?: Spec; none?: string }
+  | { kind: "object"; fields: Record<string, Spec> }
+  | { kind: "grants" };
+
+const TEXT: Spec = { kind: "text" };
+const SECRET: Spec = { kind: "secret" };
+const NAMES: Spec = { kind: "list", commas: true };
+const between = (min: number, max: number, fallback: number | string): Spec => ({
+  kind: "number",
+  range: `from ${min} to ${max}`,
+  ok: (n) => n >= min && n <= max,
+  fallback,
+});
+const atLeast = (min: number, fallback: number): Spec => ({
+  kind: "number",
+  range: `of at least ${min}`,
+  ok: (n) => n >= min,
+  fallback,
+});
+
+const GRANT_FIELDS: Record<string, Spec> = {
+  kind: { kind: "choice", values: GRANT_KINDS, caseless: false, exact: true, effect: "this grant never applies" },
+  pattern: TEXT,
+  allows: { kind: "list", commas: false },
+  scope: {
+    kind: "choice",
+    values: ["session", "persistent"],
+    caseless: false,
+    exact: true,
+    effect: "this grant is never sent",
+    notText: "this grant is never sent",
+  },
+  granted_at: TEXT,
+};
+
+const SETTINGS: Record<string, Spec> = {
+  scanUrl: TEXT,
+  rookeryUrl: TEXT,
+  oidcIssuer: TEXT,
+  clientId: SECRET,
+  clientSecret: SECRET,
+  oidcAudience: SECRET,
+  oidcScope: SECRET,
+  mode: { kind: "choice", values: ["enforce", "observe"], caseless: true, blankUnset: true, effect: "read as enforce" },
+  reviewAt: between(0, 100, DEFAULT_REVIEW_AT),
+  blockAt: between(0, 101, `${DEFAULT_BLOCK_AT}, or reviewAt if higher`),
+  onScanError: {
+    kind: "choice",
+    values: ["allow", "deny", "review"],
+    caseless: true,
+    effect: `using ${DEFAULT_ON_SCAN_ERROR}`,
+    notText: `using ${DEFAULT_ON_SCAN_ERROR}`,
+  },
+  timeoutMs: atLeast(1000, DEFAULT_SCAN_TIMEOUT_MS),
+  approval: {
+    kind: "object",
+    fields: {
+      // Whole milliseconds: a fraction is rounded down, so below 1 would mean no wait at all.
+      interactiveTimeoutMs: atLeast(1, DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS),
+      scheduledIntentKinds: {
+        kind: "list",
+        commas: false,
+        item: { kind: "choice", values: ["user", "cron", "subagent", "system"], caseless: false, effect: "ignored" },
+        none: `using ${orList(DEFAULT_SCHEDULED_INTENT_KINDS)}`,
+      },
+    },
+  },
+  stateDir: TEXT,
+  trafficLog: {
+    kind: "object",
+    fields: { enabled: { kind: "flag", fallback: true }, path: TEXT, maxBytes: atLeast(1024, DEFAULT_TRAFFIC_LOG_MAX_BYTES) },
+  },
+  historyLimit: between(1, 200, DEFAULT_HISTORY_LIMIT),
+  inputCapBytes: atLeast(1024, DEFAULT_INPUT_CAP_BYTES),
+  historyArgsCapBytes: atLeast(256, DEFAULT_HISTORY_ARGS_CAP_BYTES),
+  dashboardShowCalls: { kind: "flag", fallback: false },
+  packs: NAMES,
+  trustedSenders: NAMES,
+  trustedRoles: NAMES,
+  grants: { kind: "grants" },
+  channelBindings: NAMES,
+  skillReview: { kind: "choice", values: ["allow", "review"], caseless: true, effect: "read as allow", notText: "read as allow" },
+};
+
+/** Every setting the plugin config may hold (the manifest documents exactly these). */
+export const SETTING_NAMES: readonly string[] = Object.keys(SETTINGS);
+
+/** Config text shown back to the owner: printable, no markup, short. */
+function plain(raw: string, cap: number): string {
+  const s = raw.replace(/[^\p{L}\p{N} ._\-:/@#~+,]/gu, "?");
+  return s.length > cap ? `${s.slice(0, cap)}…` : s;
+}
+
+/** A value as quoted in a problem: text quoted and cut short, a list or object by its shape only. */
+function shown(v: unknown): string {
+  if (typeof v === "string") return `"${plain(v, 40)}"`;
+  if (Array.isArray(v)) return "a list";
+  if (v && typeof v === "object") return "an object";
+  return plain(String(v), 40);
+}
+
+function orList(values: readonly string[]): string {
+  return values.length < 2 ? values.join("") : `${values.slice(0, -1).join(", ")} or ${values.at(-1)}`;
+}
+
+/** Optimal string alignment distance: edits, with a swap of two neighbours counted as one. */
+function distance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/** The known setting an unknown key most likely means: at most two edits away, and fewer than half its length. */
+function closest(key: string, known: readonly string[]): string | null {
+  let best: string | null = null;
+  let bestD = Infinity;
+  for (const k of known) {
+    const dist = distance(key.toLowerCase(), k.toLowerCase());
+    if (dist < bestD) [best, bestD] = [k, dist];
+  }
+  return best !== null && bestD <= 2 && bestD < key.length / 2 ? best : null;
+}
+
+function checkFields(obj: Record<string, unknown>, fields: Record<string, Spec>, prefix: string, out: string[]): void {
+  const known = Object.keys(fields);
+  for (const [key, value] of Object.entries(obj)) {
+    const at = `${prefix}${plain(key, 40)}`;
+    const spec = Object.hasOwn(fields, key) ? fields[key] : undefined;
+    if (!spec) {
+      // Never the value: an unknown key can hold anything, a misplaced secret included.
+      const guess = closest(key, known);
+      out.push(`${at}: not a Sentrook setting${guess ? ` (did you mean ${guess}?)` : ""}; ignored`);
+      continue;
+    }
+    checkValue(value, spec, at, out);
+  }
+}
+
+function blank(v: unknown): boolean {
+  return typeof v === "string" && !v.trim();
+}
+
+function checkValue(v: unknown, spec: Spec, at: string, out: string[]): void {
+  if (v === undefined || v === null) return;
+  switch (spec.kind) {
+    case "text":
+      if (typeof v !== "string") out.push(`${at}: not text; ignored`);
+      return;
+    case "secret": {
+      if (typeof v === "string") return;
+      const ref = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+      if (!ref) out.push(`${at}: not text or a SecretRef; ignored`);
+      else if (ref.source !== "env" || typeof ref.id !== "string") out.push(`${at}: a SecretRef Sentrook cannot read (only source env, with an id); ignored`);
+      return;
+    }
+    case "flag":
+      if (typeof v === "boolean") return;
+      if (typeof v === "string" && ["1", "true", "yes", "on", "0", "false", "no", "off"].includes(v.trim().toLowerCase())) return;
+      out.push(`${at}: not true or false; using ${spec.fallback}`);
+      return;
+    case "number": {
+      const n = typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN;
+      if (!Number.isFinite(n) || !spec.ok(n)) out.push(`${at}: not a number ${spec.range}; using ${spec.fallback}`);
+      return;
+    }
+    case "choice": {
+      if (typeof v !== "string") {
+        out.push(`${at}: ${shown(v)} is not ${orList(spec.values)}; ${spec.notText ?? "ignored"}`);
+        return;
+      }
+      if (spec.blankUnset && blank(v)) return;
+      const s = spec.exact ? v : spec.caseless ? v.trim().toLowerCase() : v.trim();
+      if (!spec.values.includes(s)) out.push(`${at}: ${shown(v)} is not ${orList(spec.values)}; ${spec.effect}`);
+      return;
+    }
+    case "list": {
+      if (spec.commas && typeof v === "string") return;
+      if (!Array.isArray(v)) {
+        if (!blank(v)) out.push(`${at}: not a list; ignored`);
+        return;
+      }
+      const before = out.length;
+      v.forEach((item, i) => {
+        if (spec.item) checkValue(item, spec.item, `${at}[${i}]`, out);
+        else if (typeof item !== "string") out.push(`${at}[${i}]: not text; ignored`);
+      });
+      if (spec.none && v.length && out.length - before === v.length) out.push(`${at}: no item read; ${spec.none}`);
+      return;
+    }
+    case "object":
+      if (blank(v)) return;
+      if (!v || typeof v !== "object" || Array.isArray(v)) {
+        out.push(`${at}: not an object; ignored`);
+        return;
+      }
+      checkFields(v as Record<string, unknown>, spec.fields, `${at}.`, out);
+      return;
+    case "grants":
+      if (blank(v)) return;
+      if (!Array.isArray(v)) {
+        out.push(`${at}: not a list; ignored`);
+        return;
+      }
+      v.forEach((g, i) => {
+        const gAt = `${at}[${i}]`;
+        if (!g || typeof g !== "object" || Array.isArray(g)) {
+          out.push(`${gAt}: not an object; ignored`);
+          return;
+        }
+        const rec = g as Record<string, unknown>;
+        if (!str(rec.kind) || !str(rec.pattern)) {
+          out.push(`${gAt}: needs kind and pattern; ignored`);
+          return;
+        }
+        checkFields(rec, GRANT_FIELDS, `${gAt}.`, out);
+      });
+      return;
+  }
+}
+
+/** The plugin-config settings not read as written, each as `path: what; what is used instead`. */
+export function configProblems(pluginConfig: unknown): string[] {
+  if (pluginConfig === undefined || pluginConfig === null) return [];
+  if (typeof pluginConfig !== "object" || Array.isArray(pluginConfig)) return ["the Sentrook config is not an object; ignored"];
+  const out: string[] = [];
+  checkFields(pluginConfig as Record<string, unknown>, SETTINGS, "", out);
+  return out;
+}
+
+const NOTICE_LIMIT = 10;
+
+/** The owner's notice about settings not read as written; `quietHours` is how long before it can come again. */
+export function configProblemsNotice(problems: string[], quietHours = 6): string {
+  const shownProblems = problems.slice(0, NOTICE_LIMIT).map((p) => `- ${p}`);
+  const more = problems.length - NOTICE_LIMIT;
+  return [
+    "Sentrook cannot read some of its settings (plugins.entries.sentrook.config in openclaw.json). Scanning is on; " +
+      "until you fix them, each is ignored or replaced as shown:",
+    ...shownProblems,
+    ...(more > 0 ? [`(and ${more} more)`] : []),
+    "After fixing them, check with: openclaw sentrook verify",
+    `While they stand, this notice comes at most once every ${quietHours} hours.`,
+  ].join("\n");
+}
+
+/** One line for the log, status and verify. */
+export function configProblemsSummary(problems: string[]): string {
+  return problems.join("; ");
 }
