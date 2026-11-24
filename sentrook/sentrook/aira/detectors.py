@@ -771,53 +771,140 @@ def _read_send(a: CallAnalysis, sink: Sink, ctx: Context, home_files: list[str])
     return sink.read.name
 
 
-#: Code or a command that sends a body: a POST, a `data`/`json`/`body` argument, a curl or HTTPie body option.
+#: A string literal as code writes it, with its text in group 1, 2 or 3 (the other quote may appear inside, as in an
+#: f-string `f"pages/{cfg['id']}"`).
+_STR = r"""[fFrRbBuU]{0,2}(?:"([^"\n]{0,500})"|'([^'\n]{0,500})'|`([^`\n]{0,500})`)"""
+#: A method written as a literal: quoted (`'PATCH'`, `"delete"`), or a shell client's method option (`-X PUT`,
+#: `-XPATCH`, `--request=delete`, `--method PUT`).
+_LITERAL_METHOD = re.compile(
+    r"""(["'`])(post|put|patch|delete)\1|(?:\s|\A)(?:-X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?([a-z]+)""",
+    re.IGNORECASE,
+)
+#: Code or a command that sends a body or names POST: `.post(`, a quoted POST, a `data`/`json`/`body` argument or
+#: field, a curl or wget body option, `-X POST`.
 _POST_SIGNAL = re.compile(
-    r"""\.post\s*\(|["']POST["']|\b(?:data|json|body)\s*=(?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-\w+)?|--json|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)-X\s*POST\b"""
+    r"""\.post\s*\(|["'`]post["'`]|\b(?:data|json|body)\s*[=:](?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-(?:data|file)|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)(?:-X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?post\b""",
+    re.IGNORECASE,
 )
-#: A helper called with its method and path written as literals: `req('POST', 'pages', ...)`, `api("POST", f"x/{id}")`.
-_LITERAL_METHOD_CALL = re.compile(
-    r"""\b[A-Za-z_$][\w$]*\s*\(\s*[fFrRbBuU]{0,2}(["'])(POST|PUT|PATCH|DELETE)\1\s*,\s*[fFrRbBuU]{0,2}(["'])([^"'\n]*)\3"""
+#: A call whose first argument is a literal method and whose second is a literal path: `req('POST', 'pages', ...)`.
+_METHOD_FIRST = re.compile(
+    r"""\(\s*(["'`])(post|put|patch|delete)\1\s*,\s*""" + _STR, re.IGNORECASE
 )
-#: A last path segment that is a placeholder alone (`/{endpoint}`): the path is computed, not written.
+#: A call whose first argument is a literal path and whose second is a literal method: `req('pages', 'POST')`.
+_PATH_FIRST = re.compile(
+    r"""\(\s*""" + _STR + r"""\s*,\s*(["'`])(post|put|patch|delete)\4""", re.IGNORECASE
+)
+#: Keyword forms: a method keyword set to POST, and the path keyword of the same call.
+_METHOD_KEYWORD = re.compile(
+    r"""\b(?:m|method|verb|http_method)\s*=\s*(["'`])post\1""", re.IGNORECASE
+)
+_PATH_KEYWORD = re.compile(r"""\b(?:p|path|endpoint|route|url|uri)\s*=\s*""" + _STR)
+#: A literal URL the code builds on: the string closes and is joined or formatted (`'https://h/v1/' + p`).
+_BUILT_ON = re.compile(r"""\A["'`]\s*(?:\+|%|\.format\b|\.join\b)""")
+#: Path segments that name an API's version or prefix, not a resource (`/v1`, `/api`, `/rest`).
+_PREFIX_SEGMENT = re.compile(r"\A(?:v\d+(?:\.\d+)?|api|rest)\Z", re.IGNORECASE)
 _PLACEHOLDER_SEGMENT = re.compile(r"\A(?:\{[^}]*\}|\$\{[^}]*\}|\$\w+)\Z")
+#: Send heads that are not HTTP clients: a key-home send by one of them is never read as a read.
+_NOT_HTTP_HEADS = frozenset(
+    {
+        "scp",
+        "rsync",
+        "sftp",
+        "ssh",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "aws",
+        "gsutil",
+        "az",
+        "gh",
+        "rclone",
+    }
+)
 
 
-def _read_shaped_path(path: str, ctx: Context) -> bool:
-    return any(_found(r.regex, path) for r in ctx.lists.rules("egress", "read_shaped", "paths"))
+def _literal(m: re.Match[str], first: int) -> str:
+    """The text of the `_STR` literal whose three groups start at `first`."""
+    return next((g for g in m.groups()[first - 1 : first + 2] if g is not None), "")
+
+
+def _is_read(path: str, text: str, ctx: Context) -> bool:
+    """`path` asks a read given the body in `text`: a read-shaped path, and nothing in `text` writes (a GraphQL
+    path needs a query document, and no write body pattern or write statement may appear), as `_read_target`
+    judges a read URL."""
+    return _read_target(["https://host.invalid/" + path.lstrip("/")], text, ctx) is not None
+
+
+def _computed_path(path: str) -> bool:
+    """No resource path is written: after the version or API prefix, nothing, or a single computed segment
+    (`/v1/{endpoint}`, `/api/$P`)."""
+    segments = [x for x in path.split("/") if x]
+    while segments and _PREFIX_SEGMENT.match(segments[0]):
+        segments.pop(0)
+    return not segments or (len(segments) == 1 and bool(_PLACEHOLDER_SEGMENT.match(segments[0])))
 
 
 def _visible_write(a: CallAnalysis, ctx: Context) -> bool:
-    """The call shows a write as written: a PUT, PATCH or DELETE; a helper called with POST and a path that is not
-    read-shaped (`req('POST', 'pages', ...)`); or a body sent where a full URL written in it has a path that is
-    not read-shaped. A URL that is only a base (`'https://host/v1/' + p`) or ends in a computed segment names no
-    path; a helper whose method and path are its parameters shows no write."""
+    """The call shows a write as written:
+    - a PUT, PATCH or DELETE written as a literal, in any case (a quoted method, `.put(`, `-X PATCH`, `-XPUT`,
+      `--request=delete`), or a shell method option naming anything but GET, POST or HEAD;
+    - POST with a literal path that does not read: a helper called `f('POST', 'pages')`, `f('pages', 'POST')` or
+      with method and path keywords;
+    - a body or POST anywhere, and a full URL written in the call whose path does not read, unless the code only
+      builds on it (`'https://host/v1/' + p`) or names no resource after the version (`/v1/{endpoint}`).
+    A path reads when it is read-shaped and the call's text writes nothing on it (`_is_read`). A helper whose
+    method and path are its parameters shows no write."""
     text = a.scan_text
     if _found_any(_read_patterns(ctx, "write_method_patterns"), text):
         return True
-    for m in _LITERAL_METHOD_CALL.finditer(text):
-        if m.group(2) != "POST" or not _read_shaped_path("/" + m.group(4).lstrip("/"), ctx):
+    for m in _LITERAL_METHOD.finditer(text):
+        method = (m.group(2) or m.group(3) or "").upper()
+        if method not in ("GET", "POST", "HEAD"):
             return True
+    for m in _METHOD_FIRST.finditer(text):
+        if not _is_read(_literal(m, 3), text, ctx):
+            return True
+    for m in _PATH_FIRST.finditer(text):
+        if not _is_read(_literal(m, 1), text, ctx):
+            return True
+    for m in _METHOD_KEYWORD.finditer(text):
+        call = text[max(0, m.start() - 300) : m.end() + 300]
+        for k in _PATH_KEYWORD.finditer(call):
+            target = _literal(k, 1)
+            path = (
+                _url_path(target) if target.lower().startswith(("http://", "https://")) else target
+            )
+            if not _is_read(path, text, ctx):
+                return True
     if not _POST_SIGNAL.search(text):
         return False
     for m in _READ_URL.finditer(text):
-        path = _url_path(m.group(0))
-        last = path.rstrip("/").rsplit("/", 1)[-1]
-        if path.endswith("/") or not last or _PLACEHOLDER_SEGMENT.match(last):
+        if _BUILT_ON.match(text, m.end()):
             continue
-        if not _read_shaped_path(path, ctx):
+        path = _url_path(m.group(0))
+        if _computed_path(path):
+            continue
+        if not _is_read(path, text, ctx):
             return True
     return False
 
 
 def _key_home_read(a: CallAnalysis, sink: Sink, ctx: Context) -> str | None:
-    """`credential_home` when this plain send is a key going only to its own service and shows no write: the
-    credential-home check holds (`prepare.credential_home`), every destination of the sink is one of its hosts
-    (and not one the library watches), nothing is uploaded, and `_visible_write` finds nothing. Reads by a
-    helper whose method and path are parameters count: the judge's own irreversibility covers what is not
-    written out."""
+    """`credential_home` when this plain send is a key going only to its own service and shows no write:
+    - the credential-home check holds (`prepare.credential_home`);
+    - every destination of the sink is one of its hosts, and not one the library watches (no answer: watched);
+    - it is sent by code or an HTTP client (no other send command), and nothing is uploaded;
+    - `_visible_write` finds nothing.
+    Reads by a helper whose method and path are parameters count, and so does a call that also reads a local file
+    (code does not say whether a file it opens is read or written): the judge's own irreversibility covers what is
+    not written out."""
     home = getattr(ctx.prepared, "credential_home", None)
     if home is None or sink.reason not in ("exfil.web_post", "exfil.exec_egress") or a.attachments:
+        return None
+    if sink.reason == "exfil.exec_egress" and (
+        not a.heads & set(_read_list(ctx, "shell_heads")) or a.heads & _NOT_HTTP_HEADS
+    ):
         return None
     if not sink.destinations or any(
         d.kind is not EntityKind.HOST or d.entity_id not in home.hosts or _watched(d, ctx)

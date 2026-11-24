@@ -10,12 +10,15 @@ stays the send's. A call where the check fails, or with no key at all, is scored
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from test_aira_detectors import planir
 from test_converge_scan import BENIGN_ANSWERS, CLOCK, KEY
 from test_jev_probes import FakeDecider
 from test_session_sets import seed
 
+from sentrook.aira import detectors
 from sentrook.converge import load_params
 from sentrook.scan import Scanner, ScannerConfig, ScanOptions
 
@@ -211,11 +214,13 @@ def test_curl_posting_to_a_page_is_a_send():
     assert_send(res)
 
 
-def test_a_key_sent_to_an_unlisted_host_keeps_its_weight():
+def test_a_key_sent_to_an_unlisted_host_is_not_read():
     src = READ_KEY + HELPER.replace(HOST, "collector.unknown.invalid") + "req('GET','users/me')\n"
     res = scan(src)
     assert res.prepared.credential_home is None
-    assert send_weights(res).get("irreversibility", 0.8) >= 0.8 or res.response.floors_applied
+    aira = next(e for e in res.envelopes if e.step.value == "aira")
+    irr = [c.value for c in aira.contributions if c.signal == "consequence.irreversibility"]
+    assert irr and min(irr) >= 0.8
 
 
 def test_a_get_in_code_with_no_key_keeps_its_weight():
@@ -228,3 +233,150 @@ def test_a_get_in_code_with_no_key_keeps_its_weight():
     res = scan(src, oracle={"entities": [other]}, state=seed())
     assert res.prepared.credential_home is None
     assert_send(res)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "req('post','pages',{'properties':{}})",
+        "req(m='POST', p='pages', b={'properties':{}})",
+        "req('POST', f\"pages/{cfg['id']}/comments\", {'rich_text':[]})",
+        "req('pages', 'POST', {'properties':{}})",
+        "req('patch', f'pages/{pid}', {'archived':True})",
+    ],
+)
+def test_other_spellings_of_a_helper_write_are_a_send(call):
+    src = READ_KEY + HELPER + "pid='4139ad2f'\ncfg={'id':'x'}\n" + call + "\n"
+    assert_send(scan(src))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        f'curl -s --request PATCH -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/pages/abc',
+        f'curl -s -XPUT -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/pages/abc',
+        f'curl -s -X PATCH -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/pages/$PID -d \'{{"archived":true}}\'',
+        f'curl -s --request=delete -H "Authorization: Bearer $EXAMPLE_API_KEY" https://{HOST}/v1/blocks/abc',
+    ],
+)
+def test_a_shell_method_option_that_writes_is_a_send(cmd):
+    res = scan("set -a; . ~/.hermes/.env; set +a; " + cmd, tool="terminal")
+    assert res.prepared.credential_home_check == "ok"
+    w = send_weights(res)
+    assert w.get("irreversibility", 0.8) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://{HOST}/api/v2/tasks/",
+        f"https://{HOST}/v1/pages/{{pid}}",
+        f"https://{HOST}/v1/customers/{{cid}}",
+    ],
+)
+def test_a_post_to_a_literal_resource_url_is_a_send(url):
+    src = (
+        "import os, requests\n"
+        f"H='{HOST}'; pid='x'; cid='y'\n"
+        "key=[l.split('=',1)[1].strip() for l in open(os.path.expanduser('~/.hermes/.env'))"
+        " if l.startswith('EXAMPLE_API_KEY=')][0]\n"
+        f"r=requests.post(f'{url}', json={{'name':'x'}}, headers={{'Authorization':'Bearer '+key}})\n"
+    )
+    assert_send(scan(src))
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/graphql", "{'query':'mutation { issueDelete(id: \\\"x\\\") { success } }'}"),
+        ("/v1/query", "{'sql':'DELETE FROM users'}"),
+    ],
+)
+def test_a_body_that_writes_on_a_read_shaped_path_is_a_send(path, body):
+    src = (
+        READ_KEY
+        + f"r=urllib.request.Request('https://{HOST}{path}', data=json.dumps({body}).encode(),"
+        " headers={'Authorization':'Bearer '+key})\n"
+        + "print(json.load(urllib.request.urlopen(r)))\n"
+    )
+    assert_send(scan(src))
+
+
+def test_a_helper_call_with_a_read_shaped_literal_path_reads():
+    src = READ_KEY + HELPER + "print(req('POST','search',{'query':'open items'}))\n"
+    assert_read(scan(src))
+
+
+def test_a_url_that_names_no_resource_after_the_version_reads():
+    src = (
+        READ_KEY
+        + "def get(endpoint, b=None):\n"
+        + f"    r=urllib.request.Request(f'https://{HOST}/v1/{{endpoint}}', data=json.dumps(b).encode() if b else None,"
+        " headers={'Authorization':'Bearer '+key})\n"
+        + "    return json.load(urllib.request.urlopen(r))\n"
+        + "print(get('users/me'))\n"
+    )
+    assert_read(scan(src))
+
+
+def test_a_file_uploaded_to_the_home_host_is_not_read():
+    cmd = (
+        "set -a; . ~/.hermes/.env; set +a; "
+        f'curl -s -H "Authorization: Bearer $EXAMPLE_API_KEY" -F file=@/home/me/notes.txt https://{HOST}/v1/files'
+    )
+    res = scan(cmd, tool="terminal")
+    assert send_weights(res).get("irreversibility", 0.8) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize("change", [{"verdict": "known_bad"}])
+def test_a_known_bad_home_host_is_not_read(change):
+    """(The watched-tier guard is the read-shaped send's own, tested with it.)"""
+    src = READ_KEY + HELPER + "print(req('GET','users/me'))\n"
+    res = scan(src, oracle={"entities": [{**HOME, **change}]})
+    irr = send_weights(res).get("irreversibility")
+    assert irr is None or irr == pytest.approx(0.8) or res.prepared.credential_home is None
+
+
+def test_with_no_library_answer_it_is_not_read():
+    src = READ_KEY + HELPER + "print(req('GET','users/me'))\n"
+    res = scan(src, oracle={"entities": []})
+    assert res.prepared.credential_home is None
+
+
+def test_a_sensitive_file_beside_the_key_is_not_read():
+    src = (
+        READ_KEY
+        + "ssh=open(os.path.expanduser('~/.ssh/id_rsa')).read()\n"
+        + HELPER
+        + "req('GET','users/me')\n"
+    )
+    res = scan(src)
+    assert res.prepared.credential_home is None
+    assert "irreversibility" not in send_weights(res) or send_weights(res)["irreversibility"] >= 0.8
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a$" * 50_000,
+        "(" * 100_000,
+        "('POST', " * 20_000,
+        "(f'" + "x" * 100_000,
+        "method='POST' " * 10_000,
+        " -X" + " " * 100_000,
+        "'https://h/v1/" * 10_000,
+    ],
+    ids=lambda t: f"{t[:10]!r}x{len(t)}",
+)
+def test_the_write_patterns_take_linear_time(text):
+    t0 = time.perf_counter()
+    for rx in (
+        detectors._LITERAL_METHOD,
+        detectors._POST_SIGNAL,
+        detectors._METHOD_FIRST,
+        detectors._PATH_FIRST,
+        detectors._METHOD_KEYWORD,
+        detectors._PATH_KEYWORD,
+    ):
+        list(rx.finditer(text))
+    assert time.perf_counter() - t0 < 2.0
