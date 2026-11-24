@@ -61,6 +61,8 @@ versions). Inside the image, as the `hermes` user, it runs:
    plugins, and the surfaces it names as not messaging or as unattended for approvals) must be in the plugin's
    `ATTENDED_PLATFORMS`, `NOT_ATTENDED_PLATFORMS` or `LOCAL_PLATFORMS` (`integrations/hermes/plugin/intent.py`). A
    bump to a Hermes that adds a platform fails here until someone decides whether a human answers approvals there.
+8. `hermes send --help` must list `platform:chat_id:thread_id` targets: `/sentrook notify here` stores the chat it
+   was sent in and sends notices there that way.
 
 Results land in the output directory (`steps.tsv`, `validate.json`, a log per step, and the mock's request log).
 

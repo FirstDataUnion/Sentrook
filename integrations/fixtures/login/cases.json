@@ -52,7 +52,7 @@
           "status": 200,
           "body": {
             "client_id": "sentrook-scan-abc-0001",
-            "client_secret": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "client_secret": "not-a-real-secret-aaaaaaaaaaaaaaaa",
             "name": "test box",
             "replaced": false
           }
@@ -75,7 +75,7 @@
         ],
         "saved": {
           "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0001",
-          "SENTROOK_SCAN_CLIENT_SECRET": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-aaaaaaaaaaaaaaaa"
         },
         "output": [
           "{start}",
@@ -237,7 +237,7 @@
           "status": 200,
           "body": {
             "client_id": "sentrook-scan-abc-0002",
-            "client_secret": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+            "client_secret": "not-a-real-secret-bbbbbbbbbbbbbbbb",
             "name": "test box",
             "replaced": true
           }
@@ -260,7 +260,7 @@
         ],
         "saved": {
           "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0002",
-          "SENTROOK_SCAN_CLIENT_SECRET": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-bbbbbbbbbbbbbbbb"
         },
         "output": [
           "{start}",
@@ -279,7 +279,7 @@
           "status": 200,
           "body": {
             "client_id": "sentrook-scan-abc-0003",
-            "client_secret": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            "client_secret": "not-a-real-secret-cccccccccccccccc",
             "name": "test box",
             "replaced": false
           }
@@ -298,7 +298,7 @@
         ],
         "saved": {
           "SENTROOK_SCAN_CLIENT_ID": "sentrook-scan-abc-0003",
-          "SENTROOK_SCAN_CLIENT_SECRET": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+          "SENTROOK_SCAN_CLIENT_SECRET": "not-a-real-secret-cccccccccccccccc"
         },
         "output": [
           "{start}",
@@ -452,7 +452,7 @@
           "status": 200,
           "body": {
             "client_id": "sentrook-scan-abc-0004",
-            "client_secret": "0123456789abcdef\nSENTROOK_MODE=observe",
+            "client_secret": "not-a-real-secret\nSENTROOK_MODE=observe",
             "name": "test box",
             "replaced": false
           }

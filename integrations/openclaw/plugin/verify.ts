@@ -1,8 +1,10 @@
 /**
  * `openclaw sentrook verify`: endpoints valid, credentials present, every plugin-config setting read as written,
- * scanner healthy, token mint works; notes on settings that leave something unscanned.
+ * scanner healthy, token mint works; notes on settings that leave something unscanned, and on skills that replace
+ * the ones the plugin ships.
  */
 
+import { shadowCheck } from "./agentSkills.ts";
 import { clearScanTokenCache, envWithOpenclawDotenv, getScanAccessToken, resolveOidcCredentials } from "./auth.ts";
 import { configProblemsSummary, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
@@ -26,6 +28,8 @@ export async function runVerify(
     timeoutMs?: number;
     /** OpenClaw's own config; undefined when it cannot be read. */
     hostConfig?: unknown;
+    /** The home folder, for `~` in OpenClaw's config and the personal skills folder; the user's own when not given. */
+    home?: string;
   } = {},
 ): Promise<VerifyCheck[]> {
   const env = envWithOpenclawDotenv(opts.env ?? process.env);
@@ -118,6 +122,8 @@ export async function runVerify(
   checks.push({ name: "background-save notices", ok: true, detail: noticeStatus(target) });
   // Reported, not failed: OpenClaw's own memory writers that no plugin sees, with the setting that turns each off.
   checks.push(...memoryWriterChecks(opts.hostConfig));
+  // Reported, not failed: a workspace, project or managed skill with the name of one the plugin ships replaces it.
+  checks.push(shadowCheck(opts.hostConfig, env, { home: opts.home }));
   return checks;
 }
 

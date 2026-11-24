@@ -42,12 +42,14 @@ from ..prepare.views import (
     OWNER_CONFIG_VIEWS,
     REPUTATION,
     REPUTATION_CAP_CHARS,
+    SECRETS_SENT,
     SERVICES,
     VIEW_KEYS,
     _json_chars,
     services_block,
     with_reputation,
     with_resolved,
+    with_secrets_sent,
     with_services,
 )
 from .base import Contribution, Envelope, SessionMark
@@ -382,6 +384,8 @@ class JevCallProbe(_JevProbe):
             state = with_reputation(state, verdicts, room)
         if services:
             state = with_services(state, services)
+        if SECRETS_SENT in (self.qs.block_when or {}):
+            state = with_secrets_sent(state)
         if self.view_name in BATCH_VIEWS:
             # Only a command the join changed in place: a read file's content appended to the command says nothing
             # the sibling's own arguments do not already show.

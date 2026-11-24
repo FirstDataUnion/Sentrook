@@ -9,12 +9,13 @@ as the owner.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from . import hold, login, passes, skill_review
+from . import hold, login, owner_settings, passes, skill_review
 from .auth import (
     clear_scan_token_cache,
     get_scan_access_token,
@@ -99,12 +100,22 @@ def run_verify(
         )
     )
     # Reported, not failed: without a notice target a held call still waits; the owner is just not told.
-    target, why = hold.owner_target(cfg.owner_channel)
+    notify = owner_settings.notify_of(cfg)
+    failed = owner_settings.failed_line(cfg)
+    checks.append(
+        (
+            "notice target",
+            True,
+            " ".join(x for x in (owner_settings.notify_line(notify), failed) if x),
+        )
+    )
+    checks.append(("approval prompts", True, owner_settings.attended_line(cfg)))
+    target, why = hold.owner_target(notify)
     checks.append(
         (
             "held-call notices",
             True,
-            f"to the {target} home channel" if target else f"not sent: {why}",
+            f"to the {hold.target_text(target)}" if target else f"not sent: {why}",
         )
     )
     # Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
@@ -116,7 +127,7 @@ def run_verify(
         (
             "background-save notices",
             True,
-            skill_review.notice_line(cfg.owner_channel),
+            skill_review.notice_line(notify),
         )
     )
     return checks
@@ -160,6 +171,8 @@ def _rest(cmd: str, args: argparse.Namespace) -> str:
         words += [f"--{f}={getattr(args, f)}" for f in GRANT_FLAGS if getattr(args, f) is not None]
     if cmd == "snooze" and args.all:
         words.append("--all")
+    if cmd == "attended" and args.confirm:
+        words.append("--confirm")
     if cmd == "report":
         words += [f"--{f}" for f in REPORT_FLAGS if getattr(args, f)]
     return " ".join(words)
@@ -191,6 +204,15 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
             elif name == "snooze":
                 p.add_argument("sentrook_arg", nargs="*", metavar="duration|off|status")
                 p.add_argument("--all", action="store_true", help="every session")
+            elif name == "attended":
+                p.add_argument("sentrook_arg", nargs="*", metavar="add|remove|list [platform]")
+                p.add_argument(
+                    "--confirm",
+                    action="store_true",
+                    help="add a platform Sentrook treats as unattended",
+                )
+            elif name == "notify":
+                p.add_argument("sentrook_arg", nargs="*", metavar="<platform>|off|status")
             elif COMMANDS[name].cli_rest:
                 p.add_argument(
                     "sentrook_arg", nargs=argparse.REMAINDER, metavar=COMMANDS[name].args
@@ -201,7 +223,8 @@ def register_cli(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGa
     def handler(args: argparse.Namespace) -> None:
         cmd = getattr(args, "sentrook_cmd", None)
         if cmd in CLI_COMMANDS:
-            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate))
+            send = functools.partial(hold.deliver, ctx)
+            print(dispatch(f"{cmd} {_rest(cmd, args)}", settings(), gate=gate, send=send))
             return
         if cmd == "login":
             raise SystemExit(_login(settings(), getattr(args, "name", None)))

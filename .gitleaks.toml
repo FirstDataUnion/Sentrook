@@ -54,4 +54,10 @@ regexes = [
   # replaced by low-entropy literals; the values remain in history.
   '''unit-test-key-0123456789abcdef0123456789abcdef''',
   '''other-key-0123456789abcdef0123456789abcdef''',
+  # Plugin login fixture: hex fakes in the first commit of the `sentrook login` change, since replaced by
+  # low-entropy literals (not-a-real-secret-...); the values remain in that branch's history.
+  '''^0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef$''',
+  '''^fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210$''',
+  '''^00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff$''',
+  '''^0123456789abcdef$''',
 ]

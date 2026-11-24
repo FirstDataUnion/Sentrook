@@ -1,8 +1,8 @@
 """Convergence: probe envelopes → Response 2.0 and a new token.
 
 Order: (the model's sensitivity held under the credential-home relief) → merge → tier scores → risk → relief (recompute) → attended-owner check (the `relaxable` mark always; the ceiling when the parameters turn it on)
-→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → tool description → flags
-and token. Only numbers, enums and opaque entity IDs enter here; no request text.
+→ floors → unanswered-review retry cap (`retry_cap`: a ceiling of review) → reasons → grant hints (a deterministic re-score per candidate grant, `hints`) → owner pass (`owner_pass`: whether a held
+call may be passed once, always or not at all) → tool description → flags and token. Only numbers, enums and opaque entity IDs enter here; no request text.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from .describe import describe, entity_table
 from .formulas import Tiers, compute
 from .hints import grant_hints
 from .merge import Claim, Merged, collect, merge
+from .owner_pass import owner_pass
 from .params import ConvergenceParams, load_params
 from .registry import SIGNALS, reason_text
 from .relief import Relief, compute_relief
@@ -430,16 +431,13 @@ def converge(
         retry_cap["capped"] = False
         retry_cap["withheld"] = "degraded"
 
-    held_back = (
-        withheld(
-            envelopes,
-            degraded=degraded,
-            state_lost=prepared.state.fresh,
-            exposure_unjudged=unjudged,
-        )
-        if cap.attended
-        else []
+    not_informed = withheld(
+        envelopes,
+        degraded=degraded,
+        state_lost=prepared.state.fresh,
+        exposure_unjudged=unjudged,
     )
+    held_back = not_informed if cap.attended else []
     # One check: the mark in every parameter set, the ceiling only where the parameters turn it on.
     relax = relaxable(cap, held_back, enforced)
     attended_ceiling = relax and params.attended_owner_cap
@@ -501,6 +499,18 @@ def converge(
         exposure_unjudged=unjudged,
         flags=flags,
     )
+    passable = owner_pass(
+        prepared,
+        claims,
+        [c for kept in merged.claims.values() for c in kept],
+        [(r.subject, r.reason) for r in relief],
+        [f.floor for f in floors],
+        params,
+        enforced=enforced,
+        held_back=not_informed,
+        flags=flags,
+        unanswered_retry=retry_unanswered,
+    )
     # make sure every entity a reason or a hint names is displayable
     for r in [*reasons, *hints]:
         if r.subject and r.subject not in entities:
@@ -523,6 +533,7 @@ def converge(
         ],
         reasons=reasons,
         grant_hints=hints,
+        owner_pass=passable,
         tool_description=describe(prepared, category),
         entities=entities,
         action_fingerprint=prepared.fingerprint.render(),

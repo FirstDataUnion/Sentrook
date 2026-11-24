@@ -6,9 +6,13 @@ CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are b
 
 `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
 grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`, the
-same as `allow`) answer a call held on an unattended run (see `hold`), and `passes` lists and revokes what those
-answers set (see `passes`), so only the owner may run them: both forms go through the owner check (`owner_command`), which audits every attempt.
-`status` and `help` stay open.
+same as `allow`) answer a call held on an unattended run (see `hold`), `passes` lists and revokes what those
+answers set (see `passes`), and `notify` and `attended` set where notices go and which extra platforms have a person
+answering approvals (see `owner_settings`), so only the owner may run them: both forms go through the owner check
+(`owner_command`), which audits every attempt. `status` and `help` stay open.
+
+`notify here` stores the chat the slash command was sent in: Hermes passes the handler that chat (`source`, a
+gateway SessionSource). The CLI has no chat, so there it takes `notify <platform>`.
 
 `snooze` and a session `grant` cover the session the slash command was sent from (Hermes passes its
 `session_id`). The CLI has no session, so there a snooze needs `--all` and a session grant `--session`.
@@ -23,7 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, hold, passes, report, skill_review, snooze
+from . import grants, history, hold, owner_settings, passes, report, skill_review, snooze
 from .auth import missing_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
@@ -38,6 +42,11 @@ Who = dict[str, Any]
 OwnerGate = Callable[[str, Callable[[str, Who], str]], Callable[[str], str]]
 #: How the owner types a subcommand, for usage and hints.
 CMD = "/sentrook {}".format
+#: The key under which the owner check hands over the chat it judged (chat id and type); `dispatch` takes it off
+#: `who` before a subcommand sees `who`, so it is never recorded.
+OWNER_CHAT = "_owner_chat"
+#: (target, text, on_fail=, on_ok=) -> sends one notice the way held-call notices go (`hold.deliver`).
+SendNotice = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -53,6 +62,10 @@ class Subcommand:
     cli_rest: bool = False
     #: `run` also gets the current session's id (`session_id`, "" when there is none).
     session: bool = False
+    #: `run` also gets the chat the command was sent in (`chat`: platform, chat_id, thread_id, chat_type, and the
+    #: chat id and type the owner check judged as owner_chat_id and owner_chat_type; empty when there is none) and
+    #: a way to send a notice (`send`, None when there is none).
+    chat: bool = False
 
 
 def _sign_in_route(env: dict[str, str]) -> str:
@@ -73,6 +86,7 @@ def run_status(
     scan = ep.scan.url + (" (dev endpoints)" if ep.dev else "") if ep.scan.ok else ""
     missing = missing_credentials()
     grant_count, binding_count = grants.counts(cfg, grants.load(cfg.state_dir))
+    notify = owner_settings.notify_of(cfg)
     return "\n".join(
         (
             f"Sentrook plugin {PLUGIN_VERSION}",
@@ -88,7 +102,11 @@ def run_status(
             f"grants: {grant_count}",
             f"channel bindings: {binding_count}",
             f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
-            f"held calls: {hold.status_line(cfg.state_dir, cfg.owner_channel, datetime.now(UTC))}",
+            # Plain sentences, the same wherever shown: "Notices: ..." and "Attended platforms: ...".
+            owner_settings.notify_line(notify, CMD),
+            *((failed,) if (failed := owner_settings.failed_line(cfg)) else ()),
+            owner_settings.attended_line(cfg),
+            f"held calls: {hold.status_line(cfg.state_dir, notify, datetime.now(UTC))}",
             f"passes: {passes.counts(cfg.state_dir, datetime.now(UTC))}",
             "skill review: "
             + skill_review.status_line(
@@ -100,7 +118,7 @@ def run_status(
                 if skill_review.host_isolated(env)
                 else ()
             ),
-            "background-save notices: " + skill_review.notice_line(cfg.owner_channel),
+            "background-save notices: " + skill_review.notice_line(notify),
         )
     )
 
@@ -273,6 +291,32 @@ def run_passes(
     return _changed(cfg, passes.revoke(cfg.state_dir, arg, now), who, "passes")
 
 
+def run_notify(
+    rest: str,
+    settings: dict[str, Any],
+    env: dict[str, str] | None = None,
+    who: Who | None = None,
+    chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
+) -> str:
+    cfg = resolve_config(settings, env)
+    if who is None:
+        return refusal("notify")
+    now = datetime.now(UTC)
+    result = owner_settings.run_notify(cfg, rest, chat or {}, who, now, CMD, send)
+    return _changed(cfg, result, who, "settings")
+
+
+def run_attended(
+    rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
+) -> str:
+    cfg = resolve_config(settings, env)
+    if who is None:
+        return refusal("attended")
+    now = datetime.now(UTC)
+    return _changed(cfg, owner_settings.run_attended(cfg, rest, who, now, CMD), who, "settings")
+
+
 def run_help(
     rest: str = "",
     settings: dict[str, Any] | None = None,
@@ -289,6 +333,10 @@ def run_help(
     lines.append(
         "Where /sentrook goes to the model (API server, --oneshot): hermes sentrook <command>"
     )
+    if settings is not None:
+        cfg = resolve_config(settings, env)
+        lines.append(owner_settings.notify_line(owner_settings.notify_of(cfg), CMD))
+        lines.append(owner_settings.attended_line(cfg))
     return "\n".join(lines)
 
 
@@ -388,7 +436,28 @@ COMMANDS: dict[str, Subcommand] = {
         owner_only=True,
         cli_rest=True,
     ),
-    "help": Subcommand("this list", run_help),
+    "notify": Subcommand(
+        "where Sentrook's notices go (held calls on scheduled jobs and other runs nobody watches): here "
+        "stores this chat; <platform> its home channel (from the terminal); off goes back to owner_channel "
+        "in config; status",
+        run_notify,
+        args="here|off|status|<platform>",
+        owner_only=True,
+        cli_rest=True,
+        chat=True,
+    ),
+    "attended": Subcommand(
+        "list, add or remove a platform where a person answers Hermes's approval prompts; adding one "
+        "loosens Sentrook (a review there asks instead of holding the call), and one Sentrook treats as "
+        "unattended needs --confirm",
+        run_attended,
+        args="add|remove|list [platform] [--confirm]",
+        owner_only=True,
+        cli_rest=True,
+    ),
+    "help": Subcommand(
+        "this list, and where notices go and which platforms are attended", run_help
+    ),
 }
 
 
@@ -398,21 +467,57 @@ def dispatch(
     env: dict[str, str] | None = None,
     gate: OwnerGate | None = None,
     session_id: str = "",
+    chat: dict[str, str] | None = None,
+    send: SendNotice | None = None,
 ) -> str:
     """Run the named subcommand; empty or unknown input gets the help text. An owner-only
     subcommand runs through `gate`, and is refused without one. `session_id` is the session the
-    command was sent from ("" for none)."""
+    command was sent from ("" for none); `chat` the chat (empty for none, as on the CLI); `send`
+    sends a notice from this process."""
     name, _, rest = (raw_args or "").strip().partition(" ")
     name = name.lower()
     cmd = COMMANDS.get(name)
     if cmd is None:
-        return run_help()
+        return run_help(settings=settings, env=env)
     if not cmd.owner_only:
         return cmd.run(rest.strip(), settings, env)
     if gate is None:
         return refusal(name)
-    extra = {"session_id": session_id} if cmd.session else {}
-    return gate(name, lambda r, who: cmd.run(r.strip(), settings, env, who, **extra))(rest)
+    extra: dict[str, Any] = {"session_id": session_id} if cmd.session else {}
+
+    def run(r: str, who: Who) -> str:
+        who = dict(who)
+        judged = who.pop(OWNER_CHAT, None) or {}
+        more = dict(extra)
+        if cmd.chat:
+            more["chat"] = {
+                **(chat or {}),
+                "owner_chat_id": str(judged.get("chat_id") or ""),
+                "owner_chat_type": str(judged.get("chat_type") or ""),
+            }
+            more["send"] = send
+        return cmd.run(r.strip(), settings, env, who, **more)
+
+    return gate(name, run)(rest)
+
+
+def chat_of(source: Any) -> dict[str, str]:
+    """The chat a slash command was sent in, from the gateway SessionSource Hermes passes the handler: platform,
+    chat id, thread id and chat type ("" for each it does not give). Empty without one (the local terminal)."""
+    if source is None:
+        return {}
+    platform = getattr(source, "platform", None)
+    platform = getattr(platform, "value", platform)
+
+    def text(v: Any) -> str:
+        return str(v).strip() if isinstance(v, (str, int)) and str(v).strip() else ""
+
+    return {
+        "platform": text(platform).lower(),
+        "chat_id": text(getattr(source, "chat_id", None)),
+        "thread_id": text(getattr(source, "thread_id", None)),
+        "chat_type": text(getattr(source, "chat_type", None)).lower(),
+    }
 
 
 def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: OwnerGate) -> None:
@@ -425,7 +530,12 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
             else:
                 gate_here = gate
             return dispatch(
-                raw_args, settings(), gate=gate_here, session_id=sid if isinstance(sid, str) else ""
+                raw_args,
+                settings(),
+                gate=gate_here,
+                session_id=sid if isinstance(sid, str) else "",
+                chat=chat_of(context.get("source")),
+                send=functools.partial(hold.deliver, ctx),
             )
         except Exception as exc:  # noqa: BLE001 - a reply beats a stack trace in the chat
             logger.warning("/sentrook failed: %s", exc)
@@ -434,6 +544,9 @@ def register_slash(ctx: Any, settings: Callable[[], dict[str, Any]], gate: Owner
     ctx.register_command(
         name="sentrook",
         handler=handler,
-        description="Sentrook plugin status, scan history, grants, snooze, held calls and help",
+        description=(
+            "Sentrook plugin status, scan history, grants, snooze, held calls, notices, attended "
+            "platforms and help"
+        ),
         args_hint=" | ".join(f"{name} {c.args}".rstrip() for name, c in COMMANDS.items()),
     )

@@ -163,7 +163,7 @@ def test_without_a_home_channel_only_the_notice_is_missing(h, monkeypatch, save,
     assert rec["decision"] == decision and shown(h)[0] == action
     assert h.sent == []
     sent = rec["notice"]
-    assert sent["status"] == "unsent" and "owner_channel is not set" in sent["reason"]
+    assert sent["status"] == "unsent" and sent["reason"] == plugin.hold.NO_OWNER_CHANNEL
 
 
 @pytest.mark.parametrize("bypass", ["yolo", "approvals-off"])
@@ -823,15 +823,20 @@ def test_status_and_verify_name_the_notice_channel(h):
 def test_without_a_home_channel_status_and_verify_say_so_plainly(h, channel):
     if channel is None:
         del h.ctx.settings["owner_channel"]
-        why = "owner_channel is not set"
+        why = (
+            "no notice target is set; send /sentrook notify here in the chat where you want notices"
+        )
+        fix = ""
     else:
         h.ctx.settings["owner_channel"] = channel
         why = "owner_channel discord has no home channel"
+        fix = (
+            " Send /sethome in that platform's chat, or /sentrook notify here in the chat where you "
+            "want notices."
+        )
     want = (
-        f"cannot be delivered ({why}). Set owner_channel to a platform with a home channel: "
-        "hermes config set plugins.entries.sentrook.settings.owner_channel <platform>, then /sethome "
-        "in that chat. Until then background saves Sentrook lets through, holds or blocks show only in "
-        "/sentrook history and the skill review counts."
+        f"cannot be delivered ({why}).{fix} Until then background saves Sentrook lets through, holds or "
+        "blocks show only in /sentrook history and the skill review counts."
     )
     assert f"background-save notices: {want}" in status_lines(h)
     verify = {n: (ok, d) for n, ok, d in cli.run_verify(dict(h.ctx.settings), timeout=0.01)}
@@ -851,3 +856,15 @@ def test_status_counts_saves_let_through(h, monkeypatch):
     run(h, monkeypatch, "fork-skill", "telegram")
     line = next(x for x in status_lines(h) if x.startswith("skill review:"))
     assert line.endswith("1 held, 2 let through")
+
+
+def test_a_background_save_notice_goes_to_the_chat_set_by_notify_here(h, monkeypatch):
+    """`/sentrook notify here` (kept in settings.json) wins over owner_channel for these notices too."""
+    (h.dir / "sentrook").mkdir(exist_ok=True)
+    (h.dir / "sentrook" / "settings.json").write_text(
+        json.dumps({"version": 1, "notify": {"platform": "telegram", "chat_id": "4242"}})
+    )
+    h.reply.update(risk=55, self_edit=NOT_LENIENT)
+    _out, rec = run(h, monkeypatch, "fork-skill", "telegram")
+    assert rec["notice"] == {"status": "queued", "target": "telegram chat"}
+    assert [s["args"]["target"] for s in h.sent] == ["telegram:4242"]

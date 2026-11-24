@@ -14,6 +14,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from linear_time import FACTOR, assert_linear
 from test_aira_detectors import planir
 from test_converge_scan import BENIGN_ANSWERS, CLOCK, KEY
 from test_jev_probes import FakeDecider
@@ -388,15 +389,6 @@ def test_the_write_patterns_take_linear_time(text):
     assert time.perf_counter() - t0 < 2.0
 
 
-def _visible_write_seconds(text: str) -> float:
-    ctx = detectors.Context(
-        prepared=None, lists=load_lists(), packs=frozenset({detectors.PACK_TIER1})
-    )
-    t0 = time.perf_counter()
-    detectors._visible_write(SimpleNamespace(scan_text=text), ctx)
-    return time.perf_counter() - t0
-
-
 @pytest.mark.parametrize(
     "unit",
     [
@@ -408,15 +400,14 @@ def _visible_write_seconds(text: str) -> float:
 )
 def test_the_write_check_grows_linearly_with_the_call(unit):
     """Every path is a distinct read, so nothing stops early and nothing is deduplicated: four times the call
-    takes about four times as long, not sixteen (the best of three runs at each size, so a busy machine does not
-    decide it)."""
-
-    def text(n: int) -> str:
-        return "".join(unit.format(i=i) for i in range(n))
-
-    small = min(_visible_write_seconds(text(300)) for _ in range(3))
-    large = min(_visible_write_seconds(text(1200)) for _ in range(3))
-    assert large < max(small, 0.002) * 9
+    takes about four times as long, not sixteen (see linear_time.py, so a busy machine does not decide it)."""
+    ctx = detectors.Context(
+        prepared=None, lists=load_lists(), packs=frozenset({detectors.PACK_TIER1})
+    )
+    texts = {d: "".join(unit.format(i=i) for i in range(1200 // d)) for d in (1, FACTOR)}
+    _, large = assert_linear(
+        lambda d: detectors._visible_write(SimpleNamespace(scan_text=texts[d]), ctx), unit
+    )
     assert large < 2.0
 
 

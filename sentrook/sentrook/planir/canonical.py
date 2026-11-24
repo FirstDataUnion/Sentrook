@@ -99,6 +99,16 @@ _WRITE_ACTION_FIRST = frozenset(
 )
 #: Prefixes of a person (a direct message): their id is never a channel's.
 _PERSON_PREFIXES = ("user:", "dm:")
+#: A platform before a channel target (`discord:` in `discord:channel:<id>`): the same channel without it.
+_PLATFORM_CHANNEL = re.compile(r"^[a-z][a-z0-9_-]{1,20}:(?=(?:channel|group|thread):)")
+#: Discord's `thread-reply` sends to the thread `threadId` names when the call names no `target`, `to` or
+#: `channelId` (OpenClaw's Discord plugin writes it `channel:<threadId>`). Elsewhere a thread id is a thread
+#: inside the target channel, not a destination of its own.
+_THREAD_REPLY_ACTION = "thread-reply"
+_THREAD_ID_KEY = "threadId"
+_THREAD_ALIAS_PLATFORM = "discord"
+#: A Discord id (a snowflake): what a `threadId` is when the call does not name its platform.
+_SNOWFLAKE = re.compile(r"\d{17,20}")
 _CC_KEYS = ("cc",)
 _BCC_KEYS = ("bcc",)
 _ATTACHMENT_KEYS = ("attachments", "files", "attachment", "file_paths")
@@ -238,12 +248,34 @@ def _read_only_action(raw: dict[str, Any]) -> bool:
     return words[0] in _READ_ACTION_FIRST or words[-1] in _READ_ACTION_LAST
 
 
+def _thread_reply_target(raw: dict[str, Any]) -> str | None:
+    """The thread a Discord `thread-reply` sends to by `threadId` alone, written `channel:<threadId>`; None
+    when the call names a `target`, `to` or `channelId`, names another platform, or is another action."""
+    if raw.get("action") != _THREAD_REPLY_ACTION:
+        return None
+    if any(_as_list(raw.get(k)) for k in ("target", "to", _CHANNEL_ID_KEY)):
+        return None
+    thread = raw.get(_THREAD_ID_KEY)
+    if isinstance(thread, int) and not isinstance(thread, bool):
+        thread = str(thread)
+    if not isinstance(thread, str) or not thread.strip():
+        return None
+    thread = thread.strip()
+    platform = raw.get("channel")
+    platform = platform.strip().lower() if isinstance(platform, str) and platform.strip() else None
+    if platform != _THREAD_ALIAS_PLATFORM and not (
+        platform is None and _SNOWFLAKE.fullmatch(thread)
+    ):
+        return None
+    return thread if thread.startswith("channel:") else "channel:" + thread
+
+
 def _same_channel(value: str, recipients: list[str]) -> bool:
     """`value` (`channel:<id>`) is a channel a recipient already names by the same id: bare, or after a
-    prefix that is not a person's (`channel:`, `telegram:`)."""
+    prefix that is not a person's (`channel:`, `telegram:`, `discord:channel:`)."""
     ident = value.removeprefix("channel:").lower()
     for r in recipients:
-        r = r.strip().lower()
+        r = _PLATFORM_CHANNEL.sub("", r.strip().lower())
         if r == ident or (
             ":" in r and not r.startswith(_PERSON_PREFIXES) and r.split(":", 1)[1] == ident
         ):
@@ -364,6 +396,9 @@ def canonical_arguments(
             for v in _channel_ids(raw[_CHANNEL_ID_KEY]):
                 if not _same_channel(v, recipients):
                     recipients.append(v)
+        thread = _thread_reply_target(raw)
+        if thread:
+            recipients.append(thread)
     if recipients:
         args["recipients"] = list(dict.fromkeys(recipients))
     for canon, keys in (("cc", _CC_KEYS), ("bcc", _BCC_KEYS), ("attachments", _ATTACHMENT_KEYS)):
@@ -455,6 +490,7 @@ def _read_keys(tool_kind: ToolKind) -> frozenset[str]:
         ("action",),
         _RECIPIENT_KEYS,
         _SOURCE_CHANNEL_KEYS,
+        (_THREAD_ID_KEY,),
         _CC_KEYS,
         _BCC_KEYS,
         _ATTACHMENT_KEYS,

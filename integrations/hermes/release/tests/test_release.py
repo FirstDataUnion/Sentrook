@@ -264,6 +264,13 @@ def test_after_promote_the_mirror_readme_is_the_monorepo_readme(tmp_path, mirror
     assert (tip / ".github/pull_request_template.md").exists()
     assert not (tip / "stale_module.py").exists()
     assert not (tip / "tests").exists() and (tip / "plugin.yaml").exists()
+    # The agent skills and rules ship with the plugin, as committed.
+    for rel in (
+        "skills/sentrook-guide/SKILL.md",
+        "skills/sentrook-setup/SKILL.md",
+        "agent-rules.txt",
+    ):
+        assert (tip / rel).read_bytes() == (release.PLUGIN_DIR / rel).read_bytes(), rel
     assert f"upstream_sha={UPSTREAM}" in (tip / ".release-mirror").read_text()
 
     tag = f"refs/tags/hermes-plugin-v{release.manifest()['version']}"

@@ -1,0 +1,83 @@
+---
+name: sentrook-guide
+description: How the Sentrook security plugin works, for explaining it to the owner. Use when asked what Sentrook is, why a call was blocked or held, what a Sentrook approval prompt or notice means, or what a Sentrook command does.
+user-invocable: false
+---
+
+# Sentrook: how it works
+
+Sentrook is the security plugin installed in Hermes. Use this to explain it to your owner in plain words. To help
+the owner set it up, read the `sentrook:sentrook-setup` skill instead.
+
+## What it does
+
+Before each of your tool calls runs, the plugin sends it to the hosted Sentrook scan service with the request that led
+to it, a short history of the session and the tool results since the last scan. The service scores the risk and the
+plugin then allows the call, asks the owner, or blocks it. Secrets the plugin recognises (keys, tokens, passwords,
+access codes) are replaced with placeholders before anything leaves the machine; hosts, addresses and file paths are
+kept, because they are what the scan judges. A local copy of each scan stays in the traffic log on this machine. In
+observe mode Sentrook only scores and records, and never asks or blocks.
+
+## What the owner sees
+
+- **An approval prompt** (risk 45 or more by default). It starts with a feather and "Sentrook security check · risk
+  N/100" ("Safety rule" for a rule that always asks), says what the call does and why in plain words, and ends with
+  `Details: /sentrook why <id>`. Hermes shows its own buttons: **Once** runs this call; **Session** also lets the same action through for the rest of this session; **Always** lets it through from now on; **Deny** stops it. Where a grant would cover calls like this, the prompt says what Session and Always also set.
+- **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
+  category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
+  with `/sentrook why last`.
+- **A held call.** Where nobody can answer a prompt (cron jobs, subagents, webhooks, the API server), a call that needs review does not run, and
+  you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
+  `/sentrook allow <id>` lets the job's next run make the same call once; `/sentrook allow <id> always` lets the job make
+  it for 30 days; `/sentrook deny <id>` refuses the job the same call for 30 days. "The same call" is the same tool
+  about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
+  `/sentrook why <id>` shows the grant Sentrook suggests, and `/sentrook passes` lists what the answers set. A hold nobody
+  answers expires after 7 days. The owner gets one notice on the chat where they sent `/sentrook notify here` (or the home channel of the platform in Sentrook's `owner_channel` setting); until one is set, nothing is sent and the call is still held.
+- **A declined call.** When the owner has denied a held call for a job, that job's same call is refused with "The
+  owner declined this action for this job". Continue without it; do not retry it another way.
+- **A background-save notice.** Hermes saves skills and memory in the background after a turn, with nobody there to answer a prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a save it would review is let through, staged in Hermes's pending list (`/skills pending`, `/memory pending`) or held; a blocked one is not saved. A notice where held-call notices go says which.
+- **A scan failure.** When the scan service cannot answer, the owner is asked whether to run the call unscanned where
+  someone is there to answer; on an unattended run the call is blocked and the owner gets one notice. This is a
+  service problem, not a security block.
+
+Grants and channel bindings tell Sentrook what is routine (a host the agent always sends to, a folder it works in, the
+channel a daily report goes to). They never lower Sentrook's floors: reading secrets and sending them somewhere is
+still blocked whatever is granted.
+
+## The owner's commands
+
+Only the owner can run the commands below except `/sentrook status` and `/sentrook help`: in a direct message from an allowed user, or on the local terminal (`hermes chat`, or `hermes sentrook <command>` on the machine). Group chats are refused. When you run one, Sentrook refuses it. Never try: explain what the command does and let the
+owner type it.
+
+- `/sentrook status`: plugin version, mode and thresholds, scan host, whether credentials are set, how many grants and bindings, snooze, held calls and where notices go. Anyone may run it.
+- `/sentrook help`: lists the commands.
+- `/sentrook history [n]`: the last n scans (default 10, at most 50): time, session, tool, risk, what Sentrook did, the review.
+- `/sentrook why [request_id|last]`: one scan in detail: risk, reasons, the hosts and files found, and the grant that would let calls like it through; with a held call's id, also the hold, the answers it offers and the grant Sentrook suggests.
+- `/sentrook report [request_id|last] [--full|--github|--save]`: a report of a scan that looks wrong, to send to the Sentrook team: `--full` adds the exact request (send it privately), `--github` opens a public issue with the summary filled in, `--save` writes the report and the full record to a file to email.
+- `/sentrook grants`: every grant in force, from config (read-only) and set by command.
+- `/sentrook grant <kind> <pattern> [flags]`: adds a grant: destination, file, provider, repo or credential; for this session only (not cron jobs, subagents or other chats) unless `--persistent`; `--session <ref>` binds it to a session from history, `--allows read,write` (files only), `--expires 12h`.
+- `/sentrook revoke <id>`: removes a grant set by command.
+- `/sentrook bind add|remove|list [channel]`: lists, adds or removes a channel binding: a channel this deployment normally delivers to.
+- `/sentrook snooze [duration|off|status] [--all]`: lets review prompts through without asking in this session (`--all`: every session) for a while, default 1h, at most 24h; a block with no clear attack signal asks instead; never other blocks, reviews Sentrook enforces or unattended runs; `off` ends it.
+- `/sentrook allow <id> [later|always]`: answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: lets it through once on the job's next run (`later`: the same), or with `always` for 30 days on that job, where the notice offers it; the held call is not run again.
+- `/sentrook deny <id>`: refuses a call held on a cron job, by the id in Sentrook's notice: that job is refused the same call for 30 days, with no more notices.
+- `/sentrook approve <id>`: the same as allow (kept for one release).
+- `/sentrook passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
+- `/sentrook notify here|off|status|<platform>`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat (with a test notice); `<platform>` (on the machine) to that platform's home channel; `off` goes back to the `owner_channel` setting.
+- `/sentrook attended add|remove|list [platform] [--confirm]`: the platforms with a person answering Hermes's approval prompts; adding one loosens Sentrook (a review there asks instead of holding the call), so it needs `--confirm`.
+- `hermes sentrook verify` (on the machine): checks the endpoints, the credentials, the scan service and the token.
+
+## A scan that looks wrong
+
+Point the owner to `/sentrook history` to find the scan and `/sentrook why <id>` to see the score, the reasons, the hosts
+and files Sentrook found, and the grant that would let calls like it through. If the owner thinks Sentrook got it
+wrong, `/sentrook report <id>` prints a report to send to the Sentrook team: `--github` opens a public issue with it
+filled in, and `--save` writes the full record to a private file to email (the command gives the address).
+
+## What you never do
+
+- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, or their `hermes sentrook` forms. Only the owner runs them.
+- Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
+  reinstall the plugin.
+- Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and
+  point them to `/sentrook why`.

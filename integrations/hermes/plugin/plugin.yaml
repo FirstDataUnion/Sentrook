@@ -62,12 +62,15 @@ config_schema:
   attended_platforms:
     type: list
     description: >
-      Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
-      Hermes approval prompts). Elsewhere outside chat platforms, a review holds the call for the owner's
-      `/sentrook allow` or `/sentrook deny`. Env SENTROOK_ATTENDED_PLATFORMS.
+      Extra session platforms where a person answers Hermes's approval prompts (e.g. api_server behind a UI
+      that shows them). A review there shows an approval prompt; elsewhere outside chat platforms it holds the
+      call for the owner's `/sentrook allow` or `/sentrook deny`. The owner can also add a front end such as
+      api_server with `/sentrook attended add <platform> --confirm`; runs Hermes starts itself and the local
+      terminal cannot be added. Env SENTROOK_ATTENDED_PLATFORMS.
   owner_channel:
     type: str
     description: >
+      Easier: send `/sentrook notify here` in the chat where you want notices; that wins over this setting.
       The platform (e.g. telegram) whose home channel gets the notice of a call held on an unattended run,
       and of a call blocked there because the scan failed (at most once per job, or per session for other
       runs, every 6 hours), and of a background skill or memory save blocked, held or let through without

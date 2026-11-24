@@ -485,6 +485,78 @@
       "identity": null,
       "arguments": { "action": "send", "channel": "discord", "target": "#general", "message": "ops-yard is quiet today" },
       "sent": false
+    },
+    {
+      "case": "channel:<id> binding on a send that names the channel in to",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "to": "channel:1000000000000000001", "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "channel:<id> binding on a send that names the channel in targets",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "broadcast", "targets": ["channel:1000000000000000001"], "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "channel:<id> binding on a platform-prefixed target",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "target": "discord:channel:1000000000000000001", "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "channel:<id> binding on a bare-id target on that platform",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "1000000000000000001", "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "platform-named channel:<id> binding on a bare-id target on that platform",
+      "grant": { "kind": "destination", "pattern": "discord:channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "channel": "discord", "target": "1000000000000000001", "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "channel:<id> binding on a Discord thread-reply that names the thread only in threadId",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "thread-reply", "channel": "discord", "threadId": "1000000000000000001", "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "#<id> binding on a Discord thread-reply that names the thread only in threadId",
+      "grant": { "kind": "destination", "pattern": "#1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "thread-reply", "channel": "discord", "threadId": "1000000000000000001", "message": "Workout today" },
+      "sent": true
+    },
+    {
+      "case": "channel:<id> binding on a platform-prefixed target of another channel",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "send", "target": "discord:channel:1000000000000000002", "message": "Workout today" },
+      "sent": false
+    },
+    {
+      "case": "channel:<id> binding on a thread-reply to another thread",
+      "grant": { "kind": "destination", "pattern": "channel:1000000000000000001", "scope": "persistent" },
+      "tool_kind": "message_send",
+      "identity": null,
+      "arguments": { "action": "thread-reply", "channel": "discord", "threadId": "1000000000000000002", "message": "Workout today" },
+      "sent": false
     }
   ]
 }

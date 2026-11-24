@@ -63,7 +63,10 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .owner_settings import Notify
 
 #: The tools the loop saves through.
 LOOP_TOOLS = frozenset({"skill_manage", "memory"})
@@ -350,22 +353,25 @@ def _quiet_hours() -> int:
     return int(QUIET.total_seconds() // 3600)
 
 
-def notice_line(owner_channel: str) -> str:
-    """Where loop-save notices go, for status and verify."""
-    from .hold import home_platforms, notice_target, owner_target
+def notice_line(n: Notify) -> str:
+    """Where loop-save notices go, for status and verify (`n` as `owner_settings.notify_of` gives it)."""
+    from .hold import NO_OWNER_CHANNEL, home_platforms, notice_target, owner_target, target_text
 
-    target, why = owner_target(owner_channel)
+    target, why = owner_target(n)
     if target:
-        return f"to the {target} home channel"
-    if notice_target(owner_channel, home_platforms())[0] is not None:
+        return f"to the {target_text(target)}"
+    if notice_target(n, home_platforms())[0] is not None:
         # a home channel to send to, but no way to send it from this process
         return f"cannot be delivered ({why})"
-    why = why if owner_channel else "owner_channel is not set"
+    fix = (
+        ""
+        if why == NO_OWNER_CHANNEL
+        else " Send /sethome in that platform's chat, or /sentrook notify here in the chat where you want "
+        "notices."
+    )
     return (
-        f"cannot be delivered ({why}). Set owner_channel to a platform with a home channel: "
-        "hermes config set plugins.entries.sentrook.settings.owner_channel <platform>, then /sethome in that "
-        "chat. Until then background saves Sentrook lets through, holds or blocks show only in /sentrook "
-        "history and the skill review counts."
+        f"cannot be delivered ({why}).{fix} Until then background saves Sentrook lets through, holds or blocks "
+        "show only in /sentrook history and the skill review counts."
     )
 
 
