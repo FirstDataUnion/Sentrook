@@ -2333,6 +2333,9 @@ def _extract_call(
     elif kind is ToolKind.MESSAGE_SEND:
         chat, platform = _chat_send(call)
         found.extend(_recipients_in(call.recipients, chat=chat, platform=platform))
+        for v in call.get("source_channels") or []:
+            if _is_channel_target(v, chat=chat, platform=platform):
+                found.append(Found(EntityKind.CHANNEL, v, v, Role.DATA_SOURCE))
         for a in call.get("attachments") or []:
             norm = normalise_path(a, home=home, workspace_root=workspace_root)
             found.append(Found(EntityKind.PATH, norm, display_path(norm, home), Role.DATA_SOURCE))

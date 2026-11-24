@@ -530,7 +530,7 @@ export function relevantGrants(
     const always = g.kind === "credential" && opts.execCall === true;
     if (!always && !forms.some(([f, shortOk]) => hay.some((h) => piecesIn(f, h, shortOk)))) return;
     out.push({
-      grant_ref: `g_${i + 1}`,
+      grant_ref: g.ref ?? `g_${i + 1}`,
       kind: g.kind,
       pattern: g.pattern,
       ...(g.allows ? { allows: g.allows } : {}),
