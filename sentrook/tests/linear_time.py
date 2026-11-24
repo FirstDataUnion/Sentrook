@@ -10,6 +10,7 @@ shape whose match is capped at a few thousand characters (quadratic below the ca
 
 from __future__ import annotations
 
+import gc
 import time
 from collections.abc import Callable
 
@@ -20,18 +21,28 @@ ATTEMPTS = 3
 
 
 def _seconds(run: Callable[[int], object], divisor: int) -> float:
-    t0 = time.perf_counter()
-    run(divisor)
-    return time.perf_counter() - t0
+    """With the garbage collector off, as `timeit` does: a full collection costs time in proportion to
+    everything the test process holds, not to the input, and would land in whichever run triggers it."""
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        t0 = time.perf_counter()
+        run(divisor)
+        return time.perf_counter() - t0
+    finally:
+        if enabled:
+            gc.enable()
 
 
 def assert_linear(run: Callable[[int], object], what: str = "", limit: float = LIMIT) -> None:
     """`run(d)` does the work at 1/d of its full size; it is called with d = FACTOR and d = 1.
 
-    Each size runs once. If the growth is over `limit`, both sizes run again and the fastest time of
-    each is kept, so a pause on a busy runner does not fail the check, while a real super-linear
-    pattern grows the same way every time."""
-    small = _seconds(run, FACTOR)
+    The small size runs twice and keeps its faster time, so a pause there cannot hide a super-linear
+    pattern (a slow small run makes the growth look lower); it costs a quarter of a full run. If the
+    growth is over `limit`, both sizes run again and the fastest time of each is kept, so a pause
+    during a full run does not fail the check, while a real super-linear pattern grows the same way
+    every time."""
+    small = min(_seconds(run, FACTOR), _seconds(run, FACTOR))
     large = _seconds(run, 1)
     for _ in range(ATTEMPTS - 1):
         if large < FLOOR_S or large / max(small, 1e-9) < limit:
