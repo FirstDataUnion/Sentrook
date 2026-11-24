@@ -27,6 +27,7 @@
     "hold.ts",
     "memoryWriters.ts",
     "owner.ts",
+    "passes.ts",
     "planir.ts",
     "redact.ts",
     "report.ts",

@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import type { PluginConfig } from "./config.ts";
 import * as grants from "./grants.ts";
+import * as passes from "./passes.ts";
 import { actionOf, HISTORY_DEFAULT, HISTORY_MAX, parseRef, recentScans, responseOf, reviewOf, text } from "./history.ts";
 import * as report from "./report.ts";
 import * as snooze from "./snooze.ts";
@@ -31,6 +32,8 @@ import { readTime, Store } from "./store.ts";
 type Rec = Record<string, any>;
 
 export const ROUTE = "/sentrook";
+/** The answers a held call can offer, as the page shows them. */
+const ANSWERS: string[] = [passes.ALLOW, passes.ALLOW_ALWAYS, passes.DENY];
 export const MODEL_VERSION = 1;
 
 /** The leaves of each tier, in the order the page shows them; any other numeric key follows, sorted. */
@@ -451,6 +454,9 @@ export async function pendingOf(
           expires_at: typeof h.expires_at === "string" ? h.expires_at : null,
           grant: grant ? grants.describeGrant(grant) : null,
           scan: null as Rec | null,
+          // the answers a hold offers (passes.offers); null for a hold from before they were kept
+          offers: h.v === 2 && Array.isArray(h.offers) ? h.offers.filter((o: unknown) => ANSWERS.includes(o as string)) : null,
+          count: Number.isInteger(h.count) && h.count > 0 ? h.count : 1,
         };
       })
       .reverse();
@@ -511,6 +517,12 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
   const budget = budgetFor(cfg.trafficLog.maxBytes);
   const calls = cfg.dashboardShowCalls;
   const page = enabled ? await queryScans(cfg.trafficLog.path, q, budget, calls) : { scans: [], totals: totalsOf([]), query: queryEcho(q), page: { more: false, next: null, read_bytes: 0, budget_hit: false, cursor_lost: false, reached_start: true } };
+  let passesText: string;
+  try {
+    passesText = passes.formatPasses(cfg.stateDir, now, CMD);
+  } catch {
+    passesText = "Passes could not be read.";
+  }
   let grantsText: string;
   let snoozeText: string;
   try {
@@ -531,7 +543,7 @@ export async function buildModel(cfg: PluginConfig, q: Query, now: Date = new Da
     host: "openclaw",
     lines: { review_at: cfg.reviewAt, block_at: cfg.blockAt },
     mode: cfg.mode,
-    state: { grants: grantsText, snooze: snoozeText },
+    state: { grants: grantsText, passes: passesText, snooze: snoozeText },
     pending: await pendingOf(cfg.trafficLog.path, enabled, cfg.stateDir, now, cfg.approval.interactiveTimeoutMs, budget, calls),
     commands: COMMANDS,
     show_calls: calls,

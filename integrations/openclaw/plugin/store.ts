@@ -137,6 +137,12 @@ export interface HoldsFile {
   [key: string]: unknown;
 }
 
+export interface PassesFile {
+  version?: number;
+  passes: unknown[];
+  [key: string]: unknown;
+}
+
 /** Where the owner gets notices: a direct message on one channel, as `/sentrook-notify here` recorded it. */
 export interface NotifyTarget {
   channel: string;
@@ -371,6 +377,21 @@ export class Store {
 
   saveHolds(value: HoldsFile): void {
     this.writeJson(path.join(this.dir, "holds.json"), value);
+  }
+
+  /** `passes.json` (passes.ts), empty when absent; null when it exists but cannot be read. */
+  loadPasses(): PassesFile | null {
+    const file = path.join(this.dir, "passes.json");
+    if (!existsSync(file)) return { version: 1, passes: [] };
+    const data = this.readJson<unknown>(file, null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    const p = data as Record<string, unknown>;
+    if (!Object.hasOwn(p, "passes")) p.passes = [];
+    return Array.isArray(p.passes) ? (p as PassesFile) : null;
+  }
+
+  savePasses(value: PassesFile): void {
+    this.writeJson(path.join(this.dir, "passes.json"), value);
   }
 
   /** When each job or session last had a scan-failure notice (`scan-failure-notices.json`); empty when unreadable. */

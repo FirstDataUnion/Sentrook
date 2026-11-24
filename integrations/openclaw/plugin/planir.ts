@@ -16,6 +16,11 @@ import type { BufferedInput, HistoryEntry, Provider, RunContext, Session } from 
 
 /** History decisions sent as `review_timed_out`. */
 const DRAFT_OR_HELD = new Set(["held", "drafted", "draft_failed"]);
+/**
+ * History decisions the owner's pass or denial for a job settled (passes.ts), and the word PlanIR has for each: the
+ * call ran, or the owner refused it.
+ */
+const BY_OWNER: Record<string, string> = { allowed_by_pass: "allowed", denied_by_owner: "denied_by_user" };
 
 export const PLUGIN_VERSION = "2.0.0-beta.13";
 
@@ -664,7 +669,11 @@ export function buildPlanir(b: BuildInput): Built {
   // owner (kept there or not): PlanIR has no word for these, so they go as `review_timed_out` (what was asked for did
   // not run, and a retry of it is a retry after a review).
   const history = window.map(({ _host_call_id: _drop, _patch_skill: _dropSkill, ...h }) =>
-    (DRAFT_OR_HELD.has(h.decision) ? { ...h, decision: "review_timed_out" } : h) as Omit<HistoryEntry, "_host_call_id" | "_patch_skill">,
+    (DRAFT_OR_HELD.has(h.decision)
+      ? { ...h, decision: "review_timed_out" }
+      : Object.hasOwn(BY_OWNER, h.decision)
+        ? { ...h, decision: BY_OWNER[h.decision]! }
+        : h) as Omit<HistoryEntry, "_host_call_id" | "_patch_skill">,
   );
 
   const requestText = b.hostProcess ? hostRequestText(run) : requestTextOf(run);
