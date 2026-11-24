@@ -5,14 +5,29 @@ process with no terminal. There the plugin holds the call:
 - the call does not run, and the agent is told it is held for the owner's approval and must not be
   retried in this run (`HELD_TEXT`);
 - the owner gets one notice on the home channel of the platform in `owner_channel`: which run, the
-  tool and its target as a review prompt names them, the block category, and an approve id. Hermes
-  copies what `send_message` sends into the agent's own transcript, so the notice carries nothing a
-  steered agent could use; the owner reads the risk, reasons and suggested grant with `why <id>`;
-- `/sentrook approve <id>` within 24 hours sets the suggested grant as a persistent grant that ends
-  after 30 days. The held call is not run again; the next run of the job is scanned with the grant.
-  With no suggested grant, approving sets nothing and the reply says so.
-- After 24 hours the hold expires and nothing runs. Expiry is found and recorded when the holds are
-  next changed (a new hold or an approval).
+  tool and its target as a review prompt names them, the block category, the hold's id and the answers it
+  offers. Hermes copies what `send_message` sends into the agent's own transcript, so the notice carries
+  nothing a steered agent could use; the owner reads the risk, reasons and suggested grant with `why <id>`;
+- the owner answers within 7 days (`answer`):
+  - `allow <id>` (also `allow <id> later`): a one-use pass for this job and action, used by the job's next
+    run (`passes`). The held call itself is not run again. Until the plugin can start the job's run itself,
+    both forms wait for the next run; `_run_now` is where that will plug in.
+  - `allow <id> always`: a standing pass for this job and action, for 30 days. Offered only when the scan's
+    `owner_pass` is `always` and the call names its parties.
+  - `deny <id>`: a standing denial for this job and action, for 30 days. A matching call is refused with a
+    plain declined result and no notice.
+  - `approve <id>` is the same as `allow <id>`, kept for one release.
+  A hold on a run that is not a cron job has no job to bind to: it offers `allow` only, bound to the call's
+  exact arguments. The notice lists only the answers the hold offers. A wider grant the scanner suggests is
+  never set by an answer: `why` shows its command, for the owner to set by hand.
+- A later hold of the same job and action, at no higher risk and with no new warning, updates the waiting
+  hold (its count and when it was last seen) and sends no new notice.
+- After 7 days the hold expires and nothing runs. Expiry is found and recorded when the holds are next
+  changed (a new hold or an answer).
+
+`holds.json` is version 2. Its entries keep no raw arguments: the match key is a hash (`passes.match_of`).
+Holds from before (no `v`) stay answerable as before until they expire: `allow` or `approve` sets the
+suggested grant (if any), and nothing else applies to them.
 
 Hermes's own background skill and memory saves are held without an entry here (`skill_review`): approving
 could not make the save.
@@ -22,7 +37,9 @@ answered that the scanner caps at review (`decision.unattended_view`). Attended 
 is still a review prompt.
 
 The traffic log gets the scan with decision `held` and, later, a `resolution` record with resolution
-`hold_approved` or `hold_expired`, joined by `request_id` as review answers are. Holds are kept in
+`hold_allowed`, `hold_allowed_always`, `hold_denied` (`hold_approved` for an older hold) or `hold_expired`,
+joined by `request_id` as review answers are; a call a pass or denial settles is logged with decision
+`allowed_by_pass` or `denied_by_owner`. Holds are kept in
 `<hermes home>/sentrook/holds.json`; the OpenClaw plugin keeps the same file and prints the same
 notice text.
 
@@ -62,14 +79,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import grants
+from . import grants, passes
 from .decision import BLOCK_CATEGORIES, block_category, describe
 from .store import Store, file_lock, read_time
 
 logger = logging.getLogger("sentrook")
 
-HOLD_TTL = timedelta(hours=24)
+HOLD_TTL = timedelta(days=7)
+#: How long a hold from before version 2 could be answered.
+V1_HOLD_TTL = timedelta(hours=24)
 GRANT_TTL = timedelta(days=30)
+#: The held calls a repeated hold remembers, for setting their history once it is answered.
+MAX_HELD = 20
 MAX_HOLDS = 200
 _ID = re.compile(r"h-[0-9a-f]{6}")
 #: Serialises read-modify-write of the file within this process; `file_lock` does across processes.
@@ -136,23 +157,46 @@ def where_text(
     return f"{run}, session {session_ref}"
 
 
+#: The notice's line for each answer a hold offers; `{c}` is the command, `{id}` the hold's id.
+_OFFER_LINES = {
+    passes.ALLOW: "- let this call through once, on the job's next run: {c} {id}",
+    passes.ALLOW_ALWAYS: "- let this job make this call for 30 days: {c} {id} always",
+    passes.DENY: "- refuse it on this job for 30 days, with no more notices: {c} {id}",
+}
+#: A hold that is not on a cron job: `allow` is bound to the exact call.
+_EXACT_LINE = "- let this exact call through once, within 7 days: {c} {id}"
+
+
 def notice_text(
-    resp: dict[str, Any], tool: str, where: str, hold_id: str, approve: str, why: str
+    resp: dict[str, Any],
+    tool: str,
+    where: str,
+    hold_id: str,
+    offers: list[str],
+    cmd: Cmd,
+    on_job: bool = True,
 ) -> str:
     """The owner's notice. It may be copied into the agent's own transcript (Hermes keeps what
     `send_message` sends), so it carries only what a steered agent cannot use: that a call was held,
     which run, the tool and its target as a review prompt names them, the block category, and the ids
-    and commands. The risk, reason codes, scores and entities are for the owner, through `why`."""
-    return "\n".join(
-        (
-            "Sentrook held a tool call on an unattended run; it did not run.",
-            f"Run: {_clean(where, 200)}",
-            f"Tool: {inert(tool, 80)}: {inert(describe(resp, tool), 160)}",
-            f"Held because {BLOCK_CATEGORIES[block_category(resp)]}.",
-            f"To approve within 24 hours: {approve} {hold_id}",
-            f"For the reasons: {why} {hold_id}",
-        )
-    )
+    and the commands of the answers this hold offers (`offers`, from `passes.offers`). The risk, reason
+    codes, scores and entities are for the owner, through `why`. `cmd`: a verb (allow, deny, why) -> the
+    command as the owner types it."""
+    lines = [
+        "Sentrook held a tool call on an unattended run; it did not run.",
+        f"Run: {_clean(where, 200)}",
+        f"Tool: {inert(tool, 80)}: {inert(describe(resp, tool), 160)}",
+        f"Held because {BLOCK_CATEGORIES[block_category(resp)]}.",
+    ]
+    if offers:
+        lines.append("Reply within 7 days:")
+        for verb in offers:
+            line = _EXACT_LINE if verb == passes.ALLOW and not on_job else _OFFER_LINES[verb]
+            lines.append(line.format(c=cmd("deny" if verb == passes.DENY else "allow"), id=hold_id))
+    else:
+        lines.append("Sentrook offers no way to let this call through.")
+    lines.append(f"For the reasons: {cmd('why')} {hold_id}")
+    return "\n".join(lines)
 
 
 # ---- the file ---------------------------------------------------------------------------------------
@@ -172,16 +216,20 @@ def _sweep(data: dict[str, Any], now: datetime, record: Record) -> list[dict[str
         (keep if _live(h, now) else gone).append(h)
     data["holds"] = keep
     for h in gone:
-        if isinstance(h, dict) and isinstance(h.get("request_id"), str):
-            record(
-                {
-                    "kind": "resolution",
-                    "request_id": h["request_id"],
-                    "resolution": "hold_expired",
-                    "decision": "held",
-                    "hold_id": h.get("id"),
-                }
-            )
+        if not isinstance(h, dict):
+            continue
+        rids = [x.get("request_id") for x in h.get("held") or [] if isinstance(x, dict)]
+        for rid in rids or [h.get("request_id")]:
+            if isinstance(rid, str):
+                record(
+                    {
+                        "kind": "resolution",
+                        "request_id": rid,
+                        "resolution": "hold_expired",
+                        "decision": "held",
+                        "hold_id": h.get("id"),
+                    }
+                )
     return [h for h in gone if isinstance(h, dict)]
 
 
@@ -196,6 +244,24 @@ def sweep(state_dir: Path, now: datetime, record: Record) -> None:
             store.save_holds(data)
 
 
+def _repeat_of(data: dict[str, Any], job_ref: str | None, match: dict[str, Any]) -> dict[str, Any] | None:
+    """The waiting hold a new hold of the same job and action repeats: same job, same match key, at no higher
+    risk and with no new warning (`passes.covers`). Only holds on a cron job repeat."""
+    if job_ref is None:
+        return None
+    return next(
+        (
+            h
+            for h in data["holds"]
+            if isinstance(h, dict)
+            and h.get("v") == 2
+            and h.get("job_ref") == job_ref
+            and passes.covers(h.get("match") or {}, match)
+        ),
+        None,
+    )
+
+
 def create(
     state_dir: Path,
     *,
@@ -207,27 +273,55 @@ def create(
     notice: dict[str, Any],
     now: datetime,
     record: Record,
-) -> str | None:
-    """Stores a new hold and returns its approve id; None when the file cannot be read (the call is
-    still held, but cannot be approved)."""
+    sid: str = "",
+    job_id: str | None = None,
+    match: dict[str, Any] | None = None,
+    level: str | None = None,
+    offers: list[str] | None = None,
+    description: str = "",
+) -> tuple[str | None, bool]:
+    """Stores a new hold, or counts a repeat of a waiting one (`_repeat_of`); returns its id (None when the file
+    cannot be read: the call is still held, but cannot be answered) and whether it was a repeat (no new notice)."""
     store = Store(state_dir)
+    ref = passes.job_ref(job_id)
+    match = match or {}
     with _LOCK, file_lock(state_dir / "holds.json"):
         data = store.load_holds()
         if data is None:
-            return None
+            return None, False
         _sweep(data, now, record)
-        taken = {h.get("id") for h in data["holds"]}
+        data["version"] = 2
+        same = _repeat_of(data, ref, match)
+        if same is not None:
+            same["count"] = int(same.get("count") or 1) + 1
+            same["last_seen_at"] = _iso(now)
+            same["held"] = [*(same.get("held") or []), {"sid": sid, "request_id": request_id}][
+                -MAX_HELD:
+            ]
+            store.save_holds(data)
+            return str(same["id"]), True
+        taken = {h.get("id") for h in data["holds"] if isinstance(h, dict)}
         hid = f"h-{secrets.token_hex(3)}"
         while hid in taken:
             hid = f"h-{secrets.token_hex(3)}"
         data["holds"].append(
             {
+                "v": 2,
                 "id": hid,
                 "request_id": request_id,
                 "session_ref": session_ref,
+                "held": [{"sid": sid, "request_id": request_id}],
                 "tool": tool,
+                "description": description,
                 "where": where,
+                "job_id": job_id,
+                "job_ref": ref,
+                "match": match,
+                "level": level,
+                "offers": list(offers or []),
                 "held_at": _iso(now),
+                "last_seen_at": _iso(now),
+                "count": 1,
                 "expires_at": _iso(now + HOLD_TTL),
                 "hint": hint,
                 "notice": notice,
@@ -235,7 +329,7 @@ def create(
         )
         data["holds"] = data["holds"][-MAX_HOLDS:]
         store.save_holds(data)
-        return hid
+        return hid, False
 
 
 def waiting(state_dir: Path, now: datetime) -> int | None:
@@ -244,59 +338,47 @@ def waiting(state_dir: Path, now: datetime) -> int | None:
     return None if data is None else sum(1 for h in data["holds"] if _live(h, now))
 
 
-def approve(
+def repeated(state_dir: Path, now: datetime) -> list[dict[str, Any]]:
+    """The waiting holds held more than once, for status."""
+    data = Store(state_dir).load_holds() or {"holds": []}
+    return [h for h in data["holds"] if _live(h, now) and int(h.get("count") or 1) > 1]
+
+
+def _approve_v1(
+    store: Store,
     state_dir: Path,
-    rest: str,
+    data: dict[str, Any],
+    found: dict[str, Any],
+    gone: list[dict[str, Any]],
+    hid: str,
     who: dict[str, Any],
     now: datetime,
     cmd: Cmd,
     record: Record,
 ) -> str:
-    """`approve <id>`: sets the held call's suggested grant (if any) and records the answer."""
-    hid = rest.strip()
-    if not _ID.fullmatch(hid):
-        return f"usage: {cmd('approve')} <id>, with the id from Sentrook's notice (h- and 6 hex digits)"
-    store = Store(state_dir)
+    """A hold from before version 2, answered as `approve` answered it: sets the suggested grant (if any)."""
     change: dict[str, Any] | None = None
     reply = ""
-    with _LOCK, file_lock(state_dir / "holds.json"):
-        data = store.load_holds()
-        if data is None:
-            return f"The holds file {state_dir / 'holds.json'} could not be read; fix or remove it first."
-        gone = _sweep(data, now, record)
-        found = next((h for h in data["holds"] if h.get("id") == hid), None)
-        if found is None:
+    grant = grants.hint_grant(found.get("hint"))
+    if grant is not None:
+        try:
+            reply, change = grants.add_suggested(state_dir, grant, who, now, GRANT_TTL, hid)
+        except Exception as exc:  # noqa: BLE001 - reported, and the hold is kept
+            reply, change = f"The grants file could not be written ({_clean(exc, 160)}).", None
+        if change is None:
             if gone:
                 store.save_holds(data)
-            if any(h.get("id") == hid for h in gone):
-                return (
-                    f"Held call {hid} expired: holds last 24 hours. Nothing was approved; the next "
-                    "run is scanned as before."
-                )
-            return (
-                f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
-            )
-        # The grant first: when it cannot be written, the hold stays and can be approved again.
-        grant = grants.hint_grant(found.get("hint"))
-        if grant is not None:
-            try:
-                reply, change = grants.add_suggested(state_dir, grant, who, now, GRANT_TTL, hid)
-            except Exception as exc:  # noqa: BLE001 - reported, and the hold is kept
-                reply, change = f"The grants file could not be written ({_clean(exc, 160)}).", None
-            if change is None:
-                if gone:
-                    store.save_holds(data)
-                return f"Not approved: {reply} {hid} is still waiting; approve it again once that is fixed."
-        if change is not None and not change.get("existing"):
-            record({"kind": "grants", **change, "by": who})
-        data["holds"].remove(found)
-        try:
-            store.save_holds(data)
-        except Exception as exc:  # noqa: BLE001 - the grant stands; a second approve finishes
-            return (
-                f"Not finished: {reply} The hold could not be marked answered ({_clean(exc, 160)}); "
-                f"approve {hid} again to finish."
-            )
+            return f"Not approved: {reply} {hid} is still waiting; approve it again once that is fixed."
+    if change is not None and not change.get("existing"):
+        record({"kind": "grants", **change, "by": who})
+    data["holds"].remove(found)
+    try:
+        store.save_holds(data)
+    except Exception as exc:  # noqa: BLE001 - the grant stands; a second approve finishes
+        return (
+            f"Not finished: {reply} The hold could not be marked answered ({_clean(exc, 160)}); "
+            f"approve {hid} again to finish."
+        )
     done = {
         "kind": "resolution",
         "request_id": found.get("request_id"),
@@ -316,6 +398,218 @@ def approve(
     return f"Approved {hid}. {reply} The held call is not run again; the next run is scanned with this grant."
 
 
+def _run_now(found: dict[str, Any]) -> str | None:
+    """Starts the held call's job again now, for `allow`; returns None when it did, else why not (then the pass
+    waits for the job's next run). This plugin does not start runs yet: every `allow` waits."""
+    return "not available"
+
+
+def _refusal(found: dict[str, Any], want: str, hid: str, cmd: Cmd) -> str:
+    """Why a hold does not offer the answer `want`; the hold keeps waiting."""
+    on_job = bool(found.get("job_ref"))
+    level = found.get("level")
+    why = f"{cmd('why')} {hid} shows the reasons"
+    if want == passes.DENY:
+        return (
+            f"Not set: {hid} is not on a cron job, so there is no job to refuse it for. Leave it and it "
+            "expires; the call never runs."
+        )
+    if level is None:
+        alt = (
+            f"{cmd('deny')} {hid} refuses it on this job with no more notices; "
+            if on_job
+            else "leave it and it expires; "
+        )
+        return f"Not allowed: Sentrook does not offer to let this call through. {alt}{why}."
+    if not on_job:
+        return (
+            f"Not set: {hid} is not on a cron job, so there is no job to let this call through for good. "
+            f"{cmd('allow')} {hid} lets this exact call through once."
+        )
+    if level != "always":
+        return (
+            "Not set: Sentrook offers to let this call through on every run only when it judges that safe, "
+            f"and for this one it offers it once. {cmd('allow')} {hid} lets it through on the job's next run."
+        )
+    match = found.get("match") or {}
+    if not match.get("named"):
+        return (
+            "Not set: this call names nothing a standing pass could be bound to, so only a one-time pass "
+            f"bound to its exact arguments is offered: {cmd('allow')} {hid}."
+        )
+    return (
+        "Not set: this call scored at the block line, so it can only be let through once: "
+        f"{cmd('allow')} {hid}."
+    )
+
+
+def _settle_history(state_dir: Path, held: list[Any], decision: str) -> None:
+    """Sets the held calls' entries in their sessions' history to `decision`, so a retry in the same session is
+    scored as one after the owner's answer, not after a review nobody answered."""
+    store = Store(state_dir)
+    for h in held:
+        if not isinstance(h, dict) or not h.get("sid") or not isinstance(h.get("request_id"), str):
+            continue
+        sid = str(h["sid"])
+        try:
+            with store.session_lock(sid):
+                sess = store.load_session(sid)
+                hit = [
+                    e
+                    for e in sess.get("history") or []
+                    if isinstance(e, dict) and e.get("request_id") == h["request_id"]
+                ]
+                if not hit:
+                    continue
+                for e in hit:
+                    e["decision"] = decision
+                store.save_session(sid, sess, max(len(sess["history"]), 1))
+        except Exception as exc:  # noqa: BLE001 - the answer stands
+            logger.warning("sentrook could not update a held call's history: %s", exc)
+
+
+def _parse(verb: str, rest: str) -> tuple[str, str] | None:
+    """(hold id, answer) from `allow <id> [later|always]`, `approve <id>` or `deny <id>`; None when malformed."""
+    words = rest.split()
+    if not words or not _ID.fullmatch(words[0]):
+        return None
+    if verb == "deny":
+        return (words[0], passes.DENY) if len(words) == 1 else None
+    mode = words[1].lower() if len(words) > 1 else ""
+    if len(words) > 2 or mode not in ("", "later", "once", "always"):
+        return None
+    return words[0], passes.ALLOW_ALWAYS if mode == "always" else passes.ALLOW
+
+
+def answer(
+    state_dir: Path,
+    verb: str,
+    rest: str,
+    who: dict[str, Any],
+    now: datetime,
+    cmd: Cmd,
+    record: Record,
+) -> str:
+    """`allow <id> [later|always]`, `approve <id>` or `deny <id>`: sets the pass or denial the hold offers,
+    removes the hold and records the answer; the reply says what was set and how to undo it."""
+    parsed = _parse(verb, rest)
+    if parsed is None:
+        form = {
+            "deny": f"{cmd('deny')} <id>",
+            "approve": f"{cmd('approve')} <id>",
+        }.get(verb, f"{cmd('allow')} <id> [later|always]")
+        return f"usage: {form}, with the id from Sentrook's notice (h- and 6 hex digits)"
+    hid, want = parsed
+    store = Store(state_dir)
+    entry: dict[str, Any] | None = None
+    with _LOCK, file_lock(state_dir / "holds.json"):
+        data = store.load_holds()
+        if data is None:
+            return f"The holds file {state_dir / 'holds.json'} could not be read; fix or remove it first."
+        gone = _sweep(data, now, record)
+        found = next((h for h in data["holds"] if h.get("id") == hid), None)
+        if found is None:
+            if gone:
+                store.save_holds(data)
+            old = next((h for h in gone if h.get("id") == hid), None)
+            if old is not None:
+                days = "7 days" if old.get("v") == 2 else "24 hours"
+                return (
+                    f"Held call {hid} expired: a hold can be answered for {days}. Nothing was set; the "
+                    "next run is scanned as before."
+                )
+            return f"No held call {_clean(hid, 40)}: the id is unknown, already answered or expired."
+        if found.get("v") != 2:
+            if want != passes.ALLOW:
+                if gone:
+                    store.save_holds(data)
+                return (
+                    f"Held call {hid} was made by an earlier version of the plugin: only {cmd('allow')} {hid} "
+                    "answers it, as approve did (it sets the grant Sentrook suggested, if any)."
+                )
+            return _approve_v1(store, state_dir, data, found, gone, hid, who, now, cmd, record)
+        if want not in (found.get("offers") or []):
+            if gone:
+                store.save_holds(data)
+            return _refusal(found, want, hid, cmd)
+        # The hold is marked answered first, so a failure never leaves two passes for one answer.
+        data["holds"].remove(found)
+        try:
+            store.save_holds(data)
+        except Exception as exc:  # noqa: BLE001 - nothing set; the hold waits
+            return f"Not set: the holds file could not be written ({_clean(exc, 160)}); {hid} is still waiting."
+        failed = ""
+        try:
+            entry = passes.add(
+                state_dir,
+                kind="deny" if want == passes.DENY else "allow",
+                uses="once" if want == passes.ALLOW else "standing",
+                level="always" if want == passes.ALLOW_ALWAYS else "once",
+                hold=found,
+                who=who,
+                now=now,
+            )
+        except Exception as exc:  # noqa: BLE001 - the hold goes back
+            failed = _clean(exc, 160)
+        if entry is None:
+            data["holds"].append(found)
+            try:
+                store.save_holds(data)
+            except Exception:  # noqa: BLE001 - reported below
+                return f"Not set: the passes file could not be written ({failed or 'unreadable'}), and {hid} could not be put back."
+            return f"Not set: the passes file could not be written ({failed or 'unreadable'}); {hid} is still waiting."
+    resolution = {
+        passes.ALLOW: "hold_allowed",
+        passes.ALLOW_ALWAYS: "hold_allowed_always",
+        passes.DENY: "hold_denied",
+    }[want]
+    held = found.get("held") or [{"sid": "", "request_id": found.get("request_id")}]
+    record(
+        {
+            "kind": "passes",
+            "op": "add",
+            "id": entry["id"],
+            "pass_kind": entry["kind"],
+            "uses": entry["uses"],
+            "job_ref": entry.get("job_ref"),
+            "hold_id": hid,
+            "expires_at": entry["expires_at"],
+            "by": who,
+        }
+    )
+    for h in held:
+        if isinstance(h, dict) and isinstance(h.get("request_id"), str):
+            record(
+                {
+                    "kind": "resolution",
+                    "request_id": h["request_id"],
+                    "resolution": resolution,
+                    "decision": "held",
+                    "hold_id": hid,
+                    "pass_id": entry["id"],
+                    "by": who,
+                }
+            )
+    _settle_history(state_dir, held, "denied_by_user" if want == passes.DENY else "approved_by_user")
+    until = read_time(entry["expires_at"])
+    shown = passes.show(until) if until else "?"
+    job = f"Job {_clean(found.get('job_id'), 40)}"
+    undo = f"Undo: {cmd('passes')} revoke {entry['id']}."
+    if want == passes.DENY:
+        return f"{job} will not make this call until {shown}; you won't be told again. {undo}"
+    if want == passes.ALLOW_ALWAYS:
+        return f"{job} may make this call until {shown}. {undo}"
+    if not found.get("job_ref"):
+        return (
+            f"The next identical call from an unattended run may go through once, until {shown}. The held "
+            f"call itself is not run again. {undo}"
+        )
+    _run_now(found)  # the seam for starting the job now; until then the pass waits for the next run
+    return (
+        f"{job}'s next run may make this call once. The held call itself is not run again. {undo}"
+    )
+
+
 def find(state_dir: Path, hold_id: str) -> dict[str, Any] | None:
     """The hold with this id while it waits; None when unknown, answered, expired or unreadable."""
     data = Store(state_dir).load_holds()
@@ -333,7 +627,9 @@ def is_id(text: str) -> bool:
     return bool(_ID.fullmatch(text))
 
 
-def why_text(state_dir: Path, log: Path, hold_id: str, now: datetime) -> str:
+def why_text(
+    state_dir: Path, log: Path, hold_id: str, now: datetime, cmd: Cmd = "/sentrook {}".format
+) -> str:
     """`why <hold id>`: the held call's scan as `why` shows any scan, then the hold itself."""
     from .history import format_why, recent_scans, records_backward
 
@@ -355,12 +651,25 @@ def why_text(state_dir: Path, log: Path, hold_id: str, now: datetime) -> str:
     if waiting is not None:
         at = read_time(waiting.get("expires_at"))
         lines.append(f"hold: waiting, until {_show(at) if at else '?'}")
+        count = int(waiting.get("count") or 1)
+        if count > 1:
+            lines.append(f"held {count} times since {_clean(waiting.get('held_at'), 20)}")
         grant = grants.hint_grant(waiting.get("hint"))
-        lines.append(
-            "suggested grant: "
-            + (f"{grants.describe_grant(grant)} (persistent, 30 days)" if grant else "none")
-        )
         trig = ((found[0][0].get("planir") or {}).get("trigger") or {}) if found else {}
+        if waiting.get("v") != 2:
+            lines.append(
+                "suggested grant: "
+                + (f"{grants.describe_grant(grant)} (persistent, 30 days)" if grant else "none")
+            )
+        else:
+            offered = waiting.get("offers") or []
+            lines.append("answers: " + (", ".join(offered) if offered else "none offered"))
+            if grant:
+                # an answer never sets a wider grant: the owner may set it by hand
+                lines.append(
+                    f"suggested grant: {grants.describe_grant(grant)}; to set it yourself: "
+                    f"{grants.grant_command(grant, cmd)}"
+                )
         if grant and trig.get("kind") in grants.HOST_TASK_KINDS:
             # nobody asked for this in a chat: say which run did, before the owner approves it
             lines.append(
@@ -515,6 +824,13 @@ def status_line(state_dir: Path, owner_channel: str, now: datetime) -> str:
     target, why = owner_target(owner_channel)
     count = waiting(state_dir, now)
     held = "holds file unreadable" if count is None else f"{count} waiting"
+    again = repeated(state_dir, now) if count else []
+    if again:
+        most = max(again, key=lambda h: int(h.get("count") or 1))
+        held += (
+            f" ({most.get('id')} held {int(most.get('count') or 1)} times since "
+            f"{_clean(most.get('held_at'), 20)})"
+        )
     where = f"notices to the {target} home channel" if target else f"notices not sent ({why})"
     return f"{held}; {where}"
 

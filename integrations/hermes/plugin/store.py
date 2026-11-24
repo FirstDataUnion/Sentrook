@@ -11,11 +11,12 @@ the separate `hermes cron run` process.
 - `grants.json`: grants and channel bindings set by command (see `grants`)
 - `snooze.json`: snoozes set by command (see `snooze`)
 - `holds.json`: unattended reviews held for the owner's approval (see `hold`)
+- `passes.json`: the passes and denials the owner's answers to held calls set (see `passes`)
 - `salt`: per-install key for placeholder refs and hashed ids
 
 Writes are atomic (temp file then replace). One process-wide re-entrant lock serialises
-read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `grants.json` and
-`snooze.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
+read-modify-write; `session_lock` serialises a whole scan per session. `holds.json`, `passes.json`, `grants.json`
+and `snooze.json` are also changed under `file_lock`, because the gateway and a separate process (`hermes cron run`,
 `hermes sentrook`) can change them at the same time.
 """
 
@@ -393,3 +394,19 @@ class Store:
     def save_holds(self, value: dict[str, Any]) -> None:
         with self.lock:
             self._write(self.dir / "holds.json", value)
+
+    def load_passes(self) -> dict[str, Any] | None:
+        """`passes.json`, empty when absent; None when it exists but cannot be read."""
+        path = self.dir / "passes.json"
+        with self.lock:
+            if not path.exists():
+                return {"version": 1, "passes": []}
+            data = self._read(path, None)
+        if not isinstance(data, dict):
+            return None
+        data.setdefault("passes", [])
+        return data if isinstance(data["passes"], list) else None
+
+    def save_passes(self, value: dict[str, Any]) -> None:
+        with self.lock:
+            self._write(self.dir / "passes.json", value)

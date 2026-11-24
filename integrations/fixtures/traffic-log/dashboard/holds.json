@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "holds": [
     {
       "id": "h-0a0a0a",
@@ -51,6 +51,41 @@
         "kind": "destination",
         "pattern": "has space"
       },
+      "notice": {}
+    },
+    {
+      "v": 2,
+      "id": "h-4e4e4e",
+      "request_id": "aaaa0000-0000-4000-8000-000000000005",
+      "session_ref": "s_cron",
+      "held": [
+        {
+          "sid": "RAW-ARG-MARKER-sid",
+          "request_id": "aaaa0000-0000-4000-8000-000000000005"
+        }
+      ],
+      "tool": "message",
+      "description": "Sends a message to discord:#ops-reports",
+      "where": "cron job 7f3a, job name \"daily-brief\", session s_cron",
+      "job_id": "7f3a",
+      "job_ref": "j_000000000000",
+      "match": {
+        "key": "RAW-ARG-MARKER-key",
+        "named": true,
+        "risk": 47,
+        "warnings": []
+      },
+      "level": "always",
+      "offers": [
+        "allow",
+        "allow always",
+        "deny"
+      ],
+      "held_at": "2026-10-29T08:30:00Z",
+      "last_seen_at": "2026-10-29T09:30:00Z",
+      "count": 3,
+      "expires_at": "2026-11-05T08:30:00Z",
+      "hint": null,
       "notice": {}
     }
   ]
