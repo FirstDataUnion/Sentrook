@@ -1043,6 +1043,11 @@ def test_c4star_cli_reads_and_other_commands_stay_silent(raw):
         hx("hermes sentrook revoke host example.test"),
         ex("openclaw sentrook bind channel general"),
         hx("hermes sentrook why"),
+        # Where notices go and which platforms count as attended are the owner's to set.
+        hx("hermes sentrook notify telegram"),
+        hx("hermes sentrook notify off"),
+        hx("hermes sentrook attended add api_server --confirm"),
+        hx("hermes sentrook attended list"),
         # Any verb not listed as a read, including ones the plugin does not have yet.
         ex("openclaw sentrook quiet"),
         hx("hermes sentrook --verbose grant host example.test"),

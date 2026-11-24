@@ -29,8 +29,8 @@ There are two entry points:
    - Do any scheduled jobs post to a chat channel? Which one?
    - Do I use API keys for those services? (Only the key's name, such as `EXAMPLE_API_KEY`, never its value.)
    - Do I use MCP servers or other plugins? Which ones?
-3. **Explain where notices go.** When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice on the home channel (`/sethome`) of one platform. The owner chooses it on the machine, for example `hermes config set plugins.entries.sentrook.settings.owner_channel telegram`, then restarts Hermes. Until then no notice is sent: held calls still wait, but nobody is told.
-4. **Explain attended chats.** Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local terminal count as attended. The API server, cron jobs, subagents and webhooks do not: a call there that needs review is held for the owner's `/sentrook allow` or `/sentrook deny` instead of asking. If a UI in front of the API server shows Hermes's approval prompts, the owner can add it to Sentrook's `attended_platforms` setting (see the install guide's Settings).
+3. **Explain where notices go.** When a call is held, a scan fails on an unattended run, or a background save is held or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook notify here` as a direct message to you on the chat where they want them (not in a group); Sentrook sends a test notice there, and `/sentrook notify status` says whether it arrived. Until then no notice is sent: held calls still wait, but nobody is told.
+4. **Explain attended chats.** Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local terminal count as attended. The API server, cron jobs, subagents and webhooks do not: a call there that needs review is held for the owner's `/sentrook allow` or `/sentrook deny` instead of asking. If a UI in front of the API server shows Hermes's approval prompts, the owner can add it with `/sentrook attended add api_server --confirm`. That loosens Sentrook, so only suggest it when the owner really answers prompts there.
 5. **Hand over** (next section).
 
 ## Hand over
@@ -81,7 +81,7 @@ Commands only work when the owner sends them (in a direct message to you, or on 
 
 ## What you never do
 
-- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, or their `hermes sentrook` forms. Only the owner runs them.
+- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, or their `hermes sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and

@@ -4,6 +4,7 @@ when a run goes over it."""
 from __future__ import annotations
 
 import re
+import time
 
 import pytest
 from linear_time import ALWAYS_ENV, CEILING, TEXT_CACHES, assert_fast_or_linear
@@ -17,6 +18,12 @@ def _quadratic(d: int) -> None:
 
 def _linear(d: int) -> None:
     re.search(r"Qz", "Q" * (24_000_000 // d))
+
+
+def _sleep_linear(d: int) -> None:
+    """Linear, and never faster than its sleep: a real search of a long text can finish under a
+    small bound on a fast runner."""
+    time.sleep(0.08 / d)
 
 
 def test_a_run_under_its_bound_passes_without_timing_again(monkeypatch: pytest.MonkeyPatch):
@@ -49,7 +56,7 @@ def test_a_linear_run_far_over_its_bound_fails(monkeypatch: pytest.MonkeyPatch):
     """However linearly it grows, a run must stay within CEILING times its bound."""
     monkeypatch.delenv(ALWAYS_ENV, raising=False)
     with pytest.raises(AssertionError, match="however it grows"):
-        assert_fast_or_linear(1.0, 0.01, _linear, "linear")
+        assert_fast_or_linear(1.0, 0.01, _sleep_linear, "linear")
     assert CEILING == 3.0
 
 

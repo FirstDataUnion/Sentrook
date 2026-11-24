@@ -11,8 +11,8 @@
 # real agent turn (`hermes chat`, model served by the mock) in which Sentrook must block one terminal
 # call and allow the next; and the digest of this Hermes's background-review memory gate, which must be on the
 # plugin's list of verified builds (`gate_build.py`); and every session platform value this Hermes uses must be classified
-# by the plugin as attended or not (`platforms.py`). Every step runs even after a failure; the exit code is 1 when any
-# failed.
+# by the plugin as attended or not (`platforms.py`); and `hermes send` must take one chat as its target, where
+# `/sentrook notify here` sends notices. Every step runs even after a failure; the exit code is 1 when any failed.
 #
 # Synthetic credentials only. COMPAT_CLIENT_SECRET overrides the secret given to Hermes (the mock
 # accepts only compat-secret), which is how the self-test makes the token mint fail.
@@ -194,6 +194,14 @@ if [ "$platforms_rc" = 0 ]; then
   record platforms ok "$(tail -1 <<<"$platforms_out")"
 else
   record platforms FAIL "$(tail -1 <<<"$platforms_out")"
+fi
+
+# 9. `/sentrook notify here` stores the chat it was sent in, and notices go there with
+# `hermes send --to <platform>:<chat id>[:<thread id>]`.
+if run "send target" hermes send --help && grep -q "platform:chat_id:thread_id" "$OUT/send target.log"; then
+  record "send target" ok "hermes send --to takes platform:chat_id[:thread_id]"
+else
+  record "send target" FAIL "hermes send --help does not list platform:chat_id:thread_id targets"
 fi
 
 exit "$failed"

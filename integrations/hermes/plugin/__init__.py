@@ -30,6 +30,7 @@ from . import (
     hold,
     host_turns,
     owner,
+    owner_settings,
     passes,
     scan_failure_notice,
     session_allow,
@@ -39,6 +40,7 @@ from . import (
     staging,
 )
 from .auth import resolve_oidc_credentials
+from .commands import OWNER_CHAT
 from .config import PluginConfig, hermes_home, resolve_config
 from .decision import (
     BLOCK_CATEGORIES,
@@ -244,7 +246,8 @@ def owner_command(
 
     Commands that change how Sentrook behaves (grants, snooze) and those that show past traffic go
     through this. Any failure while checking the sender refuses the command. `fn` gets the raw
-    arguments and who ran it: `{"basis", "platform", "sender_ref"}`.
+    arguments and who ran it: `{"basis", "platform", "sender_ref"}`, plus the chat the check judged under
+    `OWNER_CHAT` (its chat id and type, never recorded).
     """
 
     def handler(raw_args: str = "", *_a: Any, **_kw: Any) -> str:
@@ -255,11 +258,12 @@ def owner_command(
             logger.warning("owner check for %s failed: %s", verb, exc)
             return owner.refusal(verb)
         try:
+            facts = session_facts()
             check = owner.gate(
                 verb,
                 traffic,
                 store.salt(),
-                facts=session_facts(),
+                facts=facts,
                 env=env,
                 surface=session_surface() or platform,
                 local_cli=local_cli,
@@ -276,7 +280,11 @@ def owner_command(
             return owner.refusal(verb)
         if not check["owner"]:
             return owner.refusal(verb)
-        return fn(raw_args, {k: check[k] for k in ("basis", "platform", "sender_ref")})
+        who = {k: check[k] for k in ("basis", "platform", "sender_ref")}
+        # The chat the check judged, for a command that stores it (`notify here`); taken off `who` before `who`
+        # is recorded anywhere (`commands.dispatch`).
+        who[OWNER_CHAT] = {k: str(facts.get(k) or "") for k in ("chat_id", "chat_type")}
+        return fn(raw_args, who)
 
     return handler
 
@@ -547,7 +555,11 @@ def _scan_one(
     # Any other call of the unattended review or curator: nobody can answer it either (see `skill_review`).
     background_run = not loop_save and skill_review.in_unattended_review()
     built["background_run"] = background_run
-    attendance = {"subagent": built["subagent"], "attended_platforms": cfg.attended_platforms}
+    # The config's attended platforms and those the owner added with `/sentrook attended add`.
+    attendance = {
+        "subagent": built["subagent"],
+        "attended_platforms": owner_settings.attended_of(cfg),
+    }
     # A loop save never asks: the owner's turn is over, so nobody can answer it on any surface (see `skill_review`).
     unattended = loop_save or background_run or is_unattended(built["platform"], env, **attendance)
 
@@ -959,9 +971,27 @@ def _background_save_attended(
     return owner_attends(platform, env, **{**attendance, "subagent": subagent})
 
 
-def _notice_target(owner_channel: str) -> tuple[str | None, str]:
-    """(platform whose home channel gets the owner's notices, or None; why there is none)."""
-    return hold.owner_target(owner_channel, callable(getattr(_ctx, "dispatch_tool", None)))
+def _deliver(
+    cfg: PluginConfig, target: str, text: str, on_fail: Callable[[], None] | None = None
+) -> None:
+    """Sends one of the owner's notices (`hold.deliver`); one that gets through clears a failed test notice to the
+    same target (`owner_settings.notice_delivered`)."""
+    state_dir = cfg.state_dir
+    hold.deliver(
+        _ctx,
+        target,
+        text,
+        on_fail=on_fail,
+        on_ok=lambda: owner_settings.notice_delivered(state_dir, target),
+    )
+
+
+def _notice_target(cfg: PluginConfig) -> tuple[str | None, str]:
+    """(where the owner's notices go, as `hermes send --to` takes it, or None; why there is none): the chat or
+    platform set by `/sentrook notify`, else `owner_channel` (see `owner_settings`)."""
+    return hold.owner_target(
+        owner_settings.notify_of(cfg), callable(getattr(_ctx, "dispatch_tool", None))
+    )
 
 
 def _stage_background(
@@ -1046,7 +1076,7 @@ def _send_background_notice(
 ) -> dict[str, Any]:
     """`_background_notice` from the notice's facts (`_background_info`); also used once Hermes says what it did
     with a change its own gate stages (outcomes staged, unstaged-saved, unstaged-unknown, held)."""
-    target, why = _notice_target(cfg.owner_channel)
+    target, why = _notice_target(cfg)
     if not target:
         what = (
             "held a background review call"
@@ -1111,8 +1141,8 @@ def _send_background_notice(
         release()
         return {"status": "unsent", "target": None, "reason": "notice could not be built"}
     # Not delivered: the next one of this kind in this session is announced instead.
-    hold.deliver(_ctx, target, text, on_fail=release)
-    return {"status": "queued", "target": target}
+    _deliver(cfg, target, text, on_fail=release)
+    return {"status": "queued", "target": hold.target_label(target)}
 
 
 def _scan_failure_notice(
@@ -1121,7 +1151,7 @@ def _scan_failure_notice(
     """Tells the owner a scan failure blocked a call on an unattended run: once per cron job (or session)
     per quiet period. Returns what the scan record says about the notice. Never raises: the call is
     blocked whatever happens here."""
-    target, why = _notice_target(cfg.owner_channel)
+    target, why = _notice_target(cfg)
     if not target:
         return {"status": "unsent", "target": None, "reason": why}
     where, job_id = _run_of(built)
@@ -1140,13 +1170,13 @@ def _scan_failure_notice(
         failure, built["tool"], where, job_id is not None, "hermes sentrook verify"
     )
     # Not delivered: the next failure in this job is announced instead.
-    hold.deliver(
-        _ctx,
+    _deliver(
+        cfg,
         target,
         text,
         on_fail=lambda: scan_failure_notice.release(cfg.state_dir, key, stamp),
     )
-    return {"status": "queued", "target": target}
+    return {"status": "queued", "target": hold.target_label(target)}
 
 
 def _hold(
@@ -1164,9 +1194,9 @@ def _hold(
     a waiting hold of the same job and action is counted on it, and no notice is sent."""
     now = datetime.now(UTC)
     planir = built["planir"]
-    target, why = _notice_target(cfg.owner_channel)
+    target, why = _notice_target(cfg)
     notice: dict[str, Any] = (
-        {"status": "queued", "target": target}
+        {"status": "queued", "target": hold.target_label(target)}
         if target
         else {"status": "unsent", "target": None, "reason": why}
     )
@@ -1214,7 +1244,7 @@ def _hold(
             text = hold.notice_text(
                 resp, built["tool"], where, hid, offers, commands.CMD, on_job=job_id is not None
             )
-            hold.deliver(_ctx, target, text)
+            _deliver(cfg, target, text)
         except Exception as exc:  # noqa: BLE001 - a malformed response: still held, not announced
             logger.warning("sentrook held a call but could not build its notice: %s", exc)
             notice = {"status": "unsent", "target": None, "reason": "notice could not be built"}

@@ -33,8 +33,12 @@ GITLEAKS_TAG ?= v8.30.1
 install:
 	uv sync --extra dev
 
+# Four pytest-xdist workers, as many as a CI runner has CPUs. Not `auto`: on a laptop with slower
+# efficiency cores a timing test's two runs can land on different kinds of core.
+# PYTEST_WORKERS=0 runs in one process.
+PYTEST_WORKERS ?= 4
 test:
-	uv run pytest sentrook/tests -q
+	uv run pytest sentrook/tests -q -n $(PYTEST_WORKERS)
 
 lint:
 	uv run ruff check .
