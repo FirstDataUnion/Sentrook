@@ -162,7 +162,9 @@ itself, and sets it with one command:
 - **From reviews you approved**: the grant Sentrook suggested on at least two reviews you approved in the last 30
   days, from your own message, in a chat where the scanner saw no content trying to steer the agent. Only that exact
   grant counts: a broader pattern never inherits the count. With the traffic log off, there is no evidence to count.
-- **From the agent**: items the agent proposed, with its reason shown last as a quoted note.
+- **From the agent**: items the agent proposed with its `sentrook_propose_setup` tool (see "The agent's setup
+  proposals" below), marked "not seen yet" unless reviews you approved back them, with its reason shown last as a
+  quoted note. A proposal lasts a day.
 
 Sentrook describes each item in its own words, with how long it lasts and warnings to check (a name with characters
 that are not plain ASCII, shown with its registrable domain; deleting files; your whole home folder; a whole package
@@ -333,8 +335,8 @@ into `~/.hermes/skills`):
   a notice, and point you to `/sentrook why` and `/sentrook report`.
 - `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the
   setup with `hermes sentrook verify`, asks what work is routine (the services, folders, channels and API key names
-  it uses), explains where notices go, sends you to `/sentrook setup` for what Sentrook found itself, and gives you
-  the grant and binding commands for the rest, one at a time. Later, when Sentrook keeps asking about the same thing,
+  it uses), explains where notices go, adds what you told it to your `/sentrook setup` list with
+  `sentrook_propose_setup`, sends you there to read and set the items, and offers to explain any of them. Later, when Sentrook keeps asking about the same thing,
   it sends you back to `/sentrook setup` or helps you find the grant with `/sentrook why`.
 
 The agent never runs those commands itself, `/sentrook setup apply` included, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
@@ -359,6 +361,21 @@ decides who gets an answer: only your own message in a direct chat or on the loc
 job, a subagent, a webhook or the API server, Hermes's background review, or with `plugins.isolation: host`, the
 whole answer is "Setup needs the owner in a direct chat." Each call is recorded in the traffic log as a
 `setup_report` record, and the report itself goes to the next scan like any tool result.
+
+### The agent's setup proposals
+
+The agent has a second tool, `sentrook_propose_setup`, which the setup skill uses at hand-over: it adds what you told
+the agent (a service, a folder, a key name, a channel a job posts to) to your `/sentrook setup` list, up to 20 items
+at a time, each with a short reason. It sets nothing: you read each item on the list in Sentrook's words and set it
+with the list's code. Each item must be one `/sentrook grant ... --persistent` or `/sentrook bind add` would accept;
+the agent is told which it did not add and why. It never takes settings, attended platforms or grants for one
+session, and a key is named, never its value. The agent hears only how many items were added and to ask you to open
+`/sentrook setup`: never the list, its warnings or its code. A proposal is kept in `proposals.json` in the plugin's
+state folder for a day; at most three are open, and a new one replaces the oldest. Its reason never counts as
+evidence: an item stays "not seen yet" and lasts 30 days unless reviews you approved back it. It answers in the same
+places as the setup report, and anywhere else the whole answer is "Setup needs the owner in a direct chat." and
+nothing is stored. Each call is recorded in the traffic log as a `setup_proposal` record with its session and item
+count.
 
 ## Dashboard
 
