@@ -6,6 +6,8 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The plugin's manifest declares its licence as MIT, as the code always was. It said Apache-2.0, which Hermes showed
+  as the plugin's licence.
 - A call Hermes's own background review or curator makes that is not a skill or memory save, such as a file read or a
   terminal command, is no longer sent to an approval prompt when it needs review. Nobody can answer a prompt there:
   on the terminal Hermes denied it unseen, and on a gateway it reached nobody, so the call was lost without a word and

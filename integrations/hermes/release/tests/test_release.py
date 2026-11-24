@@ -33,7 +33,7 @@ def mirror(tmp_path):
     seed = tmp_path / "seed"
     seed.mkdir()
     (seed / "README.md").write_text("# Old README: put the credentials in .env\n")
-    (seed / "LICENSE").write_text("Apache License 2.0\n")
+    (seed / "LICENSE").write_text("MIT License\n")
     (seed / "SECURITY.md").write_text("Report to security@example.invalid\n")
     (seed / "CONTRIBUTING.md").write_text("Send changes to the monorepo.\n")
     (seed / ".github").mkdir()
@@ -256,7 +256,7 @@ def test_after_promote_the_mirror_readme_is_the_monorepo_readme(tmp_path, mirror
     assert (tip / "README.md").read_bytes() == release.README.read_bytes()
     assert (tip / "CHANGELOG.md").read_bytes() == (release.PLUGIN_DIR / "CHANGELOG.md").read_bytes()
     # Mirror-authored docs stay; the plugin replaces everything else, without its tests.
-    assert (tip / "LICENSE").read_text() == "Apache License 2.0\n"
+    assert (tip / "LICENSE").read_text() == "MIT License\n"
     assert (tip / "SECURITY.md").exists() and (tip / "CONTRIBUTING.md").exists()
     assert (tip / ".github/pull_request_template.md").exists()
     assert not (tip / "stale_module.py").exists()
