@@ -76,12 +76,13 @@ test("the guide lists every OpenClaw command", () => {
 test("the rules forbid every owner command that changes what Sentrook allows", () => {
   for (const rel of Object.values(FILES)) {
     const text = read(rel);
-    // every owner command but the ones that only show something, and the revoke under passes
-    const shows = new Set(["history", "why", "report", "grants", "passes"]);
+    // every owner command but the ones that only show something, the revoke under passes and the apply under setup
+    const shows = new Set(["history", "why", "report", "grants", "passes", "setup"]);
     for (const verb of Object.keys(OWNER_SUBCOMMANDS).filter((v) => !shows.has(v))) {
       assert.ok(text.includes(`\`/sentrook-${verb}\``), `${rel} forbids /sentrook-${verb}`);
     }
     assert.ok(text.includes("`/sentrook-passes revoke`"), `${rel} forbids /sentrook-passes revoke`);
+    assert.ok(text.includes("`/sentrook-setup apply`"), `${rel} forbids /sentrook-setup apply`);
   }
 });
 

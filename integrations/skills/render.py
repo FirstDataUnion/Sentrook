@@ -98,6 +98,12 @@ SUMMARIES: dict[str, tuple[str, str]] = {
         "where notices go: `here`, sent as a direct message to the agent, sends them to that chat; `off` stops "
         "them",
     ),
+    "setup": (
+        "[apply <code> [1,3] | discard <id>]",
+        "lists what would stop Sentrook asking about routine work (channels the cron jobs deliver to, MCP servers, "
+        "grants Sentrook suggested on reviews the owner approved), each described by Sentrook; the owner sets them "
+        "with `apply` and the code the list ends with",
+    ),
 }
 
 HOSTS: dict[str, dict] = {
@@ -122,6 +128,7 @@ HOSTS: dict[str, dict] = {
             "passes",
             "notify",
             "attended",
+            "setup",
         ),
         #: Where a command's arguments or summary differ from the shared `SUMMARIES` on this host.
         "summaries": {
@@ -154,6 +161,7 @@ HOSTS: dict[str, dict] = {
             "notify",
             "attended add",
             "attended remove",
+            "setup apply",
         ),
         "values": {
             "host": "Hermes",
@@ -221,6 +229,7 @@ HOSTS: dict[str, dict] = {
             "approve",
             "passes",
             "notify",
+            "setup",
         ),
         "open": ("status", "help"),
         "owner_spelling": "/sentrook-{}",
@@ -234,6 +243,7 @@ HOSTS: dict[str, dict] = {
             "approve",
             "passes revoke",
             "notify",
+            "setup apply",
         ),
         "values": {
             "host": "OpenClaw",
@@ -284,11 +294,13 @@ PLACEHOLDER = re.compile(r"\{\{(?:(cmd|cli) ([a-z]+)|([a-z_]+))\}\}")
 
 
 def chat(host: str, verb: str) -> str:
-    """`verb` as the owner types it in a chat on `host`."""
+    """`verb` as the owner types it in a chat on `host`; `verb` may carry a word after it (`setup apply`)."""
     h = HOSTS[host]
+    verb, _, more = verb.partition(" ")
     if verb not in h["commands"]:
         raise KeyError(f"{host} has no command {verb!r}")
-    return f"/sentrook {verb}" if verb in h["open"] else h["owner_spelling"].format(verb)
+    typed = f"/sentrook {verb}" if verb in h["open"] else h["owner_spelling"].format(verb)
+    return f"{typed} {more}" if more else typed
 
 
 def cli(host: str, verb: str) -> str:

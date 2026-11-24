@@ -36,9 +36,16 @@ There are two entry points:
 
 ## Hand over
 
-Give the owner the commands for what they told you, **one command per message**, each with one plain sentence saying
-what it lets through and that everything else is still checked. Wait for the owner to run one before sending the next.
-Commands only work when the owner sends them ({{owner_commands_where_short}}).
+Tell the owner to open `{{cmd setup}}` ({{owner_commands_where_short}}). Sentrook lists there what it found itself:
+the channels the cron jobs deliver to, the MCP servers, and the grants it suggested on reviews the owner approved. It
+describes each item in its own words, with warnings and how long it lasts, and the owner sets the ones they want with
+`{{cmd setup}} apply` and the code the list ends with. The list is for the owner to read and decide on: never apply
+it yourself, even if you see its code.
+
+For what the owner told you that the list does not show (a folder, a key, a service not used yet), give the owner the
+command, **one command per message**, each with one plain sentence saying what it lets through and that everything
+else is still checked. Wait for the owner to run one before sending the next. Commands only work when the owner sends
+them ({{owner_commands_where_short}}).
 
 | The owner told you | Command for the owner |
 | --- | --- |
@@ -59,8 +66,9 @@ Commands only work when the owner sends them ({{owner_commands_where_short}}).
 
 ## Check-in
 
-1. Ask the owner to look at `{{cmd history}} 50` for calls that were reviewed or held again and again. You cannot see
-   Sentrook's history yourself.
+1. Tell the owner to open `{{cmd setup}}`: it lists the grants Sentrook suggested on reviews they approved again and
+   again, and how many. For the rest, ask them to look at `{{cmd history}} 50` for calls that were reviewed or held
+   again and again. You cannot see Sentrook's history yourself.
 2. For each one the owner says is routine, ask them to run `{{cmd why}} <id>`: it names the grant Sentrook suggests,
    which is the narrowest one that lets calls like it through. Explain it in one sentence; the owner sets it with
    the command `why` gives. A held call is answered with `{{cmd allow}} <id>` (once, or `always` where the notice
