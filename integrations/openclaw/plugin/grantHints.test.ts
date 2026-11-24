@@ -321,7 +321,7 @@ test("why lists every hint", async () => {
 
 test("a held call's hint is shown by why and never set by an answer", async () => {
   hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
-  extra = { risk: 47 };
+  extra = { risk: 47, owner_pass: "once" };
   const r = registered();
   const rec = await r.cron();
   assert.equal(rec.decision, "held");
@@ -338,7 +338,7 @@ test("a held call's hint is shown by why and never set by an answer", async () =
 for (const kind of ["cron", "heartbeat"]) {
   test(`a ${kind} run with no sender keeps its hint on the hold, why says where it came from, no answer sets it`, async () => {
     hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
-    extra = { risk: 47 };
+    extra = { risk: 47, owner_pass: "once" };
     const r = registered();
     const rec = await r.cron(false, kind);
     const trig = rec.planir.trigger;
@@ -360,7 +360,7 @@ for (const kind of ["cron", "heartbeat"]) {
 for (const requester of [undefined, { senderIsOwner: false, channel: "discord" }]) {
   test(`a held call on a hook run keeps no hint (${requester ? "someone else's" : "no requester"})`, async () => {
     hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
-    extra = { risk: 47 };
+    extra = { risk: 47, owner_pass: "once" };
     const r = registered();
     const rec = await r.cron(false, "event", requester);
     assert.deepEqual([rec.planir.trigger.kind, rec.planir.trigger.sender.relation], ["hook", requester ? "other" : "unknown"]);
@@ -375,7 +375,7 @@ for (const requester of [undefined, { senderIsOwner: false, channel: "discord" }
 test("a held call on a cron run keeps its hint whatever requester OpenClaw attaches", async () => {
   // OpenClaw 2026.11+ gives a cron run its delivery channel as the requester, with no owner flag.
   hints = [{ ...HINT, pattern: "discord:#ops-reports", risk: 12 }];
-  extra = { risk: 47 };
+  extra = { risk: 47, owner_pass: "once" };
   const r = registered();
   const rec = await r.cron(false, "cron", { channel: "discord", accountId: "main" });
   assert.deepEqual([rec.planir.trigger.kind, rec.planir.trigger.sender.relation], ["scheduled", "unknown"]);
@@ -385,7 +385,7 @@ test("a held call on a cron run keeps its hint whatever requester OpenClaw attac
 
 test("a held call whose hint does not clear this plugin's line sets nothing", async () => {
   hints = [{ ...HINT, risk: 12 }];
-  extra = { risk: 47 };
+  extra = { risk: 47, owner_pass: "once" };
   const r = registered({ reviewAt: 10 });
   const rec = await r.cron();
   assert.equal(rec.decision, "held");

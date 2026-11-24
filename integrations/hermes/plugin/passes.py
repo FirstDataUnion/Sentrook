@@ -51,8 +51,8 @@ DECLINED_TEXT = (
     "The owner declined this action for this job, so Sentrook did not run it. Continue without it."
 )
 
-#: The scan's `owner_pass` levels, lowest first. A scanner that sends no `owner_pass` predates it: its scans read as
-#: `once` (allow once, never always).
+#: The scan's `owner_pass` levels, lowest first. A response without `owner_pass` (a scanner that predates it) reads
+#: as null: no pass.
 LEVELS = ("once", "always")
 
 #: The verbs an answer can use, as the notice lists them.
@@ -61,9 +61,8 @@ ALLOW, ALLOW_LATER, ALLOW_ALWAYS, DENY = "allow", "allow later", "allow always",
 
 def level_of(resp: dict[str, Any]) -> str | None:
     """How far the scanner lets the owner pass this call: `always`, `once`, or None (not at all). A response
-    without the field comes from a scanner that predates it and reads as `once`; any value but the two is None."""
-    if "owner_pass" not in resp:
-        return "once"
+    without the field (a scanner that predates it), null or any value but the two is None: the scanner sends it on
+    every scan, and only the scanner decides that a call may be passed."""
     value = resp.get("owner_pass")
     return value if value in LEVELS else None
 
