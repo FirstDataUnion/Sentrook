@@ -56,6 +56,17 @@ test("status shows the config-derived facts", async () => {
   assert.match(text, /^channel bindings: 1 in config, 0 by command$/m);
 });
 
+test("status names the settings Sentrook cannot read, and says none when it reads them all", async () => {
+  const env = { OPENCLAW_STATE_DIR: stateDir() };
+  const clean = await runSentrookCommand("status", { pluginConfig: { mode: "observe" }, env });
+  assert.match(clean, /^settings: all read as written$/m);
+  const bad = await runSentrookCommand("status", { pluginConfig: { modee: "observe", reviewAt: "abc" }, env });
+  assert.match(
+    bad,
+    /^settings: 2 not read as written: modee: not a Sentrook setting \(did you mean mode\?\); ignored; reviewAt: not a number from 0 to 100; using 45 \(see openclaw sentrook verify\)$/m,
+  );
+});
+
 test("status says credentials are present without printing them, from env, the state-dir .env or plugin config", async () => {
   const fromEnv = await runSentrookCommand("status", {
     pluginConfig: {},

@@ -25,7 +25,7 @@ export interface ApprovalTiming {
 
 export const DEFAULT_INTERACTIVE_APPROVAL_TIMEOUT_MS = 300_000;
 
-const DEFAULT_SCHEDULED_INTENT_KINDS: IntentKind[] = ["cron", "subagent"];
+export const DEFAULT_SCHEDULED_INTENT_KINDS: readonly IntentKind[] = ["cron", "subagent"];
 
 function parsePositiveInt(raw: unknown, fallback: number): number {
   if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
