@@ -1,0 +1,4 @@
+{
+  "search": {"url": "https://mcp.search.example/sse"},
+  "notes": {"command": "npx", "args": ["-y", "@example/notes-mcp"]}
+}
