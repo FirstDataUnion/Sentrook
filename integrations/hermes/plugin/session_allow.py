@@ -112,28 +112,40 @@ def risk_of(resp: dict[str, Any]) -> float | None:
     return float(r) if isinstance(r, (int, float)) and not isinstance(r, bool) else None
 
 
+def eligible(resp: dict[str, Any]) -> bool:
+    """Whether an earlier answer may cover this scan at all: it has a risk, the scanner neither enforced it nor
+    applied a floor, and it is complete. A scan where a check failed (`degraded`) was scored without it: nothing it
+    would have said is known. Shared with the per-job passes of held calls (`passes`)."""
+    return (
+        risk_of(resp) is not None
+        and resp.get("enforced") is None
+        and not resp.get("floors_applied")
+        and resp.get("status", "ok") == "ok"
+    )
+
+
+def fits(risk: Any, seen: Any, resp: dict[str, Any]) -> bool:
+    """Whether an answer given at `risk` with the warnings `seen` covers this scan: it scores no higher and carries
+    no warning the answer did not. Shared with the per-job passes of held calls (`passes`)."""
+    now_risk = risk_of(resp)
+    if now_risk is None or not isinstance(risk, (int, float)) or isinstance(risk, bool):
+        return False
+    return now_risk <= float(risk) and not set(warnings(resp)) - set(seen or [])
+
+
 def covering(
     sess: dict[str, Any], k: str | None, resp: dict[str, Any], now: datetime
 ) -> dict[str, Any] | None:
     """The allowance in `sess` that lets this review through, or None."""
-    risk = risk_of(resp)
-    if k is None or risk is None or resp.get("enforced") is not None or resp.get("floors_applied"):
+    if k is None or not eligible(resp):
         return None
-    # A scan where a check failed (`degraded`) was scored without it: nothing it would have said is known.
-    if resp.get("status", "ok") != "ok":
-        return None
-    new = set(warnings(resp))
     for a in sess.get("session_allows") or []:
-        if (
-            not isinstance(a, dict)
-            or a.get("key") != k
-            or not isinstance(a.get("risk"), (int, float))
-        ):
+        if not isinstance(a, dict) or a.get("key") != k:
             continue
         at = read_time(a.get("at"))
         if at is None or now - at > MAX_AGE:
             continue
-        if risk <= float(a["risk"]) and not new - set(a.get("warnings") or []):
+        if fits(a.get("risk"), a.get("warnings"), resp):
             return a
     return None
 

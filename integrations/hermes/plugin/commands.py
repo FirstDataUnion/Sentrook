@@ -5,8 +5,9 @@ request. Over the API server and `hermes chat --oneshot` the text goes to the mo
 CLI form is the fallback there. Subcommands live in `COMMANDS`; both forms are built from it.
 
 `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
-grants and channel bindings set by command, `snooze` relaxes review prompts, and `approve` answers a
-call held on an unattended run (see `hold`), so only the owner may run them: both forms go through the owner check (`owner_command`), which audits every attempt.
+grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`, the
+same as `allow`) answer a call held on an unattended run (see `hold`), and `passes` lists and revokes what those
+answers set (see `passes`), so only the owner may run them: both forms go through the owner check (`owner_command`), which audits every attempt.
 `status` and `help` stay open.
 
 `snooze` and a session `grant` cover the session the slash command was sent from (Hermes passes its
@@ -22,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, hold, report, skill_review, snooze
+from . import grants, history, hold, passes, report, skill_review, snooze
 from .auth import missing_credentials
 from .config import PluginConfig, resolve_config
 from .owner import refusal
@@ -78,6 +79,7 @@ def run_status(
             f"channel bindings: {binding_count}",
             f"snooze: {snooze.status_line(snooze.load(cfg.state_dir), datetime.now(UTC))}",
             f"held calls: {hold.status_line(cfg.state_dir, cfg.owner_channel, datetime.now(UTC))}",
+            f"passes: {passes.counts(cfg.state_dir, datetime.now(UTC))}",
             "skill review: "
             + skill_review.status_line(
                 skill_review.setting_text(cfg.skill_review, cfg.skill_review_unknown),
@@ -112,7 +114,7 @@ def run_why(
     if not cfg.traffic_log_enabled:
         return history.LOG_OFF
     if hold.is_id(rest):
-        return hold.why_text(cfg.state_dir, cfg.traffic_log_path, rest, datetime.now(UTC))
+        return hold.why_text(cfg.state_dir, cfg.traffic_log_path, rest, datetime.now(UTC), CMD)
     match = history.parse_ref(rest)
     if match is None:
         return (
@@ -225,14 +227,40 @@ def run_snooze(
     return _changed(cfg, snooze.run(cfg.state_dir, rest, ref, who, now, CMD), who, "snooze")
 
 
-def run_approve(
+def _answer(verb: str) -> Callable[..., str]:
+    def run(
+        rest: str,
+        settings: dict[str, Any],
+        env: dict[str, str] | None = None,
+        who: Who | None = None,
+    ) -> str:
+        cfg = resolve_config(settings, env)
+        if who is None:
+            return refusal(verb)
+        log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
+        return hold.answer(cfg.state_dir, verb, rest, who, datetime.now(UTC), CMD, log.write)
+
+    return run
+
+
+run_allow = _answer("allow")
+run_deny = _answer("deny")
+run_approve = _answer("approve")
+
+
+def run_passes(
     rest: str, settings: dict[str, Any], env: dict[str, str] | None = None, who: Who | None = None
 ) -> str:
     cfg = resolve_config(settings, env)
     if who is None:
-        return refusal("approve")
-    log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
-    return hold.approve(cfg.state_dir, rest, who, datetime.now(UTC), CMD, log.write)
+        return refusal("passes")
+    op, _, arg = rest.strip().partition(" ")
+    now = datetime.now(UTC)
+    if not op or op.lower() == "list":
+        return passes.format_passes(cfg.state_dir, now, CMD)
+    if op.lower() != "revoke":
+        return f"usage: {CMD('passes')} [revoke <id>]"
+    return _changed(cfg, passes.revoke(cfg.state_dir, arg, now), who, "passes")
 
 
 def run_help(
@@ -269,7 +297,7 @@ COMMANDS: dict[str, Subcommand] = {
     ),
     "why": Subcommand(
         "one scan's risk, tier scores, reason codes and entities; for a held call's id, also the "
-        "hold and the grant Sentrook suggests",
+        "hold, the answers it offers and the grant Sentrook suggests",
         run_why,
         args="[request_id|last]",
         owner_only=True,
@@ -319,11 +347,34 @@ COMMANDS: dict[str, Subcommand] = {
         cli_rest=True,
         session=True,
     ),
+    "allow": Subcommand(
+        "answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: let it "
+        "through once on the job's next run (later: the same), or with always for 30 days on that job, "
+        "where the notice offers it; the held call is not run again",
+        run_allow,
+        args="<id> [later|always]",
+        owner_only=True,
+        cli_rest=True,
+    ),
+    "deny": Subcommand(
+        "refuse a call held on a cron job, by the id in Sentrook's notice: that job is refused the same "
+        "call for 30 days, with no more notices",
+        run_deny,
+        args="<id>",
+        owner_only=True,
+        cli_rest=True,
+    ),
     "approve": Subcommand(
-        "approve a call held on an unattended run, by the id in Sentrook's notice, within 24h: "
-        "sets the grant Sentrook suggested (persistent, 30 days); the held call is not run again",
+        "the same as allow (kept for one release)",
         run_approve,
         args="<id>",
+        owner_only=True,
+        cli_rest=True,
+    ),
+    "passes": Subcommand(
+        "passes and denials your answers to held calls set, with their use counts; revoke one by its id",
+        run_passes,
+        args="[revoke <id>]",
         owner_only=True,
         cli_rest=True,
     ),

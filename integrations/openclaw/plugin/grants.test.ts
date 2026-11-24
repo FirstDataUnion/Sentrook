@@ -508,10 +508,13 @@ test("the CLI forms match the chat forms and are audited as the local terminal",
   fixtureFile();
   const r = await registered(fixtureConfig());
   assert.deepEqual(r.unknownOptions.sort(), [
+    "sentrook allow [args...]",
     "sentrook approve [args...]",
     "sentrook bind [args...]",
+    "sentrook deny [args...]",
     "sentrook grant [args...]",
     "sentrook notify [args...]",
+    "sentrook passes [args...]",
     "sentrook report [args...]",
     "sentrook revoke [args...]",
     "sentrook snooze [args...]",

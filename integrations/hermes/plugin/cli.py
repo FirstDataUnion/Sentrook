@@ -10,9 +10,10 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from . import hold, skill_review
+from . import hold, passes, skill_review
 from .auth import (
     clear_scan_token_cache,
     get_scan_access_token,
@@ -102,6 +103,9 @@ def run_verify(
             f"to the {target} home channel" if target else f"not sent: {why}",
         )
     )
+    # Failed when unreadable: a pass or denial the owner set could not be applied, so the job is held again.
+    state = passes.counts(cfg.state_dir, datetime.now(UTC))
+    checks.append(("held-call passes", state != "passes file unreadable", state))
     # Reported, not failed: Hermes's background saves never ask, so without a notice target the owner learns of
     # one that was let through, held or blocked only from history.
     checks.append(

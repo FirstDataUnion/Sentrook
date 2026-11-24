@@ -40,6 +40,9 @@ _REVIEW = {
     "timeout": "timed out",
     "cancelled": "cancelled",
     "hold_approved": "approved",
+    "hold_allowed": "allowed once",
+    "hold_allowed_always": "allowed always",
+    "hold_denied": "denied",
     "hold_expired": "expired",
     "host_not_saved": "not saved",
 }
@@ -188,6 +191,11 @@ def _base_action(scan: dict[str, Any], resolution: dict[str, Any] | None) -> str
             return "allowed (let through)"
         if decision == "held":
             return "held"
+        # settled by the owner's pass or denial for this job (`passes`)
+        if decision == "allowed_by_pass":
+            return "allowed (pass)"
+        if decision == "denied_by_owner":
+            return "declined (denied by owner)"
         # a held background save kept in Hermes's pending store for the owner (`staging`)
         if decision == "staged":
             return "staged"
