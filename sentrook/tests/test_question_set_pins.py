@@ -70,6 +70,31 @@ BLOCK_SET_PINS = {
         "6870687a28854de30b343436434e4b1c3e66c28d1a26e86d6e9778a72acd008c",
         "51c8f929bf71f3f4e678adca2d4c480f8a426ff4bdc9913fdfb447e47d58d794",
     ),
+    # without a `services` block, call-v10 sends call-v9's questions byte for byte
+    "call-v10": (
+        "c02b34878a669a8e5602cc57e0c23dec4fed406450c4518c945c6f34b0f829bc",
+        "91f9747e6bc569986617701a9898d61d54b6075051f40be8fb7f23d61b9bca6a",
+        "6870687a28854de30b343436434e4b1c3e66c28d1a26e86d6e9778a72acd008c",
+        "51c8f929bf71f3f4e678adca2d4c480f8a426ff4bdc9913fdfb447e47d58d794",
+    ),
+}
+
+#: Sets with a question sent only with a `services` block (`question_when`): the questions with that block alone and
+#: with a batch, a reputation block and the services block (the largest form, which `built_questions()` gives).
+SERVICES = [{"host": "a.example", "service": ["A"]}]
+SERVICES_STATES = [
+    {"pending_call": {"tool": "exec", "arguments": {}}, "services": SERVICES},
+    {
+        "pending_call": {"tool": "exec", "arguments": {}, "batch": {"siblings": [{}]}},
+        "reputation": [{"value": "a.example"}],
+        "services": SERVICES,
+    },
+]
+SERVICES_SET_PINS = {
+    "call-v10": (
+        "a604dae1a919230a612201b3d90a6d4c29344e32acd000dd7ba68278255cb22e",
+        "5a3f67d8c2488a6e4a57c3054b306bb0c62dd9003a9deef081437b8269032cc6",
+    ),
 }
 
 
@@ -78,8 +103,17 @@ def test_a_block_set_builds_the_questions_pinned_for_each_state_shape(name, pins
     qs = load_question_set(name)
     for state, pin in zip(STATES, pins, strict=True):
         assert _sha(build_body(qs, state, model="m", provider={})["questions"]) == pin
-    # with no state, the largest form: every block, as with both a batch and a reputation block
-    assert _sha(qs.built_questions()) == pins[-1]
+    # with no state, the largest form: every block, as with both a batch and a reputation block (and a services
+    # block, for a set with a question sent only with one)
+    largest = SERVICES_SET_PINS[name][-1] if name in SERVICES_SET_PINS else pins[-1]
+    assert _sha(qs.built_questions()) == largest
+
+
+@pytest.mark.parametrize(("name", "pins"), sorted(SERVICES_SET_PINS.items()))
+def test_a_set_with_a_services_question_builds_the_questions_pinned_with_the_block(name, pins):
+    qs = load_question_set(name)
+    for state, pin in zip(SERVICES_STATES, pins, strict=True):
+        assert _sha(build_body(qs, state, model="m", provider={})["questions"]) == pin
 
 
 def test_every_shipped_set_is_pinned():

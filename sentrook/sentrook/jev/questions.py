@@ -9,7 +9,9 @@ its own `blocks`, in the set's block order; a question is sent only the blocks i
 blank line, then its own instructions. `block_when` makes a block conditional: it maps a block name to a dotted path in the state, and the
 block is sent only when the state has a non-empty value there (a batch, a reputation block). The questions sent
 then depend on the state; with no state, `built_questions` gives the largest form, every listed block, which is
-what the view budget is sized for. A set uses a `preamble` or `blocks`, never both. `exposure-v1` and
+what the view budget is sized for. `question_when` makes a question conditional the same way: it maps a question name to
+a dotted state path, and the question is sent (and answered) only when the state has a non-empty value there.
+A set uses a `preamble` or `blocks`, never both. `exposure-v1` and
 `call-v1` are the two halves of the frozen TestNest baseline set
 `designed-v1-split`, word for word; their sha is recorded in every envelope so a result
 is attributable to exact wording. A wording change is a new file.
@@ -43,6 +45,8 @@ class QuestionSet:
     blocks: dict[str, str] | None = None
     #: Block name -> dotted state path: that block is sent only when the state has a non-empty value there.
     block_when: dict[str, str] | None = None
+    #: Question name -> dotted state path: that question is sent only when the state has a non-empty value there.
+    question_when: dict[str, str] | None = None
 
     def levels(self, question: str) -> int:
         crit = self.questions[question]["criteria"]
@@ -59,13 +63,21 @@ class QuestionSet:
             b for b in (self.blocks or {}) if b in when and (state is None or _has(state, when[b]))
         ]
 
+    def sent_questions(self, state: dict[str, Any] | None = None) -> list[str]:
+        """The questions sent with `state`, in set order; with no state, all of them (the largest form)."""
+        when = self.question_when or {}
+        return [q for q in self.questions if q not in when or state is None or _has(state, when[q])]
+
     def built_questions(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         """Questions as sent with `state`: the preamble, or the question's blocks that apply, prepended;
         `state_view` and `blocks` removed. With no state, a block set gives its largest form."""
         sent = set(self.conditional_blocks(state))
         when = self.block_when or {}
+        asked = set(self.sent_questions(state))
         out: dict[str, dict[str, Any]] = {}
         for name, q in self.questions.items():
+            if name not in asked:
+                continue
             q = copy.deepcopy(q)
             q.pop("state_view", None)
             listed = q.pop("blocks", None)
@@ -133,6 +145,19 @@ def _check_blocks(raw: dict[str, Any], where: str) -> None:
             )
 
 
+def _check_question_when(raw: dict[str, Any], where: str) -> None:
+    when = raw.get("question_when")
+    if when is None:
+        return
+    if not isinstance(when, dict):
+        raise ValueError(f"{where}: question_when must map question names to dotted state paths")
+    for q, path in when.items():
+        if q not in raw["questions"]:
+            raise ValueError(f"{where}: question_when names {q!r}, which is not a question")
+        if not isinstance(path, str) or "" in path.split("."):
+            raise ValueError(f"{where}: question_when[{q!r}] must be a dotted state path")
+
+
 def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -143,6 +168,7 @@ def load_question_set(name: str | Path) -> QuestionSet:
         path = QUESTIONS_DIR / f"{name}.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     _check_blocks(raw, str(raw.get("name") or path.stem))
+    _check_question_when(raw, str(raw.get("name") or path.stem))
     return QuestionSet(
         name=raw["name"],
         state_view=raw.get("state_view", "trimmed"),
@@ -152,6 +178,7 @@ def load_question_set(name: str | Path) -> QuestionSet:
         mapping=raw.get("mapping"),
         blocks=raw.get("blocks"),
         block_when=raw.get("block_when"),
+        question_when=raw.get("question_when"),
     )
 
 
