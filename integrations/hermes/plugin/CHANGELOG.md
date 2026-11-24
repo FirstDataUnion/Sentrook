@@ -6,6 +6,22 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- **Session** on a review now covers the rest of the same job in that chat. Hermes remembers a Session answer under a
+  key made of every file and address the call touches, so a job whose steps each wrote a different output file asked
+  at every step, and Session did no more than Once. When the owner asked for the work in their own chat, a Session
+  answer now also lets a later review in the same chat through without asking, for 12 hours, when it is a call of
+  the same tool about the same parties (the entities the review's reasons and its description of the call name),
+  scoring no higher, with no warning the answered review lacked, nothing the scanner enforced and no floor. Every
+  reason code is a warning except the scanner's scoring and wording notes (the judge's own reasons, relief, a plain
+  send to a party new to the library) and the background of what the session has been reading, so a code the
+  scanner adds later asks; each answer is matched on its own. Another party, a higher score, another
+  tool, another chat, a block, a block the scanner capped to a review, or an answer from another chat asks as before;
+  so does any review that names no party. History records such a call as allowed (the owner was not shown it) and the
+  scan record says `session_allowed`. **Always** is unchanged.
+- **Session** also sets the review's suggested grant for that session only (bound to its `session_ref`), as
+  **Always** sets it for 30 days, so the scanner scores later calls with it; with that grant set, Session skips no
+  further questions. The prompt says what Session covers: "also covers the same parties at no higher risk", "covers
+  only this exact action", or, with a suggested grant, one line for Session and Always.
 - Access codes, PINs, passport numbers and random values under a key or header no longer leave the host raw. A short
   number is redacted after a cue word ("the gate code is …", "Alarm code: …", "collection PIN for order 441 is …",
   "… is your verification code") or under a code or PIN key (`yard_code=`, `client_pin=`, `pin=`, a form's `code=`);

@@ -1,7 +1,8 @@
 """Grant hints: a review names the grant that would let the call through next time.
 
 The review prompt ends with the command that sets the first suggested grant. Approving always sets it (persistent,
-30 days) when the owner's own message asked for the work; elsewhere the prompt only shows the command. A held call
+30 days) when the owner's own message asked for the work, and approving for the session sets it for that session
+only (`test_session_approval`); elsewhere the prompt only shows the command. A held call
 approved with `/sentrook approve` sets it too, and `why` lists every suggestion. The texts are shared with the
 OpenClaw plugin's tests (`integrations/fixtures/grant-hints`).
 """
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import plugin
-from plugin import card, commands, grants, hold
+from plugin import commands, grants, hold
 
 from .test_hold import h as h  # noqa: F401 - the held-call harness, used by name
 from .test_hold import holds, send
@@ -141,7 +142,10 @@ def test_the_review_prompt_names_the_grant_and_always_sets_it(owner):
     _turn(h)
     out = _call(h, "c1")
     assert out["action"] == "approve"
-    assert f'"Always" also trusts {HOST} for 30 days.' in out["message"].splitlines()
+    assert (
+        f'"Session" also trusts {HOST} in this chat, "Always" for 30 days.'
+        in out["message"].splitlines()
+    )
     _answer(h, out, "always")
     [g] = _file_grants(h)
     assert (g["kind"], g["pattern"], g["scope"]) == ("destination", HOST, "persistent")
@@ -157,7 +161,7 @@ def test_the_review_prompt_names_the_grant_and_always_sets_it(owner):
     assert any(x["pattern"] == HOST for x in h.scans[-1]["grants"])
 
 
-@pytest.mark.parametrize("choice", ["once", "session", "deny", "timeout"])
+@pytest.mark.parametrize("choice", ["once", "deny", "timeout"])
 def test_any_other_answer_sets_nothing(owner, choice):
     h = owner
     _turn(h)
@@ -270,7 +274,8 @@ def test_a_long_pattern_keeps_the_card_within_its_budget(owner):
     _turn(h)
     out = _call(h, "c1")
     assert len(html.escape(out["message"]).encode("utf-16-le")) // 2 <= 300
-    assert f'"Always" also trusts {card.mid(long, 60)} for 30 days.' in out["message"]
+    [line] = [x for x in out["message"].splitlines() if x.startswith('"Session" also trusts ')]
+    assert line.endswith('.example.invalid in this chat, "Always" for 30 days.') and "…" in line
 
 
 def test_why_lists_every_hint(owner):
