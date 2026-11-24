@@ -275,6 +275,24 @@ Where slash commands don't reach the plugin, use `hermes sentrook <command>` on 
 - **Mattermost**: a message that starts with `/` is taken by Mattermost as one of its own slash commands. Mention
   the bot first: `@yourbot /sentrook status`.
 
+## Agent skills
+
+The plugin gives your agent two skills, which Hermes lists while the plugin is enabled (read-only, and not copied
+into `~/.hermes/skills`):
+
+- `sentrook:sentrook-guide`: how Sentrook works, so the agent can explain an approval prompt, a block, a held call or
+  a notice, and point you to `/sentrook why` and `/sentrook report`.
+- `sentrook:sentrook-setup`: setting Sentrook up with you. Ask the agent to help you set up Sentrook: it checks the
+  setup with `hermes sentrook verify`, asks what work is routine (the services, folders, channels and API key names
+  it uses), explains where notices go, and gives you the grant and binding commands to type, one at a time. Later,
+  when Sentrook keeps asking about the same thing, it helps you find the grant with `/sentrook why`.
+
+The agent never runs those commands itself, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
+short section with the rules the agent follows whether or not it opens a skill: never run the commands that change
+Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked or held call
+reworded. The agent cannot see Sentrook's history: `/sentrook` replies go to you, not to the model, so show it what
+`/sentrook why` says when you want its help with a scan.
+
 ## Dashboard
 
 `hermes dashboard` gets a **Sentrook** tab with the recent scans, newest first. Open a scan to see its risk broken

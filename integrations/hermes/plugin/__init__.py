@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import (
+    agent_skills,
     card,
     cli,
     commands,
@@ -1558,6 +1559,7 @@ def register(ctx: Any) -> None:
         commands.register_slash(ctx, _settings, owner_command)
     except Exception as exc:  # noqa: BLE001 - older hosts without plugin slash commands
         logger.info("/sentrook not registered: %s", exc)
+    agent_skills.register(ctx)
     cfg, _ = _load()
     ep = cfg.endpoints
     try:

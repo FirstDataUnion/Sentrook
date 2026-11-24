@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 
+import { agentRules, reportedTool, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
 import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
@@ -67,6 +68,8 @@ interface OpenClawPluginApi {
     description: string;
     acceptsArgs?: boolean;
     requiredScopes?: string[];
+    /** Lines OpenClaw puts in the agent's system prompt while the command is registered. */
+    agentPromptGuidance?: string[];
     handler: (ctx: any) => Promise<{ text?: string }>;
   }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
@@ -193,12 +196,16 @@ const plugin = {
       if (mode === "cli-metadata") return;
     }
 
-    // `/sentrook <subcommand>` in chat; the host answers it without a model request.
+    // `/sentrook <subcommand>` in chat; the host answers it without a model request. Its prompt guidance carries the
+    // agent rules, so the agent has them whether or not it opens one of the plugin's skills.
     try {
+      const rules = agentRules();
+      if (!rules.length) api.logger.warn(`${LOG} agent rules missing from the plugin folder; the agent is not given them`);
       api.registerCommand?.({
         name: "sentrook",
         description: "Sentrook plugin status and help",
         acceptsArgs: true,
+        ...(rules.length ? { agentPromptGuidance: rules } : {}),
         handler: async (ctx) => ({
           text: await runSentrookCommand(ctx?.args, { pluginConfig: api.pluginConfig ?? {}, env: process.env }),
         }),
@@ -212,6 +219,8 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    /** The plugin's own skill texts as it loaded them: a read is the plugin's skill read only if it returned these. */
+    const skillTexts = shippedSkillTexts();
     /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
     const ocDir = openclawDir(process.env);
     const hostVersion = runtimeVersion();
@@ -472,6 +481,14 @@ const plugin = {
           const sizeBytes = Buffer.byteLength(text, "utf8");
           const ran = !(NOT_RUN.has(entry.decision) && event?.error);
           entry.result = { status: event?.error || !ran ? "error" : "ok", size_bytes: ran ? sizeBytes : 0 };
+          // A read of one of the plugin's own skill files that succeeded goes to the scanner as a read of the agent's
+          // own skills (`agentSkills.ts`).
+          if (entry.tool === "read" || entry.tool === SKILL_READ_TOOL) {
+            const ok = ran && !event?.error;
+            entry.tool = reportedTool(entry.tool, ok ? (event?.params ?? entry.arguments) : null, ok ? text : "", {
+              texts: skillTexts,
+            });
+          }
           if (ran) {
             const redactor = createRedactor("standard", store.salt());
             const redacted = redactor.string(text);
