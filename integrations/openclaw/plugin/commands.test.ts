@@ -91,7 +91,10 @@ test("status names a missing credential by variable, never by value", async () =
     pluginConfig: {},
     env: { OPENCLAW_STATE_DIR: stateDir(), SENTROOK_SCAN_CLIENT_ID: ID },
   });
-  assert.match(text, /^credentials: no \(SENTROOK_SCAN_CLIENT_SECRET not set\)$/m);
+  assert.match(
+    text,
+    /^credentials: no \(SENTROOK_SCAN_CLIENT_SECRET not set; run openclaw sentrook login on the gateway machine\)$/m,
+  );
   assert.ok(!text.includes(ID));
 });
 

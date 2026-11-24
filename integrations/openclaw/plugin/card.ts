@@ -237,11 +237,16 @@ export const ERROR_CAUSES = {
   config: "Sentrook's settings are missing or wrong. This is a setup problem, not a security finding.",
   auth: "Sentrook could not sign in to its scan service. This is a setup problem, not a security finding.",
   unreachable: "Its scan service did not answer.",
+  not_signed_in: "Sentrook isn't signed in yet. Run on the gateway machine: openclaw sentrook login",
+  sign_in_rejected: "Sentrook's sign-in was revoked or is wrong. Run on the gateway machine: openclaw sentrook login",
 } as const;
 export type ErrorCause = keyof typeof ERROR_CAUSES;
+/** Why the credentials did not work, when known: none stored, or refused by the identity service. */
+export type SignInProblem = "not_signed_in" | "sign_in_rejected";
 export const ERROR_RUNS_UNCHECKED = "If you allow it, it runs without a security check.";
 
-export function errorCause(kind: string, auth: boolean): ErrorCause {
+export function errorCause(kind: string, auth: boolean, setup?: SignInProblem): ErrorCause {
+  if (setup) return setup;
   if (kind === "rate_limited") return "rate_limited";
   if (kind === "config") return "config";
   return auth ? "auth" : "unreachable";

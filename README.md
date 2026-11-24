@@ -22,7 +22,7 @@ and logged but nothing is blocked or asked, is one setting away. The 1.x line (e
 | [OpenClaw](https://github.com/openclaw/openclaw) | [integrations/openclaw/README.md](integrations/openclaw/README.md) |
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | [integrations/hermes/README.md](integrations/hermes/README.md) |
 
-Each guide covers credentials, install, a first scan, channel bindings and grants, the plugin's commands, enforce and
+Each guide covers install, signing in, a first scan, channel bindings and grants, the plugin's commands, enforce and
 observe mode, what is sent to the scan service, and uninstalling.
 
 ## Repository layout

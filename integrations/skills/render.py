@@ -32,6 +32,9 @@ TEMPLATES: dict[str, str] = {
     "agent-rules.txt": "agent-rules.txt",
 }
 
+#: Command-line verbs with no chat form.
+CLI_ONLY = ("verify", "login")
+
 #: What each command does, in the agent's words: verb -> (arguments, summary). Shared by both hosts.
 SUMMARIES: dict[str, tuple[str, str]] = {
     "status": (
@@ -291,7 +294,7 @@ def chat(host: str, verb: str) -> str:
 def cli(host: str, verb: str) -> str:
     """`verb` as typed on the host's command line."""
     h = HOSTS[host]
-    if verb != "verify" and verb not in h["commands"]:
+    if verb not in CLI_ONLY and verb not in h["commands"]:
         raise KeyError(f"{host} has no command {verb!r}")
     return f"{h['cli']} {verb}"
 

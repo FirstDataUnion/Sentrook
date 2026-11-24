@@ -3,8 +3,9 @@
 **Hermes surfaces used.**
 
 - Hooks: {{hooks}}. `pre_llm_call` gives the owner's request for the turn, `post_api_request` the model's narration and batched calls, `pre_tool_call` runs the scan and returns the allow / approval / block directive, `post_tool_call` keeps tool results for the next scan, `post_approval_response` keeps the owner's answer in the session history.
-- `ctx.register_command` (`/sentrook status|history|why|grants|grant|revoke|bind|snooze`) and `ctx.register_cli_command` (`hermes sentrook verify` and the same subcommands). Owner-only subcommands check the sender.
-- `ctx.get_config` for settings; `agent.secret_scope.get_secret` for the two scan credentials ({{requires_env}}), declared as `type: secret` and `requires_env`.
+- `ctx.register_command` (`/sentrook status|history|why|grants|grant|revoke|bind|snooze`) and `ctx.register_cli_command` (`hermes sentrook login`, `hermes sentrook verify` and the same subcommands). Owner-only subcommands check the sender.
+- `ctx.get_config` for settings; `agent.secret_scope.get_secret` for the two scan credentials (`SENTROOK_SCAN_CLIENT_ID`, `SENTROOK_SCAN_CLIENT_SECRET`), declared as `type: secret` settings. No `requires_env`: the install would prompt for values the user does not have yet; `after-install.md` points to `hermes sentrook login` instead.
+- `hermes_cli.gateway_setup_wizard.save_env_values` (on the public plugin API list), used only by `hermes sentrook login`, which the user runs themselves: it stores the two credentials the identity service hands over after a browser sign-in, then reads them back through `get_secret`. The plugin never opens `.env`.
 - `hermes send` (Hermes's own `hermes` command, the text on standard input) for the one notice to the owner's home channel when a call is held on an unattended run, or blocked there because the scan failed. Hermes 0.23 registers no `send_message` tool for `ctx.dispatch_tool`; the plugin uses that tool only on a Hermes that registers it and has no `hermes send`.
 - Validate warnings (rule 9): the plugin reads, but never patches, some undocumented core modules; the warnings name each one by file and line. Each read is guarded: if Hermes moves the symbol, the plugin falls back to the more cautious reading instead of failing. We would rather use public seams for these and are glad to open issues for them.
 

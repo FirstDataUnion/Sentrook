@@ -39,7 +39,8 @@ from . import (
     snooze,
     staging,
 )
-from .auth import resolve_oidc_credentials
+from .auth import CREDENTIAL_VARS, resolve_oidc_credentials
+from .auth import missing_credentials as auth_missing_credentials
 from .commands import OWNER_CHAT
 from .config import PluginConfig, hermes_home, resolve_config
 from .decision import (
@@ -62,7 +63,7 @@ from .intent import (
 from .planir import PLUGIN_VERSION, build_planir, request_turn_id, session_ref, tool_kind
 from .redact import Redactor, cap_head_tail
 from .scan_client import ScanOk, post_scan
-from .scan_error_policy import ScanFailure, is_auth_failure, scan_error_to_directive
+from .scan_error_policy import ScanFailure, failure_cause, scan_error_to_directive
 from .store import LockTimeout, Store
 from .traffic import TrafficLog
 
@@ -813,7 +814,7 @@ def _scan_one(
         logger.warning("scan failed (%s): %s", result.kind, result.detail)
         if cfg.mode != "observe":
             outage = sess.setdefault("error_epoch", planir["request_id"])
-            cause = card.error_cause(result.kind, is_auth_failure(result))
+            cause = failure_cause(result)
             key = _error_rule_key(planir["session"]["session_ref"], outage, cause)
             d = scan_error_to_directive(
                 result, on_scan_error=cfg.on_scan_error, unattended=unattended, rule_key=key
@@ -1543,6 +1544,20 @@ def _host_staging_done(cfg: PluginConfig, entry: dict[str, Any], status: str, re
         logger.warning("sentrook could not record what Hermes did with a background save: %s", exc)
 
 
+def _known_missing_credentials() -> bool:
+    """True only when Hermes says the credentials are unset. At startup a multiplexed gateway has no active
+    profile and refuses the read; that is not knowing, so no warning."""
+    try:
+        from agent.secret_scope import get_secret as hermes_get_secret
+    except ImportError:
+        return bool(auth_missing_credentials())
+    try:
+        values = [hermes_get_secret(name) for name in CREDENTIAL_VARS]
+    except Exception:  # noqa: BLE001 - an unscoped read on a multiplexed gateway
+        return False
+    return not all(isinstance(v, str) and v.strip() for v in values)
+
+
 def register(ctx: Any) -> None:
     global _ctx
     _ctx = ctx
@@ -1587,6 +1602,13 @@ def register(ctx: Any) -> None:
         cfg.traffic_log_path if cfg.traffic_log_enabled else "off",
         route or "none",
     )
+    if _known_missing_credentials():
+        logger.warning(
+            "sentrook: not signed in; every tool call is stopped until you %s",
+            "set Sentrook's credentials in Hermes (see the install guide) and restart Hermes"
+            if skill_review.host_isolated()
+            else "run hermes sentrook login on this machine (then restart Hermes)",
+        )
     if not ep.scan.ok or not ep.issuer.ok:
         logger.error(
             "sentrook endpoint configuration is invalid; every tool call will fail closed until fixed"

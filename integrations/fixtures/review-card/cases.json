@@ -1603,6 +1603,24 @@
         "title": "🪶 Sentrook could not check this call",
         "description": "Its scan service did not answer.\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
       }
+    },
+    {
+      "name": "scan error: not signed in",
+      "cause": "not_signed_in",
+      "hermes": "🪶 Sentrook could not check this call\nSentrook isn't signed in yet. Run on the Hermes machine: hermes sentrook login\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "Sentrook isn't signed in yet. Run on the gateway machine: openclaw sentrook login\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
+    },
+    {
+      "name": "scan error: sign-in revoked or wrong",
+      "cause": "sign_in_rejected",
+      "hermes": "🪶 Sentrook could not check this call\nSentrook's sign-in was revoked or is wrong. Run on the Hermes machine: hermes sentrook login\nIf you allow it, it runs without a security check.\nSession and Always skip this question in this chat while Sentrook cannot scan.\nStatus: /sentrook status",
+      "openclaw": {
+        "title": "🪶 Sentrook could not check this call",
+        "description": "Sentrook's sign-in was revoked or is wrong. Run on the gateway machine: openclaw sentrook login\nIf you allow it, it runs without a security check.\nStatus: /sentrook-status"
+      }
     }
   ]
 }

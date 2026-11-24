@@ -36,8 +36,8 @@ const FILES = {
   rules: "agent-rules.txt",
 };
 const OWNER_COMMANDS = new Set(Object.values(OWNER_SUBCOMMANDS).map((o) => o.command.replace(/^sentrook-/, "")));
-/** `openclaw sentrook <verb>`: verify, status and every owner verb (cli.ts). */
-const CLI_VERBS = new Set(["verify", "status", ...Object.keys(OWNER_SUBCOMMANDS)]);
+/** `openclaw sentrook <verb>`: login, verify, status and every owner verb (cli.ts). */
+const CLI_VERBS = new Set(["login", "verify", "status", ...Object.keys(OWNER_SUBCOMMANDS)]);
 
 // ---- drift: commands ------------------------------------------------------------------------------------------------
 
