@@ -302,6 +302,15 @@ def converge(
         and info.get("verdict") == "known_good"
         and info.get("match") == "exact"
     ]
+    # Hosts the owner's request names by their service, where the call judge read the request as meaning the service.
+    service_named = [
+        eid
+        for env in envelopes
+        if env.step is ProbeStep.JEV_CALL
+        and env.status is ProbeStatus.OK
+        and (env.evidence.get("names_service") or 0.0) >= params.service_name_min_yes
+        for eid in env.evidence.get("services_sent") or []
+    ]
     relief = compute_relief(
         prepared,
         params,
@@ -309,6 +318,7 @@ def converge(
         withdrawn_trust,
         known_good_exact=known_good_exact,
         exposure=merged.get("suspicion.exposure"),
+        service_named=service_named,
     )
     excluded = {pair for r in relief for pair in r.excluded}
     if relief:

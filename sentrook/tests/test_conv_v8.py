@@ -41,7 +41,7 @@ def host_effects(res) -> list[str]:
     return [x.effect for x in res.response.relief_applied if x.subject in hosts]
 
 
-def test_conv_v8_is_conv_v7_with_the_host_relieved_and_the_default():
+def test_conv_v8_is_conv_v7_with_the_host_relieved():
     a = json.loads((PARAMS_DIR / "conv-v8.json").read_text())
     b = json.loads((PARAMS_DIR / "conv-v7.json").read_text())
     for d in (a, b):
@@ -49,8 +49,8 @@ def test_conv_v8_is_conv_v7_with_the_host_relieved_and_the_default():
     assert a["credential_home"].pop("relieve_host") is True and a == b
     assert V8.credential_home_relieve_host and not V7.credential_home_relieve_host
     assert not V8.attended_owner_cap
-    assert ServeConfig().convergence == "conv-v8"
-    assert ServeConfig.from_env({}).convergence == "conv-v8"
+    assert ServeConfig().convergence == "conv-v9"  # conv-v8 stays selectable
+    assert ServeConfig.from_env({}).convergence == "conv-v9"
     assert ServeConfig.from_env({"SENTROOK_CONVERGENCE": "conv-v7"}).convergence == "conv-v7"
 
 
