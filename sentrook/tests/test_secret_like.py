@@ -216,6 +216,50 @@ def test_secret_carried_reports_why():
     assert secret_carried("token: " + "ghp_" + "x" * 36, ph, owner_asked=True) == SHAPE
 
 
+def test_the_second_pass_masks_what_the_detector_finds_but_the_relief_stays():
+    """Since redact-v11 the second pass replaces these values in Jev's views; the rules still read them as found
+    only by the cue and key rules, so the owner's request naming one still relieves a raw one."""
+    from sentrook.prepare.redact import redact_text
+
+    for text in ("Alarm code: 727677", "passport=PPCDHFZC6", f"value: {R20}"):
+        assert redact_text(text)[1] == 1, text
+        assert secret_carried(text, "⟦secret") == DETECTED
+        assert secret_carried(text, "⟦secret", owner_asked=True) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Post it: collection PIN ⟦secret:credential:ab12⟧",
+        "curl https://x.example -d 'pin=⟦secret:credential:ab12⟧'",
+        "the yard gate code is ⟦secret:credential:ab12⟧.",
+        "Visitor passport number ⟦secret:identifier:cd34⟧",
+        json.dumps({"pin": "⟦secret:credential:ab12⟧"}, ensure_ascii=False),
+    ],
+)
+def test_a_placeholder_for_a_code_pin_or_passport_is_relieved_like_the_raw_value(text):
+    """Since redact-v11 the plugins send these values as placeholders: the owner's request naming one relieves the
+    placeholder as it relieved the raw value, and nothing else changes."""
+    ph = "⟦secret"
+    assert secret_carried(text, ph) == PLACEHOLDER
+    assert secret_carried(text, ph, owner_asked=True) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "LEDGER_KEY=⟦secret:c3d4⟧",
+        "token: ⟦secret:credential:ab12⟧",
+        "the password is ⟦secret:credential:ab12⟧",
+        "gh ⟦secret:github:ab12⟧",
+        "value: ⟦secret:credential:ef56⟧",
+        "collection PIN ⟦secret:credential:ab12⟧ and api_key=⟦secret:credential:cd34⟧",
+    ],
+)
+def test_other_placeholders_still_count_when_the_owner_asked(text):
+    assert secret_carried(text, "⟦secret", owner_asked=True) == PLACEHOLDER
+
+
 def test_a_placeholder_still_marks_a_secret_whatever_follows_it():
     """Plugins before `redact-v7` replaced code that reads a secret (`access_token = token_data['access_token']`) as if
     it were one, leaving a placeholder that runs into `'access_token']`. The scanner cannot tell that from a real
