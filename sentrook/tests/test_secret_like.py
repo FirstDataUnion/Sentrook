@@ -216,6 +216,17 @@ def test_secret_carried_reports_why():
     assert secret_carried("token: " + "ghp_" + "x" * 36, ph, owner_asked=True) == SHAPE
 
 
+def test_the_second_pass_masks_what_the_detector_finds_but_the_relief_stays():
+    """Since redact-v11 the second pass replaces these values in Jev's views; the rules still read them as found
+    only by the cue and key rules, so the owner's request naming one still relieves a raw one."""
+    from sentrook.prepare.redact import redact_text
+
+    for text in ("Alarm code: 727677", "passport=PPCDHFZC6", f"value: {R20}"):
+        assert redact_text(text)[1] == 1, text
+        assert secret_carried(text, "⟦secret") == DETECTED
+        assert secret_carried(text, "⟦secret", owner_asked=True) is None
+
+
 def test_a_placeholder_still_marks_a_secret_whatever_follows_it():
     """Plugins before `redact-v7` replaced code that reads a secret (`access_token = token_data['access_token']`) as if
     it were one, leaving a placeholder that runs into `'access_token']`. The scanner cannot tell that from a real

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 from collections.abc import Callable
 from typing import Any
@@ -453,6 +454,262 @@ _CREDENTIAL_FIELD = re.compile(
 )
 
 
+# Access codes, PINs and personal identifiers named by a cue word, and random values under a key or a header.
+# A short number is a secret only after a cue word ("the gate code is 861206", "collection PIN for order 441 is
+# 6815", `yard_code=090373`): with no cue it stays, and so do ordinary codes (postal, country, status, error,
+# product and business-record codes). A random value counts only under a key or a header (`value: <random>`,
+# `X-Desk: <random>`), never in prose ("what it says: X"), and never under a key that names an id, a hash, a version
+# or data.
+# Kinds: `code`, `pin`, `identifier` (a passport number) and `random`; a placeholder says `identifier` for an
+# identifier and `credential` for the others (`PLACEHOLDER_KIND`).
+CODE, PIN, IDENTIFIER, RANDOM = "code", "pin", "identifier", "random"
+PLACEHOLDER_KIND = {
+    CODE: "credential",
+    PIN: "credential",
+    RANDOM: "credential",
+    IDENTIFIER: "identifier",
+}
+
+# Where a cue word starts: not inside a word, or straight after an escaped newline or tab (`\nAlarm code: …` in
+# a JSON-encoded result).
+_CUE_START = r"(?:(?<![A-Za-z0-9_\\])|(?<=\\[nrt]))"
+# Words before "code" that make it an access or sign-in code: "gate code", "sign-in code", "backup codes". A
+# code with any other qualifier (postal, country, error, promo) is not a secret.
+_CODE_QUALIFIERS = (
+    r"gate|door|alarm|access|entry|entrance|keypad|lock|lockbox|key[ -]?safe|safe|sign[ -]?in|"
+    r"log[ -]?in|login|verification|verify|security|one[ -]time|backup|recovery|unlock|2fa|mfa"
+)
+_CODE_CUE = _CUE_START + r"(?:(?:" + _CODE_QUALIFIERS + r")[ \t]+codes?|pass[ -]?codes?|otp)"
+# `PIN` in capitals (a lower-case "pin" is usually the verb), and in any case "pin code" / "pin number" or a pin
+# that belongs to someone or something ("my pin", "the card pin", "collection pin").
+_PIN_CAPS_CUE = _CUE_START + r"PINs?"
+_PIN_WORDS_CUE = (
+    _CUE_START + r"(?:pin[ \t]+(?:codes?|numbers?)"
+    r"|(?:my|your|his|her|their|our|the|card|collection|door|access|sim|bank|debit|atm)[ \t]+pin)"
+)
+_PASSPORT_CUE = _CUE_START + r"passport(?:[ \t]+(?:numbers?|no\.?|#))?"
+# "for order 441", "on the booking": a short phrase between the cue and the value. When one is present the value
+# must follow `is`, `was` or a colon, so a number inside the phrase is never taken as the value. "the gate code,
+# it is N" states it in a second clause.
+_CUE_CONNECTOR = (
+    r"[ \t]+(?:for|on|of|to|from)[ \t]+[^\n.:;=]{1,40}?(?:[ \t]+(?:is|was)\b|[ \t]*:)[ \t]*"
+)
+_CUE_SEPARATOR = r"[ \t]*(?:(?:is|was)[ \t]*:?[ \t]*|[:=#-][ \t]*|,[ \t]*it(?:['’]s|[ \t]+(?:is|was))(?:[ \t]+now)?[ \t]*:?[ \t]*|)"
+# A value ends at a character that does not continue it or a number ("6815." ends a sentence; "2026-11-13" and
+# "10:30" are not codes).
+_CUE_END = r"(?![A-Za-z0-9_-]|[.:,/][0-9])"
+
+
+def _cue_rule(flags: str, cue: str, value: str) -> re.Pattern[str]:
+    return re.compile(
+        flags
+        + "(?:"
+        + cue
+        + ")(?:"
+        + _CUE_CONNECTOR
+        + "|"
+        + _CUE_SEPARATOR
+        + r")\\{0,8}[\"'`]?"
+        + value
+        + _CUE_END
+    )
+
+
+def _code_value(v: str) -> bool:
+    """A code: four to ten digits, or two groups of letters and digits with a digit in them (`4821-9930`)."""
+    return "-" not in v or re.search(r"[0-9]", v) is not None
+
+
+def _identifier_value(v: str) -> bool:
+    """A passport number: capitals and digits, with a digit (`passport renewal` is words)."""
+    return re.search(r"[0-9]", v) is not None and re.search(r"[a-z]", v) is None
+
+
+# (kind, pattern, check): group `v` is replaced; a match counts only when its value passes the check.
+_CUES: list[tuple[str, re.Pattern[str], Callable[[str], bool] | None]] = [
+    (
+        CODE,
+        _cue_rule("(?i)", _CODE_CUE, r"(?P<v>[0-9]{4,10}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})"),
+        _code_value,
+    ),
+    (PIN, _cue_rule("", _PIN_CAPS_CUE, r"(?P<v>[0-9]{4,10})"), None),
+    (PIN, _cue_rule("(?i)", _PIN_WORDS_CUE, r"(?P<v>[0-9]{4,10})"), None),
+    (IDENTIFIER, _cue_rule("(?i)", _PASSPORT_CUE, r"(?P<v>[A-Z0-9]{6,12})"), _identifier_value),
+    # The value first: "482193 is your verification code".
+    (
+        CODE,
+        re.compile(
+            r"(?i)(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[nrt]))(?P<v>[0-9]{4,10})[ \t]+is[ \t]+(?:your|the|my)[ \t]+"
+            r"(?:[A-Za-z0-9_-]{1,30}[ \t]+)?" + _CODE_CUE
+        ),
+        None,
+    ),
+]
+
+# Where a key starts: not inside a word, a dotted name or a path, or straight after an escaped newline or tab.
+_KEY_START = r"(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[nrt]))"
+# `yard_code=090373`, `client_pin: 7021`, `gateCode: 4471`, `"passport_number": "PPCDHFZC6"`, `code=006960`.
+_CODE_KEY = re.compile(
+    _KEY_START
+    + r"(?P<k>[A-Za-z][A-Za-z0-9_-]{0,40})\\{0,8}[\"']?[ \t]*(?P<sep>[:=])[ \t]*\\{0,8}[\"']?"
+    r"(?P<v>[A-Za-z0-9]{4,12})" + _CUE_END
+)
+# `value: <random>`, `"X-Desk": "<random>"`, `sig=<random>`: any key or header, a long value.
+_RANDOM_KEY = re.compile(
+    _KEY_START
+    + r"(?P<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})\\{0,8}[\"']?[ \t]*(?P<sep>[:=])[ \t]*\\{0,8}[\"']?"
+    r"(?P<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-])"
+)
+_RANDOM_VALUE = re.compile(r"[A-Za-z0-9+/_-]{12,256}={0,2}")
+# Key prefixes that make `*_code` an ordinary value: postal, country, status and error codes, product,
+# business-record and discount codes, language and currency codes.
+_ORDINARY_CODE_PREFIX = frozenset(
+    "zip postal post country area status error err exit return ret response resp http product item "
+    "sku promo discount coupon voucher lang language locale currency color colour region iso tax vat "
+    "sort bank swift bic qr bar barcode hs naics sic reason event type class char key op short dial "
+    "phone airport iata icao station stop route flight course department dept cost gl account project "
+    "source src fiscal unit state county city branch store site plan tier mode format result customer "
+    "client vendor supplier merchant mcc lot batch location loc ticket run job tariff part model serial "
+    "invoice order shipment carrier service category group cpt icd diagnosis procedure exchange "
+    "market ticker isin cusip unspsc".split()
+)
+# Keys and headers whose values are identifiers, digests, names, state, data or patterns, not secrets.
+_NOT_SECRET_KEY = re.compile(
+    r"(?i)(?:^|[_.-])(?:id|ids|uuid|guid|hash|sha\d*|md5|digest|checksum|crc|commit|rev|revision|etag|"
+    r"cid|ref|trace\w*|span\w*|request\w*|version|ver|build|sku|order|path|file|filename|url|uri|href|"
+    r"src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce|"
+    r"state|data|content|body|payload|blob|image|attachment|b64|base64|raw|integrity|list|si|"
+    r"in-reply-to|references|message-id|thread\w*|customer|payment_intent|charge|invoice|"
+    r"subscription|price|product|regex|pattern|glob)$"
+)
+# camelCase keys ending in an id or name word (`userId`, `fileHash`); case-sensitive, so `sid` and `PHPSESSID`
+# (session cookies) still count.
+_NOT_SECRET_CAMEL_KEY = re.compile(r"[a-z](?:Id|ID|Ids|Hash|Name|Url|Uri|Path|Version)$")
+# A provider's object id (`cus_…`, `pi_…`) and subresource-integrity hashes (`sha384-…`).
+_PREFIXED_OBJECT_ID = re.compile(r"[a-z]{1,8}_|(?i:sha(?:1|256|384|512))-")
+
+
+def _key_words(key: str) -> list[str]:
+    """`yard_code` → [yard, code]; `gateCode` → [gate, code]; `alarmPIN` → [alarm, pin]."""
+    return [w.lower() for w in re.split(r"[_-]|(?<=[a-z0-9])(?=[A-Z])", key) if w]
+
+
+def _key_kind(key: str, value: str, sep: str, after_query: bool) -> str | None:
+    """The kind of secret under a code, PIN or passport key, or None. A bare `code` key counts only as a form or
+    query field with six or more digits (`-d 'code=006960'`): a JSON or YAML `code:` is far more often a status or
+    error code, and a link's `?code=` an exchange the scanner needs to see."""
+    words = _key_words(key)
+    if not words:
+        return None
+    passport = words[-1] in ("passport", "passportno", "passportnum", "passportnumber") or (
+        len(words) > 1 and words[-2] == "passport" and words[-1] in ("no", "num", "number")
+    )
+    if passport:
+        return IDENTIFIER if 6 <= len(value) <= 12 and _identifier_value(value) else None
+    if not value.isdigit() or not 4 <= len(value) <= 10:
+        return None
+    if words[-1] in ("pin", "passcode", "otp"):
+        return PIN
+    if words[-1] != "code":
+        return None
+    if len(words) > 1:
+        return CODE if words[-2] not in _ORDINARY_CODE_PREFIX else None
+    return CODE if sep == "=" and len(value) >= 6 and not after_query else None
+
+
+def _class(ch: str) -> int:
+    return 0 if ch.isdigit() else 1 if ch.isupper() else 2 if ch.islower() else 3
+
+
+def _looks_random(v: str) -> bool:
+    """A value a person did not type: twelve or more characters with upper case, lower case and a digit, not hex
+    (a hash, a commit id, a UUID), with frequent changes between character classes, which rules out camelCase
+    words (`PrimaryButton2`), and enough distinct characters."""
+    core = v.rstrip("=")
+    if len(core) < 12 or core[0] in "/-_" or _PREFIXED_OBJECT_ID.match(core):
+        return False
+    if re.fullmatch(r"[0-9A-Fa-f-]+", core):
+        return False
+    if not (re.search(r"[A-Z]", core) and re.search(r"[a-z]", core) and re.search(r"[0-9]", core)):
+        return False
+    changes = sum(1 for a, b in zip(core, core[1:], strict=False) if _class(a) != _class(b))
+    if changes < 0.35 * (len(core) - 1):
+        return False
+    counts: dict[str, int] = {}
+    for c in core:
+        counts[c] = counts.get(c, 0) + 1
+    entropy = -sum(n / len(core) * math.log2(n / len(core)) for n in counts.values())
+    return entropy >= 3.0
+
+
+def _random_key(key: str, value: str, after_query: bool) -> bool:
+    """A random value under a key or header that does not name an id, a hash, a version or data, outside a link's
+    query (`?si=…`, `&list=…` are share links and tracking parameters)."""
+    return (
+        not _NOT_SECRET_KEY.search(key)
+        and not _NOT_SECRET_CAMEL_KEY.search(key)
+        and not after_query
+        and _looks_random(value)
+    )
+
+
+def _after_query(text: str, start: int) -> bool:
+    return start > 0 and text[start - 1] in "?&"
+
+
+def _starts_entry(text: str, start: int) -> bool:
+    """A `key: value` pair stands on its own: its key starts a line (indented or not), follows `{ , ; ( [` or a quote
+    (JSON, a dict, a quoted header) or a `-H` / `--header` flag. A word before a colon in a sentence ("what it says:
+    X") is prose, not a key."""
+    i = start
+    while i > 0:
+        if text[i - 1] in " \t":
+            i -= 1
+        elif i > 1 and text[i - 2 : i] == "\\t":
+            i -= 2
+        else:
+            break
+    if i == 0 or text[i - 1] in "\n\r{,;([\"'" or text[max(0, i - 2) : i] in ("\\n", "\\r"):
+        return True
+    return text.endswith(("-H", "--header"), 0, i)
+
+
+def cue_spans(text: str) -> list[tuple[int, int, int, str]]:
+    """Every access code, PIN, identifier and random value the cue and key rules find: (match start, value start,
+    value end, kind), unmerged."""
+    out: list[tuple[int, int, int, str]] = []
+    for kind, pattern, check in _CUES:
+        for m in pattern.finditer(text):
+            s, e = m.span("v")
+            if check is None or check(text[s:e]):
+                out.append((m.start(), s, e, kind))
+    for m in _CODE_KEY.finditer(text):
+        kind = _key_kind(m.group("k"), m.group("v"), m.group("sep"), _after_query(text, m.start()))
+        if kind is not None:
+            out.append((m.start(), m.start("v"), m.end("v"), kind))
+    for m in _RANDOM_KEY.finditer(text):
+        if m.group("sep") == ":" and not _starts_entry(text, m.start()):
+            continue
+        if _random_key(m.group("k"), m.group("v"), _after_query(text, m.start())):
+            out.append((m.start(), m.start("v"), m.end("v"), RANDOM))
+    return out
+
+
+def object_kind(key: str, value: Any) -> str | None:
+    """The kind of secret a parsed object's value is under its key, or None: a code, PIN or passport number under
+    its key (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`)."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    text = str(value)
+    if re.fullmatch(r"[A-Za-z0-9]{4,12}", text):
+        kind = _key_kind(key, text, ":", False)
+        if kind is not None:
+            return kind
+    if isinstance(value, str) and _RANDOM_VALUE.fullmatch(value) and _random_key(key, value, False):
+        return RANDOM
+    return None
+
+
 def _spans(text: str) -> list[tuple[int, int, str]]:
     spans: list[tuple[int, int, str]] = []
     for kind, pattern, group, check in _SHAPES:
@@ -460,6 +717,7 @@ def _spans(text: str) -> list[tuple[int, int, str]]:
             s, e = m.span(group) if group else m.span()
             if e > s and (check is None or check(text[s:e])):
                 spans.append((s, e, kind))
+    spans.extend((s, e, PLACEHOLDER_KIND[kind]) for _, s, e, kind in cue_spans(text))
     spans.sort(key=lambda x: (x[0], -x[1]))
     merged: list[list[Any]] = []
     for s, e, kind in spans:
@@ -518,6 +776,8 @@ class Redactor:
                     and _key_value(v)
                 ):
                     out[str(k)] = self._placeholder("credential", v)
+                elif self.level != "off" and (kind := object_kind(str(k), v)) is not None:
+                    out[str(k)] = self._placeholder(PLACEHOLDER_KIND[kind], str(v))
                 else:
                     out[str(k)] = self.value(v, depth + 1)
             return out

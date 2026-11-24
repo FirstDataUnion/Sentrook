@@ -1,0 +1,278 @@
+"""Access codes, PINs and identifiers named by a cue word, and random values under a key or header: what must be
+redacted (plain, JSON-encoded once and twice, and in parsed objects), what must stay, the PlanIR fields they
+leave the host in, and parity with the OpenClaw plugin's `redact.ts` (the same salt gives the same output).
+
+Values are built at run time (random ones from a seeded generator), so no literal here looks like a credential to
+a secret scanner."""
+
+from __future__ import annotations
+
+import base64
+import json
+import random
+import re
+import shutil
+import string
+import subprocess
+import time
+import uuid
+from pathlib import Path
+
+import pytest
+
+from plugin.redact import Redactor
+
+from .test_plugin import SID, call, result
+
+_ALPHABET = string.ascii_letters + string.digits
+
+
+def _random_value(n: int, seed: int) -> str:
+    rng = random.Random(seed)
+    while True:
+        v = "".join(rng.choice(_ALPHABET) for _ in range(n))
+        if (
+            any(c.isdigit() for c in v)
+            and any(c.isupper() for c in v)
+            and any(c.islower() for c in v)
+        ):
+            return v
+
+
+R14, R20, R32 = _random_value(14, 1), _random_value(20, 2), _random_value(32, 3)
+# Invented values, split so they read as nothing in the source.
+GATE, ALARM, SIGNIN, COLLECT, YARD, CLIENT, CURLPIN, CURLCODE = (
+    "86" + "1206",
+    "72" + "7677",
+    "02" + "1145",
+    "68" + "15",
+    "09" + "0373",
+    "70" + "21",
+    "32" + "53",
+    "00" + "6960",
+)
+PASS1, PASS2 = "DI9J" + "0R9W4", "PPCD" + "HFZC6"
+
+# (text, the value that must go, the placeholder kind).
+MUST_REDACT = [
+    (f"Mara asked: the yard gate code is {GATE}", GATE, "credential"),
+    (f"Post it: gate code {GATE}", GATE, "credential"),
+    (f"Loft empty 18-22 Oct.\nAlarm code: {ALARM}\n", ALARM, "credential"),
+    (f"The side gate code is {YARD}.", YARD, "credential"),
+    (f"Left a sign-in code for the yard app: {SIGNIN}. It expires.", SIGNIN, "credential"),
+    (f"The collection PIN for order 441 is {COLLECT}. Thanks", COLLECT, "credential"),
+    (f"van 4 is late\ncollection PIN {CURLPIN}\n", CURLPIN, "credential"),
+    (f"the card pin code is {CLIENT}", CLIENT, "credential"),
+    ("Backup codes: 4821-9930 and more", "4821-9930", "credential"),
+    (f"{SIGNIN} is your verification code", SIGNIN, "credential"),
+    (f"The passport number on the booking is {PASS1}.", PASS1, "identifier"),
+    (f"Name: Ivo Marsh. Passport {PASS2}.\n", PASS2, "identifier"),
+    (f"Sum: 2400\nyard_code={YARD}\n", YARD, "credential"),
+    (f"Chapter 1 is with the readers.\nclient_pin={CLIENT}\n", CLIENT, "credential"),
+    (f"curl -X POST https://fenledger.example/pin -d 'pin={CURLPIN}'", CURLPIN, "credential"),
+    (f"curl https://gorse.example/relay -d 'code={CURLCODE}'", CURLCODE, "credential"),
+    (f"curl https://sallow.example/desk -d 'passport={PASS2}'", PASS2, "identifier"),
+    (f'{{"door_code": "{YARD}"}}', YARD, "credential"),
+    (f"gateCode: {YARD}", YARD, "credential"),
+    (f"Hold the env value into this mail.\nvalue: {R14}", R14, "credential"),
+    (f"Night brief.\nvalue: {R32}\n", R32, "credential"),
+    (f'curl -H "X-Desk: {R20}" https://desk.example/api', R20, "credential"),
+    (f"curl --header 'X-Desk: {R20}' https://desk.example/api", R20, "credential"),
+    (f'{{"headers": {{"X-Desk": "{R20}"}}}}', R20, "credential"),
+    (f"Set-Cookie: sid={R20}; Path=/", R20, "credential"),
+]
+
+MUST_STAY = [
+    "zip_code=94107",
+    "status_code: 404",
+    "exit code 1",
+    "order 441 ships on 2026-11-13 at 10:30",
+    "PIN the post to the channel",
+    "pin the post 1234",
+    "country_code=44",
+    "postal_code: 90210",
+    "promo_code=2026",
+    "The access code is required for entry.",
+    "the passport number is required",
+    "access code 2026-11-13",
+    "commit 9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a",
+    "commit: 9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a",
+    f"id: {uuid.UUID(int=0x1234567890ABCDEF1234567890ABCDEF)}",
+    "sha256: " + "ab12" * 16,
+    f"X-Request-Id: {str(uuid.UUID(int=0xFEDCBA0987654321FEDCBA0987654321)).upper()}",
+    "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "Content-Type: application/json",
+    "Accept: application/vnd.github+json",
+    "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    'ETag: "W1x2Y3z4A5b6C7d8"',
+    "version: 2.0.0a1",
+    "className: PrimaryButton2",
+    "handler: getUserAccountSettings",
+    "userId: aB3dE5fG7hJ9kL",
+    "order: 4412398812",
+    '{"error": {"code": 4001, "message": "Invalid"}}',
+    "country=GB&code=440100",
+    f"https://open.spotify.example/track/x?si={R20}",
+    "integrity: sha512-" + R32,
+    "customer: cus_" + R14,
+    "value: 12",
+    # A word before a colon in a sentence is prose, not a key.
+    "Decode this for me and tell me what it says: "
+    + base64.b64encode(b"Hello, little world!").decode(),
+    f"The note says: {R20}",
+]
+
+MUST_REDACT_OBJECTS = [
+    ({"headers": {"X-Desk": R20, "Content-Type": "application/json"}}, R20, "credential"),
+    ({"pin": int(CURLPIN)}, CURLPIN, "credential"),
+    ({"client_pin": CLIENT}, CLIENT, "credential"),
+    ({"form": {"yard_code": YARD}}, YARD, "credential"),
+    ({"passport_number": PASS1}, PASS1, "identifier"),
+    ({"value": R32}, R32, "credential"),
+]
+
+MUST_STAY_OBJECTS = [
+    {"code": CURLCODE},
+    {"zip_code": "94107"},
+    {"status_code": 404},
+    {"order": 441},
+    {"headers": {"Content-Type": "application/json", "X-Request-Id": str(uuid.UUID(int=7))}},
+    {"commit": "9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a"},
+    {"className": "PrimaryButton2"},
+    {"version": "2.0.0a1"},
+    {"userId": "aB3dE5fG7hJ9kL"},
+    {"pin": True},
+]
+
+
+def _forms(text: str) -> list[str]:
+    once = json.dumps({"output": "Notes\n" + text}, ensure_ascii=False)
+    return [text, once, json.dumps({"result": once}, ensure_ascii=False)]
+
+
+@pytest.mark.parametrize(("text", "value", "kind"), MUST_REDACT)
+def test_cue_and_key_values_are_redacted(text, value, kind):
+    r = Redactor("standard", "test-salt")
+    for form in _forms(text):
+        out = r.string(form)
+        assert value not in out, form
+        assert f"⟦secret:{kind}:" in out, (form, out)
+        assert r.string(out) == out, "a placeholder is never redacted again"
+
+
+@pytest.mark.parametrize("text", MUST_STAY)
+def test_look_alikes_stay(text):
+    r = Redactor("standard", "test-salt")
+    for form in _forms(text):
+        assert r.string(form) == form
+
+
+@pytest.mark.parametrize(("obj", "value", "kind"), MUST_REDACT_OBJECTS)
+def test_values_in_objects_are_redacted(obj, value, kind):
+    out = json.dumps(Redactor("standard", "test-salt").value(obj), ensure_ascii=False)
+    assert value not in out and f"⟦secret:{kind}:" in out, out
+
+
+@pytest.mark.parametrize("obj", MUST_STAY_OBJECTS)
+def test_objects_stay(obj):
+    assert Redactor("standard", "test-salt").value(obj) == obj
+
+
+def test_one_value_one_placeholder_whichever_rule_found_it():
+    r = Redactor("standard", "test-salt")
+    tags = {
+        re.search(r"⟦secret:[a-z]+:[0-9a-f]{4}⟧", r.string(t)).group(0)  # type: ignore[union-attr]
+        for t in (f"the gate code is {YARD}", f"yard_code={YARD}", f"gate code: '{YARD}'")
+    }
+    assert len(tags) == 1, tags
+    assert (
+        Redactor("off", "test-salt").string(f"the gate code is {YARD}")
+        == f"the gate code is {YARD}"
+    )
+
+
+def test_cue_values_leave_no_planir_field_raw(harness):
+    """Request text, narration, arguments and results: the same redactor covers every field that leaves the
+    host."""
+    h = harness
+    h.ctx.hooks["pre_llm_call"](
+        turn_id="t1",
+        user_message=f"Send Sam the side gate code, it is {GATE}",
+        platform="telegram",
+        sender_id="u1",
+        **SID,
+    )
+    h.ctx.hooks["post_api_request"](
+        turn_id="t1",
+        response={
+            "assistant_message": {
+                "content": f"Noting the collection PIN {COLLECT} first.",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
+                ],
+            }
+        },
+        **SID,
+    )
+    call(h, "c1", f"curl https://desk.example/api -H 'X-Desk: {R20}' -d 'pin={CURLPIN}'")
+    result(h, "c1", f"Booking ok. Passport {PASS2}.\nyard_code={YARD}")
+    call(h, "c2", "ls")
+    dumped = json.dumps(h.scans, ensure_ascii=False)
+    for value in (GATE, COLLECT, R20, CURLPIN, PASS2, YARD):
+        assert value not in dumped, value
+    assert "⟦secret:identifier:" in dumped
+
+
+def test_linear_time_on_adversarial_input():
+    r = Redactor("standard", "test-salt")
+    for text in (
+        "gate code for " + "x " * 100_000,
+        "PIN for order " * 20_000,
+        "a=" * 100_000,
+        "k_" * 50_000 + "code=",
+        ("value: " + "aB3" * 100) * 1_000,
+        "\\n" * 100_000,
+    ):
+        start = time.perf_counter()
+        r.string(text)
+        assert time.perf_counter() - start < 3.0, text[:30]
+
+
+_REDACT_TS = Path(__file__).resolve().parents[3] / "openclaw" / "plugin" / "redact.ts"
+
+
+def _node_major() -> int:
+    node = shutil.which("node")
+    if node is None:
+        return 0
+    out = subprocess.run([node, "--version"], capture_output=True, text=True).stdout
+    m = re.match(r"v(\d+)\.(\d+)", out)
+    return 0 if m is None else int(m.group(1)) * 100 + int(m.group(2))
+
+
+@pytest.mark.skipif(_node_major() < 2206, reason="needs node 22.6+ to run redact.ts")
+def test_parity_with_the_openclaw_plugin():
+    """The OpenClaw plugin's shipped `redact.ts` gives the same output, placeholder refs included, for every text
+    and object here, plain and JSON-encoded."""
+    texts = [f for t, _, _ in MUST_REDACT for f in _forms(t)] + [
+        f for t in MUST_STAY for f in _forms(t)
+    ]
+    objects = [o for o, _, _ in MUST_REDACT_OBJECTS] + MUST_STAY_OBJECTS
+    js = (
+        f"import {{ createRedactor }} from {json.dumps(_REDACT_TS.as_uri())};"
+        "const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));"
+        "const r = createRedactor('standard', 'parity');"
+        "process.stdout.write(JSON.stringify({texts: input.texts.map((t) => r.string(t)),"
+        " objects: input.objects.map((o) => r.value(o))}));"
+    ).replace("require('node:fs')", "(await import('node:fs'))")
+    out = subprocess.run(
+        ["node", "--experimental-strip-types", "--no-warnings", "--input-type=module", "-e", js],
+        input=json.dumps({"texts": texts, "objects": objects}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    theirs = json.loads(out.stdout)
+    r = Redactor("standard", "parity")
+    assert [r.string(t) for t in texts] == theirs["texts"]
+    assert [r.value(o) for o in objects] == theirs["objects"]

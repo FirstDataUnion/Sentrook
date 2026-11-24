@@ -490,3 +490,99 @@ test("capArgs keeps an object", () => {
   const wide = capArgs(Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`k${i}`, i])), 1024);
   assert.equal(typeof wide._truncated, "string");
 });
+
+// Access codes, PINs and identifiers named by a cue word, and random values under a key or header. Values are built
+// at run time; the random one from a seeded generator.
+const seeded = (n: number, seed: number) => {
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let x = seed;
+  for (;;) {
+    let v = "";
+    for (let i = 0; i < n; i++) {
+      x = (x * 1103515245 + 12345) % 2147483648;
+      v += alphabet[x % alphabet.length];
+    }
+    if (/[0-9]/.test(v) && /[A-Z]/.test(v) && /[a-z]/.test(v)) return v;
+  }
+};
+const R20 = seeded(20, 7);
+const [GATE, ALARM, PINV, YARD] = ["86" + "1206", "72" + "7677", "32" + "53", "09" + "0373"];
+const PASSPORT = "PPCD" + "HFZC6";
+const forms = (t: string) => {
+  const once = JSON.stringify({ output: `Notes\n${t}` });
+  return [t, once, JSON.stringify({ result: once })];
+};
+
+test("codes, PINs, passport numbers and random values under a key leave the host as placeholders", () => {
+  const cases: Array<[string, string, string]> = [
+    [`the yard gate code is ${GATE}`, GATE, "credential"],
+    [`Alarm code: ${ALARM}`, ALARM, "credential"],
+    [`sign-in code for the yard app: ${ALARM}`, ALARM, "credential"],
+    [`collection PIN for order 441 is ${PINV}`, PINV, "credential"],
+    [`Send Sam the side gate code, it is ${GATE}`, GATE, "credential"],
+    [`yard_code=${YARD}`, YARD, "credential"],
+    [`client_pin=${PINV}`, PINV, "credential"],
+    [`curl -d 'pin=${PINV}' https://x.example`, PINV, "credential"],
+    [`curl -d 'code=${GATE}' https://x.example`, GATE, "credential"],
+    [`passport number on the booking is ${PASSPORT}`, PASSPORT, "identifier"],
+    [`curl -d 'passport=${PASSPORT}' https://x.example`, PASSPORT, "identifier"],
+    [`value: ${R20}`, R20, "credential"],
+    [`curl -H "X-Desk: ${R20}" https://desk.example`, R20, "credential"],
+  ];
+  for (const [text, value, kind] of cases) {
+    for (const form of forms(text)) {
+      const out = r.string(form);
+      assert.ok(!out.includes(value), form);
+      assert.ok(out.includes(`⟦secret:${kind}:`), out);
+      assert.equal(r.string(out), out);
+    }
+  }
+});
+
+test("numbers, ids and words without a cue stay", () => {
+  for (const text of [
+    "zip_code=94107",
+    "status_code: 404",
+    "exit code 1",
+    "order 441",
+    "PIN the post to the channel",
+    "country_code=44",
+    "commit 9f2c1e7b4a6d8c0e1f3a5b7d9e2c4a6b8d0f1e3a",
+    "X-Request-Id: 3F2504E0-4F89-11D3-9A0C-0305E82C3301",
+    "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "sha256: " + "ab12".repeat(16),
+    "Content-Type: application/json",
+    "version: 2.0.0a1",
+    "className: PrimaryButton2",
+    // A word before a colon in a sentence is prose, not a key.
+    `Decode this for me and tell me what it says: ${Buffer.from("Hello, little world!").toString("base64")}`,
+    `The note says: ${R20}`,
+  ]) {
+    for (const form of forms(text)) assert.equal(r.string(form), form);
+  }
+});
+
+test("codes, PINs, passport numbers and random values in objects are replaced whole", () => {
+  const out = r.value({
+    headers: { "X-Desk": R20, "Content-Type": "application/json" },
+    pin: Number(PINV),
+    passport_number: PASSPORT,
+    code: GATE,
+    zip_code: "94107",
+  }) as any;
+  assert.match(out.headers["X-Desk"], /^⟦secret:credential:/);
+  assert.equal(out.headers["Content-Type"], "application/json");
+  assert.match(out.pin, /^⟦secret:credential:/);
+  assert.match(out.passport_number, /^⟦secret:identifier:/);
+  assert.equal(out.code, GATE, "a bare JSON `code` is a status code");
+  assert.equal(out.zip_code, "94107");
+  assert.deepEqual(createRedactor("off", "s").value({ pin: PINV }), { pin: PINV });
+});
+
+test("the cue and key rules stay linear on adversarial input", () => {
+  for (const text of ["gate code for " + "x ".repeat(100_000), "PIN for order ".repeat(20_000), "a=".repeat(100_000), "\\n".repeat(100_000)]) {
+    const start = performance.now();
+    r.string(text);
+    assert.ok(performance.now() - start < 3000, text.slice(0, 30));
+  }
+});

@@ -346,6 +346,234 @@ const SHAPES: Shape[] = [
 const CREDENTIAL_FIELD =
   /^(?:.*[_-])?(?:pass|tok|credentials?)$|(?:token|password|passwd|passphrase|secret|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|auth[_-]?token|bearer|private[_-]?key|client[_-]?secret)$/i;
 
+/**
+ * Access codes, PINs and personal identifiers named by a cue word, and random values under a key or a header. A
+ * short number is a secret only after a cue word ("the gate code is 861206", "collection PIN for order 441 is 6815",
+ * `yard_code=090373`): with no cue it stays, and so do ordinary codes (postal, country, status, error, product and
+ * business-record codes). A random value counts only under a key or a header (`value: <random>`,
+ * `X-Desk: <random>`), never in prose ("what it says: X"), and never under a key that names an id, a hash, a version
+ * or data. Kinds:
+ * `code`, `pin`, `identifier` (a passport number) and `random`; a placeholder says `identifier` for an identifier
+ * and `credential` for the others (`PLACEHOLDER_KIND`). The Hermes plugin and the scanner's second pass hold the
+ * same rules.
+ */
+type CueKind = "code" | "pin" | "identifier" | "random";
+const PLACEHOLDER_KIND: Record<CueKind, string> = { code: "credential", pin: "credential", random: "credential", identifier: "identifier" };
+
+/** Where a cue word starts: not inside a word, or straight after an escaped newline or tab of a JSON-encoded text. */
+const CUE_START = String.raw`(?:(?<![A-Za-z0-9_\\])|(?<=\\[nrt]))`;
+/**
+ * Words before "code" that make it an access or sign-in code: "gate code", "sign-in code", "backup codes". A code
+ * with any other qualifier (postal, country, error, promo) is not a secret.
+ */
+const CODE_QUALIFIERS =
+  "gate|door|alarm|access|entry|entrance|keypad|lock|lockbox|key[ -]?safe|safe|sign[ -]?in|" +
+  "log[ -]?in|login|verification|verify|security|one[ -]time|backup|recovery|unlock|2fa|mfa";
+const CODE_CUE = String.raw`${CUE_START}(?:(?:${CODE_QUALIFIERS})[ \t]+codes?|pass[ -]?codes?|otp)`;
+/**
+ * `PIN` in capitals (a lower-case "pin" is usually the verb), and in any case "pin code" / "pin number" or a pin
+ * that belongs to someone or something ("my pin", "the card pin", "collection pin").
+ */
+const PIN_CAPS_CUE = String.raw`${CUE_START}PINs?`;
+const PIN_WORDS_CUE = String.raw`${CUE_START}(?:pin[ \t]+(?:codes?|numbers?)|(?:my|your|his|her|their|our|the|card|collection|door|access|sim|bank|debit|atm)[ \t]+pin)`;
+const PASSPORT_CUE = String.raw`${CUE_START}passport(?:[ \t]+(?:numbers?|no\.?|#))?`;
+/**
+ * "for order 441", "on the booking": a short phrase between the cue and the value. When one is present the value
+ * must follow `is`, `was` or a colon, so a number inside the phrase is never taken as the value. "the gate code, it is
+ * N" states it in a second clause.
+ */
+const CUE_CONNECTOR = String.raw`[ \t]+(?:for|on|of|to|from)[ \t]+[^\n.:;=]{1,40}?(?:[ \t]+(?:is|was)\b|[ \t]*:)[ \t]*`;
+const CUE_SEPARATOR = String.raw`[ \t]*(?:(?:is|was)[ \t]*:?[ \t]*|[:=#-][ \t]*|,[ \t]*it(?:['’]s|[ \t]+(?:is|was))(?:[ \t]+now)?[ \t]*:?[ \t]*|)`;
+/** A value ends at a character that does not continue it or a number ("6815." ends a sentence; "10:30" is not a code). */
+const CUE_END = String.raw`(?![A-Za-z0-9_-]|[.:,/][0-9])`;
+const cueRule = (flags: string, cue: string, value: string) =>
+  new RegExp(String.raw`(?:${cue})(?:${CUE_CONNECTOR}|${CUE_SEPARATOR})\\{0,8}["'\x60]?${value}${CUE_END}`, `${flags}gd`);
+/** A code: four to ten digits, or two groups of letters and digits with a digit in them (`4821-9930`). */
+const codeValue = (v: string) => !v.includes("-") || /[0-9]/.test(v);
+/** A passport number: capitals and digits, with a digit (`passport renewal` is words). */
+const identifierValue = (v: string) => /[0-9]/.test(v) && !/[a-z]/.test(v);
+
+/** Group `v` is replaced; a match counts only when its value passes the check. */
+const CUES: Array<{ kind: CueKind; re: RegExp; check?: (v: string) => boolean }> = [
+  { kind: "code", re: cueRule("i", CODE_CUE, "(?<v>[0-9]{4,10}|[A-Za-z0-9]{4,6}-[A-Za-z0-9]{4,6})"), check: codeValue },
+  { kind: "pin", re: cueRule("", PIN_CAPS_CUE, "(?<v>[0-9]{4,10})") },
+  { kind: "pin", re: cueRule("i", PIN_WORDS_CUE, "(?<v>[0-9]{4,10})") },
+  { kind: "identifier", re: cueRule("i", PASSPORT_CUE, "(?<v>[A-Z0-9]{6,12})"), check: identifierValue },
+  // The value first: "482193 is your verification code".
+  {
+    kind: "code",
+    re: new RegExp(
+      String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[nrt]))(?<v>[0-9]{4,10})[ \t]+is[ \t]+(?:your|the|my)[ \t]+(?:[A-Za-z0-9_-]{1,30}[ \t]+)?${CODE_CUE}`,
+      "gid",
+    ),
+  },
+];
+
+/** Where a key starts: not inside a word, a dotted name or a path, or straight after an escaped newline or tab. */
+const KEY_START = String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[nrt]))`;
+/** `yard_code=090373`, `client_pin: 7021`, `gateCode: 4471`, `"passport_number": "PPCDHFZC6"`, `code=006960`. */
+const CODE_KEY = new RegExp(
+  String.raw`${KEY_START}(?<k>[A-Za-z][A-Za-z0-9_-]{0,40})\\{0,8}["']?[ \t]*(?<sep>[:=])[ \t]*\\{0,8}["']?(?<v>[A-Za-z0-9]{4,12})${CUE_END}`,
+  "gd",
+);
+/** `value: <random>`, `"X-Desk": "<random>"`, `sig=<random>`: any key or header, a long value. */
+const RANDOM_KEY = new RegExp(
+  String.raw`${KEY_START}(?<k>[A-Za-z_][A-Za-z0-9_.-]{0,40})\\{0,8}["']?[ \t]*(?<sep>[:=])[ \t]*\\{0,8}["']?(?<v>[A-Za-z0-9+/_-]{12,256}={0,2})(?![A-Za-z0-9+/=_@-])`,
+  "gd",
+);
+const RANDOM_VALUE = /^[A-Za-z0-9+/_-]{12,256}={0,2}$/;
+/**
+ * Key prefixes that make `*_code` an ordinary value: postal, country, status and error codes, product,
+ * business-record and discount codes, language and currency codes.
+ */
+const ORDINARY_CODE_PREFIX = new Set(
+  (
+    "zip postal post country area status error err exit return ret response resp http product item " +
+    "sku promo discount coupon voucher lang language locale currency color colour region iso tax vat " +
+    "sort bank swift bic qr bar barcode hs naics sic reason event type class char key op short dial " +
+    "phone airport iata icao station stop route flight course department dept cost gl account project " +
+    "source src fiscal unit state county city branch store site plan tier mode format result customer " +
+    "client vendor supplier merchant mcc lot batch location loc ticket run job tariff part model serial " +
+    "invoice order shipment carrier service category group cpt icd diagnosis procedure exchange " +
+    "market ticker isin cusip unspsc"
+  ).split(" "),
+);
+/** Keys and headers whose values are identifiers, digests, names, state, data or patterns, not secrets. */
+const NOT_SECRET_KEY =
+  /(?:^|[_.-])(?:id|ids|uuid|guid|hash|sha\d*|md5|digest|checksum|crc|commit|rev|revision|etag|cid|ref|trace\w*|span\w*|request\w*|version|ver|build|sku|order|path|file|filename|url|uri|href|src|name|class|classname|type|title|label|tag|branch|slug|key_id|keyid|fingerprint|nonce|state|data|content|body|payload|blob|image|attachment|b64|base64|raw|integrity|list|si|in-reply-to|references|message-id|thread\w*|customer|payment_intent|charge|invoice|subscription|price|product|regex|pattern|glob)$/i;
+/**
+ * camelCase keys ending in an id or name word (`userId`, `fileHash`); case-sensitive, so `sid` and `PHPSESSID`
+ * (session cookies) still count.
+ */
+const NOT_SECRET_CAMEL_KEY = /[a-z](?:Id|ID|Ids|Hash|Name|Url|Uri|Path|Version)$/;
+/** A provider's object id (`cus_…`, `pi_…`) and subresource-integrity hashes (`sha384-…`). */
+const PREFIXED_OBJECT_ID = /^(?:[a-z]{1,8}_|[Ss][Hh][Aa](?:1|256|384|512)-)/;
+
+/** `yard_code` → [yard, code]; `gateCode` → [gate, code]; `alarmPIN` → [alarm, pin]. */
+const keyWords = (key: string) =>
+  key
+    .split(/[_-]|(?<=[a-z0-9])(?=[A-Z])/)
+    .filter((w) => w)
+    .map((w) => w.toLowerCase());
+
+/**
+ * The kind of secret under a code, PIN or passport key, or null. A bare `code` key counts only as a form or query
+ * field with six or more digits (`-d 'code=006960'`): a JSON or YAML `code:` is far more often a status or error
+ * code, and a link's `?code=` an exchange the scanner needs to see.
+ */
+const keyKind = (key: string, value: string, sep: string, afterQuery: boolean): CueKind | null => {
+  const words = keyWords(key);
+  if (!words.length) return null;
+  const last = words[words.length - 1];
+  const passport =
+    ["passport", "passportno", "passportnum", "passportnumber"].includes(last) ||
+    (words.length > 1 && words[words.length - 2] === "passport" && ["no", "num", "number"].includes(last));
+  if (passport) return value.length >= 6 && value.length <= 12 && identifierValue(value) ? "identifier" : null;
+  if (!/^[0-9]{4,10}$/.test(value)) return null;
+  if (["pin", "passcode", "otp"].includes(last)) return "pin";
+  if (last !== "code") return null;
+  if (words.length > 1) return ORDINARY_CODE_PREFIX.has(words[words.length - 2]) ? null : "code";
+  return sep === "=" && value.length >= 6 && !afterQuery ? "code" : null;
+};
+
+const charClass = (ch: string) => (/[0-9]/.test(ch) ? 0 : /[A-Z]/.test(ch) ? 1 : /[a-z]/.test(ch) ? 2 : 3);
+
+/**
+ * A value a person did not type: twelve or more characters with upper case, lower case and a digit, not hex (a
+ * hash, a commit id, a UUID), with frequent changes between character classes, which rules out camelCase words
+ * (`PrimaryButton2`), and enough distinct characters.
+ */
+const looksRandom = (v: string): boolean => {
+  const core = v.replace(/=+$/, "");
+  if (core.length < 12 || "/-_".includes(core[0]) || PREFIXED_OBJECT_ID.test(core)) return false;
+  if (/^[0-9A-Fa-f-]+$/.test(core)) return false;
+  if (!(/[A-Z]/.test(core) && /[a-z]/.test(core) && /[0-9]/.test(core))) return false;
+  let changes = 0;
+  for (let i = 1; i < core.length; i++) if (charClass(core[i - 1]) !== charClass(core[i])) changes += 1;
+  if (changes < 0.35 * (core.length - 1)) return false;
+  const counts = new Map<string, number>();
+  for (const c of core) counts.set(c, (counts.get(c) ?? 0) + 1);
+  let entropy = 0;
+  for (const n of counts.values()) entropy -= (n / core.length) * Math.log2(n / core.length);
+  return entropy >= 3.0;
+};
+
+/**
+ * A random value under a key or header that does not name an id, a hash, a version or data, outside a link's query
+ * (`?si=…`, `&list=…` are share links and tracking parameters).
+ */
+const randomKey = (key: string, value: string, afterQuery: boolean) =>
+  !NOT_SECRET_KEY.test(key) && !NOT_SECRET_CAMEL_KEY.test(key) && !afterQuery && looksRandom(value);
+
+const afterQuery = (text: string, start: number) => start > 0 && "?&".includes(text[start - 1]);
+
+/**
+ * A `key: value` pair stands on its own: its key starts a line (indented or not), follows `{ , ; ( [` or a quote (JSON,
+ * a dict, a quoted header) or a `-H` / `--header` flag. A word before a colon in a sentence ("what it says: X") is
+ * prose, not a key.
+ */
+const startsEntry = (text: string, start: number): boolean => {
+  let i = start;
+  while (i > 0) {
+    if (" \t".includes(text[i - 1])) i -= 1;
+    else if (i > 1 && text.slice(i - 2, i) === "\\t") i -= 2;
+    else break;
+  }
+  if (i === 0 || "\n\r{,;([\"'".includes(text[i - 1]) || ["\\n", "\\r"].includes(text.slice(Math.max(0, i - 2), i))) return true;
+  const before = text.slice(Math.max(0, i - 8), i);
+  return before.endsWith("-H") || before.endsWith("--header");
+};
+
+/** Every access code, PIN, identifier and random value the cue and key rules find, as (start, end, kind). */
+function cueSpans(text: string): Array<[number, number, CueKind]> {
+  const out: Array<[number, number, CueKind]> = [];
+  const each = (re: RegExp, fn: (m: RegExpExecArray) => void) => {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) {
+        re.lastIndex += 1;
+        continue;
+      }
+      fn(m);
+    }
+  };
+  for (const cue of CUES) {
+    each(cue.re, (m) => {
+      const idx = m.indices?.groups?.v;
+      if (idx && (!cue.check || cue.check(text.slice(idx[0], idx[1])))) out.push([idx[0], idx[1], cue.kind]);
+    });
+  }
+  each(CODE_KEY, (m) => {
+    const g = m.groups as Record<string, string>;
+    const kind = keyKind(g.k, g.v, g.sep, afterQuery(text, m.index));
+    const idx = m.indices?.groups?.v;
+    if (kind && idx) out.push([idx[0], idx[1], kind]);
+  });
+  each(RANDOM_KEY, (m) => {
+    const g = m.groups as Record<string, string>;
+    if (g.sep === ":" && !startsEntry(text, m.index)) return;
+    const idx = m.indices?.groups?.v;
+    if (idx && randomKey(g.k, g.v, afterQuery(text, m.index))) out.push([idx[0], idx[1], "random"]);
+  });
+  return out;
+}
+
+/**
+ * The kind of secret a parsed object's value is under its key, or null: a code, PIN or passport number under its key
+ * (a number counts as its digits), or a random string under any key or header (`{"X-Desk": …}`).
+ */
+function objectKind(key: string, value: unknown): CueKind | null {
+  if (typeof value !== "string" && !(typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) return null;
+  const text = String(value);
+  if (/^[A-Za-z0-9]{4,12}$/.test(text)) {
+    const kind = keyKind(key, text, ":", false);
+    if (kind) return kind;
+  }
+  if (typeof value === "string" && RANDOM_VALUE.test(value) && randomKey(key, value, false)) return "random";
+  return null;
+}
+
 function spansOf(text: string): Array<[number, number, string]> {
   const spans: Array<[number, number, string]> = [];
   for (const shape of SHAPES) {
@@ -365,6 +593,7 @@ function spansOf(text: string): Array<[number, number, string]> {
       }
     }
   }
+  for (const [s, e, kind] of cueSpans(text)) spans.push([s, e, PLACEHOLDER_KIND[kind]]);
   spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   const merged: Array<[number, number, string]> = [];
   for (const s of spans) {
@@ -408,7 +637,8 @@ export function createRedactor(level: RedactionLevel, salt: string): Redactor {
       if (level !== "off" && CREDENTIAL_FIELD.test(k) && typeof v === "string" && v && !v.startsWith("⟦") && keyValue(v)) {
         out[k] = placeholder("credential", v);
       } else {
-        out[k] = walk(v, depth + 1);
+        const kind = level !== "off" ? objectKind(k, v) : null;
+        out[k] = kind ? placeholder(PLACEHOLDER_KIND[kind], String(v)) : walk(v, depth + 1);
       }
     }
     return out;
