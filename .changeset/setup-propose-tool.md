@@ -12,5 +12,5 @@ key is named, never its value. The agent hears only how many items were added an
 when the sender is the owner, and Sentrook answers only a run started by your own message in a direct chat, with the
 same refusal elsewhere and nothing stored; the call itself is not scanned, its result goes to the next scan, and each
 call is logged as a `setup_proposal` record. The setup report and the proposal share one gate: the one-time marker is
-keyed by the session and the call id, and a call another tool of the same name answered is logged as foreign, after
-which calls of that name are scanned like any call.
+keyed by the session and the call id, and a call another plugin's tool of the same name answered is logged as
+`foreign_tool`, after which calls of that name are scanned like any call and `status` and `verify` say so.

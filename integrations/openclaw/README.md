@@ -441,7 +441,8 @@ state folder for a day; at most three are open, and a new one replaces the oldes
 evidence: an item stays "not seen yet" and lasts 30 days unless reviews you approved back it. It answers in the same
 places as the setup report, and anywhere else the whole answer is "Setup needs the owner in a direct chat." and
 nothing is stored. Each call is recorded in the traffic log as a `setup_proposal` record with its session and item
-count.
+count. If another plugin registers a tool with the same name and OpenClaw runs that one instead, Sentrook scans its
+calls like any other from then on, and `/sentrook-status` and `verify` say so.
 
 ## Dashboard
 

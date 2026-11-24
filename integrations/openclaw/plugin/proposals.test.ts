@@ -11,13 +11,14 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { clearScanTokenCache } from "./auth.ts";
-import { CMD } from "./commands.ts";
+import { CMD, runSentrookCommand } from "./commands.ts";
 import { resolveConfig } from "./config.ts";
 import plugin from "./index.ts";
 import { sessionRef } from "./planir.ts";
 import * as proposals from "./proposals.ts";
 import * as setup from "./setup.ts";
 import * as report from "./setupReport.ts";
+import { runVerify } from "./verify.ts";
 
 const FIXTURES = path.join(import.meta.dirname, "..", "..", "fixtures", "setup-proposals");
 const RULES = JSON.parse(readFileSync(path.join(FIXTURES, "rules.json"), "utf8"));
@@ -330,11 +331,25 @@ test("a call another tool of that name answered is flagged, and later calls of i
     h.records().map((r) => r.outcome),
     ["foreign_tool"],
   );
+  const flagged = JSON.parse(readFileSync(path.join(h.state, "foreign-tools.json"), "utf8")).tools;
+  assert.deepEqual(Object.keys(flagged), [proposals.TOOL]);
+  // status and verify say so
+  const status = await runSentrookCommand("status", { pluginConfig: {}, env: process.env });
+  assert.ok(status.includes(`setup proposal tool: ${report.FOREIGN_TEXT} (since `), status);
+  const checks = await runVerify({}, { env: process.env, fetchImpl: globalThis.fetch, hostConfig: {}, home: h.dir });
+  assert.ok(checks.some((c) => c.name === "setup proposal tool" && c.ok && c.detail.includes(report.FOREIGN_TEXT)));
   await h.ask(OWNER, "user", THREE_AND_A_BINDING, "c2");
   assert.deepEqual(
     h.scans.map((s) => s.pending_call.tool),
     [proposals.TOOL],
   );
+  // a call that failed before it ran is not taken for another plugin's tool
+  const e = harness();
+  await e.ask(OWNER, "user", THREE_AND_A_BINDING, "c1");
+  await e.fire("after_tool_call", { toolName: proposals.TOOL, params: THREE_AND_A_BINDING, runId: "r1", toolCallId: "c1", error: "invalid params" }, OWNER);
+  assert.deepEqual(e.records(), []);
+  await e.ask(OWNER, "user", THREE_AND_A_BINDING, "c2");
+  assert.equal(e.scans.length, 0);
   // a call of the plugin's own tool that ran is not flagged
   const g = harness();
   const { tool } = await g.ask(OWNER, "user", THREE_AND_A_BINDING, "c1");
