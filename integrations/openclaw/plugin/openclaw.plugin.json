@@ -16,6 +16,9 @@
   "contracts": {
     "agentToolResultMiddleware": [
       "openclaw"
+    ],
+    "tools": [
+      "sentrook_setup_report"
     ]
   },
   "configSchema": {

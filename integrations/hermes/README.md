@@ -340,8 +340,25 @@ into `~/.hermes/skills`):
 The agent never runs those commands itself, `/sentrook setup apply` included, and Sentrook refuses them if it tries. Hermes's system prompt also gets a
 short section with the rules the agent follows whether or not it opens a skill: never run the commands that change
 Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked or held call
-reworded. The agent cannot see Sentrook's history: `/sentrook` replies go to you, not to the model, so show it what
-`/sentrook why` says when you want its help with a scan.
+reworded. `/sentrook` replies go to you, not to the model, so show it what `/sentrook why` says when you want its
+help with one scan.
+
+### The agent's setup report
+
+The plugin also gives the agent one read-only tool, `sentrook_setup_report`, which the setup skill uses at check-in.
+It tells the agent what is set and what is missing, the grants Sentrook suggested on reviews you approved at least
+twice (marked covered when a grant already lets them through), the reviews you approved at least twice with nothing
+to suggest (by tool), and the API key names Sentrook saw sent only to their own service, over the last 14 days (up
+to 30), with the same rule as `/sentrook setup`: your own message, no steering content flagged in that chat. It
+changes nothing.
+
+It never shows the grants themselves (only how many of each kind are in force), any call's arguments or request text,
+key values, or anything from a group chat or another sender; every name from a tool call is shown as plain text, and
+with the traffic log off it shows only the settings. Hermes turns plugin tools on everywhere, so Sentrook itself
+decides who gets an answer: only your own message in a direct chat or on the local terminal. In a group chat, a cron
+job, a subagent, a webhook or the API server, Hermes's background review, or with `plugins.isolation: host`, the
+whole answer is "Setup needs the owner in a direct chat." Each call is recorded in the traffic log as a
+`setup_report` record, and the report itself goes to the next scan like any tool result.
 
 ## Dashboard
 

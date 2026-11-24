@@ -39,6 +39,7 @@ import { channelOf, chatKindOfTurn, PLUGIN_VERSION, sessionRef } from "./planir.
 import * as selfEdit from "./selfEdit.ts";
 import * as setup from "./setup.ts";
 import * as snooze from "./snooze.ts";
+import { FOREIGN_TEXT } from "./setupReport.ts";
 import { Store } from "./store.ts";
 
 /** Who ran an owner-only command, and what a change goes through. */
@@ -385,6 +386,7 @@ function statusText(ctx: CommandContext): string {
     resolveSecretString(ctx.pluginConfig.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
   ].filter(Boolean);
   const target = new Store(cfg.stateDir).loadNotify();
+  const foreign = new Store(cfg.stateDir).loadReportForeign();
   const lines = [
     `Sentrook plugin: ${PLUGIN_VERSION}`,
     `mode: ${cfg.mode}`,
@@ -408,6 +410,7 @@ function statusText(ctx: CommandContext): string {
         ? `${cfg.configProblems.length} not read as written: ${configProblemsSummary(cfg.configProblems)} (see openclaw sentrook verify)`
         : "all read as written"
     }`,
+    ...(foreign ? [`setup report tool: ${FOREIGN_TEXT} (since ${foreign})`] : []),
   ];
   return lines.join("\n");
 }

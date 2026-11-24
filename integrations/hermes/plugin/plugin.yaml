@@ -19,6 +19,10 @@ provides_hooks:
   - pre_tool_call
   - post_tool_call
   - post_approval_response
+# The agent's read-only setup report. Hermes turns plugin toolsets on everywhere; the plugin's own pre_tool_call
+# refuses it outside the owner's own direct chat.
+provides_tools:
+  - sentrook_setup_report
 # The scan credentials. `hermes plugins install` asks for them; Hermes stores them, never config.yaml,
 # and the plugin reads them only through Hermes (agent.secret_scope.get_secret).
 # No requires_env: the install would prompt for a client id and secret the user does not have yet.

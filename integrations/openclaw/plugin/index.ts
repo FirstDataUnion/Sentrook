@@ -8,8 +8,14 @@
 
 import { createHash } from "node:crypto";
 
-import { agentRules, reportedTool, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
-import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
+import { agentRules, reportedTool, shadowingSkills, shippedSkillTexts, SKILL_READ_TOOL } from "./agentSkills.ts";
+import {
+  CLIENT_ID_VAR,
+  CLIENT_SECRET_VAR,
+  envWithOpenclawDotenv,
+  resolveOidcCredentials,
+  resolveSecretString,
+} from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
@@ -36,6 +42,8 @@ import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
 import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
+import * as setup from "./setup.ts";
+import * as setupReport from "./setupReport.ts";
 import * as snooze from "./snooze.ts";
 import { type HistoryEntry, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
@@ -73,6 +81,8 @@ interface OpenClawPluginApi {
     handler: (ctx: any) => Promise<{ text?: string }>;
   }) => void;
   registerAgentToolResultMiddleware?: (handler: (event: any, ctx: any) => unknown, opts?: Json) => void;
+  /** A tool, or a factory OpenClaw runs whenever a run assembles its tools; null from the factory offers none. */
+  registerTool?: (tool: ((ctx: any) => Json | null) | Json, opts?: { name?: string; optional?: boolean }) => void;
   registerHttpRoute?: (route: {
     path: string;
     auth: "gateway" | "plugin";
@@ -303,6 +313,100 @@ const plugin = {
         api.logger.warn(`${LOG} /${sub.command} command unavailable: ${String(err)}`);
       }
     }
+    // ---- the setup report: a read-only tool for the owner's own direct chat (setupReport.ts) -----------------------
+    const reportMarkers = new setupReport.Markers();
+    /** Sessions the factory offered the tool in (OpenClaw said the sender is the owner), most recent last. */
+    const reportOffered = new Map<string, number>();
+    let reportRegistered = false;
+    /** Another plugin's tool ran under the report's name in this process: every call of that name is scanned. */
+    let reportForeign = false;
+    const reportRecord = (sid: string, outcome: "answered" | "refused" | "foreign_tool", extra: Json) =>
+      traffic.write({ kind: "setup_report", session_ref: sessionRef(sid), outcome, ...extra });
+    const reportText = (days: number, now: Date): string => {
+      const { cfg, env } = loadConfig();
+      const target = store.loadNotify();
+      let shadowed: string[] = [];
+      try {
+        shadowed = shadowingSkills(hostConfig(), process.env).map((s) => s.split(" at ")[0]!);
+      } catch {
+        shadowed = [];
+      }
+      const pc = api.pluginConfig ?? {};
+      const state: setupReport.ReportState = {
+        plugin_version: PLUGIN_VERSION,
+        mode: cfg.mode,
+        review_at: cfg.reviewAt,
+        block_at: cfg.blockAt,
+        scan_ok: cfg.endpoints.scan.ok && cfg.endpoints.issuer.ok,
+        credentials_missing: [
+          resolveSecretString(pc.clientId, env, CLIENT_ID_VAR) ? null : CLIENT_ID_VAR,
+          resolveSecretString(pc.clientSecret, env, CLIENT_SECRET_VAR) ? null : CLIENT_SECRET_VAR,
+        ].filter((v): v is string => v !== null),
+        notice: target
+          ? { target: hold.targetText(target), source: "/sentrook-notify here" }
+          : { target: null, why: hold.NOTIFY_UNSET },
+        attended_platforms: null,
+        unsent_grants: Object.keys(cfg.unsentGrants ?? {}).length,
+        shadowed_skills: [...new Set(shadowed)],
+        traffic_log: cfg.trafficLog.enabled,
+      };
+      const force = setup.inForce(cfg, grants.load(cfg.stateDir), now);
+      const log = cfg.trafficLog.enabled ? cfg.trafficLog.path : null;
+      const ev = setup.readEvidence(log, cfg.reviewAt, now, days * 86_400_000);
+      return setupReport.render(state, force, ev, now, days, log !== null && setupReport.logCapped(log));
+    };
+    const reportTool = (toolCtx: any): Json => ({
+      name: setupReport.TOOL,
+      label: "Sentrook setup report",
+      description: setupReport.DESCRIPTION,
+      parameters: setupReport.PARAMETERS,
+      async execute(toolCallId: string, params: unknown) {
+        const sid = sessionIdOf(toolCtx);
+        let text: string = setupReport.REFUSAL;
+        try {
+          if (!reportMarkers.take(sid, toolCallId)) {
+            reportRecord(sid, "refused", { reason: "no_marker" });
+          } else {
+            const days = setupReport.daysOf(params);
+            text = reportText(days, new Date());
+            reportRecord(sid, "answered", { days });
+          }
+        } catch (err) {
+          api.logger.warn(`${LOG} setup report failed: ${String(err)}`);
+          text = setupReport.REFUSAL;
+          safely("setup report record", () => reportRecord(sid, "refused", { reason: "error" }));
+        }
+        return { content: [{ type: "text", text }], details: {} };
+      },
+    });
+    try {
+      if (typeof api.registerTool === "function") {
+        api.registerTool(
+          (toolCtx: any) => {
+            // Detached cron runs never carry the owner's identity; anyone else is not offered the tool at all.
+            if (toolCtx?.senderIsOwner !== true) return null;
+            for (const key of [toolCtx.sessionKey, toolCtx.sessionId]) {
+              if (typeof key !== "string" || !key) continue;
+              reportOffered.delete(key);
+              reportOffered.set(key, Date.now());
+            }
+            while (reportOffered.size > 500) reportOffered.delete(reportOffered.keys().next().value!);
+            return reportTool(toolCtx);
+          },
+          { name: setupReport.TOOL },
+        );
+        reportRegistered = true;
+      }
+    } catch (err) {
+      api.logger.warn(`${LOG} setup report tool unavailable: ${String(err)}`);
+    }
+    /** A call of the plugin's own registered report tool, offered in this session: not scanned (reportGate). */
+    const ownReportCall = (event: any, ctx: any): boolean =>
+      event?.toolName === setupReport.TOOL &&
+      reportRegistered &&
+      !reportForeign &&
+      [ctx?.sessionKey, ctx?.sessionId].some((k) => typeof k === "string" && reportOffered.has(k));
+
     // Full tool results from the result middleware, keyed by host call id (after_tool_call is capped).
     const fullResults = new Map<string, string>();
     /**
@@ -454,6 +558,13 @@ const plugin = {
     api.on("after_tool_call", async (event: any, ctx: any) => {
       try {
         const hostId: string | undefined = event?.toolCallId ?? ctx?.toolCallId;
+        if (hostId && event?.toolName === setupReport.TOOL && reportMarkers.drop(sessionIdOf(ctx), hostId) && !event?.error) {
+          // Allowed as the report, yet this plugin's execute never ran: another plugin's tool of the same name won.
+          reportForeign = true;
+          api.logger.warn(`${LOG} setup report: ${setupReport.FOREIGN_TEXT}`);
+          safely("setup report record", () => reportRecord(sessionIdOf(ctx), "foreign_tool", {}));
+          safely("setup report flag", () => store.saveReportForeign(new Date()));
+        }
         if (!hostId || UNSCANNED_TOOLS.has(event?.toolName)) return;
         const { cfg } = loadConfig();
         const sid = sessionIdOf(ctx);
@@ -542,6 +653,7 @@ const plugin = {
       "before_tool_call",
       async (event: any, ctx: any): Promise<BeforeToolCallResult | undefined> => {
         if (UNSCANNED_TOOLS.has(event?.toolName)) return undefined;
+        if (ownReportCall(event, ctx)) return reportGate(event, ctx);
         try {
           const { cfg, env } = loadConfig();
           if (cfg.configProblems.length) settingsNotice(cfg);
@@ -555,6 +667,70 @@ const plugin = {
       },
       { priority: 10 },
     );
+
+    /**
+     * `before_tool_call` for the setup report: not scanned, and allowed only on the owner's own message in a direct
+     * chat (`setupReport.reportAllowed`, from the run's trigger as the plugin recorded it). An allowed call gets its
+     * marker and a step in the session's history, so its result goes to the next scan like any tool result. Anything
+     * else, a failure included, gets `setupReport.REFUSAL` and nothing more.
+     */
+    async function reportGate(event: any, ctx: any): Promise<BeforeToolCallResult | undefined> {
+      const sid = sessionIdOf(ctx);
+      const refuse = (reason: string): BeforeToolCallResult => {
+        safely("setup report record", () => reportRecord(sid, "refused", { reason }));
+        return { block: true, blockReason: setupReport.REFUSAL };
+      };
+      try {
+        const { cfg } = loadConfig();
+        return await store.withSession(sid, () => {
+          const runId = event?.runId ?? ctx?.runId;
+          const run = store.loadRun(runId);
+          const callId = event?.toolCallId ?? ctx?.toolCallId;
+          if (!runId || typeof callId !== "string" || !callId || !setupReport.reportAllowed(run, ctx, cfg, hostConfig())) {
+            return refuse("not_owner_turn");
+          }
+          const sess = store.loadSession(sid);
+          const built = buildPlanir({
+            hostConfig: hostConfig(),
+            cfg,
+            redactor: createRedactor("standard", store.salt()),
+            event,
+            ctx,
+            sid,
+            sess,
+            run,
+            assistant: store.loadAssistant(ctx?.sessionKey),
+            parents: store.parents(),
+            grants: [],
+            hostVersion,
+            hostProcess: false,
+            selfEdit: null,
+          });
+          sess.history.push({
+            step: built.step,
+            turn: built.turn,
+            call_id: built.callId,
+            tool: event.toolName,
+            tool_kind: built.toolKind,
+            provider: built.provider,
+            arguments: built.historyArgs,
+            result: null,
+            action_fingerprint: null,
+            risk: null,
+            tiers: null,
+            request_id: built.planir.request_id,
+            decision: "allowed",
+            ...(built.hostCallId ? { _host_call_id: built.hostCallId } : {}),
+          });
+          store.saveSession(sid, sess, cfg.historyLimit * 2);
+          reportMarkers.put(sid, callId);
+          return undefined;
+        });
+      } catch (err) {
+        api.logger.warn(`${LOG} setup report check failed: ${String(err)}`);
+        return refuse("error");
+      }
+    }
 
     /** On a cron run, the grant for its job's own delivery target (`cronDelivery.ts`); a failed read gives none. */
     function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, params: unknown): GrantConfig[] {

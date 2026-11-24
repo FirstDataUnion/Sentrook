@@ -454,6 +454,16 @@ export class Store {
     this.writeJson(path.join(this.dir, "notify.json"), { version: 1, target });
   }
 
+  /** When another plugin's tool ran under the setup report's name (`report-tool.json`); null when never. */
+  loadReportForeign(): string | null {
+    const data = this.readJson<any>(path.join(this.dir, "report-tool.json"), null);
+    return data && typeof data === "object" && typeof data.foreign_at === "string" ? data.foreign_at : null;
+  }
+
+  saveReportForeign(at: Date): void {
+    this.writeJson(path.join(this.dir, "report-tool.json"), { version: 1, foreign_at: at.toISOString() });
+  }
+
   private selfEditFile(runId: string) {
     return path.join(this.dir, "selfedit", `${fileKey(runId)}.json`);
   }

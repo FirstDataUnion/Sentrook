@@ -396,6 +396,25 @@ a few short rules, added with the `/sentrook` command, that it follows whether o
 commands that change Sentrook, never edit its settings or folder, never disable the plugin, and never retry a blocked
 or held call reworded.
 
+### The agent's setup report
+
+The plugin also gives the agent one read-only tool, `sentrook_setup_report`, which the setup skill uses at check-in.
+It tells the agent what is set and what is missing (a skill of the same name as one of Sentrook's included), the grants
+Sentrook suggested on reviews you approved at least twice (marked covered when a grant already lets them through), the
+reviews you approved at least twice with nothing to suggest (by tool), and the API key names Sentrook saw sent only to
+their own service, over the last 14 days (up to 30), with the same rule as `/sentrook-setup`: your own message, no
+steering content flagged in that chat. It changes nothing.
+
+It never shows the grants themselves (only how many of each kind are in force), any call's arguments or request text,
+key values, or anything from a group room or another sender; every name from a tool call is shown as plain text, and
+with the traffic log off it shows only the settings. OpenClaw offers the tool only when it says the sender is you, and
+Sentrook answers only a run started by your own message in a direct chat: in a cron job, a heartbeat, a webhook or
+event run, a subagent, a group room or one of OpenClaw's own background runs, the whole answer is "Setup needs the
+owner in a direct chat." Each call is recorded in the traffic log as a `setup_report` record, and the report itself
+goes to the next scan like any tool result. If another plugin registers a tool of the same name and OpenClaw runs
+theirs instead, Sentrook notices, scans every later call of that name like any other, and `/sentrook status` and
+`openclaw sentrook verify` say so.
+
 A skill is instructions by design, so the plugin tells the scanner when the agent reads its own skill file: a read of
 an absolute or `~/` path whose real path is one of the `SKILL.md` files in the plugin's install folder, and which
 returned (part of) the text the plugin loaded from there, is sent as `plugin_skill:read`, and the scanner does not

@@ -20,6 +20,16 @@ since the version the catalog pins.
   credentials in Hermes by hand. Credentials the identity service refuses (`invalid_client`: revoked or wrong) say to
   sign in again.
 
+- The agent gets a read-only tool, `sentrook_setup_report` (toolset `sentrook`, declared in `provides_tools`), which
+  the setup skill now uses at check-in: what is set (counts of grants and bindings by kind, never the grants), the
+  gaps in plain words, the grants Sentrook suggested on reviews you approved at least twice (marked covered when a
+  grant in force already covers one), approved reviews with nothing to suggest by tool, and API key names Sentrook saw
+  sent only to their own service, over the last 14 days (`days`, up to 30), saying how far back the log actually went.
+  It shows no call's arguments or request text, and every name from a tool call is neutralised. Only your own message
+  in a direct chat or on the local terminal gets it; everywhere else (group chats, cron, subagents, webhooks, the API
+  server, Hermes's background review, the plugin host) the whole answer is "Setup needs the owner in a direct chat."
+  `pre_tool_call` decides and leaves a one-time marker the tool needs; the call itself is not scanned, its result goes
+  to the next scan, and each call is logged as a `setup_report` record.
 - `/sentrook setup` (owner only; also `hermes sentrook setup`) lists what would stop Sentrook asking about routine
   work, each item described by Sentrook in its own words with how long it lasts and what to check: a channel binding
   for each cron job's delivery to a room that is not bound yet, a provider grant for each MCP server no grant covers,
