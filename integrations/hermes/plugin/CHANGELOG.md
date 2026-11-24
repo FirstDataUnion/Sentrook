@@ -43,6 +43,24 @@ since the version the catalog pins.
 - After `allow`, the held call's history entry becomes `approved_by_user` (after `deny`, `denied_by_user`), so a
   retry in the same session is not scored as a retry after a review nobody answered. The traffic log records calls
   a pass let through as `allowed_by_pass` and calls a denial refused as `denied_by_owner`, with the pass's id.
+- **`/sentrook notify here`** sets where Sentrook's notices go (calls held on scheduled jobs and other runs nobody
+  watches, scan failures there, Hermes's background saves) without editing the config: the chat you send it in,
+  which gets a test notice straight away. When the test notice is not delivered, `notify status`, `status` and
+  `verify` say so until a later notice gets through or the target changes. On
+  the command line, which has no chat, `hermes sentrook notify <platform>` names a platform with a home channel. When
+  Hermes does not say which chat a command came from, `here` uses the platform's home channel and the reply names
+  it. A target set this way wins over `owner_channel`, which still works; `notify off` goes back to it, and
+  `notify status` says which is in force.
+- **`/sentrook attended add|remove|list <platform>`** adds platforms where a person answers Hermes's approval prompts
+  (such as an `api_server` behind a UI that shows them) without editing `attended_platforms`. It loosens Sentrook:
+  a review there shows an approval prompt instead of holding the call. Only front ends such as the API server,
+  webhooks, A2A peers and relays can be added, each with `--confirm` after a warning. Runs Hermes starts itself (cron,
+  subagents, batch runs, the curator, kanban workers and the like), Raft and the local terminal can never be added;
+  unknown names are refused with the known list.
+- Both commands are owner-only and recorded in the traffic log and the Hermes log by platform, never a chat id; kept in
+  `settings.json` in the plugin's folder, and blocked when the agent runs them as `hermes sentrook …`. `status`,
+  `verify`, `help` and the commands themselves explain where notices go and which platforms are attended in the
+  same plain words.
 - **Session** on a review now covers the rest of the same job in that chat. Hermes remembers a Session answer under a
   key made of every file and address the call touches, so a job whose steps each wrote a different output file asked
   at every step, and Session did no more than Once. When the owner asked for the work in their own chat, a Session

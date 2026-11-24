@@ -32,10 +32,10 @@ observe mode Sentrook only scores and records, and never asks or blocks.
   it for 30 days; `/sentrook deny <id>` refuses the job the same call for 30 days. "The same call" is the same tool
   about the same parties, scoring no higher; the held call itself never runs. Answering sets no grant:
   `/sentrook why <id>` shows the grant Sentrook suggests, and `/sentrook passes` lists what the answers set. A hold nobody
-  answers expires after 7 days. The owner gets one notice on the home channel of the platform set in Sentrook's `owner_channel` setting; until it is set, nothing is sent and the call is still held.
+  answers expires after 7 days. The owner gets one notice on the chat where they sent `/sentrook notify here` (or the home channel of the platform in Sentrook's `owner_channel` setting); until one is set, nothing is sent and the call is still held.
 - **A declined call.** When the owner has denied a held call for a job, that job's same call is refused with "The
   owner declined this action for this job". Continue without it; do not retry it another way.
-- **A background-save notice.** Hermes saves skills and memory in the background after a turn, with nobody there to answer a prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a save it would review is let through, staged in Hermes's pending list (`/skills pending`, `/memory pending`) or held; a blocked one is not saved. A notice on the `owner_channel` home channel says which.
+- **A background-save notice.** Hermes saves skills and memory in the background after a turn, with nobody there to answer a prompt, so Sentrook never asks about these saves. It judges each one against the conversation: a save it would review is let through, staged in Hermes's pending list (`/skills pending`, `/memory pending`) or held; a blocked one is not saved. A notice where held-call notices go says which.
 - **A scan failure.** When the scan service cannot answer, the owner is asked whether to run the call unscanned where
   someone is there to answer; on an unattended run the call is blocked and the owner gets one notice. This is a
   service problem, not a security block.
@@ -63,6 +63,8 @@ owner type it.
 - `/sentrook deny <id>`: refuses a call held on a cron job, by the id in Sentrook's notice: that job is refused the same call for 30 days, with no more notices.
 - `/sentrook approve <id>`: the same as allow (kept for one release).
 - `/sentrook passes [revoke <id>]`: the passes and denials the owner's answers to held calls set, with their use counts; `revoke <id>` removes one.
+- `/sentrook notify here|off|status|<platform>`: where notices go: `here`, sent as a direct message to the agent, sends them to that chat (with a test notice); `<platform>` (on the machine) to that platform's home channel; `off` goes back to the `owner_channel` setting.
+- `/sentrook attended add|remove|list [platform] [--confirm]`: the platforms with a person answering Hermes's approval prompts; adding one loosens Sentrook (a review there asks instead of holding the call), so it needs `--confirm`.
 - `hermes sentrook verify` (on the machine): checks the endpoints, the credentials, the scan service and the token.
 
 ## A scan that looks wrong
@@ -74,7 +76,7 @@ filled in, and `--save` writes the full record to a private file to email (the c
 
 ## What you never do
 
-- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, or their `hermes sentrook` forms. Only the owner runs them.
+- Never run `/sentrook grant`, `/sentrook revoke`, `/sentrook bind`, `/sentrook snooze`, `/sentrook allow`, `/sentrook deny`, `/sentrook approve`, `/sentrook passes revoke`, `/sentrook notify`, `/sentrook attended add`, `/sentrook attended remove`, or their `hermes sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in Hermes's `config.yaml`) or its folder (`sentrook/` in the Hermes home, such as `~/.hermes/sentrook/`), and never disable, remove or
   reinstall the plugin.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and

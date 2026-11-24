@@ -98,6 +98,10 @@ If the history is empty, the agent has not made a tool call since the restart.
 
 ## 6. Tell Sentrook what is normal for you
 
+First, tell Sentrook where to reach you. When a scheduled job or another run nobody watches tries something
+Sentrook wants you to check, it stops that call and sends you a notice. In a direct message with the agent, send
+`/sentrook notify here` (see [Where notices go](#where-notices-go)). Until you do, those calls are held silently.
+
 Sentrook doesn't know which destinations and files are routine for your deployment. Two things tell it, so routine
 work stops asking for approval:
 
@@ -230,7 +234,7 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 
 | Command | What it does |
 | --- | --- |
-| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, held calls (and the one held most often) and where their notices go, passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
+| `status` | Plugin version, mode, thresholds, scan host, whether credentials are set, traffic log, grants, snooze, where notices go, attended platforms, held calls (and the one held most often), passes and denials, and how many of Hermes's own skill and memory saves were allowed, blocked or held |
 | `history [n]` | The last n scans (default 10) |
 | `why [request_id\|last]` | One scan in detail, with the grants that would allow it next time; with the id from a held-call notice, also the hold, the answers it offers and the command of any grant Sentrook suggests |
 | `report [request_id\|last] [--full\|--github\|--save]` | A report of a scan that looks wrong, to send to us (see [Report a wrong scan](#report-a-wrong-scan)) |
@@ -243,7 +247,9 @@ and `hermes sentrook grant` needs `--persistent` or `--session <ref>`.
 | `deny <id>` | Refuse a held call on that cron job for 30 days, with no more notices |
 | `approve <id>` | The same as `allow <id>`, kept for one release |
 | `passes [revoke <id>]` | The passes and denials your answers set, with their use counts; remove one by its id |
-| `help` | Lists the commands |
+| `notify here\|off\|status\|<platform>` | Where Sentrook's notices go (see [Where notices go](#where-notices-go)). `here` stores the chat you send it in; `<platform>` that platform's home channel (the form for the command line); `off` goes back to `owner_channel` in the config |
+| `attended add\|remove\|list [platform] [--confirm]` | Platforms where a person answers Hermes's approval prompts, besides the chat platforms and apps (see [Attended platforms](#attended-platforms)). Adding one loosens Sentrook |
+| `help` | Lists the commands, and says where notices go and which platforms are attended |
 
 **Owner only.** `status` and `help` are open to anyone the gateway admits. Every other command runs only for the
 owner: a direct message from a sender listed individually in `<PLATFORM>_ALLOWED_USERS` or `GATEWAY_ALLOWED_USERS`,
@@ -356,7 +362,7 @@ gateway ships except Raft, whose adapter sends nothing into the chat), the Herme
 it connects to a gateway on another machine), an editor connected over ACP and the local terminal count as attended. Elsewhere, including the API
 server, cron, subagents, webhooks and A2A peers, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)). If a UI in front of the API server shows Hermes's approval
-prompts, add it with `attended_platforms` (see [Settings](#settings)). Hermes's own background skill and memory saves
+prompts, add it with `/sentrook attended add api_server --confirm` (see [Attended platforms](#attended-platforms)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 
 ### What a review looks like
@@ -409,9 +415,8 @@ snooze is on in that session, a block Sentrook marks as having no clear attack s
 Where nobody can answer a review (the runs above), the call is **held**:
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
-- You get one notice on the home channel (`/sethome`) of the platform you name in `owner_channel`, for example
-  `telegram`. Set it: until you do, nothing is sent, the call is still held, and `status` and `verify` say notices
-  are not sent. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
+- You get one notice where you told Sentrook to send them (see [Where notices go](#where-notices-go)). Until you
+  do, nothing is sent, the call is still held, and `status` and `verify` say notices are not sent. Hermes copies what it sends into the agent's own conversation, so the notice says only that a call
   was held, which run (a cron job by its id, and its name in quotes), the tool and its target, a broad category,
   and the commands. Read the risk, the reasons and any grant Sentrook suggests with `/sentrook why <id>`.
 - The notice is sent with Hermes's own `hermes send` command, which works from every Hermes process: the gateway,
@@ -445,6 +450,59 @@ Where nobody can answer a review (the runs above), the call is **held**:
 A block (at `block_at` or above, or one the scanner enforces) is never held: it stays a block. The one exception is a retry of a call whose review nobody answered (it timed out, was held, or was auto-denied by the review loop) when only the retry takes it to a block: that retry is held, as a review would be. The traffic log records
 the scan with decision `held`, then your answer or the expiry; a call a pass let through is recorded as
 `allowed_by_pass`, and one a denial refused as `denied_by_owner`. `/sentrook history` shows them.
+
+### Where notices go
+
+In the chat where you want Sentrook's notices (a direct message with the agent), send:
+
+```
+/sentrook notify here
+```
+
+From then on the notices of held calls, of scan failures on unattended runs and of Hermes's background saves go to
+that chat, and Sentrook sends a test notice there straight away. If it does not arrive, `/sentrook notify status`
+(and `status` and `verify`) says the last test notice was not delivered until a later notice gets through: check the
+Hermes log, and send `/sentrook notify here` again a few minutes later (on some platforms Hermes can reach a new chat
+only once it has listed it). On the command line, which has no chat, name a platform instead: `hermes sentrook notify telegram` sends
+them to that platform's home channel (set with `/sethome` in the chat you want). If Hermes does not say which chat a
+command came from, `notify here` uses the platform's home channel and the reply names it, so you can tell when that
+is not the chat you are in. A platform with no home channel is refused, with what to set.
+
+`owner_channel` in the config (a platform whose home channel gets the notices) still works. A target set with
+`notify` wins over it, and `status` names both; `/sentrook notify off` removes the one set by command, so
+`owner_channel` applies again. `status`, `verify`, `help` and `/sentrook notify status` explain the setting in force,
+for example:
+
+> Notices: the telegram chat where you sent /sentrook notify here (set by command). When a scheduled job or another
+> run nobody watches tries something Sentrook wants you to check, Sentrook stops that call and tells you there.
+
+> Notices not set: calls held on scheduled jobs and other runs nobody watches are held silently. In the chat where
+> you want notices, send /sentrook notify here.
+
+### Attended platforms
+
+On chat platforms, the local terminal, the TUI, the desktop app and editors (ACP), a review shows you Hermes's
+approval prompt. Everywhere else (scheduled jobs, the API server, webhooks and the like) nobody is assumed to be
+watching, so a review holds the call for you. If a person does answer Hermes's approval prompts on one of those, for
+example a UI in front of the API server that shows them, add it:
+
+```
+/sentrook attended add api_server --confirm
+```
+
+This loosens Sentrook: on that platform a review shows an approval prompt instead of holding the call. Only front
+ends that can put a person in front of the prompts can be added (`api_server`, `webhook`, `a2a`, `relay`,
+`homeassistant`, `msgraph_webhook`, `wecom_callback`), and without `--confirm` the reply only warns you. Runs Hermes
+starts itself (cron jobs, subagents, batch runs, the curator, kanban workers and the like) and Raft can never be
+added: where nobody answers, Hermes may approve a prompt on its own. Nor can the local terminal (`cli`, `local`),
+which is attended when it has a terminal; a scripted run without one stays unattended. An unknown name is refused
+with the list of known platforms. `/sentrook attended remove api_server` holds its reviews again, and
+`/sentrook attended list` shows what is added and where it came from (`attended_platforms` in the config, or set by
+command). The plugin settings' `attended_platforms` still applies alongside.
+
+Both `notify` and `attended` are owner-only, recorded in the traffic log, and kept in `settings.json` in the plugin's
+folder. The agent cannot run them: `hermes sentrook notify …` or `hermes sentrook attended …` in one of its own
+commands is blocked like any other `hermes sentrook` command but `status` and `verify`.
 
 ### Hermes's own skill and memory saves
 
@@ -488,15 +546,15 @@ instead:
 | Block | It is not saved. | A notice that a background save was blocked. |
 | The scan failed | As on an unattended run: with `on_scan_error` `review` or `deny` it is not saved, with `allow` it is (see [When the scan service fails](#when-the-scan-service-fails)). | The scan-failure notice when it is not saved. |
 
-The notices go to the home channel of the platform in `owner_channel`. They say whether it was a skill or a memory
+The notices go where you set them (see [Where notices go](#where-notices-go)). They say whether it was a skill or a memory
 save and what it saved, as a review would describe it, and point to `/sentrook why <id>` and `/sentrook history`.
 You get at most one notice of each kind (let through, held, staged, blocked) per session every 6 hours; history has
 every save, and shows a held one as "not saved" and a staged one as "pending in Hermes".
-Without `owner_channel` (for example when you use Hermes only on the local terminal) the saves are handled the same
+Without a notice target (for example when you use Hermes only on the local terminal) the saves are handled the same
 way, but nothing tells you: `status` and `verify` say so, and the saves show only in `/sentrook history` and the
 `skill review` counts in `status`. A snooze on the session (or on every session) lets a save through that would
 otherwise be held, with the "let through" notice, when the save follows a chat, a local terminal, TUI or desktop app
-session, or a platform in `attended_platforms`; it never lets a blocked save through, and never one from the curator or after a
+session, or an [attended platform](#attended-platforms) you added; it never lets a blocked save through, and never one from the curator or after a
 cron job, a webhook, the API server or any other platform. History marks these saves "(self-edit)".
 
 The background review's and the curator's other calls (reading a file, a terminal command) never ask either: a
@@ -565,8 +623,8 @@ A scan gives no usable answer when the scan service returns an error, does not a
 seconds), cannot be reached, or rate-limits the scan. The call is then not scanned, and with the default setting
 (`on_scan_error`: `review`):
 
-- **Where reviews are attended** (chat platforms, the TUI and desktop app, the local terminal, and platforms in
-  `attended_platforms`) you are
+- **Where reviews are attended** (chat platforms, the TUI and desktop app, the local terminal, and the
+  [attended platforms](#attended-platforms) you added) you are
   asked, with Hermes's approval prompt, whether to run the call without a scan. It runs only if you approve, except
   in a session where you switched on YOLO, where Hermes approves the prompt itself (see above). Answering
   **Session** or **Always** stops these questions in that chat until Sentrook can scan again; another chat, or a
@@ -574,7 +632,7 @@ seconds), cannot be reached, or rate-limits the scan. The call is then not scann
 - **On unattended runs** (the API server, cron, subagents, webhooks, and anywhere Hermes approvals are switched off
   as described above) nobody can answer, so the call is blocked. The agent is told that Sentrook did not scan the
   call, that this is a service problem rather than a security block, and that the call did not run. The call is not
-  held, so there is nothing to approve, but you get a notice on the `owner_channel` home channel, like a held call's.
+  held, so there is nothing to approve, but you get a notice where notices go, like a held call's.
   It names the run, the tool and the reason (the service could not be reached, did not answer in time, returned an
   error or rate-limited the scan, or the endpoint or credentials are wrong). You get one notice per cron job (per
   session for other runs): further failures in the same job are blocked without a notice for 6 hours, so an outage
@@ -668,11 +726,11 @@ In short, for anyone deciding whether to install it:
   them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or hand it to Hermes's own approval prompt. It never approves a
   call on your behalf. Where nobody can answer a prompt (cron, webhooks, the API server) a review holds the call and
-  sends you one notice on a home channel, with Hermes's own `hermes send`, and a call blocked because the scan
+  sends you one notice in the chat or home channel you set, with Hermes's own `hermes send`, and a call blocked because the scan
   failed sends you one notice per job (per session for other runs) every 6 hours at most; those notices are the
   only messages it sends.
 - **Files:** it writes only to its own folder in Hermes's home (`~/.hermes/sentrook/`, `/opt/data/sentrook/` in Docker:
-  the traffic log, grants, snooze state, held calls, passes and denials, when each job last had a scan-failure notice, and the
+  the traffic log, grants, snooze state, held calls, passes and denials, where notices go and the attended platforms you added, when each job last had a scan-failure notice, and the
   conversation logs above), or to the paths you set for them
   (`state_dir`, `traffic_log.path`). Besides that folder it reads Hermes's `config.yaml`, for whether approvals and
   secret redaction are on. It runs no shell commands. The one process it starts is Hermes's own `hermes send`
@@ -694,8 +752,8 @@ settings (see [step 2](#2-add-the-credentials-to-hermes)).
 | `review_at` | `45` | Ask at or above this risk |
 | `block_at` | `80` | Block at or above this risk |
 | `on_scan_error` | `review` | `allow`, `deny` or `review` when the scan gives no usable answer |
-| `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server` |
-| `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. No notice is sent until it is set |
+| `attended_platforms` | | Extra session platforms where a person answers approvals, such as `api_server`. `/sentrook attended add` adds more without editing the config (see [Attended platforms](#attended-platforms)) |
+| `owner_channel` | | The platform whose home channel gets the notices of held calls, of scan failures on unattended runs, and of background skill and memory saves blocked or let through without asking, such as `telegram`. `/sentrook notify here` sets a chat instead and wins over this (see [Where notices go](#where-notices-go)). No notice is sent until one of them is set |
 | `skill_review` | `allow` | `allow` tells Sentrook which calls are Hermes's own background skill and memory saves and sends the conversation they are judged against; `review` sends them like any other call. Either way they never ask (see [Background skill and memory saves](#background-skill-and-memory-saves)). A YAML `false` (`off`, `no`) reads as `review` and `true` as `allow`; any other value reads as `allow`, and `status` names it |
 | `timeout_ms` | `30000` | How long to wait for a scan |
 | `traffic_log.enabled` | `true` | Keep the local traffic log |
