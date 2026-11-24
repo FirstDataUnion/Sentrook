@@ -34,8 +34,8 @@ since the version the catalog pins.
   day. A hold on a cron job now offers, in its notice, only the answers that apply:
   - `/sentrook allow <id>`: the job's next run may make the same call once (`allow <id> later` does the same).
   - `/sentrook allow <id> always`: the job may make the same call for 30 days, with a use count. Offered only when
-    the scan's `owner_pass` says the call may be let through for good and the call names its parties; a scanner that
-    does not send `owner_pass` never gets it.
+    the scan's `owner_pass` says the call may be let through for good and the call names its parties. A scan with
+    no `owner_pass` (a scanner that predates it) offers no pass at all: only `deny`.
   - `/sentrook deny <id>`: the job is refused the same call for 30 days. The agent gets a plain declined result
     ("The owner declined this action for this job, so Sentrook did not run it. Continue without it.") and no
     notice is sent.

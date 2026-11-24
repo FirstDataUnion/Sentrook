@@ -35,8 +35,11 @@ const ALWAYS = {
   approval_fingerprint: FP,
   reasons: [{ code: "trigger.scheduled" }, { code: "send.unbound_channel", subject: "E1" }],
 };
-/** The same send from a scanner that sends no `owner_pass` (it predates it): allow once and deny. */
-const { owner_pass: _drop, ...NAMED } = ALWAYS;
+/** The same send when the scanner offers it once: allow once and deny. */
+const NAMED = { ...ALWAYS, owner_pass: "once" };
+/** The same send from a scanner that sends no `owner_pass` (it predates it): no pass, deny only. The harness leaves an
+ * `undefined` key out of the response. */
+const MISSING = { ...ALWAYS, owner_pass: undefined };
 const OTHER_CHANNEL = { E1: { kind: "channel", display: "discord:#general" } };
 const HELD = { block: true, blockReason: FIXTURES.held_text };
 const DECLINED = { block: true, blockReason: FIXTURES.declined_text };
@@ -176,7 +179,7 @@ test("allow lets the job's next run make the same send once; the run after is he
   let { out, rec } = await r.run(1);
   assert.deepEqual(out, HELD);
   const id = rec.hold.id;
-  assert.deepEqual(rec.hold.offers, ["allow", "deny"], "this scanner sends no owner_pass: never always");
+  assert.deepEqual(rec.hold.offers, ["allow", "deny"], "the scanner offers it once: never always");
   assert.match(rec.hold.notice.status, /queued/);
   const answer = await r.command("sentrook-allow", id);
   assert.ok(answer.startsWith("Job job-j may make this call once: on its next run, or if the held run retries it."), answer);
@@ -291,7 +294,7 @@ for (const [name, later] of RISKIER) {
 for (const [name, scan, why] of [
   ["once", { ...ALWAYS, owner_pass: "once" }, "for this one it offers it once"],
   ["null", { ...ALWAYS, owner_pass: null }, "Sentrook does not offer to let this call through"],
-  ["missing (an older scanner)", { ...NAMED }, "for this one it offers it once"],
+  ["missing (an older scanner)", { ...MISSING }, "Sentrook does not offer to let this call through"],
 ] as const) {
   test(`allow always is refused with a reason when owner_pass is ${name}`, async () => {
     reply = { ...scan };

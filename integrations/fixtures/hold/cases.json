@@ -1,5 +1,5 @@
 {
-  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {allow}, {deny} and {why} replaced by their commands (/sentrook allow, /sentrook deny and /sentrook why on Hermes, /sentrook-allow, /sentrook-deny and /sentrook-why on OpenClaw). `where` is built from its parts as `where_text`. `offers` are the answers the hold offers, in the notice's order, from the run's cron job (`where.job_id`), the response's `owner_pass` (absent: an older scanner, read as `once`; null or any other value: no pass; and no pass at all for a scan that is enforced, has a floor or is not complete, since no pass could let it through), whether the call names its parties (the entities its reasons and description name, with an approval fingerprint that names something) and its risk against `block_at`: on a cron job `allow` when there is a level, `allow always` at level always for a named call below the block line, and `deny`; elsewhere `allow` alone, bound to the exact call. Chat markup (`[]()<>|@` and backticks) is taken out of every field the agent can influence (job id and name, tool, target description), and the target description is capped at 160 characters. The notice never carries the risk, reason codes, scores, entity kinds or the suggested grant: Hermes copies what it sends into the agent's own transcript. A call a denial for its job settles gets `declined_text`. `passes` says when a pass set at `pass_level` from the `held` response lets a later call (`later`, with `later_tool` when the tool differs, and `args`/`later_args` for a call that names nothing) through: same tool, same parties, risk no higher, no new warning (every reason code but the scanner's scoring and wording notes), not enforced, no floor, a complete scan, and the later scan's owner_pass at or above the pass's level. `hints` lists suggested grants and what the grant command accepts (null: refused). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans and calls a pass or denial settled. An outcome's `ceiling` is the scanner's verdict ceiling; an unattended run never lowers a block to a review with it, so a lowered block is never held, except when the response's `reasons` include `cap.unanswered_retry` (a retry of a review nobody answered may ask, never block on its own): that block is held. `scan_failure_notices` are the owner's notices when a scan failure blocks a call on an unattended run: the same shape, with {verify} replaced by the host's setup check (hermes sentrook verify, openclaw sentrook verify). There is no hold id: nothing is held. The reason names the failure kind (`reasons`), never its detail. After one is sent, further scan failures with the same `quiet_key` (the cron job id when known, else the session) send none for `scan_failure_quiet_hours`.",
+  "_comment": "Unattended reviews held for the owner. Both plugins must give the agent `held_text`, and the owner each notice's `text` with {allow}, {deny} and {why} replaced by their commands (/sentrook allow, /sentrook deny and /sentrook why on Hermes, /sentrook-allow, /sentrook-deny and /sentrook-why on OpenClaw). `where` is built from its parts as `where_text`. `offers` are the answers the hold offers, in the notice's order, from the run's cron job (`where.job_id`), the response's `owner_pass` (absent, as from a scanner that predates it, null or any other value: no pass; and no pass at all for a scan that is enforced, has a floor or is not complete, since no pass could let it through), whether the call names its parties (the entities its reasons and description name, with an approval fingerprint that names something) and its risk against `block_at`: on a cron job `allow` when there is a level, `allow always` at level always for a named call below the block line, and `deny`; elsewhere `allow` alone, bound to the exact call. Chat markup (`[]()<>|@` and backticks) is taken out of every field the agent can influence (job id and name, tool, target description), and the target description is capped at 160 characters. The notice never carries the risk, reason codes, scores, entity kinds or the suggested grant: Hermes copies what it sends into the agent's own transcript. A call a denial for its job settles gets `declined_text`. `passes` says when a pass set at `pass_level` from the `held` response lets a later call (`later`, with `later_tool` when the tool differs, and `args`/`later_args` for a call that names nothing) through: same tool, same parties, risk no higher, no new warning (every reason code but the scanner's scoring and wording notes), not enforced, no floor, a complete scan, and the later scan's owner_pass at or above the pass's level. `hints` lists suggested grants and what the grant command accepts (null: refused). `outcomes` says what each verdict becomes on an attended and an unattended run with review at 40 and block at 80: a block, from the line or enforced, is never held. `history` gives the action and review columns history prints for held scans and calls a pass or denial settled. An outcome's `ceiling` is the scanner's verdict ceiling; an unattended run never lowers a block to a review with it, so a lowered block is never held, except when the response's `reasons` include `cap.unanswered_retry` (a retry of a review nobody answered may ask, never block on its own): that block is held. `scan_failure_notices` are the owner's notices when a scan failure blocks a call on an unattended run: the same shape, with {verify} replaced by the host's setup check (hermes sentrook verify, openclaw sentrook verify). There is no hold id: nothing is held. The reason names the failure kind (`reasons`), never its detail. After one is sent, further scan failures with the same `quiet_key` (the cron job id when known, else the session) send none for `scan_failure_quiet_hours`.",
   "held_text": "Sentrook held this tool call for the owner's approval, so it did not run. Do not retry this call in this run.",
   "declined_text": "The owner declined this action for this job, so Sentrook did not run it. Continue without it.",
   "hold_days": 7,
@@ -10,7 +10,60 @@
   "block_at": 80,
   "notices": [
     {
-      "name": "a scheduled send at risk 47, named cron job, from a scanner that sends no owner_pass: allow once and deny",
+      "name": "a scheduled send at risk 47, named cron job, owner_pass once: allow once and deny",
+      "response": {
+        "response_version": "2.0",
+        "status": "ok",
+        "risk": 47,
+        "enforced": null,
+        "owner_pass": "once",
+        "tool_description": {
+          "category": "sends_data_off_host",
+          "template": "Sends a message to {E1}"
+        },
+        "entities": {
+          "E1": {
+            "kind": "channel",
+            "display": "discord:#ops-reports"
+          }
+        },
+        "reasons": [
+          {
+            "code": "trigger.scheduled"
+          },
+          {
+            "code": "send.unbound_channel"
+          }
+        ],
+        "tree": {
+          "suspicion": {
+            "score": 0.31
+          },
+          "consequence": {
+            "score": 0.42
+          },
+          "confidence": {
+            "score": 0.8
+          }
+        }
+      },
+      "tool": "message",
+      "where": {
+        "run": "cron job",
+        "session_ref": "s_0a1b2c3d4e5f",
+        "job_id": "9f1c2a",
+        "job_name": "daily-brief"
+      },
+      "where_text": "cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f",
+      "id": "h-1a2b3c",
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- let this call through once, on the job's next run: {allow} h-1a2b3c\n- refuse it on this job for 30 days, with no more notices: {deny} h-1a2b3c\nFor the reasons: {why} h-1a2b3c",
+      "offers": [
+        "allow",
+        "deny"
+      ]
+    },
+    {
+      "name": "the same scheduled send from a scanner that sends no owner_pass: deny only",
       "response": {
         "response_version": "2.0",
         "status": "ok",
@@ -54,10 +107,9 @@
         "job_name": "daily-brief"
       },
       "where_text": "cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f",
-      "id": "h-1a2b3c",
-      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- let this call through once, on the job's next run: {allow} h-1a2b3c\n- refuse it on this job for 30 days, with no more notices: {deny} h-1a2b3c\nFor the reasons: {why} h-1a2b3c",
+      "id": "h-1a2b3d",
+      "text": "Sentrook held a tool call on an unattended run; it did not run.\nRun: cron job 9f1c2a, job name \"daily-brief\", session s_0a1b2c3d4e5f\nTool: message: Sends a message to discord:#ops-reports\nHeld because it sends data to a destination outside this machine.\nReply within 7 days:\n- refuse it on this job for 30 days, with no more notices: {deny} h-1a2b3d\nFor the reasons: {why} h-1a2b3d",
       "offers": [
-        "allow",
         "deny"
       ]
     },
@@ -191,12 +243,13 @@
       ]
     },
     {
-      "name": "a subagent run from a scanner that sends no owner_pass: allow only, bound to the exact call",
+      "name": "a subagent run, owner_pass once: allow only, bound to the exact call",
       "response": {
         "response_version": "2.0",
         "status": "ok",
         "risk": 52.4,
         "enforced": null,
+        "owner_pass": "once",
         "tool_description": {
           "category": "writes_file",
           "template": "Appends to {E1}"
@@ -1846,7 +1899,7 @@
           }
         ]
       },
-      "matches": true,
+      "matches": false,
       "args": {
         "message": "a"
       },

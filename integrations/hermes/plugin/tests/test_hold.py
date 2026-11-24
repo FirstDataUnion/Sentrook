@@ -45,6 +45,10 @@ def h(harness, monkeypatch):
     return held_call_harness(harness, monkeypatch)
 
 
+#: A reply value that leaves the key out of the scanner's response altogether (as a scanner that predates the field).
+ABSENT = object()
+
+
 def held_call_harness(harness, monkeypatch):
     """The harness with a scanner whose reply each test sets (`.reply`), Discord as the only platform
     with a home channel and `owner_channel`, a `dispatch_tool` that records each send (`.sent`), and
@@ -63,7 +67,8 @@ def held_call_harness(harness, monkeypatch):
             raise ConnectionRefusedError(61, "Connection refused")
         if fake.unauthorized:
             return 401, {"error": "invalid_token"}, {}
-        return 200, {**SEND["response"], **fake.reply, "request_id": p["request_id"]}, {}
+        body = {**SEND["response"], **fake.reply, "request_id": p["request_id"]}
+        return 200, {k: v for k, v in body.items() if v is not ABSENT}, {}
 
     monkeypatch.setattr(plugin.scan_client, "http_json", http)
     monkeypatch.setattr(hold, "home_platforms", lambda: ["discord"])
