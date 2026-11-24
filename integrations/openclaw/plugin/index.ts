@@ -10,14 +10,15 @@ import { envWithOpenclawDotenv, resolveOidcCredentials } from "./auth.ts";
 import { resolveApprovalTiming, type IntentKind } from "./approvalPolicy.ts";
 import * as bg from "./backgroundSave.ts";
 import { OWNER_SUBCOMMANDS, runSentrookCommand } from "./commands.ts";
-import { type PluginConfig, resolveConfig } from "./config.ts";
+import { type GrantConfig, openclawDir, type PluginConfig, resolveConfig } from "./config.ts";
+import * as cronDelivery from "./cronDelivery.ts";
 import * as dashboard from "./dashboard.ts";
 import * as conversation from "./conversation.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
 import { reviewCard } from "./card.ts";
 import { blockReason, decide, severity, tiersOf, unattendedView, type Verdict } from "./decision.ts";
-import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind } from "./planir.ts";
+import { buildPlanir, heartbeatEventsOf, hostLabels, PLUGIN_VERSION, sessionRef, TOOL_CALL, toolKind, triggerKind } from "./planir.ts";
 import { capHeadTail, createRedactor } from "./redact.ts";
 import { postScan, type ScanOk } from "./scanClient.ts";
 import { type ScanFailure, scanErrorToHookResult } from "./scanErrorPolicy.ts";
@@ -25,7 +26,7 @@ import * as scanFailure from "./scanFailureNotice.ts";
 import { ownerCommand, type OwnerContext, senderRef } from "./owner.ts";
 import * as selfEdit from "./selfEdit.ts";
 import * as snooze from "./snooze.ts";
-import { type HistoryEntry, Store } from "./store.ts";
+import { type HistoryEntry, type RunContext, type Session, Store } from "./store.ts";
 import { TrafficLog } from "./traffic.ts";
 
 type Json = Record<string, unknown>;
@@ -201,6 +202,8 @@ const plugin = {
       return { cfg: resolveConfig(api.pluginConfig, env), env };
     };
     const boot = loadConfig().cfg;
+    /** OpenClaw's state directory as the gateway started with it (not from `.env`, which the agent can write). */
+    const ocDir = openclawDir(process.env);
     const hostVersion = runtimeVersion();
     const store = new Store(boot.stateDir);
     const traffic = new TrafficLog(boot.trafficLog.path, boot.trafficLog.maxBytes, boot.trafficLog.enabled, (m) =>
@@ -286,8 +289,25 @@ const plugin = {
         senderId: ctx?.senderId,
         workspaceDir: ctx?.workspaceDir,
         inputProvenance: ctx?.inputProvenance,
+        jobId: ctx?.jobId,
         ...patch,
       });
+      // A cron run's job target, kept once, at the first agent hook: before any of the run's tool calls.
+      if (runId && ctx?.trigger === "cron" && !store.loadRun(runId).jobDeliveryRead) {
+        let kept: cronDelivery.DeliverySnapshot | null = null;
+        try {
+          kept = cronDelivery.snapshot({
+            trigger: ctx.trigger,
+            jobId: ctx.jobId,
+            agentId: ctx.agentId,
+            hostConfig: hostConfig(),
+            openclawDir: ocDir,
+          });
+        } catch (err) {
+          api.logger.warn(`${LOG} cron job delivery lookup failed: ${String(err)}`);
+        }
+        store.mergeRun(runId, { jobDeliveryRead: true, jobDelivery: kept ?? undefined });
+      }
     };
 
     const safely = (name: string, fn: () => void) => {
@@ -497,6 +517,26 @@ const plugin = {
       { priority: 10 },
     );
 
+    /** On a cron run, the grant for its job's own delivery target (`cronDelivery.ts`); a failed read gives none. */
+    function jobDeliveryGrant(run: RunContext, ctx: any, sess: Session, sid: string, params: unknown): GrantConfig[] {
+      try {
+        const g = cronDelivery.deliveryGrant({
+          run,
+          kind: triggerKind(run),
+          argsText: JSON.stringify(params ?? {}),
+          agentId: ctx?.agentId,
+          hostConfig: hostConfig(),
+          history: sess.history,
+          sessionRef: sessionRef(sid),
+          openclawDir: ocDir,
+        });
+        return g ? [g] : [];
+      } catch (err) {
+        api.logger.warn(`${LOG} cron job delivery lookup failed: ${String(err)}`);
+        return [];
+      }
+    }
+
     async function scanOne(
       cfg: PluginConfig,
       env: NodeJS.ProcessEnv,
@@ -541,7 +581,10 @@ const plugin = {
         run,
         assistant: store.loadAssistant(ctx?.sessionKey),
         parents: store.parents(),
-        grants: grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
+        grants: [
+          ...grants.effective(cfg, store.loadGrants(), new Date(), sessionRef(sid)),
+          ...jobDeliveryGrant(run, ctx, sess, sid, event?.params),
+        ],
         hostVersion,
         hostProcess: hostKind !== null,
         selfEdit: selfEditBlock,

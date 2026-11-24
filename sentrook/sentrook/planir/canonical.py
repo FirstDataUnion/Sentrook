@@ -80,6 +80,25 @@ _RECIPIENT_KEYS = (
     "phone",
     "number",
 )
+#: OpenClaw's `message` tool takes `target`, `to` and `channelId` alike as an explicit delivery target, with
+#: no precedence between them: a `channelId` is a target written `channel:<id>`, beside any `target`. Its
+#: `channelIds` is a read and search filter, `targetAuthor` names the author of a message reacted to, and
+#: `guildId` a server: none of them is where a send goes.
+_CHANNEL_ID_KEY = "channelId"
+#: A read-only action reads from these: the channels it names are sources, not destinations.
+_SOURCE_CHANNEL_KEYS = ("channelId", "channelIds")
+#: A message action that only reads: its first word (`read`, `readMessages`, `list-pins`) or its last
+#: (`thread-list`, `channel-info`). The channel it names is where data comes from, not where it goes.
+_READ_ACTION_FIRST = frozenset(
+    {"read", "search", "list", "get", "fetch", "view", "show", "describe"}
+)
+_READ_ACTION_LAST = frozenset({"list", "info", "search", "history"})
+#: First words of an action that changes something, whatever its last word (`set-channel-info`).
+_WRITE_ACTION_FIRST = frozenset(
+    {"set", "edit", "update", "create", "delete", "remove", "add", "rename", "send", "post"}
+)
+#: Prefixes of a person (a direct message): their id is never a channel's.
+_PERSON_PREFIXES = ("user:", "dm:")
 _CC_KEYS = ("cc",)
 _BCC_KEYS = ("bcc",)
 _ATTACHMENT_KEYS = ("attachments", "files", "attachment", "file_paths")
@@ -193,6 +212,45 @@ def _as_list(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _channel_ids(value: Any) -> list[str]:
+    """The channel ids a `channelId` / `channelIds` value names (strings or numbers), each written
+    `channel:<id>` unless it is already a prefixed target, a JID or a `#name`."""
+    items = value if isinstance(value, list | tuple) else [value]
+    out: list[str] = []
+    for item in items:
+        if isinstance(item, int) and not isinstance(item, bool):
+            item = str(item)
+        if isinstance(item, bool) or not isinstance(item, str | dict):
+            continue
+        for v in _as_list(item):
+            out.append(v if (":" in v or "@" in v or v.startswith("#")) else "channel:" + v)
+    return out
+
+
+def _read_only_action(raw: dict[str, Any]) -> bool:
+    action = raw.get("action")
+    if not isinstance(action, str):
+        return False
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", action.strip())
+    words = [w for w in re.split(r"[-_\s]+", spaced.lower()) if w]
+    if not words or words[0] in _WRITE_ACTION_FIRST:
+        return False
+    return words[0] in _READ_ACTION_FIRST or words[-1] in _READ_ACTION_LAST
+
+
+def _same_channel(value: str, recipients: list[str]) -> bool:
+    """`value` (`channel:<id>`) is a channel a recipient already names by the same id: bare, or after a
+    prefix that is not a person's (`channel:`, `telegram:`)."""
+    ident = value.removeprefix("channel:").lower()
+    for r in recipients:
+        r = r.strip().lower()
+        if r == ident or (
+            ":" in r and not r.startswith(_PERSON_PREFIXES) and r.split(":", 1)[1] == ident
+        ):
+            return True
+    return False
+
+
 def _string_leaves(value: Any, out: list[str]) -> None:
     if isinstance(value, str):
         out.append(value)
@@ -295,6 +353,17 @@ def canonical_arguments(
     for k in _RECIPIENT_KEYS:
         if k in raw:
             recipients.extend(_as_list(raw[k]))
+    if tool_kind is ToolKind.MESSAGE_SEND:
+        if _read_only_action(raw):
+            # A read-only action names the channels it reads from.
+            sources = [v for k in _SOURCE_CHANNEL_KEYS if k in raw for v in _channel_ids(raw[k])]
+            if sources:
+                args["source_channels"] = list(dict.fromkeys(sources))
+        elif _CHANNEL_ID_KEY in raw:
+            # A `channelId` is a target as much as `target` is; the same channel named by both is one.
+            for v in _channel_ids(raw[_CHANNEL_ID_KEY]):
+                if not _same_channel(v, recipients):
+                    recipients.append(v)
     if recipients:
         args["recipients"] = list(dict.fromkeys(recipients))
     for canon, keys in (("cc", _CC_KEYS), ("bcc", _BCC_KEYS), ("attachments", _ATTACHMENT_KEYS)):
@@ -385,6 +454,7 @@ def _read_keys(tool_kind: ToolKind) -> frozenset[str]:
     for group in (
         ("action",),
         _RECIPIENT_KEYS,
+        _SOURCE_CHANNEL_KEYS,
         _CC_KEYS,
         _BCC_KEYS,
         _ATTACHMENT_KEYS,

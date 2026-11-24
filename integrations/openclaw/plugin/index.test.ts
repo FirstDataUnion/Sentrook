@@ -416,6 +416,93 @@ test("a cron run's delivery goes out as a scheduled trigger with its channel bin
   assert.deepEqual(other.grants, []);
 });
 
+/**
+ * A cron run's hook context as OpenClaw 2026.11.2 builds it: the requester is the run's delivery channel and the
+ * agent's account, with no sender id and no owner flag (from the traffic log's host labels of a held cron run, and
+ * the host's requester builder).
+ */
+const CRON_SESSION = "agent:sgt-johnson:cron:561a1f55-c5e9-41fb-930b-1ee7b8e31373:run:ee5a6348-31d9-4614-9762-867dbceaeabe";
+const CRON_CTX = {
+  sessionKey: CRON_SESSION,
+  sessionId: "ee5a6348-31d9-4614-9762-867dbceaeabe",
+  agentId: "sgt-johnson",
+  runId: "r-cron",
+  channelId: "channel:1519377377082216448",
+  requester: { channel: "discord", accountId: "sgt-johnson" },
+};
+const CRON_AGENT_CTX = {
+  ...CRON_CTX,
+  trigger: "cron",
+  jobId: "561a1f55-c5e9-41fb-930b-1ee7b8e31373",
+  channel: "discord",
+  accountId: "sgt-johnson",
+  channelId: "1519377377082216448",
+  chatId: "1519377377082216448",
+};
+const UNKNOWN_SENDER = { relation: "unknown", basis: ["none"] };
+
+async function hostRunTrigger(trigger: "cron" | "heartbeat", requester: Record<string, unknown>, h = setup()) {
+  const agentCtx = { ...CRON_AGENT_CTX, trigger };
+  await h.fire("before_prompt_build", { runId: "r-cron", prompt: "[cron:561a1f55 workout] post the reminder" }, agentCtx);
+  await h.fire("before_agent_run", { runId: "r-cron" }, agentCtx);
+  await h.fire("before_tool_call", { ...call("c1", "ls"), runId: "r-cron" }, { ...CRON_CTX, requester });
+  return h.scans.at(-1).trigger;
+}
+
+test("a cron run is sent with an unknown sender whatever requester OpenClaw attaches", async () => {
+  // Must be unknown: the recorded 2026.11 requester (channel and account only), and one flagged not the owner.
+  for (const requester of [CRON_CTX.requester, { channel: "discord", senderIsOwner: false }, { channel: "discord", senderId: "u9" }]) {
+    const trig = await hostRunTrigger("cron", requester);
+    assert.deepEqual(trig, { kind: "scheduled", channel: "discord", sender: UNKNOWN_SENDER }, JSON.stringify(requester));
+  }
+});
+
+test("a heartbeat run with a requester is sent with an unknown sender", async () => {
+  // Must be unknown: a heartbeat delivering to a channel carries that channel as its requester.
+  const trig = await hostRunTrigger("heartbeat", { channel: "discord", accountId: "sgt-johnson" });
+  assert.deepEqual([trig.kind, trig.sender], ["heartbeat", UNKNOWN_SENDER]);
+});
+
+test("a cron or heartbeat run whose requester is the owner stays the owner's", async () => {
+  // Must stay: the owner flag is kept on a host task run.
+  for (const trigger of ["cron", "heartbeat"] as const) {
+    const trig = await hostRunTrigger(trigger, { channel: "discord", senderIsOwner: true, senderId: "u1" });
+    assert.equal(trig.sender.relation, "owner", trigger);
+  }
+});
+
+test("a subagent child and a webhook run keep the sender their requester gives", async () => {
+  // Must stay: only scheduled and heartbeat runs lose a non-owner requester.
+  const requester = { channel: "discord", senderIsOwner: false, senderId: "u9" };
+  const h = setup();
+  const child = { ...CTX, sessionKey: "agent:main:subagent:7f2", runId: "r-sub", requester };
+  await h.fire(
+    "before_prompt_build",
+    { runId: "r-sub", prompt: "summarise" },
+    { ...child, trigger: "cron", inputProvenance: { kind: "inter_session", sourceRole: "subagent" } },
+  );
+  await h.fire("before_tool_call", { ...call("c1", "ls"), runId: "r-sub" }, child);
+  const hook = { ...CTX, sessionKey: "agent:main:hook:orders", runId: "r-hook", requester };
+  await h.fire("before_prompt_build", { runId: "r-hook", prompt: "New order received" }, { ...hook, trigger: "event" });
+  await h.fire("before_tool_call", { ...call("c2", "ls"), runId: "r-hook" }, hook);
+  assert.deepEqual(
+    h.scans.map((p) => [p.trigger.kind, p.trigger.sender.relation]),
+    [
+      ["subagent", "other"],
+      ["hook", "other"],
+    ],
+  );
+});
+
+test("a webhook run an OpenClaw before 2026.11 starts with trigger cron is a hook run and keeps its sender", async () => {
+  // Must stay: only the host's own task runs lose a non-owner requester, not a hook session's run.
+  const h = setup();
+  const ctx = { ...CTX, sessionKey: "agent:main:hook:orders", runId: "r-hook", requester: { channel: "webhook", senderIsOwner: false } };
+  await h.fire("before_prompt_build", { runId: "r-hook", prompt: "New order received" }, { ...ctx, trigger: "cron" });
+  await h.fire("before_tool_call", { ...call("c1", "ls"), runId: "r-hook" }, ctx);
+  assert.deepEqual([h.scans[0].trigger.kind, h.scans[0].trigger.sender.relation], ["hook", "other"]);
+});
+
 test("an OpenClaw system agent turn, with the host's marker lines, is a system turn without a sender", async () => {
   const h = setup({}, {}, { runtime: { version: "2026.10.3" } });
   const ctx = { ...CTX, runId: "r5", agentId: "openclaw", requester: { channel: "openclaw" } };
