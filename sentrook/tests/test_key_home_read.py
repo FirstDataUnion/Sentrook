@@ -11,14 +11,13 @@ stays the send's. A call where the check fails, or with no key at all, is scored
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 from test_aira_detectors import planir
 from test_converge_scan import BENIGN_ANSWERS, CLOCK, KEY
 from test_jev_probes import FakeDecider
 from test_session_sets import seed
-
-from types import SimpleNamespace
 
 from sentrook.aira import detectors
 from sentrook.aira.lists import load_lists
