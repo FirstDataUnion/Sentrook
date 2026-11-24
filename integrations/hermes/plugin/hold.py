@@ -4,7 +4,8 @@ Nobody can answer a review prompt on a cron job, a subagent, a run with approval
 process with no terminal. There the plugin holds the call:
 - the call does not run, and the agent is told it is held for the owner's approval and must not be
   retried in this run (`HELD_TEXT`);
-- the owner gets one notice on the home channel of the platform in `owner_channel`: which run, the
+- the owner gets one notice, in the chat set by `/sentrook notify here` or else on the home channel of the
+  platform set by `notify <platform>` or `owner_channel` (see `owner_settings`): which run, the
   tool and its target as a review prompt names them, the block category, the hold's id and the answers it
   offers. Hermes copies what `send_message` sends into the agent's own transcript, so the notice carries
   nothing a steered agent could use; the owner reads the risk, reasons and suggested grant with `why <id>`;
@@ -77,11 +78,14 @@ import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import grants, passes
 from .decision import BLOCK_CATEGORIES, block_category, describe
 from .store import Store, file_lock, read_time
+
+if TYPE_CHECKING:
+    from .owner_settings import Notify
 
 logger = logging.getLogger("sentrook")
 
@@ -709,19 +713,53 @@ def home_platforms() -> list[str]:
         return []
 
 
+def home_channel_name(platform: str) -> str:
+    """The name Hermes's gateway config gives `platform`'s home channel; "" when there is none or it cannot be read."""
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        home = load_gateway_config().get_home_channel(Platform(platform))
+        name = getattr(home, "name", "") if home else ""
+        return name if isinstance(name, str) else ""
+    except Exception as exc:  # noqa: BLE001 - no gateway config: no name
+        logger.debug("home channel name not readable: %s", exc)
+        return ""
+
+
 NO_OWNER_CHANNEL = (
-    "owner_channel is not set; set it to the platform whose home channel gets held-call notices"
+    "no notice target is set; send /sentrook notify here in the chat where you want notices"
 )
 
 
-def notice_target(owner_channel: str, homes: list[str]) -> tuple[str | None, str]:
-    """(platform whose home channel gets the notice, or None; why there is none). The owner names the
-    platform: a home channel is not assumed to be the owner's just because it is the only one."""
-    if not owner_channel:
+def notice_target(n: Notify, homes: list[str]) -> tuple[str | None, str]:
+    """(the target `hermes send --to` takes, or None; why there is none). A chat set by `notify here` is sent to
+    directly; a platform needs a home channel. The owner names the platform: a home channel is not assumed to be
+    the owner's just because it is the only one."""
+    if not n.platform:
         return None, NO_OWNER_CHANNEL
-    if owner_channel in homes:
-        return owner_channel, ""
-    return None, f"owner_channel {owner_channel} has no home channel"
+    if n.chat_id or n.platform in homes:
+        return n.to, ""
+    if n.source == "command":
+        return None, f"{n.platform}, set by command, has no home channel"
+    return None, f"owner_channel {n.platform} has no home channel"
+
+
+def target_label(to: str) -> str:
+    """The target as the traffic log records it: the platform, and "chat" for one chat, never its id."""
+    platform, chat, _ = to.partition(":")
+    return f"{platform} chat" if chat else platform
+
+
+def target_text(to: str | None) -> str:
+    """The target as status and verify show it, after "to the"."""
+    if not to:
+        return ""
+    platform, chat, _ = to.partition(":")
+    return (
+        f"{platform} chat where you sent /sentrook notify here"
+        if chat
+        else f"{platform} home channel"
+    )
 
 
 #: How a notice is sent (`send_route`).
@@ -817,9 +855,9 @@ def send_route(can_dispatch: bool = True) -> tuple[str | None, str]:
     )
 
 
-def owner_target(owner_channel: str, can_dispatch: bool = True) -> tuple[str | None, str]:
+def owner_target(n: Notify, can_dispatch: bool = True) -> tuple[str | None, str]:
     """`notice_target` for this process: also None, with the reason, when it has no way to send (`send_route`)."""
-    target, why = notice_target(owner_channel, home_platforms())
+    target, why = notice_target(n, home_platforms())
     if target:
         route, no_route = send_route(can_dispatch)
         if route is None:
@@ -827,8 +865,8 @@ def owner_target(owner_channel: str, can_dispatch: bool = True) -> tuple[str | N
     return target, why
 
 
-def status_line(state_dir: Path, owner_channel: str, now: datetime) -> str:
-    target, why = owner_target(owner_channel)
+def status_line(state_dir: Path, n: Notify, now: datetime) -> str:
+    target, why = owner_target(n)
     count = waiting(state_dir, now)
     held = "holds file unreadable" if count is None else f"{count} waiting"
     again = repeated(state_dir, now) if count else []
@@ -838,7 +876,7 @@ def status_line(state_dir: Path, owner_channel: str, now: datetime) -> str:
             f" ({most.get('id')} held {int(most.get('count') or 1)} times since "
             f"{_clean(most.get('held_at'), 20)})"
         )
-    where = f"notices to the {target} home channel" if target else f"notices not sent ({why})"
+    where = f"notices to the {target_text(target)}" if target else f"notices not sent ({why})"
     return f"{held}; {where}"
 
 
@@ -885,7 +923,8 @@ def _answer(stdout: str) -> Any:
 
 
 def _with_hermes_send(platform: str, text: str) -> tuple[bool, str]:
-    """(delivered, what Hermes said) for one `hermes send` of `text` to `platform`'s home channel."""
+    """(delivered, what Hermes said) for one `hermes send` of `text` to `platform`: a platform's home channel, or
+    `platform:chat_id[:thread_id]` for one chat (`notify here`)."""
     launcher = _hermes_launcher()
     if launcher is None:
         return False, "Hermes's hermes command is not available"
@@ -953,7 +992,7 @@ def _send(
 
 
 def deliver(ctx: Any, platform: str, text: str, on_fail: Callable[[], None] | None = None) -> None:
-    """Sends `text` to `platform`'s home channel from a worker thread with an empty context, with `hermes send` or
+    """Sends `text` to `platform` (a home channel, or one chat as `notice_target` gives it) from a worker thread with an empty context, with `hermes send` or
     the send_message tool as `send_route` chooses for the current turn (see the module note). The thread is not a daemon, so a `hermes cron run` process waits
     for it. `on_fail` runs on that thread when the notice was not delivered."""
     _threads[:] = [t for t in _threads if t.is_alive()]
