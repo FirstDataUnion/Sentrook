@@ -22,14 +22,15 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from . import grants, history, hold, owner_settings, passes, report, skill_review, snooze
+from . import grants, history, hold, owner_settings, passes, report, run_now, skill_review, snooze
 from .auth import missing_credentials
-from .config import PluginConfig, resolve_config
+from .config import PluginConfig, hermes_home, resolve_config
 from .owner import refusal
 from .planir import PLUGIN_VERSION, session_ref
 from .traffic import TrafficLog
@@ -266,7 +267,16 @@ def _answer(verb: str) -> Callable[..., str]:
         if who is None:
             return refusal(verb)
         log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
-        return hold.answer(cfg.state_dir, verb, rest, who, datetime.now(UTC), CMD, log.write)
+        # `allow` on a cron job's hold starts the job again now, unless a guard applies (`run_now`).
+        starter = run_now.Adapter(
+            hermes_home(dict(env) if env is not None else dict(os.environ)),
+            cfg.state_dir,
+            observe=cfg.mode == "observe",
+            now=lambda: datetime.now(UTC),
+        )
+        return hold.answer(
+            cfg.state_dir, verb, rest, who, datetime.now(UTC), CMD, log.write, run_now=starter
+        )
 
     return run
 
@@ -406,11 +416,12 @@ COMMANDS: dict[str, Subcommand] = {
         session=True,
     ),
     "allow": Subcommand(
-        "answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: let it "
-        "through once on the job's next run (later: the same), or with always for 30 days on that job, "
-        "where the notice offers it; the held call is not run again",
+        "answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: run the "
+        "cron job again now, letting the call through once in that run (now: even when the held run had "
+        "already sent or written something; later: on the job's next scheduled run instead), or with always "
+        "for 30 days on that job, where the notice offers it; Sentrook never runs the held call itself",
         run_allow,
-        args="<id> [later|always]",
+        args="<id> [now|later|always]",
         owner_only=True,
         cli_rest=True,
     ),

@@ -3,7 +3,8 @@
 A held call (`hold`) is answered with `allow`, `allow always` or `deny`. Each answer is kept here, in
 `<hermes home>/sentrook/passes.json`, bound to the cron job the held call came from and to the action:
 
-- `allow` (once): a one-use pass. The job's next run that makes the same call goes through once.
+- `allow` (once): a one-use pass. When the plugin starts a new run of the job for the answer (`run_now`), the pass
+  is bound to that run (`runs`, below); otherwise the job's next run that makes the same call goes through once.
 - `allow always`: a standing pass for the job, for 30 days, with a use count.
 - `deny`: a standing denial for the job, for 30 days. A matching call gets `DECLINED_TEXT` and no notice is sent.
 
@@ -22,6 +23,12 @@ job and action whatever the scan says: refusing is always safe.
 The match key is an HMAC under the install's salt, so the file reveals nothing about the action; it keeps the
 tool, the run's description of the call (as the hold's notice showed it) and the job, for the owner's list.
 `passes.json` is changed under the same cross-process lock as `holds.json` and `grants.json`.
+
+A pass bound to a run the plugin started (`run_bound`) has a record in the file's `runs` list: the job, when it was
+asked for, the held run (which never counts as the new one) and, once a scan or the run's end finds it, the run it is
+bound to. A run counts as the started one when it is that run, or (before one is bound) when it is not the held run
+and started after the answer. The record notes whether the call went through and the holds the run made, so the owner
+gets one line when the run ends (`outcome_text`); a run-bound pass the run did not use ends with it.
 """
 
 from __future__ import annotations
@@ -57,6 +64,31 @@ LEVELS = ("once", "always")
 
 #: The verbs an answer can use, as the notice lists them.
 ALLOW, ALLOW_LATER, ALLOW_ALWAYS, DENY = "allow", "allow later", "allow always", "deny"
+#: `allow` that starts the job again even though the held run had already acted (`acts`).
+ALLOW_NOW = "allow now"
+
+#: A call acted (sent or wrote something a new run would do again) when it ran with one of these tool kinds, or when
+#: the scan described it with one of these categories.
+ACTING_KINDS = frozenset({"file_edit", "file_write", "memory_write", "message_send"})
+ACTING_CATEGORIES = frozenset(
+    {
+        "deletes_data",
+        "modifies_agent_or_host_config",
+        "sends_data_off_host",
+        "sends_message_to_person",
+        "writes_local_files",
+    }
+)
+#: How much earlier than the answer a run may say it started and still count as the one started for it (clocks).
+RUN_SLACK = timedelta(seconds=2)
+
+
+def acts(kind: Any, resp: dict[str, Any] | None) -> bool:
+    """Whether a call of tool kind `kind`, scanned as `resp`, sends or writes something (`ACTING_KINDS`,
+    `ACTING_CATEGORIES`)."""
+    desc = (resp or {}).get("tool_description")
+    category = desc.get("category") if isinstance(desc, dict) else None
+    return kind in ACTING_KINDS or category in ACTING_CATEGORIES
 
 
 def level_of(resp: dict[str, Any]) -> str | None:
@@ -132,17 +164,23 @@ def covers(held: dict[str, Any], later: dict[str, Any]) -> bool:
 
 
 def offers(
-    job_id: str | None, level: str | None, named: bool, risk: float | None, block_at: float
+    job_id: str | None,
+    level: str | None,
+    named: bool,
+    risk: float | None,
+    block_at: float,
+    acted: bool = False,
 ) -> list[str]:
     """The answers a hold offers, in the notice's order. On a cron job: `allow` when the scanner lets the owner
-    pass the call at all, `allow always` when it lets it pass for good and the call names its parties below the
-    block line, and `deny`. Elsewhere only `allow` (bound to the exact call). `allow later` is accepted wherever
-    `allow` is: until the plugin can start a job's run itself, both use the job's next run."""
+    pass the call at all, then `allow later` (`allow` starts the job again now), or `allow now` when the held run had
+    already acted (`allow` then waits for the next run); `allow always` when the scanner lets it pass for good and
+    the call names its parties below the block line; and `deny`. Elsewhere only `allow` (bound to the exact call)."""
     if not job_id:
         return [ALLOW] if level is not None else []
     out: list[str] = []
     if level is not None:
         out.append(ALLOW)
+        out.append(ALLOW_NOW if acted else ALLOW_LATER)
         if level == "always" and named and risk is not None and risk < block_at:
             out.append(ALLOW_ALWAYS)
     out.append(DENY)
@@ -183,6 +221,15 @@ def live(data: dict[str, Any] | None, now: datetime) -> list[dict[str, Any]]:
     return [p for p in (data or {}).get("passes") or [] if _live(p, now)]
 
 
+def _live_runs(data: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
+    out = []
+    for r in data.get("runs") or []:
+        at = read_time(r.get("expires_at")) if isinstance(r, dict) else None
+        if at is not None and at > now:
+            out.append(r)
+    return out
+
+
 def add(
     state_dir: Path,
     *,
@@ -192,9 +239,11 @@ def add(
     hold: dict[str, Any],
     who: dict[str, Any],
     now: datetime,
+    run_bound: bool = False,
 ) -> dict[str, Any] | None:
     """Stores a pass (`kind` allow) or denial (`deny`) set from `hold`; returns the entry, or None when the file
-    cannot be read. `uses`: `once` or `standing`. Called with the holds file locked."""
+    cannot be read. `uses`: `once` or `standing`. `run_bound`: a one-use pass for a run the plugin is about to start,
+    with its record in `runs`. Called with the holds file locked."""
     store = Store(state_dir)
     with _LOCK, file_lock(_path(state_dir)):
         data = store.load_passes()
@@ -223,10 +272,189 @@ def add(
             "use_count": 0,
             "last_used_at": None,
         }
+        data["runs"] = _live_runs(data, now)
+        if run_bound:
+            entry["run_bound"] = True
+            data["runs"].append(
+                {
+                    "id": pid,
+                    "hold_id": hold.get("id"),
+                    "job_id": hold.get("job_id"),
+                    "job_ref": hold.get("job_ref"),
+                    "requested_at": _iso(now),
+                    "not_run": hold.get("run_key"),
+                    "run_id": None,
+                    "run_key": None,
+                    "passed": False,
+                    "held": [],
+                    "expires_at": entry["expires_at"],
+                }
+            )
+            data["runs"] = data["runs"][-MAX_PASSES:]
         data["passes"].append(entry)
         data["passes"] = data["passes"][-MAX_PASSES:]
         store.save_passes(data)
         return entry
+
+
+def _change_run(state_dir: Path, pid: str, change: Any) -> dict[str, Any] | None:
+    """Runs `change(data, record)` on the run record of pass `pid` under the lock and saves; returns a copy of the
+    record, or None when there is none."""
+    store = Store(state_dir)
+    with _LOCK, file_lock(_path(state_dir)):
+        data = store.load_passes()
+        if data is None:
+            return None
+        rec = next(
+            (r for r in data.get("runs") or [] if isinstance(r, dict) and r.get("id") == pid), None
+        )
+        if rec is None:
+            return None
+        change(data, rec)
+        store.save_passes(data)
+        return dict(rec)
+
+
+def started(state_dir: Path, pid: str, run_id: str | None) -> None:
+    """The run started for pass `pid`, with the host's id for it when the host gave one."""
+
+    def change(_data: dict[str, Any], rec: dict[str, Any]) -> None:
+        if run_id:
+            rec["run_id"] = run_id
+
+    _change_run(state_dir, pid, change)
+
+
+def not_started(state_dir: Path, pid: str) -> None:
+    """The run for pass `pid` could not be started: the pass is left for the job's next run, as `allow later`."""
+
+    def change(data: dict[str, Any], rec: dict[str, Any]) -> None:
+        data["runs"] = [r for r in data["runs"] if r is not rec]
+        for p in data.get("passes") or []:
+            if isinstance(p, dict) and p.get("id") == pid:
+                p.pop("run_bound", None)
+
+    _change_run(state_dir, pid, change)
+
+
+def _after(started_at: datetime | None, rec: dict[str, Any]) -> bool:
+    asked = read_time(rec.get("requested_at"))
+    return started_at is None or asked is None or started_at >= asked - RUN_SLACK
+
+
+def _is_run(rec: dict[str, Any], run_key: str | None, started_at: datetime | None) -> bool:
+    """Whether the run `run_key` (started at `started_at`, None when unknown) is the one started for `rec`."""
+    if rec.get("ended") or not run_key:
+        return False
+    if rec.get("run_key"):
+        return bool(rec["run_key"] == run_key)
+    if rec.get("run_id"):
+        return bool(rec["run_id"] == run_key)
+    return run_key != rec.get("not_run") and _after(started_at, rec)
+
+
+def run_of(
+    state_dir: Path,
+    ref: str | None,
+    run_key: str | None,
+    started_at: datetime | None,
+    now: datetime,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """(the record of the run the plugin started for an answer that this run of job `ref` is, now bound to it, or
+    None; the records of earlier started runs of the job that ended without the plugin seeing their end, now ended).
+    A file that cannot be read gives neither."""
+    if ref is None or not run_key:
+        return None, []
+    store = Store(state_dir)
+    with _LOCK, file_lock(_path(state_dir)):
+        data = store.load_passes()
+        if data is None:
+            return None, []
+        runs = _live_runs(data, now)
+        changed = len(runs) != len(data.get("runs") or [])
+        mine = next(
+            (r for r in runs if r.get("job_ref") == ref and _is_run(r, run_key, started_at)),
+            None,
+        )
+        if mine is not None and mine.get("run_key") != run_key:
+            mine["run_key"] = run_key
+            changed = True
+        gone = [
+            r
+            for r in runs
+            if r.get("job_ref") == ref
+            and r is not mine
+            and not r.get("ended")
+            and r.get("run_key")
+            and r["run_key"] != run_key
+        ]
+        for r in gone:
+            _end(data, r)
+            changed = True
+        data["runs"] = runs
+        if changed:
+            store.save_passes(data)
+        return (dict(mine) if mine is not None else None), [dict(r) for r in gone]
+
+
+def note(state_dir: Path, pid: str, *, passed: bool = False, held: str | None = None) -> None:
+    """Notes on the record of the run started for pass `pid` that the call went through, or a hold it made."""
+
+    def change(_data: dict[str, Any], rec: dict[str, Any]) -> None:
+        if passed:
+            rec["passed"] = True
+        if held and held not in rec.setdefault("held", []):
+            rec["held"].append(held)
+
+    _change_run(state_dir, pid, change)
+
+
+def _end(data: dict[str, Any], rec: dict[str, Any]) -> None:
+    """Marks a started run ended and drops its pass if the run did not use it."""
+    rec["ended"] = True
+    data["passes"] = [
+        p
+        for p in data.get("passes") or []
+        if not (isinstance(p, dict) and p.get("id") == rec.get("id") and p.get("run_bound"))
+    ]
+
+
+def run_end(
+    state_dir: Path,
+    ref: str | None,
+    run_key: str | None,
+    started_at: datetime | None,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """The run `run_key` of job `ref` ended: when it is a run the plugin started for an answer, its record, now
+    ended (its pass dropped if unused); else None."""
+    if ref is None or not run_key:
+        return None
+    store = Store(state_dir)
+    with _LOCK, file_lock(_path(state_dir)):
+        data = store.load_passes()
+        if data is None:
+            return None
+        runs = _live_runs(data, now)
+        mine = next(
+            (r for r in runs if r.get("job_ref") == ref and _is_run(r, run_key, started_at)), None
+        )
+        if mine is None:
+            return None
+        mine["run_key"] = run_key
+        _end(data, mine)
+        data["runs"] = runs
+        store.save_passes(data)
+        return dict(mine)
+
+
+def outcome_text(rec: dict[str, Any], texts: dict[str, str]) -> str:
+    """The owner's one line when a started run ended, from `texts` (the `outcomes` the shared fixture gives)."""
+    held = [h for h in rec.get("held") or [] if isinstance(h, str)]
+    kind = (
+        ("passed_held" if held else "passed") if rec.get("passed") else "held" if held else "none"
+    )
+    return texts[kind].format(job=_clean(rec.get("job_id"), 40), hold=", ".join(held))
 
 
 def check(
@@ -235,8 +463,10 @@ def check(
     match: dict[str, Any],
     resp: dict[str, Any],
     now: datetime,
+    in_run: str | None = None,
 ) -> dict[str, Any] | None:
-    """The denial or pass that settles this held-to-be call, or None. A denial of the same job and action wins
+    """The denial or pass that settles this held-to-be call, or None. `in_run`: the pass whose started run this call
+    is in (`run_of`); a run-bound pass serves no other run. A denial of the same job and action wins
     over any pass. A pass applies only to an eligible scan (`session_allow.eligible`) that the pass covers
     (`covers`) at an `owner_pass` level at or above the pass's own. A one-use pass is used up; a standing one
     counts the use. A file that cannot be read settles nothing (the call is held as before)."""
@@ -252,6 +482,8 @@ def check(
             if p.get("job_ref") == ref
             and isinstance(p.get("match"), dict)
             and p["match"].get("key") == match.get("key")
+            # a pass bound to a run the plugin started serves that run only
+            and (not p.get("run_bound") or (in_run is not None and p.get("id") == in_run))
         ]
         hit = next((p for p in same if p["kind"] == "deny" and ref is not None), None)
         if hit is None and session_allow.eligible(resp):
@@ -321,6 +553,8 @@ def describe(p: dict[str, Any]) -> str:
     call = f"{_clean(p.get('tool') or '?', 60)}: {_clean(p.get('description') or '?', 120)}"
     if p.get("kind") == "deny":
         return f"denied on {_job(p)} until {until}: {call}"
+    if p.get("uses") == "once" and p.get("run_bound"):
+        return f"allowed once in the run of {_job(p)} started for it, until {until}: {call}"
     if p.get("uses") == "once":
         return f"allowed once on {_job(p)}'s next run, until {until}: {call}"
     used = int(p.get("use_count") or 0)

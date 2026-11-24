@@ -77,10 +77,11 @@ SUMMARIES: dict[str, tuple[str, str]] = {
         "enforces or unattended runs; `off` ends it",
     ),
     "allow": (
-        "<id> [later|always]",
-        "answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: lets it through "
-        "once on the job's next run (`later`: the same), or with `always` for 30 days on that job, where the notice "
-        "offers it; the held call is not run again",
+        "<id> [now|later|always]",
+        "answers a call held on an unattended run, by the id in Sentrook's notice, within 7 days: runs the cron job "
+        "again now and lets the call through once in that run (`now`: even when the held run had already sent or "
+        "written something; `later`: on the job's next scheduled run instead), or with `always` for 30 days on that "
+        "job, where the notice offers it; Sentrook never runs the held call itself",
     ),
     "deny": (
         "<id>",
