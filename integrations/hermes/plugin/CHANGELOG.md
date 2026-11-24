@@ -6,6 +6,50 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- **Held calls: every answer now does something.** Before, `/sentrook approve <id>` only set the grant Sentrook
+  suggested, and on scheduled runs it never suggests one, so approving set nothing and the job was held again the next
+  day. A hold on a cron job now offers, in its notice, only the answers that apply:
+  - `/sentrook allow <id>`: the job's next run may make the same call once (`allow <id> later` does the same).
+  - `/sentrook allow <id> always`: the job may make the same call for 30 days, with a use count. Offered only when
+    the scan's `owner_pass` says the call may be let through for good and the call names its parties; a scanner that
+    does not send `owner_pass` never gets it.
+  - `/sentrook deny <id>`: the job is refused the same call for 30 days. The agent gets a plain declined result
+    ("The owner declined this action for this job, so Sentrook did not run it. Continue without it.") and no
+    notice is sent.
+  - `/sentrook approve <id>` stays as `allow` for one release.
+
+  "The same call" is matched on the same terms as a Session answer: the same tool, the same parties, a score no
+  higher, no new warning, nothing enforced and no floor, and the scan's `owner_pass` at or above the pass's level.
+  The job is the one Hermes's run metadata names (`current_cron_execution().job_id`), never prompt text. A call
+  that names nothing is matched on its exact arguments and offered `allow` once only. A hold on a run that is not a
+  cron job offers only `allow`, bound to the exact arguments, for 7 days. Answering never sets the suggested grant:
+  `/sentrook why <id>` shows its command.
+- **Holds** can be answered for 7 days (was 24 hours). A repeat of a waiting hold (same job and call, no higher
+  risk, no new warning) updates it and sends no new notice; `status` and `why` say how many times it was held.
+  `holds.json` is version 2 and keeps no raw arguments; holds stored before stay answerable as before until they
+  expire.
+- **`/sentrook passes`** lists the passes and denials your answers set, with use counts and end dates, and
+  `/sentrook passes revoke <id>` removes one (`passes.json`, under the same cross-process lock as the holds and
+  grants). `status`, `verify` and the dashboard show them; the dashboard's held calls list the answers each offers.
+- After `allow`, the held call's history entry becomes `approved_by_user` (after `deny`, `denied_by_user`), so a
+  retry in the same session is not scored as a retry after a review nobody answered. The traffic log records calls
+  a pass let through as `allowed_by_pass` and calls a denial refused as `denied_by_owner`, with the pass's id.
+- **Session** on a review now covers the rest of the same job in that chat. Hermes remembers a Session answer under a
+  key made of every file and address the call touches, so a job whose steps each wrote a different output file asked
+  at every step, and Session did no more than Once. When the owner asked for the work in their own chat, a Session
+  answer now also lets a later review in the same chat through without asking, for 12 hours, when it is a call of
+  the same tool about the same parties (the entities the review's reasons and its description of the call name),
+  scoring no higher, with no warning the answered review lacked, nothing the scanner enforced and no floor. Every
+  reason code is a warning except the scanner's scoring and wording notes (the judge's own reasons, relief, a plain
+  send to a party new to the library) and the background of what the session has been reading, so a code the
+  scanner adds later asks; each answer is matched on its own. Another party, a higher score, another
+  tool, another chat, a block, a block the scanner capped to a review, or an answer from another chat asks as before;
+  so does any review that names no party. History records such a call as allowed (the owner was not shown it) and the
+  scan record says `session_allowed`. **Always** is unchanged.
+- **Session** also sets the review's suggested grant for that session only (bound to its `session_ref`), as
+  **Always** sets it for 30 days, so the scanner scores later calls with it; with that grant set, Session skips no
+  further questions. The prompt says what Session covers: "also covers the same parties at no higher risk", "covers
+  only this exact action", or, with a suggested grant, one line for Session and Always.
 - Access codes, PINs, passport numbers and random values under a key or header no longer leave the host raw. A short
   number is redacted after a cue word ("the gate code is …", "Alarm code: …", "collection PIN for order 441 is …",
   "… is your verification code") or under a code or PIN key (`yard_code=`, `client_pin=`, `pin=`, a form's `code=`);

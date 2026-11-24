@@ -14,7 +14,10 @@
   concealment, sensitivity, reach, irreversibility, self-modification, `suspicion.overreach` (call-v2's
   `scope_overreach`) and `confidence.model_certainty` (the mean confidence over Score and Choice
   answers). The `untrusted_origin` answer is recorded in evidence only; the
-  context probe owns that signal. The action category goes in evidence for the tool description.
+  context probe owns that signal. The action category goes in evidence for the tool description. A set that asks
+  `names_service` (call-v10) gets a `services` block when the scan found hosts the request names by their service
+  (`prepare.service_names`); the answer and the hosts sent go in evidence (`names_service`, `services_sent`) for
+  convergence's service-name relief, and contribute no signal.
 
 The question set's `state_view` selects which prepared view a probe sends.
 
@@ -38,9 +41,16 @@ from ..prepare.views import (
     BATCH_VIEWS,
     OWNER_CONFIG_VIEWS,
     REPUTATION,
+    REPUTATION_CAP_CHARS,
+    SECRETS_SENT,
+    SERVICES,
     VIEW_KEYS,
+    _json_chars,
+    services_block,
     with_reputation,
     with_resolved,
+    with_secrets_sent,
+    with_services,
 )
 from .base import Contribution, Envelope, SessionMark
 
@@ -360,11 +370,22 @@ class JevCallProbe(_JevProbe):
         `reputation` (call-v3) gets the oracle verdicts the scan stored on `prepared`; with none
         known the key is absent."""
         state = prepared.views[self.view_name]
+        services: list[dict[str, Any]] = []
+        if SERVICES in (self.qs.question_when or {}).values() and prepared.service_candidates:
+            services = services_block(
+                [(c.host, list(c.names)) for c in prepared.service_candidates]
+            )
         if REPUTATION in VIEW_KEYS.get(self.view_name, ()):
             verdicts = list(prepared.oracle_verdicts)
             if self.view_name in OWNER_CONFIG_VIEWS:
                 verdicts += owner_config_entries(prepared, verdicts)
-            state = with_reputation(state, verdicts)
+            # the services block shares the room the view keeps for reputation
+            room = REPUTATION_CAP_CHARS - (_json_chars(services) + 16 if services else 0)
+            state = with_reputation(state, verdicts, room)
+        if services:
+            state = with_services(state, services)
+        if SECRETS_SENT in (self.qs.block_when or {}):
+            state = with_secrets_sent(state)
         if self.view_name in BATCH_VIEWS:
             # Only a command the join changed in place: a read file's content appended to the command says nothing
             # the sibling's own arguments do not already show.
@@ -376,6 +397,19 @@ class JevCallProbe(_JevProbe):
             ]
             state = with_resolved(state, commands)
         return state
+
+    @staticmethod
+    def _services_evidence(
+        prepared: Prepared, state: dict[str, Any], answers: dict[str, Any]
+    ) -> dict[str, Any]:
+        """The service-name hosts the judge was asked about (entity ids) and its answer, when it was asked."""
+        sent = {e.get("host") for e in state.get(SERVICES) or [] if isinstance(e, dict)}
+        if not sent or "names_service" not in answers:
+            return {}
+        return {
+            "services_sent": [c.entity_id for c in prepared.service_candidates if c.host in sent],
+            "names_service": _noul(answers["names_service"]),
+        }
 
     def run(self, prepared: Prepared, *, repeat: int | None = None) -> Envelope:
         try:
@@ -389,7 +423,7 @@ class JevCallProbe(_JevProbe):
             return self._failed(e, started, [state])
         latency = (time.perf_counter() - started) * 1000
         answers = res.answers
-        missing = [q for q in self.qs.questions if q not in answers]
+        missing = [q for q in self.qs.sent_questions(state) if q not in answers]
         if missing:
             env = Envelope.failed(
                 self.step,
@@ -456,6 +490,7 @@ class JevCallProbe(_JevProbe):
                 "untrusted_origin": _noul(answers["untrusted_origin"])
                 if "untrusted_origin" in answers
                 else None,
+                **self._services_evidence(prepared, state, answers),
                 "p_level_ge_2": split,
                 "confidences": confs,
                 "usage": _usage_summary([res]),

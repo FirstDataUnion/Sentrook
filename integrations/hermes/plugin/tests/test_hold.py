@@ -1,8 +1,9 @@
-"""Holds: a review on an unattended run waits for the owner, who is told once and may approve it.
+"""Holds: a review on an unattended run waits for the owner, who is told once and may answer it.
 
 The agent is told the call is held and must not be retried in this run; the owner gets one notice on
-a home channel; `/sentrook approve <id>` within 24 hours sets the suggested grant (persistent, 30
-days). Blocks stay blocks, and attended runs still get a review prompt. The texts are shared with the
+a home channel and answers within 7 days (`test_holds_v2` covers what each answer sets). A hold from
+before version 2 is still answered as approve answered it: the suggested grant, persistent for 30 days.
+Blocks stay blocks, and attended runs still get a review prompt. The texts are shared with the
 OpenClaw plugin's tests (`integrations/fixtures/hold`).
 """
 
@@ -41,6 +42,10 @@ RUN_TARGET = contextvars.ContextVar("run_delivery_target", default="unset")
 
 @pytest.fixture
 def h(harness, monkeypatch):
+    return held_call_harness(harness, monkeypatch)
+
+
+def held_call_harness(harness, monkeypatch):
     """The harness with a scanner whose reply each test sets (`.reply`), Discord as the only platform
     with a home channel and `owner_channel`, a `dispatch_tool` that records each send (`.sent`), and
     commands run from the local terminal."""
@@ -125,6 +130,34 @@ def holds(h):
     return json.loads((h.dir / "sentrook" / "holds.json").read_text())["holds"]
 
 
+def as_v1(h, hid, hint=None):
+    """Turns the waiting hold `hid` into one an earlier version of the plugin stored: no `v`, a 24-hour
+    expiry and the suggested grant it kept."""
+    path = h.dir / "sentrook" / "holds.json"
+    data = json.loads(path.read_text())
+    for entry in data["holds"]:
+        if entry["id"] == hid:
+            held = read_time(entry["held_at"])
+            keep = ("id", "request_id", "session_ref", "tool", "where", "held_at", "notice")
+            old = dict(entry)
+            entry.clear()
+            entry.update({k: v for k, v in old.items() if k in keep})
+            entry["expires_at"] = (held + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            entry["hint"] = hint
+    data["version"] = 1
+    path.write_text(json.dumps(data))
+
+
+def notice_cmd(verb):
+    return "{" + verb + "}"
+
+
+def as_sent(text):
+    for verb in ("allow", "deny", "why"):
+        text = text.replace("{" + verb + "}", commands.CMD(verb))
+    return text
+
+
 def resolutions(h):
     return [r for r in h.traffic() if r.get("kind") == "resolution"]
 
@@ -142,21 +175,30 @@ def test_a_scheduled_send_at_risk_47_is_held_and_the_owner_told_once(h):
         "id": entry["id"],
         "expires_at": entry["expires_at"],
         "hint": False,
+        # no cron job named by Hermes: only allow, bound to the exact call
+        "offers": ["allow"],
         "notice": {"status": "queued", "target": "discord"},
     }
-    assert read_time(entry["expires_at"]) - read_time(entry["held_at"]) == timedelta(hours=24)
+    assert read_time(entry["expires_at"]) - read_time(entry["held_at"]) == timedelta(days=7)
     assert entry["request_id"] == rec["request_id"]
+    assert entry["v"] == 2 and entry["count"] == 1
+    # the store keeps no raw arguments
+    assert "Daily brief" not in json.dumps(entry)
     [notice] = h.sent
     assert notice["name"] == "send_message"
     assert notice["args"]["action"] == "send" and notice["args"]["target"] == "discord"
     where = f"cron job, session {rec['session_ref']}"
     assert entry["where"] == where
     text = hold.notice_text(
-        SEND["response"] | h.reply, "send_message", where, entry["id"], "{approve}", "{why}"
+        SEND["response"] | h.reply,
+        "send_message",
+        where,
+        entry["id"],
+        ["allow"],
+        notice_cmd,
+        on_job=False,
     )
-    assert notice["args"]["message"] == text.replace("{approve}", "/sentrook approve").replace(
-        "{why}", "/sentrook why"
-    )
+    assert notice["args"]["message"] == as_sent(text)
     table = history.format_history(
         history.recent_scans(h.dir / "sentrook" / "traffic.jsonl", 1), "w"
     )
@@ -249,19 +291,26 @@ def test_owner_channel_picks_the_home_channel(h, monkeypatch):
 # ---- approve -----------------------------------------------------------------------------------------------
 
 
-def test_approve_sets_the_suggested_grant_persistent_for_30_days(h, monkeypatch):
+def test_a_hold_from_before_v2_is_approved_as_before_with_its_suggested_grant(h, monkeypatch):
+    """Holds stored by an earlier version stay answerable as they were until they expire: approving sets the
+    suggested grant, persistent for 30 days."""
     monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
     owner_run(monkeypatch)
     turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
     assert rec["hold"]["hint"] is True
+    as_v1(h, hid, dict(HINT))
     # The suggestion is for the owner's eyes: in `why`, never in the notice the agent may see.
     assert "discord:#ops-reports" not in h.sent[0]["args"]["message"].split("Tool:")[0]
     assert "grant" not in h.sent[0]["args"]["message"]
     assert "suggested grant: destination discord:#ops-reports (persistent, 30 days)" in slash(
         h, f"why {hid}"
     )
+    # Only allow (or approve) answers it: a standing pass or a denial needs what a v2 hold keeps.
+    for answer in (f"deny {hid}", f"allow {hid} always"):
+        assert slash(h, answer).startswith(f"Held call {hid} was made by an earlier version")
+    assert [x["id"] for x in holds(h)] == [hid]
     reply = slash(h, f"approve {hid}")
     assert reply.startswith(f"Approved {hid}. Granted gr-")
     assert "(persistent, expires " in reply and "The held call is not run again" in reply
@@ -302,19 +351,25 @@ def test_approve_sets_the_suggested_grant_persistent_for_30_days(h, monkeypatch)
     assert slash(h, f"approve {hid}").startswith(f"No held call {hid}")
 
 
-def test_approve_without_a_suggestion_sets_nothing_and_says_so(h):
-    turn(h)
+def test_approve_is_allow_and_sets_a_one_use_pass_not_a_grant(h, monkeypatch):
+    """`approve` stays as `allow` for one release. It sets a pass, never the suggested grant: `why` shows the
+    grant's command for the owner to set by hand."""
+    monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
+    owner_run(monkeypatch)
+    turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
+    why = slash(h, f"why {hid}")
+    assert "answers: allow" in why
+    assert (
+        "suggested grant: destination discord:#ops-reports; to set it yourself: /sentrook grant "
+        "destination discord:#ops-reports --persistent --expires 30d"
+    ) in why
     reply = slash(h, f"approve {hid}")
-    assert reply == (
-        f"Approved {hid}. Sentrook suggested no grant for this call, so nothing was set: the next run "
-        "is scanned as before. To let it pass, add a grant with /sentrook grant. The held call is not "
-        "run again."
-    )
+    assert reply.startswith("The next identical call from an unattended run may go through once")
     assert grants.load(h.dir / "sentrook")["grants"] == []
     [res] = resolutions(h)
-    assert (res["resolution"], res["hold_id"]) == ("hold_approved", hid) and "grant_id" not in res
+    assert (res["resolution"], res["hold_id"]) == ("hold_allowed", hid) and res["pass_id"] in reply
 
 
 @pytest.mark.parametrize("bad", ["", "h-zzzzzz", "gr-1a2b3c", "h-1a2b3c h-1a2b3c"])
@@ -345,7 +400,7 @@ def test_approve_is_for_the_owner_only(h, monkeypatch):
 # ---- expiry ------------------------------------------------------------------------------------------------
 
 
-def test_after_24_hours_the_hold_expires_and_approve_is_refused(h):
+def test_after_7_days_the_hold_expires_and_an_answer_is_refused(h):
     turn(h)
     _out, rec = send(h)
     hid = rec["hold"]["id"]
@@ -355,9 +410,9 @@ def test_after_24_hours_the_hold_expires_and_approve_is_refused(h):
         "%Y-%m-%dT%H:%M:%SZ"
     )
     path.write_text(json.dumps(data))
-    assert slash(h, f"approve {hid}") == (
-        f"Held call {hid} expired: holds last 24 hours. Nothing was approved; the next run is "
-        "scanned as before."
+    assert slash(h, f"allow {hid}") == (
+        f"Held call {hid} expired: a hold can be answered for 7 days. Nothing was set; the next run "
+        "is scanned as before."
     )
     [res] = resolutions(h)
     assert (res["request_id"], res["resolution"], res["decision"], res["hold_id"]) == (
@@ -371,10 +426,10 @@ def test_after_24_hours_the_hold_expires_and_approve_is_refused(h):
     assert len(resolutions(h)) == 1  # recorded once
 
 
-def test_expiry_is_exactly_24_hours_and_recorded_when_next_read(tmp_path):
+def test_expiry_is_exactly_7_days_and_recorded_when_next_read(tmp_path):
     t0 = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
     log = []
-    hid = hold.create(
+    hid, _repeat = hold.create(
         tmp_path,
         request_id="r1",
         session_ref="s_0a1b2c3d4e5f",
@@ -387,14 +442,14 @@ def test_expiry_is_exactly_24_hours_and_recorded_when_next_read(tmp_path):
     )
     cmd = commands.CMD
     who = {"basis": ["local_terminal"], "platform": "", "sender_ref": None}
-    assert hold.waiting(tmp_path, t0 + timedelta(hours=24) - timedelta(seconds=1)) == 1
-    assert hold.waiting(tmp_path, t0 + timedelta(hours=24)) == 0
+    assert hold.waiting(tmp_path, t0 + timedelta(days=7) - timedelta(seconds=1)) == 1
+    assert hold.waiting(tmp_path, t0 + timedelta(days=7)) == 0
     assert log == []  # nothing recorded until the holds are next changed
-    hold.sweep(tmp_path, t0 + timedelta(hours=24), log.append)
+    hold.sweep(tmp_path, t0 + timedelta(days=7), log.append)
     assert [(r["resolution"], r["hold_id"]) for r in log] == [("hold_expired", hid)]
-    assert hold.approve(tmp_path, hid, who, t0 + timedelta(hours=25), cmd, log.append).startswith(
-        f"No held call {hid}"
-    )
+    assert hold.answer(
+        tmp_path, "allow", hid, who, t0 + timedelta(days=8), cmd, log.append
+    ).startswith(f"No held call {hid}")
 
 
 def test_status_counts_waiting_holds(h):
@@ -449,8 +504,17 @@ def test_notice_text(case):
     w = case["where"]
     where = hold.where_text(w["run"], w["session_ref"], w["job_id"], w["job_name"])
     assert where == case["where_text"]
+    job = w["job_id"]
+    match = hold.passes.match_of(case["tool"], case["response"], {}, "salt", exact=job is None)
+    level = hold.passes.offered_level(case["response"])
+    offers = hold.passes.offers(
+        job, level, match["named"], case["response"].get("risk"), FIXTURES["block_at"]
+    )
+    assert offers == case["offers"]
     assert (
-        hold.notice_text(case["response"], case["tool"], where, case["id"], "{approve}", "{why}")
+        hold.notice_text(
+            case["response"], case["tool"], where, case["id"], offers, notice_cmd, job is not None
+        )
         == case["text"]
     )
 
@@ -608,6 +672,7 @@ def test_a_hold_whose_file_is_locked_still_holds_and_logs_the_notice_unsent(h, m
         "id": None,
         "expires_at": None,
         "hint": False,
+        "offers": [],
         "notice": {"status": "unsent", "target": None, "reason": "holds file locked"},
     }
     assert h.sent == []
@@ -615,12 +680,13 @@ def test_a_hold_whose_file_is_locked_still_holds_and_logs_the_notice_unsent(h, m
     assert session["history"][-1]["decision"] == "held"
 
 
-def test_approve_keeps_the_hold_when_the_grant_cannot_be_written(h, monkeypatch):
+def test_approving_a_v1_hold_keeps_it_when_the_grant_cannot_be_written(h, monkeypatch):
     monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
     owner_run(monkeypatch)
     turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
+    as_v1(h, hid, dict(HINT))
     gfile = h.dir / "sentrook" / "grants.json"
     gfile.write_text("{not json")
     reply = slash(h, f"approve {hid}")
@@ -632,13 +698,14 @@ def test_approve_keeps_the_hold_when_the_grant_cannot_be_written(h, monkeypatch)
     assert holds(h) == []
 
 
-def test_approve_keeps_the_hold_when_the_grants_file_is_locked(h, monkeypatch):
+def test_approving_a_v1_hold_keeps_it_when_the_grants_file_is_locked(h, monkeypatch):
     monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
     owner_run(monkeypatch)
     monkeypatch.setattr(store, "LOCK_WAIT_S", 0.05)
     turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
+    as_v1(h, hid, dict(HINT))
     with held_elsewhere(h.dir / "sentrook" / "grants.json"):
         reply = slash(h, f"approve {hid}")
     assert reply.startswith("Not approved: The grants file could not be written")
@@ -716,7 +783,8 @@ def test_the_notice_carries_only_the_minimal_fields(h, monkeypatch, forced_hex):
         f"Run: cron job, session {rec['session_ref']}\n"
         "Tool: send_message: Sends a message to discord:#ops-reports\n"
         "Held because it sends data to a destination outside this machine.\n"
-        f"To approve within 24 hours: /sentrook approve {hid}\n"
+        "Reply within 7 days:\n"
+        f"- let this exact call through once, within 7 days: /sentrook allow {hid}\n"
         f"For the reasons: /sentrook why {hid}"
     )
     if forced_hex:
@@ -732,8 +800,9 @@ def test_why_with_a_hold_id_gives_the_owner_the_reasons(h):
     assert why.startswith(f"scan: {rec['request_id']}")
     assert "risk: 47" in why and "reasons: trigger.scheduled, send.unbound_channel" in why
     assert "action: held" in why and "review: no answer" in why
-    assert "hold: waiting, until " in why and "suggested grant: none" in why
-    slash(h, f"approve {hid}")
+    assert "hold: waiting, until " in why and "answers: allow" in why
+    assert "suggested grant" not in why
+    slash(h, f"allow {hid}")
     assert slash(h, f"why {hid}").endswith("hold: answered or expired")
     assert slash(h, "why h-abcdef") == "No held call h-abcdef in the recent traffic log."
 
@@ -777,12 +846,13 @@ def test_a_cron_marker_in_the_prompt_never_names_a_job(h):
     assert "9f1c2a" not in h.sent[0]["args"]["message"]
 
 
-def test_a_retried_approve_after_the_holds_file_failed_sets_one_grant(h, monkeypatch):
+def test_a_retried_approve_of_a_v1_hold_after_the_holds_file_failed_sets_one_grant(h, monkeypatch):
     monkeypatch.setattr(hold, "grant_hint", lambda *_a: dict(HINT))
     owner_run(monkeypatch)
     turn(h, platform="cli")
     _out, rec = send(h)
     hid = rec["hold"]["id"]
+    as_v1(h, hid, dict(HINT))
     real = store.Store.save_holds
     calls = {"n": 0}
 
@@ -1108,7 +1178,7 @@ def test_without_a_send_message_tool_the_hold_notice_goes_out_with_hermes_send(h
     [run] = hermes_send.runs
     assert run["argv"] == HERMES_SEND_ARGV
     assert run["input"].startswith("Sentrook held a tool call on an unattended run")
-    assert f"{commands.CMD('approve')} {holds(h)[0]['id']}" in run["input"]
+    assert f"{commands.CMD('allow')} {holds(h)[0]['id']}" in run["input"]
     assert run["timeout"] == hold.SEND_TIMEOUT
     assert "notices to the discord home channel" in slash(h, "status")
 

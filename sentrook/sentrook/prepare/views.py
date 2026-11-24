@@ -244,12 +244,21 @@ CALL_STATE_BUDGET_TOKENS = BUDGET_TOKENS - CALL_QUESTIONS_RESERVE_TOKENS
 #: and 36,852. call-v9 is call-v8 with one rule added to the request question (its instructions and "true" criterion)
 #: and the scope question (its instructions and within-scope criterion), which every form sends: on the same uncached
 #: bodies call-v9 cost 318 tokens more than call-v8 in every one, so its entry is call-v8's largest measured form plus
-#: 318 (8,930), rounded up.
+#: 318 (8,930), rounded up. call-v10 is call-v9 plus one question sent only with a `services` block; without one its
+#: questions are call-v9's byte for byte. Measured live on 18 bodies that carry the block (6 cases, 3 repeats), against
+#: the same states under call-v9: the question and block cost 557 to 561 tokens more (2,380 characters of questions
+#: JSON, about 4.2 characters per token), so its entry is call-v9's 8,930 plus 561, rounded up. call-v11 is call-v10
+#: plus one block, `secrets_sent`, sent to three questions only when the pending call carries secret placeholders;
+#: without one its questions are call-v10's byte for byte. Measured live on 117 bodies that carry it (39 cases, 3
+#: repeats), against the same states under call-v10: the block and its list cost 539 to 563 tokens more, so its entry
+#: is call-v10's 9,491 plus 563, rounded up.
 MEASURED_QUESTION_TOKENS: dict[tuple[str, str], int] = {
     ("call-v6", "9d3bd2610d35"): 7_100,
     ("call-v7", "5832e69408d9"): 11_200,
     ("call-v8", "d8a11ad2bb37"): 8_700,
     ("call-v9", "8582a5b42e1a"): 9_000,
+    ("call-v10", "e9dd2e10f223"): 9_500,
+    ("call-v11", "8d06c0f895f1"): 10_100,
     ("selfedit-v3", "82c8686c5607"): 8_800,
 }
 #: The longest answer measured from the call and self-edit sets, in tokens; a test keeps it inside the context.
@@ -716,25 +725,29 @@ def _shorten_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def cap_reputation(verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def cap_reputation(
+    verdicts: list[dict[str, Any]], cap_chars: int = REPUTATION_CAP_CHARS
+) -> list[dict[str, Any]]:
     """The entries a `reputation` block keeps: all of them, unchanged, when they fit `REPUTATION_MAX_ENTRIES` and
-    `REPUTATION_CAP_CHARS`; otherwise the highest-ranked (`_reputation_rank`, then their order), each shortened to
+    `cap_chars` (`REPUTATION_CAP_CHARS` unless a `services` block shares its room); otherwise the highest-ranked (`_reputation_rank`, then their order), each shortened to
     `REPUTATION_ENTRY_CAP_CHARS` where longer, up to the first that does not fit, in their original order."""
     entries = [dict(v) for v in verdicts]
-    if len(entries) <= REPUTATION_MAX_ENTRIES and _json_chars(entries) <= REPUTATION_CAP_CHARS:
+    if len(entries) <= REPUTATION_MAX_ENTRIES and _json_chars(entries) <= cap_chars:
         return entries
     entries = [_shorten_entry(e) for e in entries]
     kept: list[int] = []
     for i in sorted(range(len(entries)), key=lambda i: (_reputation_rank(entries[i]), i)):
         if len(kept) == REPUTATION_MAX_ENTRIES:
             break
-        if _json_chars([entries[j] for j in sorted([*kept, i])]) > REPUTATION_CAP_CHARS:
+        if _json_chars([entries[j] for j in sorted([*kept, i])]) > cap_chars:
             break
         kept.append(i)
     return [entries[i] for i in sorted(kept)]
 
 
-def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> dict[str, Any]:
+def with_reputation(
+    state: dict[str, Any], verdicts: list[dict[str, Any]], cap_chars: int = REPUTATION_CAP_CHARS
+) -> dict[str, Any]:
     """A copy of a call-v3 state with the `reputation` block appended after `grants`; with no
     known verdicts the key is absent, so the model's default (nothing vouched for) applies and the
     request body is the same as it would be without an oracle. The block is capped (`cap_reputation`); the entries
@@ -743,11 +756,68 @@ def with_reputation(state: dict[str, Any], verdicts: list[dict[str, Any]]) -> di
     out.pop(REPUTATION, None)
     out.pop(REPUTATION_OMITTED, None)
     if verdicts:
-        kept = cap_reputation(verdicts)
+        kept = cap_reputation(verdicts, cap_chars)
         if kept:
             out[REPUTATION] = kept
         if len(kept) < len(verdicts):
             out[REPUTATION_OMITTED] = len(verdicts) - len(kept)
+    return out
+
+
+#: The `services` block (call-v10): hosts the call uses that the entity library lists as a named service's own, with
+#: the names the owner's request contains (`prepare.service_names`). It shares the room the view keeps for
+#: `reputation`: a reputation block sent beside it is capped to what the services block leaves of
+#: `REPUTATION_CAP_CHARS`. At most four hosts; one that does not fit `SERVICES_CAP_CHARS` is left out (and gets no
+#: relief).
+SERVICES = "services"
+SERVICES_CAP_CHARS = 600
+
+
+def services_block(candidates: list[tuple[str, list[str]]]) -> list[dict[str, Any]]:
+    """`[{host, service}]` for `(host, names)` pairs, in order, up to the first that does not fit `SERVICES_CAP_CHARS`."""
+    out: list[dict[str, Any]] = []
+    for host, names in candidates:
+        entry = {"host": host, "service": list(names)}
+        if _json_chars([*out, entry]) > SERVICES_CAP_CHARS:
+            break
+        out.append(entry)
+    return out
+
+
+#: The `secrets_sent` block (call-v11): the secret placeholders in the pending call's own arguments, as the view shows
+#: them (a plugin's `⟦secret:credential:ab12⟧`, or the second pass's), each once, in order, at most
+#: `SECRETS_SENT_MAX`. The judge reads each as the value it hides, in its place.
+SECRETS_SENT = "secrets_sent"
+SECRETS_SENT_MAX = 8
+_PLACEHOLDER_MARK = re.compile(r"⟦secret[^⟧\s]{0,64}⟧")
+
+
+def secrets_sent(state: dict[str, Any]) -> list[str]:
+    """The secret placeholders in the state's `pending_call.arguments`, each once, in order, at most `SECRETS_SENT_MAX`."""
+    pending = state.get("pending_call")
+    args = pending.get("arguments") if isinstance(pending, dict) else None
+    if not args:
+        return []
+    text = args if isinstance(args, str) else canonical_json(args)
+    return list(dict.fromkeys(_PLACEHOLDER_MARK.findall(text)))[:SECRETS_SENT_MAX]
+
+
+def with_secrets_sent(state: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a call state with the `secrets_sent` block (absent when the pending call carries no placeholder)."""
+    out = dict(state)
+    out.pop(SECRETS_SENT, None)
+    found = secrets_sent(state)
+    if found:
+        out[SECRETS_SENT] = found
+    return out
+
+
+def with_services(state: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """A copy of a call state with the `services` block (absent when there are no entries)."""
+    out = dict(state)
+    out.pop(SERVICES, None)
+    if entries:
+        out[SERVICES] = entries
     return out
 
 

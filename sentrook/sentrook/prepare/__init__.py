@@ -56,7 +56,14 @@ from ..planir.models import (
     ToolKind,
 )
 from ..planir.validate import InvalidPlanIR, Warning_, check, warnings
-from ..state.token import SessionState, decode_state, entity_hash, new_salt, seed_state
+from ..state.token import (
+    SessionState,
+    decode_state,
+    entity_hash,
+    new_salt,
+    seed_state,
+    settle_pending,
+)
 from . import views
 from .copies import CopyHistory, copy_history
 from .entities import (
@@ -331,6 +338,10 @@ class Prepared:
     #: parameters turn the relief on. None: the check did not run or did not hold (`credential_home_check` says why).
     credential_home: Any = None
     credential_home_check: str | None = None
+    #: Hosts the owner's request names by their service (`service_names.candidates`): set by the scan after the oracle
+    #: runs when the convergence parameters turn service-name relief on. The call judge decides whether the request
+    #: means the service; empty when the check did not run or found none.
+    service_candidates: tuple[Any, ...] = ()
     #: Grants that cover at least one pending-call entity: grant_ref → entity ids.
     grant_hits: dict[str, list[str]] = field(default_factory=dict)
     #: What the pending call does to each path a file grant pattern matched: entity id → actions.
@@ -991,8 +1002,8 @@ def _mark_skill_named(
 ) -> None:
     """A host that only reads of the agent's installed skills named, in this request and on every earlier step the
     token remembers, is marked `skill_named` and kept in the token's skill-named set; a host any other content names
-    leaves the set for good. Runs after `in_session_untrusted` is set from the token. Only the credential-home check
-    reads the mark: everything else still scores the host as untrusted."""
+    leaves the set for good. Runs after `in_session_untrusted` is set from the token. Only the credential-home and
+    service-name checks read the mark: everything else still scores the host as untrusted."""
     skill_refs = {f"input:{seq}" for seq in skill_inputs}
     prior = frozenset(state.skill_named)
     added: list[str] = []
@@ -1358,6 +1369,21 @@ def prepare(raw: dict[str, Any], options: PrepareOptions) -> Prepared:
             expected_step=planir.session.step - 1,
             deployment=options.deployment,
             deterministic_salt=options.deterministic_salt,
+        )
+        # What earlier calls read or wrote counts only once the history shows they ran.
+        settle_pending(
+            state,
+            [(h.call_id, h.decision.value) for h in planir.history],
+            ran={
+                h.call_id
+                for h in planir.history
+                if h.result is not None and h.result.status is ResultStatus.OK
+            }
+            | {
+                i.call_id
+                for i in planir.new_inputs
+                if i.kind is InputKind.TOOL_RESULT and i.call_id
+            },
         )
         if state.fresh:
             coverage.append(

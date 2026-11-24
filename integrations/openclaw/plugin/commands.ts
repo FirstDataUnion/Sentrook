@@ -5,9 +5,10 @@
  * plugin can see locally and never print credential values.
  *
  * `history` and `why` show past traffic, `report` packs one scan for sending to Sentrook, `grants`, `grant`, `revoke` and `bind` list and change the
- * grants and channel bindings set by command, `snooze` relaxes review prompts, `approve` answers a call
- * held on an unattended run and `notify` says where the notice of one goes (see `hold.ts`), so only the
- * owner may run them. `snooze` and a session `grant` cover the session the command was sent from; the
+ * grants and channel bindings set by command, `snooze` relaxes review prompts, `allow` and `deny` (and `approve`,
+ * the same as `allow`) answer a call held on an unattended run, `passes` lists and revokes what those answers set
+ * (passes.ts), and `notify` says where the notice of a held call goes (see `hold.ts`), so only the owner may run
+ * them. `snooze` and a session `grant` cover the session the command was sent from; the
  * command line has none, so there a snooze needs `--all` and a session grant `--session`. OpenClaw tells a
  * command handler who the owner is only when the whole command requires a gateway scope, so they are
  * commands of their own (`/sentrook-history`, `/sentrook-grant`, ...), registered through
@@ -15,10 +16,11 @@
  */
 
 import { CLIENT_ID_VAR, CLIENT_SECRET_VAR, envWithOpenclawDotenv, resolveSecretString } from "./auth.ts";
-import { type PluginConfig, resolveConfig } from "./config.ts";
+import { configProblemsSummary, type PluginConfig, resolveConfig } from "./config.ts";
 import { noticeStatus } from "./backgroundSave.ts";
 import * as grants from "./grants.ts";
 import * as hold from "./hold.ts";
+import * as passes from "./passes.ts";
 import {
   formatHistory,
   formatWhy,
@@ -98,7 +100,8 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
   why: {
     command: "sentrook-why",
     args: "[request_id|last]",
-    description: "One scan's risk, tier scores, reason codes and entities; for a held call's id, also the hold and the grant Sentrook suggests",
+    description:
+      "One scan's risk, tier scores, reason codes and entities; for a held call's id, also the hold, the answers it offers and the grant Sentrook suggests",
     run: (ctx, rest) => whyText(ctx, rest),
   },
   report: {
@@ -170,17 +173,44 @@ export const OWNER_SUBCOMMANDS: Record<string, OwnerSubcommand> = {
         "snooze",
       ),
   },
+  allow: {
+    command: "sentrook-allow",
+    args: "<id> [later|always]",
+    description:
+      "Answer a call held on an unattended run, by the id in Sentrook's notice, within 7 days: let it through once " +
+      "on the job's next run (later: the same), or with always for 30 days on that job, where the notice offers it; " +
+      "the held call is not run again",
+    cliRest: true,
+    run: (ctx, rest) => answerText(ctx, "allow", rest),
+  },
+  deny: {
+    command: "sentrook-deny",
+    args: "<id>",
+    description:
+      "Refuse a call held on a cron job, by the id in Sentrook's notice: that job is refused the same call for 30 " +
+      "days, with no more notices",
+    cliRest: true,
+    run: (ctx, rest) => answerText(ctx, "deny", rest),
+  },
   approve: {
     command: "sentrook-approve",
     args: "<id>",
-    description:
-      "Approve a call held on an unattended run, by the id in Sentrook's notice, within 24h: sets the grant " +
-      "Sentrook suggested (persistent, 30 days); the held call is not run again",
+    description: "The same as /sentrook-allow (kept for one release)",
+    cliRest: true,
+    run: (ctx, rest) => answerText(ctx, "approve", rest),
+  },
+  passes: {
+    command: "sentrook-passes",
+    args: "[revoke <id>]",
+    description: "Passes and denials your answers to held calls set, with their use counts; revoke one by its id",
     cliRest: true,
     run: (ctx, rest) => {
-      if (!ctx.owner) return refusal("approve");
-      const o = ctx.owner;
-      return hold.approve(configOf(ctx).stateDir, rest, o.by, new Date(), CMD, o.record, o.beforeWrite);
+      if (!ctx.owner) return refusal("passes");
+      const cfg = configOf(ctx);
+      const [op = "", ...arg] = rest.trim().split(/\s+/);
+      if (!op || op.toLowerCase() === "list") return passes.formatPasses(cfg.stateDir, new Date(), CMD);
+      if (op.toLowerCase() !== "revoke") return `usage: ${CMD("passes")} [revoke <id>]`;
+      return changed(ctx, "passes", (c, o) => passes.revoke(c.stateDir, arg.join(" "), new Date(), o.beforeWrite), "passes");
     },
   },
   notify: {
@@ -247,6 +277,16 @@ export async function runSentrookCommand(args: string | undefined, ctx: CommandC
   return await sub.run(ctx, rest.join(" "));
 }
 
+/** An answer to a held call (hold.answer), then the held calls' history set to the owner's answer. */
+async function answerText(ctx: CommandContext, verb: "allow" | "deny" | "approve", rest: string): Promise<string> {
+  if (!ctx.owner) return refusal(verb);
+  const o = ctx.owner;
+  const cfg = configOf(ctx);
+  const done = hold.answer(cfg.stateDir, verb, rest, o.by, new Date(), CMD, o.record, o.beforeWrite);
+  if (done.decision) await hold.settle(cfg.stateDir, done.held, done.decision);
+  return done.reply;
+}
+
 function historyText(ctx: CommandContext, rest: string): string {
   const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
   if (!cfg.trafficLog.enabled) return LOG_OFF;
@@ -258,7 +298,7 @@ function historyText(ctx: CommandContext, rest: string): string {
 function whyText(ctx: CommandContext, rest: string): string {
   const cfg = resolveConfig(ctx.pluginConfig, envWithOpenclawDotenv(ctx.env));
   if (!cfg.trafficLog.enabled) return LOG_OFF;
-  if (hold.isId(rest)) return hold.whyText(cfg.stateDir, cfg.trafficLog.path, rest);
+  if (hold.isId(rest)) return hold.whyText(cfg.stateDir, cfg.trafficLog.path, rest, CMD);
   const match = parseRef(rest);
   if (match === null) {
     return "usage: /sentrook-why [request_id|last], with an id (or its start) from /sentrook-history, or the id in a held-call notice";
@@ -307,11 +347,17 @@ function statusText(ctx: CommandContext): string {
     `channel bindings: ${bindingCount}`,
     `snooze: ${snooze.statusLine(snooze.load(cfg.stateDir), new Date())}`,
     `held calls: ${hold.statusLine(cfg.stateDir, target, new Date())}`,
+    `passes: ${passes.counts(cfg.stateDir, new Date())}`,
     `background-save notices: ${noticeStatus(target)}`,
     `skill review: ${selfEdit.statusLine(
       selfEdit.settingText(cfg.skillReview, cfg.skillReviewUnknown),
       cfg.trafficLog.enabled ? cfg.trafficLog.path : null,
     )}`,
+    `settings: ${
+      cfg.configProblems.length
+        ? `${cfg.configProblems.length} not read as written: ${configProblemsSummary(cfg.configProblems)} (see openclaw sentrook verify)`
+        : "all read as written"
+    }`,
   ];
   return lines.join("\n");
 }

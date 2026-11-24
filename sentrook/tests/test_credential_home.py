@@ -1,6 +1,6 @@
 """A credential sent only to its own service is not sensitive data sent (`conv-v7`, the credential-home relief).
 
-`conv-v8`, the default, also relieves the provider host (`test_conv_v8`); these tests pin `conv-v7`.
+`conv-v8` and the default `conv-v9` also relieve the provider host (`test_conv_v8`); these tests pin `conv-v7`.
 
 An agent reads an API key from its env file and sends it, as the request's authorisation, only to the API host of
 the service that issued it, at the owner's request. That is the key's normal use. The entity library lists, on a

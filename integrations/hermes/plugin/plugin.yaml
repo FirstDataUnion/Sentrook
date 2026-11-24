@@ -69,7 +69,7 @@ config_schema:
     description: >
       Extra session platforms with a human answering approvals (e.g. api_server behind a UI that shows
       Hermes approval prompts). Elsewhere outside chat platforms, a review holds the call for the owner's
-      `/sentrook approve`. Env SENTROOK_ATTENDED_PLATFORMS.
+      `/sentrook allow` or `/sentrook deny`. Env SENTROOK_ATTENDED_PLATFORMS.
   owner_channel:
     type: str
     description: >
