@@ -771,6 +771,62 @@ def _read_send(a: CallAnalysis, sink: Sink, ctx: Context, home_files: list[str])
     return sink.read.name
 
 
+#: Code or a command that sends a body: a POST, a `data`/`json`/`body` argument, a curl or HTTPie body option.
+_POST_SIGNAL = re.compile(
+    r"""\.post\s*\(|["']POST["']|\b(?:data|json|body)\s*=(?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-\w+)?|--json|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)-X\s*POST\b"""
+)
+#: A helper called with its method and path written as literals: `req('POST', 'pages', ...)`, `api("POST", f"x/{id}")`.
+_LITERAL_METHOD_CALL = re.compile(
+    r"""\b[A-Za-z_$][\w$]*\s*\(\s*[fFrRbBuU]{0,2}(["'])(POST|PUT|PATCH|DELETE)\1\s*,\s*[fFrRbBuU]{0,2}(["'])([^"'\n]*)\3"""
+)
+#: A last path segment that is a placeholder alone (`/{endpoint}`): the path is computed, not written.
+_PLACEHOLDER_SEGMENT = re.compile(r"\A(?:\{[^}]*\}|\$\{[^}]*\}|\$\w+)\Z")
+
+
+def _read_shaped_path(path: str, ctx: Context) -> bool:
+    return any(_found(r.regex, path) for r in ctx.lists.rules("egress", "read_shaped", "paths"))
+
+
+def _visible_write(a: CallAnalysis, ctx: Context) -> bool:
+    """The call shows a write as written: a PUT, PATCH or DELETE; a helper called with POST and a path that is not
+    read-shaped (`req('POST', 'pages', ...)`); or a body sent where a full URL written in it has a path that is
+    not read-shaped. A URL that is only a base (`'https://host/v1/' + p`) or ends in a computed segment names no
+    path; a helper whose method and path are its parameters shows no write."""
+    text = a.scan_text
+    if _found_any(_read_patterns(ctx, "write_method_patterns"), text):
+        return True
+    for m in _LITERAL_METHOD_CALL.finditer(text):
+        if m.group(2) != "POST" or not _read_shaped_path("/" + m.group(4).lstrip("/"), ctx):
+            return True
+    if not _POST_SIGNAL.search(text):
+        return False
+    for m in _READ_URL.finditer(text):
+        path = _url_path(m.group(0))
+        last = path.rstrip("/").rsplit("/", 1)[-1]
+        if path.endswith("/") or not last or _PLACEHOLDER_SEGMENT.match(last):
+            continue
+        if not _read_shaped_path(path, ctx):
+            return True
+    return False
+
+
+def _key_home_read(a: CallAnalysis, sink: Sink, ctx: Context) -> str | None:
+    """`credential_home` when this plain send is a key going only to its own service and shows no write: the
+    credential-home check holds (`prepare.credential_home`), every destination of the sink is one of its hosts
+    (and not one the library watches), nothing is uploaded, and `_visible_write` finds nothing. Reads by a
+    helper whose method and path are parameters count: the judge's own irreversibility covers what is not
+    written out."""
+    home = getattr(ctx.prepared, "credential_home", None)
+    if home is None or sink.reason not in ("exfil.web_post", "exfil.exec_egress") or a.attachments:
+        return None
+    if not sink.destinations or any(
+        d.kind is not EntityKind.HOST or d.entity_id not in home.hosts or _watched(d, ctx)
+        for d in sink.destinations
+    ):
+        return None
+    return None if _visible_write(a, ctx) else "credential_home"
+
+
 def _sinks(a: CallAnalysis, ctx: Context) -> list[Sink]:
     lists = ctx.lists
     if a.kind is ToolKind.EXEC:
@@ -986,8 +1042,9 @@ def detect_exfil(a: CallAnalysis, ctx: Context) -> list[Finding]:
                 "destinations": [d.value for d in sink.destinations],
             },
         )
-        # A search or query asked by POST: the body still leaves the machine, but nothing is written there.
-        read = _read_send(a, sink, ctx, home_files)
+        # A search or query asked by POST: the body still leaves the machine, but nothing is written there. A key
+        # going only to its own service, by a call that shows no write, is read the same way.
+        read = _read_send(a, sink, ctx, home_files) or _key_home_read(a, sink, ctx)
         irreversibility = ctx.weight("send", "irreversibility")
         if read is not None:
             f.detail["read"] = read
