@@ -777,13 +777,18 @@ _STR = r"""[fFrRbBuU]{0,2}(?:"([^"\n]{0,500})"|'([^'\n]{0,500})'|`([^`\n]{0,500}
 #: A method written as a literal: quoted (`'PATCH'`, `"delete"`), or a shell client's method option (`-X PUT`,
 #: `-XPATCH`, `--request=delete`, `--method PUT`).
 _LITERAL_METHOD = re.compile(
-    r"""(["'`])(post|put|patch|delete)\1|(?:\s|\A)(?:-X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?([a-z]+)""",
+    r"""(["'`])(post|put|patch|delete)\1|(?:\s|\A)(?:-[a-z]*X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?([a-z]+)""",
+    re.IGNORECASE,
+)
+#: A shell body taken from a local file (`-d @notes.json`, `--data-binary=@-`): an upload, whatever the path.
+_FILE_BODY = re.compile(
+    r"""(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-file|--body-file)(?:\s+|=)["']?@""",
     re.IGNORECASE,
 )
 #: Code or a command that sends a body or names POST: `.post(`, a quoted POST, a `data`/`json`/`body` argument or
 #: field, a curl or wget body option, `-X POST`.
 _POST_SIGNAL = re.compile(
-    r"""\.post\s*\(|["'`]post["'`]|\b(?:data|json|body)\s*[=:](?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-(?:data|file)|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)(?:-X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?post\b""",
+    r"""\.post\s*\(|["'`]post["'`]|\b(?:data|json|body)\s*[=:](?!\s*None\b)|(?:\s|\A)(?:-d|--data(?:-[a-z]+)?|--json|--post-(?:data|file)|-F|--form(?:-string)?)(?=[\s=])|(?:\s|\A)(?:-[a-z]*X\s*(?:=\s*)?|--request[\s=]+|--method[\s=]+)["']?post\b""",
     re.IGNORECASE,
 )
 #: A call whose first argument is a literal method and whose second is a literal path: `req('POST', 'pages', ...)`.
@@ -799,8 +804,6 @@ _METHOD_KEYWORD = re.compile(
     r"""\b(?:m|method|verb|http_method)\s*=\s*(["'`])post\1""", re.IGNORECASE
 )
 _PATH_KEYWORD = re.compile(r"""\b(?:p|path|endpoint|route|url|uri)\s*=\s*""" + _STR)
-#: A literal URL the code builds on: the string closes and is joined or formatted (`'https://h/v1/' + p`).
-_BUILT_ON = re.compile(r"""\A["'`]\s*(?:\+|%|\.format\b|\.join\b)""")
 #: Path segments that name an API's version or prefix, not a resource (`/v1`, `/api`, `/rest`).
 _PREFIX_SEGMENT = re.compile(r"\A(?:v\d+(?:\.\d+)?|api|rest)\Z", re.IGNORECASE)
 _PLACEHOLDER_SEGMENT = re.compile(r"\A(?:\{[^}]*\}|\$\{[^}]*\}|\$\w+)\Z")
@@ -829,11 +832,37 @@ def _literal(m: re.Match[str], first: int) -> str:
     return next((g for g in m.groups()[first - 1 : first + 2] if g is not None), "")
 
 
-def _is_read(path: str, text: str, ctx: Context) -> bool:
-    """`path` asks a read given the body in `text`: a read-shaped path, and nothing in `text` writes (a GraphQL
-    path needs a query document, and no write body pattern or write statement may appear), as `_read_target`
-    judges a read URL."""
-    return _read_target(["https://host.invalid/" + path.lstrip("/")], text, ctx) is not None
+def _body_verdict(text: str, ctx: Context) -> tuple[bool, bool]:
+    """Once per call, as `_read_target` reads a body: whether `text` writes (a write body pattern, or a database
+    statement with a write verb), and whether it holds a GraphQL query document. Read as written and unescaped."""
+    texts = (text, _unescaped(text))
+    writes = any(_found_any(_read_patterns(ctx, "write_body_patterns"), t) for t in texts) or any(
+        _found_any(_read_patterns(ctx, "statement_key_patterns"), t)
+        and _found_any(_read_patterns(ctx, "statement_write_patterns"), t)
+        for t in texts
+    )
+    query = any(_found_any(_read_patterns(ctx, "query_patterns"), t) for t in texts)
+    return writes, query
+
+
+def _as_path(target: str) -> str:
+    """A literal written as a path or a full URL, as a path."""
+    if target.lower().startswith(("http://", "https://")):
+        return _url_path(target)
+    return "/" + target.lstrip("/")
+
+
+def _path_reads(path: str, verdict: tuple[bool, bool], ctx: Context) -> bool:
+    """`path` asks a read, given the call's body verdict (`_body_verdict`): read-shaped, a GraphQL path only with a
+    query document, and nothing in the call writes."""
+    writes, query = verdict
+    if writes:
+        return False
+    rule = next(
+        (r for r in ctx.lists.rules("egress", "read_shaped", "paths") if _found(r.regex, path)),
+        None,
+    )
+    return rule is not None and (not rule.get("graphql") or query)
 
 
 def _computed_path(path: str) -> bool:
@@ -848,13 +877,15 @@ def _computed_path(path: str) -> bool:
 def _visible_write(a: CallAnalysis, ctx: Context) -> bool:
     """The call shows a write as written:
     - a PUT, PATCH or DELETE written as a literal, in any case (a quoted method, `.put(`, `-X PATCH`, `-XPUT`,
-      `--request=delete`), or a shell method option naming anything but GET, POST or HEAD;
+      `-sX DELETE`, `--request=delete`), or a shell method option naming anything but GET, POST or HEAD;
+    - a shell body taken from a local file (`-d @notes.json`);
     - POST with a literal path that does not read: a helper called `f('POST', 'pages')`, `f('pages', 'POST')` or
       with method and path keywords;
-    - a body or POST anywhere, and a full URL written in the call whose path does not read, unless the code only
-      builds on it (`'https://host/v1/' + p`) or names no resource after the version (`/v1/{endpoint}`).
-    A path reads when it is read-shaped and the call's text writes nothing on it (`_is_read`). A helper whose
-    method and path are its parameters shows no write."""
+    - a body or POST anywhere, and a full URL written in the call whose path does not read, unless it names no
+      resource after its version or API prefix (`'https://host/v1/' + p`, `/v1/{endpoint}`).
+    A path reads when it is read-shaped and the call writes nothing on it (`_path_reads`); the body is judged once
+    for the call, and each path once, so the check is linear in the call's length. A helper whose method and path
+    are its parameters shows no write."""
     text = a.scan_text
     if _found_any(_read_patterns(ctx, "write_method_patterns"), text):
         return True
@@ -862,32 +893,29 @@ def _visible_write(a: CallAnalysis, ctx: Context) -> bool:
         method = (m.group(2) or m.group(3) or "").upper()
         if method not in ("GET", "POST", "HEAD"):
             return True
+    if _FILE_BODY.search(text):
+        return True
+    paths: set[str] = set()
     for m in _METHOD_FIRST.finditer(text):
-        if not _is_read(_literal(m, 3), text, ctx):
-            return True
+        paths.add(_as_path(_literal(m, 3)))
     for m in _PATH_FIRST.finditer(text):
-        if not _is_read(_literal(m, 1), text, ctx):
-            return True
+        paths.add(_as_path(_literal(m, 1)))
+    covered = -1
     for m in _METHOD_KEYWORD.finditer(text):
-        call = text[max(0, m.start() - 300) : m.end() + 300]
-        for k in _PATH_KEYWORD.finditer(call):
-            target = _literal(k, 1)
-            path = (
-                _url_path(target) if target.lower().startswith(("http://", "https://")) else target
-            )
-            if not _is_read(path, text, ctx):
-                return True
-    if not _POST_SIGNAL.search(text):
+        lo, hi = max(m.start() - 300, covered), m.end() + 300
+        if lo < hi:
+            for k in _PATH_KEYWORD.finditer(text, lo, hi):
+                paths.add(_as_path(_literal(k, 1)))
+        covered = max(covered, hi)
+    if _POST_SIGNAL.search(text):
+        for m in _READ_URL.finditer(text):
+            path = _url_path(m.group(0))
+            if not _computed_path(path):
+                paths.add(path)
+    if not paths:
         return False
-    for m in _READ_URL.finditer(text):
-        if _BUILT_ON.match(text, m.end()):
-            continue
-        path = _url_path(m.group(0))
-        if _computed_path(path):
-            continue
-        if not _is_read(path, text, ctx):
-            return True
-    return False
+    verdict = _body_verdict(text, ctx)
+    return any(not _path_reads(path, verdict, ctx) for path in paths)
 
 
 def _key_home_read(a: CallAnalysis, sink: Sink, ctx: Context) -> str | None:
