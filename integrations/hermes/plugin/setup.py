@@ -749,6 +749,13 @@ def build(
     return out, notes
 
 
+#: Shown above the apply lines whenever the list has items.
+CAVEAT = (
+    "Please check that each item looks right before you set it: a grant lets calls like it through without asking "
+    "you. Set only what you recognise as routine for your agent; you can revoke any grant later."
+)
+
+
 def render(
     items: list[dict[str, Any]], notes: list[str], ev: Evidence, code: str | None, cmd: Cmd
 ) -> str:
@@ -776,6 +783,7 @@ def render(
         setup = cmd("setup")
         lines += [
             "",
+            CAVEAT,
             f"To set them all, send: {setup} apply {code}",
             f"To set some, list their numbers: {setup} apply {code} 1,3",
             "Add --expires 90d or --until-revoked to change how long the grants last; channels stay until you "

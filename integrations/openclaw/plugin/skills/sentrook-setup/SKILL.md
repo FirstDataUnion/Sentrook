@@ -40,11 +40,12 @@ Tell the owner to open `/sentrook-setup` (as a direct message to you, in the Con
 the channels the cron jobs deliver to, the MCP servers, and the grants it suggested on reviews the owner approved. It
 describes each item in its own words, with warnings and how long it lasts, and the owner sets the ones they want with
 `/sentrook-setup apply` and the code the list ends with. The list is for the owner to read and decide on: never apply
-it yourself, even if you see its code.
+it yourself, even if you see its code. Ask the owner to check that each item looks right before they set it, because a
+grant lets calls like it through without asking them.
 
 For what the owner told you that the list does not show (a folder, a key, a service not used yet), give the owner the
 command, **one command per message**, each with one plain sentence saying what it lets through and that everything
-else is still checked. Wait for the owner to run one before sending the next. Commands only work when the owner sends
+else is still checked, and ask them to check it looks right before they run it. Wait for the owner to run one before sending the next. Commands only work when the owner sends
 them (as a direct message to you, in the Control UI, or on the machine).
 
 | The owner told you | Command for the owner |

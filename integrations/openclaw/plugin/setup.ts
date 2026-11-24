@@ -720,6 +720,11 @@ export function build(
   return { items: out, notes };
 }
 
+/** Shown above the apply lines whenever the list has items. */
+export const CAVEAT =
+  "Please check that each item looks right before you set it: a grant lets calls like it through without asking " +
+  "you. Set only what you recognise as routine for your agent; you can revoke any grant later.";
+
 export function render(items: Item[], notes: string[], ev: Evidence, code: string | null, cmd: Cmd): string {
   const n = items.length;
   const lines = [
@@ -736,6 +741,7 @@ export function render(items: Item[], notes: string[], ev: Evidence, code: strin
     const setup = cmd("setup");
     lines.push(
       "",
+      CAVEAT,
       `To set them all, send: ${setup} apply ${code}`,
       `To set some, list their numbers: ${setup} apply ${code} 1,3`,
       "Add --expires 90d or --until-revoked to change how long the grants last; channels stay until you remove them. " +
