@@ -1132,3 +1132,37 @@ Both plugins found a secret by a credential word (in a key, a header or a senten
 - The rules live once, in the redactors: `prepare.secret_like` now reads with the second pass's cue and key rules (`redact.cue_spans`) instead of its own copy, and `secret_carried` still reports a raw value only those rules find as `secret_like`, so the owner's request naming a code, PIN or passport still relieves a raw one. The random-value rule now also needs a digit, as the plugins' does.
 - The scanner's pass is now `redact-v11`, so Jev's views of these values change. Traffic logs written by earlier plugins may hold these values raw.
 - Tests: both plugins and the scanner's pass, plain, JSON-encoded once and twice, and in parsed objects; a PlanIR whose request text, narration, arguments and result carry each kind; the look-alikes that must stay; linear time on adversarial input; the scanner's copy rule for rule against the Hermes plugin's, and the Hermes plugin's output against the OpenClaw plugin's `redact.ts`, placeholder refs included.
+
+### A message send's channel is one entity, whichever way the call names it (2026-11-24)
+A scheduled post to one channel was written differently from run to run: the channel in `target`, `to`,
+`channelId` or `targets`, spelt `channel:<id>`, `discord:channel:<id>` or as a bare id. Each spelling gave its own
+approval fingerprint, so an approval made on one run did not match the next, and a `channel:<id>` grant did not
+cover the `discord:channel:<id>` or bare-id spellings.
+- `prepare.entities.channel_key`: the one spelling of a channel target every way of writing it shares,
+  `channel:<id>` for `<platform>:channel:<id>` and for a bare Discord id (17 to 20 digits, which Discord sends to
+  as a channel). Other bare ids stay as written, since they may be people (a phone number, a Slack user id, a
+  Telegram user's chat). A person stays a person (`discord:user:<id>` is `user:<id>`), and `discord:<id>` is left
+  as written (Discord reads it as a user). The approval and session
+  fingerprints hash a channel by its key, so a target already written `channel:<id>` keeps its fingerprint.
+- `channel_names`: a target written another way than its key also has the key's names, so a `channel:<id>`,
+  `<id>` or `#<id>` grant covers `discord:channel:<id>` and a bare Discord id, and an owner's request naming
+  `channel:<id>` names them. A key that is a person's gives no names.
+- `planir.canonical`: Discord's `thread-reply` with no `target`, `to` or `channelId` sends to the thread its
+  `threadId` names, written `channel:<threadId>` as OpenClaw's Discord plugin writes it (the call names Discord, or
+  names no platform and the id is a Discord id). The same channel in `target` and `channelId` is one target also
+  when the target is platform-prefixed (`discord:channel:<id>`).
+- Keys OpenClaw's `message` tool does not send to stay out: `channelIds`, `targetAuthor`, a `threadId` on any other
+  action or platform, and `channelRef` / `providerId`, which the tool does not take (a send naming its channel only
+  there is refused for want of a target).
+- Both plugins' grant filters already read a send's arguments as text, in the forms the scanner matches; new shared
+  fixture cases pin `to`, `targets`, a platform-prefixed or bare-id target and a Discord thread reply.
+- Tests: every shape of the same send (`target`, `to`, `channelId` with or without its read filters, `targets`,
+  `discord:channel:<id>`, a bare id on Discord, another action word, `target` with `channelId`, a Discord thread
+  reply) has one approval fingerprint, and `channel:<id>`, `#<id>` and `<id>` grants relieve each one. Must fire: a
+  send to another channel in each shape has another fingerprint and the grant does not cover it; a thread reply with
+  a target goes to the target; a direct message to the same id is not the channel; a `channel:*` grant does not
+  cover a bare phone number, a Slack user id or a Telegram user's chat. Must stay silent: `channelIds`,
+  `targetAuthor`, `channelRef`, `providerId`, a `threadId` on a send, a Slack thread reply.
+- The held send that named its channel only in `channelId` was already read by the earlier `channelId` change.
+- Suite: unmoved. A zero-cost replay of dev (582 cases) and held-out (288) against current `main` changes no case's
+  outcome, risk, decision, reasons or approval fingerprint.

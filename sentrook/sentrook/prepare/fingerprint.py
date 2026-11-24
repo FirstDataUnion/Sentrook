@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 from ..planir.models import ToolKind
 from ..state.token import entity_hash
-from .entities import Entity, EntityKind, Role
+from .entities import Entity, EntityKind, Role, channel_key
 
 PREFIX = "afp1"
 
@@ -58,14 +58,15 @@ class Fingerprint:
 def fingerprint(tool_kind: ToolKind, entities: list[Entity], salt: str) -> Fingerprint:
     comps: dict[str, set[str]] = {}
     for ent in entities:
+        value = ent.value
         if ent.kind is EntityKind.CHANNEL:
+            # One channel, however the call spells it (`channel:<id>`, `discord:channel:<id>`, a bare id).
             tag_roles = [Role.RECIPIENT]
+            value = channel_key(value)
         else:
             tag_roles = [r for r in ent.roles if r in ROLE_TAGS]
         for role in tag_roles:
-            comps.setdefault(ROLE_TAGS[role], set()).add(
-                entity_hash(salt, ent.kind.value, ent.value)
-            )
+            comps.setdefault(ROLE_TAGS[role], set()).add(entity_hash(salt, ent.kind.value, value))
     return Fingerprint(
         tool_kind=tool_kind.value, components={k: frozenset(v) for k, v in comps.items()}
     )
