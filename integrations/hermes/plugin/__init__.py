@@ -115,6 +115,9 @@ _tool_markers = {
     setup_report.TOOL: setup_report.Markers(setup_report.days_of),
     proposals.TOOL: setup_report.Markers(proposals.check),
 }
+#: Proposals `pre_tool_call` allowed while the session held content no scan had seen yet, by session and checked
+#: items (`_unchecked_key`), for the handler to store with the proposal.
+_proposal_unchecked: dict[str, bool] = {}
 #: The traffic log record each own tool's calls are logged as.
 _TOOL_RECORD = {setup_report.TOOL: "setup_report", proposals.TOOL: "setup_proposal"}
 
@@ -928,6 +931,10 @@ def _own_tool(tool_name: str) -> bool:
     return getattr(entry, "handler", None) is handler
 
 
+def _unchecked_key(sid: str, args: Any) -> str:
+    return sid + "\n" + json.dumps(proposals.check(args), sort_keys=True, default=str)
+
+
 def _items_asked(args: Any) -> int:
     items = args.get("items") if isinstance(args, dict) else None
     return len(items) if isinstance(items, list) else 0
@@ -1011,6 +1018,16 @@ def _own_tool_gate(kw: dict[str, Any]) -> dict[str, Any] | None:
             )
             store.save_session(sid, sess, cfg.history_limit * 2)
             _tool_markers[tool].put(sid, kw.get("args"))
+            if tool == proposals.TOOL:
+                # Content the chat read since the last scan reaches the scanner only with the next scanned call: what
+                # it was cannot be checked now, so the owner is told.
+                pending = any(
+                    i.get("tool") not in _own_tools for i in built["planir"]["new_inputs"]
+                )
+                key = _unchecked_key(sid, kw.get("args"))
+                _proposal_unchecked[key] = _proposal_unchecked.get(key, False) or pending
+                while len(_proposal_unchecked) > 500:
+                    _proposal_unchecked.pop(next(iter(_proposal_unchecked)))
         return None
     except Exception as exc:  # noqa: BLE001
         logger.warning("sentrook %s check failed: %s", tool, exc)
@@ -1063,9 +1080,10 @@ def propose_handler(
             _tool_refused(traffic, proposals.TOOL, sid, "no_marker", args)
             return setup_report.REFUSAL
         checked = proposals.check(args)
+        unchecked = _proposal_unchecked.pop(_unchecked_key(sid, args), True)
         ref = session_ref(sid)
         text, logged = proposals.propose(
-            cfg.state_dir, checked, ref, datetime.now(UTC), commands.CMD
+            cfg.state_dir, checked, ref, datetime.now(UTC), commands.CMD, unchecked=unchecked
         )
         traffic.write({"kind": "setup_proposal", "session_ref": ref, **logged})
         return text

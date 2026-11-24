@@ -30,6 +30,7 @@ the answer is `setup_report.REFUSAL` and nothing is stored. The OpenClaw plugin 
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -38,6 +39,7 @@ from typing import Any
 
 from . import grants, setup
 from .planir import binding_problem
+from .redact import Redactor
 from .store import LockTimeout, Store, file_lock, read_time
 
 TOOL = "sentrook_propose_setup"
@@ -72,6 +74,16 @@ NOT_A_GRANT = "Not a grant the grant command would accept."
 NO_CHANNEL = 'binding must be the channel as Sentrook saw it, such as "discord:#daily-brief".'
 CHANNEL_WORD = "The channel must be one word, with no spaces or backticks."
 NOT_SHOWN = "The setup screen could not show this item."
+BROAD = (
+    "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to "
+    "grant anything broader themselves."
+)
+VALUE_NAME = (
+    "The credential name looks like a key's value, not its name: give the variable name, such as "
+    "MY_SERVICE_TOKEN, never the key itself."
+)
+#: Characters that make a pattern match more than one name.
+_WILDCARD = re.compile(r"[*?\[\]]")
 
 #: (subcommand) -> the command as the owner types it.
 Cmd = Callable[[str], str]
@@ -235,12 +247,29 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
     parsed = grants.parse_grant(" ".join(words), lambda sub: sub)
     if isinstance(parsed, str):
         return parsed or NOT_A_GRANT
+    if parsed["kind"] == "destination" and _too_broad(parsed["pattern"]):
+        return BROAD
+    if parsed["kind"] == "credential" and _value_shaped(parsed["pattern"].partition("@")[0]):
+        return VALUE_NAME
     out: dict[str, Any] = {"kind": parsed["kind"], "pattern": parsed["pattern"]}
     if parsed.get("allows"):
         out["allows"] = parsed["allows"]
     if expires is not None:
         out["expires"] = expires
     return out
+
+
+def _too_broad(pattern: str) -> bool:
+    """A destination the agent may not propose: a wildcard anywhere but as `*.` and one registrable domain
+    (`grants.wildcard_domain_ok`). The owner's own grant command is not limited this way."""
+    return bool(_WILDCARD.search(pattern)) and (
+        _WILDCARD.search(pattern[2:]) is not None or not grants.wildcard_domain_ok(pattern)
+    )
+
+
+def _value_shaped(name: str) -> bool:
+    """A credential name that the plugin's redactor would take for a secret value (a token's own shape)."""
+    return Redactor("standard", "").string(name) != name
 
 
 def check(args: Any) -> tuple[list[dict[str, Any]], list[tuple[int, str]]] | str:
@@ -300,19 +329,26 @@ def save(
     ref: str,
     now: datetime,
     make_id: Callable[[], str] = new_id,
+    unchecked: bool = False,
 ) -> tuple[str, list[str]] | None:
     """Stores a proposal of `items` from the session `ref`: (its id, the ids of the open proposals it replaced). Expired
-    proposals are dropped. None when the proposals file cannot be read, so nothing in it is overwritten."""
+    proposals are dropped. `unchecked`: the chat had read content no scan had seen yet when the agent proposed it.
+    None when the proposals file cannot be read, so nothing in it is overwritten."""
     store = Store(state_dir)
     try:
         with file_lock(state_dir / "proposals.json"):
-            return _save_locked(store, items, ref, now, make_id)
+            return _save_locked(store, items, ref, now, make_id, unchecked)
     except LockTimeout:
         return None
 
 
 def _save_locked(
-    store: Store, items: list[dict[str, Any]], ref: str, now: datetime, make_id: Callable[[], str]
+    store: Store,
+    items: list[dict[str, Any]],
+    ref: str,
+    now: datetime,
+    make_id: Callable[[], str],
+    unchecked: bool,
 ) -> tuple[str, list[str]] | None:
     raw = store.load_proposals()
     if raw is None:
@@ -333,6 +369,7 @@ def _save_locked(
             "created_at": _iso(now),
             "expires_at": _iso(now + setup.PROPOSAL_TTL),
             "items": items,
+            **({"unchecked": True} if unchecked else {}),
         }
     )
     raw["proposals"] = live
@@ -347,6 +384,7 @@ def propose(
     now: datetime,
     cmd: Cmd,
     make_id: Callable[[], str] = new_id,
+    unchecked: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """The tool's answer to a call whose arguments `check` gave `checked`, from the session `ref`, and what the
     traffic log records of it."""
@@ -356,13 +394,14 @@ def propose(
     log: dict[str, Any] = {"items": len(ok), "rejected": len(refused)}
     if not ok:
         return reply(0, refused, cmd), {"outcome": "none", **log}
-    saved = save(state_dir, ok, ref, now, make_id)
+    saved = save(state_dir, ok, ref, now, make_id, unchecked)
     if saved is None:
         return NOT_SAVED, {"outcome": "error", "reason": "proposals file unreadable", **log}
     pid, replaced = saved
     return reply(len(ok), refused, cmd), {
         "outcome": "stored",
         "proposal": pid,
+        **({"unchecked": True} if unchecked else {}),
         **({"replaced": replaced} if replaced else {}),
         **log,
     }

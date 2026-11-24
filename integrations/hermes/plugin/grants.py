@@ -65,6 +65,13 @@ def credential_pattern_ok(pattern: str) -> bool:
     return not (len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2)
 
 
+def wildcard_domain_ok(pattern: str) -> bool:
+    """`pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared
+    country second level (`*.co.uk`) or part of a numeric address. The rule is `credential_pattern_ok`'s, for the
+    host alone."""
+    return pattern.startswith("*.") and credential_pattern_ok("NAME@" + pattern.lower().rstrip("."))
+
+
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")

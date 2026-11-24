@@ -1,5 +1,5 @@
 {
-  "_comment": "What the agent's setup proposal tool takes, shared by both plugins. `items`: each item as the agent sent it, and either what is stored in the proposals file (`stored`) or the error the agent gets back for it (`error`). A grant must be one `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` would accept, a binding one `bind add` would add that could ever apply, and either one the setup screen can show; session grants, settings and attended platforms are refused. `calls`: the tool's whole answer to a call's arguments (with {setup} replaced by /sentrook setup on Hermes and /sentrook-setup on OpenClaw) and how many items it stores; items sent as JSON text read as the list it holds. `store`: the proposals file before and after a proposal is stored at `now` from `session_ref`, with ids drawn in the order `ids` gives: at most three open, a new one replacing the oldest, expired ones dropped.",
+  "_comment": "What the agent's setup proposal tool takes, shared by both plugins. `items`: each item as the agent sent it, and either what is stored in the proposals file (`stored`) or the error the agent gets back for it (`error`). A grant must be one `grant <kind> <pattern> --persistent [--allows ...] [--expires ...]` would accept, a binding one `bind add` would add that could ever apply, and either one the setup screen can show; session grants, settings and attended platforms are refused, and a destination may use a wildcard only as `*.` and one registrable domain. `calls`: the tool's whole answer to a call's arguments (with {setup} replaced by /sentrook setup on Hermes and /sentrook-setup on OpenClaw) and how many items it stores; items sent as JSON text read as the list it holds. `store`: the proposals file before and after a proposal is stored at `now` from `session_ref`, with ids drawn in the order `ids` gives: at most three open, a new one replacing the oldest, expired ones dropped. `unchecked_warning`: the line the setup screen shows on each item of a proposal made while the chat had read content no scan had seen yet.",
   "refusal": "Setup needs the owner in a direct chat.",
   "items": [
     {
@@ -369,6 +369,106 @@
         "reason": "Too long"
       },
       "error": "The channel must be at most 256 printable characters."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*",
+        "reason": "Everything"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "**",
+        "reason": "Everything"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.com",
+        "reason": "A whole top-level domain"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.co.uk",
+        "reason": "A shared country domain"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.0.1",
+        "reason": "Part of a numeric address"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "api*.example.com",
+        "reason": "A wildcard inside a name"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.example.*",
+        "reason": "Two wildcards"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "https://*.example.com/x",
+        "reason": "A wildcard after a scheme"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*.example.co.uk",
+        "reason": "One registrable domain"
+      },
+      "stored": {
+        "kind": "destination",
+        "pattern": "*.example.co.uk",
+        "reason": "One registrable domain"
+      }
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "https://api.example.com/v1",
+        "reason": "No wildcard"
+      },
+      "stored": {
+        "kind": "destination",
+        "pattern": "https://api.example.com/v1",
+        "reason": "No wildcard"
+      }
+    },
+    {
+      "item": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_API_KEY@*.example.com",
+        "reason": "Credential wildcards are the grant command's"
+      },
+      "stored": {
+        "kind": "credential",
+        "pattern": "EXAMPLE_API_KEY@*.example.com",
+        "reason": "Credential wildcards are the grant command's"
+      }
     }
   ],
   "calls": [
@@ -961,5 +1061,6 @@
         ]
       }
     }
-  ]
+  ],
+  "unchecked_warning": "Warning: Sentrook could not check what this chat read just before the agent proposed this."
 }

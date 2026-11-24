@@ -61,6 +61,10 @@ CODE_TTL = timedelta(minutes=15)
 PROPOSAL_TTL = timedelta(hours=24)
 #: Items on one screen; the rest wait for the next.
 MAX_ITEMS = 30
+#: The warning on an agent's item when the chat had read content no scan had seen yet as the agent proposed it.
+UNCHECKED_WARNING = (
+    "Sentrook could not check what this chat read just before the agent proposed this"
+)
 #: Minutes an unseen grant lasts.
 DEFAULT_MINUTES = int(hold.GRANT_TTL.total_seconds() // 60)
 
@@ -482,6 +486,7 @@ def load_proposals(state_dir: Path, now: datetime) -> list[dict[str, Any]] | Non
                 "created_at": read_time(p["created_at"]),
                 "items": readable,
                 "dropped": len(items) - len(readable),
+                "unchecked": p.get("unchecked") is True,
             }
         )
     return sorted(out, key=lambda p: (p["created_at"], p["id"]))
@@ -742,6 +747,7 @@ def build(
                     "session_ref": p["session_ref"],
                     "reason": it.get("reason"),
                     "minutes": it.get("minutes"),
+                    "unchecked": p.get("unchecked") is True,
                 },
             )
         if p["dropped"]:
@@ -803,6 +809,8 @@ def build(
                 warnings.append(
                     "the chat that proposed this had read content that tried to steer the agent"
                 )
+            if s.get("unchecked"):
+                warnings.append(UNCHECKED_WARNING)
         lines += [f"Warning: {w}." for w in dict.fromkeys(warnings)]
         lines += [line for s in agent if (line := note_line(s["reason"])) is not None]
         tags = ["config"] if any(s["from"] in ("cron", "mcp") for s in item["sources"]) else []
