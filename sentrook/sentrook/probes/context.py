@@ -368,6 +368,65 @@ def _hashes(shape: Fingerprint, echoed: Fingerprint | None, *roles: Role) -> fro
     return out
 
 
+#: Heads that only change the shell's working folder.
+_NAVIGATION_HEADS = frozenset({"cd", "pushd", "popd"})
+#: Interpreters and launchers: running one says how a program runs, not which program runs.
+_LAUNCHER_NAME_RE = re.compile(
+    r"(?:python|pypy|node|deno|bun|bunx|npx|uv|uvx|pipx|ruby|perl|php|env|sudo|doas"
+    r"|bash|sh|zsh|dash|ksh)(?:\d+(?:\.\d+)*)?"
+)
+#: A `PATH` assignment, exported or for one command, with its value.
+_PATH_ASSIGN_RE = re.compile(r"(?<![\w$])PATH=(\"[^\"]*\"|'[^']*'|[^\s;&|)]*)")
+
+
+@dataclass(frozen=True)
+class _ExecEnvironment:
+    """What an exec command sets up rather than acts on. `paths`: the folders it `cd`s into or puts on
+    `PATH`, and interpreters or launchers it runs by path, minus any of those the command also names
+    as an operand. `signature`: its acting segments as (working folder, tokens), the folder and `PATH`
+    setup left out, to tell the same command again from another one."""
+
+    paths: frozenset[str]
+    signature: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+def _exec_environment(
+    command: str, cwd: str | None, *, home: str | None, workspace_root: str | None
+) -> _ExecEnvironment:
+    from ..prepare.entities import resolve_token, shell_segments_sep
+
+    base = normalise_path(cwd or workspace_root or "/", home=home, workspace_root=workspace_root)
+
+    def at(raw: str, where: str) -> str:
+        return resolve_token(raw, where, home=home, workspace_root=workspace_root)[0]
+
+    env: set[str] = set()
+    operands: set[str] = set()
+    signature: list[tuple[str, tuple[str, ...]]] = []
+    for raw in _PATH_ASSIGN_RE.findall(command):
+        for part in raw.strip("'\"").split(":"):
+            if part and "$" not in part.replace("$HOME", ""):
+                env.add(at(part, base))
+    for _, tokens in shell_segments_sep(command):
+        head, args = tokens[0], tokens[1:]
+        if head in _NAVIGATION_HEADS:
+            if args and head != "popd":
+                base = at(args[0], base)
+                env.add(base)
+            continue
+        if head == "export" and all("=" in a or a.startswith("-") for a in args):
+            continue
+        if "/" in head and _LAUNCHER_NAME_RE.fullmatch(head.rsplit("/", 1)[-1]):
+            env.add(at(head, base))
+        else:
+            operands.add(at(head, base))
+        for tok in args:
+            if not tok.startswith("-") or tok in ("-",):
+                operands.add(at(tok, base))
+        signature.append((base, tuple(tokens)))
+    return _ExecEnvironment(paths=frozenset(env - operands), signature=tuple(signature))
+
+
 _SHAPE_ROLES = (
     Role.DATA_SOURCE,
     Role.DATA_DESTINATION,
@@ -1258,6 +1317,26 @@ class ContextProbe:
             followed,
         )
 
+    @staticmethod
+    def _environment(call: CanonicalCall, prepared: Prepared) -> _ExecEnvironment | None:
+        """An exec call's environment setup (`_exec_environment`); None for any other call."""
+        if call.tool_kind is not ToolKind.EXEC or not call.command:
+            return None
+        return _exec_environment(
+            call.command,
+            call.get("cwd"),
+            home=prepared.home,
+            workspace_root=prepared.workspace_root,
+        )
+
+    @staticmethod
+    def _env_hashes(env: _ExecEnvironment | None, prepared: Prepared) -> frozenset[str]:
+        if env is None:
+            return frozenset()
+        return frozenset(
+            entity_hash(prepared.state.salt, EntityKind.PATH.value, path) for path in env.paths
+        )
+
     def _read_shaped(self, prepared: Prepared) -> bool:
         """A file read, or an exec whose every segment starts with a reading head and writes
         nothing: touching the denied step's data again, not retrying what was denied. A `find`
@@ -1305,9 +1384,13 @@ class ContextProbe:
         pending, copies = self._with_copies(
             prepared.fingerprint, prepared.entities.pending(), step_now, prepared
         )
-        p_src = pending.hashes(Role.DATA_SOURCE)
-        p_dst = pending.hashes(Role.DATA_DESTINATION) | pending.hashes(Role.RECIPIENT)
-        p_code = pending.hashes(Role.CODE_SOURCE) | pending.hashes(Role.EXECUTABLE)
+        p_env = self._environment(prepared.pending, prepared)
+        p_env_hashes = self._env_hashes(p_env, prepared)
+        p_src = pending.hashes(Role.DATA_SOURCE) - p_env_hashes
+        p_dst = (
+            pending.hashes(Role.DATA_DESTINATION) | pending.hashes(Role.RECIPIENT)
+        ) - p_env_hashes
+        p_code = (pending.hashes(Role.CODE_SOURCE) | pending.hashes(Role.EXECUTABLE)) - p_env_hashes
         p_all = p_src | p_dst | p_code
         read_shaped = self._read_shaped(prepared)
         p_sql = _sql_objects(prepared.lineage.sql_targets)
@@ -1326,15 +1409,29 @@ class ContextProbe:
             shape = hist
             if echoed is not None and not any(hist.hashes(r) for r in _SHAPE_ROLES):
                 shape = echoed
+            # The folders a command works in or puts on PATH, and the interpreter that runs it, are
+            # not what it acts on: they neither match nor give the step a source.
+            h_env = self._environment(call, prepared)
+            h_env_hashes = self._env_hashes(h_env, prepared)
             two_sided = bool(
-                shape.hashes(Role.DATA_SOURCE)
-                and (shape.hashes(Role.DATA_DESTINATION) or shape.hashes(Role.RECIPIENT))
+                shape.hashes(Role.DATA_SOURCE) - h_env_hashes
+                and (shape.hashes(Role.DATA_DESTINATION) | shape.hashes(Role.RECIPIENT))
+                - h_env_hashes
             )
-            h_src = _hashes(shape, echoed, Role.DATA_SOURCE)
-            h_dst = _hashes(shape, echoed, Role.DATA_DESTINATION, Role.RECIPIENT)
-            h_code = _hashes(shape, echoed, Role.CODE_SOURCE, Role.EXECUTABLE)
+            h_src = _hashes(shape, echoed, Role.DATA_SOURCE) - h_env_hashes
+            h_dst = _hashes(shape, echoed, Role.DATA_DESTINATION, Role.RECIPIENT) - h_env_hashes
+            h_code = _hashes(shape, echoed, Role.CODE_SOURCE, Role.EXECUTABLE) - h_env_hashes
             src_shared, dst_shared = bool(h_src & p_all), bool(h_dst & p_all)
             code_shared = bool(h_code & p_all)
+            # A command that names nothing it acts on (`git clean -fdx` in a folder it `cd`s into)
+            # matches only itself: the same acting segments, run in the same folders.
+            same_command = bool(
+                not (h_src or h_dst or h_code)
+                and h_env is not None
+                and p_env is not None
+                and h_env.signature
+                and h_env.signature == p_env.signature
+            )
             # The same destructive statement through another tool or client shares no path or code:
             # the object it destroys is the match, unless each names a different database file.
             sql_shared = sorted(p_sql & _sql_objects(sql_targets(call))) if p_sql else []
@@ -1348,13 +1445,22 @@ class ContextProbe:
             skill_shared: list[str] = []
             if h_skills is not None:
                 skill_shared = sorted(p_skills & h_skills)
-                src_shared = dst_shared = code_shared = False
+                src_shared = dst_shared = code_shared = same_command = False
                 sql_shared = []
-            if not (src_shared or dst_shared or code_shared or sql_shared or skill_shared):
+            if not (
+                src_shared
+                or dst_shared
+                or code_shared
+                or sql_shared
+                or skill_shared
+                or same_command
+            ):
                 continue
             carry = True
             if sql_shared or skill_shared:
                 value, reason = p.retry_same_action, "retry.same_action"
+            elif same_command and read_shaped:
+                value, reason, carry = p.retry_same_source_only, "retry.same_source_only", False
             elif two_sided:  # the denied step moved data from a source to a destination
                 if src_shared and dst_shared:
                     value, reason = p.retry_same_action, "retry.same_action"
