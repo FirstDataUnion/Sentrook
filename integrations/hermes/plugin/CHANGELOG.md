@@ -219,6 +219,12 @@ since the version the catalog pins.
   `--scope session`; a pattern Sentrook would not read is refused when you type it.
 - When a review is caused by such a key going to its own service, the prompt suggests the grant, and **Always** sets
   it as it does other suggested grants.
+- The `sentrook-guide` skill has a new section, "Working well with Sentrook", on shaping work so Sentrook can judge
+  it clearly: fetch web pages and APIs with Hermes's own web tools rather than HTTP in code; keep code local (a code
+  or shell call that reads local files does not also reach the network); install packages once, early, in a chat with
+  you, not in cron jobs or subagents; keep a task's files in one work directory; refer to keys by name; and when a
+  call is held or blocked, tell you and point to `/sentrook why` rather than try it again in a new shape. It says
+  plainly that this is about clear scans, never about getting past a check.
 
 ## 2.0.0-beta.17
 

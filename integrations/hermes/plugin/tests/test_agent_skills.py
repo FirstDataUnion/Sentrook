@@ -131,6 +131,71 @@ def test_the_text_names_only_invented_hosts(host):
             assert m[0].endswith(("example.com", ".example")), (host, template, m[0])
 
 
+# ---- working well with Sentrook ----------------------------------------------------------------------------------
+
+WORKING_WELL = "## Working well with Sentrook"
+
+#: Advice that would help a call past a review rather than make it clear: splitting, disguising, rewording, avoiding.
+EVASION = re.compile(
+    r"\b(?:split\w*|disguis\w*|obfuscat\w*|encod\w*|reword\w*|rephras\w*|bypass\w*|evad\w*|evasion|dodg\w*|"
+    r"sneak\w*|slip\w*|hid(?:e|ing|den)|avoid\w*|circumvent\w*|get(?:ting)? (?:past|around)|"
+    r"below the (?:review|threshold|line)|lower the (?:risk|score)|smaller (?:calls|pieces|steps))\b",
+    re.IGNORECASE,
+)
+NEGATION = re.compile(r"\b(?:never|not|don't|do not|no)\b", re.IGNORECASE)
+
+
+def working_well(text: str) -> str:
+    """The guide's "Working well with Sentrook" section: from its heading to the next one."""
+    start = text.index(WORKING_WELL)
+    end = text.find("\n## ", start + len(WORKING_WELL))
+    return text[start : end if end != -1 else len(text)]
+
+
+def evasive_advice(section: str) -> list[str]:
+    """Each sentence of `section` that names an evasive move without forbidding it."""
+    body = " ".join(section.split("\n")[1:])
+    sentences = re.split(r"(?<=[.:;])\s+|\s-\s+", body)
+    return [s for s in sentences if EVASION.search(s) and not NEGATION.search(s)]
+
+
+def test_the_evasion_check_catches_advice_to_get_past_a_review():
+    bad = (
+        f"{WORKING_WELL}\n\nSplit a large fetch into smaller calls so each one scores below the review line. "
+        "Rename the tool and encode the host so the scan misses it. Avoid commands Sentrook asks about."
+    )
+    assert len(evasive_advice(bad)) == 3
+    good = f"{WORKING_WELL}\n\nThis is never about getting past a check. Do not retry it reworded."
+    assert evasive_advice(good) == []
+
+
+@pytest.mark.parametrize("host", list(render.HOSTS))
+def test_the_guide_says_how_to_shape_work_so_it_scans_clearly(host):
+    """Fetch with the host's web tools, keep code local, set up in the owner's chat, one work directory, keys by name,
+    and a held or blocked call goes to the owner, never back in a new shape."""
+    section = working_well(rendered(host)["sentrook-guide.md"])
+    host_name = render.HOSTS[host]["values"]["host"]
+    for needed in (
+        f"{host_name}'s own web or fetch tools",
+        "reads local files",
+        "reach the network",
+        "in a chat with the owner",
+        render.HOSTS[host]["values"]["unattended_runs"],
+        "one work directory",
+        "by its name",
+        f"`{render.chat(host, 'why')}",
+        "never about getting past a check",
+    ):
+        assert needed in " ".join(section.split()), (host, needed)
+
+
+@pytest.mark.parametrize("host", list(render.HOSTS))
+def test_the_working_well_section_never_advises_getting_past_a_review(host):
+    """No sentence tells the agent to split, disguise, reword or avoid a call to get it past a review; such a word may
+    appear only where the sentence forbids it."""
+    assert evasive_advice(working_well(rendered(host)["sentrook-guide.md"])) == []
+
+
 def test_the_rules_fit_a_hermes_prompt_section():
     text = agent_skills.rules()
     # Hermes's limits: at most 4000 characters, an id of lowercase letters, digits, `.`, `_` and `-`.
