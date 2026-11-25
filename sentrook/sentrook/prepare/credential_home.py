@@ -131,6 +131,15 @@ def _wildcard_too_broad(base: str) -> bool:
     return len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2
 
 
+def host_pattern_ok(host: str) -> bool:
+    """A host as a grant may name it (lower-cased, no scheme, port or path): exact, or `*.` and one registrable domain,
+    with at least two labels after the wildcard and not a shared suffix such as `co.uk` or an address written in
+    numbers. Destination grants read a wildcard host the same way."""
+    if not _GRANT_HOST_RE.fullmatch(host):
+        return False
+    return not (host.startswith("*.") and _wildcard_too_broad(host[2:]))
+
+
 def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
     """A `credential` grant's pattern as `(name pattern, host pattern)`, or None when it is malformed or over-broad.
     `NAME@host`: the name exact or `PREFIX*` with at least three characters before the `*`; the host lower-cased,
@@ -138,11 +147,9 @@ def parse_credential_pattern(pattern: str) -> tuple[str, str] | None:
     name, sep, host = str(pattern).strip().partition("@")
     host = host.strip().lower().rstrip(".")
     name = name.strip()
-    if not sep or not _GRANT_NAME_RE.fullmatch(name) or not _GRANT_HOST_RE.fullmatch(host):
+    if not sep or not _GRANT_NAME_RE.fullmatch(name) or not host_pattern_ok(host):
         return None
     if name.endswith("*") and len(name) - 1 < _MIN_PREFIX:
-        return None
-    if host.startswith("*.") and _wildcard_too_broad(host[2:]):
         return None
     return name, host
 

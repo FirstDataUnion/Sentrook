@@ -376,7 +376,7 @@
         "pattern": "*",
         "reason": "Everything"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"*\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
@@ -384,7 +384,7 @@
         "pattern": "**",
         "reason": "Everything"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"**\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
@@ -392,7 +392,7 @@
         "pattern": "*.com",
         "reason": "A whole top-level domain"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"*.com\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
@@ -400,7 +400,7 @@
         "pattern": "*.co.uk",
         "reason": "A shared country domain"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"*.co.uk\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
@@ -408,7 +408,7 @@
         "pattern": "*.0.1",
         "reason": "Part of a numeric address"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"*.0.1\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
@@ -416,7 +416,7 @@
         "pattern": "api*.example.com",
         "reason": "A wildcard inside a name"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"api*.example.com\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
@@ -424,13 +424,29 @@
         "pattern": "*.example.*",
         "reason": "Two wildcards"
       },
-      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+      "error": "\"*.example.*\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
     },
     {
       "item": {
         "kind": "destination",
         "pattern": "https://*.example.com/x",
         "reason": "A wildcard after a scheme"
+      },
+      "error": "\"https://*.example.com/x\" is too broad for a destination grant: a wildcard may cover only one registrable domain (*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix many owners share, such as *.com or *.co.uk."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "*@example.com",
+        "reason": "Every address at one domain"
+      },
+      "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
+    },
+    {
+      "item": {
+        "kind": "destination",
+        "pattern": "discord:#ops-*",
+        "reason": "Every ops channel"
       },
       "error": "A destination may use a wildcard only as *. and one registrable domain, such as *.example.com: ask the owner to grant anything broader themselves."
     },

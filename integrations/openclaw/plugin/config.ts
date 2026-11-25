@@ -92,7 +92,7 @@ export interface PluginConfig {
   trustedRoles: string[];
   /** Grants from the plugin config; a scan also sends the bindings and the grants set by command. */
   grants: GrantConfig[];
-  /** Config grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`). */
+  /** Config grants that are never sent, by index in `grants`: why (`too broad`, `no session`, `unknown scope "x"`). */
   unsentGrants: Record<number, string>;
   channelBindings: string[];
   /** How OpenClaw's own background saves to skills and memory are sent (see `selfEdit.ts`). */
@@ -230,14 +230,82 @@ function unsentScope(raw: unknown): string | undefined {
   return `unknown scope ${JSON.stringify(raw) ?? String(raw)}`;
 }
 
-/** The config's grants, and why each one that is never sent is not (see `PluginConfig`). */
+/**
+ * A credential grant's pattern as Sentrook reads it: a name (or a prefix of three or more characters
+ * and `*`), `@`, and a host (or `*.` and a domain of two or more labels), with no scheme, port or path.
+ */
+const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+export const CREDENTIAL_PATTERN = new RegExp(
+  `^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{2,}\\*)@(?:\\*\\.)?${LABEL}(?:\\.${LABEL})+$`,
+);
+/**
+ * Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard there,
+ * or on part of a numeric address, covers strangers, and Sentrook refuses it.
+ */
+export const SHARED_SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
+/**
+ * What is left of a pattern once glob characters and separators are removed; nothing left means it matches
+ * everything, and the scanner ignores it.
+ */
+export const NOT_LITERAL = /\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]/g;
+const GLOB = /[*?[\]]/;
+/** A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme. */
+const PLATFORM_PREFIX = /^[a-z][a-z0-9_-]*:(?!\/\/)/;
+/** Why a destination grant that `destinationOk` refuses is never sent. */
+export const TOO_BROAD = "too broad";
+
+/** `NAME@host` as Sentrook reads it (the host already lower-cased). */
+export function credentialPatternOk(pattern: string): boolean {
+  if (!CREDENTIAL_PATTERN.test(pattern)) return false;
+  const host = pattern.slice(pattern.indexOf("@") + 1);
+  if (!host.startsWith("*.")) return true;
+  const labels = host.slice(2).split(".");
+  if (labels.every((l) => /^\d+$/.test(l))) return false;
+  return !(labels.length === 2 && SHARED_SECOND_LEVEL.has(labels[0]!) && labels[1]!.length === 2);
+}
+/**
+ * `pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared country
+ * second level (`*.co.uk`) or part of a numeric address. The rule is `credentialPatternOk`'s, for the host alone.
+ */
+export function wildcardDomainOk(pattern: string): boolean {
+  return pattern.startsWith("*.") && credentialPatternOk(`NAME@${pattern.toLowerCase().replace(/\.+$/, "")}`);
+}
+
+function hostGlobOk(host: string): boolean {
+  host = host.trim().toLowerCase().replace(/\.+$/, "");
+  return !GLOB.test(host) || wildcardDomainOk(host);
+}
+
+/**
+ * A destination pattern Sentrook takes: something literal, and a wildcard that can reach a host or a mail domain only
+ * as `*.` and one registrable domain (`wildcardDomainOk`), never over a suffix many owners share (`*.com`,
+ * `*.co.uk`). A channel's name or id after a platform prefix or `#` (`discord:#ops-*`), and the name before an `@`
+ * (`*@example.com`), may hold a wildcard. Sentrook ignores any other destination grant.
+ */
+export function destinationOk(pattern: string): boolean {
+  const pat = pattern.trim().toLowerCase();
+  if (!pat.replace(NOT_LITERAL, "")) return false;
+  if (!GLOB.test(pat)) return true;
+  const prefix = PLATFORM_PREFIX.exec(pat);
+  const rest = prefix ? pat.slice(prefix[0].length) : pat;
+  if (rest.startsWith("#")) return true;
+  if (rest.includes("@")) return hostGlobOk(rest.slice(rest.lastIndexOf("@") + 1));
+  if (prefix && !rest.includes(".")) return true; // a channel's name or id: `slack:C0B*`, `channel:ops-*`
+  return hostGlobOk(rest);
+}
+
+/**
+ * The config's grants, and why each one that is never sent is not (see `PluginConfig`). A destination grant Sentrook
+ * would ignore as too broad (`destinationOk`) is kept in the list, so the others keep their numbers, and is never sent.
+ */
 export function parseConfigGrants(raw: unknown): { grants: GrantConfig[]; unsentGrants: Record<number, string> } {
   const grants: GrantConfig[] = [];
   const unsentGrants: Record<number, string> = {};
   for (const g of Array.isArray(raw) ? raw : []) {
     const [parsed] = parseGrants([g]);
     if (!parsed) continue;
-    const why = unsentScope((g as Record<string, unknown>).scope);
+    const tooBroad = parsed.kind === "destination" && !destinationOk(parsed.pattern);
+    const why = tooBroad ? TOO_BROAD : unsentScope((g as Record<string, unknown>).scope);
     if (why) unsentGrants[grants.length] = why;
     grants.push(parsed);
   }

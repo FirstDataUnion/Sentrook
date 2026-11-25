@@ -263,6 +263,14 @@ since the version the catalog pins.
   you, not in cron jobs or subagents; keep a task's files in one work directory; refer to keys by name; and when a
   call is held or blocked, tell you and point to `/sentrook why` rather than try it again in a new shape. It says
   plainly that this is about clear scans, never about getting past a check.
+- **A destination grant over a whole public suffix is refused.** A destination may use a wildcard on a host or a
+  mail domain only as `*.` and one registrable domain (`*.example.com`, `*.example.co.uk`). `/sentrook grant
+  destination *.com` (or `*.co.uk`, `*.io`, `**.com`, `*.0.1`, `api*.example.com`) is refused with the reason, as
+  Sentrook ignores such a grant: it would let calls reach sites run by many owners. A wildcard in a channel's name
+  (`discord:#daily-*`) or before an `@` (`*@example.com`) is still taken. Such a grant in `config.yaml`, or one
+  already in the grants file, is never sent: `/sentrook grants`, `/sentrook status` and `hermes sentrook verify`
+  list it as too broad, and the other grants still apply. A channel binding like it (`*.com`, `daily-*`) is listed as
+  too broad and never sent.
 
 ## 2.0.0-beta.17
 

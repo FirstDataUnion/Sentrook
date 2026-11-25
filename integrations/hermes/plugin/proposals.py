@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import grants, setup
+from .config import wildcard_domain_ok
 from .planir import binding_problem
 from .redact import Redactor
 from .store import LockTimeout, Store, file_lock, read_time
@@ -261,9 +262,10 @@ def _grant(raw: dict[str, Any]) -> dict[str, Any] | str:
 
 def _too_broad(pattern: str) -> bool:
     """A destination the agent may not propose: a wildcard anywhere but as `*.` and one registrable domain
-    (`grants.wildcard_domain_ok`). The owner's own grant command is not limited this way."""
+    (`config.wildcard_domain_ok`). The grant command refuses a wildcard over more than one registrable domain from
+    anyone (`config.destination_ok`); only the owner may put one in a channel's name or before an `@`."""
     return bool(_WILDCARD.search(pattern)) and (
-        _WILDCARD.search(pattern[2:]) is not None or not grants.wildcard_domain_ok(pattern)
+        _WILDCARD.search(pattern[2:]) is not None or not wildcard_domain_ok(pattern)
     )
 
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import host_turns
-from .config import PluginConfig
+from .config import NOT_LITERAL, TOO_BROAD, PluginConfig, destination_ok
 from .intent import (
     approvals_off,
     channel_of,
@@ -242,19 +242,16 @@ def _destination_forms(pattern: str, platform: str | None) -> list[tuple[str, bo
     return forms
 
 
-#: What is left of a pattern once glob characters and separators are removed; nothing left means it
-#: matches everything, and the scanner ignores it.
-_NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
-
-
 def binding_problem(pattern: str) -> str | None:
     """Why a channel binding can never relieve a send, as the listing and verify say it; None when it
     can."""
     pattern = pattern.strip()
-    if not _NOT_LITERAL.sub("", pattern):
+    if not NOT_LITERAL.sub("", pattern):
         return "matches every channel, ignored"
     if not any(_long_enough(f) for f, _ in _destination_forms(pattern.lower(), None)):
         return "too short, never sent"
+    if not destination_ok(pattern):
+        return f"{TOO_BROAD}, never sent"
     return None
 
 
@@ -294,7 +291,8 @@ def relevant_grants(
     A destination is read the way the scanner reads a channel: a `#name` as `channel:name`, and a
     `<platform>:` prefix as met when the send names `platform` (`call_platform`). A credential grant
     (`NAME@host`) is sent on every exec call (`exec_call`: the key and the host may be only in a script the
-    call runs, which Sentrook reads too), and on any other call that shows either its name or its host."""
+    call runs, which Sentrook reads too), and on any other call that shows either its name or its host. A destination
+    grant Sentrook would ignore as too broad (`config.destination_ok`) is never sent."""
     text = args_text.lower()
     texts = [text]
     if base := cwd or workspace:
@@ -309,6 +307,8 @@ def relevant_grants(
         pats = [root + p[1:] if p.startswith("~/") else p for p in pats]
     out = []
     for i, (g, pat) in enumerate(zip(grants, pats, strict=True)):
+        if g["kind"] == "destination" and not destination_ok(g["pattern"]):
+            continue
         hay = list(texts)
         if g["kind"] == "provider" and identity:
             hay.append(identity.lower())

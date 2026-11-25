@@ -31,6 +31,7 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
+import { wildcardDomainOk } from "./config.ts";
 import * as grants from "./grants.ts";
 import { bindingProblem } from "./planir.ts";
 import { createRedactor } from "./redact.ts";
@@ -201,10 +202,11 @@ function grantItem(r: Entry): Entry | string {
 
 /**
  * A destination the agent may not propose: a wildcard anywhere but as `*.` and one registrable domain
- * (`grants.wildcardDomainOk`). The owner's own grant command is not limited this way.
+ * (`config.wildcardDomainOk`). The grant command refuses a wildcard over more than one registrable domain from anyone
+ * (`config.destinationOk`); only the owner may put one in a channel's name or before an `@`.
  */
 function tooBroad(pattern: string): boolean {
-  return WILDCARD.test(pattern) && (WILDCARD.test(pattern.slice(2)) || !grants.wildcardDomainOk(pattern));
+  return WILDCARD.test(pattern) && (WILDCARD.test(pattern.slice(2)) || !wildcardDomainOk(pattern));
 }
 
 /** A credential name that the plugin's redactor would take for a secret value (a token's own shape). */

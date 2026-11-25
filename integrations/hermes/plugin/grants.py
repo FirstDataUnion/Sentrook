@@ -9,7 +9,10 @@ id, who set it (`set_by`: the owner basis, platform and hashed sender) and an op
 Scope is `session` unless the owner asks for `persistent`; any other value is refused. A `credential` grant
 (`NAME@host`: a key's environment name, or `PREFIX*`, and the host it is meant for, or `*.example.com`) is
 `persistent` unless the owner asks for `session`: a key's home rarely changes. Its pattern is checked here as
-Sentrook reads it, so a typo is refused at once rather than relieving nothing.
+Sentrook reads it, so a typo is refused at once rather than relieving nothing. A `destination` grant is checked the
+same way (`config.destination_ok`): a wildcard that can reach a host or a mail domain may only be `*.` and one
+registrable domain, so `*.com` or `*.co.uk` is refused, and one in the settings, or in the file from before, is
+listed as too broad and never sent.
 
 A session grant is bound to one session: the one the command was sent from, or the one `--session`
 names (a `session_ref` as `history` shows it). It stores that `session_ref`, the same hash a scan
@@ -19,8 +22,8 @@ one stored without a session is never sent. Persistent grants are sent on every 
 grant has no session to be bound to, so one with scope session, or with an unknown scope (read as
 session), is never sent either; the listing, status, verify and the startup log name it. A scan sends a
 session grant with its `session_ref` and a grant with an expiry with its `expires_at`, and Sentrook
-checks both. An expired grant is not sent, and is dropped from the file on the next change. Patterns
-are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
+checks both. An expired grant is not sent, and is dropped from the file on the next change. Other
+patterns are passed on as typed: Sentrook itself refuses patterns too broad to relieve on.
 
 Every change is written to the traffic log as a `grants` record (none when the owner has turned the
 traffic log off).
@@ -36,42 +39,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .config import PluginConfig, parse_grants
+from .config import PluginConfig, credential_pattern_ok, destination_ok, parse_grants
 from .planir import binding_problem
 from .store import Store, file_lock, read_time
 
 KINDS = ("destination", "file", "provider", "repo", "credential")
-#: A credential grant's pattern as Sentrook reads it: a name (or a prefix of three or more characters and `*`), `@`,
-#: and a host (or `*.` and a domain of two or more labels), with no scheme, port or path.
-_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-CREDENTIAL_PATTERN = re.compile(
-    rf"(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{{2,}}\*)@(?:\*\.)?{_LABEL}(?:\.{_LABEL})+"
+#: Why the grant command refuses a destination `destination_ok` refuses; `{pattern}` is the pattern as typed.
+TOO_BROAD = (
+    '"{pattern}" is too broad for a destination grant: a wildcard may cover only one registrable domain '
+    "(*.example.com), a channel's name (discord:#ops-*) or the name before an @ (*@example.com), never a suffix "
+    "many owners share, such as *.com or *.co.uk."
 )
-#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard
-#: there, or on part of a numeric address, covers strangers, and Sentrook refuses it.
-_SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
-
-
-def credential_pattern_ok(pattern: str) -> bool:
-    """`NAME@host` as Sentrook reads it (the host already lower-cased)."""
-    if not CREDENTIAL_PATTERN.fullmatch(pattern):
-        return False
-    host = pattern.partition("@")[2]
-    if not host.startswith("*."):
-        return True
-    labels = host[2:].split(".")
-    if all(label.isdigit() for label in labels):
-        return False
-    return not (len(labels) == 2 and labels[0] in _SHARED_SECOND_LEVEL and len(labels[1]) == 2)
-
-
-def wildcard_domain_ok(pattern: str) -> bool:
-    """`pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared
-    country second level (`*.co.uk`) or part of a numeric address. The rule is `credential_pattern_ok`'s, for the
-    host alone."""
-    return pattern.startswith("*.") and credential_pattern_ok("NAME@" + pattern.lower().rstrip("."))
-
-
 ALLOWS = ("read", "write", "edit", "delete", "exec")
 SCOPES = ("session", "persistent")
 SESSION_REF = re.compile(r"s_[0-9a-f]{12}")
@@ -140,7 +118,11 @@ def effective(
 ) -> list[dict[str, Any]]:
     """Every grant a scan of the session `session_ref` may send: persistent config grants, config
     bindings, then live file entries (a session grant only in its own session)."""
-    out = [dict(g) for g in cfg.grants if g["scope"] == "persistent"]
+    out = [
+        dict(g)
+        for i, g in enumerate(cfg.grants)
+        if g["scope"] == "persistent" and i not in cfg.unsent_grants
+    ]
     out += [
         {"kind": "destination", "pattern": p, "scope": "persistent"} for p in cfg.channel_bindings
     ]
@@ -201,6 +183,8 @@ def format_grants(
     file_rows = _file_grants(data)
     for raw, g in file_rows:
         details = [_session_of(raw, ref)] if g["scope"] == "session" else []
+        if g["kind"] == "destination" and not destination_ok(g["pattern"]):
+            details.append("too broad, never sent")
         if g.get("allows"):
             details.append(f"allows {','.join(g['allows'])}")
         if "expires_at" in raw:
@@ -338,6 +322,8 @@ def parse_grant(rest: str, cmd: Cmd) -> dict[str, Any] | str:
                 "MY_SERVICE_TOKEN@api.myservice.example (NAME may end in * after three or more characters, "
                 "host may be *.example.com)."
             )
+    if kind == "destination" and not destination_ok(pattern):
+        return TOO_BROAD.format(pattern=_clean(pattern, 80))
     # a credential grant is persistent unless the owner asks for a session (naming one with --session asks too)
     default = "persistent" if kind == "credential" and "session" not in opts else "session"
     scope = opts.get("scope", default)

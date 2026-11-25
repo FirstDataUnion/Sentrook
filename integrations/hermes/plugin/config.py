@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,70 @@ DEFAULT_TRAFFIC_LOG_MAX_BYTES = 50 * 1024 * 1024
 
 ON_SCAN_ERROR = ("allow", "deny", "review")
 SKILL_REVIEW = ("allow", "review")
+
+#: A credential grant's pattern as Sentrook reads it: a name (or a prefix of three or more characters and `*`), `@`,
+#: and a host (or `*.` and a domain of two or more labels), with no scheme, port or path.
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+CREDENTIAL_PATTERN = re.compile(
+    rf"(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]{{2,}}\*)@(?:\*\.)?{_LABEL}(?:\.{_LABEL})+"
+)
+#: Second-level labels under which a two-letter country domain is shared by many owners (`co.uk`): a wildcard
+#: there, or on part of a numeric address, covers strangers, and Sentrook refuses it.
+SHARED_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+#: What is left of a pattern once glob characters and separators are removed; nothing left means it
+#: matches everything, and the scanner ignores it.
+NOT_LITERAL = re.compile(r"\[[^\]]*\]|\$HOME|[*?/~.@:#_\s-]")
+_GLOB = re.compile(r"[*?\[\]]")
+#: A chat platform in front of a channel (`discord:`, `channel:`), not a URL scheme.
+_PLATFORM_PREFIX = re.compile(r"[a-z][a-z0-9_-]*:(?!//)")
+#: Why a destination grant that `destination_ok` refuses is never sent.
+TOO_BROAD = "too broad"
+
+
+def credential_pattern_ok(pattern: str) -> bool:
+    """`NAME@host` as Sentrook reads it (the host already lower-cased)."""
+    if not CREDENTIAL_PATTERN.fullmatch(pattern):
+        return False
+    host = pattern.partition("@")[2]
+    if not host.startswith("*."):
+        return True
+    labels = host[2:].split(".")
+    if all(label.isdigit() for label in labels):
+        return False
+    return not (len(labels) == 2 and labels[0] in SHARED_SECOND_LEVEL and len(labels[1]) == 2)
+
+
+def wildcard_domain_ok(pattern: str) -> bool:
+    """`pattern` is `*.` and one domain as a credential grant's host may name it: two or more labels, not a shared
+    country second level (`*.co.uk`) or part of a numeric address. The rule is `credential_pattern_ok`'s, for the
+    host alone."""
+    return pattern.startswith("*.") and credential_pattern_ok("NAME@" + pattern.lower().rstrip("."))
+
+
+def _host_glob_ok(host: str) -> bool:
+    host = host.strip().lower().rstrip(".")
+    return not _GLOB.search(host) or wildcard_domain_ok(host)
+
+
+def destination_ok(pattern: str) -> bool:
+    """A destination pattern Sentrook takes: something literal, and a wildcard that can reach a host or a mail domain
+    only as `*.` and one registrable domain (`wildcard_domain_ok`), never over a suffix many owners share (`*.com`,
+    `*.co.uk`). A channel's name or id after a platform prefix or `#` (`discord:#ops-*`), and the name before an `@`
+    (`*@example.com`), may hold a wildcard. Sentrook ignores any other destination grant."""
+    pat = pattern.strip().lower()
+    if not NOT_LITERAL.sub("", pat):
+        return False
+    if not _GLOB.search(pat):
+        return True
+    prefix = _PLATFORM_PREFIX.match(pat)
+    rest = pat[prefix.end() :] if prefix else pat
+    if rest.startswith("#"):
+        return True
+    if "@" in rest:
+        return _host_glob_ok(rest.rpartition("@")[2])
+    if prefix and "." not in rest:
+        return True  # a channel's name or id: `slack:C0B*`, `channel:ops-*`
+    return _host_glob_ok(rest)
 
 
 @dataclass(frozen=True)
@@ -81,7 +146,8 @@ class PluginConfig:
     skill_review_unknown: str | None = None
     #: Grants from the settings; a scan also sends the bindings and the grants set by command.
     grants: list[dict[str, Any]] = field(default_factory=list)
-    #: Settings grants that are never sent, by index in `grants`: why (`no session`, `unknown scope "x"`).
+    #: Settings grants that are never sent, by index in `grants`: why (`too broad`, `no session`,
+    #: `unknown scope "x"`).
     unsent_grants: dict[int, str] = field(default_factory=dict)
     channel_bindings: list[str] = field(default_factory=list)
     #: The platform whose home channel gets the notice of a held call ("" for the only platform with a
@@ -252,14 +318,17 @@ def parse_grants(raw: Any) -> list[dict[str, Any]]:
 
 
 def parse_config_grants(raw: Any) -> tuple[list[dict[str, Any]], dict[int, str]]:
-    """The settings' grants, and why each one that is never sent is not (see `PluginConfig`)."""
+    """The settings' grants, and why each one that is never sent is not (see `PluginConfig`). A destination grant
+    Sentrook would ignore as too broad (`destination_ok`) is kept in the list, so the others keep their numbers, and is
+    never sent."""
     grants: list[dict[str, Any]] = []
     unsent: dict[int, str] = {}
     for g in raw if isinstance(raw, list) else []:
         parsed = parse_grants([g])
         if not parsed:
             continue
-        if why := _unsent(g.get("scope")):
+        too_broad = parsed[0]["kind"] == "destination" and not destination_ok(parsed[0]["pattern"])
+        if why := (TOO_BROAD if too_broad else _unsent(g.get("scope"))):
             unsent[len(grants)] = why
         grants.append(parsed[0])
     return grants, unsent
