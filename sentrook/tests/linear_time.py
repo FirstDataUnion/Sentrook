@@ -9,8 +9,10 @@ quadratic work about 16 times, on any machine.
 when a run goes over it, for tests whose bound is also a promise (a scan well under the probe
 timeout): a fast machine still holds the bound, and a slow one is judged by how the time grows.
 
-Measured on the redaction inputs: 3.7-4.3 for the scanner's own patterns, up to about 6.5 for a vendor
-shape whose match is capped at a few thousand characters (quadratic below the cap, linear above it).
+Measured on the redaction inputs: 3.6-4.7 for the scanner's own patterns and the vendor shapes. A shape
+whose match is capped at a few thousand characters grows quadratically on runs shorter than a few caps
+and linearly on longer ones, so its input is sized past the cap at both sizes (`CAP_RUNS` in
+test_redact_shapes.py); sized across the cap, it read 6.5x on a fast machine and 12x on a CI runner.
 Whole scans of long inputs read up to about 7.3."""
 
 from __future__ import annotations

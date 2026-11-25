@@ -813,13 +813,15 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   all (at startup, or on its next hook after you change the setting) and keeps nothing.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
-similar) are replaced with placeholders such as `⟦secret:github:…⟧`. So are access codes and PINs named as such ("the
+similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
+`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept. So are access codes and PINs named as such ("the
 gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
 header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
 hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
 kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
-`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too. Your
+`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too, and so is a quoted
+example value that only stands in for one, such as `"access_token": "ya29.a0..."` or `"token": "REDACTED"`. Your
 files, messages and tool output can still contain other personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.hermes/sentrook/traffic.jsonl`,

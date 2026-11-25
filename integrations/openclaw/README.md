@@ -346,12 +346,15 @@ commands run only for the owner, from any of three places:
   does anyone holding the shared gateway token. Limited Control UI sessions are refused.
 - **The machine**: whoever can run `openclaw` there counts as the owner.
 
-OpenClaw decides who the owner is by the sender, not the room, so in a group or channel room your own message runs
-them too, and the reply is shown to everyone there. `/sentrook-setup` refuses in a room (show and apply alike), since
-its list would be shown to the room, and in a chat it cannot tell from one (a chat channel with no session key, or
-the agent's main session when `session.groupScope` routes rooms into it); run it in your direct message, the Control
-UI or on the machine instead. Every attempt, allowed or refused, is
-recorded in the traffic log (unless you turned it off).
+OpenClaw decides who the owner is by the sender, not the room, and keeps a command and its reply in the room's
+transcript. So every dashed command refuses in a group or channel room, even from you, since its reply (recent scans,
+hosts, file paths, reasons, grants, setup codes) would be shown to everyone there; and in a chat it cannot tell from
+one: a chat channel with no session key, or the agent's main session when `session.groupScope` routes rooms into it.
+This includes a Control UI session that is a room's, and the Control UI on the main session when rooms share it, since
+its transcript is theirs too. A thread or topic is the chat it is in: one in your DM works, one in a room is refused.
+Run them in your direct message, the Control UI (in a session no room shares) or on the machine instead.
+`/sentrook-notify here` also needs a direct message on a chat channel, since that is where it sends notices. Every
+attempt, allowed or refused, is recorded in the traffic log (unless you turned it off).
 
 If Sentrook blocks your own setup work, snooze for the duration: blocks without a clear attack signal then ask you
 instead; blocks with a clear attack signal still stop. While a snooze is on, in a chat you attend, a block the scanner
@@ -791,13 +794,15 @@ Each scan sends one request to `sentrook.firstdataunion.org`:
   change the setting) and keeps nothing.
 
 Before anything leaves the machine, secrets the plugin recognises (API keys, tokens, passwords, private keys and
-similar) are replaced with placeholders such as `⟦secret:github:…⟧`. So are access codes and PINs named as such ("the
+similar) are replaced with placeholders such as `⟦secret:github:…⟧`, the whole value even when it holds `&`, `,` or
+`;` (`password=<value>&<rest>`); in a link's query (`?password=…&page=2`) the next parameter is kept. So are access codes and PINs named as such ("the
 gate code is …", `client_pin=…`), passport numbers (`⟦secret:identifier:…⟧`) and random-looking values under a key or
 header (`X-Desk: …`); a number with no such cue word, such as an order number or a status code, is kept. Recipients,
 hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
 kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
-`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too. Your
+`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too, and so is a quoted
+example value that only stands in for one, such as `"access_token": "ya29.a0..."` or `"token": "REDACTED"`. Your
 files, messages and tool output can still contain other personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.openclaw/sentrook/traffic.jsonl`,
