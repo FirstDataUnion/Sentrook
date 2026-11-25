@@ -173,6 +173,13 @@ LONG = [
                 ),
             ),
             ("many shell scripts", lambda size: _repeat("", "bash -c 'openclaw x'; ", size=size)),
+            ("many open substitutions", lambda size: _repeat("", "$(", size=size)),
+            ("quotes and backticks in turn", lambda size: _repeat("", '"`', size=size // 2)),
+            ("glued host CLI words", lambda size: _repeat("", ";openclaw x", size=size)),
+            (
+                "nested substitutions in double quotes",
+                lambda size: _repeat("echo ", '"$(echo ', size=size // 2),
+            ),
         ]
     ),
     # A command is parsed up to `MAX_PARSE_CHARS`, and the approval-loosening routes read a parsed
