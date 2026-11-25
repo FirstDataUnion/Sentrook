@@ -1339,7 +1339,7 @@ def _hold(
     job_digest = None
     if job_id:
         try:
-            job_digest = run_now.job_digest(hermes_home(dict(os.environ)), job_id)
+            job_digest = run_now.job_digest(run_now.home(dict(os.environ)), job_id)
         except Exception as exc:  # noqa: BLE001 - not known: allow will not start the job
             logger.warning("sentrook could not read the held call's job: %s", exc)
     repeat = False

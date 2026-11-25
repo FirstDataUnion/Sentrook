@@ -79,6 +79,9 @@ ACTING_CATEGORIES = frozenset(
         "writes_local_files",
     }
 )
+#: How long a run the plugin started for an answer counts as still pending (so another answer does not start a second
+#: run of the job) until the plugin sees it end.
+PENDING_RUN = timedelta(hours=1)
 #: How much earlier than the answer a run may say it started and still count as the one started for it (clocks).
 RUN_SLACK = timedelta(seconds=2)
 
@@ -295,6 +298,22 @@ def add(
         data["passes"] = data["passes"][-MAX_PASSES:]
         store.save_passes(data)
         return entry
+
+
+def pending_run(state_dir: Path, ref: str | None, now: datetime) -> bool:
+    """Whether a run the plugin started for an answer on job `ref` has not been seen to end yet (asked for within
+    `PENDING_RUN`): another answer must not start the job again meanwhile. An unreadable file says no."""
+    data = Store(state_dir).load_passes()
+    for r in _live_runs(data or {}, now):
+        asked = read_time(r.get("requested_at"))
+        if (
+            r.get("job_ref") == ref
+            and not r.get("ended")
+            and asked is not None
+            and now - asked < PENDING_RUN
+        ):
+            return True
+    return False
 
 
 def _change_run(state_dir: Path, pid: str, change: Any) -> dict[str, Any] | None:

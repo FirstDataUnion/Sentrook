@@ -308,7 +308,7 @@ def create(
     cannot be read: the call is still held, but cannot be answered) and whether it was a repeat (no new notice).
     `job_digest`: the job's settings as `run_now.digest` gives them; `acted`: the held run had sent or written
     something before the held call; `run_key`: the held run, which never counts as one started for an answer. A
-    repeat takes the latest run's digest and run, and has acted when any of its runs had."""
+    repeat keeps the first digest it had, takes the latest run, and has acted when any of its runs had."""
     store = Store(state_dir)
     ref = passes.job_ref(job_id)
     match = match or {}
@@ -325,7 +325,9 @@ def create(
             same["held"] = [*(same.get("held") or []), {"sid": sid, "request_id": request_id}][
                 -MAX_HELD:
             ]
-            same["job_digest"] = job_digest
+            # the job as it was at the first notice: an edit since then still counts as a change
+            if not same.get("job_digest"):
+                same["job_digest"] = job_digest
             same["run_key"] = run_key
             same["acted"] = bool(same.get("acted")) or acted
             store.save_holds(data)
@@ -471,7 +473,10 @@ OUTCOMES = {
         "Sentrook: cron job {job} ran again but did not make the call you allowed; it made a different call, held "
         "as {hold}."
     ),
-    "none": "Sentrook: cron job {job} ran again but did not make the call you allowed, so nothing was let through.",
+    "none": (
+        "Sentrook: cron job {job} ran again without using your answer: it did not make that call, or made it "
+        "without needing a pass."
+    ),
 }
 
 

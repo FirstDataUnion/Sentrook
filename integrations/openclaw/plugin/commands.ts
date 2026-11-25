@@ -288,7 +288,8 @@ async function answerText(ctx: CommandContext, verb: "allow" | "deny" | "approve
   const cfg = configOf(ctx);
   // allow on a cron job's hold starts the job again now, unless a guard applies (runNow.ts). OpenClaw's state
   // directory as the gateway started with it, not from `.env`, which the agent can write.
-  const starter = ctx.runNow ?? new runNow.Adapter(openclawDir(ctx.env), cfg.mode === "observe");
+  const starter =
+    ctx.runNow ?? new runNow.Adapter(openclawDir(ctx.env), cfg.mode === "observe", runNow.runChild, runNow.openclawCommand(), cfg.stateDir);
   const done = await hold.answer(cfg.stateDir, verb, rest, o.by, new Date(), CMD, o.record, o.beforeWrite, starter);
   if (done.decision) await hold.settle(cfg.stateDir, done.held, done.decision);
   return done.reply;

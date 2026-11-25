@@ -77,6 +77,11 @@ export const ACTING_CATEGORIES = new Set([
   "sends_message_to_person",
   "writes_local_files",
 ]);
+/**
+ * How long a run the plugin started for an answer counts as still pending (so another answer does not start a second
+ * run of the job) until the plugin sees it end.
+ */
+const PENDING_RUN_MS = 3600_000;
 /** How much earlier than the answer a run may say it started and still count as the one started for it (clocks). */
 const RUN_SLACK_MS = 2_000;
 
@@ -484,6 +489,19 @@ export function counts(stateDir: string, now: Date): string {
 export const isId = (text: string) => ID.test(text);
 
 // ---- runs started for an answer (runNow.ts) -------------------------------------------------------------
+
+/**
+ * Whether a run the plugin started for an answer on job `ref` has not been seen to end yet (asked for within an hour):
+ * another answer must not start the job again meanwhile. An unreadable file says no.
+ */
+export function pendingRun(stateDir: string, ref: string | null, now: Date): boolean {
+  const data = new Store(stateDir).loadPasses();
+  if (!data) return false;
+  return liveRuns(data, now).some((r) => {
+    const asked = readTime(r.requested_at);
+    return r.job_ref === ref && !r.ended && asked !== null && now.getTime() - asked.getTime() < PENDING_RUN_MS;
+  });
+}
 
 /** Runs `change(data, record)` on the run record of pass `id` under the lock and saves; a copy of it, or null. */
 function changeRun(stateDir: string, id: string, change: (data: PassesFile, rec: Entry) => void): Entry | null {

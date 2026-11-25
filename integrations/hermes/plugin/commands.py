@@ -30,7 +30,7 @@ from typing import Any
 
 from . import grants, history, hold, owner_settings, passes, report, run_now, skill_review, snooze
 from .auth import missing_credentials
-from .config import PluginConfig, hermes_home, resolve_config
+from .config import PluginConfig, resolve_config
 from .owner import refusal
 from .planir import PLUGIN_VERSION, session_ref
 from .traffic import TrafficLog
@@ -269,7 +269,7 @@ def _answer(verb: str) -> Callable[..., str]:
         log = TrafficLog(cfg.traffic_log_path, cfg.traffic_log_max_bytes, cfg.traffic_log_enabled)
         # `allow` on a cron job's hold starts the job again now, unless a guard applies (`run_now`).
         starter = run_now.Adapter(
-            hermes_home(dict(env) if env is not None else dict(os.environ)),
+            run_now.home(dict(env) if env is not None else dict(os.environ)),
             cfg.state_dir,
             observe=cfg.mode == "observe",
             now=lambda: datetime.now(UTC),

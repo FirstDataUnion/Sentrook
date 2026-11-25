@@ -525,3 +525,28 @@ test("start reads OpenClaw's answer and never throws", async () => {
   assert.match((await runNow.start("job-j", runner("boom", 1), ["openclaw"])).why, /^exit 1: boom/);
   assert.equal((await runNow.start("job-j", runner(""), null)).why, "unavailable");
 });
+
+test("two holds of one job allowed back to back start one run", async () => {
+  const { r, id } = await heldSend();
+  receipt("held-run-2");
+  reply = { ...NAMED, entities: GENERAL };
+  const { rec } = await r.call(5, { target: "#general" });
+  finish("held-run-2");
+  assert.ok((await r.command("sentrook-allow", id)).startsWith("Running job job-j again now"));
+  const answer = await r.command("sentrook-allow", rec.hold.id);
+  assert.ok(answer.includes(`It was not run again now: ${RUN_NOW.reasons.running}.`), answer);
+  assert.equal(cliCalls().length, 1);
+});
+
+test("a job edited after the first notice counts as changed, even after a repeat", async () => {
+  const { r, id } = await heldSend();
+  putJob({ ...JOB, payload: { kind: "agentTurn", message: "Post it to #general instead." } });
+  receipt("held-run-2");
+  const { rec } = await r.call(2);
+  finish("held-run-2");
+  assert.equal(rec.hold.repeat, true);
+  assert.equal(rec.hold.id, id);
+  const answer = await r.command("sentrook-allow", id);
+  assert.ok(answer.includes(`It was not run again now: ${RUN_NOW.reasons.changed}.`), answer);
+  assert.deepEqual(cliCalls(), []);
+});

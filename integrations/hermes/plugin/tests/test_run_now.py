@@ -434,7 +434,9 @@ def test_the_job_starts_with_hermes_cron_run_through_the_launcher(tmp_path, monk
         def poll(self):
             return None
 
-        def wait(self):
+        def wait(self, timeout=None):
+            if timeout is not None:  # still running when the plugin stops waiting
+                raise run_now.subprocess.TimeoutExpired("hermes", timeout)
             return 0
 
     monkeypatch.setattr(hold, "_hermes_launcher", lambda: FAKE_LAUNCHER)
@@ -470,3 +472,50 @@ def test_with_neither_it_cannot_start(tmp_path, monkeypatch):
 
 def test_the_plugin_registers_the_run_end_hook(h):
     assert h.ctx.hooks["on_session_end"] is plugin.on_session_end
+
+
+def test_a_launcher_that_exits_with_an_error_at_once_did_not_start_the_run(tmp_path, monkeypatch):
+    class Popen:
+        def __init__(self, argv, stdout=None, **kw):
+            stdout.write(b"Failed to run job: already being fired\n")
+            stdout.flush()
+
+        def wait(self, timeout=None):
+            return 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(hold, "_hermes_launcher", lambda: FAKE_LAUNCHER)
+    monkeypatch.setattr(hold, "_other_home", lambda: None)
+    monkeypatch.setattr(run_now.subprocess, "Popen", Popen)
+    ok, how, why = run_now.start("job-j", tmp_path)
+    assert (ok, how) == (False, "hermes cron run")
+    assert why == "hermes cron run exit 1: Failed to run job: already being fired"
+
+
+def test_two_holds_of_one_job_allowed_back_to_back_start_one_run(h):
+    first = held(h, 1)
+    h.reply = {**NAMED, "entities": {"E1": {"kind": "channel", "display": "discord:#general"}}}
+    _out, rec = call(h, 1, cid="c2", target="discord:#general")
+    second = rec["hold"]["id"]
+    assert slash(h, f"allow {first}").startswith("Running job job-j again now")
+    reply = slash(h, f"allow {second}")
+    assert f"It was not run again now: {RUN_NOW['reasons']['running']}." in reply
+    assert h.started == ["job-j"]
+    # once the started run has ended, another answer may start the job again
+    end_run(h, 2)
+    h.reply = dict(NAMED)
+    third = held(h, 3)
+    assert slash(h, f"allow {third}").startswith("Running job job-j again now")
+    assert h.started == ["job-j", "job-j"]
+
+
+def test_a_job_edited_after_the_first_notice_counts_as_changed_even_after_a_repeat(h):
+    hid = held(h, 1)
+    change_job(h, prompt="Post the daily brief to #general instead.")
+    _out, rec = call(h, 2)  # the same call held again: a repeat of the waiting hold
+    assert rec["hold"]["repeat"] is True and rec["hold"]["id"] == hid
+    reply = slash(h, f"allow {hid}")
+    assert f"It was not run again now: {RUN_NOW['reasons']['changed']}." in reply
+    assert h.started == []

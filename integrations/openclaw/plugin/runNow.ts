@@ -11,7 +11,8 @@
  * - A run is known by OpenClaw's run receipt (`cron_run_receipts`): the running receipt of a job names the run id that
  *   `openclaw cron run` returned (`request_run_id`). That id is what a started run's pass is bound to (`runKey`).
  * - `guard` says why a run is not started: observe mode, the job cannot be read, it is gone, finished (a one-shot that
- *   ran), disabled, running now (a running receipt), or changed since the hold.
+ *   ran), disabled, running now (a running receipt, or a run the plugin started for an earlier answer that has not
+ *   ended), or changed since the hold.
  * - `start` runs `openclaw cron run <job> --json` as a child process: an external plugin cannot call the gateway's
  *   `cron.run` itself. It is the same OpenClaw the gateway runs (`process.argv[1]`), else `openclaw` on the PATH. The
  *   command asks the gateway to queue the run and prints its run id; the plugin waits for that answer without blocking
@@ -22,6 +23,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+
+import * as passes from "./passes.ts";
 
 type Entry = Record<string, any>;
 
@@ -149,7 +152,7 @@ export function activeRun(openclawDir: string, jobId: string): { runKey: string;
 }
 
 /** Why the job of `hold` is not started now (a key of the shared fixture's `run_now.reasons`); null when it may be. */
-export function guard(openclawDir: string, hold: Entry, observe: boolean): string | null {
+export function guard(openclawDir: string, hold: Entry, observe: boolean, stateDir: string | null = null): string | null {
   if (observe) return "observe";
   const jobId = typeof hold.job_id === "string" ? hold.job_id : null;
   const row = jobId ? readJob(openclawDir, jobId) : null;
@@ -160,6 +163,8 @@ export function guard(openclawDir: string, hold: Entry, observe: boolean): strin
     return obj(row.job.schedule).kind === "at" && row.state.lastRunAtMs != null ? "terminal" : "paused";
   }
   if (activeRun(openclawDir, jobId!) !== null || typeof row.state.runningAtMs === "number") return "running";
+  // a run the plugin started for an earlier answer that it has not seen end (it may still be queued)
+  if (stateDir !== null && passes.pendingRun(stateDir, hold.job_ref ?? null, new Date())) return "running";
   if (!hold.job_digest) return "unknown";
   if (hold.job_digest !== digest(row.job)) return "changed";
   return null;
@@ -262,16 +267,24 @@ export class Adapter {
   private readonly observe: boolean;
   private readonly run: Runner;
   private readonly command: string[] | null;
+  private readonly stateDir: string | null;
 
-  constructor(openclawDir: string, observe: boolean, run: Runner = runChild, command: string[] | null = openclawCommand()) {
+  constructor(
+    openclawDir: string,
+    observe: boolean,
+    run: Runner = runChild,
+    command: string[] | null = openclawCommand(),
+    stateDir: string | null = null,
+  ) {
     this.openclawDir = openclawDir;
+    this.stateDir = stateDir;
     this.observe = observe;
     this.run = run;
     this.command = command;
   }
 
   guard(hold: Entry): string | null {
-    return guard(this.openclawDir, hold, this.observe);
+    return guard(this.openclawDir, hold, this.observe, this.stateDir);
   }
 
   start(hold: Entry): Promise<Started> {

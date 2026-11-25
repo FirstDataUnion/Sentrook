@@ -8,10 +8,14 @@ by the plugin itself: the job runs again, and the one-use pass the answer set le
   Hermes module to read it. A hold keeps a digest of the job's settings (`digest`, over `SETTINGS`: what the job does
   and where it delivers, not its run state), so a job changed since the hold is not run again.
 - `guard` says why a run is not started: observe mode, the job cannot be read, it is gone, finished (`completed` or
-  `error`, which Hermes will not run), paused, running now (a fresh fire or run claim), or changed since the hold.
+  `error`, which Hermes will not run), paused, running now (a fresh fire or run claim, or a run the plugin started for
+  an earlier answer that has not ended), or changed since the hold.
+- The job file is the one under the current turn's Hermes home (Hermes's `get_hermes_home`, which a profile-scoped
+  turn sets), else under `HERMES_HOME` (`home`).
 - `start` runs `hermes cron run <job>` through Hermes's `hermes` launcher, as notices run `hermes send`
   (`hold._hermes_launcher`), in a process of its own that outlives the answer: Hermes 0.23 runs the whole job inside
   that command. It is pinned to this process's Hermes home and gets no cron delivery variables, as `hermes send` is.
+  A command that exits with an error within `EARLY_EXIT` seconds (Hermes refused the run) counts as not started.
   Without the launcher, or for a turn another profile's home is serving, Hermes's own `cron.jobs.trigger_job` marks
   the job due now for the scheduler's next tick. No extra prompt is ever given: the job runs as it is.
 """
@@ -29,7 +33,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import hold
+from . import hold, passes
+from .config import hermes_home
 from .store import read_time
 
 logger = logging.getLogger("sentrook")
@@ -49,17 +54,35 @@ SETTINGS = (
     "provider",
     "base_url",
     "enabled_toolsets",
+    "interpreter",
+    "reasoning_effort",
+    "timezone",
     "context_from",
+    "attach_to_session",
     "deliver",
     "failure_deliver",
+    "origin",
     "monitor_script",
     "monitor_url",
 )
+#: Seconds to wait for `hermes cron run` to refuse the run (an error exit) before it counts as started.
+EARLY_EXIT = 2.0
 #: Hermes's lease on a firing job (`fire_claim`) is renewed while the run lives; older than this, the run is gone.
 FIRE_CLAIM_TTL = timedelta(seconds=300)
 #: A one-shot's `run_claim` lasts longer (Hermes's own default upper bound).
 RUN_CLAIM_TTL = timedelta(seconds=1800)
 TERMINAL = ("completed", "error")
+
+
+def home(env: dict[str, str]) -> Path:
+    """The Hermes home whose job file holds the current turn's jobs: Hermes's own answer for the turn, else
+    `HERMES_HOME` as the plugin reads it."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:  # noqa: BLE001 - an older or stand-in Hermes
+        return hermes_home(env)
 
 
 def read_job(home: Path, job_id: str) -> dict[str, Any] | None:
@@ -108,9 +131,15 @@ def _claimed(claim: Any, now: datetime, ttl: timedelta) -> bool:
     return timedelta(0) <= now - at < ttl
 
 
-def guard(home: Path, hold_entry: dict[str, Any], observe: bool, now: datetime) -> str | None:
+def guard(
+    home: Path,
+    hold_entry: dict[str, Any],
+    observe: bool,
+    now: datetime,
+    state_dir: Path | None = None,
+) -> str | None:
     """Why the job of `hold_entry` is not started now (a key of the shared fixture's `run_now.reasons`); None when it
-    may be."""
+    may be. `state_dir`: the plugin's, for the runs it started (`passes.pending_run`)."""
     if observe:
         return "observe"
     job_id = hold_entry.get("job_id")
@@ -126,6 +155,8 @@ def guard(home: Path, hold_entry: dict[str, Any], observe: bool, now: datetime) 
     if _claimed(job.get("fire_claim"), now, FIRE_CLAIM_TTL) or _claimed(
         job.get("run_claim"), now, RUN_CLAIM_TTL
     ):
+        return "running"
+    if state_dir is not None and passes.pending_run(state_dir, hold_entry.get("job_ref"), now):
         return "running"
     kept = hold_entry.get("job_digest")
     if not kept:
@@ -164,10 +195,28 @@ def _with_launcher(launcher: str, job_id: str, log: Path) -> tuple[bool, str]:
             )
     except Exception as exc:  # noqa: BLE001 - could not start it
         return False, hold._clean(exc, 200)
+    try:
+        code = proc.wait(timeout=EARLY_EXIT)
+    except subprocess.TimeoutExpired:
+        code = None  # still running: the run is under way
+    if code:
+        return False, f"hermes cron run exit {code}: {hold._clean(_last_line(log), 200)}"
     _children[:] = [p for p in _children if p.poll() is None]
     _children.append(proc)
     threading.Thread(target=_reap, args=(proc,), name="sentrook-run-now", daemon=True).start()
     return True, ""
+
+
+def _last_line(log: Path) -> str:
+    try:
+        lines = [
+            ln
+            for ln in log.read_text(encoding="utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
+    except OSError:
+        return ""
+    return lines[-1] if lines else ""
 
 
 def _in_process(job_id: str) -> tuple[bool, str]:
@@ -201,7 +250,7 @@ class Adapter:
         self.home, self.state_dir, self.observe, self.now = home, state_dir, observe, now
 
     def guard(self, hold_entry: dict[str, Any]) -> str | None:
-        return guard(self.home, hold_entry, self.observe, self.now())
+        return guard(self.home, hold_entry, self.observe, self.now(), self.state_dir)
 
     def start(self, hold_entry: dict[str, Any]) -> tuple[bool, str | None, str]:
         """(started, the host's run id: none on Hermes, why not)."""

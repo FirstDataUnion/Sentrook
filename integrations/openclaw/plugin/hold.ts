@@ -293,8 +293,9 @@ function createLocked(stateDir: string, hold: NewHold, now: Date, record: Record
     same.count = Number(same.count ?? 1) + 1;
     same.last_seen_at = iso(now);
     same.held = [...(Array.isArray(same.held) ? same.held : []), held].slice(-MAX_HELD);
-    // the latest run's job and run; acted when any of its runs had
-    same.job_digest = hold.jobDigest ?? null;
+    // the job as it was at the first notice (an edit since still counts as a change), the latest run, and acted when
+    // any of its runs had
+    if (!same.job_digest) same.job_digest = hold.jobDigest ?? null;
     same.run_key = hold.runKey ?? null;
     same.acted = !!same.acted || !!hold.acted;
     store.saveHolds(data);
@@ -379,7 +380,7 @@ export const OUTCOMES: Record<string, string> = {
   held:
     "Sentrook: cron job {job} ran again but did not make the call you allowed; it made a different call, held " +
     "as {hold}.",
-  none: "Sentrook: cron job {job} ran again but did not make the call you allowed, so nothing was let through.",
+  none: "Sentrook: cron job {job} ran again without using your answer: it did not make that call, or made it without needing a pass.",
 };
 
 /**
