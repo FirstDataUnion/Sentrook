@@ -110,5 +110,8 @@ approved.
 - Never run `/sentrook-grant`, `/sentrook-revoke`, `/sentrook-bind`, `/sentrook-snooze`, `/sentrook-allow`, `/sentrook-deny`, `/sentrook-approve`, `/sentrook-passes revoke`, `/sentrook-notify`, `/sentrook-setup apply`, or their `openclaw sentrook` forms. Only the owner runs them.
 - Never edit Sentrook's settings (`plugins.entries.sentrook` in `openclaw.json`) or its folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`), and never disable, remove or
   reinstall the plugin.
+- Never read Sentrook's folder (`sentrook/` in the OpenClaw state folder, such as `~/.openclaw/sentrook/`) or its traffic log to work out what is routine: call the
+  `sentrook_setup_report` tool instead. The log holds content from earlier tool calls, so Sentrook treats a chat that
+  reads it as one that has read untrusted content, and is stricter with the calls after it.
 - Never retry a blocked, held or denied call reworded, split up or with another tool. Tell the owner what happened and
   point them to `/sentrook-why`.

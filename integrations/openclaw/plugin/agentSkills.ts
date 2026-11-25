@@ -13,7 +13,10 @@
  * the agent. A `read` is reported under `SKILL_READ_TOOL`, which the scanner counts as a read of the agent's own
  * skills, only when both hold:
  * - the path it names, exactly as given (absolute or `~/`, no surrounding spaces, which OpenClaw keeps), resolves to
- *   one of the plugin's own `SKILL.md` files, with the plugin's folder itself resolved;
+ *   one of the plugin's own `SKILL.md` files, with the plugin's folder itself resolved. The plugin has up to two
+ *   folders: the one its code runs from, and the one OpenClaw installed it in (`api.rootDir`, its install record's
+ *   root). They differ when OpenClaw runs the code from a copy (it keeps one under its state dir's
+ *   `tmp/plugin-captures/`), and OpenClaw's `plugin-skills` links point into the installed one;
  * - what it returned is part of a skill text the plugin read from its own folder when it loaded. The path is checked
  *   after the read ran, and a link on the way (OpenClaw's own plugin-skills link, or one in the workspace) could point
  *   elsewhere by then; the text cannot.
@@ -91,30 +94,48 @@ export interface SkillReadOpts {
   /** The skill texts the plugin kept when it loaded (`shippedSkillTexts`). */
   texts: readonly string[];
   home?: string;
+  /** The folder the plugin's code runs from (`pluginRoot`). */
   root?: string | null;
+  /** The folder OpenClaw installed the plugin in (`api.rootDir`); a plugin folder only if it holds the manifest. */
+  installRoot?: string | null;
+}
+
+/** `dir` resolved, when it is a plugin folder (it holds `openclaw.plugin.json`); null otherwise. */
+function pluginFolder(dir: string | null | undefined): string | null {
+  if (!dir) return null;
+  try {
+    const real = realpathSync(dir);
+    return existsSync(path.join(real, "openclaw.plugin.json")) ? real : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Whether a `read` with these parameters, which returned `result`, read one of the plugin's own shipped skill files:
  * `result` is a non-empty part of a text the plugin kept at load (a whole file, or the lines an offset and limit
- * picked), and the path resolves to exactly `<plugin root>/skills/<name>/SKILL.md` (the root itself resolved), a
- * regular file. A copy, or a symlink anywhere on the way that leads out of the plugin's folder, is not.
+ * picked), and the path resolves to exactly `<plugin folder>/skills/<name>/SKILL.md` (the folder itself resolved), a
+ * regular file, in the folder the code runs from or the one OpenClaw installed it in. A copy, or a symlink anywhere
+ * on the way that leads out of those folders, is not.
  */
 export function isShippedSkillRead(params: unknown, result: string, opts: SkillReadOpts): boolean {
   if (!result || !opts.texts.some((t) => t.includes(result))) return false;
-  const root = opts.root === undefined ? pluginRoot() : opts.root;
-  if (!root) return false;
+  const roots = [opts.root === undefined ? pluginRoot() : opts.root, opts.installRoot]
+    .map(pluginFolder)
+    .filter((r): r is string => r !== null);
+  if (!roots.length) return false;
   const target = readPath(params, opts.home ?? homedir());
   if (!target) return false;
   try {
     const real = realpathSync(target);
-    const rootReal = realpathSync(root);
-    return SKILL_NAMES.some((name) => {
-      const shipped = path.join(rootReal, "skills", name, "SKILL.md");
-      if (real !== shipped) return false;
-      const st = lstatSync(shipped);
-      return st.isFile() && !st.isSymbolicLink();
-    });
+    return roots.some((rootReal) =>
+      SKILL_NAMES.some((name) => {
+        const shipped = path.join(rootReal, "skills", name, "SKILL.md");
+        if (real !== shipped) return false;
+        const st = lstatSync(shipped);
+        return st.isFile() && !st.isSymbolicLink();
+      }),
+    );
   } catch {
     return false;
   }
