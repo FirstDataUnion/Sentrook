@@ -125,8 +125,28 @@ LONG = [
             + " set y"
         ),
     ),
-    # The approval-loosening routes read a parsed command, and a command is parsed up to
-    # `MAX_PARSE_CHARS`: the same shapes at that length.
+    # An approval loosening behind options, past the parse limit: its words are read whole, also
+    # in the quote-aware split, and each command of a chain.
+    (
+        "openclaw config set behind options",
+        lambda d=1: ex(
+            _repeat("openclaw ", "-x y ", " config set tools.exec.security full", size=SIZE // d)
+        ),
+    ),
+    (
+        "openclaw config set of quoted JSON behind options",
+        lambda d=1: ex(
+            _repeat(
+                "openclaw ", "-x y ", ' config set tools.exec \'{"security": "full"}\'', SIZE // d
+            )
+        ),
+    ),
+    (
+        "a chain of openclaw config sets",
+        lambda d=1: ex(_repeat("", "openclaw -x y config set a.b c; ", size=SIZE // d)),
+    ),
+    # A command is parsed up to `MAX_PARSE_CHARS`, and the approval-loosening routes read a parsed
+    # command's segments (a longer one's words, as the shapes above): the same shapes at that length.
     *(
         (f"{name}, parsed", lambda d=1, make=make: ex(make(MAX_PARSE_CHARS // d)))
         for name, make in [
@@ -214,8 +234,6 @@ def test_a_long_chain_inside_a_shell_script_scans_fast():
 # --------------------------------------------------------------------------- fail closed
 
 RUNS = [1, 10, 1000, 5000]
-#: The approval-loosening routes read a parsed command: these runs stay under `MAX_PARSE_CHARS`.
-PARSED_RUNS = [1, 10, 100, 1000]
 
 
 @pytest.mark.parametrize("n", RUNS)
@@ -254,15 +272,15 @@ def test_an_approvals_config_set_behind_a_long_option_run_is_found(n):
     assert "selfmod.host_approvals" in {c.reason for c in env.contributions}
 
 
-@pytest.mark.parametrize("n", PARSED_RUNS)
+@pytest.mark.parametrize("n", RUNS)
 def test_an_approval_loosening_behind_a_long_option_run_takes_the_floor(n):
+    """Parsed up to `MAX_PARSE_CHARS`, read as words past it: the floor either way."""
     command = "openclaw " + "-x y " * n + "config " + "-x set " * n + "set tools.exec.security full"
-    assert len(command) <= MAX_PARSE_CHARS
     _, env = run(ex(command))
     assert "guardrail.approval_loosening" in floor_reasons(env)
 
 
-@pytest.mark.parametrize("n", PARSED_RUNS)
+@pytest.mark.parametrize("n", RUNS)
 def test_an_exec_policy_preset_behind_a_long_option_run_takes_the_floor(n):
     command = "openclaw " + "-x y " * n + "exec-policy " + "-x preset " * n + "preset yolo"
     _, env = run(ex(command))

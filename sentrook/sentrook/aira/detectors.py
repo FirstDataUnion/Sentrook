@@ -42,6 +42,7 @@ from ..prepare.entities import (
     provider_name,
     repos_named_in,
     resolve_token,
+    shell_segments,
 )
 from ..prepare.secret_like import DETECTED, PLACEHOLDER, secret_carried
 from ..prepare.sibling_join import sibling_writes
@@ -4047,6 +4048,27 @@ def _approval_loosening(
                 produced.append(rendered)
             printed[index] = rendered
             previous = line
+        if not shape.parse_ok:
+            # A command the scan does not parse (one over the parse limit, padded with options
+            # to get there, or one whose parse it does not trust). The host CLIs are read from its
+            # words two ways, and what either finds counts: split on whitespace, as the other
+            # guardrail CLI routes read it, and in preparation's light split, which keeps a quoted
+            # value (`'{"security": "full"}'`) one word and reads each command of a chain (`cd x &&
+            # openclaw …`) on its own. A shell `-c` script in the light split is read as a command.
+            fallback = (
+                _cli_segments(a, lists)
+                if depth == 0
+                else [([_shell_word(w) for w in command.split()], command)]
+            )
+            for words in shell_segments(command):
+                fallback.append((words, " ".join(words)))
+                script = _shell_script(words, shells)
+                if script is not None and depth < 3:
+                    shell(script, cwd, depth + 1)
+            for words, line in fallback:
+                tokens = _cli_tokens(words, cli_heads, lists)
+                if tokens and tokens[0] in cli_heads:
+                    cli(tokens, line, command)
         # Inline code anywhere in the command (`python3 -c`, `node -e`, a heredoc script).
         code(command, cwd, depth)
         env = _match_any(rules.env, command)
