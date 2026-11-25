@@ -830,7 +830,8 @@ header (`X-Desk: …`); a number with no such cue word, such as an order number 
 hosts and email addresses are kept,
 because the scanner needs them to judge where data is going. So is code that only reads a secret from where it is
 kept, such as `os.environ["API_KEY"]`, `config.token` or `sys.argv[1]`: it names the place, not the secret. The name of a credential field, such as
-`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too. Your
+`api_key:api_secret` quoted from an API's docs or `password: your_password`, is kept too, and so is a quoted
+example value that only stands in for one, such as `"access_token": "ya29.a0..."` or `"token": "REDACTED"`. Your
 files, messages and tool output can still contain other personal information, and that is sent as it is.
 
 A local copy of each scan (the redacted request and the response) is kept in `~/.hermes/sentrook/traffic.jsonl`,

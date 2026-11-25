@@ -1,4 +1,4 @@
-"""The scanner's second redaction pass (`prepare.redact`, redact-v12): one positive per secret shape,
+"""The scanner's second redaction pass (`prepare.redact`, redact-v13): one positive per secret shape,
 the forms the plugins also catch (URL passwords, credential keys in JSON-encoded text and in parsed
 objects, prose, whole private keys, command-line password flags, access codes, PINs and passport numbers
 named by a cue word or key, random values under a key or header), the negatives that must survive (emails, hosts, placeholders, ordinary prose), parity
@@ -17,7 +17,13 @@ from pathlib import Path
 import pytest
 from linear_time import assert_linear
 
-from sentrook.prepare.redact import PLACEHOLDER, REDACTION_VERSION, redact_text, second_pass
+from sentrook.prepare.redact import (
+    PLACEHOLDER,
+    REDACTION_VERSION,
+    protected_spans,
+    redact_text,
+    second_pass,
+)
 
 P = PLACEHOLDER
 
@@ -102,7 +108,7 @@ def test_second_pass_walks_and_never_mutates():
     assert obj["new_inputs"][0]["content"] == f"token {secret}"  # input untouched
     assert out["n"] == 3 and out["flag"] is None and secret in out
     assert second_pass(out) == (out, 0)  # idempotent: the placeholder never matches
-    assert REDACTION_VERSION == "redact-v12"
+    assert REDACTION_VERSION == "redact-v13"
 
 
 def test_two_shapes_on_one_value_count_once():
@@ -539,9 +545,18 @@ def test_rules_are_the_plugins_rules():
         "_FIELD_NAME_VALUE",
         "_PLACEHOLDER_VALUE",
         "_SHORT_WORD",
+        "_REDACTED_WORD",
+        "_MASK_RUN",
+        "_PASSWORD_KEY",
+        "_TOKEN_RUN",
+        "_PLAIN_WORD",
+        "_QUOTED_REST",
+        "_ELIDED",
     ):
         assert getattr(redact, name).pattern == getattr(plugin, name).pattern, name
     assert redact._CODE_RECEIVERS == plugin._CODE_RECEIVERS
+    assert redact._CREDENTIAL_NOUNS == plugin._CREDENTIAL_NOUNS
+    assert redact._PLACEHOLDER_WORDS == plugin._PLACEHOLDER_WORDS
     assert redact._CODE_READERS == plugin._CODE_READERS
     # The cue and key rules: access codes, PINs, identifiers and random values.
     assert [(k, rx.pattern) for k, rx, _ in redact._CUES] == [
@@ -797,3 +812,64 @@ def test_field_names_match_the_hermes_plugin():
 def test_an_object_value_under_a_credential_key_is_still_replaced_whole():
     out, n = second_pass({"api_key": "api_secret", "password": "sunshine"})
     assert n == 2 and out == {"api_key": P, "password": P}
+
+
+# A quoted value that stands in for a secret: an example cut short with an ellipsis, the word REDACTED, a run of one
+# symbol, or a phrase that says what it stands for (redact-v13). Values are built at run time.
+_GOOGLE, _REFRESH = "ya" + "29.", "1/" + "/0"
+STAND_IN_STAY = [
+    f'"access_token": "{_GOOGLE}a0..."',
+    f'"refresh_token": "{_REFRESH}g..."',
+    '"api_key": "xxxxxxxx"',
+    '"token": "REDACTED"',
+    '"access_token": "short-lived token"',
+    f'"access_token": "{_GOOGLE}<...>"',
+    '"client_secret": "••••••••"',
+    "token: REDACTED",
+    '"api_key": "your api key"',
+    f'"api_key": "{_R40[:10]}..."',
+    '"password": "••••••••"',
+    f'{{"access_token": "{_GOOGLE}a0...", "refresh_token": "{_REFRESH}g...", "token_type": "Bearer"}}',
+]
+STAND_IN_REPLACE = [
+    (f'"access_token": "{_GOOGLE}a0{_R40}"', _R40),
+    (f'"access_token": "{_GOOGLE}a0{_R40}..."', _R40),
+    (f'"api_key": "{_R40[:22]}..."', _R40[:22]),
+    (f"the password is {_R40[:9]}...", _R40[:9]),
+    ('"password": "' + "1" * 8 + '"', "1" * 8),
+    ('"password": "' + " ".join(["correct", "horse", "battery", "staple"]) + '"', "horse battery"),
+    ('"password": "your new password is ' + "Tr0ub4" + 'dor9"', "Tr0ub4dor9"),
+    ('"password": "here comes the sun"', "here comes the sun"),
+    ('"password": "secret garden"', "secret garden"),
+    ('"password": "' + "hun" + 'ter2..."', "hunter2"),
+    ('"api_key": "nobody knows this secret"', "nobody knows this secret"),
+    ('"api_key": "token Kx"', "token Kx"),
+    (f'"api_key": "{_R40[:11]}..."', _R40[:11]),
+    ('"session_token": "s%3A' + 'abc..."', "s%3Aabc"),
+    ('"password": "' + "!" * 10 + '"', "!" * 10),
+    ('--token "' + "hun" + 'ter2..."', "hunter2"),
+    (f'--api-key "{_R40[:15]}…"', _R40[:15]),
+    ('mysql -u root -p"' + "Tr0ub4" + 'dor&3..."', "Tr0ub4dor"),
+]
+
+
+@pytest.mark.parametrize("text", STAND_IN_STAY)
+def test_a_stand_in_under_a_key_is_not_a_secret(text):
+    for form in (text, _as_result(text)):
+        assert redact_text(form) == (form, 0)
+        assert protected_spans(form) == []
+
+
+@pytest.mark.parametrize(("text", "secret"), STAND_IN_REPLACE)
+def test_a_full_value_under_the_same_key_is_still_replaced(text, secret):
+    for form in (text, _as_result(text)):
+        out, n = redact_text(form)
+        assert n >= 1 and secret not in out, out
+
+
+def test_stand_ins_match_the_hermes_plugin():
+    plugin = _plugin_module().Redactor("standard", "parity")
+    for text in STAND_IN_STAY + [t for t, _ in STAND_IN_REPLACE]:
+        for form in (text, _as_result(text)):
+            theirs = re.sub(r"⟦secret:[a-z_]+:[0-9a-f]{4}⟧", P, plugin.string(form))
+            assert redact_text(form)[0] == theirs, form

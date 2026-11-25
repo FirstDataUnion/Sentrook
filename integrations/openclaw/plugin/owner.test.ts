@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { OWNER_SCOPES, type OwnerContext, ownerCommand, ownerGate, refusal } from "./owner.ts";
+import { OWNER_SCOPES, type OwnerContext, ownerCommand, ownerGate, OwnerRefused, refusal, roomRefusal } from "./owner.ts";
 import { TrafficLog } from "./traffic.ts";
 
 const SALT = "test-salt";
@@ -81,7 +81,12 @@ test("the owner runs the command and it is audited", async () => {
 test("an owner from a chat channel is audited by a salted hash of the sender", async () => {
   const h = harness();
   const def = ownerCommand({ name: "snooze", description: "Snooze", handler: () => ({ text: "ok" }) }, h);
-  const { ctx } = adminCtx({ senderId: "telegram:42", gatewayClientScopes: undefined, channel: "telegram" });
+  const { ctx } = adminCtx({
+    senderId: "telegram:42",
+    gatewayClientScopes: undefined,
+    channel: "telegram",
+    sessionKey: "agent:main:telegram:direct:42",
+  });
   assert.deepEqual(await def.handler(ctx), { text: "ok" });
   const [rec] = h.records();
   assert.equal(rec.outcome, "allowed");
@@ -224,7 +229,7 @@ test("a failure inside the owner check refuses and is audited", async () => {
 test("odd context values do not break the check or leak a sender id", async () => {
   const h = harness();
   const def = ownerCommand({ name: "grant", description: "Grant", handler: () => ({ text: "ok" }) }, h);
-  const { ctx } = adminCtx({ senderId: 42, gatewayClientScopes: "operator.admin", channel: { id: "x" } });
+  const { ctx } = adminCtx({ senderId: 42, gatewayClientScopes: "operator.admin", channel: { id: "x" }, sessionKey: "agent:main:main" });
   assert.deepEqual(await def.handler(ctx), { text: "ok" });
   const [rec] = h.records();
   assert.deepEqual([rec.outcome, rec.basis, rec.sender_ref, rec.channel], ["allowed", ["sender_is_owner"], null, null]);
@@ -260,4 +265,50 @@ test("the refusal names every route an owner command runs from: the owner's own 
   assert.match(text, /a sender in commands\.ownerAllowFrom, which the first pairing approval fills/);
   assert.match(text, /from the Control UI/);
   assert.match(text, /openclaw sentrook <command> on the machine/);
+});
+
+test("the owner in a group or channel room is refused before the handler runs, and audited with the room", async () => {
+  const h = harness();
+  let ran = false;
+  const def = ownerCommand(
+    {
+      name: "history",
+      description: "History",
+      handler: () => {
+        ran = true;
+        return { text: "scans" };
+      },
+    },
+    h,
+  );
+  const room = { senderId: "123", channel: "discord", gatewayClientScopes: undefined, sessionKey: "agent:main:discord:channel:9" };
+  assert.deepEqual(await def.handler(adminCtx(room).ctx), { text: roomRefusal("history") });
+  assert.equal(ran, false);
+  const [rec] = h.records();
+  assert.deepEqual([rec.verb, rec.outcome, rec.basis, rec.reason], ["history", "refused", ["sender_is_owner"], "group_chat"]);
+  assert.ok(rec.sender_ref);
+});
+
+test("ownerGate refuses a room and a chat it cannot tell from one; its writes throw", () => {
+  const h = harness();
+  const telegram = { senderId: "123", channel: "telegram", gatewayClientScopes: undefined };
+  const group = ownerGate(adminCtx({ ...telegram, sessionKey: "agent:main:telegram:group:-100" }).ctx, "grant", h);
+  assert.deepEqual([group.owner, group.reason], [false, "group_chat"]);
+  assert.throws(() => group.beforeWrite(), OwnerRefused);
+  const noKey = ownerGate(adminCtx(telegram).ctx, "grant", h);
+  assert.deepEqual([noKey.owner, noKey.reason], [false, "unknown_chat"]);
+  // The main session is the owner's DM unless OpenClaw routes rooms into it.
+  const main = adminCtx({ ...telegram, sessionKey: "agent:main:main" }).ctx;
+  assert.equal(ownerGate(main, "grant", h).owner, true);
+  const shared = ownerGate(main, "grant", h, () => ({ session: { groupScope: "main" } }));
+  assert.deepEqual([shared.owner, shared.reason], [false, "unknown_chat"]);
+  assert.deepEqual(
+    h.records().map((r) => [r.outcome, r.reason ?? null]),
+    [
+      ["refused", "group_chat"],
+      ["refused", "unknown_chat"],
+      ["allowed", null],
+      ["refused", "unknown_chat"],
+    ],
+  );
 });

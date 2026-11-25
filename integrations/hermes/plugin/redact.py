@@ -105,6 +105,25 @@ _FIELD_NAME_VALUE = re.compile(
 # A placeholder that masks a value (`xxxxxxxx`), and a short lower-case word (`changeme`, `required`, `basic`).
 _PLACEHOLDER_VALUE = re.compile(r"(?i)x{3,}")
 _SHORT_WORD = re.compile(r"[a-z]{1,12}")
+# A value that stands in for a secret rather than being one, under any key: the word REDACTED (maybe in brackets), or
+# a mask of three or more `*`, `•` or `·`. A run of another symbol, letter or digit may be a password (`!!!!!!!!`).
+_REDACTED_WORD = re.compile(r"(?i)[(\[<{]?redacted[)\]>}]?")
+_MASK_RUN = re.compile(r"([*•·])\1{2,}")
+# A key or cue word that names a password (`password`, `db_pass`, `passphrase`, `pwd`, `pin`): its value is what a
+# person typed, so neither a short value before an ellipsis nor a phrase is read as a stand-in under it.
+_PASSWORD_KEY = re.compile(r"(?i)pass|pwd|(?<![a-z])pin(?![a-z])")
+# A quoted string's content from where a value starts to the closing quote (escaped or not), and a token cut short
+# with an ellipsis, as docs abridge one: up to ten token characters, then `...`, `…`, `<...>` or `[...]`
+# (`ya29.a0...`, `1//0g…`). A longer start, or a symbol other than `. _ / + -` in it, may be the secret itself.
+_QUOTED_REST = re.compile(r"(?<=[\"'])[^\"'\\\n]{1,200}(?=\\{0,8}[\"'])")
+_ELIDED = re.compile(r"[A-Za-z0-9._/+-]{0,10}(?:\.{3}|…|<(?:\.{3}|…)>|\[(?:\.{3}|…)\])")
+# A phrase that says what a token or key is (`short-lived token`, `your api key`, `paste your key here`): two to four
+# plain words (letters, maybe hyphenated, or a short number), no run of twelve or more token characters, and either up
+# to three words ending in a credential noun or a placeholder word with a credential noun anywhere in it.
+_TOKEN_RUN = re.compile(r"[A-Za-z0-9_+/=.~-]{12}")
+_PLAIN_WORD = re.compile(r"[(\[<{\"'~*]*(?:[A-Za-z][A-Za-z'’-]*|[0-9]{1,4})[)\]>}\",.;:!?*]*")
+_CREDENTIAL_NOUNS = frozenset("token tokens key keys secret secrets credential credentials".split())
+_PLACEHOLDER_WORDS = frozenset("your here example placeholder".split())
 
 
 def _is_ordinary(v: str) -> bool:
@@ -131,9 +150,45 @@ def _names_a_field(v: str) -> bool:
     return _CREDENTIAL_FIELD.search(re.sub(r"(?i)[_-]?here\Z", "", v)) is not None
 
 
+def _stands_in(v: str) -> bool:
+    """Plainly a stand-in for a secret under any key: the word REDACTED or a mask (`********`)."""
+    return _REDACTED_WORD.fullmatch(v) is not None or _MASK_RUN.fullmatch(v) is not None
+
+
+def _describes_a_credential(v: str) -> bool:
+    """A phrase that says what a token or key is rather than being one (`_CREDENTIAL_NOUNS`)."""
+    words = v.split()
+    if not 2 <= len(words) <= 4 or _TOKEN_RUN.search(v) is not None:
+        return False
+    if not all(_PLAIN_WORD.fullmatch(w) for w in words):
+        return False
+    names = [re.sub(r"[^a-z0-9'’-]", "", w.lower()) for w in words]
+    if len(names) <= 3 and names[-1] in _CREDENTIAL_NOUNS:
+        return True
+    return any(n in _PLACEHOLDER_WORDS for n in names) and any(
+        n in _CREDENTIAL_NOUNS for n in names
+    )
+
+
 def _text_key_value(v: str) -> bool:
-    """A value after a key in text: a key's value that does not name a field."""
-    return _key_value(v) and not _names_a_field(v)
+    """A value after a key in text: a key's value that does not name a field or stand in for a secret."""
+    return _key_value(v) and not _names_a_field(v) and not _stands_in(v)
+
+
+def _quoted_stand_in(text: str, key_start: int, start: int, end: int) -> bool:
+    """Whether the value at `start`-`end`, after the key or cue word at `key_start`, opens a quoted string that as a
+    whole stands in for a secret: REDACTED or a mask under any key; under a key that does not name a password, also a
+    token cut short with an ellipsis (`"access_token": "ya29.a0..."`) or a phrase that says what it is
+    (`"short-lived token"`). An unquoted value before an ellipsis ("the password is hunter2...") is still a value."""
+    m = _QUOTED_REST.match(text, start)
+    if m is None or end > m.end():
+        return False
+    v = m.group()
+    if _stands_in(v):
+        return True
+    if _PASSWORD_KEY.search(text[key_start:start]) is not None:
+        return False
+    return _ELIDED.fullmatch(v) is not None or _describes_a_credential(v)
 
 
 def is_code_read(v: str) -> bool:
@@ -186,6 +241,7 @@ def _stated_value(v: str) -> bool:
         and not _NAMED_THING.search(v)
         and not is_code_read(v)
         and not _names_a_field(v)
+        and not _stands_in(v)
     )
 
 
@@ -198,6 +254,13 @@ def _bare_value(v: str) -> bool:
         and not _is_ordinary(v)
         and not _NAMED_THING.search(v)
     )
+
+
+# The checks of the key and sentence rules, whose quoted values may stand in for a secret (`_quoted_stand_in`). A
+# command-line value is what the command runs with, so the flag rules are not among them.
+_STAND_IN_CHECKS = frozenset(
+    {_unquoted_key_value, _text_key_value, _inner_key_value, _inner_quoted_value, _stated_value}
+)
 
 
 def _flag_value(v: str) -> bool:
@@ -791,6 +854,8 @@ def _spans(text: str) -> list[tuple[int, int, str]]:
     for kind, pattern, group, check in _SHAPES:
         for m in pattern.finditer(text):
             s, e = m.span(group) if group else m.span()
+            if check in _STAND_IN_CHECKS and _quoted_stand_in(text, m.start(), s, e):
+                continue  # a quoted value cut short in docs: `"access_token": "ya29.a0..."`
             if e > s and (check is None or check(text[s:e])):
                 spans.append((s, e, kind))
     spans.extend((s, e, PLACEHOLDER_KIND[kind]) for _, s, e, kind in cue_spans(text))

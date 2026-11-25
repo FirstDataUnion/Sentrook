@@ -745,6 +745,36 @@ def test_must_stay_quiet_on_a_skill_that_reads_a_token_from_an_attribute():
     assert "secret" in res.response.model_dump(mode="json")["self_edit"]["adds"]
 
 
+_GOOGLE, _REFRESH = "ya" + "29.", "1/" + "/0"
+TOKEN_SHAPE_MD = (
+    "---\nname: drive-upload\ndescription: Upload a file\n---\nThe token file looks like this:\n```json\n"
+    f'{{"access_token": "{_GOOGLE}a0...", "refresh_token": "{_REFRESH}g...", "token_type": "Bearer",\n'
+    ' "expires_in": 3599, "client_secret": "REDACTED", "id_token": "short-lived token"}\n```\n'
+)
+
+
+def test_must_stay_quiet_on_a_skill_that_shows_a_token_file_with_stand_in_values():
+    """A skill that documents a token file's shape with its values abridged or masked holds no secret: a current plugin
+    sends it as it is. The same skill with a full token in it still writes a secret."""
+    path = "/home/me/.openclaw/agents/main/workshop-skills/drive/SKILL.md"
+    sent = _as_sent_by_the_plugin(TOKEN_SHAPE_MD)
+    assert sent == TOKEN_SHAPE_MD
+    raw = planir("write", {"path": path, "content": sent}, store="skills", platform="openclaw")
+    raw["pending_call"]["tool_kind"] = "file_write"
+    res, _ = scan(raw)
+    assert "artefact.placeholder_in_write" not in codes(res)
+    assert "secret" not in res.response.model_dump(mode="json")["self_edit"]["adds"]
+
+    full = _GOOGLE + "a0" + "Xk29fQv7" + "Lm2Pq8aZt5wB" + "Hy3Nc6Rd"
+    sent = _as_sent_by_the_plugin(TOKEN_SHAPE_MD.replace(f"{_GOOGLE}a0...", full))
+    assert full not in sent
+    raw = planir("write", {"path": path, "content": sent}, store="skills", platform="openclaw")
+    raw["pending_call"]["tool_kind"] = "file_write"
+    res, _ = scan(raw)
+    assert "artefact.placeholder_in_write" in codes(res)
+    assert "secret" in res.response.model_dump(mode="json")["self_edit"]["adds"]
+
+
 WORKSHOP = "/home/node/.openclaw/agents/main/agent/workshop-skills"
 
 
