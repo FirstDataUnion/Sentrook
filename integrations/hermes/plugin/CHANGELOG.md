@@ -108,11 +108,13 @@ since the version the catalog pins.
 - **A subagent of your own chat asks you in that chat.** A subagent started from your direct message on a chat
   platform, the TUI or the desktop app is attended: its review is Hermes's approval prompt, shown in the chat that
   started it (Hermes keeps the parent chat's session for a delegated child, so the prompt joins that chat's approval
-  queue), with the same card and answers. A prompt nobody answers in time, or one Hermes cannot show, holds the call
-  instead, bound to the parent session, with the usual notice; an `allow` or `deny` you gave for subagents of that
-  session settles the next matching call without asking. A subagent of the local terminal or ACP (where Hermes answers
-  a subagent's prompt itself), a cron job, a webhook, the API server, a group chat, someone else's message, or a held
-  subagent is still held. Blocks stay blocks. Previously every subagent was held.
+  queue, also after the turn ends), with the same card and answers. A prompt nobody answers in time, one Hermes cannot
+  show or withdraws, or one the subagent's own thread answered because no chat could show it, holds the call instead,
+  bound to the parent session, with the usual notice; an `allow` or `deny` you gave for subagents of that session
+  settles the next matching call without asking. A subagent of the local terminal or ACP (where Hermes answers a
+  subagent's prompt itself), a cron job, a webhook, the API server, a group chat, someone else's message, or a held
+  subagent is still held, and so is every subagent while `delegation.subagent_auto_approve` is on. Blocks stay
+  blocks. Previously every subagent was held.
 - **Holds** can be answered for 7 days (was 24 hours). A repeat of a waiting hold (same job and call, no higher
   risk, no new warning) updates it and sends no new notice; `status` and `why` say how many times it was held.
   `holds.json` is version 2 and keeps no raw arguments; holds stored before stay answerable as before until they

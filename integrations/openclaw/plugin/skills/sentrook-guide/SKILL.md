@@ -26,7 +26,7 @@ observe mode Sentrook only scores and records, and never asks or blocks.
 - **A block** (risk 80 or more, or a rule that always blocks). The call does not run. You are told only a broad
   category, such as "it reads or sends sensitive data", not which checks fired or the score; the owner sees those
   with `/sentrook-why last`.
-- **A held call.** Where nobody can answer a prompt (cron jobs, heartbeats, webhooks, subagents of those), a call that needs review does not run, and
+- **A held call.** Where nobody can answer a prompt (cron jobs, heartbeats, subagents, webhooks), a call that needs review does not run, and
   you must not retry it in that run. The owner answers within 7 days, with only the answers the notice offers:
   `/sentrook-allow <id>` runs the job again now and lets the same call through once in that run (`later`: on the job's
   next scheduled run instead; when the held run had already sent or written something, only `now` runs it again);

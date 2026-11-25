@@ -450,12 +450,14 @@ it connects to a gateway on another machine), an editor connected over ACP and t
 server, cron, webhooks and A2A peers, a review holds the call instead
 (see [Held calls](#held-calls-on-unattended-runs)).
 
-A subagent you start from your own chat, the TUI or the desktop app is attended too: Hermes shows its approval prompt
-in that chat, and you answer it there as you would any other. A prompt nobody answers in time, or one Hermes cannot
-show, holds the call instead, bound to the chat that started the subagent. In the local terminal and over ACP Hermes
-answers a subagent's prompts itself (deny, or approve with `delegation.subagent_auto_approve`), so there a subagent's
-reviews are held. A subagent of a cron job, a webhook, the API server, a group chat or someone else's message, and a
-subagent of such a subagent, is unattended. If a UI in front of the API server shows Hermes's approval
+A subagent you start from your own direct message on a chat platform, the TUI or the desktop app is attended too:
+Hermes shows its approval prompt in that chat (also after your turn has ended, while the subagent still runs), and
+you answer it there as you would any other. A prompt nobody answers in time, one Hermes cannot show or withdraws,
+or one the subagent's own thread answers because no chat could show it, holds the call instead, bound to the chat
+that started the subagent. In the local terminal and over ACP Hermes answers a subagent's prompts itself, so there a
+subagent's reviews are held, and so they are everywhere while `delegation.subagent_auto_approve` is on (Hermes would
+approve them with nobody asked). A subagent of a cron job, a webhook, the API server, a group chat or someone else's
+message, and a subagent of such a subagent, is unattended. If a UI in front of the API server shows Hermes's approval
 prompts, add it with `/sentrook attended add api_server --confirm` (see [Attended platforms](#attended-platforms)). Hermes's own background skill and memory saves
 never ask, wherever they run (see [Background skill and memory saves](#background-skill-and-memory-saves)).
 

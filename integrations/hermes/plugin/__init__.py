@@ -58,6 +58,7 @@ from .decision import (
 )
 from .intent import (
     asks_for_children,
+    children_auto_approved,
     conversation_sender_of,
     hermes_config,
     is_unattended,
@@ -126,9 +127,9 @@ _TOOL_RECORD = {setup_report.TOOL: "setup_report", proposals.TOOL: "setup_propos
 #: the prompt times out or cannot be shown (`_child_prompt_fallback`). Oldest dropped past `_CHILD_PROMPTS_KEPT`.
 _child_prompts: dict[str, dict[str, Any]] = {}
 _CHILD_PROMPTS_KEPT = 64
-#: The prompt outcomes after which a sub-agent's review falls back to a hold: nobody answered in time, or Hermes could
-#: not show the prompt.
-_CHILD_FALLBACK = {"timeout", "notify_failed"}
+#: The prompt outcomes after which a sub-agent's review falls back to a hold: nobody answered in time, Hermes could not
+#: show the prompt, or it withdrew it (the sub-agent or the chat's turn ended first).
+_CHILD_FALLBACK = {"timeout", "notify_failed", "cancelled"}
 
 
 def _settings() -> dict[str, Any]:
@@ -590,10 +591,14 @@ def _scan_one(
         "attended_platforms": owner_settings.attended_of(cfg),
     }
     # A sub-agent of the owner's attended chat asks in that chat: Hermes shows its prompt there (`asks_for_children`).
-    # Approvals off or YOLO still count, as they would in the parent chat.
+    # Approvals off or YOLO still count, as they would in the parent chat, and so does Hermes approving a sub-agent's
+    # prompts by itself (`children_auto_approved`).
     parent_chat = (
         _parent_chat(store, turn)
-        if built["subagent"] and not loop_save and not background_run
+        if built["subagent"]
+        and not loop_save
+        and not background_run
+        and not children_auto_approved(host_cfg)
         else None
     )
     in_parent_chat = parent_chat is not None and not is_unattended(
@@ -1911,7 +1916,10 @@ def on_post_approval_response(**kw: Any) -> None:
         # call is held for the owner, as if the sub-agent had been unattended.
         held = None
         if review.get("child"):
-            if choice in _CHILD_FALLBACK:
+            # The sub-agent's own thread answered it on the terminal surface: no chat showed the prompt (Hermes's
+            # callback for a sub-agent's thread denies), so nobody was asked.
+            unseen = str(kw.get("surface") or "") == "cli" and not approved
+            if choice in _CHILD_FALLBACK or unseen:
                 held = _child_prompt_fallback(cfg, traffic, store, str(review["request_id"]))
                 if held is not None:
                     final = "held"

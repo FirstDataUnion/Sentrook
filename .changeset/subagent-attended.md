@@ -2,13 +2,10 @@
 "@firstdataunion/sentrook-openclaw": patch
 ---
 
-A subagent of your own direct chat asks you in that chat. OpenClaw starts a subagent's run with trigger `user` on the
-parent chat's route; the plugin now sends such a run (session `agent:<id>:subagent:<uuid>`) as trigger `subagent`,
-and decides whether it is attended from its parent session: a subagent started by the owner's own message in a chat
-they attend (not a group room), or by a subagent that asks there, gets the usual approval prompt, which OpenClaw sends
-to that chat. When the prompt times out, or OpenClaw cancels it (no approval route), the call is held instead, bound
-to the parent session, with the usual notice; an allow or deny given for subagents of that session settles the next
-matching call without asking. A subagent of a cron job, a heartbeat, an event run, a group room, someone else's
-message, a held subagent, or one whose spawn OpenClaw has not reported is held. Previously such child runs were sent
-as the owner's message and always asked, also under a cron job. Removing `subagent` from
-`approval.scheduledIntentKinds` still asks in every subagent.
+A subagent's run is now sent as a subagent's. OpenClaw starts a subagent's run (session `agent:<id>:subagent:<uuid>`)
+with trigger `user` and no provenance, so the plugin sent it as the owner's message and asked: under a cron job too,
+and the prompt never reached anyone, because OpenClaw refuses a plugin's approval request from a subagent's run (its
+gateway identity has no approvals scope) and the call was blocked with no notice. Such a run is now sent as trigger
+`subagent`, and a review in it is held for the owner, bound to the parent session, with the usual notice: whether
+the subagent was started by a cron job, a heartbeat, an event run, someone else's message or the owner's own chat.
+Blocks stay blocks.

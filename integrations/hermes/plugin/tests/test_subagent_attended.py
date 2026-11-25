@@ -88,10 +88,14 @@ def child_send(h, parent="P1", n=1, cid="c1"):
     return out, [r for r in h.traffic() if r.get("kind") == "scan"][-1]
 
 
-def answer(h, out, choice, sid, key=OWNER_DM["key"]):
+def answer(h, out, choice, sid, key=OWNER_DM["key"], surface="gateway"):
     """Hermes's approval hook for the prompt: the child's session id, the parent chat's session key."""
     h.ctx.hooks["post_approval_response"](
-        pattern_key=f"plugin_rule:{out['rule_key']}", choice=choice, session_id=sid, session_key=key
+        pattern_key=f"plugin_rule:{out['rule_key']}",
+        choice=choice,
+        session_id=sid,
+        session_key=key,
+        surface=surface,
     )
     hold.wait_for_notices()
 
@@ -166,7 +170,7 @@ def test_a_denied_prompt_is_the_owners_denial_not_a_hold(h):
 # ---- must fire (held, or blocked) ------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("choice", ["timeout", "notify_failed"])
+@pytest.mark.parametrize("choice", ["timeout", "notify_failed", "cancelled"])
 def test_a_prompt_nobody_answers_or_hermes_cannot_show_falls_back_to_a_hold_for_the_parent(
     h, choice
 ):
@@ -185,6 +189,26 @@ def test_a_prompt_nobody_answers_or_hermes_cannot_show_falls_back_to_a_hold_for_
     slash(h, f"allow {res['hold']['id']}")
     out, rec = child_send(h, n=2)
     assert out is None and rec["decision"] == "allowed_by_pass"
+
+
+def test_a_deny_from_the_subagents_own_thread_is_nobodys_answer_and_falls_back_to_a_hold(h):
+    """Where no chat shows the prompt, Hermes's callback for the sub-agent's thread answers it on the terminal
+    surface: that deny is not the owner's."""
+    delegate(h, platform="tui", facts={"platform": "tui"})
+    out, _rec = child_send(h)
+    answer(h, out, "deny", "sub-P1-1", surface="cli")
+    [res] = resolutions(h)
+    assert res["decision"] == "held" and res["hold"]["id"]
+
+
+@pytest.mark.parametrize("value", [True, "true"])
+def test_a_subagent_is_held_when_hermes_approves_subagent_prompts_by_itself(h, monkeypatch, value):
+    delegate(h)
+    monkeypatch.setattr(
+        plugin, "hermes_config", lambda: {"delegation": {"subagent_auto_approve": value}}
+    )
+    out, rec = child_send(h)
+    assert out == HELD and "parent_chat" not in rec
 
 
 @pytest.mark.parametrize(

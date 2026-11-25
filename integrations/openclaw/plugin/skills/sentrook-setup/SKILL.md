@@ -32,7 +32,7 @@ There are two entry points:
    - Do I use API keys for those services? (Only the key's name, such as `EXAMPLE_API_KEY`, never its value.)
    - Do I use MCP servers or other plugins? Which ones?
 3. **Explain where notices go.** When a call is held, a scan fails on an unattended run, or a background save is held, drafted or let through, Sentrook sends the owner a notice. The owner chooses where by sending `/sentrook-notify here` as a direct message to you on the chat where they want them (not in a group or channel). Until then no notice is sent: held calls still wait, but nobody is told.
-4. **Explain attended chats.** Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control UI) is attended, and so is a subagent it starts: its review is asked in that chat. Group rooms, cron jobs, heartbeats and their subagents are not: a review there holds the call for the owner's `/sentrook-allow` or `/sentrook-deny` instead of asking, and so does a subagent's prompt nobody answers in time. Which runs hold is set by Sentrook's `approval.scheduledIntentKinds` setting.
+4. **Explain attended chats.** Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, heartbeat or subagent holds the call for the owner's `/sentrook-allow` or `/sentrook-deny` instead of asking. That includes a subagent the owner's own chat started: OpenClaw cannot show a subagent's prompt, so its hold is bound to that chat. Which runs hold is set by Sentrook's `approval.scheduledIntentKinds` setting.
 5. **Hand over** (next section).
 
 ## Hand over

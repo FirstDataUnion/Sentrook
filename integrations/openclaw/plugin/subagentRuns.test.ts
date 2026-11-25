@@ -1,12 +1,12 @@
 /**
- * A subagent of the owner's attended chat asks its reviews in that chat.
+ * Subagent runs are subagent runs, and their reviews are held for the owner, bound to the parent session.
  *
- * OpenClaw starts a subagent's run (`agent:<id>:subagent:<uuid>`) with trigger `user` on the parent chat's route, and
- * sends a plugin's prompt from the child there. Such a run is sent as trigger `subagent`, and it is attended exactly
- * when its parent session is the owner's own message in a chat they attend (or a subagent that asks in its own
- * parent's chat): a review there is a prompt the owner answers in that chat. When the prompt times out, or OpenClaw
- * cancels it (no approval route), the call is held for the owner, bound to the parent session. A subagent of a cron
- * job, a heartbeat, a webhook, another unattended subagent, a shared room or someone else's chat is unattended.
+ * OpenClaw starts a subagent's run (`agent:<id>:subagent:<uuid>`) with trigger `user` and no provenance, on the
+ * parent chat's route. The plugin sends such a run as trigger `subagent` (its task is the parent agent's words, not
+ * the owner's message), so its reviews are held like any subagent's: under a cron job, a heartbeat, an event run or
+ * someone else's chat, and also under the owner's own direct chat, because OpenClaw refuses a plugin's approval
+ * request from a subagent's run (its gateway identity has no approvals scope), so no card could reach the owner.
+ * The hold is bound to the parent session; blocks stay blocks.
  */
 
 import assert from "node:assert/strict";
@@ -158,8 +158,15 @@ function registered() {
       "message",
       { action: "send", channel: "discord", target: "#ops-reports", message: `Vendor summary ${run}` },
     );
+  /** A review-band send from the parent session itself. */
+  const parentSend = (parent: Parent) =>
+    call(
+      { sessionKey: parent.key, sessionId: `s-${parent.key}`, runId: `r-${parent.key}-${n}`, trigger: parent.trigger, channel: "telegram", requester: parent.requester },
+      "message",
+      { action: "send", channel: "discord", target: "#ops-reports", message: "Vendor summary" },
+    );
   const command = async (name: string, args: string) => (await commands[name].handler({ ...DM, args })).text as string;
-  return { fire, sent, records, spawn, childSend, command };
+  return { fire, sent, records, spawn, childSend, parentSend, command };
 }
 
 const holds = () => {
@@ -175,116 +182,66 @@ async function withNotify() {
 
 const CHILD = "agent:main:subagent:5b1e-1";
 
-// ---- must ask (a prompt in the parent chat) --------------------------------------------------------------------
+// ---- must fire (held, bound to the parent session) ------------------------------------------------------------
 
-test("a subagent of the owner's direct chat asks there, as trigger subagent, and approving runs the call", async () => {
-  const r = await withNotify();
-  await r.spawn(OWNER_DM, CHILD);
-  const { out, rec } = await r.childSend(CHILD);
-  assert.ok(out.requireApproval, "a prompt, not a hold");
-  assert.equal(rec.decision, "review_timed_out", "provisional until the owner answers");
-  assert.equal(rec.parent_chat, true);
-  assert.equal(scans.at(-1).trigger.kind, "subagent");
-  assert.equal(scans.at(-1).session.agent_role, "subagent");
-  assert.deepEqual(holds(), []);
-  await out.requireApproval.onResolution("allow-once");
-  const res = r.records("resolution").at(-1);
-  assert.deepEqual([res.resolution, res.decision], ["allow-once", "approved_by_user"]);
-  assert.equal(res.hold, undefined);
-});
-
-test("a strong signal with no owner pass is still a prompt with its reasons", async () => {
-  reply = { ...NAMED, owner_pass: null, reasons: [...NAMED.reasons, { code: "origin.untrusted_destination" }] };
-  const r = await withNotify();
-  await r.spawn(OWNER_DM, CHILD);
-  const { out, rec } = await r.childSend(CHILD);
-  assert.ok(out.requireApproval);
-  assert.ok(out.requireApproval.description, "the full card");
-  assert.equal(rec.hold, undefined);
-});
-
-test("a subagent of an asking subagent asks in the same chat", async () => {
-  const r = await withNotify();
-  await r.spawn(OWNER_DM, CHILD);
-  await r.spawn({ key: CHILD, trigger: "user" }, "agent:main:subagent:5b1e-2");
-  const { out, rec } = await r.childSend("agent:main:subagent:5b1e-2");
-  assert.ok(out.requireApproval);
-  assert.equal(rec.parent_chat, true);
-});
-
-test("a denied prompt is the owner's denial, not a hold", async () => {
-  const r = await withNotify();
-  await r.spawn(OWNER_DM, CHILD);
-  const { out } = await r.childSend(CHILD);
-  await out.requireApproval.onResolution("deny");
-  assert.equal(r.records("resolution").at(-1).decision, "denied_by_user");
-  assert.deepEqual(holds(), []);
-});
-
-// ---- must fire (held, or blocked) ---------------------------------------------------------------------------
-
-for (const decision of ["timeout", "cancelled"] as const) {
-  test(`a prompt that ends ${decision} falls back to a hold bound to the parent session`, async () => {
-    const r = await withNotify();
-    await r.spawn(OWNER_DM, CHILD);
-    const { out } = await r.childSend(CHILD);
-    const before = r.sent.length;
-    await out.requireApproval.onResolution(decision);
-    await hold.waitForNotices();
-    const res = r.records("resolution").at(-1);
-    assert.equal(res.decision, "held");
-    assert.ok(res.hold?.id);
-    const [entry] = holds();
-    assert.equal(entry.source.kind, "subagent");
-    assert.equal(entry.source.ref, passes.sourceRef("subagent", scans.at(-1).session.parent_session_ref));
-    assert.equal(r.sent.length, before + 1, "the owner is told, as for any hold");
-    // the owner's allow lets the next matching call from a subagent of the same parent through once
-    await r.command("sentrook-allow", res.hold.id);
-    const next = await r.childSend(CHILD, 2);
-    assert.equal(next.out, undefined);
-    assert.equal(next.rec.decision, "allowed_by_pass");
-  });
-}
-
-const UNATTENDED: [string, Parent][] = [
+const PARENTS: [string, Parent][] = [
+  ["the owner's direct chat (OpenClaw cannot show a subagent's prompt)", OWNER_DM],
   ["a cron job", { key: "agent:main:cron:job-1", trigger: "cron", jobId: "job-1" }],
   ["a heartbeat", { key: "agent:main:main", trigger: "heartbeat" }],
   ["a webhook or event run", { key: "agent:main:hook:gh-1", trigger: "event" }],
   ["someone else's chat", { key: "agent:main:telegram:direct:555", trigger: "user", requester: { senderIsOwner: false, channel: "telegram", senderId: "555" } }],
   ["a shared room", { key: "agent:main:telegram:group:-100", trigger: "user", requester: { senderIsOwner: true, channel: "telegram", senderId: OWNER } }],
 ];
-for (const [what, parent] of UNATTENDED) {
-  test(`a subagent of ${what} is held, bound to the parent session`, async () => {
+for (const [what, parent] of PARENTS) {
+  test(`a subagent of ${what} is sent as trigger subagent and its review is held, bound to the parent session`, async () => {
     const r = await withNotify();
     await r.spawn(parent, CHILD);
+    const before = r.sent.length;
     const { out, rec } = await r.childSend(CHILD);
-    assert.deepEqual(out, HELD);
+    assert.deepEqual(out, HELD, "never a prompt");
     assert.equal(rec.decision, "held");
-    assert.equal(rec.parent_chat, undefined);
     assert.equal(scans.at(-1).trigger.kind, "subagent");
-    assert.equal(holds()[0].source.kind, "subagent");
+    assert.equal(scans.at(-1).session.agent_role, "subagent");
+    const [entry] = holds();
+    assert.equal(entry.source.kind, "subagent");
+    assert.equal(entry.source.ref, passes.sourceRef("subagent", scans.at(-1).session.parent_session_ref));
+    assert.equal(r.sent.length, before + 1, "the owner is told");
   });
 }
 
-test("a subagent whose spawn OpenClaw never reported is held", async () => {
+test("the owner's allow on such a hold lets the next matching call from a subagent of the same chat through once", async () => {
+  const r = await withNotify();
+  await r.spawn(OWNER_DM, CHILD);
+  const { rec } = await r.childSend(CHILD);
+  await r.command("sentrook-allow", rec.hold.id);
+  await r.spawn(OWNER_DM, "agent:main:subagent:5b1e-2");
+  const next = await r.childSend("agent:main:subagent:5b1e-2", 2);
+  assert.equal(next.out, undefined);
+  assert.equal(next.rec.decision, "allowed_by_pass");
+  assert.deepEqual((await r.childSend(CHILD, 3)).out, HELD, "used up");
+});
+
+test("a strong signal with no owner pass is held with no pass offered, not asked", async () => {
+  reply = { ...NAMED, owner_pass: null };
+  const r = await withNotify();
+  await r.spawn(OWNER_DM, CHILD);
+  const { out, rec } = await r.childSend(CHILD);
+  assert.deepEqual(out, HELD);
+  assert.equal(rec.decision, "held");
+});
+
+test("a subagent whose spawn OpenClaw never reported is held with no source", async () => {
   const r = await withNotify();
   const { out } = await r.childSend(CHILD);
   assert.deepEqual(out, HELD);
-});
-
-test("a subagent of a held subagent is held", async () => {
-  const r = await withNotify();
-  await r.spawn({ key: "agent:main:cron:job-1", trigger: "cron", jobId: "job-1" }, CHILD);
-  await r.spawn({ key: CHILD, trigger: "user" }, "agent:main:subagent:5b1e-2");
-  const { out } = await r.childSend("agent:main:subagent:5b1e-2");
-  assert.deepEqual(out, HELD);
+  assert.equal(holds()[0].source ?? null, null);
 });
 
 for (const [what, extra] of [
   ["over the block line", { risk: 95 }],
   ["an enforced block", { risk: 40, enforced: "block" }],
 ] as const) {
-  test(`${what} in a subagent of the owner's chat stays a block`, async () => {
+  test(`${what} in a subagent stays a block`, async () => {
     const r = await withNotify();
     await r.spawn(OWNER_DM, CHILD);
     reply = { ...NAMED, ...extra };
@@ -293,3 +250,13 @@ for (const [what, extra] of [
     assert.equal(rec.decision, "blocked");
   });
 }
+
+// ---- must stay silent ------------------------------------------------------------------------------------------
+
+test("the owner's own direct chat still asks", async () => {
+  const r = await withNotify();
+  const { out, rec } = await r.parentSend(OWNER_DM);
+  assert.ok(out.requireApproval);
+  assert.equal(rec.decision, "review_timed_out");
+  assert.equal(scans.at(-1).trigger.kind, "message");
+});

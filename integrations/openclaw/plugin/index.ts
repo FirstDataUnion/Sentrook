@@ -897,21 +897,11 @@ const plugin = {
       const body = JSON.stringify(built.planir);
       const triggerKind: string = built.planir.trigger.kind;
       const timing = resolveApprovalTiming(cfg.approval, intentKindOf(triggerKind), undefined);
-      // A subagent of the owner's attended chat asks in that chat: OpenClaw starts the child on the parent chat's
-      // route, and sends a plugin's prompt from the child there. The parent is known once the spawn hook named it.
-      const parentKey = triggerKind === "subagent" && runKind === null ? store.parents()[ctx?.sessionKey] : undefined;
-      const inParentChat = typeof parentKey === "string" && store.childrenAsk(parentKey);
       // Nobody can answer a prompt in one of OpenClaw's background runs, on any OpenClaw: the host cancels it or ends
-      // the run. That holds for every call of the run, not only its saves (backgroundSave.ts).
-      const unattended = (timing.unattended && !inParentChat) || runKind !== null;
-      // Whether a subagent of this session asks in this chat: the owner's own message in a chat they attend (not a
-      // shared room), or a subagent that asks in its own parent's chat.
-      if (typeof ctx?.sessionKey === "string" && !hostKind) {
-        const sender = built.planir.trigger?.sender;
-        const ownerMessage =
-          triggerKind === "message" && sender?.relation === "owner" && !(sender.basis ?? []).includes("group_chat");
-        safely("children", () => store.setChildrenAsk(ctx.sessionKey, !unattended && (inParentChat || ownerMessage)));
-      }
+      // the run. That holds for every call of the run, not only its saves (backgroundSave.ts). Nor in a subagent's run,
+      // even one the owner's own chat started: OpenClaw refuses a plugin's approval request from a subagent's run (its
+      // gateway identity has no approvals scope), so its reviews are held, bound to the parent session (`runSource`).
+      const unattended = timing.unattended || runKind !== null;
 
       let result: ScanOk | ScanFailure;
       const { scan, issuer } = cfg.endpoints;
@@ -972,8 +962,6 @@ const plugin = {
       let held: Json | null = null;
       /** The owner's pass or denial that settled an unattended review (passes.ts). */
       let byPass: Json | null = null;
-      /** The owner's pass or denial for subagents of the same parent that settled a subagent's review. */
-      let childPass: Json | null = null;
       /** The suggested grant "allow always" sets, when the prompt offers it. */
       let remember: grants.Entry | null = null;
       if (result.ok) {
@@ -1110,17 +1098,6 @@ const plugin = {
             });
             if (rerunId && typeof held?.id === "string") noteRun(cfg, rerunId, { held: held.id });
           }
-        } else if (inParentChat && (childPass = parentPass(cfg, triggerKind, ctx, built, resp, event.toolName, event?.params)) !== null) {
-          // A subagent asks in its parent's chat, but the owner already answered a held call from a subagent of the
-          // same parent (passes.ts): that answer settles it.
-          if (childPass.kind === "deny") {
-            entry.decision = "denied_by_owner";
-            hook = { block: true, blockReason: passes.DECLINED_TEXT };
-            byPass = { id: childPass.id, kind: "deny" };
-          } else {
-            entry.decision = "allowed_by_pass";
-            byPass = { id: childPass.id, kind: "allow", uses: childPass.uses, use_count: childPass.use_count };
-          }
         } else {
           // Provisional until the user answers.
           entry.decision = "review_timed_out";
@@ -1188,7 +1165,6 @@ const plugin = {
         ...(lenient ? { lenient: true } : {}),
         ...(held ? { hold: held } : {}),
         ...(byPass ? { pass: byPass } : {}),
-        ...(inParentChat ? { parent_chat: true } : {}),
         ...(notice ? { notice } : {}),
         ...(scannedSelfEdit ? { skill_review: true, self_edit: { kind: hostKind, store: declaredStore } } : {}),
         ...(hostKind && !scannedSelfEdit ? { host_process: hostKind } : {}),
@@ -1212,7 +1188,7 @@ const plugin = {
         const requestId = built.planir.request_id;
         hook.requireApproval.onResolution = async (decision: Resolution) => {
           const approved = decision === "allow-once" || decision === "allow-always";
-          let final = onError
+          const final = onError
             ? approved
               ? "allowed_on_error"
               : "blocked_on_error"
@@ -1223,24 +1199,6 @@ const plugin = {
                 : decision === "timeout"
                   ? "review_timed_out"
                   : "blocked";
-          // A subagent's prompt in its parent's chat that nobody answered in time, or that OpenClaw cancelled (no route
-          // to an approval surface): the call is held for the owner, as if the subagent had been unattended.
-          let childHeld: Json | null = null;
-          if (inParentChat && !onError && (decision === "timeout" || decision === "cancelled") && result.ok) {
-            try {
-              const source = runSource(triggerKind, ctx, built);
-              childHeld = holdCall(cfg, built, result.response, event.toolName, triggerKind, run, {
-                sid,
-                jobId: null,
-                source,
-                match: passes.matchOf(event.toolName, result.response, event?.params ?? {}, store.salt(), source === null),
-                acted: !!store.loadRun(runId).acted,
-              });
-              final = "held";
-            } catch (err) {
-              api.logger.warn(`${LOG} could not hold the subagent's unanswered call: ${String(err)}`);
-            }
-          }
           let grantId: string | null = null;
           if (decision === "allow-always" && remember && !onError) {
             // Approved for good: the suggested grant, persistent for 30 days, once per review. A grant that cannot be
@@ -1274,35 +1232,10 @@ const plugin = {
             resolution: decision,
             decision: final,
             ...(grantId ? { grant_id: grantId } : {}),
-            ...(childHeld ? { hold: childHeld } : {}),
           });
         };
       }
       return hook;
-    }
-
-    /**
-     * The owner's pass or denial for subagents of this subagent's parent session that settles this call
-     * (`passes.check`), or null: then it is asked.
-     */
-    function parentPass(
-      cfg: PluginConfig,
-      triggerKind: string,
-      ctx: any,
-      built: { planir: any },
-      resp: any,
-      tool: string,
-      params: unknown,
-    ): Json | null {
-      const source = runSource(triggerKind, ctx, built);
-      if (!source) return null;
-      try {
-        const match = passes.matchOf(tool, resp, params ?? {}, store.salt(), false);
-        return passes.check(cfg.stateDir, source.ref, match, resp, new Date(), null);
-      } catch (err) {
-        api.logger.warn(`${LOG} could not read the passes: ${String(err)}`);
-        return null;
-      }
     }
 
     /**

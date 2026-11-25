@@ -218,6 +218,16 @@ def owner_attends(
 CHILD_PROMPT_PLATFORMS = ATTENDED_PLATFORMS | frozenset({"tui", "desktop"})
 
 
+def children_auto_approved(cfg: dict[str, Any]) -> bool:
+    """`delegation.subagent_auto_approve` is on: where nothing can show a sub-agent's prompt, Hermes's own callback
+    for the sub-agent's thread approves it, with nobody asked. A sub-agent never asks then: its reviews are held."""
+    delegation = cfg.get("delegation")
+    value = delegation.get("subagent_auto_approve") if isinstance(delegation, dict) else None
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return value is True
+
+
 def asks_for_children(
     platform: str,
     env: dict[str, str],

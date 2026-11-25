@@ -206,8 +206,8 @@ HOSTS: dict[str, dict] = {
             "attended_explain": (
                 "Approval prompts need a person to answer them. Chats, the Hermes TUI, the desktop app and the local "
                 "terminal count as attended. A subagent of the owner's own chat, TUI or desktop app asks there too "
-                "(not from the local terminal, where Hermes answers a subagent's prompt itself); one nobody answers "
-                "in time is held. The API server, "
+                "(not from the local terminal, where Hermes answers a subagent's prompt itself, nor while "
+                "`delegation.subagent_auto_approve` is on); one nobody answers in time is held. The API server, "
                 "cron jobs, webhooks and their subagents do not: a call there "
                 "that needs review is held for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of asking. If a UI in front of the API "
                 "server shows Hermes's approval prompts, the owner can add it with "
@@ -262,7 +262,7 @@ HOSTS: dict[str, dict] = {
                 "grant would cover calls like this and the owner asked for the work, and also sets that grant for 30 "
                 "days; **Deny** stops it. Unanswered, a prompt in a chat denies the call after 5 minutes."
             ),
-            "unattended_runs": "cron jobs, heartbeats, webhooks, subagents of those",
+            "unattended_runs": "cron jobs, heartbeats, subagents, webhooks",
             "run_sources": "a heartbeat's agent, a subagent's parent session",
             "sourceless_runs": "a webhook",
             "held_notice": (
@@ -291,10 +291,11 @@ HOSTS: dict[str, dict] = {
             ),
             "attended_explain": (
                 "Approval prompts need a person to answer them. A direct chat with you (a DM, webchat or the Control "
-                "UI) is attended, and so is a subagent it starts: its review is asked in that chat. Group rooms, "
-                "cron jobs, heartbeats and their subagents are not: a review there holds the call for the owner's "
-                "`{{cmd allow}}` or `{{cmd deny}}` instead of asking, and so does a subagent's prompt nobody answers "
-                "in time. Which runs hold is set by Sentrook's `approval.scheduledIntentKinds` setting."
+                "UI) is attended. Group rooms, cron jobs, heartbeats and subagents are not: a review in a cron job, "
+                "heartbeat or subagent holds the call for the owner's `{{cmd allow}}` or `{{cmd deny}}` instead of "
+                "asking. That includes a subagent the owner's own chat started: OpenClaw cannot show a subagent's "
+                "prompt, so its hold is bound to that chat. Which runs hold is set by Sentrook's "
+                "`approval.scheduledIntentKinds` setting."
             ),
         },
     },
