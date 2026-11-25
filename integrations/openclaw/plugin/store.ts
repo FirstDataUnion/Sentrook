@@ -525,4 +525,28 @@ export class Store {
   parents(): Record<string, string> {
     return this.readJson<Record<string, string>>(path.join(this.dir, "subagents.json"), {});
   }
+
+  /**
+   * Records whether a subagent of session `sessionKey` asks its reviews in that session's chat (true) or has them held
+   * (false), as the session's latest scan found. Only a change is written; the oldest sessions are dropped past
+   * `CHILD_ATTENDANCE_KEEP`.
+   */
+  setChildrenAsk(sessionKey: string, ask: boolean): void {
+    const file = path.join(this.dir, "children.json");
+    const m = this.readJson<Record<string, boolean>>(file, {});
+    if (m[sessionKey] === ask) return;
+    delete m[sessionKey];
+    m[sessionKey] = ask;
+    const keys = Object.keys(m);
+    for (const k of keys.slice(0, Math.max(0, keys.length - CHILD_ATTENDANCE_KEEP))) delete m[k];
+    this.writeJson(file, m);
+  }
+
+  /** Whether a subagent of session `sessionKey` asks in that session's chat; false when the session is not known. */
+  childrenAsk(sessionKey: string): boolean {
+    return this.readJson<Record<string, boolean>>(path.join(this.dir, "children.json"), {})[sessionKey] === true;
+  }
 }
+
+/** How many sessions' `setChildrenAsk` records are kept. */
+const CHILD_ATTENDANCE_KEEP = 1000;

@@ -543,9 +543,17 @@ Details: /sentrook-why 3f9c2a1b
 
 ### Held calls in cron jobs and subagents
 
-Nobody is there to answer a review in a cron job, a heartbeat, a subagent, or a run OpenClaw starts from an event (a
-webhook or mapped hook, or the agent joining a channel). There the call is **held** instead. Which runs count is set
-by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats and event runs count as `cron`.
+Nobody is there to answer a review in a cron job, a heartbeat, a subagent of one of those, or a run OpenClaw starts
+from an event (a webhook or mapped hook, or the agent joining a channel). There the call is **held** instead. Which
+runs count is set by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats and event runs count
+as `cron`.
+
+A subagent you start from your own direct chat (a DM, webchat or the Control UI) is attended: OpenClaw sends its
+approval prompt to that chat, and you answer it there as you would any other. When that prompt times out, or
+OpenClaw cancels it because the chat has no approval route, the call is held instead, bound to the chat that started
+the subagent. A subagent of a cron job, a heartbeat, an event run, a group room or someone else's message, and a
+subagent of such a subagent, is held. Removing `subagent` from `approval.scheduledIntentKinds` asks in every
+subagent, as before.
 
 - The call does not run. The agent is told it is held for your approval and not to retry it in this run.
 - You get one notice as a direct message. It says only that a call was held, which run (a cron job by its id, and
@@ -581,7 +589,7 @@ by `approval.scheduledIntentKinds` (default `cron` and `subagent`); heartbeats a
   - a subagent: its parent session. Another subagent of the same parent session counts as the same source.
 
   There `/sentrook-allow <id>` lets the next matching call from the same source through once within 7 days (nothing
-  is started), `/sentrook-allow <id> always` lets that source make it for 30 days (where offered), and
+  is started; a subagent that would ask in your chat uses it instead of asking), `/sentrook-allow <id> always` lets that source make it for 30 days (where offered), and
   `/sentrook-deny <id>` refuses it from that source for 30 days. The same call from another agent's heartbeat or
   another parent session is held again.
 - A webhook or event run has no source OpenClaw names (it gives plugins no hook or mapping id), and neither does a
@@ -726,7 +734,7 @@ A scan gives no usable answer when the scan service returns an error, does not a
 seconds), cannot be reached, or rate-limits the scan. The call is then not scanned, and with the default setting
 (`onScanError`: `review`):
 
-- **In a cron job, a heartbeat, a subagent or a run started from an event** (`approval.scheduledIntentKinds`) nobody
+- **In a cron job, a heartbeat, a run started from an event or a subagent of one** (`approval.scheduledIntentKinds`) nobody
   is there to answer, so the call is blocked. The agent is told that Sentrook did not scan the call, that this is a
   service problem rather than a security block, and that the call did not run. The call is not held, so there is
   nothing to approve, but you get a notice where held-call notices go (`/sentrook-notify here`). It names the run,
@@ -811,7 +819,7 @@ In short, for anyone deciding whether to install it:
   each skill and memory save OpenClaw makes on its own, and a redacted copy is kept on disk for up to 7 days to send
   with them. Set it to `review` to stop both.
 - **What it can do to a call:** allow it, block it, or ask you through OpenClaw's own approval prompt. It never approves
-  a call on your behalf. Where nobody can answer (cron jobs, subagents) a review holds the call and sends you one
+  a call on your behalf. Where nobody can answer (cron jobs, and subagents they start) a review holds the call and sends you one
   notice, through the channel you chose with `/sentrook-notify here`, and a call blocked because the scan failed sends
   you one notice per job (per session for other runs) every 6 hours at most. OpenClaw's own skill and memory saves
   are never asked about: a reviewed one is let through, saved as a Skill Workshop draft or held, and a notice tells

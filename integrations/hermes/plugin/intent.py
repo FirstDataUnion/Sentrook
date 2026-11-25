@@ -210,6 +210,31 @@ def owner_attends(
     )
 
 
+#: Where Hermes shows a delegated child's approval prompt in its parent's chat. A child runs on a worker thread that
+#: keeps the parent's session context, so on the gateway (the chat platforms, and the TUI and desktop app through their
+#: own gateway) the child's prompt joins the parent chat's approval queue and is answered there. The classic terminal
+#: and ACP answer a child's prompt on the worker thread with nobody asked: deny, or approve with
+#: `delegation.subagent_auto_approve`.
+CHILD_PROMPT_PLATFORMS = ATTENDED_PLATFORMS | frozenset({"tui", "desktop"})
+
+
+def asks_for_children(
+    platform: str,
+    env: dict[str, str],
+    *,
+    sender_relation: Any,
+    attended_platforms: frozenset[str] | set[str] = frozenset(),
+) -> bool:
+    """A sub-agent this session delegates to asks its reviews here, in this chat: the owner attends it
+    (`owner_attends`), the turn is the owner's own (sender `owner`), and Hermes shows a child's prompt on this platform
+    (`CHILD_PROMPT_PLATFORMS`). Anywhere else the sub-agent's reviews are held for the owner."""
+    return (
+        sender_relation == "owner"
+        and platform in CHILD_PROMPT_PLATFORMS
+        and owner_attends(platform, env, attended_platforms=attended_platforms)
+    )
+
+
 def trigger_kind(platform: str) -> str:
     if not platform:
         return "unknown"

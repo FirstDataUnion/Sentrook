@@ -245,8 +245,15 @@ export function isHookSession(sessionKey: unknown): boolean {
   return /^(?:agent:[^:]+:)?hook:/.test(key);
 }
 
+/** A subagent's own session (`agent:<id>:subagent:<uuid>`), as OpenClaw keys the child runs `sessions_spawn` starts. */
+export function isSubagentSession(sessionKey: unknown): boolean {
+  return typeof sessionKey === "string" && /(^|:)subagent:/.test(sessionKey);
+}
+
 export function triggerKind(run: RunContext, sessionKey?: unknown): string {
-  if (run.inputProvenance?.sourceRole === "subagent") return "subagent";
+  // OpenClaw starts a subagent's run with trigger `user` and no provenance: its session key says what it is. Its
+  // message is the parent agent's task, not the owner's.
+  if (run.inputProvenance?.sourceRole === "subagent" || isSubagentSession(sessionKey)) return "subagent";
   // The host writes its own lines into these turns ([proposal-resolved], [ui-context]): not an owner's chat message.
   if (isSystemAgentTurn(run)) return "system";
   switch (run.trigger) {
@@ -636,7 +643,7 @@ export function buildPlanir(b: BuildInput): Built {
   sess.nextStep += 1;
 
   const sessionKey = ctx.sessionKey;
-  const isSub = !!sessionKey && /(^|:)subagent:/.test(sessionKey);
+  const isSub = isSubagentSession(sessionKey);
   const parent = isSub ? b.parents[sessionKey!] : undefined;
   const assistant = b.assistant;
   const calls: any[] = Array.isArray(assistant?.calls) ? assistant.calls : [];
