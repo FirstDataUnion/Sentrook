@@ -6,12 +6,13 @@ test swaps in its own grants and pending command."""
 from __future__ import annotations
 
 import copy
+import fnmatch
 import json
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from linear_time import assert_linear
 
 from sentrook.converge import load_params
 from sentrook.converge.merge import ANY_SUBJECT, Claim, merge
@@ -108,29 +109,37 @@ def _target(value):
     return Entity(id="E1", kind=EntityKind.HOST, value=value, display=value)
 
 
-#: Long runs of `.` and `[`, which a pattern check with nested or overlapping repeats would take
-#: quadratic time over.
-LONG_RUNS = [
-    "[" * 100_000,
-    "*." + "[" * 100_000,
-    "a" + "[" * 100_000 + "*",
-    "." * 100_000 + "x",
-    "*." + "." * 100_000 + "a",
-    "*." + "a." * 50_000 + "." * 100_000,
-    "slack:" + "[" * 100_000 + "*",
-    "*@" + "." * 100_000 + "*",
-]
+def long_runs(divisor: int = 1) -> list[str]:
+    """Long runs of `.` and `[` (100k at full size, 1/`divisor` of it for the growth check), which a
+    pattern check with nested or overlapping repeats would take quadratic time over."""
+    n = 100_000 // divisor
+    return [
+        "[" * n,
+        "*." + "[" * n,
+        "a" + "[" * n + "*",
+        "." * n + "x",
+        "*." + "." * n + "a",
+        "*." + "a." * (n // 2) + "." * n,
+        "slack:" + "[" * n + "*",
+        "*@" + "." * n + "*",
+    ]
 
 
 def test_pattern_checks_take_linear_time_on_long_runs():
+    """Time that grows linearly with the input, measured at a quarter and at full size; a generous
+    ceiling guards against a hang."""
     host = Entity(id="E1", kind=EntityKind.HOST, value="api.example.com", display="api.example.com")
-    start = time.perf_counter()
-    for p in LONG_RUNS:
-        over_broad(p)
-        destination_ok(p)
-        grant_matches("destination", p, host)
-        host_pattern_ok(p)
-    assert time.perf_counter() - start < 1.0
+
+    def run(divisor: int) -> None:
+        fnmatch._compile_pattern.cache_clear()  # a cached glob would time nothing at the second size
+        for p in long_runs(divisor):
+            over_broad(p)
+            destination_ok(p)
+            grant_matches("destination", p, host)
+            host_pattern_ok(p)
+
+    _, full = assert_linear(run, "destination pattern checks")
+    assert full < 10.0
 
 
 @pytest.mark.parametrize("c", DESTINATION_PATTERNS["cases"], ids=lambda c: c["typed"])

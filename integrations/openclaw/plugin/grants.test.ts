@@ -480,29 +480,60 @@ for (const c of DESTINATION_PATTERNS.cases) {
   });
 }
 
-/** Long runs of `.` and `[`, which a pattern check with nested or overlapping repeats would take quadratic time over. */
-const LONG_RUNS = [
-  "[".repeat(100_000),
-  `*.${"[".repeat(100_000)}`,
-  `a${"[".repeat(100_000)}*`,
-  `${".".repeat(100_000)}x`,
-  `*.${".".repeat(100_000)}a`,
-  `*.${"a.".repeat(50_000)}${".".repeat(100_000)}`,
-  `slack:${"[".repeat(100_000)}*`,
-  `*@${".".repeat(100_000)}*`,
-];
+/**
+ * Long runs of `.` and `[` (100k at full size, 1/`divisor` of it for the growth check), which a pattern check with
+ * nested or overlapping repeats would take quadratic time over.
+ */
+const longRuns = (divisor = 1) => {
+  const n = Math.floor(100_000 / divisor);
+  return [
+    "[".repeat(n),
+    `*.${"[".repeat(n)}`,
+    `a${"[".repeat(n)}*`,
+    `${".".repeat(n)}x`,
+    `*.${".".repeat(n)}a`,
+    `*.${"a.".repeat(Math.floor(n / 2))}${".".repeat(n)}`,
+    `slack:${"[".repeat(n)}*`,
+    `*@${".".repeat(n)}*`,
+  ];
+};
+
+/**
+ * How the time grows with the input, as the scanner's tests measure it (`sentrook/tests/linear_time.py`): the work at
+ * a quarter and at full size, the fastest of a few runs each; linear work takes about 4 times as long, quadratic about
+ * 16. A full-size run under 20 ms is too short to time and passes. Returns [quarter ms, full ms].
+ */
+function assertLinear(run: (divisor: number) => void, what: string, limit = 10): [number, number] {
+  const ms = (divisor: number) => {
+    const t0 = performance.now();
+    run(divisor);
+    return performance.now() - t0;
+  };
+  let small = ms(4);
+  let large = ms(1);
+  small = Math.min(small, ms(4));
+  for (let attempt = 1; attempt < 5 && large >= 20 && large / Math.max(small, 1e-6) >= 0.8 * limit; attempt++) {
+    small = Math.min(small, ms(4));
+    large = Math.min(large, ms(1));
+  }
+  const growth = large / Math.max(small, 1e-6);
+  assert.ok(large < 20 || growth < limit, `${what}: ${large.toFixed(1)} ms at full size vs ${small.toFixed(1)} ms at 1/4, ${growth.toFixed(1)}x`);
+  return [small, large];
+}
 
 test("pattern checks take linear time on long runs of . and [", () => {
-  const start = performance.now();
-  for (const p of LONG_RUNS) {
-    destinationOk(p);
-    nothingLiteral(p);
-    bindingProblem(p);
-    wildcardDomainOk(p);
-    credentialPatternOk(`NAME@${p}`);
-    relevantGrants([{ kind: "destination", pattern: p, scope: "persistent" }], p);
-  }
-  assert.ok(performance.now() - start < 1000, `${performance.now() - start} ms`);
+  // A generous ceiling guards against a hang.
+  const [, full] = assertLinear((divisor) => {
+    for (const p of longRuns(divisor)) {
+      destinationOk(p);
+      nothingLiteral(p);
+      bindingProblem(p);
+      wildcardDomainOk(p);
+      credentialPatternOk(`NAME@${p}`);
+      relevantGrants([{ kind: "destination", pattern: p, scope: "persistent" }], p);
+    }
+  }, "destination pattern checks");
+  assert.ok(full < 10_000, `${full} ms`);
 });
 
 test("a public-suffix destination grant is refused and nothing is stored", async () => {

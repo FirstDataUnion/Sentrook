@@ -3,13 +3,17 @@
 import argparse
 import json
 import shutil
-import time
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-import plugin
+# The scanner's timing check (tests are not published with the plugin).
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "sentrook" / "tests"))
+from linear_time import assert_linear  # noqa: E402
+
+import plugin  # noqa: E402
 from plugin import grants, owner
 from plugin.config import (
     credential_pattern_ok,
@@ -496,30 +500,37 @@ def test_a_destination_pattern_is_taken_as_sentrook_takes_it(c):
     assert cfg.unsent_grants == ({} if ok else {0: "too broad"})
 
 
-#: Long runs of `.` and `[`, which a pattern check with nested or overlapping repeats would take
-#: quadratic time over.
-LONG_RUNS = [
-    "[" * 100_000,
-    "*." + "[" * 100_000,
-    "a" + "[" * 100_000 + "*",
-    "." * 100_000 + "x",
-    "*." + "." * 100_000 + "a",
-    "*." + "a." * 50_000 + "." * 100_000,
-    "slack:" + "[" * 100_000 + "*",
-    "*@" + "." * 100_000 + "*",
-]
+def long_runs(divisor: int = 1) -> list[str]:
+    """Long runs of `.` and `[` (100k at full size, 1/`divisor` of it for the growth check), which a pattern
+    check with nested or overlapping repeats would take quadratic time over."""
+    n = 100_000 // divisor
+    return [
+        "[" * n,
+        "*." + "[" * n,
+        "a" + "[" * n + "*",
+        "." * n + "x",
+        "*." + "." * n + "a",
+        "*." + "a." * (n // 2) + "." * n,
+        "slack:" + "[" * n + "*",
+        "*@" + "." * n + "*",
+    ]
 
 
 def test_pattern_checks_take_linear_time_on_long_runs():
-    start = time.perf_counter()
-    for p in LONG_RUNS:
-        destination_ok(p)
-        nothing_literal(p)
-        binding_problem(p)
-        wildcard_domain_ok(p)
-        credential_pattern_ok("NAME@" + p)
-        relevant_grants([{"kind": "destination", "pattern": p, "scope": "persistent"}], p)
-    assert time.perf_counter() - start < 1.0
+    """Time that grows linearly with the input, measured at a quarter and at full size; a generous ceiling
+    guards against a hang."""
+
+    def run(divisor: int) -> None:
+        for p in long_runs(divisor):
+            destination_ok(p)
+            nothing_literal(p)
+            binding_problem(p)
+            wildcard_domain_ok(p)
+            credential_pattern_ok("NAME@" + p)
+            relevant_grants([{"kind": "destination", "pattern": p, "scope": "persistent"}], p)
+
+    _, full = assert_linear(run, "destination pattern checks")
+    assert full < 10.0
 
 
 def test_a_public_suffix_destination_grant_is_refused_and_nothing_is_stored(term):
