@@ -4671,6 +4671,12 @@ _ASSIGNMENT_VALUE_RE = re.compile(
     r"(?<![\w$-])([A-Za-z_][A-Za-z0-9_]*)=(\"(?:[^\"\\]|\\.)*\"|'[^']*'|[^\s;&|()<>]*)"
 )
 _KEEPS_PATH = frozenset({"$PATH", "${PATH}"})
+#: The variables the allowed folders are read relative to (`~` is `$HOME`).
+_PATH_BASE_VARS = frozenset({"HOME", "VIRTUAL_ENV"})
+#: A read of `PATH` (`$PATH`, `${PATH}`, `${PATH:+...}`), which leaves it unchanged.
+_PATH_REFERENCE_RE = re.compile(r"\$PATH\b|\$\{PATH[^}]*\}")
+#: `path` as a word, allowing quotes or backslashes between its letters.
+_PATH_SPELLED_RE = re.compile(r"(?i)(?<![\w./-])p[\\'\"]*a[\\'\"]*t[\\'\"]*h(?![\w./-])")
 
 
 def _benign_path_entry(entry: str, lists: Lists) -> bool:
@@ -4698,10 +4704,20 @@ def _path_prepends_are_benign(text: str, shadow: set[str], lists: Lists) -> bool
     `PATH=~/.venv/bin:$PATH` is how a virtualenv is activated; `PATH=/tmp/x:$PATH` and a `PATH`
     replaced outright are not this. A single-quoted value keeps `$PATH` literal, so it does not count.
     """
-    values = [m.group(2) for m in _ASSIGNMENT_VALUE_RE.finditer(text) if m.group(1) in shadow]
-    if not values:
+    matches = list(_ASSIGNMENT_VALUE_RE.finditer(text))
+    if any(m.group(1) in _PATH_BASE_VARS for m in matches):
+        return False  # the folder `~/.local/bin` or `$VIRTUAL_ENV/bin` names is moved first
+    shadow_matches = [m for m in matches if m.group(1) in shadow]
+    if not shadow_matches:
         return False
-    for value in values:
+    # Anything else that still spells the variable (`P\ATH=`, `'PATH'=`, `read PATH`, zsh `path=(`)
+    # is a change this reading cannot check, so the command keeps firing.
+    rest = text
+    for m in reversed(shadow_matches):
+        rest = rest[: m.start()] + " " + rest[m.end() :]
+    if _PATH_SPELLED_RE.search(_PATH_REFERENCE_RE.sub(" ", rest)):
+        return False
+    for value in (m.group(2) for m in shadow_matches):
         if value.startswith('"') and value.endswith('"') and len(value) >= 2:
             value = value[1:-1]
         elif value.startswith("'"):

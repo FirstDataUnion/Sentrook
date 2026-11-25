@@ -1402,6 +1402,7 @@ def test_c8_sudo_is_host_gated_but_preload_and_shadowing_are_not():
         'export PATH="$VIRTUAL_ENV/bin:${PATH}"',
         "export PATH=$HOME/.cargo/bin:~/go/bin:$PATH; cargo build",
         "export PATH=venv/bin/:$PATH; python -m pytest",
+        "export PATH=~/.venv/bin:$PATH; python -c 'import os.path' --path=src",
     ],
 )
 def test_c8_prepending_a_venv_or_user_bin_keeping_path_is_not_shadowing(command: str):
@@ -1420,6 +1421,14 @@ def test_c8_prepending_a_venv_or_user_bin_keeping_path_is_not_shadowing(command:
         "export PATH=$(mktemp -d)/venv/bin:$PATH",
         "export PATH='~/.local/bin:$PATH'",  # single quotes keep `$PATH` literal
         "export PATH=~/.local/bin:$PATH; PATH=/tmp/x:$PATH ls",  # the second assignment
+        # The folder's base is moved in the same command.
+        "export HOME=/tmp/x; export PATH=$HOME/.local/bin:$PATH; sudo ls",
+        "export VIRTUAL_ENV=/tmp/x; export PATH=$VIRTUAL_ENV/bin:$PATH; sudo ls",
+        # A benign prepend next to a second change this reading cannot parse.
+        "export PATH=~/.venv/bin:$PATH; export P\\ATH=/tmp/x:$PATH; sudo ls",
+        "export PATH=~/.venv/bin:$PATH; export 'PATH'=/tmp/x:$PATH; sudo ls",
+        "export PATH=~/.venv/bin:$PATH; path=(/tmp/x $path); sudo ls",
+        "export PATH=~/.venv/bin:$PATH; read PATH <<< /tmp/x; sudo ls",
     ],
 )
 def test_c8_path_shadowing_still_fires(command: str):
