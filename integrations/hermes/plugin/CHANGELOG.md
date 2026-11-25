@@ -6,6 +6,9 @@ since the version the catalog pins.
 
 ## 2.0.0-beta.18
 
+- The `sentrook-setup` skill tells the agent never to read Sentrook's folder or traffic log to work out what is
+  routine, and to call the `sentrook_setup_report` tool instead: the log holds content from earlier tool calls, so
+  reading it made the rest of the chat count as exposed to it.
 - A password or token with `&`, `,` or `;` in it is now redacted whole. After a key in an assignment, an `.env` line
   or a quoted value (`password=<value>&<rest>`, `export DB_PASSWORD=…`, `password='…'`) the value used to end at the
   first of these characters, so the rest of it left the machine as written, and the same password written `password:
